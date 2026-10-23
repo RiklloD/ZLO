@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use ironclaw_gpui_client::Backend;
-use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView};
+use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView, UserModelCatalog};
 use ironclaw_gpui_client::product_wire::SettingsToolPermissionState;
 use ironclaw_gpui_client::wire::ToolPermission;
 
@@ -35,6 +35,9 @@ pub struct SettingsView {
     auto_approve: Option<bool>,
     tools: Vec<(String, ToolPermission)>,
     models: HashMap<String, Models>,
+    /// Models offered by the chat's quick switcher.
+    catalog: Option<UserModelCatalog>,
+    pin_input: Option<Entity<InputState>>,
     key_editor: Option<(String, Entity<InputState>)>,
     show_all_providers: bool,
     error: Option<SharedString>,
@@ -51,6 +54,8 @@ impl SettingsView {
             auto_approve: None,
             tools: Vec::new(),
             models: HashMap::new(),
+            catalog: None,
+            pin_input: None,
             key_editor: None,
             show_all_providers: false,
             error: None,
@@ -70,6 +75,16 @@ impl SettingsView {
                     Ok(llm) => this.llm = Some(llm),
                     Err(e) => this.error = Some(e.to_string().into()),
                 }
+                cx.notify();
+            },
+        );
+        jobs::run(
+            &self.backend,
+            cx,
+            |c| async move { c.model_catalog().await },
+            |this, result, cx| {
+                // silent-ok: an older gateway without the route just has no switcher.
+                this.catalog = result.ok();
                 cx.notify();
             },
         );
@@ -110,10 +125,32 @@ impl SettingsView {
 
     fn set_active(&mut self, provider: String, model: Option<String>, cx: &mut Context<Self>) {
         self.notice = None;
+        // With a quick-switch list saved, the gateway runs chats on that
+        // list's default (or the person's pick), not the active model. Keep
+        // "Use" honest: make the chosen model the default and clear the pick.
+        let switcher = self
+            .catalog
+            .as_ref()
+            .filter(|c| c.selection_enabled)
+            .map(|c| c.models.clone());
         jobs::run(
             &self.backend,
             cx,
-            move |c| async move { c.set_active_llm(&provider, model).await },
+            move |c| async move {
+                let llm = c.set_active_llm(&provider, model.clone()).await?;
+                let same_provider = llm
+                    .active
+                    .as_ref()
+                    .is_some_and(|a| a.provider_id == provider);
+                if let (Some(mut allowed), Some(model), true) = (switcher, model, same_provider) {
+                    if !allowed.contains(&model) {
+                        allowed.push(model.clone());
+                    }
+                    c.set_model_policy(model, allowed).await?;
+                    c.set_model_preference(None).await?;
+                }
+                Ok(llm)
+            },
             |this, result, cx| match result {
                 Ok(llm) => {
                     let active = llm.active.as_ref().map(|a| {
@@ -129,6 +166,41 @@ impl SettingsView {
                     this.llm = Some(llm);
                     this.error = None;
                     this.notice = active.map(Into::into);
+                    this.refresh(cx);
+                }
+                Err(e) => this.fail(e, cx),
+            },
+        );
+    }
+
+    /// Add or remove a model from the quick switcher. The default stays the
+    /// active model when it is pinned, else the first pinned one.
+    fn toggle_pin(&mut self, model: String, active: Option<String>, cx: &mut Context<Self>) {
+        let mut allowed = self
+            .catalog
+            .as_ref()
+            .map(|c| c.models.clone())
+            .unwrap_or_default();
+        if let Some(i) = allowed.iter().position(|m| *m == model) {
+            allowed.remove(i);
+        } else {
+            allowed.push(model);
+        }
+        let Some(default) = active
+            .filter(|a| allowed.contains(a))
+            .or_else(|| allowed.first().cloned())
+        else {
+            self.fail("Keep at least one model in the quick switcher.", cx);
+            return;
+        };
+        jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move { c.set_model_policy(default, allowed).await },
+            |this, result, cx| match result {
+                Ok(catalog) => {
+                    this.catalog = Some(catalog);
+                    this.error = None;
                     cx.notify();
                 }
                 Err(e) => this.fail(e, cx),
@@ -355,6 +427,7 @@ impl SettingsView {
                     .child(actions),
             )
             .when_some(models, |d, m| d.child(m))
+            .when(p.active, |d| d.child(self.render_quick_switch(p, cx)))
             .when_some(editing, |d, (_, input)| {
                 let provider = p.clone();
                 d.child(
@@ -378,6 +451,99 @@ impl SettingsView {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.key_editor = None;
                                     cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// Models the chat's switcher offers. The gateway binds the list to the
+    /// active provider, so it lives on that provider's card.
+    fn render_quick_switch(&self, p: &LlmProviderView, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let pinned = self
+            .catalog
+            .as_ref()
+            .map(|c| c.models.clone())
+            .unwrap_or_default();
+        let active = p.active_model.clone();
+        v_flex()
+            .gap_1p5()
+            .pt_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(div().text_xs().font_medium().child("Quick switch in chat"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .whitespace_normal()
+                    .child(if pinned.is_empty() {
+                        "Add models here to switch between them from the chat composer."
+                    } else {
+                        "Click a model to remove it."
+                    }),
+            )
+            .when(!pinned.is_empty(), |d| {
+                d.child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .children(pinned.iter().enumerate().map(|(pix, model)| {
+                            let (m, a) = (model.clone(), active.clone());
+                            Button::new(("pinned", pix))
+                                .label(model.clone())
+                                .icon(IconName::Close)
+                                .outline()
+                                .xsmall()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.toggle_pin(m.clone(), a.clone(), cx)
+                                }))
+                        })),
+                )
+            })
+            .when(self.pin_input.is_none(), |d| {
+                d.child(
+                    h_flex().child(
+                        Button::new("pin-open")
+                            .label("Add model")
+                            .icon(IconName::Plus)
+                            .ghost()
+                            .xsmall()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let input = cx.new(|cx| {
+                                    InputState::new(window, cx)
+                                        .placeholder("Model id, e.g. glm-5.3")
+                                });
+                                input.update(cx, |s, cx| s.focus(window, cx));
+                                this.pin_input = Some(input);
+                                cx.notify();
+                            })),
+                    ),
+                )
+            })
+            .when_some(self.pin_input.clone(), |d, input| {
+                d.child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().flex_1().child(Input::new(&input).small()))
+                        .child(
+                            Button::new("pin-add")
+                                .label("Add")
+                                .outline()
+                                .small()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    let model = input.read(cx).value().trim().to_string();
+                                    if !model.is_empty() {
+                                        input.update(cx, |s, cx| s.set_value("", window, cx));
+                                        let active = this
+                                            .llm
+                                            .as_ref()
+                                            .and_then(|l| l.active.as_ref())
+                                            .and_then(|a| a.model.clone());
+                                        this.toggle_pin(model, active, cx);
+                                    }
                                 })),
                         ),
                 )

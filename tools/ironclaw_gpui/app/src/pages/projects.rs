@@ -1,4 +1,4 @@
-//! Projects: list, create, archive and restore. Shown only when the gateway
+//! Projects: list, create, archive, restore and delete. Shown only when the gateway
 //! reports `features.reborn_projects`.
 
 use ironclaw_gpui_client::Backend;
@@ -17,6 +17,7 @@ pub struct ProjectsView {
     creating: bool,
     loaded: bool,
     error: Option<SharedString>,
+    confirm_delete: Option<String>,
     _name_events: Subscription,
 }
 
@@ -49,6 +50,7 @@ impl ProjectsView {
             creating: false,
             loaded: false,
             error: None,
+            confirm_delete: None,
             _name_events: name_events,
         };
         this.refresh(cx);
@@ -132,6 +134,23 @@ impl ProjectsView {
         );
     }
 
+    fn delete(&mut self, id: String, cx: &mut Context<Self>) {
+        self.confirm_delete = None;
+        let job_id = id.clone();
+        jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move { c.delete_project(&job_id).await },
+            move |this, result, cx| {
+                match result {
+                    Ok(()) => this.items.retain(|p| p.project_id != id),
+                    Err(e) => this.error = Some(e.to_string().into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
     fn render_row(&self, ix: usize, p: &RebornProjectInfo, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let archived = matches!(p.state, RebornProjectState::Archived);
@@ -158,7 +177,8 @@ impl ProjectsView {
                     .when(archived, |d| {
                         d.child(Tag::secondary().small().child("Archived"))
                     })
-                    .child(
+                    .child({
+                        let id = id.clone();
                         Button::new(("project-state", ix))
                             .icon(icon)
                             .ghost()
@@ -167,8 +187,28 @@ impl ProjectsView {
                             .accessibility_label(tip)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.set_state(id.clone(), next, cx)
-                            })),
-                    ),
+                            }))
+                    })
+                    .child(if self.confirm_delete.as_deref() == Some(id.as_str()) {
+                        Button::new(("project-delete-confirm", ix))
+                            .label("Delete?")
+                            .danger()
+                            .small()
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.delete(id.clone(), cx)),
+                            )
+                    } else {
+                        Button::new(("project-delete", ix))
+                            .icon(IconName::Delete)
+                            .ghost()
+                            .small()
+                            .tooltip("Delete project")
+                            .accessibility_label("Delete project")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.confirm_delete = Some(id.clone());
+                                cx.notify();
+                            }))
+                    }),
             )
             .when(!p.description.trim().is_empty(), |d| {
                 d.child(

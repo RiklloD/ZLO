@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use ironclaw_product_contracts::inbound_requests::ProductSetupExtensionRequest;
 use ironclaw_product_contracts::operator_llm::{
     LlmConfigSnapshot, LlmModelsResult, LlmProviderView, SetActiveLlmRequest,
+    SetUserModelPolicyRequest, SetUserModelPreferenceRequest, UserModelCatalog,
+    UserModelPreference,
 };
 use ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef;
 use ironclaw_product_contracts::product_wire::{
@@ -67,6 +69,49 @@ impl Client {
             model,
         };
         self.post(&format!("{V2}/llm/active"), &body).await
+    }
+
+    // --- quick model switching (policy + per-user preference) ---
+
+    /// The models a user may switch between; `selection_enabled` is false
+    /// until an operator saved a list for the active provider.
+    pub async fn model_catalog(&self) -> Result<UserModelCatalog, ClientError> {
+        self.get(&format!("{V2}/llm/models")).await
+    }
+
+    /// Replace the switchable list for the active provider (operator only).
+    pub async fn set_model_policy(
+        &self,
+        workspace_default: String,
+        allowed_models: Vec<String>,
+    ) -> Result<UserModelCatalog, ClientError> {
+        let body = SetUserModelPolicyRequest {
+            workspace_default,
+            allowed_models,
+            model_entries: None,
+        };
+        self.send(
+            self.request(Method::PUT, &format!("{V2}/llm/model-policy"))
+                .json(&body),
+        )
+        .await
+    }
+
+    pub async fn model_preference(&self) -> Result<UserModelPreference, ClientError> {
+        self.get(&format!("{V2}/llm/model-preference")).await
+    }
+
+    /// `None` goes back to the workspace default.
+    pub async fn set_model_preference(
+        &self,
+        model: Option<String>,
+    ) -> Result<UserModelPreference, ClientError> {
+        let body = SetUserModelPreferenceRequest { model };
+        self.send(
+            self.request(Method::PUT, &format!("{V2}/llm/model-preference"))
+                .json(&body),
+        )
+        .await
     }
 
     /// Uses the provider's stored key; nothing secret leaves the app.

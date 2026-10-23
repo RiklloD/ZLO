@@ -2,6 +2,21 @@
 
 Open items found while building and testing the GPUI client. Newest first.
 
+## Found during 4.2 (23.10.2026)
+
+- Gateway trap: once a quick-switch model list exists for the active
+  provider, chats run on that list's default or the person's pick, and the
+  active model set in Settings is ignored. The desktop app's "Use" button
+  updates the list default and clears the pick to stay consistent; the web UI
+  and CLI do not. There is no route to delete the list. Worth an upstream
+  issue.
+- Once, after "Suggest tasks", the app kept showing the spinner although the
+  gateway had finished. Not reproduced with logging on (polls arrived every
+  second and the cards appeared). If it comes back, check whether the window
+  repaints while another app is in front.
+- The suggestion generator leaves an empty, untitled thread in the sidebar
+  ("New conversation"). Gateway behavior; the web UI likely shows it too.
+
 ## Native notifications (fixed 23.10.2026)
 
 macOS refused notifications from the ad-hoc signed bundle ("Notifications are

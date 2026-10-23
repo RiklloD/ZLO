@@ -12,7 +12,7 @@ pub use gpui_kit::component::spinner::Spinner;
 pub use gpui_kit::component::switch::Switch;
 pub use gpui_kit::component::tag::Tag;
 pub use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, h_flex, v_flex,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, h_flex, v_flex,
 };
 pub use gpui_kit::prelude::FluentBuilder;
 pub use gpui_kit::{

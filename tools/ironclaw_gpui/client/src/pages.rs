@@ -4,15 +4,19 @@
 
 use std::time::Duration;
 
+use ironclaw_product_contracts::inbound_requests::ProductRenameAutomationRequest;
+use ironclaw_product_contracts::inbound_requests::RebornSuggestionsGenerateRequest;
 use ironclaw_product_contracts::notification_inbox::{
     ProductListNotificationsResponse, ProductNotificationMutationResponse,
 };
 use ironclaw_product_contracts::product_wire::{
     RebornAutomationMutationResponse, RebornListAutomationsResponse,
+    RebornSuggestionDismissResponse, RebornSuggestionStartResponse, RebornSuggestionsResponse,
 };
 use ironclaw_product_contracts::workspace_views::{
     FsMount, RebornCreateProjectRequest, RebornFsListResponse, RebornFsMountsResponse,
-    RebornFsStatResponse, RebornListProjectsResponse, RebornProjectResponse, RebornProjectState,
+    RebornFsStatResponse, RebornListProjectsResponse, RebornProjectFsListResponse,
+    RebornProjectFsStatResponse, RebornProjectResponse, RebornProjectState,
     RebornUpdateProjectRequest,
 };
 use reqwest::Method;
@@ -113,6 +117,49 @@ impl Client {
         }
     }
 
+    pub async fn rename_automation(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> Result<RebornAutomationMutationResponse, ClientError> {
+        let body = ProductRenameAutomationRequest {
+            name: Some(name.to_string()),
+        };
+        self.post(&format!("{V2}/automations/{}", seg(id)), &body)
+            .await
+    }
+
+    // --- suggestions (generated on request; each costs one model run) ---
+
+    pub async fn suggestions(&self) -> Result<RebornSuggestionsResponse, ClientError> {
+        self.get(&format!("{V2}/suggestions")).await
+    }
+
+    pub async fn generate_suggestions(&self) -> Result<RebornSuggestionsResponse, ClientError> {
+        let body = RebornSuggestionsGenerateRequest {
+            client_action_id: crate::api::client_action_id(),
+        };
+        self.post(&format!("{V2}/suggestions/generate"), &body)
+            .await
+    }
+
+    /// The gateway creates the thread and submits the prompt itself.
+    pub async fn start_suggestion(
+        &self,
+        id: &str,
+    ) -> Result<RebornSuggestionStartResponse, ClientError> {
+        self.post_empty(&format!("{V2}/suggestions/{}/start", seg(id)))
+            .await
+    }
+
+    pub async fn dismiss_suggestion(
+        &self,
+        id: &str,
+    ) -> Result<RebornSuggestionDismissResponse, ClientError> {
+        self.send(self.request(Method::DELETE, &format!("{V2}/suggestions/{}", seg(id))))
+            .await
+    }
+
     // --- projects (behind the deployment's `reborn_projects` feature) ---
 
     pub async fn list_projects(&self) -> Result<RebornListProjectsResponse, ClientError> {
@@ -132,6 +179,76 @@ impl Client {
             metadata: None,
         };
         self.post(&format!("{V2}/projects"), &body).await
+    }
+
+    /// The gateway answers with an empty success status.
+    pub async fn delete_project(&self, id: &str) -> Result<(), ClientError> {
+        let resp = self
+            .request(Method::DELETE, &format!("{V2}/projects/{}", seg(id)))
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ClientError::from_status(status.as_u16(), &text));
+        }
+        Ok(())
+    }
+
+    // --- one conversation's own files (its project workspace) ---
+
+    pub async fn thread_files(
+        &self,
+        thread_id: &str,
+        path: Option<&str>,
+    ) -> Result<RebornProjectFsListResponse, ClientError> {
+        let mut url = format!("{V2}/threads/{}/files", seg(thread_id));
+        if let Some(path) = path {
+            url.push_str(&format!("?path={}", seg(path)));
+        }
+        self.get(&url).await
+    }
+
+    pub async fn thread_file_stat(
+        &self,
+        thread_id: &str,
+        path: &str,
+    ) -> Result<RebornProjectFsStatResponse, ClientError> {
+        self.get(&format!(
+            "{V2}/threads/{}/files/stat?path={}",
+            seg(thread_id),
+            seg(path)
+        ))
+        .await
+    }
+
+    pub async fn thread_file_bytes(
+        &self,
+        thread_id: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, ClientError> {
+        let resp = self
+            .request(
+                Method::GET,
+                &format!(
+                    "{V2}/threads/{}/files/content?path={}",
+                    seg(thread_id),
+                    seg(path)
+                ),
+            )
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await?;
+        let status = resp.status();
+        let bytes = resp.bytes().await?;
+        if !status.is_success() {
+            return Err(ClientError::from_status(
+                status.as_u16(),
+                &String::from_utf8_lossy(&bytes),
+            ));
+        }
+        Ok(bytes.to_vec())
     }
 
     pub async fn set_project_state(

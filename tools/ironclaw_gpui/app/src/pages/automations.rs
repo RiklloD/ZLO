@@ -1,5 +1,5 @@
 //! Scheduled and one-time automations: status, recent runs, run now, pause,
-//! resume, delete. Automations are created by asking IronClaw in a chat.
+//! resume, rename, delete. Automations are created by asking IronClaw in a chat.
 
 use std::collections::HashSet;
 
@@ -22,6 +22,9 @@ pub struct AutomationsView {
     error: Option<SharedString>,
     busy: HashSet<String>,
     confirm_delete: Option<String>,
+    /// The automation whose name is being edited, with its input.
+    renaming: Option<(String, Entity<InputState>)>,
+    _rename_enter: Option<Subscription>,
 }
 
 impl EventEmitter<PageEvent> for AutomationsView {}
@@ -36,6 +39,8 @@ impl AutomationsView {
             error: None,
             busy: HashSet::new(),
             confirm_delete: None,
+            renaming: None,
+            _rename_enter: None,
         };
         this.refresh(cx);
         this
@@ -83,6 +88,62 @@ impl AutomationsView {
                             *row = updated;
                         }
                         this.refresh(cx);
+                    }
+                    Err(e) => this.error = Some(e.to_string().into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn start_rename(
+        &mut self,
+        id: String,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(name));
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self._rename_enter = Some(cx.subscribe_in(&input, window, |this, _, event, _, cx| {
+            if let InputEvent::PressEnter { .. } = event {
+                this.save_rename(cx);
+            }
+        }));
+        self.renaming = Some((id, input));
+        cx.notify();
+    }
+
+    fn save_rename(&mut self, cx: &mut Context<Self>) {
+        let Some((id, input)) = self.renaming.take() else {
+            return;
+        };
+        self._rename_enter = None;
+        let name = input.read(cx).value().trim().to_string();
+        let unchanged = self
+            .items
+            .iter()
+            .any(|a| a.automation_id == id && a.name == name);
+        if name.is_empty() || unchanged {
+            cx.notify();
+            return;
+        }
+        self.busy.insert(id.clone());
+        let job_id = id.clone();
+        jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move { c.rename_automation(&job_id, &name).await },
+            move |this, result, cx| {
+                this.busy.remove(&id);
+                match result {
+                    Ok(resp) => {
+                        if let Some(updated) = resp.automation
+                            && let Some(row) = this.items.iter_mut().find(|a| a.automation_id == id)
+                        {
+                            *row = updated;
+                        }
+                        this.error = None;
                     }
                     Err(e) => this.error = Some(e.to_string().into()),
                 }
@@ -217,14 +278,48 @@ impl AutomationsView {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(
-                        div()
+                    .child(match self.renaming.as_ref().filter(|(rid, _)| *rid == id) {
+                        Some((_, input)) => h_flex()
                             .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .font_semibold()
-                            .child(a.name.clone()),
-                    )
+                            .gap_1()
+                            .child(div().flex_1().child(Input::new(input).small()))
+                            .child(
+                                Button::new(("rename-save", ix))
+                                    .label("Save")
+                                    .primary()
+                                    .xsmall()
+                                    .on_click(cx.listener(|this, _, _, cx| this.save_rename(cx))),
+                            )
+                            .child(
+                                Button::new(("rename-cancel", ix))
+                                    .label("Cancel")
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.renaming = None;
+                                        this._rename_enter = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .into_any_element(),
+                        None => {
+                            let (rid, name) = (id.clone(), a.name.clone());
+                            div()
+                                .id(("rename", ix))
+                                .role(Role::Button)
+                                .aria_label(format!("Rename {}", a.name))
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .font_semibold()
+                                .cursor_text()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.start_rename(rid.clone(), name.clone(), window, cx)
+                                }))
+                                .child(a.name.clone())
+                                .into_any_element()
+                        }
+                    })
                     .child(state_tag(a.state))
                     .child(actions),
             )

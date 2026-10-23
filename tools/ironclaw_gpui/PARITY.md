@@ -17,11 +17,11 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 | session_channel_message, get_timeline, stream_events | done |
 | cancel_run, resolve_gate, retry_run | done |
 | stream_events_ws | excluded: SSE carries the same frames |
-| list_commands, execute_command | todo [4.2] |
-| get_attachment (+ attachments on send) | todo [4.2] |
-| suggestions.list, suggestions.generate, suggestions.start, suggestions.dismiss | todo [4.2] |
-| get_user_model_catalog, get_user_model_preference, set_user_model_preference, set_user_model_policy | todo [4.2] |
-| get_run_artifact, get_thread_artifact | todo [4.2] |
+| list_commands, execute_command | done |
+| get_attachment (+ attachments on send) | done |
+| suggestions.list, suggestions.generate, suggestions.start, suggestions.dismiss | done |
+| get_user_model_catalog, get_user_model_preference, set_user_model_preference, set_user_model_policy | done (not live-tested: saving a quick-switch list cannot be undone through the API) |
+| get_run_artifact, get_thread_artifact | excluded: debug export behind `regression_artifact_export`, off in this deployment (404) |
 
 ## Notifications
 
@@ -36,7 +36,7 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 | Route | Status |
 |---|---|
 | list_automations, pause_automation, resume_automation, run_automation, delete_automation | done |
-| rename_automation | todo [4.2] |
+| rename_automation | done (not live-tested: no automation exists) |
 
 ## Files and projects
 
@@ -44,7 +44,9 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 |---|---|
 | list_fs_mounts, browse_fs_dir, stat_fs_path, read_fs_file | done |
 | list_projects, create_project, update_project | done |
-| get_project, delete_project, list_project_files, stat_project_file, read_project_file | todo [4.2] |
+| delete_project, list_project_files, read_project_file | done |
+| get_project | excluded: returns the same record as list_projects |
+| stat_project_file | done (client call; the panel lists and opens files without a stat step) |
 | list_project_members, add_project_member, update_project_member, remove_project_member | excluded: single user (decided 23.10.2026) |
 
 ## Extensions
