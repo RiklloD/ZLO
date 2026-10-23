@@ -11,6 +11,7 @@ mod backend;
 pub mod commands;
 mod connection;
 mod error;
+pub mod operator;
 mod pages;
 mod settings;
 mod stream;

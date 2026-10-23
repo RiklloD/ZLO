@@ -5,6 +5,7 @@ pub mod automations;
 pub mod extensions;
 pub mod files;
 pub mod notifications;
+pub mod operator;
 pub mod projects;
 pub mod settings;
 pub mod skills;

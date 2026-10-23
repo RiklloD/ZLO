@@ -15,6 +15,7 @@ use crate::pages::automations::AutomationsView;
 use crate::pages::extensions::ExtensionsView;
 use crate::pages::files::FilesView;
 use crate::pages::notifications::NotificationsView;
+use crate::pages::operator::OperatorView;
 use crate::pages::projects::ProjectsView;
 use crate::pages::settings::SettingsView;
 use crate::pages::skills::SkillsView;
@@ -40,6 +41,7 @@ enum Page {
     Extensions,
     Skills,
     Settings,
+    Operator,
 }
 
 /// Pages are built on first visit and kept, so switching back is instant.
@@ -52,6 +54,7 @@ struct Pages {
     extensions: Option<Entity<ExtensionsView>>,
     skills: Option<Entity<SkillsView>>,
     settings: Option<Entity<SettingsView>>,
+    operator: Option<Entity<OperatorView>>,
 }
 
 enum Conn {
@@ -438,6 +441,7 @@ impl Workspace {
             Page::Extensions => open!(extensions, |cx| ExtensionsView::new(backend, cx)),
             Page::Skills => open!(skills, |cx| SkillsView::new(backend, window, cx)),
             Page::Settings => open!(settings, |cx| SettingsView::new(backend, cx)),
+            Page::Operator => open!(operator, |cx| OperatorView::new(backend, cx)),
         }
         self.page = page;
         cx.notify();
@@ -456,6 +460,7 @@ impl Workspace {
         items.push((Page::Extensions, IconName::Frame, "Extensions"));
         items.push((Page::Skills, IconName::BookOpen, "Skills"));
         items.push((Page::Settings, IconName::Settings, "Settings"));
+        items.push((Page::Operator, IconName::SquareTerminal, "Operator"));
         let unread = self.unread;
         v_flex()
             .px_2()
@@ -700,6 +705,7 @@ impl Render for Workspace {
                     Page::Extensions => self.pages.extensions.clone().map(|v| v.into_any_element()),
                     Page::Skills => self.pages.skills.clone().map(|v| v.into_any_element()),
                     Page::Settings => self.pages.settings.clone().map(|v| v.into_any_element()),
+                    Page::Operator => self.pages.operator.clone().map(|v| v.into_any_element()),
                 };
                 let main: AnyElement = match (page, &self.active) {
                     (Some(page), _) => page,
