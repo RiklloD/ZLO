@@ -12,6 +12,7 @@ pub mod commands;
 mod connection;
 mod error;
 pub mod operator;
+pub mod orchestration;
 mod pages;
 mod settings;
 mod stream;
