@@ -1,8 +1,9 @@
 //! Operator: gateway readiness, the OS service, first-run setup, config keys,
-//! the log ring, and the run inspector. Every route behind this page is
+//! extension credentials, the log ring, and the run inspector. Every route behind this page is
 //! operator-gated; the local single-user token has that role.
 
 mod config;
+mod extensions;
 mod inspector;
 mod logs;
 mod setup;
@@ -16,6 +17,7 @@ use ironclaw_gpui_client::product_wire::{
 };
 
 use self::config::ConfigPanel;
+use self::extensions::ExtensionConfigPanel;
 use self::inspector::InspectorPanel;
 use self::logs::LogsPanel;
 use self::setup::SetupPanel;
@@ -28,14 +30,16 @@ enum Tab {
     Status,
     Setup,
     Config,
+    Extensions,
     Logs,
     Inspector,
 }
 
-const TABS: [(Tab, &str); 5] = [
+const TABS: [(Tab, &str); 6] = [
     (Tab::Status, "Status"),
     (Tab::Setup, "Setup"),
     (Tab::Config, "Config"),
+    (Tab::Extensions, "Extensions"),
     (Tab::Logs, "Logs"),
     (Tab::Inspector, "Inspector"),
 ];
@@ -47,6 +51,7 @@ pub struct OperatorView {
     status: Entity<StatusPanel>,
     setup: Option<Entity<SetupPanel>>,
     config: Option<Entity<ConfigPanel>>,
+    extensions: Option<Entity<ExtensionConfigPanel>>,
     logs: Option<Entity<LogsPanel>>,
     inspector: Option<Entity<InspectorPanel>>,
     _events: Vec<Subscription>,
@@ -63,6 +68,7 @@ impl OperatorView {
             status,
             setup: None,
             config: None,
+            extensions: None,
             logs: None,
             inspector: None,
             _events: Vec::new(),
@@ -75,6 +81,7 @@ impl OperatorView {
             Tab::Status => self.status.update(cx, |p, cx| p.refresh(cx)),
             Tab::Setup => update(&self.setup, cx, |p, cx| p.refresh(cx)),
             Tab::Config => update(&self.config, cx, |p, cx| p.refresh(cx)),
+            Tab::Extensions => update(&self.extensions, cx, |p, cx| p.refresh(cx)),
             Tab::Logs => update(&self.logs, cx, |p, cx| p.refresh(cx)),
             Tab::Inspector => update(&self.inspector, cx, |p, cx| p.refresh(cx)),
         }
@@ -89,6 +96,9 @@ impl OperatorView {
             }),
             Tab::Config => build(&mut self.config, || {
                 cx.new(|cx| ConfigPanel::new(backend, window, cx))
+            }),
+            Tab::Extensions => build(&mut self.extensions, || {
+                cx.new(|cx| ExtensionConfigPanel::new(backend, window, cx))
             }),
             Tab::Logs => build(&mut self.logs, || {
                 cx.new(|cx| LogsPanel::new(backend, window, cx))
@@ -121,6 +131,7 @@ impl OperatorView {
             Tab::Status => Some(self.status.clone().into_any_element()),
             Tab::Setup => self.setup.clone().map(|v| v.into_any_element()),
             Tab::Config => self.config.clone().map(|v| v.into_any_element()),
+            Tab::Extensions => self.extensions.clone().map(|v| v.into_any_element()),
             Tab::Logs => self.logs.clone().map(|v| v.into_any_element()),
             Tab::Inspector => self.inspector.clone().map(|v| v.into_any_element()),
         }

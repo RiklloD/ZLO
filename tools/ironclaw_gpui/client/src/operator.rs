@@ -438,3 +438,81 @@ mod tests {
         );
     }
 }
+
+// --- extension deployment configuration ---
+//
+// The gateway serves these as untyped JSON; the wire types live in
+// `ironclaw_assistant` (`RebornAdminConfiguration*`), which the client does
+// not depend on. These decode the fields the app shows.
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminConfigGroups {
+    pub groups: Vec<AdminConfigGroup>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminConfigGroup {
+    pub group_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    pub revision: u64,
+    pub complete: bool,
+    pub fields: Vec<AdminConfigField>,
+    #[serde(default)]
+    pub used_by: Vec<AdminConfigUse>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminConfigField {
+    pub handle: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    pub secret: bool,
+    pub required: bool,
+    pub provided: bool,
+    /// Present for non-secret fields that have a value.
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminConfigUse {
+    pub display_name: String,
+    pub installed: bool,
+}
+
+impl Client {
+    pub async fn extension_configuration(&self) -> Result<AdminConfigGroups, ClientError> {
+        self.get(&format!("{V2}/operator/extension-configuration"))
+            .await
+    }
+
+    /// Replace one group's values. A blank secret keeps the stored one;
+    /// `revision` guards against overwriting a newer save (409).
+    pub async fn replace_extension_configuration(
+        &self,
+        group_id: &str,
+        revision: u64,
+        values: Vec<(String, String)>,
+    ) -> Result<serde_json::Value, ClientError> {
+        let values: Vec<_> = values
+            .into_iter()
+            .map(|(handle, value)| serde_json::json!({ "handle": handle, "value": value }))
+            .collect();
+        let body = serde_json::json!({
+            "values": values,
+            "expected_revision": revision,
+            "idempotency_key": crate::api::client_action_id(),
+        });
+        self.send(
+            self.request(
+                Method::PUT,
+                &format!("{V2}/operator/extension-configuration/{}", seg(group_id)),
+            )
+            .json(&body),
+        )
+        .await
+    }
+}

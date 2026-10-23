@@ -28,8 +28,8 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 | Route | Status |
 |---|---|
 | list_notifications, mark_notification_read, mark_all_notifications_read, archive_notification | done |
-| get_notification_channels, set_notification_channels, list_outbound_delivery_targets | todo [4.3] |
-| notification_setup_status, notification_setup_enable, notification_setup_disable | todo [4.3] |
+| get_notification_channels, set_notification_channels, list_outbound_delivery_targets | done (Notifications page, Channels section) |
+| notification_setup_status | done; enable/disable excluded: the only enrollable target is browser web push, which needs a browser push subscription |
 
 ## Automations
 
@@ -55,16 +55,18 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 |---|---|
 | list_extensions, list_extension_registry, install_extension, remove_extension | done |
 | get_extension_setup, setup_extension (API keys, config fields) | done |
-| OAuth setup start, channel pairing | todo [4.3] |
-| import_extension, register_hosted_mcp_extension, ironhub_deliver_install | todo [4.3] |
-| operator_list_extension_configuration, operator_replace_extension_configuration | todo [4.3] |
+| channel pairing (mint, status, unpair) | done (Connect on active channel extensions) |
+| OAuth setup start | excluded: the OAuth callback reports to a browser popup; the app hands off with "Sign in via browser" |
+| import_extension, register_hosted_mcp_extension | done (not live-tested: both install real extensions) |
+| ironhub_deliver_install | excluded: a signed delivery IronHub posts, not a user action; the web UI has no caller either |
+| operator_list_extension_configuration, operator_replace_extension_configuration | done (Operator > Extensions; blank secrets keep the stored value) |
 
 ## Skills
 
 | Route | Status |
 |---|---|
 | list_skills, get_skill, search_skills, install_skill, remove_skill, set_skill_auto_activate | done |
-| update_skill (edit SKILL.md), set_auto_activate_learned | todo [4.3] |
+| update_skill (edit SKILL.md), set_auto_activate_learned | done |
 
 ## Settings and models
 
@@ -72,8 +74,9 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 |---|---|
 | settings.list_tools, auto-approve switch, per-tool permission | done |
 | get_llm_config, upsert_llm_provider (API key), set_active_llm, list_llm_models | done |
-| delete_llm_provider, test_llm_connection | todo [4.3] |
-| start_nearai_login, complete_nearai_wallet_login, start_codex_login | todo [4.3] |
+| delete_llm_provider, test_llm_connection | done |
+| start_codex_login | done (device code shown in Settings, app waits until Codex is active) |
+| start_nearai_login, complete_nearai_wallet_login | excluded: NEAR AI SSO refuses loopback origins (the web UI blocks it locally too) and wallet login needs a browser wallet; a NEAR AI API key works through Set key |
 
 ## Operator
 

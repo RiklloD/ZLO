@@ -2,11 +2,12 @@
 
 use std::collections::BTreeMap;
 
+use ironclaw_extension_contracts::hosted_mcp::HostedMcpAuthSelection;
 use ironclaw_product_contracts::inbound_requests::ProductSetupExtensionRequest;
 use ironclaw_product_contracts::operator_llm::{
-    LlmConfigSnapshot, LlmModelsResult, LlmProviderView, SetActiveLlmRequest,
-    SetUserModelPolicyRequest, SetUserModelPreferenceRequest, UserModelCatalog,
-    UserModelPreference,
+    CodexLoginStart, LlmConfigSnapshot, LlmModelsResult, LlmProbeResult, LlmProviderView,
+    SetActiveLlmRequest, SetUserModelPolicyRequest, SetUserModelPreferenceRequest,
+    UserModelCatalog, UserModelPreference,
 };
 use ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef;
 use ironclaw_product_contracts::product_wire::{
@@ -20,7 +21,7 @@ use serde_json::json;
 
 use crate::api::{Client, V2, client_action_id, seg};
 use crate::error::ClientError;
-use crate::wire::ExtensionList;
+use crate::wire::{ExtensionList, HostedMcpRegistered, PairingCode, PairingStatus};
 
 impl Client {
     // --- tool permissions ---
@@ -124,6 +125,36 @@ impl Client {
         self.post(&format!("{V2}/llm/list-models"), &body).await
     }
 
+    /// Probe the provider with its stored key and default model.
+    pub async fn test_llm_connection(
+        &self,
+        p: &LlmProviderView,
+    ) -> Result<LlmProbeResult, ClientError> {
+        let body = json!({
+            "provider_id": p.id,
+            "adapter": p.adapter,
+            "base_url": p.base_url,
+            "model": p.active_model.as_ref().unwrap_or(&p.default_model),
+        });
+        self.post(&format!("{V2}/llm/test-connection"), &body).await
+    }
+
+    /// Remove an operator-defined provider and its stored key.
+    pub async fn delete_llm_provider(&self, id: &str) -> Result<LlmConfigSnapshot, ClientError> {
+        self.post(
+            &format!("{V2}/llm/providers/{}/delete", seg(id)),
+            &json!({}),
+        )
+        .await
+    }
+
+    /// Start a ChatGPT device-code login. The gateway finishes it in the
+    /// background and makes Codex active once the code is entered.
+    pub async fn start_codex_login(&self) -> Result<CodexLoginStart, ClientError> {
+        self.post(&format!("{V2}/llm/codex/login"), &json!({}))
+            .await
+    }
+
     /// Store a new API key for an existing provider. The gateway encrypts it;
     /// the request is the only place the key exists outside the secret store.
     pub async fn set_provider_key(
@@ -197,6 +228,61 @@ impl Client {
             .await
     }
 
+    /// Channel pairing: a short code the user sends to the bot, plus a deep
+    /// link that pre-fills it.
+    pub async fn mint_pairing_code(&self, id: &str) -> Result<PairingCode, ClientError> {
+        self.post(
+            &format!("{V2}/extensions/{}/pairing/mint", seg(id)),
+            &json!({}),
+        )
+        .await
+    }
+
+    pub async fn pairing_status(&self, id: &str) -> Result<PairingStatus, ClientError> {
+        self.get(&format!("{V2}/extensions/{}/pairing/status", seg(id)))
+            .await
+    }
+
+    pub async fn unpair_extension(&self, id: &str) -> Result<(), ClientError> {
+        self.send_unit(self.request(
+            Method::POST,
+            &format!("{V2}/extensions/{}/pairing/unpair", seg(id)),
+        ))
+        .await
+    }
+
+    /// Register a remote MCP server as an extension. The gateway probes the
+    /// endpoint; credentials are entered afterwards in setup.
+    pub async fn register_hosted_mcp(
+        &self,
+        id: &str,
+        name: &str,
+        endpoint: &str,
+        auth: HostedMcpAuthSelection,
+    ) -> Result<HostedMcpRegistered, ClientError> {
+        let body = json!({
+            "desired_id": id,
+            "desired_name": name,
+            "endpoint": endpoint,
+            "auth_selection": auth,
+        });
+        self.post(&format!("{V2}/extensions/register-hosted-mcp"), &body)
+            .await
+    }
+
+    /// Upload a tool bundle zip (operator only).
+    pub async fn import_extension(
+        &self,
+        bundle: Vec<u8>,
+    ) -> Result<RebornExtensionActionResponse, ClientError> {
+        self.send(
+            self.request(Method::POST, &format!("{V2}/extensions/import"))
+                .header(reqwest::header::CONTENT_TYPE, "application/zip")
+                .body(bundle),
+        )
+        .await
+    }
+
     // --- skills ---
 
     pub async fn skills(&self) -> Result<RebornSkillListResponse, ClientError> {
@@ -217,6 +303,31 @@ impl Client {
     ) -> Result<RebornSkillActionResponse, ClientError> {
         self.post(
             &format!("{V2}/skills/{}/auto-activate", seg(name)),
+            &json!({ "enabled": enabled }),
+        )
+        .await
+    }
+
+    /// Replace an editable skill's SKILL.md; the gateway re-validates it.
+    pub async fn update_skill(
+        &self,
+        name: &str,
+        content: &str,
+    ) -> Result<RebornSkillActionResponse, ClientError> {
+        self.send(
+            self.request(Method::PUT, &format!("{V2}/skills/{}", seg(name)))
+                .json(&json!({ "content": content })),
+        )
+        .await
+    }
+
+    /// Master switch for criteria-based auto-activation of all skills.
+    pub async fn set_auto_activate_learned(
+        &self,
+        enabled: bool,
+    ) -> Result<RebornSkillActionResponse, ClientError> {
+        self.post(
+            &format!("{V2}/skills/auto-activate-learned"),
             &json!({ "enabled": enabled }),
         )
         .await

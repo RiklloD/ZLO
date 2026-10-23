@@ -25,6 +25,7 @@ pub use error::{ApiErrorBody, ClientError};
 pub use pages::{AutomationAction, FilePreview, PREVIEW_LIMIT_BYTES};
 pub use stream::{EventStream, StreamMessage, StreamStatus};
 
+pub use ironclaw_extension_contracts::hosted_mcp;
 pub use ironclaw_extension_contracts::state as extension_state;
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;

@@ -1,5 +1,5 @@
-//! Skills: installed skills with auto-activation, their instructions, removal,
-//! and a catalog search to install more.
+//! Skills: installed skills with auto-activation, their instructions (view
+//! and edit), removal, and a catalog search to install more.
 
 use std::collections::HashMap;
 
@@ -20,6 +20,10 @@ pub struct SkillsView {
     backend: Backend,
     skills: Vec<RebornSkillInfo>,
     open: HashMap<String, Option<String>>,
+    /// SKILL.md editor: skill name and its text.
+    editor: Option<(String, Entity<TextareaState>)>,
+    /// Global switch: skills activate on their own when relevant.
+    auto_learned: Option<bool>,
     query: Entity<InputState>,
     results: Option<Result<Vec<CatalogSkill>, SharedString>>,
     searching: bool,
@@ -46,6 +50,8 @@ impl SkillsView {
             backend,
             skills: Vec::new(),
             open: HashMap::new(),
+            editor: None,
+            auto_learned: None,
             query,
             results: None,
             searching: false,
@@ -69,6 +75,7 @@ impl SkillsView {
                 match result {
                     Ok(list) => {
                         this.skills = list.skills;
+                        this.auto_learned = Some(list.auto_activate_learned);
                         this.error = None;
                     }
                     Err(e) => this.error = Some(e.to_string().into()),
@@ -119,6 +126,68 @@ impl SkillsView {
                     this.error = Some(e.to_string().into());
                     cx.notify();
                 }
+            },
+        );
+    }
+
+    fn set_auto_learned(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move { c.set_auto_activate_learned(enabled).await },
+            |this, result, cx| match result {
+                Ok(_) => this.refresh(cx),
+                Err(e) => {
+                    this.error = Some(e.to_string().into());
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    fn open_editor(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Some(content)) = self.open.get(&name) else {
+            return;
+        };
+        let content = content.clone();
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(8, 30)
+                .default_value(content)
+        });
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self.editor = Some((name, input));
+        cx.notify();
+    }
+
+    fn save_editor(&mut self, cx: &mut Context<Self>) {
+        let Some((name, input)) = self.editor.as_ref() else {
+            return;
+        };
+        let (name, content) = (name.clone(), input.read(cx).value().to_string());
+        self.busy = Some(name.clone());
+        cx.notify();
+        jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move {
+                c.update_skill(&name, &content).await?;
+                // Read back what the gateway stored.
+                c.skill_content(&name).await
+            },
+            |this, result, cx| {
+                this.busy = None;
+                match result {
+                    Ok(skill) => {
+                        this.notice = Some(format!("Saved /{}.", skill.name).into());
+                        this.error = None;
+                        this.editor = None;
+                        this.open.insert(skill.name, Some(skill.content));
+                        this.refresh(cx);
+                    }
+                    Err(e) => this.error = Some(e.to_string().into()),
+                }
+                cx.notify();
             },
         );
     }
@@ -222,6 +291,11 @@ impl SkillsView {
         let open = self.open.get(&s.name);
         let confirming = self.confirm_remove.as_deref() == Some(s.name.as_str());
         let busy = self.busy.as_deref() == Some(s.name.as_str());
+        let editing = self
+            .editor
+            .as_ref()
+            .filter(|(n, _)| *n == s.name)
+            .map(|(_, input)| input.clone());
 
         card(cx)
             .child(
@@ -270,6 +344,21 @@ impl SkillsView {
                                 })),
                         )
                     })
+                    .when(
+                        s.can_edit && matches!(open, Some(Some(_))) && editing.is_none(),
+                        |d| {
+                            let name = name.clone();
+                            d.child(
+                                Button::new(("edit", ix))
+                                    .label("Edit")
+                                    .ghost()
+                                    .small()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_editor(name.clone(), window, cx)
+                                    })),
+                            )
+                        },
+                    )
                     .when(s.can_delete, |d| {
                         let name = name.clone();
                         d.child(if confirming {
@@ -298,9 +387,41 @@ impl SkillsView {
                     }),
             )
             .when_some(open, |d, content| {
-                d.child(match content {
-                    None => Spinner::new().into_any_element(),
-                    Some(text) => div()
+                d.child(match (content, editing) {
+                    (_, Some(input)) => v_flex()
+                        .gap_2()
+                        .pt_2()
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .child(Textarea::new(&input).font_family(theme.mono_font_family.clone()))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .justify_end()
+                                .child(
+                                    Button::new(("cancel-edit", ix))
+                                        .label("Cancel")
+                                        .ghost()
+                                        .small()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.editor = None;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new(("save-edit", ix))
+                                        .label("Save")
+                                        .primary()
+                                        .small()
+                                        .loading(busy)
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.save_editor(cx)),
+                                        ),
+                                ),
+                        )
+                        .into_any_element(),
+                    (None, None) => Spinner::new().into_any_element(),
+                    (Some(text), None) => div()
                         .pt_2()
                         .border_t_1()
                         .border_color(theme.border)
@@ -385,6 +506,38 @@ impl Render for SkillsView {
                         .text_sm()
                         .text_color(theme.muted_foreground)
                         .child(n),
+                )
+            })
+            .when_some(self.auto_learned, |d, on| {
+                d.child(
+                    h_flex()
+                        .gap_3()
+                        .pb_3()
+                        .items_center()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .child(div().text_sm().font_medium().child("Auto-activate skills"))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .whitespace_normal()
+                                        .child(if on {
+                                            "Skills turn on by themselves when a message matches them."
+                                        } else {
+                                            "Skills only run when you type /name in a message."
+                                        }),
+                                ),
+                        )
+                        .child(
+                            Switch::new("auto-learned")
+                                .checked(on)
+                                .accessibility_label("Auto-activate skills")
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.set_auto_learned(*checked, cx)
+                                })),
+                        ),
                 )
             })
             .child(

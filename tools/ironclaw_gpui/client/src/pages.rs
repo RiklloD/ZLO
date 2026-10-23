@@ -11,7 +11,10 @@ use ironclaw_product_contracts::notification_inbox::{
 };
 use ironclaw_product_contracts::product_wire::{
     RebornAutomationMutationResponse, RebornListAutomationsResponse,
-    RebornSuggestionDismissResponse, RebornSuggestionStartResponse, RebornSuggestionsResponse,
+    RebornNotificationChannelsResponse, RebornNotificationSetupStatusResponse,
+    RebornOutboundDeliveryTargetId, RebornOutboundDeliveryTargetListResponse,
+    RebornSetNotificationChannelsRequest, RebornSuggestionDismissResponse,
+    RebornSuggestionStartResponse, RebornSuggestionsResponse,
 };
 use ironclaw_product_contracts::workspace_views::{
     FsMount, RebornCreateProjectRequest, RebornFsListResponse, RebornFsMountsResponse,
@@ -63,6 +66,39 @@ impl Client {
     }
 
     // --- notifications ---
+
+    /// Channels that can receive notifications (web push, Telegram, ...).
+    pub async fn delivery_targets(
+        &self,
+    ) -> Result<RebornOutboundDeliveryTargetListResponse, ClientError> {
+        self.get(&format!("{V2}/outbound/targets")).await
+    }
+
+    pub async fn notification_channels(
+        &self,
+    ) -> Result<RebornNotificationChannelsResponse, ClientError> {
+        self.get(&format!("{V2}/outbound/notification-channels"))
+            .await
+    }
+
+    /// Full replace: an empty list turns every channel off.
+    pub async fn set_notification_channels(
+        &self,
+        target_ids: Vec<RebornOutboundDeliveryTargetId>,
+    ) -> Result<RebornNotificationChannelsResponse, ClientError> {
+        let body = RebornSetNotificationChannelsRequest { target_ids };
+        self.post(&format!("{V2}/outbound/notification-channels"), &body)
+            .await
+    }
+
+    /// Whether `channel` needs per-user enrollment and has it.
+    pub async fn notification_setup(
+        &self,
+        channel: &str,
+    ) -> Result<RebornNotificationSetupStatusResponse, ClientError> {
+        self.get(&format!("{V2}/channels/{}/notifications", seg(channel)))
+            .await
+    }
 
     pub async fn list_notifications(
         &self,
@@ -183,17 +219,8 @@ impl Client {
 
     /// The gateway answers with an empty success status.
     pub async fn delete_project(&self, id: &str) -> Result<(), ClientError> {
-        let resp = self
-            .request(Method::DELETE, &format!("{V2}/projects/{}", seg(id)))
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ClientError::from_status(status.as_u16(), &text));
-        }
-        Ok(())
+        self.send_unit(self.request(Method::DELETE, &format!("{V2}/projects/{}", seg(id))))
+            .await
     }
 
     // --- one conversation's own files (its project workspace) ---

@@ -15,7 +15,7 @@ use ironclaw_product_contracts::outbound::{
 };
 use ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef;
 use ironclaw_product_contracts::product_wire::{
-    RebornExtensionOnboardingPayload, SettingsToolPermissionState,
+    RebornExtensionOnboardingPayload, RebornExtensionSurface, SettingsToolPermissionState,
 };
 use serde::Deserialize;
 
@@ -288,6 +288,17 @@ pub struct InstalledExtension {
     pub version: Option<String>,
     #[serde(default)]
     pub onboarding: Option<RebornExtensionOnboardingPayload>,
+    #[serde(default)]
+    pub surfaces: Vec<RebornExtensionSurface>,
+}
+
+impl InstalledExtension {
+    /// Channels connect by pairing a chat account rather than by a form.
+    pub fn is_channel(&self) -> bool {
+        self.surfaces
+            .iter()
+            .any(|s| matches!(s, RebornExtensionSurface::Channel { .. }))
+    }
 }
 
 /// The `value` of a `tool.<capability>` entry from `GET /settings/tools`.
@@ -358,4 +369,27 @@ pub enum CommandEffect {
     },
     #[serde(other)]
     Other,
+}
+
+/// A minted channel pairing code (`/extensions/{id}/pairing/mint`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PairingCode {
+    pub code: String,
+    #[serde(default)]
+    pub deep_link: Option<String>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PairingStatus {
+    pub connected: bool,
+    #[serde(default)]
+    pub pending: Option<PairingCode>,
+}
+
+/// `POST /extensions/register-hosted-mcp`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HostedMcpRegistered {
+    pub message: String,
+    pub package_ref: LifecyclePackageRef,
 }

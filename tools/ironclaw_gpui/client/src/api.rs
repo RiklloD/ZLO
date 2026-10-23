@@ -100,6 +100,17 @@ impl Client {
         serde_json::from_str(&text).map_err(|e| ClientError::Decode(e.to_string()))
     }
 
+    /// For routes that answer 204 with no body.
+    pub(crate) async fn send_unit(&self, req: RequestBuilder) -> Result<(), ClientError> {
+        let resp = req.timeout(Duration::from_secs(30)).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await?;
+            return Err(ClientError::from_status(status.as_u16(), &text));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
         self.send(self.request(Method::GET, path)).await
     }
