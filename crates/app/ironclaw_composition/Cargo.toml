@@ -100,6 +100,7 @@ ironclaw_threads = { path = "../../domains/ironclaw_threads" }
 ironclaw_orchestrator = { path = "../../domains/ironclaw_orchestrator" }
 ironclaw_cli_providers = { path = "../../domains/ironclaw_cli_providers" }
 ironclaw_usage = { path = "../../domains/ironclaw_usage" }
+ironclaw_supermemory = { path = "../../domains/ironclaw_supermemory" }
 ironclaw_triggers = { path = "../../domains/ironclaw_triggers" }
 ironclaw_trust = { path = "../../kernel/ironclaw_trust" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }

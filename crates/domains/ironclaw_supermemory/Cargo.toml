@@ -1,0 +1,40 @@
+[package]
+name = "ironclaw_supermemory"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+description = "Supermemory client for IronClaw: per-profile container binding, recall, capture and the search/write tool operations"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.ironclaw]
+layer = "substrates"
+
+[dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures = "0.3"
+ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
+# The two seams Supermemory decorates: prompt-context recall and the
+# after-turn `MemoryService` writer.
+ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts" }
+ironclaw_memory = { path = "../ironclaw_memory" }
+# Every Supermemory call is an outbound HTTP request through the hardened,
+# policy-checked egress (AGENTS.md: external HTTP goes through ironclaw_network).
+ironclaw_network = { path = "../../substrates/ironclaw_network" }
+# `OperatorSecretValueStore`: the API key is read from the instance secret
+# store under `supermemory_api_key`, the same port LLM provider keys use.
+ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
+# Recalled text is enveloped as untrusted and credential-redacted exactly as
+# native memory snippets are.
+ironclaw_prompt_envelope = { path = "../../contracts/ironclaw_prompt_envelope" }
+ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["time", "sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }

@@ -3632,6 +3632,13 @@ pub(crate) async fn build_runtime_with_resource_governor(
         Arc::new(ironclaw_assistant::inspector_store::InMemoryDiagnosticStore::default());
     let diagnostic_store: Arc<dyn ironclaw_assistant::inspector_store::DiagnosticStorePort> =
         diagnostic_store_impl.clone();
+    // Supermemory replaces local memory for callers with a key and binding.
+    let supermemory = ironclaw_supermemory::Supermemory::from_env(
+        crate::RuntimeOperatorSecretValueStore::shared(Arc::clone(&services.secret_store)),
+    )
+    .map_err(|error| RebornRuntimeError::MalformedConfig {
+        reason: error.to_string(),
+    })?;
     let (
         capability_factory,
         capability_input_resolver,
@@ -3663,6 +3670,7 @@ pub(crate) async fn build_runtime_with_resource_governor(
             trajectory_observer,
             Some(tool_diagnostic_sink),
             trigger_poller.enabled,
+            Some(Arc::clone(&supermemory)),
         )?;
         _ = reply_projection.bind_display_previews(Arc::clone(&capability_host.display_previews));
         (
@@ -4227,14 +4235,20 @@ pub(crate) async fn build_runtime_with_resource_governor(
         // disabled or third-party-without-a-provider binding resolves to
         // `None` — degrading to no memory rather than silently reading native
         // (issue #5013).
-        memory_context_service: wired_memory_context_service,
+        memory_context_service: ironclaw_supermemory::SupermemoryPromptContext::wrap(
+            &supermemory,
+            wired_memory_context_service,
+        ),
         // After-turn memory recording (#3537 / mem0 `add`): the RAW bound
         // provider — the SAME resolved provider the profile source and prompt-context
         // lane use, NOT wrapped in `ProductionMemoryPromptContextService`. The
         // executor forwards each Completed run's transcript to `record_interaction`
         // ONLY when the provider's manifest declares that hook; `None` degrades
         // to no after-turn recording (issue #5013).
-        after_turn_memory_writer: wired_after_turn_memory_writer,
+        after_turn_memory_writer: ironclaw_supermemory::SupermemoryInteractionRecorder::wrap(
+            &supermemory,
+            wired_after_turn_memory_writer,
+        ),
         model_policy_guard: None,
         model_budget_accountant,
         safety_context: None,

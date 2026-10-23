@@ -1,9 +1,9 @@
 # `crates/domains/` — one crate per business-record grammar, no authority decisions
 
-**Layer(s):** `substrates` (all 17 manifests declare it; checked by
+**Layer(s):** `substrates` (all 18 manifests declare it; checked by
 `reborn_workspace_crates_declare_layers_and_follow_layer_matrix`) ·
-**Crates:** 17 · **May depend on:** `contracts/`, `substrates/`, `events/`,
-plus six inventoried in-family edges (below) · **Depended on by:** `kernel/`,
+**Crates:** 18 · **May depend on:** `contracts/`, `substrates/`, `events/`,
+plus seven inventoried in-family edges (below) · **Depended on by:** `kernel/`,
 `loop/`, `extensions/`, `product/`, `app/` — every tier above wires against
 these contracts.
 
@@ -36,6 +36,7 @@ no other crate in the family may acquire either property.
 | [`ironclaw_cli_providers`](./ironclaw_cli_providers) | Coding-agent CLI drivers (Claude CLI, two accounts) as orchestrator `TurnRuntime`s: process per turn, stream-json folding, session resume, Stop kills the process group, usage-limit mapping, per-turn telemetry; tools off until approvals are bridged (ADR 0006) | Changing how a CLI agent runs a turn |
 | [`ironclaw_outbound`](./ironclaw_outbound) | Metadata-only outbound authority: sealed access grants, at-most-once delivery-attempt reservation, delivery resolution, preferences and subscription cursors — never a transport | Deciding *whether/where* something may be pushed, or recording a delivery attempt |
 | [`ironclaw_orchestrator`](./ironclaw_orchestrator) | Thread orchestration engine: delegation tree, durable per-thread queue, Stop propagation, forks/merge-back, restart and usage-limit recovery, the `TurnRuntime` seam; `orch_*` libSQL tables under ADR 0005 | Changing orchestration semantics or adding a turn runtime |
+| [`ironclaw_supermemory`](./ironclaw_supermemory) | Supermemory as a caller's only memory when a key is set: HTTP client over `ironclaw_network`, the `SupermemoryBindingSource` container seam, recall/capture decorators over the memory seams, and the `supermemory.search`/`supermemory.write` tool operations | Changing Supermemory recall, capture, containers, or its tools |
 | [`ironclaw_skills`](./ironclaw_skills) | Skill parsing, validation, deterministic selection scoring, scoped filesystem management, and the pure learning path | Changing skill grammar, selection, install records, or learning prompts |
 | [`ironclaw_threads`](./ironclaw_threads) | The canonical transcript service: `SessionThreadService` (filesystem + in-memory), message ordering/status/redaction, tool-result records, display projections | Reading or writing thread/message history or transcript-derived views |
 | [`ironclaw_trace_commons`](./ironclaw_trace_commons) | The Trace Commons client: envelope schema, deterministic redaction, submission queue/credits, device-key onboarding, and the autonomous capture pipeline | Contributing traces to the external Trace Commons service |
@@ -76,9 +77,10 @@ Two boundary facts that have been gotten wrong before, stated precisely:
   → `product/`. A domains crate knows nothing about a WebUI handler or a Slack
   payload.
 - **Transport and framework code.** No Axum, no transport sends
-  (`ironclaw_outbound` is metadata-only). HTTP appears only inside the three
+  (`ironclaw_outbound` is metadata-only). HTTP appears only inside the chartered
   chartered external-service cones: `ironclaw_llm`, `ironclaw_trace_commons`,
-  and `ironclaw_auth`'s engine.
+  `ironclaw_auth`'s engine, `ironclaw_usage`, and `ironclaw_supermemory` (v2,
+  every call through `ironclaw_network`'s policy egress).
 - **Vendor names or vendor branches** outside `ironclaw_llm`,
   `ironclaw_auth`'s recipe data and `ironclaw_cli_providers` → `reborn_extension_specificity.rs` fails the
   build (its only domains carve-outs are llm's provider files and
@@ -110,9 +112,9 @@ crate path is given.
   pinned absence of `ironclaw_filesystem`), and armed **allowlists** for
   `ironclaw_identity` (`{host_api, filesystem, product_contracts}`) and
   `ironclaw_memory` (`{host_api, prompt_envelope}`).
-- **In-family edges are a closed, inventoried set** — exactly six today:
+- **In-family edges are a closed, inventoried set** — exactly seven today:
   `conversations→triggers`, `attachments→extractors`, `attachments→threads`,
-  `outbound→attachments`, `trace_commons→llm`, `cli_providers→orchestrator`.
+  `outbound→attachments`, `trace_commons→llm`, `cli_providers→orchestrator`, `supermemory→memory`.
   `reborn_every_same_layer_edge_is_inventoried_and_no_entry_is_stale` fails on
   a seventh (and on a stale entry), and
   `reborn_same_layer_edge_inventory_ratchets_down_only` stops regrowth.

@@ -63,6 +63,8 @@ pub(crate) struct RefreshingCapabilityPortConfig {
     pub(super) outbound_preferences_service: Option<Arc<dyn OutboundPreferencesProductService>>,
     /// The `t3_*` orchestrator tools are offered when the deployment has an engine.
     pub(super) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
+    /// Swaps local memory tools for Supermemory's on runs it is active for.
+    pub(super) supermemory: Option<Arc<ironclaw_supermemory::Supermemory>>,
     pub(super) outbound_preference_write_requires_approval: bool,
     pub(super) approval_settings: Arc<dyn ApprovalSettingsProvider>,
     pub(super) approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
@@ -126,6 +128,7 @@ pub(crate) async fn create_refreshing_capability_port(
         trajectory_observer: config.trajectory_observer,
         outbound_preferences_service: config.outbound_preferences_service,
         orchestrator: config.orchestrator,
+        supermemory: config.supermemory,
         outbound_preference_write_requires_approval: config
             .outbound_preference_write_requires_approval,
         approval_settings: config.approval_settings,
@@ -169,6 +172,7 @@ struct RefreshingCapabilityPort {
     trajectory_observer: Option<Arc<dyn crate::RebornTrajectoryObserver>>,
     outbound_preferences_service: Option<Arc<dyn OutboundPreferencesProductService>>,
     orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
+    supermemory: Option<Arc<ironclaw_supermemory::Supermemory>>,
     outbound_preference_write_requires_approval: bool,
     approval_settings: Arc<dyn ApprovalSettingsProvider>,
     approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
@@ -263,6 +267,13 @@ impl RefreshingCapabilityPort {
             .grants
             .grants
             .retain(|grant| !self.unavailable_capability_ids.contains(&grant.capability));
+        let supermemory = ironclaw_assistant::supermemory::active_for_run(
+            self.supermemory.as_ref(),
+            &self.run_context,
+            &self.fallback_user_id,
+            &mut visible_request.context.grants.grants,
+        )
+        .await;
         // Test-support-only extra provider-trust entries (empty in production,
         // see the config field doc-comment): merge after the canonical helper
         // has built the base provider-trust map, so the production helper
@@ -353,6 +364,22 @@ impl RefreshingCapabilityPort {
             synthetic_capabilities.extend(
                 ironclaw_assistant::orchestration::orchestrator_capabilities(
                     Arc::clone(engine),
+                    self.fallback_user_id.clone(),
+                )?,
+            );
+        }
+        if let Some(supermemory) = supermemory {
+            synthetic_capabilities.extend(
+                ironclaw_assistant::supermemory::supermemory_capabilities(
+                    Arc::clone(supermemory),
+                    ironclaw_assistant::supermemory::SupermemoryApprovalStores {
+                        approval_requests: Arc::clone(&self.approval_requests),
+                        capability_leases: Arc::clone(&self.capability_leases),
+                        approval_settings: Arc::clone(&self.approval_settings),
+                        replay_payload_store: Arc::clone(&self.replay_payload_store),
+                        gate_record_store: Arc::clone(&self.gate_record_store),
+                        write_requires_approval: self.outbound_preference_write_requires_approval,
+                    },
                     self.fallback_user_id.clone(),
                 )?,
             );
@@ -614,6 +641,7 @@ pub(crate) async fn create_refreshing_capability_port_for_test(
         trajectory_observer,
         outbound_preferences_service,
         orchestrator: None,
+        supermemory: None,
         outbound_preference_write_requires_approval,
         approval_settings,
         approval_requests,

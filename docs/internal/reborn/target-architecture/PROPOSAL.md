@@ -247,6 +247,7 @@ crates/
 │   ├── ironclaw_cli_providers        ▣ [substrates]             CLI agents (Claude CLI) as orchestrator runtimes (ADR 0006)
 │   ├── ironclaw_usage                ▣ [substrates]             subscription usage windows via ironclaw_network (v2 stage 4)
 │   ├── ironclaw_memory               ▣ [substrates]             provider-neutral memory contract + conformance suite
+│   ├── ironclaw_supermemory          ▣ [substrates]             Supermemory client: per-profile recall/capture/tools (v2 stage 5)
 │   │                                                            (providers → extensions/packages/, amended 2026-07-29)
 │   ├── ironclaw_skills               ▣ [substrates] (narrowed)  skill parsing/selection/management + pure learning
 │   ├── ironclaw_auth                 ▣ [substrates] (narrowed)  product-auth flows + recipe-driven AuthEngine
