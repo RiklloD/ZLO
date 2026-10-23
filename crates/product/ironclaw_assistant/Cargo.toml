@@ -34,6 +34,9 @@ ironclaw_attachments = { path = "../../domains/ironclaw_attachments", version = 
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version = "0.1.0" }
 ironclaw_approvals = { path = "../../kernel/ironclaw_approvals", version = "0.1.0" }
 ironclaw_authorization = { path = "../../kernel/ironclaw_authorization", version = "0.1.0" }
+# The approval-gated `supermemory.write` tool persists its replay payload
+# through the capability replay store, as the other gated synthetic tools do.
+ironclaw_capabilities = { path = "../../kernel/ironclaw_capabilities", version = "0.1.0" }
 ironclaw_auth = { path = "../../domains/ironclaw_auth", version = "0.1.0" }
 ironclaw_event_projections = { path = "../../events/ironclaw_event_projections", version = "0.1.0" }
 ironclaw_event_streams = { path = "../../events/ironclaw_event_streams", version = "0.1.0" }
@@ -57,6 +60,7 @@ ironclaw_safety = { path = "../../substrates/ironclaw_safety", version = "0.2.2"
 ironclaw_threads = { path = "../../domains/ironclaw_threads", version = "0.1.0" }
 ironclaw_triggers = { path = "../../domains/ironclaw_triggers", version = "0.1.0" }
 ironclaw_orchestrator = { path = "../../domains/ironclaw_orchestrator", version = "0.1.0" }
+ironclaw_supermemory = { path = "../../domains/ironclaw_supermemory", version = "0.1.0" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_memory = { path = "../../domains/ironclaw_memory", version = "0.1.0" }
 ironclaw_hooks = { path = "../../loop/ironclaw_hooks", version = "0.1.0" }

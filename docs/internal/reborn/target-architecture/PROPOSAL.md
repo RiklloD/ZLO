@@ -245,6 +245,7 @@ crates/
 │   ├── ironclaw_triggers             ▣ [substrates]             scheduled-trigger records + deterministic tick
 │   ├── ironclaw_orchestrator         ▣ [substrates]             thread orchestration: tasks, queue, forks, recovery (ADR 0005)
 │   ├── ironclaw_memory               ▣ [substrates]             provider-neutral memory contract + conformance suite
+│   ├── ironclaw_supermemory          ▣ [substrates]             Supermemory client: per-profile recall/capture/tools (v2 stage 5)
 │   │                                                            (providers → extensions/packages/, amended 2026-07-29)
 │   ├── ironclaw_skills               ▣ [substrates] (narrowed)  skill parsing/selection/management + pure learning
 │   ├── ironclaw_auth                 ▣ [substrates] (narrowed)  product-auth flows + recipe-driven AuthEngine

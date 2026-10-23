@@ -3844,6 +3844,7 @@ dependencies = [
  "ironclaw_product_contracts",
  "ironclaw_safety",
  "ironclaw_secrets",
+ "ironclaw_supermemory",
  "ironclaw_telegram_extension",
  "ironclaw_threads",
  "ironclaw_trace_commons",
@@ -4047,6 +4048,7 @@ dependencies = [
  "ironclaw_secrets",
  "ironclaw_skills",
  "ironclaw_slack_extension",
+ "ironclaw_supermemory",
  "ironclaw_threads",
  "ironclaw_trace_commons",
  "ironclaw_triggers",
@@ -5253,6 +5255,28 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "uuid",
+]
+
+[[package]]
+name = "ironclaw_supermemory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "ironclaw_host_api",
+ "ironclaw_loop_contracts",
+ "ironclaw_memory",
+ "ironclaw_network",
+ "ironclaw_product_contracts",
+ "ironclaw_prompt_envelope",
+ "ironclaw_safety",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
