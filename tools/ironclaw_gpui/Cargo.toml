@@ -1,0 +1,43 @@
+# IronClaw Desktop: native GPUI client for the local IronClaw gateway.
+#
+# Its own workspace root, so the GPUI dependency tree never enters the main
+# IronClaw build, its Cargo.lock, or its layer gates. The app is a plain HTTP
+# client of `ironclaw serve`; nothing here links the agent runtime.
+[workspace]
+resolver = "3"
+members = ["client", "app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+ironclaw_gpui_client = { path = "client" }
+# Wire contract owned by the gateway. Contracts-layer only (serde + ids, no
+# web server or storage), so sharing it keeps client and server in lockstep:
+# an upstream contract change fails `cargo check` here instead of at runtime.
+ironclaw_product_contracts = { path = "../../crates/contracts/ironclaw_product_contracts" }
+ironclaw_host_api = { path = "../../crates/contracts/ironclaw_host_api" }
+
+# Pinned exactly: gpui-kit is pre-1.0 and ships weekly. Bump on purpose.
+gpui-kit = { version = "=0.8.0" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+eventsource-stream = "0.2"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "0.9"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

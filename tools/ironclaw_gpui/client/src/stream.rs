@@ -1,0 +1,283 @@
+//! Live thread events over SSE, with the reconnect behavior `CONTRACT.md`
+//! specifies for the browser:
+//!
+//! - resume with `Last-Event-ID` (keep-alives carry no id, so the last real
+//!   frame stays the resume point);
+//! - jittered 1/2/4/8/16/30 s backoff, honoring `Retry-After`;
+//! - backoff resets only after an application frame arrived and the stream
+//!   then stayed open 15 s;
+//! - one stable `connection_id` per subscription with an increasing
+//!   `connection_generation`, so a reconnect supersedes its own old slot
+//!   instead of consuming another of the 3 per-user stream slots;
+//! - an activity watchdog: the server sends `keep_alive` every 15 s, so 45 s
+//!   of silence means a dead connection.
+//!
+//! Dropping the [`EventStream`] handle stops the task and frees the slot.
+
+use std::time::Duration;
+
+use eventsource_stream::Eventsource;
+use futures::StreamExt;
+use reqwest::{Method, StatusCode};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
+
+use crate::api::{Client, V2, seg};
+use crate::wire::{StreamErrorFrame, StreamFrame};
+
+const BACKOFF_STEPS: [u64; 6] = [1, 2, 4, 8, 16, 30];
+const STABLE_AFTER: Duration = Duration::from_secs(15);
+const ACTIVITY_TIMEOUT: Duration = Duration::from_secs(45);
+const CHANNEL_DEPTH: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamStatus {
+    Connecting,
+    Live,
+    Reconnecting { attempt: u32, delay_secs: u64 },
+}
+
+#[derive(Debug, Clone)]
+pub enum StreamMessage {
+    Status(StreamStatus),
+    Frame(Box<StreamFrame>),
+    /// A frame the client could not decode. The stream continues.
+    Undecodable {
+        event: String,
+        error: String,
+    },
+    /// Terminal: the stream stopped and will not reconnect.
+    Closed {
+        reason: String,
+    },
+}
+
+/// Owns the background task; dropping it cancels the subscription.
+pub struct EventStream {
+    task: JoinHandle<()>,
+}
+
+impl Drop for EventStream {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl Client {
+    /// Subscribe to one thread. Must be called inside the tokio runtime
+    /// (see [`crate::Backend::subscribe`]).
+    pub fn subscribe(&self, thread_id: &str) -> (EventStream, mpsc::Receiver<StreamMessage>) {
+        let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
+        let task = tokio::spawn(run(self.clone(), thread_id.to_string(), tx));
+        (EventStream { task }, rx)
+    }
+}
+
+enum Ended {
+    /// Normal end (server lifetime cap, network drop). Reconnect.
+    Retry {
+        stable: bool,
+        retry_after: Option<u64>,
+    },
+    /// The receiver is gone or the gateway refused for good.
+    Stop(Option<String>),
+}
+
+async fn run(client: Client, thread_id: String, tx: mpsc::Sender<StreamMessage>) {
+    let connection_id = format!("desktop-{}", uuid::Uuid::new_v4().simple());
+    let mut generation: u64 = 0;
+    let mut last_event_id: Option<String> = None;
+    let mut attempt: u32 = 0;
+
+    if tx
+        .send(StreamMessage::Status(StreamStatus::Connecting))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    loop {
+        generation += 1;
+        let ended = connect_once(
+            &client,
+            &thread_id,
+            &connection_id,
+            generation,
+            &mut last_event_id,
+            &tx,
+        )
+        .await;
+
+        let retry_after = match ended {
+            Ended::Stop(reason) => {
+                if let Some(reason) = reason {
+                    let _ = tx.send(StreamMessage::Closed { reason }).await;
+                }
+                return;
+            }
+            Ended::Retry {
+                stable,
+                retry_after,
+            } => {
+                if stable {
+                    attempt = 0;
+                }
+                retry_after
+            }
+        };
+
+        let step = BACKOFF_STEPS[(attempt as usize).min(BACKOFF_STEPS.len() - 1)];
+        let delay = retry_after.unwrap_or(step).max(step);
+        attempt = attempt.saturating_add(1);
+        let status = StreamStatus::Reconnecting {
+            attempt,
+            delay_secs: delay,
+        };
+        if tx.send(StreamMessage::Status(status)).await.is_err() {
+            return;
+        }
+        tokio::time::sleep(jitter(Duration::from_secs(delay))).await;
+    }
+}
+
+async fn connect_once(
+    client: &Client,
+    thread_id: &str,
+    connection_id: &str,
+    generation: u64,
+    last_event_id: &mut Option<String>,
+    tx: &mpsc::Sender<StreamMessage>,
+) -> Ended {
+    let path = format!(
+        "{V2}/threads/{}/events?connection_id={}&connection_generation={generation}",
+        seg(thread_id),
+        seg(connection_id),
+    );
+    let mut req = client
+        .request(Method::GET, &path)
+        .header(reqwest::header::ACCEPT, "text/event-stream");
+    if let Some(id) = last_event_id.as_deref() {
+        req = req.header("Last-Event-ID", id);
+    }
+
+    let resp = match req.send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::debug!(error = %e, "event stream connect failed");
+            return Ended::Retry {
+                stable: false,
+                retry_after: None,
+            };
+        }
+    };
+
+    match resp.status() {
+        StatusCode::OK => {}
+        // An older generation of this same connection: nothing to do.
+        StatusCode::NO_CONTENT => {
+            return Ended::Retry {
+                stable: false,
+                retry_after: None,
+            };
+        }
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
+            return Ended::Stop(Some(format!(
+                "the gateway refused the stream ({})",
+                resp.status()
+            )));
+        }
+        status => {
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok());
+            tracing::debug!(%status, "event stream rejected, retrying");
+            return Ended::Retry {
+                stable: false,
+                retry_after,
+            };
+        }
+    }
+
+    let mut events = resp.bytes_stream().eventsource();
+    let mut first_frame_at: Option<Instant> = None;
+    let mut announced_live = false;
+
+    loop {
+        let next = match tokio::time::timeout(ACTIVITY_TIMEOUT, events.next()).await {
+            Ok(next) => next,
+            Err(_) => {
+                tracing::debug!("event stream went silent, reconnecting");
+                break;
+            }
+        };
+        let event = match next {
+            Some(Ok(event)) => event,
+            Some(Err(e)) => {
+                tracing::debug!(error = %e, "event stream read failed");
+                break;
+            }
+            None => break,
+        };
+
+        if !announced_live {
+            announced_live = true;
+            if tx
+                .send(StreamMessage::Status(StreamStatus::Live))
+                .await
+                .is_err()
+            {
+                return Ended::Stop(None);
+            }
+        }
+
+        if event.event == "stream_error" {
+            let frame: StreamErrorFrame =
+                serde_json::from_str(&event.data).unwrap_or(StreamErrorFrame {
+                    error: None,
+                    kind: None,
+                    retryable: true,
+                });
+            if frame.retryable {
+                break;
+            }
+            let reason = frame
+                .kind
+                .or(frame.error)
+                .unwrap_or_else(|| "stream error".into());
+            return Ended::Stop(Some(reason));
+        }
+
+        let message = match serde_json::from_str::<StreamFrame>(&event.data) {
+            Ok(frame) => {
+                if !event.id.is_empty() {
+                    *last_event_id = Some(event.id.clone());
+                }
+                if event.event != "keep_alive" && first_frame_at.is_none() {
+                    first_frame_at = Some(Instant::now());
+                }
+                StreamMessage::Frame(Box::new(frame))
+            }
+            Err(e) => StreamMessage::Undecodable {
+                event: event.event.clone(),
+                error: e.to_string(),
+            },
+        };
+        if tx.send(message).await.is_err() {
+            return Ended::Stop(None);
+        }
+    }
+
+    Ended::Retry {
+        stable: first_frame_at.is_some_and(|t| t.elapsed() >= STABLE_AFTER),
+        retry_after: None,
+    }
+}
+
+/// +/-20% jitter so many clients don't reconnect in lockstep.
+fn jitter(base: Duration) -> Duration {
+    let r = (uuid::Uuid::new_v4().as_u128() % 401) as f64 / 1000.0; // 0.0..=0.4
+    base.mul_f64(0.8 + r)
+}
