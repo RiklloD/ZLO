@@ -206,7 +206,7 @@ jobs:
         run: corepack enable pnpm
 
       - name: Install Node.js for WebUI bundle build
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v4
         with:
           node-version: "24"
           cache: "pnpm"
@@ -325,7 +325,7 @@ jobs:
 
       - name: Upload product-surface coverage matrix
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: product-surface-coverage-${{ steps.product_surface_coverage.outputs.source_commit }}
           path: artifacts/product-surface-coverage/
@@ -369,7 +369,7 @@ jobs:
           echo "product_ref=${product_ref}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload Reborn SSO test binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reborn-webui-v2-sso-binary-${{ steps.live_canary_binary.outputs.product_ref }}
           path: artifacts/reborn-webui-v2-sso-binary/
@@ -378,7 +378,7 @@ jobs:
           retention-days: 1
 
       - name: Upload live-canary binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reborn-webui-v2-binary-${{ steps.live_canary_binary.outputs.product_ref }}
           path: artifacts/reborn-webui-v2-binary/
@@ -434,14 +434,14 @@ jobs:
         uses: ./.github/actions/setup-rust
 
       - name: Download default Reborn E2E binary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: reborn-webui-v2-binary-${{ needs.webui-v2-smoke.outputs.product_ref }}
           path: artifacts/reborn-webui-v2-binary
 
       - name: Download Reborn SSO test binary
         if: matrix.kind == 'browser'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: reborn-webui-v2-sso-binary-${{ needs.webui-v2-smoke.outputs.product_ref }}
           path: artifacts/reborn-webui-v2-sso-binary
@@ -515,7 +515,7 @@ jobs:
 
       - name: Install Node.js for Emulate
         if: matrix.kind == 'provider'
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v4
         with:
           node-version: "24"
           cache: "pnpm"
@@ -641,7 +641,7 @@ jobs:
 
       - name: Upload screenshots on failure
         if: matrix.kind == 'browser' && failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reborn-webui-v2-screenshots
           path: tests/e2e/screenshots/
@@ -649,7 +649,7 @@ jobs:
 
       - name: Upload E2E diagnostics on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reborn-e2e-${{ matrix.lane }}-diagnostics
           path: ${{ runner.temp }}/e2e-artifacts/
