@@ -42,14 +42,19 @@ Cause: `HostProcessPort` scopes `/workspace` per caller to
 tools write through the DB-backed filesystem, so it never appears, and
 `spawn` fails with ENOENT on the missing cwd.
 
-Local workaround applied: `mkdir -p
-~/.ironclaw/reborn/workspace/tenants/reborn-cli/users/reborn-cli`. Verified:
-`pwd` with `workdir: /workspace` now succeeds.
+Fixed 23.10.2026 in `process_port.rs`: `run_command` creates the caller's
+scoped root (only the root, never a subdirectory the model names) before
+spawning. The output rewrite now includes the scoped aliases, so `pwd` prints
+`/workspace` instead of `/workspace/tenants/reborn-cli[REDACTED_HOST_PATH]`.
+Regression test: `scoped_workspace_is_created_for_a_fresh_caller`. Verified
+live with the folder deleted first. Upstream-worthy as a PR to nearai/ironclaw.
 
-Proper fix (upstream-worthy): create the scoped directory before spawning in
-`HostProcessPort::run_command`, with a regression test. Related: the output
-rewrite uses the unscoped alias list, so `pwd` prints
-`/workspace/tenants/reborn-cli[REDACTED_HOST_PATH]` instead of `/workspace`.
+## Desktop app follow-ups found 23.10.2026
+
+- After Approve, the approval card keeps saying "Approval required" until the
+  thread reloads. It should switch to an approved/declined state.
+- After a gateway restart the app waits 30 s before reconnecting. Retry sooner
+  (for example 1, 2, 5, 10, 30 s).
 
 ## Skills page limits (23.10.2026)
 

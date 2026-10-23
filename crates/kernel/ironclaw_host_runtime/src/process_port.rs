@@ -8,7 +8,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::Duration,
@@ -427,6 +427,9 @@ impl RuntimeProcessPort for HostProcessPort {
                     "cannot determine working directory: {e}"
                 ))
             })?;
+        if self.workspace_scoped_per_caller {
+            ensure_caller_workspace(&aliases, &cwd).await?;
+        }
         let timeout = request
             .timeout_secs
             .map(Duration::from_secs)
@@ -454,7 +457,14 @@ impl RuntimeProcessPort for HostProcessPort {
         // `/workspace` terms and never leaks the host layout into the reply.
         // (The saved-output full result is a separate, non-model-facing UI
         // surface and is left to the result-fetch path.)
-        let preview = rewrite_local_host_output_aliases(&output.preview, &self.workdir_aliases);
+        // Scoped aliases come along so the caller's own subtree maps back to
+        // `/workspace` itself rather than `/workspace/tenants/<t>/users/<u>`.
+        let output_aliases: Vec<HostWorkdirAlias> = aliases
+            .iter()
+            .chain(self.workdir_aliases.iter())
+            .cloned()
+            .collect();
+        let preview = rewrite_local_host_output_aliases(&output.preview, &output_aliases);
         Ok(CommandExecutionOutput {
             output: preview,
             saved_output: output.saved_output,
@@ -463,6 +473,29 @@ impl RuntimeProcessPort for HostProcessPort {
             duration: start.elapsed(),
         })
     }
+}
+
+/// Create the caller's scoped workspace root when the command runs inside it.
+///
+/// Per-caller scoping maps `/workspace` to `<root>/tenants/<t>/users/<u>`, but nothing
+/// else guarantees that directory exists on disk (the file tools may write through a
+/// DB-backed filesystem), so a shell command there would fail to spawn with
+/// "No such file or directory". Only the scoped root is created;
+/// a missing subdirectory the model asked for still fails, as it should.
+async fn ensure_caller_workspace(
+    aliases: &[HostWorkdirAlias],
+    cwd: &Path,
+) -> Result<(), RuntimeProcessError> {
+    let Some(root) = aliases
+        .iter()
+        .find(|alias| alias.is_workspace() && cwd.starts_with(alias.host_path()))
+        .map(HostWorkdirAlias::host_path)
+    else {
+        return Ok(());
+    };
+    tokio::fs::create_dir_all(root).await.map_err(|e| {
+        RuntimeProcessError::ExecutionFailed(format!("cannot create caller workspace: {e}"))
+    })
 }
 
 async fn execute_local_command(
@@ -577,7 +610,7 @@ mod tests {
         action::{NetworkScheme, NetworkTargetPattern},
         capability::{RuntimeCredentialRequirement, RuntimeCredentialRequirementSource},
         http::RuntimeCredentialTarget,
-        ids::{CapabilityId, SecretHandle},
+        ids::{CapabilityId, InvocationId, SecretHandle, UserId},
     };
     use parking_lot::Mutex;
 
@@ -1191,6 +1224,54 @@ mod tests {
         // rewrite maps it back to the virtual alias before it reaches the model,
         // so the caller never sees the host layout.
         assert_eq!(output.output, "/workspace/qa-coding-smoke");
+    }
+
+    #[tokio::test]
+    async fn scoped_workspace_is_created_for_a_fresh_caller() {
+        // Regression: with per-caller scoping, `/workspace` resolves to
+        // `<root>/tenants/<t>/users/<u>`. Nothing created that directory before a
+        // caller's first file write, so a fresh caller's first shell command failed
+        // to spawn with "No such file or directory".
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let port = HostProcessPort::new_inherited_env()
+            .with_workdir_alias("/workspace", workspace_root.clone())
+            .with_workspace_scoped_per_caller(true);
+        let scope =
+            ResourceScope::local_default(UserId::new("ada").expect("user"), InvocationId::new())
+                .expect("scope");
+        let caller_root = workspace_root
+            .join("tenants")
+            .join(scope.tenant_id.as_str())
+            .join("users")
+            .join("ada");
+        assert!(!caller_root.exists());
+
+        let request = |workdir: &str| CommandExecutionRequest {
+            scope: scope.clone(),
+            mounts: None,
+            command: "printf '%s' \"$PWD\"".to_string(),
+            workdir: Some(workdir.to_string()),
+            timeout_secs: Some(5),
+            extra_env: HashMap::new(),
+        };
+
+        let output = port
+            .run_command(request("/workspace"))
+            .await
+            .expect("command succeeds");
+        assert_eq!(output.exit_code, 0);
+        // The caller's own root maps back to `/workspace`, not the tenant layout.
+        assert_eq!(output.output, "/workspace");
+        assert!(caller_root.is_dir());
+
+        // Only the scoped root is created; a missing subdirectory still fails.
+        let missing = port.run_command(request("/workspace/missing")).await;
+        assert!(missing.is_err());
+        assert!(!caller_root.join("missing").exists());
     }
 
     #[tokio::test]

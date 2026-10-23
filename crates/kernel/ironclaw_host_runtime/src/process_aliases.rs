@@ -47,6 +47,14 @@ impl HostWorkdirAlias {
         })
     }
 
+    pub(crate) fn is_workspace(&self) -> bool {
+        self.alias == WORKSPACE_WORKDIR_ALIAS
+    }
+
+    pub(crate) fn host_path(&self) -> &Path {
+        &self.host_path
+    }
+
     fn resolve(&self, workdir: &str) -> Option<PathBuf> {
         if workdir == self.alias {
             return Some(PathBuf::new());

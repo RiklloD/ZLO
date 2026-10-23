@@ -15,6 +15,9 @@ mkdir -p "$(dirname "$bin")"
 if [ -f "$bin" ]; then
   cp "$bin" "$bin.previous"
 fi
+# Replace, never overwrite in place: macOS caches the code signature per file
+# and SIGKILLs a binary whose bytes changed under the same inode.
+rm -f "$bin"
 cp target/release/ironclaw "$bin"
 "$bin" service restart
 "$bin" --version
