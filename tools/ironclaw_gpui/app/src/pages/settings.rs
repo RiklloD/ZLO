@@ -1,6 +1,8 @@
 //! Settings: which model IronClaw uses, provider API keys and logins, and
 //! what tools may do without asking.
 
+mod traces;
+
 use std::collections::HashMap;
 
 use ironclaw_gpui_client::Backend;
@@ -55,6 +57,7 @@ pub struct SettingsView {
     probes: HashMap<String, Option<(bool, SharedString)>>,
     confirm_delete: Option<String>,
     codex: Option<CodexLogin>,
+    traces: Entity<traces::TracePanel>,
     error: Option<SharedString>,
     notice: Option<SharedString>,
 }
@@ -64,7 +67,7 @@ impl EventEmitter<PageEvent> for SettingsView {}
 impl SettingsView {
     pub fn new(backend: Backend, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
-            backend,
+            backend: backend.clone(),
             llm: None,
             auto_approve: None,
             tools: Vec::new(),
@@ -75,6 +78,7 @@ impl SettingsView {
             show_all_providers: false,
             probes: HashMap::new(),
             confirm_delete: None,
+            traces: cx.new(|cx| traces::TracePanel::new(backend.clone(), cx)),
             codex: None,
             error: None,
             notice: None,
@@ -84,6 +88,7 @@ impl SettingsView {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.traces.update(cx, |t, cx| t.refresh(cx));
         jobs::run(
             &self.backend,
             cx,
@@ -995,6 +1000,8 @@ impl Render for SettingsView {
             .child(self.render_models(cx))
             .child(section_title("Desktop app"))
             .child(self.render_desktop(cx))
+            .child(section_title("Trace Commons"))
+            .child(self.traces.clone())
             .child(section_title("Tool permissions"))
             .child(self.render_tools(cx));
         page_body("settings-page", body)

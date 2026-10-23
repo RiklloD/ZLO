@@ -94,7 +94,7 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 
 | Route | Status |
 |---|---|
-| trace_credits, trace_account_traces, trace_account_login_link, authorize_trace_hold | todo [4.5] |
+| trace_credits, trace_account_traces, trace_account_login_link, authorize_trace_hold | done: Settings > Trace Commons (login link opens in the browser) |
 
 ## Multi-user admin
 

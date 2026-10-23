@@ -11,10 +11,11 @@ use ironclaw_product_contracts::operator_llm::{
 };
 use ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef;
 use ironclaw_product_contracts::product_wire::{
-    RebornExtensionActionResponse, RebornExtensionRegistryResponse,
-    RebornOperatorConfigGetResponse, RebornOperatorConfigListResponse,
-    RebornSetupExtensionResponse, RebornSkillActionResponse, RebornSkillContentResponse,
-    RebornSkillListResponse, RebornSkillSearchResponse, SettingsToolPermissionState,
+    RebornAccountLoginLinkResponse, RebornAccountTracesResponse, RebornExtensionActionResponse,
+    RebornExtensionRegistryResponse, RebornOperatorConfigGetResponse,
+    RebornOperatorConfigListResponse, RebornSetupExtensionResponse, RebornSkillActionResponse,
+    RebornSkillContentResponse, RebornSkillListResponse, RebornSkillSearchResponse,
+    RebornTraceCreditsResponse, RebornTraceHoldAuthorizeResponse, SettingsToolPermissionState,
 };
 use reqwest::Method;
 use serde_json::json;
@@ -352,6 +353,35 @@ impl Client {
         name: &str,
     ) -> Result<RebornSkillActionResponse, ClientError> {
         self.post(&format!("{V2}/skills/install"), &json!({ "name": name }))
+            .await
+    }
+
+    // --- Trace Commons ---
+
+    /// Local credit summary; the unenrolled zero-state is not an error.
+    pub async fn trace_credits(&self) -> Result<RebornTraceCreditsResponse, ClientError> {
+        self.get(&format!("{V2}/traces/credit")).await
+    }
+
+    pub async fn account_traces(&self) -> Result<RebornAccountTracesResponse, ClientError> {
+        self.get(&format!("{V2}/traces/account")).await
+    }
+
+    /// Submit a trace held for manual privacy review as-is.
+    pub async fn authorize_trace_hold(
+        &self,
+        submission_id: &str,
+    ) -> Result<RebornTraceHoldAuthorizeResponse, ClientError> {
+        let path = format!("{V2}/traces/holds/{}/authorize", seg(submission_id));
+        self.post(&path, &json!({})).await
+    }
+
+    /// Mint a one-time login link. Every call burns a link server-side, and the
+    /// URL is an account credential: open it, never log or store it.
+    pub async fn trace_account_login_link(
+        &self,
+    ) -> Result<RebornAccountLoginLinkResponse, ClientError> {
+        self.post(&format!("{V2}/traces/account-login-link"), &json!({}))
             .await
     }
 }
