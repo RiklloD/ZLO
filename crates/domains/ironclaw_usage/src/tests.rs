@@ -228,3 +228,42 @@ fn second_login_keychain_item_follows_the_cli_naming() {
         "Claude Code-credentials-fdc51ded"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_failing_endpoint_falls_back_to_the_clis_own_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    write_credentials(dir.path(), i64::MAX);
+    let observed = dir.path().join("claude-cli.json");
+    let future = chrono::Utc::now().timestamp() + 3_600;
+    std::fs::write(
+        &observed,
+        format!(
+            r#"{{"observedAt": 1000, "windows": {{
+                "five_hour": {{"utilization": 0.42, "resetsAt": {future}}},
+                "seven_day": {{"utilization": 0.9, "resetsAt": 1}}}}}}"#
+        ),
+    )
+    .unwrap();
+    let egress = Arc::new(RecordingEgress::default());
+    let monitor = UsageMonitor::with_sources(
+        egress.clone(),
+        vec![UsageSource::Claude(
+            claude_account(dir.path()).with_observed_file(observed),
+        )],
+    );
+    egress.reply(500, &[], "");
+    let usage = monitor.report().await.providers.remove(0);
+    assert_eq!(usage.status, UsageStatus::Ok);
+    assert!(usage.message.unwrap().contains("CLI's last reading"));
+    assert_eq!(usage.fetched_at, Some(1000));
+    let five: Vec<_> = usage
+        .windows
+        .iter()
+        .map(|w| (w.id.as_str(), w.used_percent))
+        .collect();
+    assert_eq!(
+        five,
+        [("five_hour", 42.0)],
+        "a window past its reset is dropped"
+    );
+}

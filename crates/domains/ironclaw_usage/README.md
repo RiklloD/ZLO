@@ -23,6 +23,13 @@ Read-only: tokens are never refreshed here; each CLI refreshes its own. A
 Keychain item is read with `/usr/bin/security` only when the file is missing,
 then cached in memory until it expires or is rejected.
 
+The Claude endpoint is undocumented and may change or close. After every
+turn the CLI driver (`ironclaw_cli_providers`) saves the CLI's own
+`unifiedWindows` reading to `~/.ironclaw/usage/<runtime>.json`; when the
+endpoint gives no windows, that reading is shown instead (windows past their
+reset are dropped) with a note saying so. `IRONCLAW_USAGE_CLAUDE_ENDPOINT=off`
+skips the endpoint, and with it every Keychain read, and uses only that file.
+
 ## Public surface
 
 - `UsageMonitor::new(egress, secrets)` for the real accounts;

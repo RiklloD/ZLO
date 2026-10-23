@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::engine::{CallContext, Engine, Result, clip_title, json_ok};
 use crate::error::OrchestratorError;
 use crate::model::*;
-use crate::profiles::{ProfileOwner, parse_profile_slug};
+use crate::profiles::{ProfileOwner, ProfileRecord, parse_profile_slug};
 use crate::runtime::*;
 use crate::store::TaskPatch;
 
@@ -59,14 +59,14 @@ impl Engine {
     }
 
     /// An active profile of the caller's user, for `target.profile`.
-    async fn delegation_profile(&self, raw: &str, scope: &ThreadScope) -> Result<ProfileId> {
+    async fn delegation_profile(&self, raw: &str, scope: &ThreadScope) -> Result<ProfileRecord> {
         let id = parse_profile_slug(raw)?;
         match self
             .store
             .profile(&ProfileOwner::from(scope), &id, false)
             .await?
         {
-            Some(record) => Ok(record.profile_id),
+            Some(record) => Ok(record),
             None => Err(OrchestratorError::request(
                 "profile_unavailable",
                 format!("Unknown profile '{raw}'. t3_capabilities lists the available profiles."),
@@ -266,13 +266,35 @@ impl Engine {
             ));
         }
         let target = req.target.clone().unwrap_or_default();
-        let (runtime_id, provider, model) = self
-            .resolve_target(&target, ctx, &parent.runtime_id)
-            .await?;
-        let profile_id = match trimmed(&target.profile) {
+        let profile = match trimmed(&target.profile) {
             Some(raw) => Some(self.delegation_profile(&raw, &parent.scope).await?),
-            None => parent.profile_id.clone(),
+            None => None,
         };
+        // A named profile without an engine override runs on its own engine.
+        let profile_route = match &profile {
+            Some(p) if trimmed(&target.provider).is_none() && trimmed(&target.model).is_none() => {
+                self.profile_route(p, &parent.scope).await?
+            }
+            _ => None,
+        };
+        let (runtime_id, provider, model) = match profile_route {
+            Some(route) => route,
+            None => {
+                let (rt, provider, model) = self
+                    .resolve_target(&target, ctx, &parent.runtime_id)
+                    .await?;
+                // On IronClaw's loop the profile's model is a per-turn hint.
+                let hint = profile.as_ref().and_then(|p| {
+                    (trimmed(&target.model).is_none() && rt == self.default_runtime)
+                        .then(|| p.settings.default_model.clone())
+                        .flatten()
+                });
+                (rt, provider, hint.or(model))
+            }
+        };
+        let profile_id = profile
+            .map(|p| p.profile_id)
+            .or_else(|| parent.profile_id.clone());
         let runtime = self.runtime(&runtime_id)?;
         let title = clip_title(
             req.title

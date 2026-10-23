@@ -17,9 +17,17 @@ const TIMEOUT_MS: u32 = 15_000;
 #[derive(Debug)]
 pub(crate) enum Fetched {
     Windows(Vec<UsageWindow>),
+    /// Read from the CLI's own last turn instead of the provider endpoint.
+    Observed {
+        windows: Vec<UsageWindow>,
+        at: i64,
+        note: String,
+    },
     NotConfigured(String),
     Unauthorized(String),
-    RateLimited { retry_after: Option<Duration> },
+    RateLimited {
+        retry_after: Option<Duration>,
+    },
     Error(String),
 }
 

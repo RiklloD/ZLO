@@ -66,8 +66,8 @@ mod project_create_capability;
 pub mod projection;
 mod reborn_services;
 mod run_delivery;
-pub mod usage;
 pub mod supermemory;
+pub mod usage;
 
 /// Test-only access to the stable Inbox identity used by production run
 /// notification publishers and lifecycle resolvers.

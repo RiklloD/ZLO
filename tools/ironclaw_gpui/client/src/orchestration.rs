@@ -154,6 +154,22 @@ pub struct QueueDoc {
     /// Set on `add`.
     #[serde(default)]
     pub queued_id: Option<String>,
+    /// The thread's runtime; anything but `ironclaw` has no run stream.
+    #[serde(default)]
+    pub runtime: Option<String>,
+    #[serde(default)]
+    pub running: bool,
+    #[serde(default)]
+    pub active_run_id: Option<String>,
+}
+
+impl QueueDoc {
+    /// The running turn of a thread off IronClaw's loop (a profile on a CLI
+    /// provider). Those turns are seen by polling, not through the stream.
+    pub fn external_run(&self) -> Option<&str> {
+        let external = self.runtime.as_deref().is_some_and(|r| r != "ironclaw");
+        (external && self.running).then(|| self.active_run_id.as_deref().unwrap_or(""))
+    }
 }
 
 /// A queue mutation (`POST /threads/{id}/queue`).

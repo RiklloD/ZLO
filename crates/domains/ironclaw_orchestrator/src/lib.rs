@@ -26,6 +26,7 @@ pub mod engine;
 pub mod error;
 pub mod handoff;
 pub mod model;
+pub mod profile_runtime;
 pub mod profiles;
 mod recovery;
 pub mod restart;

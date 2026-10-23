@@ -32,6 +32,10 @@ local `ironclaw_memory` works as before.
 
 ## Behaviour (matches the Hermes `supermemory` plugin)
 
+- Containers: the `supermemory` block of the thread's profile
+  (`ironclaw_assistant::orchestration::ProfileSupermemoryBindings`, filled by
+  the Hermes importer from `supermemory.json`), else the env binding below.
+
 - Recall: `/v4/profile` on the primary container with the first 200
   characters of the user message (profile facts, recent context, relevant
   memories), plus a 3-hit `/v4/search` per read container; deduplicated,

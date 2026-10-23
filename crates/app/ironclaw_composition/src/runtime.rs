@@ -3119,7 +3119,15 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     Ok(runtime)
 }
 
+/// Boxed: the assembly future is several MiB, past a 2 MiB worker or test
+/// thread stack when awaited inline.
 pub(crate) async fn build_runtime_with_resource_governor(
+    input: RebornRuntimeInput,
+) -> Result<(RebornRuntime, Arc<dyn ironclaw_resources::ResourceGovernor>), RebornRuntimeError> {
+    Box::pin(assemble_runtime(input)).await
+}
+
+async fn assemble_runtime(
     input: RebornRuntimeInput,
 ) -> Result<(RebornRuntime, Arc<dyn ironclaw_resources::ResourceGovernor>), RebornRuntimeError> {
     let RebornRuntimeInput {
@@ -3632,9 +3640,17 @@ pub(crate) async fn build_runtime_with_resource_governor(
         Arc::new(ironclaw_assistant::inspector_store::InMemoryDiagnosticStore::default());
     let diagnostic_store: Arc<dyn ironclaw_assistant::inspector_store::DiagnosticStorePort> =
         diagnostic_store_impl.clone();
-    // Supermemory replaces local memory for callers with a key and binding.
-    let supermemory = ironclaw_supermemory::Supermemory::from_env(
+    // Supermemory replaces local memory for callers with a key and binding;
+    // a thread's profile picks its containers, the env binding is the default.
+    let profile_engine = services.orchestrator.clone();
+    let supermemory = ironclaw_supermemory::Supermemory::from_env_with_bindings(
         crate::RuntimeOperatorSecretValueStore::shared(Arc::clone(&services.secret_store)),
+        |env| match profile_engine {
+            Some(engine) => Arc::new(
+                ironclaw_assistant::orchestration::ProfileSupermemoryBindings::new(engine, env),
+            ),
+            None => env,
+        },
     )
     .map_err(|error| RebornRuntimeError::MalformedConfig {
         reason: error.to_string(),
@@ -4059,10 +4075,12 @@ pub(crate) async fn build_runtime_with_resource_governor(
         diagnostic_store_impl as Arc<dyn ironclaw_loop_host::HostManagedPromptDiagnosticSink>;
     // Model-call telemetry (context, speed, cache) feeds the orchestrator.
     let diagnostic_inner = match &services.orchestrator {
-        Some(engine) => Arc::new(ironclaw_assistant::orchestration::OrchestratorTelemetrySink::new(
-            diagnostic_inner,
-            Arc::clone(engine),
-        )) as Arc<dyn ironclaw_loop_host::HostManagedPromptDiagnosticSink>,
+        Some(engine) => Arc::new(
+            ironclaw_assistant::orchestration::OrchestratorTelemetrySink::new(
+                diagnostic_inner,
+                Arc::clone(engine),
+            ),
+        ) as Arc<dyn ironclaw_loop_host::HostManagedPromptDiagnosticSink>,
         None => diagnostic_inner,
     };
     let prompt_diagnostic_sink = Arc::new(

@@ -19,6 +19,9 @@ struct FakeRuntime {
     cancelled: Mutex<Vec<ThreadId>>,
     history: Mutex<HashMap<ThreadId, Vec<HistoryMessage>>>,
     created: Mutex<u32>,
+    /// A second runtime (a CLI driver stand-in) advertising one provider of
+    /// this name; `None` is the default runtime `fake`.
+    name: Option<&'static str>,
 }
 
 impl FakeRuntime {
@@ -46,7 +49,20 @@ fn msg(role: HistoryRole, text: &str) -> HistoryMessage {
 #[async_trait]
 impl TurnRuntime for FakeRuntime {
     fn id(&self) -> RuntimeId {
-        RuntimeId::new("fake").unwrap()
+        RuntimeId::new(self.name.unwrap_or("fake")).unwrap()
+    }
+    async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
+        Ok(self
+            .name
+            .map(|name| CatalogProvider {
+                provider: name.into(),
+                name: name.into(),
+                authenticated: true,
+                current: false,
+                models: vec!["m1".into(), "m2".into()],
+            })
+            .into_iter()
+            .collect())
     }
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
@@ -58,8 +74,8 @@ impl TurnRuntime for FakeRuntime {
         let mut n = self.created.lock().unwrap();
         *n += 1;
         Ok(CreatedThread {
-            thread_id: ThreadId::new(format!("child-{n}")).unwrap(),
-            native_session_id: None,
+            thread_id: ThreadId::new(format!("{}child-{n}", self.name.unwrap_or(""))).unwrap(),
+            native_session_id: self.name.map(|_| format!("session-{n}")),
             provider: None,
             model: None,
         })
@@ -601,7 +617,10 @@ async fn profiles_own_threads_for_life_and_steer_delegation() {
     assert_eq!(list[0].profile_id, work);
     assert_eq!(list.len(), 2);
     let b_profile = store.thread_profile(&b).await.unwrap().unwrap();
-    assert!(b_profile.is_default(), "a thread without a profile runs as default");
+    assert!(
+        b_profile.is_default(),
+        "a thread without a profile runs as default"
+    );
 
     // Children inherit the parent's profile unless the target names another.
     let p = tid("p");
@@ -634,4 +653,71 @@ async fn profiles_own_threads_for_life_and_steer_delegation() {
     assert!(store.thread_profile(&a).await.unwrap().is_some());
     let protected = store.archive_profile(&owner, &default).await.unwrap_err();
     assert_eq!(protected.code(), "profile_protected");
+}
+
+#[tokio::test]
+async fn profiles_run_on_their_providers_runtime() {
+    use crate::profile_runtime::UserTurn;
+    use crate::profiles::{ProfileOwner, parse_profile_slug};
+    use ironclaw_product_contracts::profiles::ProfileSettings;
+
+    let h = harness().await;
+    let cli = Arc::new(FakeRuntime {
+        name: Some("cli"),
+        ..FakeRuntime::default()
+    });
+    h.engine.register_runtime(cli.clone());
+    let store = h.engine.store();
+    let owner = ProfileOwner::from(&scope());
+    let coder = parse_profile_slug("coder").unwrap();
+    let settings = ProfileSettings {
+        display_name: "Coder".into(),
+        default_provider: Some("cli".into()),
+        default_model: Some("m2".into()),
+        ..ProfileSettings::default()
+    };
+    store
+        .create_profile(&owner, &coder, &settings)
+        .await
+        .unwrap();
+
+    // Delegating to the profile without naming a provider uses its engine.
+    let p = tid("p");
+    h.engine.ensure_thread(&p, &scope(), None).await.unwrap();
+    let task = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "x", "target": {"profile": "coder"}})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let child = store
+        .thread(&tid(task["childThreadId"].as_str().unwrap()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(child.runtime_id.as_str(), "cli");
+    assert_eq!(child.model.as_deref(), Some("m2"));
+    assert_eq!(cli.starts_on(&child.thread_id).len(), 1);
+    assert!(h.rt.starts_on(&child.thread_id).is_empty());
+
+    // A new thread on the profile moves to that runtime; user turns go there.
+    let t = tid("t");
+    h.engine.ensure_thread(&t, &scope(), None).await.unwrap();
+    store.set_thread_profile(&t, &coder).await.unwrap();
+    let profile = store.thread_profile(&t).await.unwrap().unwrap();
+    assert!(h.engine.bind_profile_runtime(&t, &profile).await.unwrap());
+    let bound = h.engine.external_thread(&t).await.unwrap().unwrap();
+    assert_eq!(bound.native_session_id.as_deref(), Some("session-2"));
+    let turn = h.engine.user_turn(&bound, "hello").await.unwrap();
+    assert!(matches!(turn, UserTurn::Started { .. }));
+    assert_eq!(cli.starts_on(&t), vec!["hello".to_string()]);
+    assert!(
+        h.rt.starts_on(&t).is_empty(),
+        "IronClaw's loop never sees it"
+    );
+    // Busy: the next message waits in the queue.
+    let busy = h.engine.user_turn(&bound, "again").await.unwrap();
+    assert!(matches!(busy, UserTurn::Queued { .. }));
 }

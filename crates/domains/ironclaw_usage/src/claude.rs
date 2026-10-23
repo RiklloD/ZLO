@@ -46,6 +46,9 @@ pub struct ClaudeAccount {
     /// runs once per token lifetime. Outer `None`: not read yet; `Some(None)`:
     /// read and empty or denied, which is not retried until restart.
     keychain_cache: Mutex<Option<Option<OauthToken>>>,
+    /// The CLI driver's last limit reading (`~/.ironclaw/usage/<runtime>.json`),
+    /// the fallback when the endpoint fails or is switched off.
+    observed_file: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -67,7 +70,13 @@ impl ClaudeAccount {
             config_dir,
             keychain_service,
             keychain_cache: Mutex::new(None),
+            observed_file: None,
         }
+    }
+
+    pub fn with_observed_file(mut self, path: PathBuf) -> Self {
+        self.observed_file = Some(path);
+        self
     }
 
     /// CLI 1 (`~/.claude`) and CLI 2 (`~/.claude-account2`). A config dir set
@@ -76,6 +85,7 @@ impl ClaudeAccount {
     pub fn defaults(home: &Path) -> Vec<Self> {
         let keychain = cfg!(target_os = "macos");
         let second = home.join(".claude-account2");
+        let observed = home.join(".ironclaw").join("usage");
         let second_service = format!("{KEYCHAIN_SERVICE}-{}", hex8(&second.to_string_lossy()));
         vec![
             Self::new(
@@ -83,17 +93,57 @@ impl ClaudeAccount {
                 "Claude CLI",
                 home.join(".claude"),
                 keychain.then(|| KEYCHAIN_SERVICE.to_string()),
-            ),
+            )
+            .with_observed_file(observed.join("claude-cli.json")),
             Self::new(
                 "claude_cli_2",
                 "Claude CLI 2",
                 second,
                 keychain.then_some(second_service),
-            ),
+            )
+            .with_observed_file(observed.join("claude-cli-2.json")),
         ]
     }
 
+    /// The usage endpoint first, unless switched off; the CLI's own last
+    /// reading when the endpoint gives no windows.
     pub(crate) async fn fetch(&self, egress: &dyn NetworkHttpEgress, now_ms: i64) -> Fetched {
+        let endpoint = endpoint_enabled(std::env::var(ENDPOINT_SWITCH).ok().as_deref());
+        let primary = if endpoint {
+            self.fetch_endpoint(egress, now_ms).await
+        } else {
+            Fetched::NotConfigured(format!(
+                "Run one Claude CLI turn to see limits ({ENDPOINT_SWITCH} is off)."
+            ))
+        };
+        if matches!(primary, Fetched::Windows(_)) {
+            return primary;
+        }
+        match self.observed(now_ms).await {
+            Some((windows, at)) => Fetched::Observed {
+                windows,
+                at,
+                note: if endpoint {
+                    "The usage endpoint did not answer; showing the CLI's last reading."
+                } else {
+                    "From the CLI's last turn."
+                }
+                .to_string(),
+            },
+            None => primary,
+        }
+    }
+
+    /// Windows from the driver's file that have not reset yet.
+    async fn observed(&self, now_ms: i64) -> Option<(Vec<UsageWindow>, i64)> {
+        let bytes = tokio::fs::read(self.observed_file.as_ref()?).await.ok()?; // silent-ok: no file means no CLI turn yet
+        let doc: Value = serde_json::from_slice(&bytes).ok()?;
+        let at = doc.get("observedAt")?.as_i64()?;
+        let windows = parse_observed(doc.get("windows")?, now_ms);
+        (!windows.is_empty()).then_some((windows, at))
+    }
+
+    async fn fetch_endpoint(&self, egress: &dyn NetworkHttpEgress, now_ms: i64) -> Fetched {
         let token = match self.token(now_ms).await {
             Ok(Some(token)) => token,
             Ok(None) => return Fetched::NotConfigured("Not logged in on this Mac.".to_string()),
@@ -240,6 +290,41 @@ pub(crate) fn parse_windows(body: &Value) -> Vec<UsageWindow> {
                 label: (*label).to_string(),
                 used_percent: used.clamp(0.0, 100.0),
                 resets_at,
+                window_minutes: Some(*minutes),
+            })
+        })
+        .collect()
+}
+
+/// `IRONCLAW_USAGE_CLAUDE_ENDPOINT=off` (or `0`, `false`) stops the
+/// undocumented endpoint call and with it every Keychain read.
+const ENDPOINT_SWITCH: &str = "IRONCLAW_USAGE_CLAUDE_ENDPOINT";
+
+fn endpoint_enabled(raw: Option<&str>) -> bool {
+    !matches!(
+        raw.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("off" | "0" | "false" | "no")
+    )
+}
+
+/// The CLI's `unifiedWindows`: utilization is a fraction, `resetsAt` epoch
+/// seconds. A window past its reset is dropped (its reading is stale).
+pub(crate) fn parse_observed(windows: &Value, now_ms: i64) -> Vec<UsageWindow> {
+    const OBSERVED: &[(&str, &str, &str, u32)] = &[
+        ("five_hour", "five_hour", "5-hour", 300),
+        ("seven_day", "seven_day", "Weekly", 10_080),
+    ];
+    OBSERVED
+        .iter()
+        .filter_map(|(key, id, label, minutes)| {
+            let window = windows.get(*key)?;
+            let used = window.get("utilization")?.as_f64()?;
+            let resets_at = window.get("resetsAt")?.as_i64()? * 1000;
+            (resets_at > now_ms).then(|| UsageWindow {
+                id: (*id).to_string(),
+                label: (*label).to_string(),
+                used_percent: (used * 100.0).clamp(0.0, 100.0),
+                resets_at: Some(resets_at),
                 window_minutes: Some(*minutes),
             })
         })

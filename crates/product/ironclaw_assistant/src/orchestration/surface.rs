@@ -6,7 +6,9 @@
 //!   next-message context;
 //! - `run.cancel` (the Stop button) holds the thread and stops every
 //!   delegated task beneath it before the run is cancelled;
-//! - the `orchestrator.*` views and commands are answered here.
+//! - the `orchestrator.*` views and commands are answered here;
+//! - a thread bound to another runtime (a profile on a CLI driver) has its
+//!   submit, cancel and timeline answered by the engine (`external.rs`).
 //!
 //! Everything else passes through untouched, so existing route shapes keep
 //! working.
@@ -31,9 +33,10 @@ use ironclaw_product_contracts::surface::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use super::external;
 use super::profiles::{self, ProfileHome};
 use crate::reborn_services::{
-    CANCEL_RUN_COMMAND_ID, CREATE_THREAD_COMMAND_ID, SUBMIT_TURN_COMMAND_ID,
+    CANCEL_RUN_COMMAND_ID, CREATE_THREAD_COMMAND_ID, SUBMIT_TURN_COMMAND_ID, TIMELINE_VIEW,
 };
 
 pub struct OrchestratedProductSurface {
@@ -99,7 +102,10 @@ fn soft(step: &str, result: Result<impl Sized, OrchestratorError>) {
 }
 
 /// The thread's telemetry document; measurements stay `null` until reported.
-async fn telemetry_view(engine: &Engine, thread: &ThreadRecord) -> Result<Value, OrchestratorError> {
+async fn telemetry_view(
+    engine: &Engine,
+    thread: &ThreadRecord,
+) -> Result<Value, OrchestratorError> {
     let latest = engine.thread_telemetry(&thread.thread_id).await?;
     let (t, updated_at) = match latest {
         Some(r) => (r.telemetry, Some(r.updated_at)),
@@ -121,6 +127,13 @@ async fn telemetry_view(engine: &Engine, thread: &ThreadRecord) -> Result<Value,
 }
 
 impl OrchestratedProductSurface {
+    /// The caller's thread, when it runs off IronClaw's loop.
+    async fn external(&self, id: &ThreadId, scope: &ThreadScope) -> Option<ThreadRecord> {
+        let thread = self.engine.external_thread(id).await.ok().flatten()?;
+        self.engine.owned_thread(id, scope).await.ok()?;
+        Some(thread)
+    }
+
     async fn owned(
         &self,
         raw: &str,
@@ -274,6 +287,10 @@ impl OrchestratedProductSurface {
                 let id = ironclaw_orchestrator::profiles::parse_profile_slug(&profile_id)?;
                 self.engine.ensure_thread(&thread, scope, None).await?;
                 self.engine.store().set_thread_profile(&thread, &id).await?;
+                // A profile on a CLI provider runs its threads there.
+                if let Some(profile) = self.engine.store().thread_profile(&thread).await? {
+                    self.engine.bind_profile_runtime(&thread, &profile).await?;
+                }
                 to_json(ProfileThreadCreateResponse {
                     thread_id: thread.to_string(),
                     profile_id,
@@ -471,6 +488,20 @@ impl ProductSurface for OrchestratedProductSurface {
                             Err(error) => soft("profile default model", Err::<(), _>(error)),
                         }
                     }
+                    if let Some(thread) = self.external(&id, &scope).await {
+                        let text = body.content.unwrap_or_default();
+                        let turn = self
+                            .engine
+                            .user_turn(&thread, &text)
+                            .await
+                            .map_err(ProductSurfaceError::internal_from)?;
+                        let output = external::submit_response(&id, turn)
+                            .ok_or_else(|| ProductSurfaceError::internal_from("submit ref"))?;
+                        return Ok(ProductSurfaceInvokeResponse {
+                            output: serde_json::to_value(output)
+                                .map_err(ProductSurfaceError::internal_from)?,
+                        });
+                    }
                     if changed && let Ok(input) = serde_json::to_value(&body) {
                         request.input = input;
                     }
@@ -486,6 +517,17 @@ impl ProductSurface for OrchestratedProductSurface {
                         .and_then(|raw| ThreadId::new(raw).ok())
                     && self.engine.owned_thread(&id, &scope).await.is_ok()
                 {
+                    if let Some(thread) = self.external(&id, &scope).await {
+                        self.engine
+                            .user_stop_external(&thread)
+                            .await
+                            .map_err(ProductSurfaceError::internal_from)?;
+                        let run = body.run_id.as_deref().unwrap_or_default();
+                        return Ok(ProductSurfaceInvokeResponse {
+                            output: serde_json::to_value(external::cancel_response(run))
+                                .map_err(ProductSurfaceError::internal_from)?,
+                        });
+                    }
                     soft("user stop", self.engine.on_user_stop(&id).await);
                 }
                 self.inner.invoke(caller, request).await
@@ -518,6 +560,26 @@ impl ProductSurface for OrchestratedProductSurface {
             .await?
         {
             return Ok(page(value));
+        }
+        if request.view_id == TIMELINE_VIEW.id
+            && let Some(id) = request.input["thread_id"]
+                .as_str()
+                .and_then(|raw| ThreadId::new(raw).ok())
+            && let Some(thread) = self.external(&id, &scope).await
+        {
+            let limit = request.input["limit"].as_u64().unwrap_or(200).clamp(1, 500) as usize;
+            let history = self
+                .engine
+                .external_history(&thread)
+                .await
+                .map_err(ProductSurfaceError::internal_from)?;
+            let mut result = self.inner.query(caller, request).await?;
+            if let Some(item) = result.items.first_mut() {
+                item["messages"] = Value::Array(external::timeline_messages(&id, &history, limit));
+                item["next_cursor"] = Value::Null;
+            }
+            result.next_cursor = None;
+            return Ok(result);
         }
         self.inner.query(caller, request).await
     }

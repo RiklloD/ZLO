@@ -24,6 +24,9 @@ impl Engine {
 
     pub async fn queue_list(&self, thread: &ThreadId) -> Result<Value> {
         let hold = self.store.hold(thread).await?;
+        // Clients poll this document; a thread off IronClaw's loop has no run
+        // stream, so its runtime and turn state ride along.
+        let record = self.store.thread(thread).await?;
         let items: Vec<Value> = self
             .store
             .queue(thread, false)
@@ -36,7 +39,10 @@ impl Engine {
             })
             .collect();
         Ok(json!({"threadId": thread.as_str(), "held": hold.is_some(),
-                  "holdReason": hold.map(HoldReason::as_str), "items": items}))
+                  "holdReason": hold.map(HoldReason::as_str), "items": items,
+                  "runtime": record.as_ref().map(|t| t.runtime_id.as_str()),
+                  "running": record.as_ref().is_some_and(ThreadRecord::is_running),
+                  "activeRunId": record.as_ref().and_then(|t| t.active_run_id.as_deref())}))
     }
 
     async fn pending_item(&self, thread: &ThreadId, id: &QueueItemId) -> Result<QueueItem> {

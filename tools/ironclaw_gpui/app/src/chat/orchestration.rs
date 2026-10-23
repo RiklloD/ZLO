@@ -91,6 +91,7 @@ impl ChatView {
     }
 
     fn apply_snapshot(&mut self, s: Snapshot, cx: &mut Context<Self>) {
+        let mut reload_timeline = false;
         let o = &mut self.orch;
         o.loading = false;
         // silent-ok: a thread the orchestrator has not seen yet (no message
@@ -101,7 +102,14 @@ impl ChatView {
             Err(e) => tracing::debug!(error = %e, "thread tasks refresh failed"),
         }
         match s.queue {
-            Ok(queue) => o.queue = queue,
+            Ok(queue) => {
+                // An external turn shows up only here: reload its transcript
+                // while it runs and once more when it ends.
+                if queue.external_run().is_some() || o.queue.external_run().is_some() {
+                    reload_timeline = true;
+                }
+                o.queue = queue;
+            }
             Err(e) if e.is_not_found() => o.queue = QueueDoc::default(),
             Err(e) => tracing::debug!(error = %e, "thread queue refresh failed"),
         }
@@ -127,6 +135,9 @@ impl ChatView {
             related.push(from.source_thread.clone());
         }
         crate::titles::ensure(related, &self.backend, cx);
+        if reload_timeline {
+            self.load_timeline(cx);
+        }
         if std::mem::take(&mut self.orch.stale) {
             self.refresh_orchestration(cx);
         }
@@ -142,7 +153,17 @@ impl ChatView {
     }
 
     fn needs_poll(&self) -> bool {
-        self.transcript.active_run().is_some() || self.orch.tasks.iter().any(|t| t.status.is_live())
+        self.transcript.active_run().is_some()
+            || self.orch.queue.external_run().is_some()
+            || self.orch.tasks.iter().any(|t| t.status.is_live())
+    }
+
+    /// The running turn, streamed (IronClaw's loop) or polled (CLI runtime).
+    pub(super) fn running_run(&self) -> Option<String> {
+        self.transcript
+            .active_run()
+            .or(self.orch.queue.external_run())
+            .map(str::to_string)
     }
 
     /// Start the slow poll if something is moving. It stops by itself.

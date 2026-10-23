@@ -624,6 +624,31 @@ impl Store {
         Ok(())
     }
 
+    /// Move a thread to another runtime (a profile's engine, before its first turn).
+    pub async fn set_thread_runtime(
+        &self,
+        id: &ThreadId,
+        runtime: &RuntimeId,
+        provider: Option<&str>,
+        model: Option<&str>,
+        native_session_id: Option<&str>,
+    ) -> Result<()> {
+        self.exec(
+            "UPDATE orch_threads SET runtime_id = ?2, provider = ?3, model = ?4, \
+             native_session_id = ?5, updated_at = ?6 WHERE thread_id = ?1",
+            vec![
+                s(id.as_str()),
+                s(runtime.as_str()),
+                opt(provider),
+                opt(model),
+                opt(native_session_id),
+                now_ms().into(),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn set_turn_running(
         &self,
         id: &ThreadId,

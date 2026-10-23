@@ -65,6 +65,9 @@ pub struct ClaudeCliConfig {
     pub login_file: PathBuf,
     /// Where the account's transcripts live (`<config>/projects`).
     pub projects_dir: PathBuf,
+    /// Where each turn's rate-limit windows are written for the Usage page
+    /// (`~/.ironclaw/usage/<runtime_id>.json`); `None` writes nothing.
+    pub usage_file: Option<PathBuf>,
 }
 
 struct ActiveTurn {
@@ -212,6 +215,7 @@ impl ClaudeCliRuntime {
         let active = Arc::clone(&self.active);
         let thread_id = thread.thread_id.clone();
         let provider = self.config.runtime_id.clone();
+        let usage_file = self.config.usage_file.clone();
         let run = run_id.clone();
         tokio::spawn(async move {
             if let Some(sink) = sink.upgrade() {
@@ -234,6 +238,9 @@ impl ClaudeCliRuntime {
             let outcome = fold.outcome(cancelled.load(std::sync::atomic::Ordering::SeqCst), exit);
             if let Ok(mut map) = active.lock() {
                 map.remove(&thread_id);
+            }
+            if let (Some(path), Some(windows)) = (usage_file, fold.limit_windows()) {
+                write_limit_windows(&path, windows, now_ms()).await;
             }
             if let Some(sink) = sink.upgrade() {
                 if let Some(telemetry) = fold.telemetry(&provider) {
@@ -376,8 +383,27 @@ pub fn find_binary(home: &Path) -> Option<PathBuf> {
 }
 
 /// The two accounts Lorik runs: the CLI default and `~/.claude-account2`.
+/// Persist the CLI's own limit reading (atomic replace). Losing one is
+/// harmless: the next turn writes another.
+async fn write_limit_windows(path: &Path, windows: &serde_json::Value, at: i64) {
+    let body = serde_json::json!({"observedAt": at, "windows": windows}).to_string();
+    let tmp = path.with_extension("json.tmp");
+    let written = async {
+        if let Some(dir) = path.parent() {
+            tokio::fs::create_dir_all(dir).await?;
+        }
+        tokio::fs::write(&tmp, body).await?;
+        tokio::fs::rename(&tmp, path).await
+    }
+    .await;
+    if let Err(error) = written {
+        tracing::debug!(%error, "claude cli: limit windows not saved");
+    }
+}
+
 pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
     let work_dir = home.join(".ironclaw").join("claude-cli");
+    let usage_dir = home.join(".ironclaw").join("usage");
     let second = home.join(".claude-account2");
     vec![
         ClaudeCliConfig {
@@ -388,6 +414,7 @@ pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
             work_dir: work_dir.clone(),
             login_file: home.join(".claude.json"),
             projects_dir: home.join(".claude").join("projects"),
+            usage_file: Some(usage_dir.join("claude-cli.json")),
         },
         ClaudeCliConfig {
             runtime_id: "claude-cli-2".into(),
@@ -397,6 +424,7 @@ pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
             work_dir,
             login_file: second.join(".claude.json"),
             projects_dir: second.join("projects"),
+            usage_file: Some(usage_dir.join("claude-cli-2.json")),
         },
     ]
 }

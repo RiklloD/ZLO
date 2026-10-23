@@ -36,6 +36,14 @@ lands, every turn runs with `--tools ""`, `--strict-mcp-config`,
 MCP servers, and anything that would prompt is denied. No allow rules are
 passed and `--dangerously-skip-permissions` is never used.
 
+## Profiles and limits
+
+A profile whose default provider is `claude-cli` or `claude-cli-2` runs its
+threads here (`Engine::bind_profile_runtime`); the product surface answers
+their submit, Stop and timeline from the engine. After each turn the CLI's
+`unifiedWindows` limit reading is saved to `~/.ironclaw/usage/<runtime>.json`
+for the Usage page.
+
 ## Telemetry
 
 After each turn: context used (last assistant message: input + cache read +

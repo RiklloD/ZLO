@@ -21,6 +21,8 @@ pub(crate) struct TurnFold {
     generated_tokens: u64,
     rate_limit_resets_at: Option<i64>,
     rate_limited: bool,
+    /// The latest `unifiedWindows` reading (5-hour, weekly), as the CLI sent it.
+    limit_windows: Option<serde_json::Value>,
     result: Option<ResultFold>,
 }
 
@@ -60,6 +62,9 @@ impl TurnFold {
             ClaudeOutput::StreamEvent(ev) => self.push_stream_event(&ev.event, now),
             ClaudeOutput::RateLimitEvent(ev) => {
                 let info = ev.rate_limit_info;
+                if let Some(windows) = &info.unified_windows {
+                    self.limit_windows = serde_json::to_value(windows).ok();
+                }
                 if matches!(info.status, RateLimitStatus::Rejected) {
                     self.rate_limited = true;
                     self.rate_limit_resets_at = info.resets_at.map(|s| s as i64 * 1000);
@@ -137,6 +142,10 @@ impl TurnFold {
 
     /// Context from the last assistant message, max from the result's
     /// `modelUsage`, speed over the turn's streamed messages.
+    pub(crate) fn limit_windows(&self) -> Option<&serde_json::Value> {
+        self.limit_windows.as_ref()
+    }
+
     pub(crate) fn telemetry(&self, provider: &str) -> Option<TurnTelemetry> {
         let (input, read, write) = self.last_prompt?;
         Some(TurnTelemetry {

@@ -102,10 +102,20 @@ impl Supermemory {
     pub fn from_env(
         keys: Arc<dyn OperatorSecretValueStore>,
     ) -> Result<Arc<Self>, SupermemoryError> {
+        Self::from_env_with_bindings(keys, |env| env)
+    }
+
+    /// [`Self::from_env`] with the env binding wrapped by `bindings` (per-profile
+    /// containers that fall back to it).
+    pub fn from_env_with_bindings(
+        keys: Arc<dyn OperatorSecretValueStore>,
+        bindings: impl FnOnce(Arc<dyn SupermemoryBindingSource>) -> Arc<dyn SupermemoryBindingSource>,
+    ) -> Result<Arc<Self>, SupermemoryError> {
         let config = SupermemoryConfig::from_env()?;
-        let bindings = Arc::new(StaticSupermemoryBindingSource::from_env()?);
+        let env: Arc<dyn SupermemoryBindingSource> =
+            Arc::new(StaticSupermemoryBindingSource::from_env()?);
         let client = SupermemoryClient::production(&config, keys)?;
-        Ok(Arc::new(Self::new(client, bindings, config)))
+        Ok(Arc::new(Self::new(client, bindings(env), config)))
     }
 
     pub fn config(&self) -> &SupermemoryConfig {

@@ -126,6 +126,10 @@ impl UsageMonitor {
                 state.backoff = BACKOFF_START;
                 (UsageStatus::Ok, None, MIN_POLL)
             }
+            Fetched::Observed { windows, at, note } => {
+                state.last_good = Some((windows, at));
+                (UsageStatus::Ok, Some(note), MIN_POLL)
+            }
             Fetched::RateLimited { retry_after } => {
                 let delay = retry_after.unwrap_or(state.backoff).max(MIN_POLL);
                 state.backoff = (state.backoff * 2).min(BACKOFF_MAX);

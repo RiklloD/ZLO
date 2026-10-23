@@ -513,6 +513,55 @@ pub fn profile_surface_resolver(
     ))
 }
 
+/// Supermemory containers per profile: the `supermemory` block of the
+/// caller's thread profile, else the env binding.
+pub struct ProfileSupermemoryBindings {
+    engine: Arc<Engine>,
+    fallback: Arc<dyn ironclaw_supermemory::SupermemoryBindingSource>,
+}
+
+impl ProfileSupermemoryBindings {
+    pub fn new(
+        engine: Arc<Engine>,
+        fallback: Arc<dyn ironclaw_supermemory::SupermemoryBindingSource>,
+    ) -> Self {
+        Self { engine, fallback }
+    }
+}
+
+#[async_trait]
+impl ironclaw_supermemory::SupermemoryBindingSource for ProfileSupermemoryBindings {
+    async fn binding_for(
+        &self,
+        caller: &ironclaw_supermemory::SupermemoryCaller,
+    ) -> std::result::Result<
+        Option<ironclaw_supermemory::SupermemoryBinding>,
+        ironclaw_supermemory::SupermemoryError,
+    > {
+        if let Some(thread) = &caller.thread_id {
+            let profile = self
+                .engine
+                .store()
+                .thread_profile(thread)
+                .await
+                .map_err(
+                    |error| ironclaw_supermemory::SupermemoryError::InvalidConfig {
+                        reason: format!("thread profile unreadable: {error}"),
+                    },
+                )?;
+            if let Some(sm) = profile.and_then(|p| p.settings.supermemory)
+                && !sm.container.trim().is_empty()
+            {
+                return Ok(Some(ironclaw_supermemory::SupermemoryBinding {
+                    primary_container: sm.container,
+                    read_containers: sm.read_containers,
+                }));
+            }
+        }
+        self.fallback.binding_for(caller).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -147,8 +147,8 @@ impl TurnOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnInput {
     pub text: String,
-    /// Why the engine starts this turn; user-typed turns arrive through the
-    /// product surface, never through here.
+    /// Why the engine starts this turn. User-typed turns reach a runtime here
+    /// only on threads that do not run on IronClaw's loop.
     pub origin: TurnOrigin,
     /// Model hint for runtimes that pick per turn.
     pub model: Option<String>,
@@ -163,6 +163,8 @@ pub enum TurnOrigin {
     ContextHandoff,
     AutoContinue,
     AgentSend,
+    /// The user typed it into a thread that runs on this runtime.
+    UserPrompt,
 }
 
 /// Result of `start_turn`.
@@ -335,6 +337,5 @@ pub trait TurnEventSink: Send + Sync {
 
     /// Latest context/speed/cache figures of a thread; reported after every
     /// model call or turn, whichever the runtime can measure.
-    async fn turn_telemetry(&self, _thread_id: &ThreadId, _telemetry: TurnTelemetry, _at: Millis) {
-    }
+    async fn turn_telemetry(&self, _thread_id: &ThreadId, _telemetry: TurnTelemetry, _at: Millis) {}
 }

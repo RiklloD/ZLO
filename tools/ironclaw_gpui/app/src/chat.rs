@@ -721,6 +721,8 @@ impl ChatView {
                         this.error = Some(notice.into());
                     }
                     this.load_timeline(cx);
+                    // A CLI-runtime turn has no stream; the poll follows it.
+                    this.refresh_orchestration(cx);
                 }
                 Err(e) => {
                     this.transcript.drop_pending_user(pending);
@@ -737,7 +739,7 @@ impl ChatView {
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
-        let Some(run) = self.transcript.active_run().map(str::to_string) else {
+        let Some(run) = self.running_run() else {
             return;
         };
         let thread_id = self.thread_id.clone();
@@ -815,7 +817,7 @@ impl Render for ChatView {
         let menu = self.menu(cx);
         let menu_index = self.menu_index.min(menu.len().saturating_sub(1));
         let (model_button, model_menu) = self.render_model_switcher(cx);
-        let running = self.transcript.active_run().is_some();
+        let running = self.running_run().is_some();
         let stopping = self.transcript.is_stopping();
         // Fill the silence between send and the first streamed token.
         let working = stopping
