@@ -678,6 +678,38 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
         owner: "domains/",
         decided_in: "ADR 0006 (orchestrator v2 stage 4, CLI runtimes)",
     },
+    // Usage windows are fetched through the policy egress, never a raw client.
+    SameLayerEdge {
+        crate_name: "ironclaw_usage",
+        dependency_name: "ironclaw_network",
+        layer: "substrates",
+        owner: "domains/",
+        decided_in: "IronClaw v2 plan (PLAN_V2.md)",
+    },
+    // Supermemory calls go through the policy egress, never a raw client.
+    SameLayerEdge {
+        crate_name: "ironclaw_supermemory",
+        dependency_name: "ironclaw_network",
+        layer: "substrates",
+        owner: "domains/",
+        decided_in: "IronClaw v2 plan (PLAN_V2.md)",
+    },
+    // Supermemory implements the memory prompt-context and writer seams.
+    SameLayerEdge {
+        crate_name: "ironclaw_supermemory",
+        dependency_name: "ironclaw_memory",
+        layer: "substrates",
+        owner: "domains/",
+        decided_in: "IronClaw v2 plan (PLAN_V2.md)",
+    },
+    // Captured text is redacted before it leaves for Supermemory.
+    SameLayerEdge {
+        crate_name: "ironclaw_supermemory",
+        dependency_name: "ironclaw_safety",
+        layer: "substrates",
+        owner: "domains/",
+        decided_in: "IronClaw v2 plan (PLAN_V2.md)",
+    },
     // The trusted-trigger prompt scan moved *behind* the seam: it now runs in
     // `TrustedTriggerSubmitRequest::new`, so "this prompt passed the scan" is
     // an invariant of the sealed type rather than a step one submitter
@@ -767,7 +799,7 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
 // 72 -> 73 (#7688): the dedicated notification-record domain is introduced
 // directly at the substrates layer and stores its grammar through the shared
 // filesystem substrate rather than coupling notification state to outbound.
-const SAME_LAYER_EDGE_BASELINE: usize = 75;
+const SAME_LAYER_EDGE_BASELINE: usize = 79;
 
 /// Sanity floors for the metadata walk. A gate that scans nothing must never
 /// read as success; these are deliberately far below the live values (✎ **65**
@@ -866,6 +898,8 @@ const CRATE_LAYER_ORIGINS: &[(&str, &str)] = &[
     ("ironclaw_triggers", "substrates"),
     ("ironclaw_orchestrator", "substrates"),
     ("ironclaw_cli_providers", "substrates"),
+    ("ironclaw_usage", "substrates"),
+    ("ironclaw_supermemory", "substrates"),
     ("ironclaw_web_app", "substrates"),
     ("ironclaw_web_app_extension", "products"),
     ("ironclaw_trust", "kernel"),

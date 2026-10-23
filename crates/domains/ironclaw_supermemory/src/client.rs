@@ -110,12 +110,6 @@ impl SupermemoryClient {
         Self::new(config, egress, keys)
     }
 
-    #[cfg(test)]
-    pub(crate) fn without_retry_delay(mut self) -> Self {
-        self.retry_base_delay = Duration::ZERO;
-        self
-    }
-
     /// The stored API key, or `None` when none is set (feature off).
     pub async fn api_key(&self) -> Result<Option<SecretString>, SupermemoryError> {
         {
@@ -297,5 +291,17 @@ impl SupermemoryClient {
         retry_after
             .unwrap_or_else(|| self.retry_base_delay * 2u32.saturating_pow(attempt))
             .min(MAX_RETRY_AFTER)
+    }
+}
+
+#[cfg(test)]
+mod test_support {
+    use super::*;
+
+    impl SupermemoryClient {
+        pub(crate) fn without_retry_delay(mut self) -> Self {
+            self.retry_base_delay = Duration::ZERO;
+            self
+        }
     }
 }

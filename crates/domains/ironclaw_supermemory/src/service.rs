@@ -268,11 +268,6 @@ impl Supermemory {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    #[cfg(test)]
-    pub(crate) fn pending_len(&self) -> usize {
-        self.pending_lock().len()
-    }
-
     /// Semantic search in the primary container, or in `container` when it is
     /// one of the caller's readable containers.
     pub async fn search(
@@ -462,5 +457,16 @@ fn detect_category(text: &str) -> &'static str {
         "fact"
     } else {
         "other"
+    }
+}
+
+#[cfg(test)]
+mod test_support {
+    use super::*;
+
+    impl Supermemory {
+        pub(crate) fn pending_len(&self) -> usize {
+            self.pending_lock().len()
+        }
     }
 }
