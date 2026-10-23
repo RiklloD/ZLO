@@ -170,6 +170,7 @@ impl NotificationsView {
                             .ghost()
                             .xsmall()
                             .tooltip("Archive")
+                            .accessibility_label("Archive")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 let id = archive_id.clone();
@@ -183,14 +184,14 @@ impl NotificationsView {
     }
 }
 
-fn thread_of(item: &ProductNotification) -> Option<&str> {
+pub fn thread_of(item: &ProductNotification) -> Option<&str> {
     match &item.action {
         ProductNotificationAction::OpenThread { thread_id } => Some(thread_id),
         ProductNotificationAction::None => item.thread_id.as_deref(),
     }
 }
 
-fn describe(kind: ProductNotificationKind) -> (IconName, &'static str) {
+pub fn describe(kind: ProductNotificationKind) -> (IconName, &'static str) {
     match kind {
         ProductNotificationKind::ApprovalRequired => (IconName::TriangleAlert, "Approval needed"),
         ProductNotificationKind::AuthenticationRequired => (IconName::CircleUser, "Sign-in needed"),

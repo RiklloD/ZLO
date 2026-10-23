@@ -4,8 +4,10 @@
 //! app finds the gateway and its token on its own; see
 //! `ironclaw_gpui_client::Connection::discover`.
 
+mod alerts;
 mod chat;
 mod jobs;
+mod login_item;
 mod pages;
 mod ui;
 mod workspace;

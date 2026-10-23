@@ -12,6 +12,12 @@
 //! - an activity watchdog: the server sends `keep_alive` every 15 s, so 45 s
 //!   of silence means a dead connection.
 //!
+//! One desktop-only shortcut: when the connect itself fails (nothing listens,
+//! typically a gateway restart) the backoff wait ends early as soon as a
+//! plain TCP connect to the gateway succeeds, probed once a second. A refused
+//! connect costs the server nothing, and HTTP-level rejections (429/503 with
+//! `Retry-After`) still wait the full backoff.
+//!
 //! Dropping the [`EventStream`] handle stops the task and frees the slot.
 
 use std::time::Duration;
@@ -30,6 +36,7 @@ const BACKOFF_STEPS: [u64; 6] = [1, 2, 4, 8, 16, 30];
 const STABLE_AFTER: Duration = Duration::from_secs(15);
 const ACTIVITY_TIMEOUT: Duration = Duration::from_secs(45);
 const CHANNEL_DEPTH: usize = 256;
+const LISTENER_PROBE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamStatus {
@@ -79,6 +86,8 @@ enum Ended {
     Retry {
         stable: bool,
         retry_after: Option<u64>,
+        /// The TCP connect failed: nobody is listening yet.
+        listener_down: bool,
     },
     /// The receiver is gone or the gateway refused for good.
     Stop(Option<String>),
@@ -109,7 +118,7 @@ async fn run(client: Client, thread_id: String, tx: mpsc::Sender<StreamMessage>)
         )
         .await;
 
-        let retry_after = match ended {
+        let (retry_after, listener_down) = match ended {
             Ended::Stop(reason) => {
                 if let Some(reason) = reason {
                     let _ = tx.send(StreamMessage::Closed { reason }).await;
@@ -119,11 +128,12 @@ async fn run(client: Client, thread_id: String, tx: mpsc::Sender<StreamMessage>)
             Ended::Retry {
                 stable,
                 retry_after,
+                listener_down,
             } => {
                 if stable {
                     attempt = 0;
                 }
-                retry_after
+                (retry_after, listener_down)
             }
         };
 
@@ -137,8 +147,38 @@ async fn run(client: Client, thread_id: String, tx: mpsc::Sender<StreamMessage>)
         if tx.send(StreamMessage::Status(status)).await.is_err() {
             return;
         }
-        tokio::time::sleep(jitter(Duration::from_secs(delay))).await;
+        let wait = jitter(Duration::from_secs(delay));
+        if listener_down {
+            wait_for_listener(&client, wait).await;
+        } else {
+            tokio::time::sleep(wait).await;
+        }
     }
+}
+
+/// Sleep up to `max`, returning early once the gateway accepts TCP again.
+async fn wait_for_listener(client: &Client, max: Duration) {
+    let Some(addr) = listener_addr(&client.connection().base_url) else {
+        tokio::time::sleep(max).await;
+        return;
+    };
+    let deadline = Instant::now() + max;
+    while Instant::now() < deadline {
+        tokio::time::sleep(LISTENER_PROBE.min(deadline - Instant::now())).await;
+        let probe = tokio::net::TcpStream::connect(addr.as_str());
+        if matches!(tokio::time::timeout(LISTENER_PROBE, probe).await, Ok(Ok(_))) {
+            return;
+        }
+    }
+}
+
+fn listener_addr(base_url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(base_url).ok()?;
+    Some(format!(
+        "{}:{}",
+        url.host_str()?,
+        url.port_or_known_default()?
+    ))
 }
 
 async fn connect_once(
@@ -168,6 +208,7 @@ async fn connect_once(
             return Ended::Retry {
                 stable: false,
                 retry_after: None,
+                listener_down: e.is_connect(),
             };
         }
     };
@@ -179,6 +220,7 @@ async fn connect_once(
             return Ended::Retry {
                 stable: false,
                 retry_after: None,
+                listener_down: false,
             };
         }
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
@@ -197,6 +239,7 @@ async fn connect_once(
             return Ended::Retry {
                 stable: false,
                 retry_after,
+                listener_down: false,
             };
         }
     }
@@ -273,6 +316,7 @@ async fn connect_once(
     Ended::Retry {
         stable: first_frame_at.is_some_and(|t| t.elapsed() >= STABLE_AFTER),
         retry_after: None,
+        listener_down: false,
     }
 }
 
@@ -280,4 +324,22 @@ async fn connect_once(
 fn jitter(base: Duration) -> Duration {
     let r = (uuid::Uuid::new_v4().as_u128() % 401) as f64 / 1000.0; // 0.0..=0.4
     base.mul_f64(0.8 + r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::listener_addr;
+
+    #[test]
+    fn listener_addr_fills_default_ports() {
+        assert_eq!(
+            listener_addr("http://127.0.0.1:3000").as_deref(),
+            Some("127.0.0.1:3000")
+        );
+        assert_eq!(
+            listener_addr("http://localhost").as_deref(),
+            Some("localhost:80")
+        );
+        assert_eq!(listener_addr("not a url"), None);
+    }
 }

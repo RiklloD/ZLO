@@ -424,6 +424,45 @@ impl SettingsView {
             .into_any_element()
     }
 
+    fn render_desktop(&self, cx: &Context<Self>) -> impl IntoElement {
+        let bundled = crate::login_item::bundle_path().is_some();
+        card(cx).child(
+            h_flex()
+                .gap_3()
+                .items_center()
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().font_semibold().child("Open at login"))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .whitespace_normal()
+                                .child(if bundled {
+                                    "Starts IronClaw Desktop when you log in to your Mac."
+                                } else {
+                                    "Available when IronClaw runs from IronClaw.app (tools/ironclaw_gpui/bundle.sh)."
+                                }),
+                        ),
+                )
+                .child(
+                    Switch::new("open-at-login")
+                        .checked(crate::login_item::is_enabled())
+                        .disabled(!bundled)
+                        .accessibility_label("Open at login")
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            match crate::login_item::set_enabled(*checked) {
+                                Ok(()) => this.error = None,
+                                Err(e) => this.error = Some(e.into()),
+                            }
+                            cx.notify();
+                        })),
+                ),
+        )
+    }
+
     fn render_tools(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let auto = self.auto_approve.unwrap_or(false);
@@ -538,6 +577,8 @@ impl Render for SettingsView {
             })
             .child(section_title("Model"))
             .child(self.render_models(cx))
+            .child(section_title("Desktop app"))
+            .child(self.render_desktop(cx))
             .child(section_title("Tool permissions"))
             .child(self.render_tools(cx));
         page_body("settings-page", body)

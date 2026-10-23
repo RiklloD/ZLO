@@ -164,6 +164,7 @@ impl ProjectsView {
                             .ghost()
                             .small()
                             .tooltip(tip)
+                            .accessibility_label(tip)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.set_state(id.clone(), next, cx)
                             })),

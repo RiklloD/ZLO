@@ -7,7 +7,8 @@ use std::time::Duration;
 use ironclaw_gpui_client::wire::{SessionInfo, ThreadSummary};
 use ironclaw_gpui_client::{Backend, Client, ClientError, Connection};
 
-use crate::chat::{ChatView, ThreadUpdated};
+use crate::alerts::Alerts;
+use crate::chat::{ChatView, RunEnded, ThreadUpdated};
 use crate::jobs;
 use crate::pages::PageEvent;
 use crate::pages::automations::AutomationsView;
@@ -22,7 +23,12 @@ use crate::ui::*;
 const THREAD_PAGE: u32 = 100;
 const SIDEBAR_WIDTH: f32 = 260.;
 /// The inbox has no live stream, so the badge polls. One tiny request.
-const UNREAD_POLL: Duration = Duration::from_secs(30);
+const UNREAD_POLL: Duration = Duration::from_secs(15);
+/// Retry schedule while the gateway is unreachable (seconds, last repeats).
+/// It is a local listener, so a refused connect is free to repeat.
+/// Enough to catch every new item between two polls.
+const ALERT_PAGE: u32 = 20;
+const CONNECT_RETRY: [u64; 5] = [1, 2, 5, 10, 30];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -50,7 +56,11 @@ struct Pages {
 
 enum Conn {
     Connecting,
-    Failed(SharedString),
+    /// `retry_in` is set when the app retries on its own.
+    Failed {
+        message: SharedString,
+        retry_in: Option<u64>,
+    },
     Ready,
 }
 
@@ -63,9 +73,12 @@ pub struct Workspace {
     page: Page,
     pages: Pages,
     unread: usize,
-    _chat_events: Option<Subscription>,
+    _chat_events: Vec<Subscription>,
     _page_events: Vec<Subscription>,
     _poll: Option<Task<()>>,
+    connect_attempt: usize,
+    _retry: Option<Task<()>>,
+    alerts: Alerts,
 }
 
 impl Workspace {
@@ -79,10 +92,23 @@ impl Workspace {
             page: Page::Chat,
             pages: Pages::default(),
             unread: 0,
-            _chat_events: None,
+            _chat_events: Vec::new(),
             _page_events: Vec::new(),
             _poll: None,
+            connect_attempt: 0,
+            _retry: None,
+            alerts: Alerts::default(),
         };
+        // Clicking a system notification brings the window up on its thread.
+        let weak = cx.entity().downgrade();
+        let handle = window.window_handle();
+        cx.on_system_notification_response(move |response: SystemNotificationResponse, cx| {
+            cx.activate(true);
+            let _ = handle.update(cx, |_, window, cx| {
+                window.activate_window();
+                let _ = weak.update(cx, |this, cx| this.alert_clicked(&response.tag, window, cx));
+            });
+        });
         this.connect(window, cx);
         this
     }
@@ -95,7 +121,10 @@ impl Workspace {
         {
             Ok(backend) => backend,
             Err(e) => {
-                self.conn = Conn::Failed(e.to_string().into());
+                self.conn = Conn::Failed {
+                    message: e.to_string().into(),
+                    retry_in: None,
+                };
                 return;
             }
         };
@@ -114,20 +143,48 @@ impl Workspace {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok((session, page)) => {
+                        this.connect_attempt = 0;
+                        this._retry = None;
                         this.session = Some(session);
                         this.threads = page.threads;
                         this.conn = Conn::Ready;
-                        this.start_polling(cx);
+                        this.start_polling(window, cx);
                         if let Some(first) = this.threads.first().map(|t| t.thread_id.clone()) {
                             this.open_thread(first, window, cx);
                         }
                     }
-                    Err(e) => this.conn = Conn::Failed(friendly(&e).into()),
+                    Err(e) => this.connect_failed(&e, window, cx),
                 }
                 cx.notify();
             });
         });
         task.detach();
+    }
+
+    /// Show the error, and retry on a schedule when the gateway is simply not
+    /// up yet (it starts after the app at login, or is restarting).
+    fn connect_failed(&mut self, error: &ClientError, window: &mut Window, cx: &mut Context<Self>) {
+        let retry_in = matches!(error, ClientError::Network(_))
+            .then(|| CONNECT_RETRY[self.connect_attempt.min(CONNECT_RETRY.len() - 1)]);
+        self.conn = Conn::Failed {
+            message: friendly(error).into(),
+            retry_in,
+        };
+        let Some(secs) = retry_in else {
+            return;
+        };
+        self.connect_attempt += 1;
+        self._retry = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(secs))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if matches!(this.conn, Conn::Failed { .. }) {
+                    this.connect(window, cx);
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn open_thread(&mut self, thread_id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -144,10 +201,23 @@ impl Workspace {
         // Replacing the entity drops the old chat, which closes its stream
         // and frees one of the gateway's per-user stream slots.
         let view = cx.new(|cx| ChatView::new(backend, channel, id, window, cx));
-        self._chat_events = Some(cx.subscribe(&view, |this, _, _: &ThreadUpdated, cx| {
-            this.refresh_threads(cx);
-            this.refresh_unread(cx);
-        }));
+        self._chat_events = vec![
+            cx.subscribe_in(&view, window, |this, _, _: &ThreadUpdated, window, cx| {
+                this.refresh_threads(cx);
+                this.refresh_unread(window, cx);
+            }),
+            cx.subscribe_in(&view, window, |this, _, event: &RunEnded, window, cx| {
+                if !window.is_window_active() {
+                    let title = this
+                        .threads
+                        .iter()
+                        .find(|t| t.thread_id == event.thread_id)
+                        .map(|t| t.display_title().to_string());
+                    this.alerts
+                        .post_run(&event.thread_id, event.failed, title.as_deref(), cx);
+                }
+            }),
+        ];
         self.active = Some((thread_id, view));
         cx.notify();
     }
@@ -190,7 +260,10 @@ impl Workspace {
                     this.open_thread(id, window, cx);
                 }
                 Err(e) => {
-                    this.conn = Conn::Failed(friendly(&e).into());
+                    this.conn = Conn::Failed {
+                        message: friendly(&e).into(),
+                        retry_in: None,
+                    };
                     cx.notify();
                 }
             });
@@ -239,29 +312,46 @@ impl Workspace {
             .unwrap_or(false)
     }
 
-    fn start_polling(&mut self, cx: &mut Context<Self>) {
-        self.refresh_unread(cx);
-        self._poll = Some(cx.spawn(async move |this, cx| {
+    fn start_polling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_unread(window, cx);
+        self._poll = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(UNREAD_POLL).await;
-                if this.update(cx, |this, cx| this.refresh_unread(cx)).is_err() {
+                if this
+                    .update_in(cx, |this, window, cx| this.refresh_unread(window, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
         }));
     }
 
-    fn refresh_unread(&mut self, cx: &mut Context<Self>) {
+    /// Badge count plus system notifications for new inbox items.
+    fn refresh_unread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(backend) = self.backend.clone() else {
             return;
         };
-        jobs::run(
+        jobs::run_in(
             &backend,
+            window,
             cx,
-            |c| async move { c.list_notifications(1).await },
-            |this, result, cx| {
+            |c| async move { c.list_notifications(ALERT_PAGE).await },
+            |this, result, window, cx| {
                 // silent-ok: the badge is a hint; the inbox page shows real errors.
                 if let Ok(page) = result {
+                    let titles = this.thread_titles();
+                    let looking_at = (window.is_window_active() && this.page == Page::Chat)
+                        .then(|| this.active.as_ref().map(|(id, _)| id.as_str()))
+                        .flatten();
+                    for item in this.alerts.take_new(&page.notifications) {
+                        let thread = crate::pages::notifications::thread_of(item);
+                        if thread.is_some() && thread == looking_at {
+                            continue;
+                        }
+                        let title = thread.and_then(|t| titles.get(t)).map(String::as_str);
+                        this.alerts.post(item, title, cx);
+                    }
                     let changed = page.unread_count != this.unread;
                     this.unread = page.unread_count;
                     if changed && let Some(view) = this.pages.notifications.clone() {
@@ -271,6 +361,27 @@ impl Workspace {
                 }
             },
         );
+    }
+
+    fn alert_clicked(&mut self, tag: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(thread) = self.alerts.thread_for(tag) {
+            self.open_thread(thread, window, cx);
+        }
+        // `run:` tags are local; every other tag is an inbox notification id.
+        if tag.starts_with("run:") {
+            return;
+        }
+        if let Some(backend) = self.backend.clone() {
+            let id = tag.to_string();
+            jobs::run_in(
+                &backend,
+                window,
+                cx,
+                move |c| async move { c.mark_notification_read(&id).await },
+                // silent-ok: read state is cosmetic; the next poll recounts.
+                |this, _, window, cx| this.refresh_unread(window, cx),
+            );
+        }
     }
 
     fn on_page_event(&mut self, event: &PageEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -433,6 +544,7 @@ impl Workspace {
                                     .ghost()
                                     .xsmall()
                                     .tooltip("Delete conversation")
+                                    .accessibility_label("Delete conversation")
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.delete_thread(delete_id.clone(), window, cx)
                                     })),
@@ -476,6 +588,7 @@ impl Workspace {
                             .ghost()
                             .xsmall()
                             .tooltip("New conversation")
+                            .accessibility_label("New conversation")
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.new_thread(window, cx)),
                             ),
@@ -529,7 +642,7 @@ impl Render for Workspace {
                 .child(Spinner::new())
                 .child("Connecting to IronClaw")
                 .into_any_element(),
-            Conn::Failed(message) => v_flex()
+            Conn::Failed { message, retry_in } => v_flex()
                 .size_full()
                 .items_center()
                 .justify_center()
@@ -544,11 +657,22 @@ impl Render for Workspace {
                         .whitespace_normal()
                         .child(message.clone()),
                 )
+                .when_some(*retry_in, |this, secs| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("Trying again in {secs} s")),
+                    )
+                })
                 .child(
                     Button::new("retry-connect")
                         .label("Try again")
                         .primary()
-                        .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.connect_attempt = 0;
+                            this.connect(window, cx)
+                        })),
                 )
                 .into_any_element(),
             Conn::Ready => {

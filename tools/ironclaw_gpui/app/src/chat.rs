@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use ironclaw_gpui_client::contract::ProductGateKind;
-use ironclaw_gpui_client::transcript::{GateState, Row, ToolStatus, Transcript};
+use ironclaw_gpui_client::transcript::{GateState, Row, RunEnd, ToolStatus, Transcript};
 use ironclaw_gpui_client::{
     Backend, ClientError, EventStream, GateDecision, StreamMessage, StreamStatus,
 };
@@ -32,6 +32,16 @@ pub struct ChatView {
 pub struct ThreadUpdated;
 
 impl EventEmitter<ThreadUpdated> for ChatView {}
+
+/// A run watched live in this view reached the end on its own (not stopped).
+/// The gateway inbox only records background runs, so this is how a chat run
+/// becomes a system notification.
+pub struct RunEnded {
+    pub thread_id: String,
+    pub failed: bool,
+}
+
+impl EventEmitter<RunEnded> for ChatView {}
 
 impl ChatView {
     pub fn new(
@@ -111,6 +121,7 @@ impl ChatView {
 
     fn on_stream(&mut self, batch: Vec<StreamMessage>, cx: &mut Context<Self>) {
         let mut changed = false;
+        let mut ended = None;
         let mut reload = false;
         for message in batch {
             match message {
@@ -118,6 +129,7 @@ impl ChatView {
                     let applied = self.transcript.apply(&frame.event);
                     changed |= applied.changed;
                     reload |= applied.reload_timeline;
+                    ended = applied.run_ended.or(ended);
                 }
                 StreamMessage::Status(status) => {
                     self.status = status;
@@ -136,6 +148,13 @@ impl ChatView {
         }
         if changed {
             self.refresh_rows(cx);
+        }
+        // Stopping a run is the person's own doing; no alert for that.
+        if let Some(end @ (RunEnd::Completed | RunEnd::Failed)) = ended {
+            cx.emit(RunEnded {
+                thread_id: self.thread_id.clone(),
+                failed: end == RunEnd::Failed,
+            });
         }
     }
 
@@ -233,7 +252,7 @@ impl ChatView {
         decision: GateDecision,
         cx: &mut Context<Self>,
     ) {
-        self.transcript.mark_gate_resolving(&gate_ref);
+        self.transcript.mark_gate_resolving(&gate_ref, decision);
         self.refresh_rows(cx);
         let thread_id = self.thread_id.clone();
         let gate = gate_ref.clone();
@@ -370,12 +389,14 @@ impl Render for ChatView {
                             Button::new("stop")
                                 .icon(IconName::Square)
                                 .tooltip("Stop")
+                                .accessibility_label("Stop")
                                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
                         } else {
                             Button::new("send")
                                 .icon(IconName::ArrowUp)
                                 .primary()
                                 .tooltip("Send (Enter)")
+                                .accessibility_label("Send (Enter)")
                                 .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
                         }),
                 ),
@@ -514,15 +535,44 @@ fn render_gate(
             })
     };
 
+    // A settled gate collapses to one line; the full card is only for asking.
+    if let GateState::Closed(decision) = state {
+        let (icon, verdict) = match decision {
+            Some(GateDecision::Approve { always: true }) => {
+                (IconName::CircleCheck, "Always allowed")
+            }
+            Some(GateDecision::Approve { always: false }) => (IconName::CircleCheck, "Approved"),
+            Some(GateDecision::Decline) => (IconName::CircleX, "Declined"),
+            None => (IconName::Check, "Answered"),
+        };
+        return h_flex()
+            .gap_2()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(Icon::new(icon).xsmall())
+            .child(div().font_medium().child(verdict))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(body.clone().unwrap_or_else(|| headline.to_string())),
+            )
+            .into_any_element();
+    }
+
     let actions = match (state, kind) {
-        (GateState::Closed, _) => None,
-        (GateState::Resolving, _) => Some(
+        (GateState::Closed(_), _) => None,
+        (GateState::Resolving(decision), _) => Some(
             h_flex()
                 .gap_2()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
                 .child(Spinner::new().xsmall())
-                .child("Waiting for IronClaw to confirm")
+                .child(match decision {
+                    GateDecision::Decline => "Declined, waiting for IronClaw to confirm",
+                    GateDecision::Approve { .. } => "Approved, waiting for IronClaw to confirm",
+                })
                 .into_any_element(),
         ),
         // Sign-in flows run in the browser; the gate clears when they finish.
@@ -557,7 +607,6 @@ fn render_gate(
     };
 
     card(cx)
-        .when(state == GateState::Closed, |this| this.opacity(0.6))
         .child(
             h_flex()
                 .gap_2()

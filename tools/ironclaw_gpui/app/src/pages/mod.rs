@@ -67,4 +67,5 @@ pub fn refresh_button(id: &'static str) -> Button {
         .ghost()
         .small()
         .tooltip("Refresh")
+        .accessibility_label("Refresh")
 }

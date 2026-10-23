@@ -16,7 +16,8 @@ pub use gpui_kit::prelude::FluentBuilder;
 pub use gpui_kit::{
     AnyElement, App, AppContext, Context, ElementId, Entity, EventEmitter, InteractiveElement,
     IntoElement, ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, WeakEntity, Window, div, px,
+    Subscription, SystemNotification, SystemNotificationResponse, Task, WeakEntity, Window, div,
+    px,
 };
 
 use gpui_kit::component::bubble::{Bubble, BubbleContent, BubbleVariant};

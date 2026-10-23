@@ -18,6 +18,7 @@ use ironclaw_product_contracts::outbound::{
     ProductGateKind, ProductProjectionItem,
 };
 
+use crate::api::GateDecision;
 use crate::wire::{MessageKind, StreamEvent, TimelineMessage, TimelinePage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,8 +32,10 @@ pub enum ToolStatus {
 pub enum GateState {
     Open,
     /// The person answered; waiting for the projection to confirm.
-    Resolving,
-    Closed,
+    Resolving(GateDecision),
+    /// The run moved on. The decision is known only when it was made in this
+    /// view: the projection does not carry it, so a reloaded gate has `None`.
+    Closed(Option<GateDecision>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +157,25 @@ pub struct Applied {
     pub changed: bool,
     /// A run settled: refetch the timeline so the durable reply lands.
     pub reload_timeline: bool,
+    /// Set once per run, on the frame that first settled it.
+    pub run_ended: Option<RunEnd>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunEnd {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl RunEnd {
+    fn from_status(status: &str) -> Self {
+        match status {
+            "completed" | "succeeded" => Self::Completed,
+            "cancelled" => Self::Cancelled,
+            _ => Self::Failed,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -163,7 +185,8 @@ pub struct Transcript {
     live: HashMap<String, LiveEntry>,
     runs: HashMap<String, RunStatus>,
     settled: HashSet<String>,
-    resolving: HashSet<String>,
+    /// Answers given in this view, kept after the gate closes for its label.
+    decisions: HashMap<String, GateDecision>,
     pending_user: Vec<(u64, String, bool)>,
     latest_run: Option<String>,
     tick: u64,
@@ -207,12 +230,12 @@ impl Transcript {
         self.pending_user.retain(|(i, _, _)| *i != id);
     }
 
-    pub fn mark_gate_resolving(&mut self, gate_ref: &str) {
-        self.resolving.insert(gate_ref.to_string());
+    pub fn mark_gate_resolving(&mut self, gate_ref: &str, decision: GateDecision) {
+        self.decisions.insert(gate_ref.to_string(), decision);
     }
 
     pub fn clear_gate_resolving(&mut self, gate_ref: &str) {
-        self.resolving.remove(gate_ref);
+        self.decisions.remove(gate_ref);
     }
 
     /// The run the Stop button targets: the latest one not yet terminal.
@@ -283,12 +306,17 @@ impl Transcript {
                         narration: false,
                     },
                 );
-                self.settle(&run, &mut out);
+                self.settle(&run, RunEnd::Completed, &mut out);
                 out.changed = true;
             }
             StreamEvent::Cancelled { .. } | StreamEvent::Failed { .. } => {
+                let end = if matches!(event, StreamEvent::Cancelled { .. }) {
+                    RunEnd::Cancelled
+                } else {
+                    RunEnd::Failed
+                };
                 if let Some(run) = self.latest_run.clone() {
-                    self.settle(&run, &mut out);
+                    self.settle(&run, end, &mut out);
                 }
                 out.reload_timeline = true;
                 out.changed = true;
@@ -396,7 +424,7 @@ impl Transcript {
                     },
                 );
                 if is_terminal(status) {
-                    self.settle(&run, out);
+                    self.settle(&run, RunEnd::from_status(status), out);
                 }
             }
         }
@@ -490,9 +518,10 @@ impl Transcript {
         }
     }
 
-    fn settle(&mut self, run: &str, out: &mut Applied) {
+    fn settle(&mut self, run: &str, end: RunEnd, out: &mut Applied) {
         if self.settled.insert(run.to_string()) {
             out.reload_timeline = true;
+            out.run_ended = Some(end);
         }
     }
 
@@ -684,6 +713,7 @@ impl Transcript {
     }
 
     fn gate_state(&self, gate_ref: &str, entry: &LiveEntry) -> GateState {
+        let decision = self.decisions.get(gate_ref).copied();
         let superseded = entry
             .run
             .as_deref()
@@ -695,9 +725,9 @@ impl Transcript {
                 .as_deref()
                 .is_some_and(|r| self.settled.contains(r))
         {
-            GateState::Closed
-        } else if self.resolving.contains(gate_ref) {
-            GateState::Resolving
+            GateState::Closed(decision)
+        } else if let Some(decision) = decision {
+            GateState::Resolving(decision)
         } else {
             GateState::Open
         }
@@ -899,6 +929,19 @@ mod tests {
     }
 
     #[test]
+    fn run_end_is_reported_once() {
+        let mut t = Transcript::default();
+        assert_eq!(t.apply(&status("running")).run_ended, None);
+        assert_eq!(
+            t.apply(&status("completed")).run_ended,
+            Some(RunEnd::Completed)
+        );
+        assert_eq!(t.apply(&status("completed")).run_ended, None);
+        let mut t = Transcript::default();
+        assert_eq!(t.apply(&status("failed")).run_ended, Some(RunEnd::Failed));
+    }
+
+    #[test]
     fn gate_closes_when_run_moves_on() {
         let mut t = Transcript::default();
         t.apply(&frame(serde_json::json!({
@@ -915,21 +958,22 @@ mod tests {
                 ..
             }
         ));
-        t.mark_gate_resolving("g1");
+        let approve = GateDecision::Approve { always: false };
+        t.mark_gate_resolving("g1", approve);
         assert!(matches!(
             t.rows()[0],
             Row::Gate {
-                state: GateState::Resolving,
+                state: GateState::Resolving(d),
                 ..
-            }
+            } if d == approve
         ));
         t.apply(&status("running"));
         assert!(matches!(
             t.rows()[0],
             Row::Gate {
-                state: GateState::Closed,
+                state: GateState::Closed(Some(d)),
                 ..
-            }
+            } if d == approve
         ));
     }
 }

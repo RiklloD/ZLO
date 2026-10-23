@@ -25,7 +25,7 @@ ironclaw_extension_contracts = { path = "../../crates/contracts/ironclaw_extensi
 # Pinned exactly: gpui-kit is pre-1.0 and ships weekly. Bump on purpose.
 gpui-kit = { version = "=0.8.0" }
 
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 eventsource-stream = "0.2"
 futures = "0.3"

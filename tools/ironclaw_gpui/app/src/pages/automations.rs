@@ -157,6 +157,7 @@ impl AutomationsView {
                     .ghost()
                     .small()
                     .tooltip("Run now")
+                    .accessibility_label("Run now")
                     .disabled(busy)
                     .on_click(cx.listener({
                         let id = id.clone();
@@ -203,6 +204,7 @@ impl AutomationsView {
                     .ghost()
                     .small()
                     .tooltip("Delete automation")
+                    .accessibility_label("Delete automation")
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.confirm_delete = Some(id.clone());
