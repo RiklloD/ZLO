@@ -9,15 +9,14 @@ use std::time::Duration;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use ironclaw_product_contracts::inspector::{
-    BoundedDiagnosticText, DiagnosticActivityEvent, ModelCallDiagnostic, PromptComponentDiagnostic,
-    SessionDiagnosticStats, ToolExecutionDiagnostic,
+    DiagnosticPromptResponse, DiagnosticSnapshot, DiagnosticSnapshotResponse,
+    DiagnosticToolResponse, PromptDiagnostic, ToolExecutionDiagnostic,
 };
 use ironclaw_product_contracts::product_wire::{
     RebornLogQueryResponse, RebornOperatorCommandPlaneResponse, RebornOperatorConfigGetResponse,
-    RebornOperatorConfigListResponse, RebornOperatorConfigSetRequest,
-    RebornOperatorConfigValidateRequest, RebornOperatorConfigValidateResponse,
-    RebornOperatorLogsQuery, RebornOperatorServiceLifecycleAction,
-    RebornOperatorServiceLifecycleRequest, RebornOperatorSetupResponse,
+    RebornOperatorConfigListResponse, RebornOperatorConfigSetRequest, RebornOperatorLogsQuery,
+    RebornOperatorServiceLifecycleAction, RebornOperatorServiceLifecycleRequest,
+    RebornOperatorSetupResponse,
 };
 use reqwest::{Method, StatusCode};
 use serde::Deserialize;
@@ -63,68 +62,10 @@ impl SetupInput {
 }
 
 // --- inspector decoding ---
-//
-// The gateway builds `DiagnosticSnapshot` / `PromptDiagnostic` server-side and
-// they are serialize-only. Their leaves (model calls, tools, activity, stats,
-// prompt components, bounded text) are deserializable contract types, so the
-// client decodes only the fields it renders and keeps the leaves as-is.
 
 /// What the inspector shows for one run.
-#[derive(Debug, Clone, Deserialize)]
-pub struct InspectorRun {
-    #[serde(default)]
-    pub prompt: Option<InspectorPrompt>,
-    #[serde(default)]
-    pub model_calls: Vec<ModelCallDiagnostic>,
-    #[serde(default)]
-    pub tool_executions: Vec<ToolExecutionDiagnostic>,
-    #[serde(default)]
-    pub activity: Vec<InspectorActivity>,
-    #[serde(default)]
-    pub stats: SessionDiagnosticStats,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct InspectorActivity {
-    pub sequence: u64,
-    pub event: DiagnosticActivityEvent,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct InspectorPrompt {
-    #[serde(default)]
-    pub components: Vec<PromptComponentDiagnostic>,
-    #[serde(default)]
-    pub components_truncated: bool,
-    pub reconstructed_prompt: BoundedDiagnosticText,
-    #[serde(default)]
-    pub total_estimated_tokens: Option<u64>,
-    #[serde(default)]
-    pub message_count: u32,
-    #[serde(default)]
-    pub capability_count: u32,
-    #[serde(default)]
-    pub active_skills: Vec<BoundedDiagnosticText>,
-    #[serde(default)]
-    pub effective_model: Option<BoundedDiagnosticText>,
-    #[serde(default)]
-    pub context_limit: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct SnapshotEnvelope {
-    snapshot: Option<InspectorRun>,
-}
-
-#[derive(Deserialize)]
-struct PromptEnvelope {
-    prompt: Option<InspectorPrompt>,
-}
-
-#[derive(Deserialize)]
-struct ToolEnvelope {
-    tool: Option<ToolExecutionDiagnostic>,
-}
+pub type InspectorRun = DiagnosticSnapshot;
+pub type InspectorPrompt = PromptDiagnostic;
 
 // --- inspector live updates ---
 
@@ -297,16 +238,6 @@ impl Client {
             .await
     }
 
-    /// An empty key list validates every key.
-    pub async fn validate_operator_config(
-        &self,
-        keys: Vec<String>,
-    ) -> Result<RebornOperatorConfigValidateResponse, ClientError> {
-        let body = RebornOperatorConfigValidateRequest { keys };
-        self.post(&format!("{V2}/operator/config/validate"), &body)
-            .await
-    }
-
     // --- status, diagnostics, service ---
 
     pub async fn operator_status(&self) -> Result<RebornOperatorCommandPlaneResponse, ClientError> {
@@ -361,7 +292,7 @@ impl Client {
         thread_id: &str,
         run_id: &str,
     ) -> Result<Option<InspectorRun>, ClientError> {
-        let envelope: SnapshotEnvelope = self.get(&run_path(thread_id, run_id)).await?;
+        let envelope: DiagnosticSnapshotResponse = self.get(&run_path(thread_id, run_id)).await?;
         Ok(envelope.snapshot)
     }
 
@@ -371,7 +302,7 @@ impl Client {
         run_id: &str,
     ) -> Result<Option<InspectorPrompt>, ClientError> {
         let path = format!("{}/prompt", run_path(thread_id, run_id));
-        let envelope: PromptEnvelope = self.get(&path).await?;
+        let envelope: DiagnosticPromptResponse = self.get(&path).await?;
         Ok(envelope.prompt)
     }
 
@@ -382,7 +313,7 @@ impl Client {
         activity_id: &str,
     ) -> Result<Option<ToolExecutionDiagnostic>, ClientError> {
         let path = format!("{}/tools/{}", run_path(thread_id, run_id), seg(activity_id));
-        let envelope: ToolEnvelope = self.get(&path).await?;
+        let envelope: DiagnosticToolResponse = self.get(&path).await?;
         Ok(envelope.tool)
     }
 }
@@ -417,7 +348,7 @@ mod tests {
             "model_calls": [],
             "tool_executions": [],
             "prompt": null,
-            "scope": { "tenant_id": "t", "user_id": "u", "thread_id": "x", "run_id": "y" },
+            "scope": { "tenant_id": "t", "user_id": "u", "thread_id": "8a3c1f0e-2b4d-4e6f-9a1b-3c5d7e9f0a2b", "run_id": "5b7d9f1a-3c5e-4a7b-8c9d-0e1f2a3b4c5d" },
             "stream_id": "10f1199c-82ce-4c3c-8bb3-3d1ac2c7402d",
             "stats": {
                 "total_model_calls": 0, "calls_per_model": [], "calls_per_model_truncated": false,
@@ -429,7 +360,8 @@ mod tests {
                 "total_tool_calls": 0, "successful_tool_calls": 0, "failed_tool_calls": 0
             }
         }});
-        let decoded: SnapshotEnvelope = serde_json::from_value(body).expect("decode snapshot");
+        let decoded: DiagnosticSnapshotResponse =
+            serde_json::from_value(body).expect("decode snapshot");
         let run = decoded.snapshot.expect("snapshot present");
         assert_eq!(run.activity.len(), 1);
         assert_eq!(

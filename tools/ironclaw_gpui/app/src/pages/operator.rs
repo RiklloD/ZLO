@@ -407,7 +407,7 @@ impl StatusPanel {
                 ))
                 .when(disagrees, |d| {
                     d.child(muted(
-                        "This gateway is answering, so it runs. It may run outside the service manager (ironclaw serve), or the gateway misread launchctl (it parses `launchctl list <label>` as a table, which macOS prints as a dictionary).",
+                        "This gateway is answering, so it runs, probably outside the service manager (`ironclaw serve` in a terminal).",
                         cx,
                     ))
                 })
@@ -451,7 +451,7 @@ impl StatusPanel {
             .children(reported)
             .when(self.confirm_stop, |d| {
                 d.child(confirm_row(
-                    "Stop IronClaw? Chats and automations stop, and this app loses its connection. Start it again in a terminal with `ironclaw service start`.",
+                    "Stop IronClaw? Chats and automations stop, and this app loses its connection. \"Try again\" on the connect screen starts it back up.",
                     Button::new("confirm-stop")
                         .label("Stop")
                         .danger()

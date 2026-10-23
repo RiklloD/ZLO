@@ -394,6 +394,53 @@ impl RebornLlmConfigService {
         ))
     }
 
+    /// Chats resolve the quick-switch list's default (or the caller's pick)
+    /// before the active model, so a list saved earlier silently kept the old
+    /// model after the operator chose a new one. Make the newly active model
+    /// the list default and drop the caller's pick so the choice takes effect.
+    async fn align_model_policy_with_active(
+        &self,
+        caller: &ProductSurfaceCaller,
+    ) -> Result<(), LlmConfigServiceError> {
+        let (Some(store), Some(mut policy)) = (
+            self.model_policy_store.as_ref(),
+            self.read_model_policy(caller).await?,
+        ) else {
+            return Ok(());
+        };
+        let snapshot = self.build_provider_snapshot().await?;
+        let Some(model) = snapshot
+            .active
+            .filter(|active| active.provider_id == policy.provider_id)
+            .and_then(|active| active.model)
+        else {
+            return Ok(());
+        };
+        if !policy.allowed_models.contains(&model) {
+            if policy.allowed_models.len() >= USER_MODEL_POLICY_MAX_MODELS {
+                return Err(invalid_policy_field(
+                    "allowed_models",
+                    "the quick-switch list is full; remove a model before activating a new one",
+                ));
+            }
+            policy.allowed_models.push(model.clone());
+        }
+        if policy.workspace_default != model {
+            policy.workspace_default = model;
+            store
+                .update(caller, &policy, ModelSelectionPolicyUpdateMode::Replace)
+                .await
+                .map_err(map_model_policy_store_error)?;
+        }
+        if let Some(preferences) = self.user_model_preference_store.as_ref() {
+            preferences
+                .write(caller, &UserModelPreference { model: None })
+                .await
+                .map_err(map_user_model_preference_store_error)?;
+        }
+        Ok(())
+    }
+
     async fn build_snapshot(
         &self,
         caller: &ProductSurfaceCaller,
@@ -700,6 +747,9 @@ impl LlmConfigService for RebornLlmConfigService {
         }
 
         self.refresh_running_provider().await;
+        if request.set_active {
+            self.align_model_policy_with_active(&caller).await?;
+        }
         self.snapshot(caller).await
     }
 
@@ -757,6 +807,7 @@ impl LlmConfigService for RebornLlmConfigService {
             .await
             .map_err(map_admin_error)?;
         self.refresh_running_provider().await;
+        self.align_model_policy_with_active(&caller).await?;
         self.snapshot(caller).await
     }
 
@@ -2060,6 +2111,50 @@ mod tests {
                 .await,
             Err(LlmConfigServiceError::InvalidRequest { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn set_active_moves_the_quick_switch_default_to_the_new_model() {
+        let (_temp, service) = service_with_active_provider("nearai", "model-a");
+        let admin = caller().with_operator_config(true);
+        service
+            .set_user_model_policy(
+                admin.clone(),
+                policy_request("model-a", &["model-a", "model-b"]),
+            )
+            .await
+            .expect("set policy");
+        service
+            .set_user_model_preference(
+                caller(),
+                SetUserModelPreferenceRequest {
+                    model: Some("model-b".to_string()),
+                },
+            )
+            .await
+            .expect("pick model-b");
+
+        service
+            .set_active(
+                admin,
+                SetActiveLlmRequest {
+                    provider_id: "nearai".to_string(),
+                    model: Some("model-c".to_string()),
+                },
+            )
+            .await
+            .expect("activate model-c");
+
+        assert_eq!(
+            service
+                .resolve_user_model(caller(), None)
+                .await
+                .expect("resolved model"),
+            Some("model-c".to_string()),
+        );
+        let catalog = service.user_model_catalog(caller()).await.expect("catalog");
+        assert_eq!(catalog.workspace_default.as_deref(), Some("model-c"));
+        assert_eq!(catalog.models, vec!["model-a", "model-b", "model-c"]);
     }
 
     #[tokio::test]

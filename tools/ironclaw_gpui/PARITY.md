@@ -19,7 +19,7 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 | stream_events_ws | excluded: SSE carries the same frames |
 | list_commands, execute_command | done |
 | get_attachment (+ attachments on send) | done |
-| suggestions.list, suggestions.generate, suggestions.start, suggestions.dismiss | done |
+| suggestions.list, suggestions.generate, suggestions.start, suggestions.dismiss | removed 23.10.2026: not wanted, and each generation left an empty thread |
 | get_user_model_catalog, get_user_model_preference, set_user_model_preference, set_user_model_policy | done (not live-tested: saving a quick-switch list cannot be undone through the API) |
 | get_run_artifact, get_thread_artifact | excluded: debug export behind `regression_artifact_export`, off in this deployment (404) |
 
@@ -83,10 +83,11 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 | Route | Status |
 |---|---|
 | operator.get_setup, operator.run_setup (onboarding) | done |
-| operator.list_config, get_config_key, set_config_key, validate_config | done |
+| operator.list_config, get_config_key, set_config_key | done |
+| operator.validate_config | removed 23.10.2026: the gateway has no effective-config service and answers "not wired yet" for every key |
 | operator.status, operator.diagnostics | done |
 | operator.service_lifecycle: status, stop | done |
-| operator.service_lifecycle: start, install | excluded: the app reaches the service through the gateway, which is down whenever start is needed; see note below |
+| operator.service_lifecycle: start, install | start is local: the app loads the launchd job when it opens (`service.rs`); install stays in the terminal |
 | logs (per conversation, in the inspector), operator.logs | done |
 | operator.inspector_snapshot, inspector_prompt, inspector_tool, inspector_updates | done |
 
@@ -106,7 +107,7 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 
 `completion`, `run`, `profile` stay terminal-only. `service install` sets up
 the backend the app connects to, so it stays in the terminal too. Status and
-stop are in the app (Operator page). Start and restart stay in the terminal
-(`ironclaw service start`): the gateway is the only door to the service, and
-it is down whenever start is needed. The contract has no restart action. A
-later step could let the connect screen run `ironclaw service start` locally.
+stop are in the app (Operator page). Since 23.10.2026 the app owns the
+service's lifetime: opening it loads the launchd job, quitting unloads it, and
+"Try again" on the connect screen loads it again after a Stop. The contract
+has no restart action.

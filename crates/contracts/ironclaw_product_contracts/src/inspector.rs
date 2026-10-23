@@ -191,7 +191,7 @@ pub struct DiagnosticToolRequest {
     pub activity_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DiagnosticScope {
     pub tenant_id: TenantId,
     pub user_id: UserId,
@@ -493,7 +493,7 @@ impl PromptComponentDiagnostic {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptDiagnostic {
     pub captured_at: DateTime<Utc>,
     pub components: Vec<PromptComponentDiagnostic>,
@@ -883,7 +883,7 @@ impl DiagnosticActivityEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticActivityEntry {
     pub sequence: DiagnosticSequence,
     pub event: DiagnosticActivityEvent,
@@ -970,7 +970,7 @@ pub enum DiagnosticUpdateKind {
     Stats(SessionDiagnosticStats),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticUpdateEnvelope {
     pub scope: DiagnosticScope,
     pub stream_id: DiagnosticStreamId,
@@ -985,7 +985,7 @@ impl DiagnosticUpdateEnvelope {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticUpdateBatch {
     pub updates: Vec<DiagnosticUpdateEnvelope>,
     pub retention_floor: Option<DiagnosticCursor>,
@@ -993,7 +993,7 @@ pub struct DiagnosticUpdateBatch {
     pub rebase_required: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticSnapshot {
     pub scope: DiagnosticScope,
     pub stream_id: DiagnosticStreamId,
@@ -1005,17 +1005,17 @@ pub struct DiagnosticSnapshot {
     pub latest_sequence: DiagnosticSequence,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticSnapshotResponse {
     pub snapshot: Option<DiagnosticSnapshot>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticPromptResponse {
     pub prompt: Option<PromptDiagnostic>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticToolResponse {
     pub tool: Option<ToolExecutionDiagnostic>,
 }

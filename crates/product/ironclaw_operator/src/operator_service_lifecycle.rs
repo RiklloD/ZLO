@@ -884,12 +884,41 @@ enum LaunchdStatus {
 }
 
 fn launchd_status(stdout: &str) -> LaunchdStatus {
+    // `launchctl list <label>` prints a plist-style dictionary, while plain
+    // `launchctl list` prints a PID / status / label table. Accept both.
+    if let Some(status) = launchd_status_from_dictionary(stdout) {
+        return status;
+    }
     stdout
         .lines()
         .find_map(|line| {
             launchd_status_from_line(line).filter(|(_, label)| label == &LAUNCHD_LABEL)
         })
         .map_or(LaunchdStatus::Stopped, |(status, _)| status)
+}
+
+fn launchd_status_from_dictionary(stdout: &str) -> Option<LaunchdStatus> {
+    let field = |key: &str| {
+        stdout.lines().find_map(|line| {
+            let (name, value) = line.trim().split_once(" = ")?;
+            (name.trim_matches('"') == key)
+                .then(|| value.trim_end_matches(';').trim_matches('"').to_string())
+        })
+    };
+    if field("Label")? != LAUNCHD_LABEL {
+        return None;
+    }
+    Some(
+        if field("PID").is_some_and(|pid| pid.parse::<i32>().is_ok()) {
+            LaunchdStatus::Running
+        } else if field("LastExitStatus")
+            .is_some_and(|status| status.parse::<i32>().is_ok_and(|status| status != 0))
+        {
+            LaunchdStatus::Failed
+        } else {
+            LaunchdStatus::Stopped
+        },
+    )
 }
 
 fn launchd_status_from_line(line: &str) -> Option<(LaunchdStatus, &str)> {
@@ -1810,6 +1839,20 @@ env_user_id_var = "CUSTOM_WEBUI_USER_ID"
                 vec!["list".to_string(), LAUNCHD_LABEL.to_string()]
             )]
         );
+    }
+
+    #[test]
+    fn launchd_status_reads_the_dictionary_form() {
+        let running = format!(
+            "{{\n\t\"Label\" = \"{LAUNCHD_LABEL}\";\n\t\"LastExitStatus\" = 0;\n\t\"PID\" = 4289;\n}};\n"
+        );
+        assert_eq!(launchd_status(&running), LaunchdStatus::Running);
+        let failed =
+            format!("{{\n\t\"Label\" = \"{LAUNCHD_LABEL}\";\n\t\"LastExitStatus\" = 256;\n}};\n");
+        assert_eq!(launchd_status(&failed), LaunchdStatus::Failed);
+        let stopped =
+            format!("{{\n\t\"Label\" = \"{LAUNCHD_LABEL}\";\n\t\"LastExitStatus\" = 0;\n}};\n");
+        assert_eq!(launchd_status(&stopped), LaunchdStatus::Stopped);
     }
 
     #[tokio::test]

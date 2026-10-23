@@ -7,10 +7,7 @@ use ironclaw_gpui_client::attachments::{self, StagedFile, format_bytes};
 use ironclaw_gpui_client::commands::{match_command, menu_matches, takes_arguments};
 use ironclaw_gpui_client::contract::ProductGateKind;
 use ironclaw_gpui_client::operator_llm::UserModelCatalog;
-use ironclaw_gpui_client::product_wire::{
-    RebornProductCommandInfo, RebornSuggestion, RebornSuggestionGenerationStatus,
-    RebornSuggestionsResponse,
-};
+use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::transcript::{
     AttachmentChip, GateState, Row, RunEnd, ToolStatus, Transcript,
 };
@@ -54,7 +51,6 @@ pub struct ChatView {
     model_choice: Option<(UserModelCatalog, Option<String>)>,
     model_menu_open: bool,
     /// Task ideas for an empty conversation, loaded once it is known empty.
-    suggestions: Option<RebornSuggestionsResponse>,
     /// The conversation's files panel, when open.
     files: Option<FilesPanel>,
     /// The draft the `/` menu was closed for with Esc; typing reopens it.
@@ -148,7 +144,6 @@ impl ChatView {
             model_choice: None,
             model_menu_open: false,
             files: None,
-            suggestions: None,
             menu_dismissed: None,
             _stream: Some(stream),
             _pump: pump,
@@ -272,231 +267,6 @@ impl ChatView {
         self.open_fetched(dir, &chip.filename, cx, move |c| async move {
             c.attachment_bytes(&thread_id, &message_id, &id).await
         });
-    }
-
-    /// Read the suggestion set, after `delay` when the gateway asked to wait.
-    /// Keeps polling while a generation runs.
-    fn poll_suggestions(&mut self, delay: Option<std::time::Duration>, cx: &mut Context<Self>) {
-        let job = self.backend.spawn(move |c| async move {
-            if let Some(delay) = delay {
-                tokio::time::sleep(delay).await;
-            }
-            c.suggestions().await
-        });
-        let task = cx.spawn(async move |this, cx| {
-            // silent-ok: suggestions are optional; the composer still works.
-            match flatten(job.await) {
-                Ok(response) => {
-                    let _ = this.update(cx, |this, cx| this.show_suggestions(response, cx));
-                }
-                Err(e) => tracing::debug!(error = %e, "suggestions poll failed"),
-            }
-        });
-        self.keep(task);
-    }
-
-    fn show_suggestions(&mut self, response: RebornSuggestionsResponse, cx: &mut Context<Self>) {
-        if response.status == RebornSuggestionGenerationStatus::Generating {
-            let wait = response.retry_after_seconds.unwrap_or(3).clamp(1, 30);
-            self.poll_suggestions(Some(std::time::Duration::from_secs(wait.into())), cx);
-        }
-        self.suggestions = Some(response);
-        cx.notify();
-    }
-
-    fn generate_suggestions(&mut self, cx: &mut Context<Self>) {
-        if let Some(s) = self.suggestions.as_mut() {
-            s.status = RebornSuggestionGenerationStatus::Generating;
-        }
-        cx.notify();
-        let job = self
-            .backend
-            .spawn(|c| async move { c.generate_suggestions().await });
-        let task = cx.spawn(async move |this, cx| {
-            let result = flatten(job.await);
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(response) => this.show_suggestions(response, cx),
-                Err(e) => {
-                    this.set_error(e.to_string(), cx);
-                    // Another device may own the generation; re-read the truth.
-                    this.poll_suggestions(None, cx);
-                }
-            });
-        });
-        self.keep(task);
-    }
-
-    fn start_suggestion(&mut self, id: String, cx: &mut Context<Self>) {
-        let job = self
-            .backend
-            .spawn(move |c| async move { c.start_suggestion(&id).await });
-        let task = cx.spawn(async move |this, cx| {
-            let result = flatten(job.await);
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(started) => cx.emit(OpenThread(started.thread_id)),
-                Err(e) => this.set_error(e.to_string(), cx),
-            });
-        });
-        self.keep(task);
-    }
-
-    fn dismiss_suggestion(&mut self, id: String, cx: &mut Context<Self>) {
-        if let Some(s) = self.suggestions.as_mut() {
-            s.suggestions.retain(|card| card.id != id);
-        }
-        cx.notify();
-        let job = self
-            .backend
-            .spawn(move |c| async move { c.dismiss_suggestion(&id).await });
-        let task = cx.spawn(async move |this, cx| {
-            if let Err(e) = flatten(job.await) {
-                let _ = this.update(cx, |this, cx| {
-                    this.set_error(e.to_string(), cx);
-                    this.poll_suggestions(None, cx);
-                });
-            }
-        });
-        self.keep(task);
-    }
-
-    fn render_suggestions(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let response = self.suggestions.as_ref().filter(|_| self.rows.is_empty())?;
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let status = match response.status {
-            RebornSuggestionGenerationStatus::Generating => h_flex()
-                .gap_2()
-                .text_sm()
-                .text_color(muted)
-                .child(Spinner::new().xsmall())
-                .child("Finding tasks IronClaw could do for you…")
-                .into_any_element(),
-            // Also offered again once every card was dismissed.
-            _ if response.suggestions.is_empty() => {
-                let failed = response.status == RebornSuggestionGenerationStatus::Failed;
-                v_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().text_sm().text_color(muted).child(if failed {
-                        "Suggestions couldn't be generated."
-                    } else {
-                        "Not sure where to start? IronClaw can suggest tasks based on what it can reach. This uses one model run."
-                    }))
-                    .child(
-                        Button::new("suggest")
-                            .label(if failed { "Try again" } else { "Suggest tasks" })
-                            .outline()
-                            .small()
-                            .on_click(cx.listener(|this, _, _, cx| this.generate_suggestions(cx))),
-                    )
-                    .into_any_element()
-            }
-            _ => div().into_any_element(),
-        };
-        let cards = response
-            .suggestions
-            .iter()
-            .enumerate()
-            .map(|(ix, s)| self.render_suggestion(ix, s, cx));
-        Some(
-            v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_4()
-                .p_6()
-                .child(
-                    div()
-                        .text_lg()
-                        .font_semibold()
-                        .child("What can I do for you?"),
-                )
-                .child(status)
-                .child(
-                    h_flex()
-                        .max_w(px(CONTENT_MAX_WIDTH))
-                        .flex_wrap()
-                        .items_start()
-                        .justify_center()
-                        .gap_3()
-                        .children(cards),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn render_suggestion(
-        &self,
-        ix: usize,
-        s: &RebornSuggestion,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = cx.theme();
-        let started = s.thread_id.clone();
-        let (start_id, dismiss_id) = (s.id.clone(), s.id.clone());
-        card(cx)
-            .w(px(240.))
-            .flex_none()
-            .overflow_hidden()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_start()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .whitespace_normal()
-                            .font_medium()
-                            .text_sm()
-                            .child(s.title.clone()),
-                    )
-                    .child(
-                        Button::new(("dismiss-suggestion", ix))
-                            .icon(IconName::Close)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Dismiss")
-                            .accessibility_label(format!("Dismiss {}", s.title))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.dismiss_suggestion(dismiss_id.clone(), cx)
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .whitespace_normal()
-                    .child(s.description.clone()),
-            )
-            .when(!s.sources.is_empty(), |d| {
-                d.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(format!("Uses {}", s.sources.join(", "))),
-                )
-            })
-            .child(
-                h_flex().child(match started {
-                    Some(thread) => Button::new(("open-suggestion", ix))
-                        .label("Open")
-                        .outline()
-                        .small()
-                        .on_click(
-                            cx.listener(move |_, _, _, cx| cx.emit(OpenThread(thread.clone()))),
-                        ),
-                    None => Button::new(("start-suggestion", ix))
-                        .label("Start")
-                        .primary()
-                        .small()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.start_suggestion(start_id.clone(), cx)
-                        })),
-                }),
-            )
-            .into_any_element()
     }
 
     fn toggle_files(&mut self, cx: &mut Context<Self>) {
@@ -830,9 +600,6 @@ impl ChatView {
                     cx.emit(ThreadUpdated);
                     this.transcript.set_timeline(page);
                     this.refresh_rows(cx);
-                    if this.rows.is_empty() && this.suggestions.is_none() {
-                        this.poll_suggestions(None, cx);
-                    }
                 }
                 Err(e) => this.set_error(e.to_string(), cx),
             });
@@ -1088,15 +855,7 @@ impl Render for ChatView {
                         .child(text),
                 )
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(match self.render_suggestions(cx) {
-                        Some(suggestions) => suggestions,
-                        None => list.size_full().into_any_element(),
-                    }),
-            )
+            .child(div().flex_1().min_h_0().child(list.size_full()))
             .child(
                 div().absolute().top_2().right_4().child(
                     Button::new("files-toggle")

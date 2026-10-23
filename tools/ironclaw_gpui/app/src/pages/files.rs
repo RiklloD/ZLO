@@ -76,6 +76,13 @@ impl FilesView {
                                 .cmp(&is_dir(a))
                                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
                         });
+                        let threads = listing
+                            .entries
+                            .iter()
+                            .filter_map(|e| is_thread_folder(this.mount, &e.path))
+                            .map(str::to_string)
+                            .collect::<Vec<_>>();
+                        crate::titles::ensure(threads, &this.backend, cx);
                         this.entries = listing.entries;
                         this.error = None;
                     }
@@ -136,7 +143,7 @@ impl FilesView {
                 acc.push('/');
             }
             acc.push_str(part);
-            crumbs.push((part.to_string(), acc.clone()));
+            crumbs.push((display_name(self.mount, &acc, part, cx), acc.clone()));
         }
         let last = crumbs.len() - 1;
         let mount = self.mount;
@@ -180,8 +187,8 @@ impl FilesView {
         let rows = self.entries.iter().enumerate().map(|(ix, entry)| {
             let dir = is_dir(entry);
             let selected = self.selected.as_deref() == Some(entry.path.as_str());
+            let name = display_name(self.mount, &entry.path, &entry.name, cx);
             let entry = entry.clone();
-            let name = entry.name.clone();
             h_flex()
                 .id(("entry", ix))
                 .role(Role::Button)
@@ -299,6 +306,19 @@ impl FilesView {
             .child(body)
             .into_any_element()
     }
+}
+
+/// Memory keeps one folder per thread under `threads/`, named by thread id.
+fn is_thread_folder(mount: FsMount, path: &str) -> Option<&str> {
+    let id = path.strip_prefix("threads/")?;
+    (mount == FsMount::Memory && !id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+/// A thread folder shows its conversation title; anything else its name.
+fn display_name(mount: FsMount, path: &str, name: &str, cx: &App) -> String {
+    is_thread_folder(mount, path)
+        .and_then(|id| crate::titles::get(cx, id))
+        .unwrap_or_else(|| name.to_string())
 }
 
 fn is_dir(entry: &ProjectFsEntry) -> bool {

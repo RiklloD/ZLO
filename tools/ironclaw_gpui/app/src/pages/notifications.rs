@@ -1,8 +1,6 @@
 //! The notification inbox: approvals, failures and finished runs the gateway
 //! recorded for this user, plus which channels deliver them outside the app.
 
-use std::collections::HashMap;
-
 use ironclaw_gpui_client::Backend;
 use ironclaw_gpui_client::notification_inbox::{
     ProductNotification, ProductNotificationAction, ProductNotificationKind,
@@ -29,7 +27,6 @@ struct Channel {
 pub struct NotificationsView {
     backend: Backend,
     items: Vec<ProductNotification>,
-    titles: HashMap<String, String>,
     channels: Vec<Channel>,
     loaded: bool,
     error: Option<SharedString>,
@@ -38,23 +35,16 @@ pub struct NotificationsView {
 impl EventEmitter<PageEvent> for NotificationsView {}
 
 impl NotificationsView {
-    pub fn new(backend: Backend, titles: HashMap<String, String>, cx: &mut Context<Self>) -> Self {
+    pub fn new(backend: Backend, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             backend,
             items: Vec::new(),
-            titles,
             channels: Vec::new(),
             loaded: false,
             error: None,
         };
         this.refresh(cx);
         this
-    }
-
-    /// Thread titles from the sidebar, so rows can name their conversation.
-    pub fn set_titles(&mut self, titles: HashMap<String, String>, cx: &mut Context<Self>) {
-        self.titles = titles;
-        cx.notify();
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -66,6 +56,9 @@ impl NotificationsView {
             |this, result, cx| {
                 match result {
                     Ok(page) => {
+                        let threads = page.notifications.iter().filter_map(thread_of);
+                        let threads: Vec<String> = threads.map(str::to_string).collect();
+                        crate::titles::ensure(threads, &this.backend, cx);
                         this.items = page.notifications;
                         this.error = None;
                         cx.emit(PageEvent::Unread(page.unread_count));
@@ -250,12 +243,8 @@ impl NotificationsView {
             ProductNotificationSeverity::Info => theme.muted_foreground,
         };
         let unread = item.read_at.is_none();
-        let thread = thread_of(item).map(|id| {
-            self.titles
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| "Conversation".to_string())
-        });
+        let thread = thread_of(item)
+            .map(|id| crate::titles::get(cx, id).unwrap_or_else(|| "Conversation".to_string()));
         let archive_id = item.id.clone();
 
         h_flex()

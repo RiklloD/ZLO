@@ -5,7 +5,6 @@
 use std::time::Duration;
 
 use ironclaw_product_contracts::inbound_requests::ProductRenameAutomationRequest;
-use ironclaw_product_contracts::inbound_requests::RebornSuggestionsGenerateRequest;
 use ironclaw_product_contracts::notification_inbox::{
     ProductListNotificationsResponse, ProductNotificationMutationResponse,
 };
@@ -13,8 +12,7 @@ use ironclaw_product_contracts::product_wire::{
     RebornAutomationMutationResponse, RebornListAutomationsResponse,
     RebornNotificationChannelsResponse, RebornNotificationSetupStatusResponse,
     RebornOutboundDeliveryTargetId, RebornOutboundDeliveryTargetListResponse,
-    RebornSetNotificationChannelsRequest, RebornSuggestionDismissResponse,
-    RebornSuggestionStartResponse, RebornSuggestionsResponse,
+    RebornSetNotificationChannelsRequest,
 };
 use ironclaw_product_contracts::workspace_views::{
     FsMount, RebornCreateProjectRequest, RebornFsListResponse, RebornFsMountsResponse,
@@ -162,37 +160,6 @@ impl Client {
             name: Some(name.to_string()),
         };
         self.post(&format!("{V2}/automations/{}", seg(id)), &body)
-            .await
-    }
-
-    // --- suggestions (generated on request; each costs one model run) ---
-
-    pub async fn suggestions(&self) -> Result<RebornSuggestionsResponse, ClientError> {
-        self.get(&format!("{V2}/suggestions")).await
-    }
-
-    pub async fn generate_suggestions(&self) -> Result<RebornSuggestionsResponse, ClientError> {
-        let body = RebornSuggestionsGenerateRequest {
-            client_action_id: crate::api::client_action_id(),
-        };
-        self.post(&format!("{V2}/suggestions/generate"), &body)
-            .await
-    }
-
-    /// The gateway creates the thread and submits the prompt itself.
-    pub async fn start_suggestion(
-        &self,
-        id: &str,
-    ) -> Result<RebornSuggestionStartResponse, ClientError> {
-        self.post_empty(&format!("{V2}/suggestions/{}/start", seg(id)))
-            .await
-    }
-
-    pub async fn dismiss_suggestion(
-        &self,
-        id: &str,
-    ) -> Result<RebornSuggestionDismissResponse, ClientError> {
-        self.send(self.request(Method::DELETE, &format!("{V2}/suggestions/{}", seg(id))))
             .await
     }
 

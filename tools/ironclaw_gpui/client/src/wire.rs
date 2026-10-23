@@ -83,9 +83,20 @@ pub struct ThreadSummary {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
+    /// JSON text; automation runs carry `{"source":"automation_trigger","trigger_id":…}`.
+    #[serde(default)]
+    pub metadata_json: Option<String>,
 }
 
 impl ThreadSummary {
+    /// The automation that started this thread, if one did.
+    pub fn automation_trigger_id(&self) -> Option<String> {
+        let meta: serde_json::Value = serde_json::from_str(self.metadata_json.as_deref()?).ok()?;
+        (meta.get("source")?.as_str()? == "automation_trigger")
+            .then(|| meta.get("trigger_id")?.as_str().map(str::to_string))
+            .flatten()
+    }
+
     pub fn display_title(&self) -> &str {
         self.title
             .as_deref()

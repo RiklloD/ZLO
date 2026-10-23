@@ -37,6 +37,10 @@ impl ClientError {
         matches!(self, Self::Api { status: 401, .. })
     }
 
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::Api { status: 404, .. })
+    }
+
     pub(crate) fn from_status(status: u16, text: &str) -> Self {
         let body: ApiErrorBody = serde_json::from_str(text).unwrap_or_default();
         // Same humanizing the SPA does: most specific code wins.

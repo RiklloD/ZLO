@@ -13,6 +13,7 @@ use ironclaw_turns::{
     SanitizedFailure, TurnError, TurnRunWake, TurnRunWakeNotifier, TurnRunWakeNotifyError,
     claimed_turn_run_from_process_claim, runner::ClaimedTurnRun,
 };
+use tracing::Instrument;
 
 /// Consecutive heartbeat failures a turn run absorbs before the supervisor gives
 /// up on it.
@@ -292,8 +293,16 @@ impl JournalProcessExecutor for TurnProcessExecutor {
         let claimed = claimed_turn_run_from_process_claim(claimed)
             .map_err(|_| ProcessExecutorFailure::new("process_claim_invalid"))?;
         let claimed_for_failure_metadata = claimed.clone();
+        // Every log line emitted while the run executes carries its thread and
+        // run ids, so the caller-scoped `/logs?thread_id=` query can find them.
+        let span = tracing::debug_span!(
+            "turn_run",
+            thread_id = %claimed.state.scope.thread_id,
+            run_id = %claimed.state.run_id,
+        );
         self.executor
             .execute_claimed_run(claimed, Arc::clone(&self.transitions))
+            .instrument(span)
             .await
             .map_err(|error| {
                 let recovery = match error.failure_category() {

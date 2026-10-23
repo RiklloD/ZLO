@@ -2,6 +2,33 @@
 
 Open items found while building and testing the GPUI client. Newest first.
 
+## Closed 23.10.2026 (backlog pass)
+
+- Service lifetime: the app loads the launchd job on open and unloads it on
+  quit (`app/src/service.rs`); "Try again" on the connect screen starts it
+  after a Stop. The gateway only stops fast once no client holds a stream:
+  with the app still connected, `launchctl unload` took 5 s.
+- macOS service status: `launchd_status` now reads the dictionary form of
+  `launchctl list <label>` (fork fix, test
+  `launchd_status_reads_the_dictionary_form`).
+- Diagnostics: `DiagnosticSnapshot`, `PromptDiagnostic`, the update batch
+  types and the three response wrappers derive `Deserialize`; the client
+  decodes the contract types instead of a partial mirror.
+- Quick-switch trap: setting the active model (Settings or provider save with
+  "activate") now makes it the quick-switch default and clears the caller's
+  pick, in the gateway (test
+  `set_active_moves_the_quick_switch_default_to_the_new_model`). Web UI and
+  CLI get the fix too.
+- Per-conversation logs: each run executes inside a `turn_run` span carrying
+  `thread_id` and `run_id`, so `/logs?thread_id=` finds its lines.
+- Config validate: removed from the app; the route has no service behind it.
+- Suggested tasks: removed from the app (not wanted). That also retires the
+  stuck-spinner report and the empty "New conversation" threads.
+- Thread titles: one cache (`app/src/titles.rs`) names threads everywhere.
+  Threads missing from the list (automation runs) are fetched once: title,
+  else the automation's name, else the first line of the first message.
+  Memory > threads and notifications/alerts use it.
+
 ## Found during 4.2 (23.10.2026)
 
 - Gateway trap: once a quick-switch model list exists for the active

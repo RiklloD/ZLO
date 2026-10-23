@@ -1,7 +1,6 @@
 //! Window root: connects to the gateway, lists threads, and switches between
 //! the open chat and the full-width pages.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use ironclaw_gpui_client::wire::{SessionInfo, ThreadSummary};
@@ -150,6 +149,7 @@ impl Workspace {
                         this._retry = None;
                         this.session = Some(session);
                         this.threads = page.threads;
+                        crate::titles::set_listed(&this.threads, cx);
                         this.conn = Conn::Ready;
                         this.start_polling(window, cx);
                         if let Some(first) = this.threads.first().map(|t| t.thread_id.clone()) {
@@ -212,11 +212,7 @@ impl Workspace {
             }),
             cx.subscribe_in(&view, window, |this, _, event: &RunEnded, window, cx| {
                 if !window.is_window_active() {
-                    let title = this
-                        .threads
-                        .iter()
-                        .find(|t| t.thread_id == event.thread_id)
-                        .map(|t| t.display_title().to_string());
+                    let title = crate::titles::get(cx, &event.thread_id);
                     this.alerts
                         .post_run(&event.thread_id, event.failed, title.as_deref(), cx);
                 }
@@ -244,10 +240,7 @@ impl Workspace {
             if let Ok(Ok(page)) = job.await {
                 let _ = this.update(cx, |this, cx| {
                     this.threads = page.threads;
-                    if let Some(view) = this.pages.notifications.clone() {
-                        let titles = this.thread_titles();
-                        view.update(cx, |v, cx| v.set_titles(titles, cx));
-                    }
+                    crate::titles::set_listed(&this.threads, cx);
                     cx.notify();
                 });
             }
@@ -309,13 +302,6 @@ impl Workspace {
         task.detach();
     }
 
-    fn thread_titles(&self) -> HashMap<String, String> {
-        self.threads
-            .iter()
-            .map(|t| (t.thread_id.clone(), t.display_title().to_string()))
-            .collect()
-    }
-
     fn projects_enabled(&self) -> bool {
         self.session
             .as_ref()
@@ -352,7 +338,6 @@ impl Workspace {
             |this, result, window, cx| {
                 // silent-ok: the badge is a hint; the inbox page shows real errors.
                 if let Ok(page) = result {
-                    let titles = this.thread_titles();
                     let looking_at = (window.is_window_active() && this.page == Page::Chat)
                         .then(|| this.active.as_ref().map(|(id, _)| id.as_str()))
                         .flatten();
@@ -361,8 +346,23 @@ impl Workspace {
                         if thread.is_some() && thread == looking_at {
                             continue;
                         }
-                        let title = thread.and_then(|t| titles.get(t)).map(String::as_str);
-                        this.alerts.post(item, title, cx);
+                        // Automation runs are not in the thread list; fetch
+                        // their title first so the alert can name them.
+                        let Some(thread) = thread.map(str::to_string) else {
+                            this.alerts.post(item, None, cx);
+                            continue;
+                        };
+                        let Some(backend) = this.backend.clone() else {
+                            continue;
+                        };
+                        let title = crate::titles::resolve(thread, &backend, cx);
+                        let item = item.clone();
+                        cx.spawn(async move |this, cx| {
+                            let title = title.await;
+                            let _ = this
+                                .update(cx, |this, cx| this.alerts.post(&item, Some(&title), cx));
+                        })
+                        .detach();
                     }
                     let changed = page.unread_count != this.unread;
                     this.unread = page.unread_count;
@@ -430,10 +430,7 @@ impl Workspace {
         match page {
             Page::Chat => {}
             Page::Notifications => {
-                let titles = self.thread_titles();
-                open!(notifications, |cx| NotificationsView::new(
-                    backend, titles, cx
-                ))
+                open!(notifications, |cx| NotificationsView::new(backend, cx))
             }
             Page::Automations => open!(automations, |cx| AutomationsView::new(backend, cx)),
             Page::Files => open!(files, |cx| FilesView::new(backend, cx)),
@@ -636,7 +633,8 @@ impl Workspace {
 fn friendly(error: &ClientError) -> String {
     match error {
         ClientError::Network(_) => format!(
-            "{error}\n\nStart the gateway with `ironclaw serve` (or `ironclaw service start`)."
+            "{error}\n\nIronClaw starts its service when the app opens. If this persists, \
+             run `ironclaw service install` once, then try again."
         ),
         e if e.is_unauthorized() => format!(
             "{error}\n\nThe WebUI token was rejected. Re-run `ironclaw onboard` to refresh it."
@@ -684,6 +682,9 @@ impl Render for Workspace {
                         .label("Try again")
                         .primary()
                         .on_click(cx.listener(|this, _, window, cx| {
+                            // Also brings the gateway back after a Stop from
+                            // the Operator page.
+                            crate::service::start();
                             this.connect_attempt = 0;
                             this.connect(window, cx)
                         })),

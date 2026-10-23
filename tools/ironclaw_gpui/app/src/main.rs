@@ -1,7 +1,7 @@
 //! IronClaw Desktop: a native GPUI window onto the local IronClaw gateway.
 //!
-//! Run the gateway (`ironclaw serve`), then `cargo run --release` here. The
-//! app finds the gateway and its token on its own; see
+//! Opening the app starts the gateway's launchd job and quitting stops it
+//! (`service.rs`). The app finds the gateway and its token on its own; see
 //! `ironclaw_gpui_client::Connection::discover`.
 
 mod alerts;
@@ -9,6 +9,8 @@ mod chat;
 mod jobs;
 mod login_item;
 mod pages;
+mod service;
+mod titles;
 mod ui;
 mod workspace;
 
@@ -31,6 +33,12 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
+            service::start();
+            cx.on_app_quit(|_| {
+                service::stop();
+                async {}
+            })
+            .detach();
             cx.on_action(|_: &Quit, cx| {
                 tracing::info!("quit requested");
                 cx.quit()

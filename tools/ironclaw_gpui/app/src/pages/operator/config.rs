@@ -1,10 +1,12 @@
-//! Operator config keys: list with source and precedence, validate, and edit
-//! one key as JSON (read fresh first, confirm before saving).
+//! Operator config keys: list with source and precedence, and edit one key as
+//! JSON (read fresh first, confirm before saving).
+//!
+//! No "Validate" button: the gateway's validate route has no effective-config
+//! service behind it and answers "not wired yet" for every key.
 
 use ironclaw_gpui_client::Backend;
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorConfigEntry, RebornOperatorConfigListResponse,
-    RebornOperatorConfigValidateResponse,
 };
 
 use super::{confirm_row, diagnostic_row, muted, notice_line, section_title};
@@ -24,8 +26,6 @@ struct Editor {
 pub struct ConfigPanel {
     backend: Backend,
     list: Option<RebornOperatorConfigListResponse>,
-    validation: Option<RebornOperatorConfigValidateResponse>,
-    validating: bool,
     filter: Entity<InputState>,
     editor: Option<Editor>,
     error: Option<SharedString>,
@@ -44,8 +44,6 @@ impl ConfigPanel {
         let mut this = Self {
             backend,
             list: None,
-            validation: None,
-            validating: false,
             filter,
             editor: None,
             error: None,
@@ -67,24 +65,6 @@ impl ConfigPanel {
                         this.list = Some(list);
                         this.error = None;
                     }
-                    Err(e) => this.error = Some(e.to_string().into()),
-                }
-                cx.notify();
-            },
-        );
-    }
-
-    fn validate(&mut self, cx: &mut Context<Self>) {
-        self.validating = true;
-        cx.notify();
-        jobs::run(
-            &self.backend,
-            cx,
-            |c| async move { c.validate_operator_config(Vec::new()).await },
-            |this, result, cx| {
-                this.validating = false;
-                match result {
-                    Ok(v) => this.validation = Some(v),
                     Err(e) => this.error = Some(e.to_string().into()),
                 }
                 cx.notify();
@@ -303,40 +283,6 @@ impl ConfigPanel {
             })
             .into_any_element()
     }
-
-    fn render_validation(&self, cx: &Context<Self>) -> impl IntoElement {
-        let result = self.validation.as_ref().map(|v| {
-            v_flex()
-                .child(if v.valid {
-                    Tag::success().small().child("Valid")
-                } else {
-                    Tag::danger().small().child("Problems found")
-                })
-                .children(v.diagnostics.iter().map(|d| diagnostic_row(d, cx)))
-        });
-        card(cx)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .child(div().font_semibold().child("Validate"))
-                            .child(muted("Checks every key against the effective config.", cx)),
-                    )
-                    .child(
-                        Button::new("validate-config")
-                            .label("Validate")
-                            .outline()
-                            .small()
-                            .loading(self.validating)
-                            .disabled(self.validating)
-                            .on_click(cx.listener(|this, _, _, cx| this.validate(cx))),
-                    ),
-            )
-            .children(result)
-    }
 }
 
 /// One-line JSON preview, cut on a char boundary.
@@ -375,7 +321,6 @@ impl Render for ConfigPanel {
         v_flex()
             .when_some(self.error.as_ref(), |d, e| d.child(error_line(e, cx)))
             .when_some(self.notice.as_ref(), |d, n| d.child(notice_line(n, cx)))
-            .child(self.render_validation(cx))
             .child(section_title("Keys"))
             .when(!precedence.is_empty(), |d| {
                 d.child(muted(format!("Precedence: {precedence}"), cx).pb_2())

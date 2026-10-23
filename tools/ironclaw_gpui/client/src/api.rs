@@ -18,8 +18,8 @@ use serde::de::DeserializeOwned;
 use crate::connection::Connection;
 use crate::error::ClientError;
 use crate::wire::{
-    ATTACHMENTS_ONLY_CONTENT, CommandOutcome, CreatedThread, SessionInfo, SubmitAck, ThreadPage,
-    TimelinePage,
+    ATTACHMENTS_ONLY_CONTENT, CommandOutcome, CreatedThread, MessageKind, SessionInfo, SubmitAck,
+    ThreadPage, TimelinePage,
 };
 
 pub(crate) const V2: &str = "/api/webchat/v2";
@@ -160,6 +160,43 @@ impl Client {
             seg(thread_id)
         ))
         .await
+    }
+
+    /// A readable name for any thread, automation runs included (the thread
+    /// list leaves those out): its title, else the automation that started
+    /// it, else the first line of its first message.
+    pub async fn thread_label(&self, thread_id: &str) -> Result<String, ClientError> {
+        // The timeline pages back from the newest message; short threads
+        // (automation runs) fit in one page, long ones usually have a title.
+        let page = match self.timeline(thread_id, 50).await {
+            Ok(page) => page,
+            // Memory keeps a deleted thread's folder.
+            Err(e) if e.is_not_found() => return Ok("Deleted conversation".to_string()),
+            Err(e) => return Err(e),
+        };
+        if let Some(title) = page
+            .thread
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            return Ok(title.to_string());
+        }
+        if let Some(trigger) = page.thread.automation_trigger_id() {
+            // silent-ok: a deleted automation falls back to the message text.
+            if let Ok(list) = self.list_automations().await
+                && let Some(a) = list.automations.iter().find(|a| a.automation_id == trigger)
+            {
+                return Ok(a.name.clone());
+            }
+        }
+        Ok(page
+            .messages
+            .iter()
+            .filter(|m| m.kind == MessageKind::User)
+            .find_map(|m| first_line(m.content.as_deref()?))
+            .unwrap_or_else(|| "Conversation".to_string()))
     }
 
     // --- turns + runs ---
@@ -303,5 +340,46 @@ impl Client {
             ));
         }
         Ok(bytes.to_vec())
+    }
+}
+
+/// First line of prose, skipping blank lines and Markdown heading marks,
+/// cut to a sidebar-sized label on a char boundary.
+fn first_line(text: &str) -> Option<String> {
+    const MAX_CHARS: usize = 60;
+    let line = text
+        .lines()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .find(|l| !l.is_empty() && *l != ATTACHMENTS_ONLY_CONTENT)?;
+    // A lone heading ("## Goal") says little; prefer the line after it.
+    let line = if text.trim_start().starts_with('#') && line.split_whitespace().count() <= 2 {
+        text.lines()
+            .map(|l| l.trim().trim_start_matches('#').trim())
+            .filter(|l| !l.is_empty())
+            .nth(1)
+            .unwrap_or(line)
+    } else {
+        line
+    };
+    Some(if line.chars().count() > MAX_CHARS {
+        format!("{}…", line.chars().take(MAX_CHARS).collect::<String>())
+    } else {
+        line.to_string()
+    })
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::first_line;
+
+    #[test]
+    fn first_line_skips_a_bare_heading() {
+        assert_eq!(
+            first_line("## Goal\n\nTell the user a fun fact.").as_deref(),
+            Some("Tell the user a fun fact.")
+        );
+        assert_eq!(first_line("Plan my trip").as_deref(), Some("Plan my trip"));
+        assert_eq!(first_line("  \n").as_deref(), None);
+        assert!(first_line(&"é".repeat(100)).unwrap().ends_with('…'));
     }
 }
