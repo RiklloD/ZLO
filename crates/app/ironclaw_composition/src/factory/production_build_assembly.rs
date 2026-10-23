@@ -287,6 +287,10 @@ async fn build_local_storage_production_shaped(
         build_filesystem(root, workspace_root, host_home_root, storage_backend_input).await?;
     let trigger_repository =
         trigger_repository_for_durable_backend(&filesystem_bundle.durable_backend).await?;
+    let orchestrator = crate::backend_store_assembly::orchestrator_for_durable_backend(
+        &filesystem_bundle.durable_backend,
+    )
+    .await?;
     let refresh_lock_pool = match &filesystem_bundle.durable_backend {
         DurableBackend::LibSql { .. } => None,
         DurableBackend::Postgres(pool) => Some(pool.clone()),
@@ -357,7 +361,7 @@ async fn build_local_storage_production_shaped(
     )
     .await?
     .with_process_journal_filesystem(process_journal_filesystem);
-    build_backend_production(
+    let mut runtime_stores = build_backend_production(
         context,
         stores,
         trigger_repository,
@@ -366,7 +370,9 @@ async fn build_local_storage_production_shaped(
             None => ironclaw_auth::CredentialRefreshLeaderLock::always_leader_for_single_writer(),
         },
     )
-    .await
+    .await?;
+    runtime_stores.orchestrator = orchestrator;
+    Ok(runtime_stores)
 }
 
 pub(super) struct RebornProductionWiring {

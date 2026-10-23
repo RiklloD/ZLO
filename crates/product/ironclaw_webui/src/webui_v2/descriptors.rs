@@ -155,6 +155,34 @@ pub const WEBUI_V2_ROUTE_ADMIN_GET_THREAD_SCRAPE_ARTIFACT: &str =
 pub const WEBUI_V2_ROUTE_ADMIN_GET_THREAD_SCRAPE_RUN_ARTIFACT: &str =
     "webui.v2.admin.thread_scrape.get_run_artifact";
 
+// Orchestrator routes (delegated tasks, thread queue, runs, lineage, fork, merge-back).
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_TASKS: &str = "webui.v2.orchestrator.thread_tasks";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_QUEUE: &str = "webui.v2.orchestrator.thread_queue";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_QUEUE_MUTATE: &str = "webui.v2.orchestrator.queue_mutate";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_LINEAGE: &str = "webui.v2.orchestrator.thread_lineage";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_RUNS: &str = "webui.v2.orchestrator.thread_runs";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_FORK: &str = "webui.v2.orchestrator.thread_fork";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
+    "webui.v2.orchestrator.thread_merge_back";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK: &str = "webui.v2.orchestrator.task";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK_CANCEL: &str = "webui.v2.orchestrator.task_cancel";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS: &str =
+    "/api/webchat/v2/threads/{thread_id}/tasks";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_QUEUE: &str =
+    "/api/webchat/v2/threads/{thread_id}/queue";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_QUEUE_MUTATE: &str =
+    "/api/webchat/v2/threads/{thread_id}/queue";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_LINEAGE: &str =
+    "/api/webchat/v2/threads/{thread_id}/lineage";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_RUNS: &str =
+    "/api/webchat/v2/threads/{thread_id}/runs";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_FORK: &str =
+    "/api/webchat/v2/threads/{thread_id}/fork";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
+    "/api/webchat/v2/threads/{thread_id}/merge-back";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK: &str = "/api/webchat/v2/tasks/{task_id}";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL: &str =
+    "/api/webchat/v2/tasks/{task_id}/cancel";
 pub const WEBUI_V2_PATTERN_CREATE_THREAD: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_THREADS: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_NOTIFICATIONS: &str = "/api/webchat/v2/notifications";
@@ -345,6 +373,15 @@ pub fn webui_v2_routes_with_artifact_flags(
         stream_events_descriptor(),
         stream_events_ws_descriptor(),
         cancel_run_descriptor(),
+        orchestrator_thread_tasks_descriptor(),
+        orchestrator_thread_queue_descriptor(),
+        orchestrator_queue_mutate_descriptor(),
+        orchestrator_thread_lineage_descriptor(),
+        orchestrator_thread_runs_descriptor(),
+        orchestrator_thread_fork_descriptor(),
+        orchestrator_thread_merge_back_descriptor(),
+        orchestrator_task_descriptor(),
+        orchestrator_task_cancel_descriptor(),
         resolve_gate_descriptor(),
         retry_run_descriptor(),
         list_commands_descriptor(),
@@ -1384,6 +1421,132 @@ fn set_notification_channels_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_PATTERN_NOTIFICATION_CHANNELS,
         mutation_policy(
             body_limit_kib(8),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
+fn orchestrator_thread_tasks_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_TASKS,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn orchestrator_thread_queue_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_QUEUE,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_QUEUE,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn orchestrator_queue_mutate_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_QUEUE_MUTATE,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_QUEUE_MUTATE,
+        mutation_policy(
+            body_limit_kib(64),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
+fn orchestrator_thread_lineage_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_LINEAGE,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_LINEAGE,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn orchestrator_thread_runs_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_RUNS,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_RUNS,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn orchestrator_thread_fork_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_FORK,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_FORK,
+        mutation_policy(
+            body_limit_kib(64),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
+fn orchestrator_thread_merge_back_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_MERGE_BACK,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK,
+        mutation_policy(
+            body_limit_kib(64),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
+fn orchestrator_task_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_TASK,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_TASK,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn orchestrator_task_cancel_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_TASK_CANCEL,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL,
+        mutation_policy(
+            body_limit_kib(64),
             mutation_rate_limit(),
             AuditTraceClass::UserAction,
             AllowedEffectPath::ProductSurface,

@@ -106,6 +106,7 @@ async fn standalone_yolo_shell_translates_workspace_workdir_without_scoped_mount
         thread_service: Arc::new(ironclaw_threads::InMemorySessionThreadService::default()),
         trajectory_observer: None,
         outbound_preferences_service: None,
+        orchestrator: None,
         outbound_preference_write_requires_approval: false,
         approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
         approval_requests: runtime_surfaces.approval_requests_for_test().clone(),

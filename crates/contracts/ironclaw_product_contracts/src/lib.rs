@@ -53,6 +53,7 @@ pub mod lifecycle_service;
 pub mod notification_inbox;
 pub mod notification_setup;
 pub mod operator_llm;
+pub mod orchestration;
 pub mod operator_secrets;
 pub mod operator_service;
 pub mod operator_tools;

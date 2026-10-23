@@ -661,6 +661,15 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
         owner: "domains/",
         decided_in: "WS6",
     },
+    // The orchestrator's `orch_*` tables sit on the shared libSQL admission
+    // runtime, the same shape as triggers (ADR 0005).
+    SameLayerEdge {
+        crate_name: "ironclaw_orchestrator",
+        dependency_name: "ironclaw_libsql_runtime",
+        layer: "substrates",
+        owner: "domains/",
+        decided_in: "ADR 0005 (orchestrator v2 stage 2)",
+    },
     // The trusted-trigger prompt scan moved *behind* the seam: it now runs in
     // `TrustedTriggerSubmitRequest::new`, so "this prompt passed the scan" is
     // an invariant of the sealed type rather than a step one submitter
@@ -750,7 +759,7 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
 // 72 -> 73 (#7688): the dedicated notification-record domain is introduced
 // directly at the substrates layer and stores its grammar through the shared
 // filesystem substrate rather than coupling notification state to outbound.
-const SAME_LAYER_EDGE_BASELINE: usize = 73;
+const SAME_LAYER_EDGE_BASELINE: usize = 74;
 
 /// Sanity floors for the metadata walk. A gate that scans nothing must never
 /// read as success; these are deliberately far below the live values (✎ **65**
@@ -847,6 +856,7 @@ const CRATE_LAYER_ORIGINS: &[(&str, &str)] = &[
     ("ironclaw_telegram_extension", "products"),
     ("ironclaw_threads", "substrates"),
     ("ironclaw_triggers", "substrates"),
+    ("ironclaw_orchestrator", "substrates"),
     ("ironclaw_web_app", "substrates"),
     ("ironclaw_web_app_extension", "products"),
     ("ironclaw_trust", "kernel"),

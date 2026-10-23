@@ -614,6 +614,10 @@ pub struct RebornRuntime {
         Arc<dyn ironclaw_product_contracts::project_service::ProjectService>,
     pub(crate) diagnostic_store: Arc<dyn ironclaw_assistant::inspector_store::DiagnosticStorePort>,
     pub(crate) trigger_repository: Arc<dyn ironclaw_triggers::TriggerRepository>,
+    /// Thread orchestration engine; `None` off libSQL. Started (with
+    /// IronClaw's agent loop as its runtime) by [`RebornRuntime::product_surface`].
+    // arch-exempt: optional_arc, libSQL-only engine absent on other backends, plan #orchestrator-stage-3
+    pub(crate) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     /// Late-bound manual-fire runner shared by product automation actions and
     /// the scheduler so both surfaces execute through the same worker graph.
     pub(crate) trigger_manual_fire_runner: Arc<dyn ironclaw_triggers::TriggerManualFireRunner>,
@@ -2521,6 +2525,13 @@ impl RebornRuntime {
     /// Awaits both tasks before returning so background state is fully
     /// drained when the runtime drops.
     pub async fn shutdown(self) -> Result<(), RebornRuntimeError> {
+        // Before turns are interrupted: a clean quit holds running threads
+        // as interrupted so reopening never auto-continues them.
+        if let Some(engine) = &self.orchestrator
+            && let Err(error) = engine.prepare_for_shutdown().await
+        {
+            tracing::warn!(%error, "orchestrator shutdown bookkeeping failed");
+        }
         if let Some(trigger_poller) = self.trigger_poller_handle {
             trigger_poller
                 .shutdown(TRIGGER_POLLER_SHUTDOWN_TIMEOUT)
@@ -3300,6 +3311,18 @@ pub(crate) async fn build_runtime_with_resource_governor(
         .map_err(|error| RebornRuntimeError::MalformedConfig {
             reason: format!("suggestion generation observer wiring failed: {error}"),
         })?;
+    if let Some(engine) = &services.orchestrator {
+        // Turn lifecycle for the orchestrator, replayed from the durable cursor.
+        processes
+            .subscribe_process_observer(Arc::new(
+                ironclaw_assistant::orchestration::OrchestratorProcessObserver::new(Arc::clone(
+                    engine,
+                )),
+            ))
+            .map_err(|error| RebornRuntimeError::MalformedConfig {
+                reason: format!("orchestrator turn observer wiring failed: {error}"),
+            })?;
+    }
     processes
         .subscribe_process_observer(Arc::new(
             RunOutcomeProcessCommitObserver::new(
@@ -4767,6 +4790,7 @@ pub(crate) async fn build_runtime_with_resource_governor(
         project_service,
         diagnostic_store,
         trigger_repository: trigger_repository.clone(),
+        orchestrator: services.orchestrator.clone(),
         trigger_manual_fire_runner: services.trigger_manual_fire_runner.clone(),
         #[cfg(any(test, feature = "test-support"))]
         trigger_process_lifecycle_source: Arc::clone(&services.trigger_process_lifecycle_source),

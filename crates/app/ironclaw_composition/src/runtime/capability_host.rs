@@ -219,6 +219,7 @@ pub(super) fn capability_wiring(
             thread_service,
             trajectory_observer,
             outbound_preferences_service,
+            orchestrator: services.orchestrator.clone(),
             outbound_preference_write_requires_approval,
             approval_settings,
             approval_requests,
@@ -256,6 +257,7 @@ struct RefreshingLoopCapabilityPortFactory {
     thread_service: Arc<dyn SessionThreadService>,
     trajectory_observer: Option<Arc<dyn crate::RebornTrajectoryObserver>>,
     outbound_preferences_service: Option<Arc<dyn OutboundPreferencesProductService>>,
+    orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     outbound_preference_write_requires_approval: bool,
     approval_settings: Arc<dyn ApprovalSettingsProvider>,
     approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
@@ -360,6 +362,7 @@ impl LoopCapabilityPortFactory for RefreshingLoopCapabilityPortFactory {
             // so the two callbacks correlate by `call_id` for one tool call.
             trajectory_observer: self.trajectory_observer.clone(),
             outbound_preferences_service: self.outbound_preferences_service.clone(),
+            orchestrator: self.orchestrator.clone(),
             outbound_preference_write_requires_approval: self
                 .outbound_preference_write_requires_approval,
             approval_settings: Arc::clone(&self.approval_settings),

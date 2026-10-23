@@ -57,6 +57,7 @@ mod lifecycle;
 pub mod memory_scheduled_ops;
 mod model_channel_delivery;
 mod notification_channel_resolution;
+pub mod orchestration;
 mod outbound_delivery;
 mod policy;
 mod process_gate_turn_view;

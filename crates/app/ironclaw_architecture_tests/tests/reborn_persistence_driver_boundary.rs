@@ -87,6 +87,8 @@ const ADDITIONAL_DRIVER_ALLOWLISTS: &[(&str, &[&str])] = &[
             // wording.
             "ironclaw_hooks",
             "ironclaw_triggers",
+            // ADR 0005 (`docs/internal/adr/0005-orchestrator-keeps-hand-written-sql.md`).
+            "ironclaw_orchestrator",
             // Measured residue the clause names explicitly as "today also
             // includes". Each is a standing §11.2.6 target, not a charter.
             "ironclaw_host_runtime",

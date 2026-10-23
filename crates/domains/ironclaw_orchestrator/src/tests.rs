@@ -1,0 +1,559 @@
+//! Engine core tests over a real libSQL file and a scripted runtime.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
+use serde_json::json;
+
+use crate::engine::{CallContext, Engine};
+use crate::model::*;
+use crate::restart::CONTINUE_PROMPT;
+use crate::runtime::*;
+use crate::store::Store;
+
+#[derive(Default)]
+struct FakeRuntime {
+    started: Mutex<Vec<(ThreadId, String)>>,
+    cancelled: Mutex<Vec<ThreadId>>,
+    history: Mutex<HashMap<ThreadId, Vec<HistoryMessage>>>,
+    created: Mutex<u32>,
+}
+
+impl FakeRuntime {
+    fn starts_on(&self, thread: &ThreadId) -> Vec<String> {
+        self.started
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| t == thread)
+            .map(|(_, text)| text.clone())
+            .collect()
+    }
+}
+
+fn msg(role: HistoryRole, text: &str) -> HistoryMessage {
+    HistoryMessage {
+        role,
+        text: text.into(),
+        tool_calls: vec![],
+        run_id: None,
+        hidden: false,
+    }
+}
+
+#[async_trait]
+impl TurnRuntime for FakeRuntime {
+    fn id(&self) -> RuntimeId {
+        RuntimeId::new("fake").unwrap()
+    }
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            steer_in_turn: true,
+            ..Default::default()
+        }
+    }
+    async fn create_thread(&self, _r: CreateThread) -> Result<CreatedThread, RuntimeError> {
+        let mut n = self.created.lock().unwrap();
+        *n += 1;
+        Ok(CreatedThread {
+            thread_id: ThreadId::new(format!("child-{n}")).unwrap(),
+            native_session_id: None,
+            provider: None,
+            model: None,
+        })
+    }
+    async fn start_turn(
+        &self,
+        t: &ThreadRecord,
+        input: TurnInput,
+    ) -> Result<TurnAdmission, RuntimeError> {
+        self.started
+            .lock()
+            .unwrap()
+            .push((t.thread_id.clone(), input.text.clone()));
+        let mut history = self.history.lock().unwrap();
+        history
+            .entry(t.thread_id.clone())
+            .or_default()
+            .push(msg(HistoryRole::User, &input.text));
+        Ok(TurnAdmission::Started {
+            run_id: Some(format!("run-{}", now_ms())),
+        })
+    }
+    async fn steer(
+        &self,
+        _t: &ThreadRecord,
+        _text: &str,
+        _h: SteerHow,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        Ok(SteerOutcome::Steered)
+    }
+    async fn cancel(&self, t: &ThreadRecord, _reason: &str) -> Result<(), RuntimeError> {
+        self.cancelled.lock().unwrap().push(t.thread_id.clone());
+        Ok(())
+    }
+    async fn history(
+        &self,
+        t: &ThreadRecord,
+        _limit: usize,
+    ) -> Result<Vec<HistoryMessage>, RuntimeError> {
+        Ok(self
+            .history
+            .lock()
+            .unwrap()
+            .get(&t.thread_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
+struct Harness {
+    _dir: tempfile::TempDir,
+    db: Arc<libsql::Database>,
+    engine: Arc<Engine>,
+    rt: Arc<FakeRuntime>,
+}
+
+fn scope() -> ThreadScope {
+    ThreadScope {
+        tenant_id: TenantId::new("t1").unwrap(),
+        user_id: UserId::new("u1").unwrap(),
+        agent_id: None,
+        project_id: None,
+    }
+}
+
+fn tid(raw: &str) -> ThreadId {
+    ThreadId::new(raw).unwrap()
+}
+
+fn ctx(thread: &str) -> CallContext {
+    CallContext {
+        thread_id: tid(thread),
+        scope: scope(),
+        provider: None,
+        model: None,
+    }
+}
+
+async fn open_engine(db: &Arc<libsql::Database>) -> Arc<Engine> {
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(db)).unwrap());
+    Engine::open(Store::new(runtime), RuntimeId::new("fake").unwrap())
+        .await
+        .unwrap()
+}
+
+async fn harness() -> Harness {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let engine = open_engine(&db).await;
+    let rt = Arc::new(FakeRuntime::default());
+    engine.register_runtime(rt.clone());
+    Harness {
+        _dir: dir,
+        db,
+        engine,
+        rt,
+    }
+}
+
+async fn finish(engine: &Engine, thread: &ThreadId, outcome: TurnOutcome) {
+    let t = engine.store().thread(thread).await.unwrap().unwrap();
+    engine
+        .turn_finished(thread, t.active_run_id.clone(), outcome, now_ms())
+        .await;
+}
+
+async fn task_status(engine: &Engine, id: &str) -> TaskStatus {
+    engine
+        .store()
+        .task(&TaskId::new(id).unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .status
+}
+
+#[tokio::test]
+async fn queue_drains_only_when_idle_and_unheld() {
+    let h = harness().await;
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    h.engine
+        .store()
+        .set_turn_running(&a, Some("r0"), now_ms())
+        .await
+        .unwrap();
+    h.engine.queue_add(&a, "first", Author::User).await.unwrap();
+    h.engine
+        .queue_add(&a, "second", Author::User)
+        .await
+        .unwrap();
+
+    h.engine.tick().await;
+    assert!(h.rt.starts_on(&a).is_empty(), "busy thread must not drain");
+
+    finish(&h.engine, &a, TurnOutcome::completed(None)).await;
+    h.engine.queue_hold(&a, true).await.unwrap();
+    h.engine.tick().await;
+    assert!(h.rt.starts_on(&a).is_empty(), "held thread must not drain");
+
+    h.engine.queue_hold(&a, false).await.unwrap();
+    h.engine.tick().await;
+    h.engine.tick().await; // still running "first": no second drain
+    assert_eq!(h.rt.starts_on(&a), vec!["first".to_string()]);
+    finish(&h.engine, &a, TurnOutcome::completed(None)).await;
+    h.engine.tick().await;
+    assert_eq!(
+        h.rt.starts_on(&a),
+        vec!["first".to_string(), "second".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn stop_propagates_to_every_descendant() {
+    let h = harness().await;
+    let child = h
+        .engine
+        .delegate(
+            &ctx("root"),
+            serde_json::from_value(json!({"task": "level 1"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let child_thread = tid(child["childThreadId"].as_str().unwrap());
+    let grand = h
+        .engine
+        .delegate(
+            &ctx(child_thread.as_str()),
+            serde_json::from_value(json!({"task": "level 2"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let grand_thread = tid(grand["childThreadId"].as_str().unwrap());
+    // The level-1 child finishes its own turn while its child still runs.
+    finish(
+        &h.engine,
+        &child_thread,
+        TurnOutcome::completed(Some("partial".into())),
+    )
+    .await;
+    assert_eq!(
+        task_status(&h.engine, child["taskId"].as_str().unwrap()).await,
+        TaskStatus::WaitingChildren
+    );
+
+    h.engine.on_user_stop(&tid("root")).await.unwrap();
+    assert!(h.rt.cancelled.lock().unwrap().contains(&grand_thread));
+    assert!(h.engine.store().hold(&tid("root")).await.unwrap().is_some());
+    // The interrupted grandchild reports back; its task ends cancelled.
+    finish(
+        &h.engine,
+        &grand_thread,
+        TurnOutcome::ended(TurnEndStatus::Cancelled, None),
+    )
+    .await;
+    assert_eq!(
+        task_status(&h.engine, grand["taskId"].as_str().unwrap()).await,
+        TaskStatus::Cancelled
+    );
+    // The idle level-1 child is finalized directly.
+    assert_eq!(
+        task_status(&h.engine, child["taskId"].as_str().unwrap()).await,
+        TaskStatus::Cancelled
+    );
+    // The held root receives no result card until the user speaks again.
+    h.engine.tick().await;
+    assert!(h.rt.starts_on(&tid("root")).is_empty());
+    h.engine.on_user_prompt(&tid("root")).await.unwrap();
+    h.engine.tick().await;
+    assert_eq!(h.rt.starts_on(&tid("root")).len(), 1);
+}
+
+#[tokio::test]
+async fn delegation_limits_and_result_delivery() {
+    let h = harness().await;
+    h.engine
+        .store()
+        .set_settings(&json!({"max_running_per_parent": 1}))
+        .await
+        .unwrap();
+    let first = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "x", "client_request_id": "r1"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let again = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "x", "client_request_id": "r1"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first["taskId"], again["taskId"],
+        "client_request_id is idempotent"
+    );
+    let err = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "y"})).unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "too_many_tasks");
+
+    let child = tid(first["childThreadId"].as_str().unwrap());
+    h.engine
+        .store()
+        .set_turn_running(&tid("p"), Some("pr"), now_ms())
+        .await
+        .unwrap();
+    finish(
+        &h.engine,
+        &child,
+        TurnOutcome::completed(Some("done!".into())),
+    )
+    .await;
+    h.engine.tick().await;
+    assert!(
+        h.rt.starts_on(&tid("p")).is_empty(),
+        "busy parent waits for its card"
+    );
+    finish(&h.engine, &tid("p"), TurnOutcome::completed(None)).await;
+    h.engine.tick().await;
+    let card = h.rt.starts_on(&tid("p"));
+    assert_eq!(card.len(), 1);
+    assert!(card[0].contains("done!"));
+}
+
+#[tokio::test]
+async fn restart_cut_turns_continue_once_idle() {
+    let h = harness().await;
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    h.engine
+        .store()
+        .set_turn_running(&a, Some("r1"), now_ms())
+        .await
+        .unwrap();
+    let cut = TurnOutcome {
+        cut_by_restart: true,
+        ..TurnOutcome::ended(TurnEndStatus::Interrupted, None)
+    };
+    finish(&h.engine, &a, cut).await;
+    h.engine.tick().await;
+    assert_eq!(h.rt.starts_on(&a), vec![CONTINUE_PROMPT.to_string()]);
+    h.engine.tick().await;
+    assert_eq!(h.rt.starts_on(&a).len(), 1, "fires once");
+
+    // Live work a dead engine instance left behind is a cut turn too.
+    let b = tid("b");
+    h.engine.ensure_thread(&b, &scope(), None).await.unwrap();
+    h.engine
+        .store()
+        .put_live_work(&b, "old-instance", &json!({"run_id": "x"}))
+        .await
+        .unwrap();
+    let fresh = open_engine(&h.db).await;
+    fresh.register_runtime(h.rt.clone());
+    fresh.tick().await;
+    assert_eq!(h.rt.starts_on(&b), vec![CONTINUE_PROMPT.to_string()]);
+
+    // A user message after the cut supersedes the continuation.
+    let c = tid("c");
+    h.engine.ensure_thread(&c, &scope(), None).await.unwrap();
+    h.engine
+        .store()
+        .set_turn_running(&c, Some("r2"), now_ms() - 5_000)
+        .await
+        .unwrap();
+    let cut = TurnOutcome {
+        cut_by_restart: true,
+        ..TurnOutcome::ended(TurnEndStatus::Interrupted, None)
+    };
+    h.engine
+        .turn_finished(&c, Some("r2".into()), cut, now_ms() - 1_000)
+        .await;
+    h.engine.on_user_prompt(&c).await.unwrap();
+    h.engine.tick().await;
+    assert!(h.rt.starts_on(&c).is_empty());
+
+    // A clean quit is not a crash: reopening continues nothing and the
+    // queue waits until the user presses Continue (releases the hold).
+    let q = tid("q");
+    h.engine.ensure_thread(&q, &scope(), None).await.unwrap();
+    h.engine
+        .store()
+        .set_turn_running(&q, Some("r3"), now_ms())
+        .await
+        .unwrap();
+    h.engine
+        .store()
+        .put_live_work(&q, &h.engine.instance_id, &json!({"run_id": "r3"}))
+        .await
+        .unwrap();
+    assert_eq!(h.engine.prepare_for_shutdown().await.unwrap(), 1);
+    let reopened = open_engine(&h.db).await;
+    reopened.register_runtime(h.rt.clone());
+    reopened.queue_add(&q, "later", Author::User).await.unwrap();
+    let cut = TurnOutcome {
+        cut_by_restart: true,
+        ..TurnOutcome::ended(TurnEndStatus::Interrupted, None)
+    };
+    finish(&reopened, &q, cut).await;
+    reopened.tick().await;
+    reopened.tick().await;
+    assert!(
+        h.rt.starts_on(&q).is_empty(),
+        "quit work never auto-continues"
+    );
+    reopened.queue_hold(&q, false).await.unwrap();
+    reopened.tick().await;
+    assert_eq!(
+        h.rt.starts_on(&q),
+        vec![CONTINUE_PROMPT.to_string()],
+        "Continue resumes the cut turn before the queue drains"
+    );
+}
+
+#[tokio::test]
+async fn usage_limit_parks_task_and_resumes_after_reset() {
+    let h = harness().await;
+    h.engine
+        .store()
+        .set_settings(&json!({"usage_limit_grace_ms": 0}))
+        .await
+        .unwrap();
+    let task = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "long job"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let child = tid(task["childThreadId"].as_str().unwrap());
+    let reset = now_ms() + 300;
+    let limited = TurnOutcome {
+        usage_limit_resets_at: Some(reset),
+        usage: Some(TurnUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Default::default()
+        }),
+        ..TurnOutcome::ended(TurnEndStatus::Failed, Some("usage limit".into()))
+    };
+    finish(&h.engine, &child, limited).await;
+    let id = task["taskId"].as_str().unwrap();
+    assert_eq!(task_status(&h.engine, id).await, TaskStatus::Waiting);
+    h.engine.tick().await;
+    assert_eq!(
+        h.rt.starts_on(&child).len(),
+        1,
+        "no resume before the reset"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    h.engine.tick().await;
+    assert_eq!(
+        h.rt.starts_on(&child).last().map(String::as_str),
+        Some(CONTINUE_PROMPT)
+    );
+    assert_eq!(task_status(&h.engine, id).await, TaskStatus::Running);
+    let t = h
+        .engine
+        .store()
+        .task(&TaskId::new(id).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(t.usage.unwrap().input_tokens, 10);
+}
+
+#[tokio::test]
+async fn fork_hands_off_context_and_merge_back_sends_the_delta() {
+    let h = harness().await;
+    let src = tid("src");
+    h.engine.ensure_thread(&src, &scope(), None).await.unwrap();
+    h.rt.history.lock().unwrap().insert(
+        src.clone(),
+        vec![
+            msg(HistoryRole::User, "plan it"),
+            msg(HistoryRole::Assistant, "the plan"),
+        ],
+    );
+    let source = h.engine.store().thread(&src).await.unwrap().unwrap();
+    let fork = h
+        .engine
+        .fork(&ctx("src"), &source, None, None, None, Author::User)
+        .await
+        .unwrap();
+    assert_eq!(fork["strategy"], "portable_context");
+    let fork_id = tid(fork["forkThreadId"].as_str().unwrap());
+    h.engine.tick().await;
+    let handoff = h.rt.starts_on(&fork_id);
+    assert_eq!(handoff.len(), 1);
+    assert!(handoff[0].contains("the plan"));
+    finish(&h.engine, &fork_id, TurnOutcome::completed(None)).await;
+    h.rt.history
+        .lock()
+        .unwrap()
+        .get_mut(&fork_id)
+        .unwrap()
+        .extend([
+            msg(HistoryRole::Assistant, "ack"),
+            msg(HistoryRole::User, "try B"),
+            msg(HistoryRole::Assistant, "B works"),
+        ]);
+    let fork_row = h.engine.store().thread(&fork_id).await.unwrap().unwrap();
+    let merge = h
+        .engine
+        .merge_back(&ctx("src"), &fork_row, None, None, None, Author::User)
+        .await
+        .unwrap();
+    assert_eq!(merge["targetThreadId"], "src");
+    h.engine.tick().await;
+    let merged = h.rt.starts_on(&src);
+    assert_eq!(merged.len(), 1);
+    assert!(merged[0].contains("B works") && !merged[0].contains("the plan"));
+}
+
+#[tokio::test]
+async fn legacy_threads_import_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("l.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let conn = db.connect().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE root_filesystem_entries (path TEXT PRIMARY KEY, contents BLOB, is_dir INTEGER DEFAULT 0, kind TEXT);
+         INSERT INTO root_filesystem_entries VALUES ('/x/thread.json', CAST('{\"scope\":{\"tenant_id\":\"t1\",\"agent_id\":\"ag\",\"owner_user_id\":\"u1\"},\"thread_id\":\"old-1\",\"title\":\"Hello\",\"created_at\":\"2026-10-22T21:44:54.063018Z\",\"updated_at\":\"2026-10-22T21:44:54.063018Z\"}' AS BLOB), 0, 'session_thread');",
+    )
+    .await
+    .unwrap();
+    let rt = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
+    let store = Store::new(rt);
+    let id = RuntimeId::new("ironclaw").unwrap();
+    assert_eq!(store.migrate(&id).await.unwrap(), 1);
+    assert_eq!(store.migrate(&id).await.unwrap(), 0);
+    let t = store.thread(&tid("old-1")).await.unwrap().unwrap();
+    assert_eq!(t.title.as_deref(), Some("Hello"));
+    assert_eq!(t.scope.user_id.as_str(), "u1");
+    assert!(t.created_at > 1_700_000_000_000);
+    assert!(t.profile_id.is_none());
+}

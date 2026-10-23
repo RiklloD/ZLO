@@ -1131,7 +1131,9 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // typed notification records, pagination, and lifecycle command DTOs.
         // Storage and lifecycle behavior live in ironclaw_notifications;
         // this crate only owns the authenticated ProductSurface wire contract.
-        ("ironclaw_product_contracts", 16_581),
+        // Orchestrator v2 stage 2: the `orchestration` descriptor module
+        // (view/command ids and request bodies, no behavior).
+        ("ironclaw_product_contracts", 16_800),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

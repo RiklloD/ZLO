@@ -46,7 +46,11 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_OPERATOR_EXTENSION_CONFIGURATION,
     WEBUI_V2_PATTERN_OPERATOR_EXTENSION_CONFIGURATION_GROUP, WEBUI_V2_PATTERN_OPERATOR_LOGS,
     WEBUI_V2_PATTERN_OPERATOR_SERVICE_LIFECYCLE, WEBUI_V2_PATTERN_OPERATOR_SETUP,
-    WEBUI_V2_PATTERN_OPERATOR_STATUS, WEBUI_V2_PATTERN_OUTBOUND_DELIVERY_TARGETS,
+    WEBUI_V2_PATTERN_OPERATOR_STATUS, WEBUI_V2_PATTERN_ORCHESTRATOR_TASK,
+    WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL, WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_FORK,
+    WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_LINEAGE, WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK,
+    WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_QUEUE, WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_RUNS,
+    WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS, WEBUI_V2_PATTERN_OUTBOUND_DELIVERY_TARGETS,
     WEBUI_V2_PATTERN_PAUSE_AUTOMATION, WEBUI_V2_PATTERN_PROJECT_DETAIL,
     WEBUI_V2_PATTERN_PROJECT_MEMBER_DETAIL, WEBUI_V2_PATTERN_PROJECT_MEMBERS,
     WEBUI_V2_PATTERN_READ_FS_FILE, WEBUI_V2_PATTERN_READ_PROJECT_FILE,
@@ -418,6 +422,38 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         .route(
             WEBUI_V2_PATTERN_NOTIFICATION_CHANNELS,
             get(handlers::get_notification_channels).post(handlers::set_notification_channels),
+        )
+        .route(
+            WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS,
+            get(handlers::orchestrator_thread_tasks),
+        )
+        .route(
+            WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_QUEUE,
+            get(handlers::orchestrator_thread_queue).post(handlers::orchestrator_queue_mutate),
+        )
+        .route(
+            WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_LINEAGE,
+            get(handlers::orchestrator_thread_lineage),
+        )
+        .route(
+            WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_RUNS,
+            get(handlers::orchestrator_thread_runs),
+        )
+        .route(
+            WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_FORK,
+            post(handlers::orchestrator_thread_fork),
+        )
+        .route(
+            WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK,
+            post(handlers::orchestrator_thread_merge_back),
+        )
+        .route(
+            WEBUI_V2_PATTERN_ORCHESTRATOR_TASK,
+            get(handlers::orchestrator_task),
+        )
+        .route(
+            WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL,
+            post(handlers::orchestrator_task_cancel),
         )
         .route(
             WEBUI_V2_PATTERN_NOTIFICATION_SETUP_STATUS,

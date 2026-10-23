@@ -61,6 +61,8 @@ pub(crate) struct RefreshingCapabilityPortConfig {
     pub(super) thread_service: Arc<dyn SessionThreadService>,
     pub(super) trajectory_observer: Option<Arc<dyn crate::RebornTrajectoryObserver>>,
     pub(super) outbound_preferences_service: Option<Arc<dyn OutboundPreferencesProductService>>,
+    /// The `t3_*` orchestrator tools are offered when the deployment has an engine.
+    pub(super) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     pub(super) outbound_preference_write_requires_approval: bool,
     pub(super) approval_settings: Arc<dyn ApprovalSettingsProvider>,
     pub(super) approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
@@ -123,6 +125,7 @@ pub(crate) async fn create_refreshing_capability_port(
         thread_service: config.thread_service,
         trajectory_observer: config.trajectory_observer,
         outbound_preferences_service: config.outbound_preferences_service,
+        orchestrator: config.orchestrator,
         outbound_preference_write_requires_approval: config
             .outbound_preference_write_requires_approval,
         approval_settings: config.approval_settings,
@@ -165,6 +168,7 @@ struct RefreshingCapabilityPort {
     thread_service: Arc<dyn SessionThreadService>,
     trajectory_observer: Option<Arc<dyn crate::RebornTrajectoryObserver>>,
     outbound_preferences_service: Option<Arc<dyn OutboundPreferencesProductService>>,
+    orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     outbound_preference_write_requires_approval: bool,
     approval_settings: Arc<dyn ApprovalSettingsProvider>,
     approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
@@ -344,6 +348,14 @@ impl RefreshingCapabilityPort {
                 Arc::clone(&self.replay_payload_store),
                 Arc::clone(&self.gate_record_store),
             )?);
+        }
+        if let Some(engine) = &self.orchestrator {
+            synthetic_capabilities.extend(
+                ironclaw_assistant::orchestration::orchestrator_capabilities(
+                    Arc::clone(engine),
+                    self.fallback_user_id.clone(),
+                )?,
+            );
         }
         let suppressed_scheduled_run = self
             .run_context
@@ -601,6 +613,7 @@ pub(crate) async fn create_refreshing_capability_port_for_test(
         thread_service,
         trajectory_observer,
         outbound_preferences_service,
+        orchestrator: None,
         outbound_preference_write_requires_approval,
         approval_settings,
         approval_requests,

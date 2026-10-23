@@ -3838,6 +3838,7 @@ dependencies = [
  "ironclaw_loop_host",
  "ironclaw_memory",
  "ironclaw_notifications",
+ "ironclaw_orchestrator",
  "ironclaw_outbound",
  "ironclaw_processes",
  "ironclaw_product_contracts",
@@ -4035,6 +4036,7 @@ dependencies = [
  "ironclaw_observability",
  "ironclaw_openai_compat",
  "ironclaw_operator",
+ "ironclaw_orchestrator",
  "ironclaw_outbound",
  "ironclaw_processes",
  "ironclaw_product_contracts",
@@ -4969,6 +4971,23 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "ironclaw_orchestrator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ironclaw_host_api",
+ "ironclaw_libsql_runtime",
+ "libsql",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 

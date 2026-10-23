@@ -363,6 +363,11 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) processes: ProcessRuntimeSystem,
     pub(crate) thread_service: Arc<dyn SessionThreadService>,
     pub(crate) trigger_repository: Arc<dyn TriggerRepository>,
+    /// Thread orchestration engine (libSQL deployments only; its store is
+    /// `orch_*` tables in the same file). Genuinely optional: Postgres and
+    /// in-memory graphs run without orchestration.
+    // arch-exempt: optional_arc, libSQL-only engine absent on other backends, plan #orchestrator-stage-3
+    pub(crate) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     pub(crate) trigger_manual_fire_runner:
         Arc<crate::automation::trigger_poller::LateBoundTriggerManualFireRunner>,
     pub(crate) trigger_create_hook: Arc<TriggerCreatorPairingHook>,

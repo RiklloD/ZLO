@@ -80,6 +80,26 @@ pub(crate) async fn resolve_explicit_or_keychain_master_key(
     }
 }
 
+/// The orchestration engine over the deployment's libSQL file (one store in
+/// the existing database). Migrates its tables and imports legacy threads
+/// once. Postgres deployments run without it until a Postgres store exists.
+pub(crate) async fn orchestrator_for_durable_backend(
+    backend: &DurableBackend,
+) -> Result<Option<Arc<ironclaw_orchestrator::engine::Engine>>, RebornBuildError> {
+    let DurableBackend::LibSql { runtime, .. } = backend else {
+        return Ok(None);
+    };
+    ironclaw_orchestrator::engine::Engine::open_libsql(
+        Arc::clone(runtime),
+        ironclaw_assistant::orchestration::IRONCLAW_RUNTIME_ID,
+    )
+    .await
+    .map(Some)
+    .map_err(|error| RebornBuildError::InvalidConfig {
+        reason: format!("orchestrator store migrations failed: {error}"),
+    })
+}
+
 pub(crate) async fn trigger_repository_for_durable_backend(
     backend: &DurableBackend,
 ) -> Result<Arc<dyn TriggerRepository>, RebornBuildError> {

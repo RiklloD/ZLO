@@ -317,7 +317,15 @@ pub(crate) fn build_product_surface_with_channel_connection(
         api = api.with_active_model_reader(active_model_reader);
     }
 
-    Ok(Arc::new(api))
+    // Threads route through the orchestrator when the deployment has one.
+    Ok(match runtime.orchestrator.as_ref() {
+        Some(engine) => ironclaw_assistant::orchestration::orchestrate(
+            engine,
+            Arc::new(api),
+            runtime.session_channel_extension_id().map(str::to_string),
+        ),
+        None => Arc::new(api),
+    })
 }
 
 /// Compose the operator LLM-config settings service from the runtime's boot
