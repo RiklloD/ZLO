@@ -3119,17 +3119,19 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     Ok(runtime)
 }
 
+type BuiltRuntime = (RebornRuntime, Arc<dyn ironclaw_resources::ResourceGovernor>);
+
 /// Boxed: the assembly future is several MiB, past a 2 MiB worker or test
 /// thread stack when awaited inline.
 pub(crate) async fn build_runtime_with_resource_governor(
     input: RebornRuntimeInput,
-) -> Result<(RebornRuntime, Arc<dyn ironclaw_resources::ResourceGovernor>), RebornRuntimeError> {
+) -> Result<BuiltRuntime, RebornRuntimeError> {
     Box::pin(assemble_runtime(input)).await
 }
 
 async fn assemble_runtime(
     input: RebornRuntimeInput,
-) -> Result<(RebornRuntime, Arc<dyn ironclaw_resources::ResourceGovernor>), RebornRuntimeError> {
+) -> Result<BuiltRuntime, RebornRuntimeError> {
     let RebornRuntimeInput {
         services: services_input,
         llm,
