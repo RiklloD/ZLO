@@ -4,11 +4,13 @@
 //! that reports turn lifecycle, and the `t3_*` model tools.
 
 mod observer;
+mod profiles;
 mod runtime;
 mod surface;
 mod tools;
 
 pub use observer::OrchestratorProcessObserver;
+pub use profiles::{ProfileHome, profile_identity_source, profile_surface_resolver};
 pub use runtime::{AgentLoopRuntime, IRONCLAW_RUNTIME_ID};
 pub use surface::OrchestratedProductSurface;
 pub use tools::orchestrator_capabilities;

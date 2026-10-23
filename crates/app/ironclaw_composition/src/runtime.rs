@@ -4055,7 +4055,7 @@ pub(crate) async fn build_runtime_with_resource_governor(
         .map_err(|reason| RebornRuntimeError::MalformedConfig { reason })?,
     )
         as Arc<dyn ironclaw_loop_host::HostManagedPromptDiagnosticSink>;
-    let planned_runtime_parts = DefaultPlannedRuntimeParts {
+    let mut planned_runtime_parts = DefaultPlannedRuntimeParts {
         process_system: processes.clone(),
         thread_service: Arc::clone(&thread_service),
         thread_scope: thread_scope.clone(),
@@ -4240,6 +4240,17 @@ pub(crate) async fn build_runtime_with_resource_governor(
         // to mint its own wiring internally (existing behavior).
         scheduler_wake_wiring: production_scheduler_wake,
     };
+    // Stage 3 profiles: SOUL.md joins SYSTEM.md; the allowlist narrows the surface.
+    if let Some(engine) = &services.orchestrator {
+        use ironclaw_assistant::orchestration::{
+            profile_identity_source, profile_surface_resolver,
+        };
+        let parts = &mut planned_runtime_parts;
+        parts.identity_context_source =
+            profile_identity_source(Arc::clone(&parts.identity_context_source), engine);
+        parts.capability_surface_resolver =
+            profile_surface_resolver(Arc::clone(&parts.capability_surface_resolver), engine);
+    }
     let composition = build_default_planned_runtime(planned_runtime_parts)?;
     let default_resolved_run_profile = composition
         .run_profile_resolver

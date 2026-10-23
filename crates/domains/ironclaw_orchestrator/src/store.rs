@@ -173,7 +173,7 @@ fn opt<T: Into<Value>>(value: Option<T>) -> Value {
     value.map_or(Value::Null, Into::into)
 }
 
-fn s(value: impl AsRef<str>) -> Value {
+pub(crate) fn s(value: impl AsRef<str>) -> Value {
     Value::Text(value.as_ref().to_string())
 }
 
@@ -185,13 +185,13 @@ fn json_opt<T: serde::Serialize>(value: Option<&T>) -> Result<Value> {
 }
 
 /// Sequential column reader for one row.
-struct Cols<'a> {
+pub(crate) struct Cols<'a> {
     row: &'a libsql::Row,
     i: i32,
 }
 
 impl<'a> Cols<'a> {
-    fn new(row: &'a libsql::Row) -> Self {
+    pub(crate) fn new(row: &'a libsql::Row) -> Self {
         Self { row, i: 0 }
     }
     fn value(&mut self) -> Result<Value> {
@@ -199,7 +199,7 @@ impl<'a> Cols<'a> {
         self.i += 1;
         Ok(v)
     }
-    fn otext(&mut self) -> Result<Option<String>> {
+    pub(crate) fn otext(&mut self) -> Result<Option<String>> {
         match self.value()? {
             Value::Null => Ok(None),
             Value::Text(t) => Ok(Some(t)),
@@ -208,12 +208,12 @@ impl<'a> Cols<'a> {
             Value::Real(r) => Ok(Some(r.to_string())),
         }
     }
-    fn text(&mut self) -> Result<String> {
+    pub(crate) fn text(&mut self) -> Result<String> {
         let col = self.i;
         self.otext()?
             .ok_or_else(|| OrchestratorError::Corrupt(format!("column {col} is null")))
     }
-    fn oint(&mut self) -> Result<Option<i64>> {
+    pub(crate) fn oint(&mut self) -> Result<Option<i64>> {
         match self.value()? {
             Value::Null => Ok(None),
             Value::Integer(i) => Ok(Some(i)),
@@ -223,7 +223,7 @@ impl<'a> Cols<'a> {
             ))),
         }
     }
-    fn int(&mut self) -> Result<i64> {
+    pub(crate) fn int(&mut self) -> Result<i64> {
         let col = self.i;
         self.oint()?
             .ok_or_else(|| OrchestratorError::Corrupt(format!("column {col} is null")))
@@ -403,12 +403,12 @@ impl Store {
 
     // ── plumbing ────────────────────────────────────────────────────────
 
-    async fn exec(&self, sql: &str, params: Vec<Value>) -> Result<u64> {
+    pub(crate) async fn exec(&self, sql: &str, params: Vec<Value>) -> Result<u64> {
         let conn = self.db.write().await?;
         Ok(conn.execute(sql, params).await?)
     }
 
-    async fn rows<T>(
+    pub(crate) async fn rows<T>(
         &self,
         sql: &str,
         params: Vec<Value>,
@@ -423,7 +423,7 @@ impl Store {
         Ok(out)
     }
 
-    async fn row<T>(
+    pub(crate) async fn row<T>(
         &self,
         sql: &str,
         params: Vec<Value>,
@@ -455,6 +455,7 @@ impl Store {
         {
             let conn = self.db.write().await?;
             conn.execute_batch(SCHEMA).await?;
+            conn.execute_batch(crate::profiles::PROFILES_SCHEMA).await?;
         }
         self.import_legacy_threads(legacy_runtime).await
     }

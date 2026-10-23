@@ -183,6 +183,17 @@ pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK: &str = "/api/webchat/v2/tasks/{task_id}";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL: &str =
     "/api/webchat/v2/tasks/{task_id}/cancel";
+pub const WEBUI_V2_ROUTE_PROFILES_LIST: &str = "webui.v2.profiles.list";
+pub const WEBUI_V2_ROUTE_PROFILE_CREATE: &str = "webui.v2.profiles.create";
+pub const WEBUI_V2_ROUTE_PROFILE_GET: &str = "webui.v2.profiles.get";
+pub const WEBUI_V2_ROUTE_PROFILE_UPDATE: &str = "webui.v2.profiles.update";
+pub const WEBUI_V2_ROUTE_PROFILE_DELETE: &str = "webui.v2.profiles.delete";
+pub const WEBUI_V2_ROUTE_PROFILE_THREAD_CREATE: &str = "webui.v2.profiles.thread_create";
+pub const WEBUI_V2_ROUTE_PROFILES_IMPORT_HERMES: &str = "webui.v2.profiles.import_hermes";
+pub const WEBUI_V2_PATTERN_PROFILES: &str = "/api/webchat/v2/profiles";
+pub const WEBUI_V2_PATTERN_PROFILE: &str = "/api/webchat/v2/profiles/{profile_id}";
+pub const WEBUI_V2_PATTERN_PROFILE_THREADS: &str = "/api/webchat/v2/profiles/{profile_id}/threads";
+pub const WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES: &str = "/api/webchat/v2/profiles/import/hermes";
 pub const WEBUI_V2_PATTERN_CREATE_THREAD: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_THREADS: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_NOTIFICATIONS: &str = "/api/webchat/v2/notifications";
@@ -382,6 +393,41 @@ pub fn webui_v2_routes_with_artifact_flags(
         orchestrator_thread_merge_back_descriptor(),
         orchestrator_task_descriptor(),
         orchestrator_task_cancel_descriptor(),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_PROFILES_LIST,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_PROFILES,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_PROFILE_CREATE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_PROFILES,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_PROFILE_GET,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_PROFILE,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_PROFILE_UPDATE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_PROFILE,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_PROFILE_DELETE,
+            NetworkMethod::Delete,
+            WEBUI_V2_PATTERN_PROFILE,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_PROFILE_THREAD_CREATE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_PROFILE_THREADS,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_PROFILES_IMPORT_HERMES,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES,
+        ),
         resolve_gate_descriptor(),
         retry_run_descriptor(),
         list_commands_descriptor(),
@@ -1552,6 +1598,30 @@ fn orchestrator_task_cancel_descriptor() -> IngressRouteDescriptor {
             AllowedEffectPath::ProductSurface,
         ),
     )
+}
+
+/// Profile routes: reads on the read policy; writes carry SOUL.md (at most
+/// 24 KiB, escaped as JSON), so 64 KiB bodies.
+fn profile_route_descriptor(
+    route_id: &'static str,
+    method: NetworkMethod,
+    pattern: &'static str,
+) -> IngressRouteDescriptor {
+    let policy = match method {
+        NetworkMethod::Get => read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+        _ => mutation_policy(
+            body_limit_kib(64),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    };
+    descriptor(route_id, method, pattern, policy)
 }
 
 fn notification_setup_status_descriptor() -> IngressRouteDescriptor {

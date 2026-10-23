@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use crate::engine::{CallContext, Engine, Result, clip_title, json_ok};
 use crate::error::OrchestratorError;
 use crate::model::*;
+use crate::profiles::{ProfileOwner, parse_profile_slug};
 use crate::runtime::*;
 use crate::store::TaskPatch;
 
@@ -57,6 +58,22 @@ impl Engine {
         out
     }
 
+    /// An active profile of the caller's user, for `target.profile`.
+    async fn delegation_profile(&self, raw: &str, scope: &ThreadScope) -> Result<ProfileId> {
+        let id = parse_profile_slug(raw)?;
+        match self
+            .store
+            .profile(&ProfileOwner::from(scope), &id, false)
+            .await?
+        {
+            Some(record) => Ok(record.profile_id),
+            None => Err(OrchestratorError::request(
+                "profile_unavailable",
+                format!("Unknown profile '{raw}'. t3_capabilities lists the available profiles."),
+            )),
+        }
+    }
+
     /// Resolve a target to (runtime, provider, model). An empty target
     /// inherits the caller's route on the default runtime.
     pub(crate) async fn resolve_target(
@@ -65,14 +82,6 @@ impl Engine {
         ctx: &CallContext,
         inherit_runtime: &RuntimeId,
     ) -> Result<(RuntimeId, Option<String>, Option<String>)> {
-        if let Some(profile) = trimmed(&target.profile) {
-            return Err(OrchestratorError::request(
-                "profile_unavailable",
-                format!(
-                    "Profile '{profile}' is not available: profiles are not enabled in this backend yet."
-                ),
-            ));
-        }
         let provider = trimmed(&target.provider);
         let model = trimmed(&target.model);
         if provider.is_none() && model.is_none() {
@@ -143,6 +152,13 @@ impl Engine {
 
     pub async fn capabilities(&self, ctx: &CallContext) -> Result<Value> {
         let settings = self.store.settings().await?;
+        let profiles: Vec<Value> = self
+            .store
+            .profiles(&ProfileOwner::from(&ctx.scope))
+            .await?
+            .into_iter()
+            .map(|p| json!({"name": p.profile_id.as_str(), "displayName": p.settings.display_name}))
+            .collect();
         let providers: Vec<Value> = self
             .catalog(&ctx.scope)
             .await
@@ -165,7 +181,7 @@ impl Engine {
             .collect();
         Ok(json!({
             "inherited": {"provider": ctx.provider, "model": ctx.model, "threadId": ctx.thread_id.as_str()},
-            "profiles": [],
+            "profiles": profiles,
             "providers": providers,
             "features": {
                 "delegation": true, "asyncWait": true, "cancel": true, "fork": true,
@@ -253,6 +269,10 @@ impl Engine {
         let (runtime_id, provider, model) = self
             .resolve_target(&target, ctx, &parent.runtime_id)
             .await?;
+        let profile_id = match trimmed(&target.profile) {
+            Some(raw) => Some(self.delegation_profile(&raw, &parent.scope).await?),
+            None => parent.profile_id.clone(),
+        };
         let runtime = self.runtime(&runtime_id)?;
         let title = clip_title(
             req.title
@@ -268,7 +288,7 @@ impl Engine {
                 .as_ref()
                 .map_or_else(|| parent.thread_id.clone(), |t| t.root_thread.clone()),
             depth,
-            profile_id: parent.profile_id.clone(),
+            profile_id,
             parent_profile_id: parent.profile_id.clone(),
             title: title.clone(),
             role,
@@ -344,7 +364,7 @@ impl Engine {
             parent.scope.clone(),
             runtime.id(),
         );
-        child.profile_id = parent.profile_id.clone();
+        child.profile_id = task.profile_id.clone();
         child.provider = created.provider.clone().or_else(|| task.provider.clone());
         child.model = created.model.clone().or_else(|| task.model.clone());
         child.title = Some(format!("↳ {}", task.title));

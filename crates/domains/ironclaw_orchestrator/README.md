@@ -33,13 +33,18 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   `t3_task`, `t3_thread`, `t3_queue` schemas and dispatch.
 - `store::Store` — the `orch_*` tables (ADR 0005).
 - `handoff` — bounded portable context and merge-back deltas.
+- `profiles` — stage 3 profile records (`ProfileOwner`, `ProfileRecord`,
+  slug and settings validation) and their `Store` methods. Settings are the
+  `ironclaw_product_contracts::profiles::ProfileSettings` wire shape.
 
 ## Tables
 
 `orch_threads` (thread registry: scope, nullable `profile_id`, runtime,
 route, turn state), `orch_tasks`, `orch_queue`, `orch_holds`,
 `orch_transfers`, `orch_recoveries`, `orch_live_work`, `orch_turns`
-(per-turn status and usage), `orch_settings`, `orch_meta`. First open imports
+(per-turn status and usage), `orch_profiles` (per user: settings JSON,
+`archived_at`; last use and thread count derive from `orch_threads`),
+`orch_settings`, `orch_meta`. First open imports
 the legacy `ironclaw_threads` thread records once (marker
 `legacy_threads_imported_v1`).
 
@@ -56,6 +61,11 @@ the legacy `ironclaw_threads` thread records once (marker
   runtime's shutdown) holds running threads as `interrupted`, their child
   tasks stay live, and nothing runs until the user releases the hold
   (Continue), which resumes the cut turn before the queue drains.
+
+- A thread's profile is set once (`profile_id IS NULL` guard) and never
+  changes; a thread without one runs as `default`. Delegated children inherit
+  the parent's profile unless `target.profile` names another; forks keep it.
+  Archiving a profile hides it from the list, its threads keep resolving it.
 
 ## Tests
 
