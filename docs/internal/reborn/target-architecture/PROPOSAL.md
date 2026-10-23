@@ -244,6 +244,7 @@ crates/
 │   ├── ironclaw_conversations        ▣ [substrates]             external↔canonical binding, idempotency, pairing
 │   ├── ironclaw_triggers             ▣ [substrates]             scheduled-trigger records + deterministic tick
 │   ├── ironclaw_orchestrator         ▣ [substrates]             thread orchestration: tasks, queue, forks, recovery (ADR 0005)
+│   ├── ironclaw_cli_providers        ▣ [substrates]             CLI agents (Claude CLI) as orchestrator runtimes (ADR 0006)
 │   ├── ironclaw_memory               ▣ [substrates]             provider-neutral memory contract + conformance suite
 │   │                                                            (providers → extensions/packages/, amended 2026-07-29)
 │   ├── ironclaw_skills               ▣ [substrates] (narrowed)  skill parsing/selection/management + pure learning

@@ -14,6 +14,7 @@ use libsql::Value;
 use crate::error::OrchestratorError;
 use crate::model::*;
 use crate::runtime::{TurnEndStatus, TurnUsage};
+use crate::telemetry::{ThreadTelemetryRecord, TurnTelemetry};
 
 type Result<T> = std::result::Result<T, OrchestratorError>;
 
@@ -138,6 +139,11 @@ CREATE TABLE IF NOT EXISTS orch_turns (
   error TEXT
 );
 CREATE INDEX IF NOT EXISTS orch_turns_thread ON orch_turns(thread_id, ended_at);
+CREATE TABLE IF NOT EXISTS orch_telemetry (
+  thread_id TEXT PRIMARY KEY,
+  doc TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 "#;
 
 const LEGACY_IMPORT_MARKER: &str = "legacy_threads_imported_v1";
@@ -1424,6 +1430,47 @@ impl Store {
         )
         .await?;
         Ok(())
+    }
+
+    // ── telemetry ───────────────────────────────────────────────────────
+
+    /// Replace the thread's latest telemetry.
+    pub async fn put_telemetry(
+        &self,
+        thread: &ThreadId,
+        telemetry: &TurnTelemetry,
+        at: Millis,
+    ) -> Result<()> {
+        self.exec(
+            "INSERT OR REPLACE INTO orch_telemetry (thread_id, doc, updated_at) VALUES (?1, ?2, ?3)",
+            vec![
+                s(thread.as_str()),
+                s(serde_json::to_string(telemetry)?),
+                Value::Integer(at),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn telemetry(&self, thread: &ThreadId) -> Result<Option<ThreadTelemetryRecord>> {
+        let row = self
+            .row(
+                "SELECT doc, updated_at FROM orch_telemetry WHERE thread_id = ?1",
+                vec![s(thread.as_str())],
+                |r| {
+                    let mut c = Cols::new(r);
+                    Ok((c.text()?, c.int()?))
+                },
+            )
+            .await?;
+        row.map(|(doc, updated_at)| {
+            Ok(ThreadTelemetryRecord {
+                telemetry: serde_json::from_str(&doc)?,
+                updated_at,
+            })
+        })
+        .transpose()
     }
 
     pub async fn live_work(&self) -> Result<Vec<LiveWork>> {

@@ -1,9 +1,9 @@
 # `crates/domains/` — one crate per business-record grammar, no authority decisions
 
-**Layer(s):** `substrates` (all 15 manifests declare it; checked by
+**Layer(s):** `substrates` (all 16 manifests declare it; checked by
 `reborn_workspace_crates_declare_layers_and_follow_layer_matrix`) ·
-**Crates:** 15 · **May depend on:** `contracts/`, `substrates/`, `events/`,
-plus five inventoried in-family edges (below) · **Depended on by:** `kernel/`,
+**Crates:** 16 · **May depend on:** `contracts/`, `substrates/`, `events/`,
+plus six inventoried in-family edges (below) · **Depended on by:** `kernel/`,
 `loop/`, `extensions/`, `product/`, `app/` — every tier above wires against
 these contracts.
 
@@ -15,8 +15,9 @@ isolation), and the typed service contract over `ScopedFilesystem` that every
 caller uses. A domains crate answers *"what does this record mean and how does
 it stay correct"*, never *"is this caller allowed to do this"* — authorization,
 approval, and resource decisions are exhausted by the kernel before any call
-lands here. Two crates are deliberately vendor-scoped (`ironclaw_llm`
-providers, `ironclaw_auth` recipes-as-data) and two mint narrow trust
+lands here. Three crates are deliberately vendor-scoped (`ironclaw_llm`
+providers, `ironclaw_auth` recipes-as-data, `ironclaw_cli_providers` CLI
+drivers, ADR 0006) and two mint narrow trust
 (`ironclaw_outbound` sealed grants, `ironclaw_triggers` trusted-fire minting);
 no other crate in the family may acquire either property.
 
@@ -32,6 +33,7 @@ no other crate in the family may acquire either property.
 | [`ironclaw_llm`](./ironclaw_llm) | The `LlmProvider` contract, one adapter per model vendor, provider auth/sessions, registry, reliability decorators, recording — the family's vendor cone | Adding a model provider, changing provider selection/reliability, or trace recording of model calls |
 | [`ironclaw_memory`](./ironclaw_memory) | The provider-neutral `MemoryService` contract, memory path/scope grammar, prompt-write-safety vocabulary, and the shared conformance suite | Changing what memory *means*; provider implementations live in `extensions/packages/memory-native` and `…/mem0` |
 | [`ironclaw_notifications`](./ironclaw_notifications) | Durable, metadata-only user notification inbox records and lifecycle over `ScopedFilesystem` | Changing notification identity, pagination, retention bounds, or read/resolved/archived state |
+| [`ironclaw_cli_providers`](./ironclaw_cli_providers) | Coding-agent CLI drivers (Claude CLI, two accounts) as orchestrator `TurnRuntime`s: process per turn, stream-json folding, session resume, Stop kills the process group, usage-limit mapping, per-turn telemetry; tools off until approvals are bridged (ADR 0006) | Changing how a CLI agent runs a turn |
 | [`ironclaw_outbound`](./ironclaw_outbound) | Metadata-only outbound authority: sealed access grants, at-most-once delivery-attempt reservation, delivery resolution, preferences and subscription cursors — never a transport | Deciding *whether/where* something may be pushed, or recording a delivery attempt |
 | [`ironclaw_orchestrator`](./ironclaw_orchestrator) | Thread orchestration engine: delegation tree, durable per-thread queue, Stop propagation, forks/merge-back, restart and usage-limit recovery, the `TurnRuntime` seam; `orch_*` libSQL tables under ADR 0005 | Changing orchestration semantics or adding a turn runtime |
 | [`ironclaw_skills`](./ironclaw_skills) | Skill parsing, validation, deterministic selection scoring, scoped filesystem management, and the pure learning path | Changing skill grammar, selection, install records, or learning prompts |
@@ -76,8 +78,8 @@ Two boundary facts that have been gotten wrong before, stated precisely:
   (`ironclaw_outbound` is metadata-only). HTTP appears only inside the three
   chartered external-service cones: `ironclaw_llm`, `ironclaw_trace_commons`,
   and `ironclaw_auth`'s engine.
-- **Vendor names or vendor branches** outside `ironclaw_llm` and
-  `ironclaw_auth`'s recipe data → `reborn_extension_specificity.rs` fails the
+- **Vendor names or vendor branches** outside `ironclaw_llm`,
+  `ironclaw_auth`'s recipe data and `ironclaw_cli_providers` → `reborn_extension_specificity.rs` fails the
   build (its only domains carve-outs are llm's provider files and
   trace_commons' redaction *denylists*).
 - **Another domain's records.** Transcript content stays out of conversations
@@ -107,11 +109,11 @@ crate path is given.
   pinned absence of `ironclaw_filesystem`), and armed **allowlists** for
   `ironclaw_identity` (`{host_api, filesystem, product_contracts}`) and
   `ironclaw_memory` (`{host_api, prompt_envelope}`).
-- **In-family edges are a closed, inventoried set** — exactly five today:
+- **In-family edges are a closed, inventoried set** — exactly six today:
   `conversations→triggers`, `attachments→extractors`, `attachments→threads`,
-  `outbound→attachments`, `trace_commons→llm`.
+  `outbound→attachments`, `trace_commons→llm`, `cli_providers→orchestrator`.
   `reborn_every_same_layer_edge_is_inventoried_and_no_entry_is_stale` fails on
-  a sixth (and on a stale entry), and
+  a seventh (and on a stale entry), and
   `reborn_same_layer_edge_inventory_ratchets_down_only` stops regrowth.
 - **Naming and single-home rules:**
   `reborn_conversations_threads_attachments.rs` —

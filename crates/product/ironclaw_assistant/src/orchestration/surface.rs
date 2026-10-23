@@ -86,6 +86,28 @@ fn soft(step: &str, result: Result<impl Sized, OrchestratorError>) {
     }
 }
 
+/// The thread's telemetry document; measurements stay `null` until reported.
+async fn telemetry_view(engine: &Engine, thread: &ThreadRecord) -> Result<Value, OrchestratorError> {
+    let latest = engine.thread_telemetry(&thread.thread_id).await?;
+    let (t, updated_at) = match latest {
+        Some(r) => (r.telemetry, Some(r.updated_at)),
+        None => (Default::default(), None),
+    };
+    let response = ThreadTelemetryResponse {
+        thread_id: thread.thread_id.as_str().to_string(),
+        runtime_id: thread.runtime_id.as_str().to_string(),
+        provider: t.provider.clone().or_else(|| thread.provider.clone()),
+        model: t.model.clone().or_else(|| thread.model.clone()),
+        context_used: t.context_used,
+        context_max: t.context_max,
+        context_pct: t.context_pct(),
+        tps: t.tps,
+        cache_hit_rate: t.cache_hit_rate,
+        updated_at,
+    };
+    Ok(serde_json::to_value(response)?)
+}
+
 impl OrchestratedProductSurface {
     async fn owned(
         &self,
@@ -159,6 +181,16 @@ impl OrchestratedProductSurface {
                             }
                             _ => engine.runs(&thread).await,
                         }
+                    }
+                    .await,
+                )
+            }
+            v if v == ORCHESTRATOR_THREAD_TELEMETRY_VIEW.id => {
+                let req: OrchestratorThreadRequest = decode(input)?;
+                answer(
+                    async {
+                        let thread = self.owned(&req.thread_id, scope).await?;
+                        telemetry_view(engine, &thread).await
                     }
                     .await,
                 )

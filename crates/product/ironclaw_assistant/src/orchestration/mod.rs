@@ -1,16 +1,18 @@
 //! Product-tier wiring of the `ironclaw_orchestrator` engine: IronClaw's
 //! agent loop as the first orchestrator runtime, the product-surface
 //! decorator that routes threads through the engine, the journal observer
-//! that reports turn lifecycle, and the `t3_*` model tools.
+//! that reports turn lifecycle, the per-model-call telemetry tap, and the `t3_*` model tools.
 
 mod observer;
 mod runtime;
 mod surface;
+mod telemetry;
 mod tools;
 
 pub use observer::OrchestratorProcessObserver;
 pub use runtime::{AgentLoopRuntime, IRONCLAW_RUNTIME_ID};
 pub use surface::OrchestratedProductSurface;
+pub use telemetry::OrchestratorTelemetrySink;
 pub use tools::orchestrator_capabilities;
 
 use std::sync::Arc;

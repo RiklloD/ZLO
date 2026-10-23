@@ -19,6 +19,7 @@ pub use orchestrator::{
     orchestrator_queue_mutate, orchestrator_task, orchestrator_task_cancel,
     orchestrator_thread_fork, orchestrator_thread_lineage, orchestrator_thread_merge_back,
     orchestrator_thread_queue, orchestrator_thread_runs, orchestrator_thread_tasks,
+    orchestrator_thread_telemetry,
 };
 mod run_artifact;
 pub use run_artifact::{

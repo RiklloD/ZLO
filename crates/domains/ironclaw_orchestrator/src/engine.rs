@@ -718,8 +718,28 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// The thread's latest per-turn telemetry, if any runtime reported one.
+    pub async fn thread_telemetry(
+        &self,
+        thread: &ThreadId,
+    ) -> Result<Option<crate::telemetry::ThreadTelemetryRecord>> {
+        self.store.telemetry(thread).await
+    }
+}
+
 #[async_trait]
 impl TurnEventSink for Engine {
+    async fn turn_telemetry(
+        &self,
+        thread_id: &ThreadId,
+        telemetry: crate::telemetry::TurnTelemetry,
+        at: Millis,
+    ) {
+        let result = self.store.put_telemetry(thread_id, &telemetry, at).await;
+        log_step("turn telemetry", result);
+    }
+
     async fn turn_started(&self, thread_id: &ThreadId, run_id: Option<String>, at: Millis) {
         if self.shutting_down.load(Ordering::SeqCst) {
             return;

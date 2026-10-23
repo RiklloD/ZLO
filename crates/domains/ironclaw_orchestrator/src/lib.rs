@@ -30,6 +30,7 @@ mod recovery;
 pub mod restart;
 pub mod runtime;
 pub mod store;
+pub mod telemetry;
 mod thread_ops;
 pub mod tools;
 

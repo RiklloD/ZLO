@@ -94,7 +94,11 @@ pub(crate) async fn orchestrator_for_durable_backend(
         ironclaw_assistant::orchestration::IRONCLAW_RUNTIME_ID,
     )
     .await
-    .map(Some)
+    .map(|engine| {
+        // Claude CLI accounts become runtimes when `claude` is installed.
+        ironclaw_cli_providers::register_claude_runtimes(&engine);
+        Some(engine)
+    })
     .map_err(|error| RebornBuildError::InvalidConfig {
         reason: format!("orchestrator store migrations failed: {error}"),
     })

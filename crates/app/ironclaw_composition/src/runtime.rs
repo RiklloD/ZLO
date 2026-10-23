@@ -4047,9 +4047,19 @@ pub(crate) async fn build_runtime_with_resource_governor(
 
     #[cfg(feature = "test-support")]
     let runtime_skill_context_source = skill_context_source.clone();
+    let diagnostic_inner =
+        diagnostic_store_impl as Arc<dyn ironclaw_loop_host::HostManagedPromptDiagnosticSink>;
+    // Model-call telemetry (context, speed, cache) feeds the orchestrator.
+    let diagnostic_inner = match &services.orchestrator {
+        Some(engine) => Arc::new(ironclaw_assistant::orchestration::OrchestratorTelemetrySink::new(
+            diagnostic_inner,
+            Arc::clone(engine),
+        )) as Arc<dyn ironclaw_loop_host::HostManagedPromptDiagnosticSink>,
+        None => diagnostic_inner,
+    };
     let prompt_diagnostic_sink = Arc::new(
         ironclaw_loop_host::BufferedPromptDiagnosticSink::new(
-            diagnostic_store_impl as Arc<dyn ironclaw_loop_host::HostManagedPromptDiagnosticSink>,
+            diagnostic_inner,
             ironclaw_loop_host::DEFAULT_PROMPT_DIAGNOSTIC_QUEUE_CAPACITY,
         )
         .map_err(|reason| RebornRuntimeError::MalformedConfig { reason })?,

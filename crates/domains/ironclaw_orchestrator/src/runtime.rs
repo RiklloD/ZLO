@@ -20,6 +20,7 @@ use ironclaw_host_api::ids::ThreadId;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Millis, RuntimeId, ThreadRecord, ThreadScope};
+use crate::telemetry::TurnTelemetry;
 
 /// What a runtime can do natively. The engine adapts to missing features
 /// (portable handoffs instead of native forks, interrupt-and-restart instead
@@ -331,4 +332,9 @@ pub trait TurnEventSink: Send + Sync {
         outcome: TurnOutcome,
         at: Millis,
     );
+
+    /// Latest context/speed/cache figures of a thread; reported after every
+    /// model call or turn, whichever the runtime can measure.
+    async fn turn_telemetry(&self, _thread_id: &ThreadId, _telemetry: TurnTelemetry, _at: Millis) {
+    }
 }

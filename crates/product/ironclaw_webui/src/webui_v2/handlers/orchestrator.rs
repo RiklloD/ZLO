@@ -45,6 +45,19 @@ pub async fn orchestrator_thread_queue(
     thread_view(&state, caller, ORCHESTRATOR_THREAD_QUEUE_VIEW, thread_id).await
 }
 
+/// `GET /api/webchat/v2/threads/{thread_id}/telemetry`
+pub async fn orchestrator_thread_telemetry(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    let params = serde_json::json!({ "thread_id": thread_id });
+    let descriptor = ORCHESTRATOR_THREAD_TELEMETRY_VIEW.descriptor();
+    Ok(Json(
+        query_product_view(state.services(), caller, descriptor, params, None).await?,
+    ))
+}
+
 /// `GET /api/webchat/v2/threads/{thread_id}/lineage`
 pub async fn orchestrator_thread_lineage(
     State(state): State<WebUiV2State>,

@@ -1,0 +1,30 @@
+[package]
+name = "ironclaw_cli_providers"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+description = "Coding-agent CLI drivers (Claude CLI) as ironclaw_orchestrator turn runtimes"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.ironclaw]
+layer = "substrates"
+
+[dependencies]
+async-trait = "0.1"
+# Wire types for the CLI's stream-json protocol. Pinned exactly to the CLI
+# version the driver is tested against (`claude::EXPECTED_CLI_VERSION`); bump
+# both together, on purpose. Types only: the driver owns process handling.
+claude-codes = { version = "=2.1.302", default-features = false, features = ["types"] }
+ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
+ironclaw_orchestrator = { path = "../ironclaw_orchestrator" }
+# Stop kills the CLI's whole process group (tool subprocesses included).
+nix = { version = "0.31", default-features = false, features = ["signal"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }

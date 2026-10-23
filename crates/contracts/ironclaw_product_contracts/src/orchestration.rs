@@ -95,6 +95,30 @@ pub const ORCHESTRATOR_THREAD_LINEAGE_VIEW: ProductView<
 pub const ORCHESTRATOR_THREAD_RUNS_VIEW: ProductView<OrchestratorThreadRequest, serde_json::Value> =
     ProductView::unpaginated("orchestrator.thread_runs");
 
+/// Latest per-turn telemetry of a thread (the desktop status bar).
+pub const ORCHESTRATOR_THREAD_TELEMETRY_VIEW: ProductView<
+    OrchestratorThreadRequest,
+    ThreadTelemetryResponse,
+> = ProductView::unpaginated("orchestrator.thread_telemetry");
+
+/// Context fill, generation speed and cache hit rate of the thread's latest
+/// turn, whichever runtime ran it. Every measurement is `null` until a
+/// runtime has reported one; `updatedAt` is unix milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTelemetryResponse {
+    pub thread_id: String,
+    pub runtime_id: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub context_used: Option<u64>,
+    pub context_max: Option<u64>,
+    pub context_pct: Option<f64>,
+    pub tps: Option<f64>,
+    pub cache_hit_rate: Option<f64>,
+    pub updated_at: Option<i64>,
+}
+
 pub const ORCHESTRATOR_TASK_CANCEL_COMMAND_ID: &str = "orchestrator.task_cancel";
 pub const ORCHESTRATOR_TASK_CANCEL_COMMAND: ProductSurfaceCommandDescriptor<
     OrchestratorTaskCancelRequest,
