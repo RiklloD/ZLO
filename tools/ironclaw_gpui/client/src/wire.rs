@@ -8,9 +8,14 @@
 //! decoding.
 
 use chrono::{DateTime, Utc};
+use ironclaw_extension_contracts::state::LifecyclePublicState;
 use ironclaw_product_contracts::outbound::{
     CapabilityActivityView, CapabilityDisplayPreviewView, FinalReplyView, GatePromptView,
     ProductProjectionState, ProgressUpdateView,
+};
+use ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef;
+use ironclaw_product_contracts::product_wire::{
+    RebornExtensionOnboardingPayload, SettingsToolPermissionState,
 };
 use serde::Deserialize;
 
@@ -210,4 +215,55 @@ pub struct StreamErrorFrame {
     pub kind: Option<String>,
     #[serde(default)]
     pub retryable: bool,
+}
+
+/// `GET /extensions` (`RebornExtensionListResponse` lives in
+/// `ironclaw_assistant`, so only the rendered fields are mirrored here).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExtensionList {
+    pub extensions: Vec<InstalledExtension>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstalledExtension {
+    pub package_ref: LifecyclePackageRef,
+    pub display_name: String,
+    #[serde(default)]
+    pub runtime: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    pub installation_state: LifecyclePublicState,
+    #[serde(default)]
+    pub activation_error: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub onboarding: Option<RebornExtensionOnboardingPayload>,
+}
+
+/// The `value` of a `tool.<capability>` entry from `GET /settings/tools`.
+/// The entry value is untyped JSON on the wire; this is the shape the
+/// gateway writes for tool rows.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolPermission {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub state: SettingsToolPermissionState,
+    #[serde(default)]
+    pub default_state: Option<SettingsToolPermissionState>,
+    #[serde(default)]
+    pub locked: bool,
+    /// `override` when this tool has its own setting; otherwise the state
+    /// follows the global auto-approve switch (`global`) or a hard floor.
+    #[serde(default)]
+    pub effective_source: Option<String>,
+}
+
+impl ToolPermission {
+    pub fn has_override(&self) -> bool {
+        self.effective_source.as_deref() == Some("override")
+    }
 }

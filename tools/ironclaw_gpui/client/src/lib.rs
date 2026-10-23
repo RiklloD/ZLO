@@ -10,6 +10,7 @@ mod backend;
 mod connection;
 mod error;
 mod pages;
+mod settings;
 mod stream;
 pub mod transcript;
 pub mod wire;
@@ -21,8 +22,9 @@ pub use error::{ApiErrorBody, ClientError};
 pub use pages::{AutomationAction, FilePreview, PREVIEW_LIMIT_BYTES};
 pub use stream::{EventStream, StreamMessage, StreamStatus};
 
+pub use ironclaw_extension_contracts::state as extension_state;
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{
-    notification_inbox, product_wire as automations, workspace_views,
+    notification_inbox, operator_llm, package_lifecycle, product_wire, workspace_views,
 };

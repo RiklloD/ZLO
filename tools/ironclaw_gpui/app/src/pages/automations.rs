@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
-use ironclaw_gpui_client::automations::{
+use ironclaw_gpui_client::product_wire::{
     RebornAutomationHoldReason, RebornAutomationInfo, RebornAutomationRecentRunStatus,
     RebornAutomationRunStatus, RebornAutomationSource, RebornAutomationState,
 };

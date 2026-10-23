@@ -35,6 +35,27 @@ pub fn run<V, F, Fut, T>(
     .detach();
 }
 
+/// Like [`run`], for results that need the window (building inputs, focus).
+pub fn run_in<V, F, Fut, T>(
+    backend: &Backend,
+    window: &mut Window,
+    cx: &mut Context<V>,
+    f: F,
+    done: impl FnOnce(&mut V, Result<T, ClientError>, &mut Window, &mut Context<V>) + 'static,
+) where
+    V: 'static,
+    F: FnOnce(Client) -> Fut,
+    Fut: Future<Output = Result<T, ClientError>> + Send + 'static,
+    T: Send + 'static,
+{
+    let job = backend.spawn(f);
+    cx.spawn_in(window, async move |this, cx| {
+        let result = flatten(job.await);
+        let _ = this.update_in(cx, |this, window, cx| done(this, result, window, cx));
+    })
+    .detach();
+}
+
 /// "just now", "5 min ago", "3 h ago", then a local date.
 pub fn ago(at: DateTime<Utc>) -> String {
     let secs = (Utc::now() - at).num_seconds();

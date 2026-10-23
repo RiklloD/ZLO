@@ -20,6 +20,7 @@ ironclaw_gpui_client = { path = "client" }
 # an upstream contract change fails `cargo check` here instead of at runtime.
 ironclaw_product_contracts = { path = "../../crates/contracts/ironclaw_product_contracts" }
 ironclaw_host_api = { path = "../../crates/contracts/ironclaw_host_api" }
+ironclaw_extension_contracts = { path = "../../crates/contracts/ironclaw_extension_contracts" }
 
 # Pinned exactly: gpui-kit is pre-1.0 and ships weekly. Bump on purpose.
 gpui-kit = { version = "=0.8.0" }

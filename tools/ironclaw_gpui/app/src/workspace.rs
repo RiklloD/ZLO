@@ -11,9 +11,12 @@ use crate::chat::{ChatView, ThreadUpdated};
 use crate::jobs;
 use crate::pages::PageEvent;
 use crate::pages::automations::AutomationsView;
+use crate::pages::extensions::ExtensionsView;
 use crate::pages::files::FilesView;
 use crate::pages::notifications::NotificationsView;
 use crate::pages::projects::ProjectsView;
+use crate::pages::settings::SettingsView;
+use crate::pages::skills::SkillsView;
 use crate::ui::*;
 
 const THREAD_PAGE: u32 = 100;
@@ -28,6 +31,9 @@ enum Page {
     Automations,
     Files,
     Projects,
+    Extensions,
+    Skills,
+    Settings,
 }
 
 /// Pages are built on first visit and kept, so switching back is instant.
@@ -37,6 +43,9 @@ struct Pages {
     automations: Option<Entity<AutomationsView>>,
     files: Option<Entity<FilesView>>,
     projects: Option<Entity<ProjectsView>>,
+    extensions: Option<Entity<ExtensionsView>>,
+    skills: Option<Entity<SkillsView>>,
+    settings: Option<Entity<SettingsView>>,
 }
 
 enum Conn {
@@ -306,6 +315,9 @@ impl Workspace {
             Page::Automations => open!(automations, |cx| AutomationsView::new(backend, cx)),
             Page::Files => open!(files, |cx| FilesView::new(backend, cx)),
             Page::Projects => open!(projects, |cx| ProjectsView::new(backend, window, cx)),
+            Page::Extensions => open!(extensions, |cx| ExtensionsView::new(backend, cx)),
+            Page::Skills => open!(skills, |cx| SkillsView::new(backend, window, cx)),
+            Page::Settings => open!(settings, |cx| SettingsView::new(backend, cx)),
         }
         self.page = page;
         cx.notify();
@@ -321,6 +333,9 @@ impl Workspace {
         if self.projects_enabled() {
             items.push((Page::Projects, IconName::LayoutDashboard, "Projects"));
         }
+        items.push((Page::Extensions, IconName::Frame, "Extensions"));
+        items.push((Page::Skills, IconName::BookOpen, "Skills"));
+        items.push((Page::Settings, IconName::Settings, "Settings"));
         let unread = self.unread;
         v_flex()
             .px_2()
@@ -549,6 +564,9 @@ impl Render for Workspace {
                     }
                     Page::Files => self.pages.files.clone().map(|v| v.into_any_element()),
                     Page::Projects => self.pages.projects.clone().map(|v| v.into_any_element()),
+                    Page::Extensions => self.pages.extensions.clone().map(|v| v.into_any_element()),
+                    Page::Skills => self.pages.skills.clone().map(|v| v.into_any_element()),
+                    Page::Settings => self.pages.settings.clone().map(|v| v.into_any_element()),
                 };
                 let main: AnyElement = match (page, &self.active) {
                     (Some(page), _) => page,

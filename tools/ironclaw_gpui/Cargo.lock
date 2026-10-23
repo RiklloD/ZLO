@@ -3274,6 +3274,7 @@ dependencies = [
  "chrono",
  "eventsource-stream",
  "futures",
+ "ironclaw_extension_contracts",
  "ironclaw_host_api",
  "ironclaw_product_contracts",
  "reqwest",

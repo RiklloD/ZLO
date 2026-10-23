@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 ironclaw_product_contracts.workspace = true
 ironclaw_host_api.workspace = true
+ironclaw_extension_contracts.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 eventsource-stream.workspace = true

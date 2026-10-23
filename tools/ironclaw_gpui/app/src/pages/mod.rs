@@ -2,9 +2,12 @@
 //! projects. Each page owns its data and reloads it when shown again.
 
 pub mod automations;
+pub mod extensions;
 pub mod files;
 pub mod notifications;
 pub mod projects;
+pub mod settings;
+pub mod skills;
 
 use crate::ui::*;
 

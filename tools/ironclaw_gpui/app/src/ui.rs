@@ -4,9 +4,10 @@
 //! never from `gpui_kit` directly, so a version bump is fixed in this file.
 
 pub use gpui_kit::component::button::{Button, ButtonVariants};
-pub use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+pub use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 pub use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 pub use gpui_kit::component::spinner::Spinner;
+pub use gpui_kit::component::switch::Switch;
 pub use gpui_kit::component::tag::Tag;
 pub use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, h_flex, v_flex,
