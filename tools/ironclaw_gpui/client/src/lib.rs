@@ -9,6 +9,7 @@ mod api;
 mod backend;
 mod connection;
 mod error;
+pub mod operator;
 mod pages;
 mod settings;
 mod stream;

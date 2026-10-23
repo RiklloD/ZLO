@@ -77,11 +77,13 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 
 | Route | Status |
 |---|---|
-| operator.get_setup, operator.run_setup (onboarding) | todo [4.4] |
-| operator.list_config, get_config_key, set_config_key, validate_config | todo [4.4] |
-| operator.status, operator.diagnostics, operator.service_lifecycle | todo [4.4] |
-| logs, operator.logs | todo [4.4] |
-| operator.inspector_snapshot, inspector_prompt, inspector_tool, inspector_updates | todo [4.4] |
+| operator.get_setup, operator.run_setup (onboarding) | done |
+| operator.list_config, get_config_key, set_config_key, validate_config | done |
+| operator.status, operator.diagnostics | done |
+| operator.service_lifecycle: status, stop | done |
+| operator.service_lifecycle: start, install | excluded: the app reaches the service through the gateway, which is down whenever start is needed; see note below |
+| logs (per conversation, in the inspector), operator.logs | done |
+| operator.inspector_snapshot, inspector_prompt, inspector_tool, inspector_updates | done |
 
 ## TraceCommons
 
@@ -98,5 +100,8 @@ Status: `done` (the app calls it), `todo` (planned step in brackets),
 ## CLI commands with no GUI form
 
 `completion`, `run`, `profile` stay terminal-only. `service install` sets up
-the backend the app connects to, so it stays in the terminal too; start, stop
-and restart move into the app with operator.service_lifecycle [4.4].
+the backend the app connects to, so it stays in the terminal too. Status and
+stop are in the app (Operator page). Start and restart stay in the terminal
+(`ironclaw service start`): the gateway is the only door to the service, and
+it is down whenever start is needed. The contract has no restart action. A
+later step could let the connect screen run `ironclaw service start` locally.
