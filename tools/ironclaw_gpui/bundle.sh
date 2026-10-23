@@ -2,10 +2,10 @@
 # Build IronClaw Desktop as a macOS app and install it to ~/Applications.
 #
 # The bundle is what enables native notifications (macOS only delivers them
-# to an app with a bundle identifier) and "Open at login". Without
-# IRONCLAW_SIGN_IDENTITY the app is ad-hoc signed: it runs, but macOS refuses
-# its notifications. Set it to an Apple Development identity
-# (`security find-identity -v -p codesigning`) to enable them.
+# to an app with a bundle identifier) and "Open at login". The app is signed
+# with IRONCLAW_SIGN_IDENTITY, else the first valid "Apple Development"
+# identity in the keychain, else ad-hoc. An ad-hoc signed app runs, but macOS
+# refuses its notifications.
 #
 #   sh tools/ironclaw_gpui/bundle.sh             build and install
 #   sh tools/ironclaw_gpui/bundle.sh --no-install build only (target/IronClaw.app)
@@ -67,7 +67,9 @@ cat > "$app/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-codesign --force --sign "${IRONCLAW_SIGN_IDENTITY:--}" --timestamp=none "$app"
+identity="${IRONCLAW_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/{print $2; exit}')}"
+[ -n "$identity" ] || echo "warning: no signing identity, ad-hoc signing (notifications will not work)" >&2
+codesign --force --sign "${identity:--}" --timestamp=none "$app"
 echo "Built $app ($version)"
 
 [ "${1:-}" = "--no-install" ] && exit 0

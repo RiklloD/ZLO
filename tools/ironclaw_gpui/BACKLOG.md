@@ -2,17 +2,13 @@
 
 Open items found while building and testing the GPUI client. Newest first.
 
-## Native notifications blocked by signing (found 23.10.2026)
+## Native notifications (fixed 23.10.2026)
 
-`bundle.sh` builds `~/Applications/IronClaw.app`, and the app posts a system
-notification when a run ends or an approval arrives while the window is in
-the background (log line `posting system notification`). macOS refuses it:
-`UNUserNotificationCenter` authorization fails with "Notifications are not
-allowed for this application", also when launched through `open`. The bundle
-is ad-hoc signed (`codesign -s -`) and this Mac has no signing identity
-(`security find-identity -v -p codesigning` reports 0). Fix: sign with an
-Apple Development certificate (free with an Apple ID in Xcode), then set
-`IRONCLAW_SIGN_IDENTITY` for `bundle.sh`.
+macOS refused notifications from the ad-hoc signed bundle ("Notifications are
+not allowed for this application"). Fixed by signing with the user's Apple
+Development certificate, which also needed Apple's WWDR G3 intermediate in the
+login keychain, and turning IronClaw on in System Settings > Notifications.
+`bundle.sh` now picks the Apple Development identity on its own.
 
 Also learned: the gateway inbox records "run finished" only for background
 runs (automations), and those items arrive already resolved. Chat runs are
