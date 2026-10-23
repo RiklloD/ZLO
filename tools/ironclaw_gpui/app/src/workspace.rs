@@ -18,6 +18,7 @@ use crate::pages::extensions::ExtensionsView;
 use crate::pages::files::FilesView;
 use crate::pages::notifications::NotificationsView;
 use crate::pages::operator::OperatorView;
+use crate::pages::profiles::ProfilesView;
 use crate::pages::projects::ProjectsView;
 use crate::pages::settings::SettingsView;
 use crate::pages::skills::SkillsView;
@@ -45,6 +46,7 @@ enum Page {
     Automations,
     Files,
     Projects,
+    Profiles,
     Extensions,
     Skills,
     Settings,
@@ -58,6 +60,7 @@ struct Pages {
     automations: Option<Entity<AutomationsView>>,
     files: Option<Entity<FilesView>>,
     projects: Option<Entity<ProjectsView>>,
+    profiles: Option<Entity<ProfilesView>>,
     extensions: Option<Entity<ExtensionsView>>,
     skills: Option<Entity<SkillsView>>,
     settings: Option<Entity<SettingsView>>,
@@ -450,6 +453,7 @@ impl Workspace {
             Page::Automations => open!(automations, |cx| AutomationsView::new(backend, cx)),
             Page::Files => open!(files, |cx| FilesView::new(backend, cx)),
             Page::Projects => open!(projects, |cx| ProjectsView::new(backend, window, cx)),
+            Page::Profiles => open!(profiles, |cx| ProfilesView::new(backend, window, cx)),
             Page::Extensions => open!(extensions, |cx| ExtensionsView::new(backend, cx)),
             Page::Skills => open!(skills, |cx| SkillsView::new(backend, window, cx)),
             Page::Settings => open!(settings, |cx| SettingsView::new(backend, cx)),
@@ -468,6 +472,7 @@ impl Workspace {
         if self.projects_enabled() {
             items.push((Page::Projects, IconName::LayoutDashboard, "Projects"));
         }
+        items.push((Page::Profiles, IconName::User, "Profiles"));
         items.push((Page::Extensions, IconName::Frame, "Extensions"));
         items.push((Page::Skills, IconName::BookOpen, "Skills"));
         items.push((Page::Settings, IconName::Settings, "Settings"));
@@ -741,6 +746,7 @@ impl Render for Workspace {
                     }
                     Page::Files => self.pages.files.clone().map(|v| v.into_any_element()),
                     Page::Projects => self.pages.projects.clone().map(|v| v.into_any_element()),
+                    Page::Profiles => self.pages.profiles.clone().map(|v| v.into_any_element()),
                     Page::Extensions => self.pages.extensions.clone().map(|v| v.into_any_element()),
                     Page::Skills => self.pages.skills.clone().map(|v| v.into_any_element()),
                     Page::Settings => self.pages.settings.clone().map(|v| v.into_any_element()),

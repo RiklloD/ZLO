@@ -1,0 +1,555 @@
+//! Stage 3 profiles on the product side: the `profiles.*` views and
+//! commands answered by the orchestrating decorator, the one-time Hermes
+//! importer, and the two turn decorators that make a profile matter at run
+//! time: its SOUL.md joins the identity context and its capability allowlist
+//! narrows the visible surface. Records live in `ironclaw_orchestrator`.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use ironclaw_host_api::capability_surface::CapabilitySurfacePolicy;
+use ironclaw_host_api::ids::{CapabilityId, ThreadId};
+use ironclaw_loop_contracts::{LoopRunContext, PromptMode};
+use ironclaw_loop_host::{
+    CapabilityResolveError, CapabilitySurfaceProfileResolver, HostIdentityContextBuildError,
+    HostIdentityContextCandidate, HostIdentityContextSource, HostIdentityMessageContent,
+    IdentityApplicability, IdentityFileName, identity_message_ref,
+};
+use ironclaw_orchestrator::engine::Engine;
+use ironclaw_orchestrator::error::OrchestratorError;
+use ironclaw_orchestrator::model::ThreadScope;
+use ironclaw_orchestrator::profiles::{
+    ProfileOwner, ProfileRecord, parse_profile_slug, profile_not_found,
+};
+use ironclaw_product_contracts::profiles::*;
+use ironclaw_turns::LoopMessageRef;
+use serde::Deserialize;
+
+type Result<T> = std::result::Result<T, OrchestratorError>;
+
+const SOUL_FILE: &str = "SOUL.md";
+/// Hermes profiles that never come over.
+const HERMES_EXCLUDED: &[&str] = &["hermes-builder"];
+
+/// Where profile folders and the Hermes source live on this machine.
+#[derive(Debug, Clone)]
+pub struct ProfileHome {
+    user_home: PathBuf,
+}
+
+impl ProfileHome {
+    pub fn new(user_home: PathBuf) -> Self {
+        Self { user_home }
+    }
+
+    /// `$HOME`, when set.
+    pub fn from_env() -> Option<Self> {
+        std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .map(|v| Self::new(PathBuf::from(v)))
+    }
+
+    fn expand(&self, folder: &str) -> PathBuf {
+        match folder.strip_prefix("~/") {
+            Some(rest) => self.user_home.join(rest),
+            None => PathBuf::from(folder),
+        }
+    }
+
+    /// The folder CLI agents run in: the configured one or
+    /// `~/.ironclaw/profiles/<id>/`.
+    pub fn folder(&self, record: &ProfileRecord) -> PathBuf {
+        match record.settings.working_folder.as_deref() {
+            Some(folder) => self.expand(folder),
+            None => self
+                .user_home
+                .join(".ironclaw/profiles")
+                .join(record.profile_id.as_str()),
+        }
+    }
+
+    fn hermes_profiles(&self) -> PathBuf {
+        self.user_home.join(".hermes/profiles")
+    }
+}
+
+/// Current branch of a git checkout (short sha when detached).
+fn git_branch(folder: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(folder.join(".git/HEAD")).ok()?; // silent-ok: not a git repo is the common case
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => Some(branch.to_string()),
+        None => head.get(..7).map(str::to_string),
+    }
+}
+
+pub(crate) fn info(home: &ProfileHome, record: ProfileRecord) -> ProfileInfo {
+    let folder = home.folder(&record);
+    ProfileInfo {
+        is_default: record.is_default(),
+        git_branch: git_branch(&folder),
+        effective_folder: folder.to_string_lossy().into_owned(),
+        profile_id: record.profile_id.to_string(),
+        settings: record.settings,
+        thread_count: record.thread_count,
+        last_used_at: record.last_used_at,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
+pub(crate) async fn list(
+    engine: &Engine,
+    home: &ProfileHome,
+    scope: &ThreadScope,
+) -> Result<ProfileListResponse> {
+    let records = engine.store().profiles(&ProfileOwner::from(scope)).await?;
+    let last_used_profile_id = records
+        .first()
+        .filter(|r| r.last_used_at.is_some())
+        .map(|r| r.profile_id.to_string());
+    Ok(ProfileListResponse {
+        profiles: records.into_iter().map(|r| info(home, r)).collect(),
+        last_used_profile_id,
+    })
+}
+
+pub(crate) async fn get(
+    engine: &Engine,
+    home: &ProfileHome,
+    scope: &ThreadScope,
+    raw: &str,
+) -> Result<ProfileInfo> {
+    let owner = ProfileOwner::from(scope);
+    let id = parse_profile_slug(raw)?;
+    engine.store().ensure_default_profile(&owner).await?;
+    let record = engine
+        .store()
+        .profile(&owner, &id, false)
+        .await?
+        .ok_or_else(|| profile_not_found(&id))?;
+    Ok(info(home, record))
+}
+
+pub(crate) async fn write(
+    engine: &Engine,
+    home: &ProfileHome,
+    scope: &ThreadScope,
+    request: ProfileWriteRequest,
+    create: bool,
+) -> Result<ProfileInfo> {
+    let owner = ProfileOwner::from(scope);
+    let id = parse_profile_slug(&request.profile_id)?;
+    let record = if create {
+        engine
+            .store()
+            .create_profile(&owner, &id, &request.settings)
+            .await?
+    } else {
+        engine
+            .store()
+            .update_profile(&owner, &id, &request.settings)
+            .await?
+    };
+    if record.settings.working_folder.is_none() {
+        let folder = home.folder(&record);
+        if let Err(error) = std::fs::create_dir_all(&folder) {
+            tracing::debug!(%error, "profile folder could not be created");
+        }
+    }
+    Ok(info(home, record))
+}
+
+pub(crate) async fn delete(engine: &Engine, scope: &ThreadScope, raw: &str) -> Result<()> {
+    let id = parse_profile_slug(raw)?;
+    engine
+        .store()
+        .archive_profile(&ProfileOwner::from(scope), &id)
+        .await
+}
+
+/// The profile a new thread joins, validated before the thread exists.
+pub(crate) async fn require_active(
+    engine: &Engine,
+    scope: &ThreadScope,
+    raw: &str,
+) -> Result<ironclaw_orchestrator::model::ProfileId> {
+    let owner = ProfileOwner::from(scope);
+    let id = parse_profile_slug(raw)?;
+    engine.store().ensure_default_profile(&owner).await?;
+    match engine.store().profile(&owner, &id, false).await? {
+        Some(record) => Ok(record.profile_id),
+        None => Err(profile_not_found(&id)),
+    }
+}
+
+/// Default model of the thread's profile, for submits that pick none.
+pub(crate) async fn default_model(engine: &Engine, thread: &ThreadId) -> Result<Option<String>> {
+    Ok(engine
+        .store()
+        .thread_profile(thread)
+        .await?
+        .and_then(|p| p.settings.default_model))
+}
+
+// ── Hermes import ───────────────────────────────────────────────────────
+
+#[derive(Debug, Default, Deserialize)]
+struct HermesConfig {
+    #[serde(default)]
+    model: Option<HermesModel>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct HermesModel {
+    #[serde(default)]
+    default: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct HermesSupermemory {
+    #[serde(default)]
+    container_tag: Option<String>,
+    #[serde(default)]
+    enable_custom_container_tags: bool,
+    #[serde(default)]
+    custom_containers: Vec<String>,
+    #[serde(default)]
+    custom_container_instructions: Option<String>,
+}
+
+/// Hermes name → (IronClaw id, display name, working folder).
+fn hermes_identity(name: &str) -> (String, String, Option<String>) {
+    if name == "ironclaw" {
+        return (
+            "ironclaw-builder".into(),
+            "IronClaw Builder".into(),
+            Some("~/ironclaw".into()),
+        );
+    }
+    let display = name
+        .split(['-', '_'])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    (name.to_string(), display, None)
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Read one Hermes profile directory into settings. Never writes there.
+fn read_hermes_profile(
+    dir: &Path,
+    display_name: String,
+    folder: Option<String>,
+) -> std::result::Result<ProfileSettings, String> {
+    let soul = match std::fs::read_to_string(dir.join(SOUL_FILE)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("SOUL.md unreadable: {error}")),
+    };
+    let config: HermesConfig = match std::fs::read_to_string(dir.join("config.yaml")) {
+        Ok(text) => serde_yaml::from_str(&text).map_err(|e| format!("config.yaml: {e}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => HermesConfig::default(),
+        Err(error) => return Err(format!("config.yaml unreadable: {error}")),
+    };
+    let memory: Option<HermesSupermemory> =
+        match std::fs::read_to_string(dir.join("supermemory.json")) {
+            Ok(text) => {
+                Some(serde_json::from_str(&text).map_err(|e| format!("supermemory.json: {e}"))?)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("supermemory.json unreadable: {error}")),
+        };
+    let model = config.model.unwrap_or_default();
+    let supermemory = memory.and_then(|m| {
+        let container = non_empty(m.container_tag)?;
+        let custom = m.enable_custom_container_tags;
+        Some(ProfileSupermemory {
+            read_containers: if custom {
+                m.custom_containers
+                    .into_iter()
+                    .filter(|c| !c.trim().is_empty() && *c != container)
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            instructions: if custom {
+                non_empty(m.custom_container_instructions)
+            } else {
+                None
+            },
+            container,
+        })
+    });
+    Ok(ProfileSettings {
+        display_name,
+        soul,
+        default_provider: non_empty(model.provider),
+        default_model: non_empty(model.default),
+        working_folder: folder,
+        supermemory,
+        ..ProfileSettings::default()
+    })
+}
+
+/// Copy every Hermes profile (but `hermes-builder`) that is not already
+/// here. Existing profiles, archived ones included, are left untouched, so a
+/// second run imports nothing.
+pub(crate) async fn import_hermes(
+    engine: &Engine,
+    home: &ProfileHome,
+    scope: &ThreadScope,
+) -> Result<HermesImportResponse> {
+    let owner = ProfileOwner::from(scope);
+    let root = home.hermes_profiles();
+    let entries = std::fs::read_dir(&root).map_err(|error| {
+        tracing::debug!(%error, "hermes profiles folder unreadable");
+        OrchestratorError::request(
+            "hermes_not_found",
+            "No Hermes profiles found in ~/.hermes/profiles.",
+        )
+    })?;
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok()) // silent-ok: an unreadable entry is reported as absent
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    names.sort();
+    let mut out = HermesImportResponse::default();
+    let mut skip = |source: &str, reason: String| {
+        out.skipped.push(ProfileImportSkipped {
+            source: source.to_string(),
+            reason,
+        })
+    };
+    let mut imported = Vec::new();
+    for name in &names {
+        if HERMES_EXCLUDED.contains(&name.as_str()) {
+            skip(name, "excluded".into());
+            continue;
+        }
+        let (raw_id, display, folder) = hermes_identity(name);
+        let Ok(id) = parse_profile_slug(&raw_id) else {
+            skip(name, "name is not a valid profile id".into());
+            continue;
+        };
+        if engine.store().profile(&owner, &id, true).await?.is_some() {
+            skip(name, format!("profile '{id}' already exists"));
+            continue;
+        }
+        let settings = match read_hermes_profile(&root.join(name), display, folder) {
+            Ok(settings) => settings,
+            Err(reason) => {
+                skip(name, reason);
+                continue;
+            }
+        };
+        match engine.store().create_profile(&owner, &id, &settings).await {
+            Ok(_) => imported.push(id.to_string()),
+            Err(error) if error.is_correctable() => skip(name, error.to_string()),
+            Err(error) => return Err(error),
+        }
+    }
+    out.imported = imported;
+    Ok(out)
+}
+
+// ── turn decorators ─────────────────────────────────────────────────────
+
+/// Adds the thread's profile SOUL.md after the inner identity files.
+pub struct ProfileIdentityContextSource {
+    inner: Arc<dyn HostIdentityContextSource>,
+    engine: Arc<Engine>,
+}
+
+impl ProfileIdentityContextSource {
+    pub fn new(inner: Arc<dyn HostIdentityContextSource>, engine: Arc<Engine>) -> Self {
+        Self { inner, engine }
+    }
+
+    /// The thread's SOUL.md and its message ref, when it has one.
+    async fn soul(
+        &self,
+        thread: &ThreadId,
+    ) -> std::result::Result<
+        Option<(IdentityFileName, LoopMessageRef, String)>,
+        HostIdentityContextBuildError,
+    > {
+        let profile = match self.engine.store().thread_profile(thread).await {
+            Ok(profile) => profile,
+            Err(error) => {
+                tracing::debug!(%error, "profile lookup failed; turn runs without SOUL.md");
+                return Ok(None); // silent-ok: SYSTEM.md still applies; the soul is additive
+            }
+        };
+        let Some(soul) = profile
+            .map(|p| p.settings.soul)
+            .filter(|s| !s.trim().is_empty())
+        else {
+            return Ok(None);
+        };
+        let name = IdentityFileName::new(SOUL_FILE)?;
+        let message_ref = identity_message_ref(&name, &soul)
+            .map_err(|_error| HostIdentityContextBuildError::Internal)?;
+        Ok(Some((name, message_ref, soul)))
+    }
+}
+
+#[async_trait]
+impl HostIdentityContextSource for ProfileIdentityContextSource {
+    async fn load_identity_candidates(
+        &self,
+        run_context: &LoopRunContext,
+        mode: PromptMode,
+    ) -> std::result::Result<Vec<HostIdentityContextCandidate>, HostIdentityContextBuildError> {
+        let mut candidates = self
+            .inner
+            .load_identity_candidates(run_context, mode)
+            .await?;
+        if let Some((name, message_ref, soul)) = self.soul(&run_context.thread_id).await? {
+            candidates.push(HostIdentityContextCandidate::new_trusted(
+                name,
+                message_ref,
+                format!("profile identity file {SOUL_FILE} available"),
+                IdentityApplicability::Always,
+                soul.len(),
+            ));
+        }
+        Ok(candidates)
+    }
+
+    async fn resolve_identity_message_content(
+        &self,
+        run_context: &LoopRunContext,
+        message_ref: &LoopMessageRef,
+    ) -> std::result::Result<Option<HostIdentityMessageContent>, HostIdentityContextBuildError>
+    {
+        if let Some(found) = self
+            .inner
+            .resolve_identity_message_content(run_context, message_ref)
+            .await?
+        {
+            return Ok(Some(found));
+        }
+        Ok(self
+            .soul(&run_context.thread_id)
+            .await?
+            .filter(|(_, r, _)| r == message_ref)
+            .map(|(name, _, content)| HostIdentityMessageContent { name, content }))
+    }
+}
+
+/// Narrows the inner surface to the thread profile's capability allowlist.
+pub struct ProfileCapabilitySurfaceResolver {
+    inner: Arc<dyn CapabilitySurfaceProfileResolver>,
+    engine: Arc<Engine>,
+}
+
+impl ProfileCapabilitySurfaceResolver {
+    pub fn new(inner: Arc<dyn CapabilitySurfaceProfileResolver>, engine: Arc<Engine>) -> Self {
+        Self { inner, engine }
+    }
+}
+
+#[async_trait]
+impl CapabilitySurfaceProfileResolver for ProfileCapabilitySurfaceResolver {
+    async fn resolve(
+        &self,
+        run_context: &LoopRunContext,
+    ) -> std::result::Result<CapabilitySurfacePolicy, CapabilityResolveError> {
+        let policy = self.inner.resolve(run_context).await?;
+        // Fail closed: an unreadable profile must not widen the surface.
+        let profile = self
+            .engine
+            .store()
+            .thread_profile(&run_context.thread_id)
+            .await
+            .map_err(|error| CapabilityResolveError::unavailable(error.to_string()))?;
+        let Some(allowed) = profile.and_then(|p| p.settings.allowed_capabilities) else {
+            return Ok(policy);
+        };
+        let ids = allowed
+            .iter()
+            .map(|raw| {
+                CapabilityId::new(raw.as_str())
+                    .map_err(|error| CapabilityResolveError::unavailable(error.to_string()))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(policy.narrow_to_capability_ids(ids))
+    }
+}
+
+/// Wrap the runtime's identity source with profile SOUL.md injection.
+pub fn profile_identity_source(
+    inner: Arc<dyn HostIdentityContextSource>,
+    engine: &Arc<Engine>,
+) -> Arc<dyn HostIdentityContextSource> {
+    Arc::new(ProfileIdentityContextSource::new(inner, Arc::clone(engine)))
+}
+
+/// Wrap the runtime's capability surface with profile allowlists.
+pub fn profile_surface_resolver(
+    inner: Arc<dyn CapabilitySurfaceProfileResolver>,
+    engine: &Arc<Engine>,
+) -> Arc<dyn CapabilitySurfaceProfileResolver> {
+    Arc::new(ProfileCapabilitySurfaceResolver::new(
+        inner,
+        Arc::clone(engine),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hermes_names_map_to_profiles() {
+        assert_eq!(
+            hermes_identity("ironclaw"),
+            (
+                "ironclaw-builder".to_string(),
+                "IronClaw Builder".to_string(),
+                Some("~/ironclaw".to_string())
+            )
+        );
+        assert_eq!(hermes_identity("financial-advisor").1, "Financial Advisor");
+    }
+
+    #[test]
+    fn hermes_profile_reads_soul_model_and_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("SOUL.md"), "be kind").unwrap();
+        std::fs::write(
+            dir.path().join("config.yaml"),
+            "model:\n  default: claude-opus-5-5\n  provider: claude-cli-2\nplugins: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("supermemory.json"),
+            r#"{"container_tag":"finance","enable_custom_container_tags":true,"custom_containers":["hermes","finance"],"custom_container_instructions":"x"}"#,
+        )
+        .unwrap();
+        let settings = read_hermes_profile(dir.path(), "Finance".into(), None).unwrap();
+        assert_eq!(settings.soul, "be kind");
+        assert_eq!(settings.default_model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(settings.default_provider.as_deref(), Some("claude-cli-2"));
+        let memory = settings.supermemory.unwrap();
+        assert_eq!(memory.container, "finance");
+        assert_eq!(memory.read_containers, vec!["hermes".to_string()]);
+    }
+}

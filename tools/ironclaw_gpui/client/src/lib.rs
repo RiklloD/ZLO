@@ -14,6 +14,7 @@ mod error;
 pub mod operator;
 pub mod orchestration;
 mod pages;
+mod profile_calls;
 mod settings;
 mod stream;
 pub mod transcript;
@@ -31,5 +32,5 @@ pub use ironclaw_extension_contracts::state as extension_state;
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{
-    notification_inbox, operator_llm, package_lifecycle, product_wire, workspace_views,
+    notification_inbox, operator_llm, package_lifecycle, product_wire, profiles, workspace_views,
 };

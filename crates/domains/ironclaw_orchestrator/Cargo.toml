@@ -13,6 +13,8 @@ layer = "substrates"
 [dependencies]
 async-trait = "0.1"
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
+# Profile settings are persisted in their wire shape (`profiles::ProfileSettings`).
+ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
 # Hand-written SQL store on the shared admission runtime, the same shape as
 # `ironclaw_triggers` (ADR 0003): orchestration rows are relational
 # (parent/child trees, ordered queues, conditional status transitions).

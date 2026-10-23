@@ -1133,7 +1133,11 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // this crate only owns the authenticated ProductSurface wire contract.
         // Orchestrator v2 stage 2: the `orchestration` descriptor module
         // (view/command ids and request bodies, no behavior).
-        ("ironclaw_product_contracts", 16_800),
+        // 16_800 -> 16_980 (2026-10-24, IronClaw v2 stage 3 profiles): the
+        // `profiles` module, profile wire DTOs and descriptor ids only;
+        // records live in ironclaw_orchestrator, behavior in
+        // ironclaw_assistant. Count read from this test's failure message.
+        ("ironclaw_product_contracts", 16_980),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

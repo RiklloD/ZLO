@@ -21,6 +21,11 @@ pub use orchestrator::{
     orchestrator_thread_queue, orchestrator_thread_runs, orchestrator_thread_tasks,
     orchestrator_thread_telemetry,
 };
+mod profiles;
+pub use profiles::{
+    profile_create, profile_delete, profile_get, profile_thread_create, profile_update,
+    profiles_import_hermes, profiles_list,
+};
 mod run_artifact;
 pub use run_artifact::{
     admin_get_thread_scrape_artifact, admin_get_thread_scrape_run_artifact,

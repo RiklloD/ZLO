@@ -557,3 +557,81 @@ async fn legacy_threads_import_once() {
     assert!(t.created_at > 1_700_000_000_000);
     assert!(t.profile_id.is_none());
 }
+
+#[tokio::test]
+async fn profiles_own_threads_for_life_and_steer_delegation() {
+    use crate::profiles::{ProfileOwner, parse_profile_slug};
+    use ironclaw_product_contracts::profiles::ProfileSettings;
+
+    let h = harness().await;
+    let store = h.engine.store();
+    let owner = ProfileOwner::from(&scope());
+    let work = parse_profile_slug("work").unwrap();
+    let settings = ProfileSettings {
+        display_name: "Work".into(),
+        soul: "be terse".into(),
+        ..ProfileSettings::default()
+    };
+    store
+        .create_profile(&owner, &work, &settings)
+        .await
+        .unwrap();
+    let dup = store.create_profile(&owner, &work, &settings).await;
+    assert_eq!(dup.unwrap_err().code(), "profile_exists");
+
+    // A thread keeps its first profile; one without a profile runs as default.
+    let (a, b) = (tid("a"), tid("b"));
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    h.engine.ensure_thread(&b, &scope(), None).await.unwrap();
+    assert!(store.set_thread_profile(&a, &work).await.unwrap());
+    let default = parse_profile_slug("default").unwrap();
+    assert!(!store.set_thread_profile(&a, &default).await.unwrap());
+    let soul = store
+        .thread_profile(&a)
+        .await
+        .unwrap()
+        .unwrap()
+        .settings
+        .soul;
+    assert_eq!(soul, "be terse");
+
+    // Last use orders the picker.
+    h.engine.on_user_prompt(&a).await.unwrap();
+    let list = store.profiles(&owner).await.unwrap();
+    assert_eq!(list[0].profile_id, work);
+    assert_eq!(list.len(), 2);
+    let b_profile = store.thread_profile(&b).await.unwrap().unwrap();
+    assert!(b_profile.is_default(), "a thread without a profile runs as default");
+
+    // Children inherit the parent's profile unless the target names another.
+    let p = tid("p");
+    h.engine.ensure_thread(&p, &scope(), None).await.unwrap();
+    store.set_thread_profile(&p, &work).await.unwrap();
+    let inherit = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "x"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let child = tid(inherit["childThreadId"].as_str().unwrap());
+    let child_profile = store.thread(&child).await.unwrap().unwrap().profile_id;
+    assert_eq!(child_profile, Some(work.clone()));
+    let unknown = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "y", "target": {"profile": "nope"}})).unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code(), "profile_unavailable");
+
+    // Archiving hides the profile; its threads still resolve it.
+    store.archive_profile(&owner, &work).await.unwrap();
+    assert_eq!(store.profiles(&owner).await.unwrap().len(), 1);
+    assert!(store.thread_profile(&a).await.unwrap().is_some());
+    let protected = store.archive_profile(&owner, &default).await.unwrap_err();
+    assert_eq!(protected.code(), "profile_protected");
+}

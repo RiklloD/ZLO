@@ -60,6 +60,7 @@ pub mod operator_tools;
 pub mod outbound;
 pub mod package_lifecycle;
 pub mod product_wire;
+pub mod profiles;
 pub mod project_service;
 pub mod projection;
 pub mod prompt_source;

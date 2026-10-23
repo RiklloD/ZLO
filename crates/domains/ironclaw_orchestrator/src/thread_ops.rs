@@ -258,6 +258,12 @@ impl Engine {
             provider: source.provider.clone(),
             model: source.model.clone(),
         };
+        if target.is_some_and(|t| t.profile.as_deref().is_some_and(|p| !p.trim().is_empty())) {
+            return Err(OrchestratorError::request(
+                "profile_unavailable",
+                "A fork keeps its source thread's profile; delegate to run as another profile.",
+            ));
+        }
         let (runtime_id, provider, model) = self
             .resolve_target(
                 &target.cloned().unwrap_or_default(),

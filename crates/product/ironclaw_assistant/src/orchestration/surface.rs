@@ -19,9 +19,10 @@ use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::error::OrchestratorError;
 use ironclaw_orchestrator::model::{Author, QueueItemId, TaskId, ThreadRecord, ThreadScope};
 use ironclaw_product_contracts::inbound_requests::{
-    ProductCancelRunRequest, ProductSubmitTurnRequest,
+    ProductCancelRunRequest, ProductCreateThreadRequest, ProductSubmitTurnRequest,
 };
 use ironclaw_product_contracts::orchestration::*;
+use ironclaw_product_contracts::profiles::*;
 use ironclaw_product_contracts::surface::{
     ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceInvokeRequest,
     ProductSurfaceInvokeResponse, ProductSurfaceQueryPage, ProductSurfaceQueryRequest,
@@ -30,6 +31,7 @@ use ironclaw_product_contracts::surface::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use super::profiles::{self, ProfileHome};
 use crate::reborn_services::{
     CANCEL_RUN_COMMAND_ID, CREATE_THREAD_COMMAND_ID, SUBMIT_TURN_COMMAND_ID,
 };
@@ -37,12 +39,22 @@ use crate::reborn_services::{
 pub struct OrchestratedProductSurface {
     inner: Arc<dyn ProductSurface>,
     engine: Arc<Engine>,
+    /// `None` when the process has no home folder: profile routes then fail.
+    home: Option<ProfileHome>,
 }
 
 impl OrchestratedProductSurface {
     pub fn new(inner: Arc<dyn ProductSurface>, engine: Arc<Engine>) -> Self {
-        Self { inner, engine }
+        Self {
+            inner,
+            engine,
+            home: ProfileHome::from_env(),
+        }
     }
+}
+
+fn to_json<T: serde::Serialize>(value: T) -> Result<Value, OrchestratorError> {
+    Ok(serde_json::to_value(value)?)
 }
 
 pub(crate) fn scope_of(caller: &ProductSurfaceCaller) -> ThreadScope {
@@ -195,9 +207,80 @@ impl OrchestratedProductSurface {
                     .await,
                 )
             }
+            v if v == PROFILES_VIEW.id || v == PROFILE_VIEW.id => answer(
+                async {
+                    let home = self.home()?;
+                    if v == PROFILES_VIEW.id {
+                        to_json(profiles::list(engine, home, scope).await?)
+                    } else {
+                        let req: ProfileRequest = serde_json::from_value(input)?;
+                        to_json(profiles::get(engine, home, scope, &req.profile_id).await?)
+                    }
+                }
+                .await,
+            ),
             _ => return Ok(None),
         };
         result.map(Some)
+    }
+
+    fn home(&self) -> Result<&ProfileHome, OrchestratorError> {
+        self.home.as_ref().ok_or_else(|| {
+            OrchestratorError::request("profiles_unavailable", "The backend has no home folder.")
+        })
+    }
+
+    /// `profiles.thread_create`: a new thread that belongs to one profile.
+    async fn create_profile_thread(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: ProductSurfaceInvokeRequest,
+        scope: &ThreadScope,
+    ) -> Result<Value, ProductSurfaceError> {
+        let body: ProfileThreadCreateRequest = decode(request.input.clone())?;
+        let profile = answer(
+            profiles::require_active(&self.engine, scope, &body.profile_id)
+                .await
+                .and_then(|id| to_json(id.as_str())),
+        )?;
+        let Some(profile_id) = profile.as_str().map(str::to_string) else {
+            return Ok(profile); // the correctable error document
+        };
+        let create = ProductCreateThreadRequest {
+            client_action_id: body.client_action_id,
+            requested_thread_id: None,
+            project_id: caller.project_id.as_ref().map(|p| p.as_str().to_string()),
+        };
+        let input = serde_json::to_value(create).map_err(ProductSurfaceError::internal_from)?;
+        let operation_id = ironclaw_host_api::ids::CapabilityId::new(CREATE_THREAD_COMMAND_ID)
+            .map_err(ProductSurfaceError::internal_from)?;
+        let response = self
+            .inner
+            .invoke(
+                caller,
+                ProductSurfaceInvokeRequest {
+                    operation_id,
+                    input,
+                    activity_id: request.activity_id,
+                },
+            )
+            .await?;
+        let thread = response.output["thread"]["thread_id"]
+            .as_str()
+            .and_then(|raw| ThreadId::new(raw).ok())
+            .ok_or_else(|| ProductSurfaceError::internal_from("create thread returned no id"))?;
+        answer(
+            async {
+                let id = ironclaw_orchestrator::profiles::parse_profile_slug(&profile_id)?;
+                self.engine.ensure_thread(&thread, scope, None).await?;
+                self.engine.store().set_thread_profile(&thread, &id).await?;
+                to_json(ProfileThreadCreateResponse {
+                    thread_id: thread.to_string(),
+                    profile_id,
+                })
+            }
+            .await,
+        )
     }
 
     async fn orchestrator_command(
@@ -208,6 +291,31 @@ impl OrchestratedProductSurface {
     ) -> Result<Option<Value>, ProductSurfaceError> {
         let engine = &self.engine;
         let result = match operation {
+            PROFILE_CREATE_COMMAND_ID | PROFILE_UPDATE_COMMAND_ID => {
+                let req: ProfileWriteRequest = decode(input)?;
+                let create = operation == PROFILE_CREATE_COMMAND_ID;
+                answer(
+                    async {
+                        to_json(profiles::write(engine, self.home()?, scope, req, create).await?)
+                    }
+                    .await,
+                )
+            }
+            PROFILE_DELETE_COMMAND_ID => {
+                let req: ProfileRequest = decode(input)?;
+                answer(
+                    profiles::delete(engine, scope, &req.profile_id)
+                        .await
+                        .map(|()| serde_json::json!({"ok": true})),
+                )
+            }
+            PROFILE_IMPORT_HERMES_COMMAND_ID => {
+                let _: HermesImportRequest = decode(input)?;
+                answer(
+                    async { to_json(profiles::import_hermes(engine, self.home()?, scope).await?) }
+                        .await,
+                )
+            }
             ORCHESTRATOR_TASK_CANCEL_COMMAND_ID => {
                 let req: OrchestratorTaskCancelRequest = decode(input)?;
                 answer(
@@ -321,6 +429,10 @@ impl ProductSurface for OrchestratedProductSurface {
             return Ok(ProductSurfaceInvokeResponse { output });
         }
         match operation.as_str() {
+            PROFILE_THREAD_CREATE_COMMAND_ID => {
+                let output = self.create_profile_thread(caller, request, &scope).await?;
+                Ok(ProductSurfaceInvokeResponse { output })
+            }
             SUBMIT_TURN_COMMAND_ID => {
                 if let Ok(mut body) =
                     serde_json::from_value::<ProductSubmitTurnRequest>(request.input.clone())
@@ -334,16 +446,33 @@ impl ProductSurface for OrchestratedProductSurface {
                         self.engine.ensure_thread(&id, &scope, None).await,
                     );
                     soft("user prompt", self.engine.on_user_prompt(&id).await);
+                    let mut changed = false;
                     match self.engine.take_next_message_context(&id).await {
                         Ok(Some(context)) => {
                             let typed = body.content.take().unwrap_or_default();
                             body.content = Some(format!("{context}\n\n---\n\n{typed}"));
-                            if let Ok(input) = serde_json::to_value(&body) {
-                                request.input = input;
-                            }
+                            changed = true;
                         }
                         Ok(None) => {}
                         Err(error) => soft("next-message context", Err::<(), _>(error)),
+                    }
+                    // A thread without a picked model runs on its profile's default.
+                    let unpicked = body
+                        .model
+                        .as_deref()
+                        .is_none_or(|m| m.trim().is_empty() || m == "default");
+                    if unpicked {
+                        match profiles::default_model(&self.engine, &id).await {
+                            Ok(Some(model)) => {
+                                body.model = Some(model);
+                                changed = true;
+                            }
+                            Ok(None) => {}
+                            Err(error) => soft("profile default model", Err::<(), _>(error)),
+                        }
+                    }
+                    if changed && let Ok(input) = serde_json::to_value(&body) {
+                        request.input = input;
                     }
                 }
                 self.inner.invoke(caller, request).await
