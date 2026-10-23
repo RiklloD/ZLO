@@ -84,7 +84,8 @@ use ironclaw_webui::webui_v2::{
     WEBUI_V2_ROUTE_TRACE_ACCOUNT_LOGIN_LINK, WEBUI_V2_ROUTE_TRACE_ACCOUNT_TRACES,
     WEBUI_V2_ROUTE_TRACE_CREDITS, WEBUI_V2_ROUTE_TRACE_HOLD_AUTHORIZE,
     WEBUI_V2_ROUTE_UPDATE_PROJECT, WEBUI_V2_ROUTE_UPDATE_PROJECT_MEMBER,
-    WEBUI_V2_ROUTE_UPDATE_SKILL, WEBUI_V2_ROUTE_UPSERT_LLM_PROVIDER, webui_v2_routes,
+    WEBUI_V2_ROUTE_UPDATE_SKILL, WEBUI_V2_ROUTE_UPSERT_LLM_PROVIDER, WEBUI_V2_ROUTE_USAGE_REPORT,
+    webui_v2_routes,
 };
 
 /// Expected policy surface for one route. Everything host composition
@@ -834,6 +835,23 @@ fn expected_table() -> Vec<Expected> {
             route_id: WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_TELEMETRY,
             method: NetworkMethod::Get,
             pattern: "/api/webchat/v2/threads/{thread_id}/telemetry",
+            listener_class: ListenerClass::LocalGateway,
+            auth_schemes: &[IngressAuthScheme::BearerToken],
+            scope_source: IngressScopeSource::AuthenticatedCaller,
+            body_limit: BodyLimitPolicy::NoBody,
+            rate_limit_max: 120,
+            rate_limit_window_seconds: 60,
+            rate_limit_scope: RateLimitScope::PerCaller,
+            cors: CorsPolicy::SameOriginOnly,
+            websocket_origin: WebSocketOriginPolicy::NotApplicable,
+            streaming: StreamingMode::None,
+            audit: AuditTraceClass::UserAction,
+            effect_path: AllowedEffectPath::ProductSurface,
+        },
+        Expected {
+            route_id: WEBUI_V2_ROUTE_USAGE_REPORT,
+            method: NetworkMethod::Get,
+            pattern: "/api/webchat/v2/usage",
             listener_class: ListenerClass::LocalGateway,
             auth_schemes: &[IngressAuthScheme::BearerToken],
             scope_source: IngressScopeSource::AuthenticatedCaller,

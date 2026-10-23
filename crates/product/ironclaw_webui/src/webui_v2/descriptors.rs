@@ -198,6 +198,10 @@ pub const WEBUI_V2_PATTERN_PROFILES: &str = "/api/webchat/v2/profiles";
 pub const WEBUI_V2_PATTERN_PROFILE: &str = "/api/webchat/v2/profiles/{profile_id}";
 pub const WEBUI_V2_PATTERN_PROFILE_THREADS: &str = "/api/webchat/v2/profiles/{profile_id}/threads";
 pub const WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES: &str = "/api/webchat/v2/profiles/import/hermes";
+
+// Usage route (subscription usage windows for the Usage page).
+pub const WEBUI_V2_ROUTE_USAGE_REPORT: &str = "webui.v2.usage.report";
+pub const WEBUI_V2_PATTERN_USAGE_REPORT: &str = "/api/webchat/v2/usage";
 pub const WEBUI_V2_PATTERN_CREATE_THREAD: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_THREADS: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_NOTIFICATIONS: &str = "/api/webchat/v2/notifications";
@@ -433,6 +437,7 @@ pub fn webui_v2_routes_with_artifact_flags(
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES,
         ),
+        usage_report_descriptor(),
         resolve_gate_descriptor(),
         retry_run_descriptor(),
         list_commands_descriptor(),
@@ -2513,4 +2518,18 @@ fn rate_limit_per_caller(max: u32, window_secs: u32) -> RateLimitPolicy {
         max_requests: NonZeroU32::new(max).expect("max_requests must be non-zero"), // safety: all call sites pass crate-local positive constants (12, 60, 120)
         window_seconds: NonZeroU32::new(window_secs).expect("window_seconds must be non-zero"), // safety: all call sites pass crate-local positive constants (60)
     }
+}
+
+fn usage_report_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_USAGE_REPORT,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_USAGE_REPORT,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
 }

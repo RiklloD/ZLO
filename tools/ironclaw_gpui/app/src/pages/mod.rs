@@ -10,6 +10,7 @@ pub mod profiles;
 pub mod projects;
 pub mod settings;
 pub mod skills;
+pub mod usage;
 
 use crate::ui::*;
 

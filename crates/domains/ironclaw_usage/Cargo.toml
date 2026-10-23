@@ -1,0 +1,32 @@
+[package]
+name = "ironclaw_usage"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+description = "Subscription usage windows for IronClaw's Usage page (CLI logins, coding-plan quotas); logic ported from CodexBar (MIT)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.ironclaw]
+layer = "substrates"
+
+[dependencies]
+async-trait = "0.1"
+chrono = "0.4"
+futures = "0.3"
+ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
+# Every provider call goes out through the network boundary with a
+# one-host policy (AGENTS.md: external HTTP goes through ironclaw_network).
+ironclaw_network = { path = "../../substrates/ironclaw_network" }
+# The report DTO and the operator secret-value port (the coding-plan key).
+ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
+secrecy = "0.10"
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "process", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts", features = ["test-support"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }

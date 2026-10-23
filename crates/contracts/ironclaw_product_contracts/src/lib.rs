@@ -70,6 +70,7 @@ pub mod suggestions;
 pub mod surface;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod usage;
 pub mod views;
 pub mod workspace_views;
 

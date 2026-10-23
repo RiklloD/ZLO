@@ -46,6 +46,12 @@ impl BatterySaver {
         }
     }
 
+    /// Engaged: the window is in the background or idle. Pollers skip
+    /// their tick while this holds.
+    pub fn saving(&self) -> bool {
+        self.idle || !self.active
+    }
+
     pub fn set_active(&mut self, window: &Window, cx: &mut App) {
         self.active = window.is_window_active();
         if self.active {
