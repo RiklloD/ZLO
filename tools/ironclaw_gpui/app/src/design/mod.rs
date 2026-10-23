@@ -1,0 +1,268 @@
+//! Design system: one palette, layout numbers, fonts, motion and the battery
+//! saver. Colors and helpers are adapted from Zeron (MIT, see
+//! `THIRD_PARTY_NOTICES.md`).
+//!
+//! `install` writes the palette into gpui-kit's theme, so every existing
+//! screen and component repaints from it. New code reads [`Palette`] for the
+//! tokens gpui-kit has no slot for (raised surfaces, hairlines, washes).
+//! Dark only for now; a light palette is one more constructor here.
+
+pub mod battery;
+pub mod motion;
+pub mod prefs;
+pub mod themes;
+pub mod wallpaper;
+
+use std::borrow::Cow;
+
+use gpui_kit::component::theme::{Theme, ThemeMode};
+use gpui_kit::{App, Global, Hsla, hsla, px};
+
+// Layout numbers. Colors are paint; these drive layout and never depend on it.
+pub const SIDEBAR_WIDTH: f32 = 264.;
+pub const TITLEBAR_HEIGHT: f32 = 38.;
+pub const STATUS_BAR_HEIGHT: f32 = 24.;
+/// Gap between the window edge and the inset content panel.
+pub const PANEL_INSET: f32 = 6.;
+pub const PANEL_RADIUS: f32 = 10.;
+pub const CONTROL_RADIUS: f32 = 6.;
+
+pub const FONT_SANS: &str = "Geist";
+pub const FONT_MONO: &str = "Geist Mono";
+
+/// Paint tokens. Read with [`Palette::of`].
+#[derive(Clone, Copy)]
+pub struct Palette {
+    /// Main content panel, the deepest plane.
+    pub bg: Hsla,
+    /// Shell and sidebar, one step up from `bg`.
+    pub surface: Hsla,
+    /// Opaque pills and chips.
+    pub surface_raised: Hsla,
+    pub surface_card: Hsla,
+    pub surface_overlay: Hsla,
+    pub hover: Hsla,
+    pub active: Hsla,
+    pub border: Hsla,
+    pub border_strong: Hsla,
+    pub text: Hsla,
+    pub text_muted: Hsla,
+    pub text_faint: Hsla,
+    /// Near-white plate for primary buttons, `on_solid` is its label.
+    pub solid: Hsla,
+    pub on_solid: Hsla,
+    pub accent: Hsla,
+    pub accent_strong: Hsla,
+    pub accent_wash: Hsla,
+    pub danger: Hsla,
+    pub warning: Hsla,
+    pub success: Hsla,
+}
+
+impl Global for Palette {}
+
+impl Palette {
+    /// Every token from a preset's eleven seed colors.
+    pub fn from_seed(t: &themes::ThemeSeed) -> Self {
+        let accent = hex(t.accent);
+        let accent_strong = Hsla {
+            l: accent.l * 0.85,
+            ..accent
+        };
+        let text = hex(t.text);
+        Self {
+            bg: hex(t.bg),
+            surface: hex(t.shell),
+            surface_raised: hex(t.raised),
+            surface_card: hex(t.card),
+            surface_overlay: lift(hex(t.card), 0.035),
+            hover: text.opacity(0.07),
+            active: text.opacity(0.11),
+            border: hsla(0., 0., 1., 0.08),
+            border_strong: hsla(0., 0., 1., 0.14),
+            text,
+            text_muted: hex(t.muted),
+            text_faint: hex(t.faint),
+            solid: text,
+            on_solid: hex(t.card),
+            accent,
+            accent_strong,
+            accent_wash: accent_strong.opacity(0.18),
+            danger: hex(t.danger),
+            warning: hex(t.warning),
+            success: hex(t.success),
+        }
+    }
+
+    pub fn of(cx: &App) -> &Self {
+        cx.global::<Self>()
+    }
+}
+
+/// Load the fonts and paint gpui-kit's theme from the palette. Call once,
+/// right after `gpui_kit::init`.
+pub fn install(cx: &mut App) {
+    let fonts: Vec<Cow<'static, [u8]>> = vec![
+        Cow::Borrowed(include_bytes!("../../assets/fonts/Geist.ttf")),
+        Cow::Borrowed(include_bytes!("../../assets/fonts/Geist-Medium.ttf")),
+        Cow::Borrowed(include_bytes!("../../assets/fonts/Geist-SemiBold.ttf")),
+        Cow::Borrowed(include_bytes!("../../assets/fonts/GeistMono.ttf")),
+    ];
+    let have_fonts = match cx.text_system().add_fonts(fonts) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("bundled fonts failed to load, using system fonts: {e}");
+            false
+        }
+    };
+
+    cx.set_global(prefs::Prefs::load());
+    apply_theme(cx, have_fonts);
+}
+
+/// Switch preset: repaint gpui-kit's theme and rebuild the wallpaper.
+pub fn set_theme(id: &str, cx: &mut App) {
+    let id = id.to_string();
+    prefs::Prefs::update(cx, |p| p.theme = id);
+    apply_theme(cx, true);
+}
+
+pub fn set_wallpaper(choice: prefs::Wallpaper, cx: &mut App) {
+    prefs::Prefs::update(cx, |p| p.wallpaper = choice);
+    wallpaper::reload(cx);
+}
+
+fn apply_theme(cx: &mut App, have_fonts: bool) {
+    let p = Palette::from_seed(themes::find(&prefs::Prefs::of(cx).theme));
+    cx.set_global(p);
+    // Load the dark base first; a mode switch reloads colors, so the palette
+    // goes in a second update (gpui-kit's documented order).
+    Theme::change(ThemeMode::Dark, None, cx);
+    Theme::update(cx, |t| {
+        if have_fonts {
+            t.font_family = FONT_SANS.into();
+            t.mono_font_family = FONT_MONO.into();
+        }
+        t.font_size = px(14.);
+        t.mono_font_size = px(13.);
+        t.radius = px(CONTROL_RADIUS);
+        t.radius_lg = px(PANEL_RADIUS);
+        t.shadow = false;
+
+        let c = &mut t.colors;
+        c.background = p.bg;
+        c.foreground = p.text;
+        c.border = p.border;
+        c.input = p.border_strong;
+        c.ring = p.accent.opacity(0.6);
+        c.caret = p.accent;
+        c.selection = p.accent.opacity(0.35);
+        c.muted = p.surface_raised;
+        c.muted_foreground = p.text_muted;
+        c.accent = p.hover;
+        c.accent_foreground = p.text;
+        c.popover = p.surface_overlay;
+        c.popover_foreground = p.text;
+        c.overlay = hsla(0., 0., 0., 0.6);
+        c.window_border = p.border;
+        c.title_bar = p.surface;
+        c.title_bar_border = p.border;
+        c.status_bar = p.surface;
+        c.status_bar_border = p.border;
+
+        c.sidebar = p.surface;
+        c.sidebar_foreground = p.text_muted;
+        c.sidebar_border = p.border;
+        c.sidebar_accent = p.active;
+        c.sidebar_accent_foreground = p.text;
+        c.sidebar_primary = p.accent;
+        c.sidebar_primary_foreground = p.text;
+
+        c.primary = p.solid;
+        c.primary_hover = lift(p.solid, 0.05);
+        c.primary_active = p.text_muted;
+        c.primary_foreground = p.on_solid;
+        c.secondary = p.hover;
+        c.secondary_hover = p.active;
+        c.secondary_active = hsla(0., 0., 0.92, 0.16);
+        c.secondary_foreground = p.text;
+
+        c.button_primary = p.solid;
+        c.button_primary_hover = lift(p.solid, 0.05);
+        c.button_primary_active = p.text_muted;
+        c.button_primary_foreground = p.on_solid;
+        c.button = p.hover;
+        c.button_hover = p.active;
+        c.button_active = hsla(0., 0., 0.92, 0.16);
+        c.button_foreground = p.text;
+        c.button_secondary = p.hover;
+        c.button_secondary_hover = p.active;
+        c.button_secondary_active = hsla(0., 0., 0.92, 0.16);
+        c.button_secondary_foreground = p.text;
+
+        c.list = p.bg;
+        c.list_even = p.bg;
+        c.list_head = p.surface;
+        c.list_hover = p.hover;
+        c.list_active = p.active;
+        c.list_active_border = p.border_strong;
+        c.table = p.bg;
+        c.table_even = p.bg;
+        c.table_head = p.surface;
+        c.table_head_foreground = p.text_muted;
+        c.table_hover = p.hover;
+        c.table_active = p.active;
+        c.table_active_border = p.border_strong;
+        c.table_row_border = p.border;
+        c.tab_bar = p.surface;
+        c.tab = p.surface;
+        c.tab_active = p.bg;
+        c.tab_foreground = p.text_muted;
+        c.tab_active_foreground = p.text;
+        c.group_box = p.surface_card;
+        c.group_box_foreground = p.text;
+        c.skeleton = p.surface_raised;
+        c.scrollbar = hsla(0., 0., 0., 0.);
+        c.scrollbar_thumb = hsla(0., 0., 1., 0.12);
+        c.scrollbar_thumb_hover = hsla(0., 0., 1., 0.2);
+        c.switch = p.surface_raised;
+        c.switch_thumb = p.text;
+        c.slider_bar = p.accent;
+        c.slider_thumb = p.text;
+        c.progress_bar = p.accent;
+        c.link = p.accent;
+        c.link_hover = lift(p.accent, 0.08);
+        c.link_active = p.accent_strong;
+        c.drag_border = p.accent;
+        c.drop_target = p.accent_wash;
+
+        c.danger = p.danger;
+        c.danger_hover = p.danger.opacity(0.9);
+        c.danger_active = p.danger.opacity(0.8);
+        c.danger_foreground = p.on_solid;
+        c.button_danger = p.danger.opacity(0.16);
+        c.button_danger_hover = p.danger.opacity(0.24);
+        c.button_danger_active = p.danger.opacity(0.3);
+        c.button_danger_foreground = p.danger;
+        c.warning = p.warning;
+        c.warning_foreground = p.on_solid;
+        c.success = p.success;
+        c.success_foreground = p.on_solid;
+        c.info = p.accent;
+        c.info_foreground = p.text;
+    });
+    wallpaper::reload(cx);
+}
+
+/// `0xRRGGBB` as Hsla.
+pub fn hex(rgb: u32) -> Hsla {
+    gpui_kit::rgb(rgb).into()
+}
+
+/// Lighter by `by` (0..1 of lightness).
+fn lift(c: Hsla, by: f32) -> Hsla {
+    Hsla {
+        l: (c.l + by).min(1.),
+        ..c
+    }
+}

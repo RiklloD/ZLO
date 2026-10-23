@@ -3258,9 +3258,12 @@ name = "ironclaw_gpui"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs 6.0.0",
  "futures",
  "gpui-kit",
+ "image",
  "ironclaw_gpui_client",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

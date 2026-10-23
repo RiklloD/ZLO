@@ -1,6 +1,7 @@
 //! Settings: which model IronClaw uses, provider API keys and logins, and
 //! what tools may do without asking.
 
+mod appearance;
 mod traces;
 
 use std::collections::HashMap;
@@ -998,6 +999,8 @@ impl Render for SettingsView {
             })
             .child(section_title("Model"))
             .child(self.render_models(cx))
+            .child(section_title("Appearance"))
+            .child(appearance::render(cx))
             .child(section_title("Desktop app"))
             .child(self.render_desktop(cx))
             .child(section_title("Trace Commons"))

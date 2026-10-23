@@ -12,8 +12,7 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-repo=$(cd "$here/../.." && pwd)
-icon_src="$repo/crates/product/ironclaw_webui/frontend/public/assets/apple-touch-icon.png"
+icon_src="$here/app/assets/icon.png"
 app="$here/target/IronClaw.app"
 dest="$HOME/Applications/IronClaw.app"
 
@@ -25,7 +24,7 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/ironclaw-desktop "$app/Contents/MacOS/ironclaw-desktop"
 
-# Icon: every size macOS asks for, scaled from the WebUI's 180 px icon.
+# Icon: every size macOS asks for, scaled from the 1024 px app icon.
 iconset=$(mktemp -d)/AppIcon.iconset
 mkdir -p "$iconset"
 for size in 16 32 128 256 512; do

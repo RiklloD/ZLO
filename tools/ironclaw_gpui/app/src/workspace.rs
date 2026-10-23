@@ -8,6 +8,9 @@ use ironclaw_gpui_client::{Backend, Client, ClientError, Connection};
 
 use crate::alerts::Alerts;
 use crate::chat::{ChatView, OpenThread, RunEnded, ThreadUpdated};
+use crate::design::battery::BatterySaver;
+use crate::design::prefs::Prefs;
+use crate::design::{self, Palette, motion, wallpaper};
 use crate::jobs;
 use crate::pages::PageEvent;
 use crate::pages::automations::AutomationsView;
@@ -19,9 +22,9 @@ use crate::pages::projects::ProjectsView;
 use crate::pages::settings::SettingsView;
 use crate::pages::skills::SkillsView;
 use crate::ui::*;
+use gpui_kit::StyledImage as _;
 
 const THREAD_PAGE: u32 = 100;
-const SIDEBAR_WIDTH: f32 = 260.;
 /// The inbox has no live stream, so the badge polls. One tiny request.
 const UNREAD_POLL: Duration = Duration::from_secs(15);
 /// Retry schedule while the gateway is unreachable (seconds, last repeats).
@@ -29,6 +32,11 @@ const UNREAD_POLL: Duration = Duration::from_secs(15);
 /// Enough to catch every new item between two polls.
 const ALERT_PAGE: u32 = 20;
 const CONNECT_RETRY: [u64; 5] = [1, 2, 5, 10, 30];
+
+/// Whether the bottom status bar shows. Toggled app-wide with Cmd+Shift+S.
+pub fn toggle_status_bar(cx: &mut App) {
+    Prefs::update(cx, |p| p.status_bar_hidden = !p.status_bar_hidden);
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -81,6 +89,8 @@ pub struct Workspace {
     connect_attempt: usize,
     _retry: Option<Task<()>>,
     alerts: Alerts,
+    battery: BatterySaver,
+    _activation: Subscription,
 }
 
 impl Workspace {
@@ -100,7 +110,12 @@ impl Workspace {
             connect_attempt: 0,
             _retry: None,
             alerts: Alerts::default(),
+            battery: BatterySaver::new(),
+            _activation: cx.observe_window_activation(window, |this, window, cx| {
+                this.battery.set_active(window, cx)
+            }),
         };
+        this.battery.start(|w: &mut Self| &mut w.battery, cx);
         // Clicking a system notification brings the window up on its thread.
         let weak = cx.entity().downgrade();
         let handle = window.window_handle();
@@ -445,7 +460,6 @@ impl Workspace {
     }
 
     fn render_nav(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
         let mut items = vec![
             (Page::Notifications, IconName::Bell, "Notifications"),
             (Page::Automations, IconName::Calendar, "Automations"),
@@ -462,29 +476,14 @@ impl Workspace {
         v_flex()
             .px_2()
             .pb_2()
-            .gap_0p5()
+            .gap_px()
             .children(
                 items
                     .into_iter()
                     .enumerate()
                     .map(|(ix, (page, icon, label))| {
-                        let active = self.page == page;
-                        h_flex()
-                            .id(("nav", ix))
-                            .role(Role::Button)
+                        sidebar_row(("nav", ix), self.page == page, cx)
                             .aria_label(label)
-                            .w_full()
-                            .gap_2()
-                            .px_2()
-                            .py_1p5()
-                            .rounded(theme.radius)
-                            .text_sm()
-                            .cursor_pointer()
-                            .when(active, |d| {
-                                d.bg(theme.sidebar_accent)
-                                    .text_color(theme.sidebar_accent_foreground)
-                            })
-                            .when(!active, |d| d.hover(|s| s.bg(theme.sidebar_accent)))
                             .on_click(
                                 cx.listener(move |this, _, window, cx| this.show(page, window, cx)),
                             )
@@ -510,31 +509,15 @@ impl Workspace {
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active.as_ref().map(|(id, _)| id.clone());
-        let theme = cx.theme();
+        let p = *Palette::of(cx);
         let rows =
             self.threads.iter().enumerate().map(|(ix, thread)| {
                 let id = thread.thread_id.clone();
                 let delete_id = id.clone();
                 let is_active = self.page == Page::Chat && active.as_deref() == Some(id.as_str());
-                h_flex()
-                    .id(("thread", ix))
-                    .role(Role::Button)
+                sidebar_row(("thread", ix), is_active, cx)
                     .aria_label(thread.display_title().to_string())
                     .group("thread-row")
-                    .w_full()
-                    .px_2()
-                    .py_1p5()
-                    .gap_1()
-                    .rounded(theme.radius)
-                    .text_sm()
-                    .cursor_pointer()
-                    .when(is_active, |this| {
-                        this.bg(theme.sidebar_accent)
-                            .text_color(theme.sidebar_accent_foreground)
-                    })
-                    .when(!is_active, |this| {
-                        this.hover(|s| s.bg(theme.sidebar_accent))
-                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_thread(id.clone(), window, cx)
                     }))
@@ -564,46 +547,41 @@ impl Workspace {
             });
 
         v_flex()
-            .w(px(SIDEBAR_WIDTH))
+            .w(px(design::SIDEBAR_WIDTH))
             .h_full()
             .flex_none()
-            .bg(theme.sidebar)
-            .text_color(theme.sidebar_foreground)
-            .border_r_1()
-            .border_color(theme.sidebar_border)
+            .text_color(p.text_muted)
+            // Titlebar strip: traffic lights sit on the left, macOS drags
+            // the window from the empty space.
             .child(
                 h_flex()
-                    .justify_between()
-                    .px_3()
-                    .py_3()
-                    .child(div().font_semibold().child("IronClaw")),
-            )
-            .child(self.render_nav(cx))
-            .child(
-                h_flex()
-                    .justify_between()
+                    .h(px(design::TITLEBAR_HEIGHT))
+                    .flex_none()
+                    .justify_end()
                     .items_center()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_medium()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Conversations"),
-                    )
+                    .pr_2()
                     .child(
                         Button::new("new-thread")
                             .icon(IconName::Plus)
                             .ghost()
-                            .xsmall()
+                            .small()
                             .tooltip("New conversation")
                             .accessibility_label("New conversation")
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.new_thread(window, cx)),
                             ),
                     ),
+            )
+            .child(self.render_nav(cx))
+            .child(
+                div()
+                    .px_4()
+                    .pt_3()
+                    .pb_1()
+                    .text_xs()
+                    .font_medium()
+                    .text_color(p.text_faint)
+                    .child("Conversations"),
             )
             .child(
                 v_flex()
@@ -612,7 +590,7 @@ impl Workspace {
                     .min_h_0()
                     .overflow_y_scroll()
                     .px_2()
-                    .gap_0p5()
+                    .gap_px()
                     .children(rows),
             )
             .child(
@@ -627,6 +605,63 @@ impl Workspace {
                 ),
             )
     }
+
+    /// The bottom strip. Stage 4 fills its right side with context use,
+    /// tokens per second and cache hit rate.
+    fn render_status_bar(&self, cx: &App) -> impl IntoElement {
+        let p = Palette::of(cx);
+        let (dot, label): (_, SharedString) = match &self.conn {
+            Conn::Connecting => (p.warning, "Connecting".into()),
+            Conn::Failed { .. } => (p.danger, "Disconnected".into()),
+            Conn::Ready => {
+                let host = self
+                    .backend
+                    .as_ref()
+                    .map(|b| b.client().connection().base_url.clone())
+                    .unwrap_or_default();
+                let host = host
+                    .trim_start_matches("http://")
+                    .trim_start_matches("https://")
+                    .trim_end_matches('/')
+                    .to_string();
+                (p.success, format!("Connected · {host}").into())
+            }
+        };
+        h_flex()
+            .h(px(design::STATUS_BAR_HEIGHT))
+            .flex_none()
+            .px_3()
+            .gap_2()
+            .items_center()
+            .text_xs()
+            .text_color(p.text_faint)
+            .child(div().size(px(6.)).rounded_full().bg(dot))
+            .child(label)
+            .child(div().flex_1())
+            .child("⌘⇧S hides this bar")
+    }
+}
+
+/// One sidebar row: Zeron's quiet list style, a wash on hover and a
+/// stronger one when selected.
+fn sidebar_row(
+    id: impl Into<ElementId>,
+    active: bool,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let p = Palette::of(cx);
+    h_flex()
+        .id(id)
+        .role(Role::Button)
+        .w_full()
+        .h(px(30.))
+        .gap_2()
+        .px_2()
+        .rounded(px(design::CONTROL_RADIUS))
+        .text_sm()
+        .cursor_pointer()
+        .when(active, |d| d.bg(p.active).text_color(p.text))
+        .when(!active, |d| d.hover(|s| s.bg(p.hover).text_color(p.text)))
 }
 
 /// Turn the two common first-run failures into instructions.
@@ -645,12 +680,15 @@ fn friendly(error: &ClientError) -> String {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = *Palette::of(cx);
+        let backdrop = wallpaper::current(cx);
         let body: AnyElement = match &self.conn {
             Conn::Connecting => v_flex()
                 .size_full()
                 .items_center()
                 .justify_center()
                 .gap_2()
+                .text_color(p.text_muted)
                 .child(Spinner::new())
                 .child("Connecting to IronClaw")
                 .into_any_element(),
@@ -665,7 +703,7 @@ impl Render for Workspace {
                     div()
                         .max_w(px(520.))
                         .text_sm()
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(p.text_muted)
                         .whitespace_normal()
                         .child(message.clone()),
                 )
@@ -673,7 +711,7 @@ impl Render for Workspace {
                     this.child(
                         div()
                             .text_xs()
-                            .text_color(cx.theme().muted_foreground)
+                            .text_color(p.text_faint)
                             .child(format!("Trying again in {secs} s")),
                     )
                 })
@@ -708,37 +746,132 @@ impl Render for Workspace {
                     Page::Settings => self.pages.settings.clone().map(|v| v.into_any_element()),
                     Page::Operator => self.pages.operator.clone().map(|v| v.into_any_element()),
                 };
+                // Replays the entrance on every page or thread switch.
+                let key: SharedString = match (self.page, &self.active) {
+                    (Page::Chat, Some((id, _))) => format!("main-chat-{id}").into(),
+                    (page, _) => format!("main-{}", page as u8).into(),
+                };
                 let main: AnyElement = match (page, &self.active) {
                     (Some(page), _) => page,
                     (None, Some((_, chat))) => chat.clone().into_any_element(),
-                    (None, None) => v_flex()
-                        .size_full()
-                        .items_center()
-                        .justify_center()
-                        .gap_3()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("No conversation open")
-                        .child(
-                            Button::new("start-thread")
-                                .label("Start a conversation")
-                                .primary()
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.new_thread(window, cx)),
-                                ),
-                        )
-                        .into_any_element(),
+                    (None, None) => self.render_empty(cx).into_any_element(),
                 };
                 h_flex()
                     .size_full()
+                    .min_h_0()
                     .child(self.render_sidebar(cx))
-                    .child(div().flex_1().min_w_0().h_full().child(main))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .py(px(design::PANEL_INSET))
+                            .pr(px(design::PANEL_INSET))
+                            .child(
+                                div()
+                                    .size_full()
+                                    .rounded(px(design::PANEL_RADIUS))
+                                    .border_1()
+                                    .border_color(p.border)
+                                    .bg(if backdrop.is_some() {
+                                        p.bg.opacity(0.68)
+                                    } else {
+                                        p.bg
+                                    })
+                                    .overflow_hidden()
+                                    .child(motion::fade_in(
+                                        div().size_full().child(main),
+                                        ElementId::Name(key),
+                                        motion::FADE_QUICK,
+                                        0.,
+                                    )),
+                            ),
+                    )
                     .into_any_element()
             }
         };
+        let show_status = !Prefs::of(cx).status_bar_hidden;
+        v_flex()
+            .size_full()
+            .relative()
+            .bg(p.surface)
+            // The wallpaper sits under everything; shell and panel turn to
+            // tinted glass over it.
+            .when_some(backdrop.clone(), |d, image| {
+                d.child(
+                    gpui_kit::img(image)
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .object_fit(gpui_kit::ObjectFit::Cover),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(p.surface.opacity(0.35)),
+                )
+            })
+            .text_color(p.text)
+            .font_family(design::FONT_SANS)
+            .on_mouse_move(
+                cx.listener(|this, _, _, cx| this.battery.input(|w: &mut Self| &mut w.battery, cx)),
+            )
+            .capture_key_down(
+                cx.listener(|this, _, _, cx| this.battery.input(|w: &mut Self| &mut w.battery, cx)),
+            )
+            .child(div().flex_1().min_h_0().child(body))
+            .when(show_status, |d| d.child(self.render_status_bar(cx)))
+    }
+}
+
+impl Workspace {
+    /// No thread open: a soft accent glow at the top of the panel. A static
+    /// gradient, so it costs nothing per frame.
+    fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = *Palette::of(cx);
         div()
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .child(body)
+            .relative()
+            .child(div().absolute().top_0().left_0().right_0().h(px(320.)).bg(
+                gpui_kit::linear_gradient(
+                    180.,
+                    gpui_kit::linear_color_stop(p.accent_wash, 0.),
+                    gpui_kit::linear_color_stop(p.accent_wash.opacity(0.), 1.),
+                ),
+            ))
+            .child(motion::fade_in(
+                v_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_semibold()
+                            .child("What are we building?"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(p.text_muted)
+                            .child("Start a conversation, or pick one from the sidebar."),
+                    )
+                    .child(
+                        Button::new("start-thread")
+                            .label("New conversation")
+                            .primary()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.new_thread(window, cx)),
+                            ),
+                    ),
+                "empty-state",
+                motion::FADE_IN,
+                4.,
+            ))
     }
 }

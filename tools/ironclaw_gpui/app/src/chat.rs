@@ -839,7 +839,6 @@ impl Render for ChatView {
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(cx.theme().background)
             .drag_over::<ExternalPaths>(|this, _, _, cx| this.bg(cx.theme().accent))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 this.attach(paths.paths().to_vec(), cx)
