@@ -19,7 +19,10 @@ use ironclaw_product_contracts::outbound::{
 };
 
 use crate::api::GateDecision;
-use crate::wire::{MessageKind, StreamEvent, TimelineMessage, TimelinePage};
+use crate::wire::{
+    ATTACHMENTS_ONLY_CONTENT, CommandField, CommandOutcome, MessageKind, StreamEvent,
+    TimelineMessage, TimelinePage,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -44,6 +47,7 @@ pub enum Row {
         key: String,
         text: String,
         pending: bool,
+        attachments: Vec<AttachmentChip>,
     },
     Assistant {
         key: String,
@@ -93,6 +97,26 @@ pub enum Row {
         failed: bool,
         retryable: bool,
     },
+    /// A slash command's answer. Local to this view: the gateway does not
+    /// store command results in the timeline.
+    Command {
+        key: String,
+        input: String,
+        title: String,
+        fields: Vec<CommandField>,
+        lines: Vec<String>,
+        failed: bool,
+    },
+}
+
+/// A file on a user message. `message_id` is set once the gateway stored the
+/// bytes, which is when the file can be opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentChip {
+    pub message_id: Option<String>,
+    pub id: String,
+    pub filename: String,
+    pub size: Option<u64>,
 }
 
 impl Row {
@@ -107,7 +131,8 @@ impl Row {
             | Row::Skills { key, .. }
             | Row::WorkSummary { key, .. }
             | Row::Gate { key, .. }
-            | Row::RunNotice { key, .. } => key,
+            | Row::RunNotice { key, .. }
+            | Row::Command { key, .. } => key,
         }
     }
 }
@@ -187,7 +212,9 @@ pub struct Transcript {
     settled: HashSet<String>,
     /// Answers given in this view, kept after the gate closes for its label.
     decisions: HashMap<String, GateDecision>,
-    pending_user: Vec<(u64, String, bool)>,
+    pending_user: Vec<(u64, String, bool, Vec<AttachmentChip>)>,
+    /// Command results, each placed after the last durable message it saw.
+    notes: Vec<(u64, Row)>,
     latest_run: Option<String>,
     tick: u64,
 }
@@ -210,24 +237,66 @@ impl Transcript {
         messages.sort_by_key(|m| m.sequence);
         self.durable = messages;
         // The server accepted these sends; the durable copy replaces them.
-        self.pending_user.retain(|(_, _, acked)| !acked);
+        self.pending_user.retain(|(_, _, acked, _)| !acked);
     }
 
     /// Show a message immediately while the send is in flight.
-    pub fn push_pending_user(&mut self, text: &str) -> u64 {
+    pub fn push_pending_user(&mut self, text: &str, files: &[String]) -> u64 {
         self.tick += 1;
-        self.pending_user.push((self.tick, text.to_string(), false));
+        let chips = files
+            .iter()
+            .enumerate()
+            .map(|(i, name)| AttachmentChip {
+                message_id: None,
+                id: i.to_string(),
+                filename: name.clone(),
+                size: None,
+            })
+            .collect();
+        self.pending_user
+            .push((self.tick, text.to_string(), false, chips));
         self.tick
     }
 
     pub fn ack_pending_user(&mut self, id: u64) {
-        if let Some(entry) = self.pending_user.iter_mut().find(|(i, _, _)| *i == id) {
+        if let Some(entry) = self.pending_user.iter_mut().find(|(i, _, _, _)| *i == id) {
             entry.2 = true;
         }
     }
 
     pub fn drop_pending_user(&mut self, id: u64) {
-        self.pending_user.retain(|(i, _, _)| *i != id);
+        self.pending_user.retain(|(i, _, _, _)| *i != id);
+    }
+
+    /// Show a slash command and its answer (or rejection) in the transcript.
+    pub fn push_command(&mut self, input: &str, outcome: Result<CommandOutcome, String>) {
+        self.tick += 1;
+        let (title, fields, lines, failed) = match outcome {
+            Ok(CommandOutcome {
+                result: Some(r), ..
+            }) => (r.title, r.fields, r.lines, false),
+            Ok(CommandOutcome {
+                rejection: Some(r), ..
+            }) => (String::new(), Vec::new(), vec![r.message], true),
+            Ok(_) => (String::new(), Vec::new(), Vec::new(), false),
+            Err(message) => (String::new(), Vec::new(), vec![message], true),
+        };
+        let anchor = self
+            .durable
+            .iter()
+            .filter(|m| m.is_visible())
+            .map(|m| m.sequence)
+            .max()
+            .unwrap_or(0);
+        let row = Row::Command {
+            key: format!("cmd:{}", self.tick),
+            input: input.to_string(),
+            title,
+            fields,
+            lines,
+            failed,
+        };
+        self.notes.push((anchor, row));
     }
 
     pub fn mark_gate_resolving(&mut self, gate_ref: &str, decision: GateDecision) {
@@ -553,15 +622,34 @@ impl Transcript {
                 && !groups.iter().any(|(r, _)| r.as_deref() == Some(run))
         };
 
+        let mut notes = self.notes.iter().peekable();
         for message in self.durable.iter().filter(|m| m.is_visible()) {
-            let text = message.content.clone().unwrap_or_default();
+            while let Some((_, note)) = notes.next_if(|(anchor, _)| *anchor < message.sequence) {
+                rows.push(note.clone());
+            }
+            let text = message
+                .content
+                .clone()
+                .filter(|c| c != ATTACHMENTS_ONLY_CONTENT)
+                .unwrap_or_default();
             let key = format!("msg:{}", message.message_id);
             match message.kind {
                 MessageKind::User => {
+                    let attachments = message
+                        .attachments
+                        .iter()
+                        .map(|a| AttachmentChip {
+                            message_id: a.storage_key.as_ref().map(|_| message.message_id.clone()),
+                            id: a.id.clone(),
+                            filename: a.filename.clone().unwrap_or_else(|| "attachment".into()),
+                            size: a.size_bytes,
+                        })
+                        .collect();
                     rows.push(Row::User {
                         key,
                         text,
                         pending: false,
+                        attachments,
                     });
                     if let Some(run) = message.turn_run_id.as_deref()
                         && quiet_run(run)
@@ -592,11 +680,13 @@ impl Transcript {
             }
         }
 
-        for (id, text, _) in &self.pending_user {
+        rows.extend(notes.map(|(_, note)| note.clone()));
+        for (id, text, _, chips) in &self.pending_user {
             rows.push(Row::User {
                 key: format!("pending:{id}"),
                 text: text.clone(),
                 pending: true,
+                attachments: chips.clone(),
             });
         }
 

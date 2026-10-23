@@ -8,7 +8,7 @@ use ironclaw_gpui_client::wire::{SessionInfo, ThreadSummary};
 use ironclaw_gpui_client::{Backend, Client, ClientError, Connection};
 
 use crate::alerts::Alerts;
-use crate::chat::{ChatView, RunEnded, ThreadUpdated};
+use crate::chat::{ChatView, OpenThread, RunEnded, ThreadUpdated};
 use crate::jobs;
 use crate::pages::PageEvent;
 use crate::pages::automations::AutomationsView;
@@ -197,10 +197,11 @@ impl Workspace {
             return;
         };
         let channel = session.session_channel_extension_id.clone();
+        let limits = session.attachments.clone();
         let id = thread_id.clone();
         // Replacing the entity drops the old chat, which closes its stream
         // and frees one of the gateway's per-user stream slots.
-        let view = cx.new(|cx| ChatView::new(backend, channel, id, window, cx));
+        let view = cx.new(|cx| ChatView::new(backend, channel, limits, id, window, cx));
         self._chat_events = vec![
             cx.subscribe_in(&view, window, |this, _, _: &ThreadUpdated, window, cx| {
                 this.refresh_threads(cx);
@@ -216,6 +217,14 @@ impl Workspace {
                     this.alerts
                         .post_run(&event.thread_id, event.failed, title.as_deref(), cx);
                 }
+            }),
+            // `/new`: the gateway created the thread; switch after this event.
+            cx.subscribe_in(&view, window, |_, _, event: &OpenThread, window, cx| {
+                let id = event.0.clone();
+                cx.defer_in(window, move |this, window, cx| {
+                    this.refresh_threads(cx);
+                    this.open_thread(id, window, cx);
+                });
             }),
         ];
         self.active = Some((thread_id, view));

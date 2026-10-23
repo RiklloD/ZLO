@@ -30,6 +30,47 @@ pub struct SessionInfo {
     pub capabilities: serde_json::Value,
     #[serde(default)]
     pub features: serde_json::Value,
+    #[serde(default)]
+    pub attachments: AttachmentLimits,
+}
+
+/// `session.attachments`: what the composer may attach. The server
+/// re-validates every upload; these limits only fail fast in the UI.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AttachmentLimits {
+    /// MIME types and `.ext` suffixes, each MIME followed by its extensions.
+    #[serde(default)]
+    pub accept: Vec<String>,
+    pub max_count: usize,
+    pub max_file_bytes: u64,
+    pub max_total_bytes: u64,
+}
+
+impl Default for AttachmentLimits {
+    /// Mirrors `MAX_INLINE_*` in `ironclaw_assistant`, for an older gateway.
+    fn default() -> Self {
+        Self {
+            accept: Vec::new(),
+            max_count: 10,
+            max_file_bytes: 10 * 1024 * 1024,
+            max_total_bytes: 10 * 1024 * 1024,
+        }
+    }
+}
+
+/// One landed attachment on a timeline message (`AttachmentRef`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AttachmentView {
+    pub id: String,
+    #[serde(default)]
+    pub mime_type: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    /// Set once the bytes landed; without it there is nothing to download.
+    #[serde(default)]
+    pub storage_key: Option<String>,
 }
 
 /// One `SessionThreadRecord`, as rendered in the thread list.
@@ -112,7 +153,12 @@ pub struct TimelineMessage {
     pub turn_run_id: Option<String>,
     #[serde(default)]
     pub content: Option<String>,
+    #[serde(default)]
+    pub attachments: Vec<AttachmentView>,
 }
+
+/// Content the web UI sends for a message that is only attachments.
+pub const ATTACHMENTS_ONLY_CONTENT: &str = "__ironclaw_attachments_only_v1__";
 
 impl TimelineMessage {
     /// Rows a person reads in the transcript. Tool-result references and
@@ -122,10 +168,11 @@ impl TimelineMessage {
             self.kind,
             MessageKind::User | MessageKind::Assistant | MessageKind::System
         ) && !matches!(self.status, MessageStatus::Superseded)
-            && self
-                .content
-                .as_deref()
-                .is_some_and(|c| !c.trim().is_empty())
+            && (!self.attachments.is_empty()
+                || self
+                    .content
+                    .as_deref()
+                    .is_some_and(|c| !c.trim().is_empty()))
     }
 }
 
@@ -266,4 +313,49 @@ impl ToolPermission {
     pub fn has_override(&self) -> bool {
         self.effective_source.as_deref() == Some("override")
     }
+}
+
+/// `POST /threads/{id}/commands` (`RebornExecuteProductCommandResponse`, in
+/// `ironclaw_assistant`). Exactly one of `result` / `rejection` is set.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommandOutcome {
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub result: Option<CommandResult>,
+    #[serde(default)]
+    pub rejection: Option<CommandRejection>,
+    #[serde(default)]
+    pub effect: Option<CommandEffect>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommandResult {
+    pub title: String,
+    #[serde(default)]
+    pub fields: Vec<CommandField>,
+    #[serde(default)]
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CommandField {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommandRejection {
+    pub message: String,
+}
+
+/// Client-side effect of a command; new kinds decode as `Other`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CommandEffect {
+    OpenThread {
+        thread_id: String,
+    },
+    #[serde(other)]
+    Other,
 }

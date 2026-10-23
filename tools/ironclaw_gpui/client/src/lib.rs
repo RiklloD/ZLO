@@ -6,7 +6,9 @@
 //! its own, and a GPUI upgrade never touches it.
 
 mod api;
+pub mod attachments;
 mod backend;
+pub mod commands;
 mod connection;
 mod error;
 mod pages;

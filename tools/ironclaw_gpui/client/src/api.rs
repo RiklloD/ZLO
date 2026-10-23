@@ -7,16 +7,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ironclaw_product_contracts::inbound_requests::{
-    ProductCancelRunRequest, ProductCreateThreadRequest, ProductResolveGateRequest,
-    ProductRetryRunRequest, ProductSubmitTurnRequest,
+    ProductCancelRunRequest, ProductCreateThreadRequest, ProductInboundAttachment,
+    ProductResolveGateRequest, ProductRetryRunRequest, ProductSubmitTurnRequest,
 };
+use ironclaw_product_contracts::product_wire::RebornProductCommandListResponse;
 use reqwest::{Method, RequestBuilder};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::connection::Connection;
 use crate::error::ClientError;
-use crate::wire::{CreatedThread, SessionInfo, SubmitAck, ThreadPage, TimelinePage};
+use crate::wire::{
+    ATTACHMENTS_ONLY_CONTENT, CommandOutcome, CreatedThread, SessionInfo, SubmitAck, ThreadPage,
+    TimelinePage,
+};
 
 pub(crate) const V2: &str = "/api/webchat/v2";
 
@@ -156,11 +160,20 @@ impl Client {
         channel: &str,
         thread_id: &str,
         content: &str,
+        attachments: Vec<ProductInboundAttachment>,
     ) -> Result<SubmitAck, ClientError> {
+        // The gateway wants content; an attachments-only send uses the same
+        // placeholder as the web UI, which both clients hide again.
+        let content = if content.trim().is_empty() && !attachments.is_empty() {
+            ATTACHMENTS_ONLY_CONTENT
+        } else {
+            content
+        };
         let body = ProductSubmitTurnRequest {
             client_action_id: Some(client_action_id()),
             thread_id: Some(thread_id.to_string()),
             content: Some(content.to_string()),
+            attachments,
             ..Default::default()
         };
         self.post(&format!("{V2}/channels/{}/messages", seg(channel)), &body)
@@ -230,5 +243,54 @@ impl Client {
             &body,
         )
         .await
+    }
+
+    // --- slash commands ---
+
+    /// The commands this caller may run, in registry order.
+    pub async fn list_commands(&self) -> Result<RebornProductCommandListResponse, ClientError> {
+        self.get(&format!("{V2}/commands")).await
+    }
+
+    /// Run one raw slash-command line (`/status`, `/model use x`) in a thread.
+    pub async fn execute_command(
+        &self,
+        thread_id: &str,
+        text: &str,
+    ) -> Result<CommandOutcome, ClientError> {
+        self.post(
+            &format!("{V2}/threads/{}/commands", seg(thread_id)),
+            &serde_json::json!({ "text": text }),
+        )
+        .await
+    }
+
+    /// The bytes of one landed attachment.
+    pub async fn attachment_bytes(
+        &self,
+        thread_id: &str,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<Vec<u8>, ClientError> {
+        let path = format!(
+            "{V2}/threads/{}/messages/{}/attachments/{}",
+            seg(thread_id),
+            seg(message_id),
+            seg(attachment_id)
+        );
+        let resp = self
+            .request(Method::GET, &path)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await?;
+        let status = resp.status();
+        let bytes = resp.bytes().await?;
+        if !status.is_success() {
+            return Err(ClientError::from_status(
+                status.as_u16(),
+                &String::from_utf8_lossy(&bytes),
+            ));
+        }
+        Ok(bytes.to_vec())
     }
 }

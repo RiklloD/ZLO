@@ -4,7 +4,9 @@
 //! never from `gpui_kit` directly, so a version bump is fixed in this file.
 
 pub use gpui_kit::component::button::{Button, ButtonVariants};
-pub use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+pub use gpui_kit::component::input::{
+    Input, InputEvent, InputState, Position, Textarea, TextareaState,
+};
 pub use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 pub use gpui_kit::component::spinner::Spinner;
 pub use gpui_kit::component::switch::Switch;
@@ -14,10 +16,10 @@ pub use gpui_kit::component::{
 };
 pub use gpui_kit::prelude::FluentBuilder;
 pub use gpui_kit::{
-    AnyElement, App, AppContext, Context, ElementId, Entity, EventEmitter, InteractiveElement,
-    IntoElement, ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, SystemNotification, SystemNotificationResponse, Task, WeakEntity, Window, div,
-    px,
+    AnyElement, App, AppContext, Context, ElementId, Entity, EventEmitter, ExternalPaths,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Render, Role,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, SystemNotification,
+    SystemNotificationResponse, Task, WeakEntity, Window, div, px,
 };
 
 use gpui_kit::component::bubble::{Bubble, BubbleContent, BubbleVariant};

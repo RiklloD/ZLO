@@ -1,9 +1,16 @@
 //! One open thread: transcript, live stream, composer, run controls.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
+use ironclaw_gpui_client::attachments::{self, StagedFile, format_bytes};
+use ironclaw_gpui_client::commands::{match_command, menu_matches, takes_arguments};
 use ironclaw_gpui_client::contract::ProductGateKind;
-use ironclaw_gpui_client::transcript::{GateState, Row, RunEnd, ToolStatus, Transcript};
+use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
+use ironclaw_gpui_client::transcript::{
+    AttachmentChip, GateState, Row, RunEnd, ToolStatus, Transcript,
+};
+use ironclaw_gpui_client::wire::{AttachmentLimits, CommandEffect};
 use ironclaw_gpui_client::{
     Backend, ClientError, EventStream, GateDecision, StreamMessage, StreamStatus,
 };
@@ -17,6 +24,9 @@ const CONTENT_MAX_WIDTH: f32 = 780.;
 pub struct ChatView {
     backend: Backend,
     channel: Option<String>,
+    limits: AttachmentLimits,
+    /// Files to go with the next message.
+    staged: Vec<StagedFile>,
     thread_id: String,
     transcript: Transcript,
     rows: Rc<Vec<Row>>,
@@ -24,6 +34,11 @@ pub struct ChatView {
     composer: Entity<TextareaState>,
     status: StreamStatus,
     error: Option<SharedString>,
+    /// Slash commands from the gateway, loaded once per view.
+    commands: Rc<Vec<RebornProductCommandInfo>>,
+    menu_index: usize,
+    /// The draft the `/` menu was closed for with Esc; typing reopens it.
+    menu_dismissed: Option<SharedString>,
     _stream: Option<EventStream>,
     _pump: Task<()>,
 }
@@ -43,10 +58,16 @@ pub struct RunEnded {
 
 impl EventEmitter<RunEnded> for ChatView {}
 
+/// A command asked to switch conversation (`/new`).
+pub struct OpenThread(pub String);
+
+impl EventEmitter<OpenThread> for ChatView {}
+
 impl ChatView {
     pub fn new(
         backend: Backend,
         channel: Option<String>,
+        limits: AttachmentLimits,
         thread_id: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -57,11 +78,19 @@ impl ChatView {
                 .placeholder("Message IronClaw")
                 .submit_on_enter(true)
         });
-        let subscription = cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
-            if let InputEvent::PressEnter { shift: false, .. } = event {
-                this.send(window, cx);
-            }
-        });
+        let subscription =
+            cx.subscribe_in(
+                &composer,
+                window,
+                |this, _, event, window, cx| match event {
+                    InputEvent::PressEnter { shift: false, .. } => this.send(window, cx),
+                    InputEvent::Change => {
+                        this.menu_index = 0;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            );
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
 
         let (stream, mut rx) = backend.subscribe(&thread_id);
@@ -85,6 +114,8 @@ impl ChatView {
         let mut this = Self {
             backend,
             channel,
+            limits,
+            staged: Vec::new(),
             thread_id,
             transcript: Transcript::default(),
             rows: Rc::new(Vec::new()),
@@ -92,12 +123,199 @@ impl ChatView {
             composer,
             status: StreamStatus::Connecting,
             error: None,
+            commands: Rc::new(Vec::new()),
+            menu_index: 0,
+            menu_dismissed: None,
             _stream: Some(stream),
             _pump: pump,
         };
         cx.on_release(move |_, _| drop(subscription)).detach();
         this.load_timeline(cx);
+        this.load_commands(cx);
         this
+    }
+
+    fn load_commands(&mut self, cx: &mut Context<Self>) {
+        let job = self
+            .backend
+            .spawn(|c| async move { c.list_commands().await });
+        let task = cx.spawn(async move |this, cx| {
+            // Without the inventory every `/` line is sent as a normal message.
+            if let Ok(list) = flatten(job.await) {
+                let _ = this.update(cx, |this, cx| {
+                    this.commands = Rc::new(list.commands);
+                    cx.notify();
+                });
+            }
+        });
+        self.keep(task);
+    }
+
+    fn pick_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        let task = cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await {
+                let _ = this.update(cx, |this, cx| this.attach(paths, cx));
+            }
+        });
+        self.keep(task);
+    }
+
+    /// Read files off the main thread, then stage the ones within limits.
+    fn attach(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let limits = self.limits.clone();
+        let job = self.backend.spawn(move |_| async move {
+            let mut out = Vec::new();
+            for path in paths {
+                out.push(attachments::stage(&path, &limits).await);
+            }
+            Ok::<_, ClientError>(out)
+        });
+        let task = cx.spawn(async move |this, cx| {
+            let Ok(results) = flatten(job.await) else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                let mut problems = Vec::new();
+                for result in results {
+                    match result.and_then(|file| {
+                        attachments::check(&file, &this.staged, &this.limits).map(|()| file)
+                    }) {
+                        Ok(file) => this.staged.push(file),
+                        Err(problem) => problems.push(problem),
+                    }
+                }
+                this.error = (!problems.is_empty()).then(|| problems.join(" ").into());
+                cx.notify();
+            });
+        });
+        self.keep(task);
+    }
+
+    /// Save an attachment to a temp folder and open it in its default app.
+    fn open_attachment(&mut self, chip: AttachmentChip, cx: &mut Context<Self>) {
+        let Some(message_id) = chip.message_id.clone() else {
+            return;
+        };
+        let thread_id = self.thread_id.clone();
+        let job = self.backend.spawn(move |c| async move {
+            let bytes = c
+                .attachment_bytes(&thread_id, &message_id, &chip.id)
+                .await?;
+            let dir = std::env::temp_dir()
+                .join("ironclaw-desktop")
+                .join(&message_id)
+                .join(&chip.id);
+            // The name comes from the sender; keep only its last component.
+            let name = std::path::Path::new(&chip.filename)
+                .file_name()
+                .map(|n| n.to_owned())
+                .unwrap_or_else(|| "attachment".into());
+            let path = dir.join(name);
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .and(tokio::fs::write(&path, bytes).await)
+                .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))?;
+            Ok(path)
+        });
+        let task = cx.spawn(async move |this, cx| {
+            let result = flatten(job.await);
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(path) => cx.open_with_system(&path),
+                Err(e) => this.set_error(e.to_string(), cx),
+            });
+        });
+        self.keep(task);
+    }
+
+    /// Menu entries for the current draft, empty when the menu is closed.
+    fn menu(&self, cx: &App) -> Vec<RebornProductCommandInfo> {
+        let draft = self.composer.read(cx).value();
+        if self.menu_dismissed.as_ref() == Some(&draft) {
+            return Vec::new();
+        }
+        menu_matches(&draft, &self.commands)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Arrow keys, Tab, Enter and Esc drive the menu while it is open.
+    fn on_composer_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let items = self.menu(cx);
+        if items.is_empty() || event.keystroke.modifiers.modified() {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "up" => self.menu_index = (self.menu_index + items.len() - 1) % items.len(),
+            "down" => self.menu_index = (self.menu_index + 1) % items.len(),
+            "tab" | "enter" => {
+                let pick = items[self.menu_index.min(items.len() - 1)].clone();
+                self.pick_command(&pick, window, cx);
+            }
+            "escape" => self.menu_dismissed = Some(self.composer.read(cx).value()),
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// A command without arguments runs at once; others get `/name ` to finish.
+    fn pick_command(
+        &mut self,
+        command: &RebornProductCommandInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if takes_arguments(command) {
+            let text = format!("/{} ", command.name);
+            let end = text.len();
+            self.composer.update(cx, |state, cx| {
+                state.set_value(text, window, cx);
+                state.set_cursor_position(Position::new(0, end as u32), window, cx);
+            });
+        } else {
+            self.composer.update(cx, |state, cx| {
+                state.set_value(format!("/{}", command.name), window, cx)
+            });
+            self.send(window, cx);
+        }
+    }
+
+    fn run_command(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |state, cx| state.clean(window, cx));
+        self.error = None;
+        let thread_id = self.thread_id.clone();
+        let line = text.clone();
+        let job = self
+            .backend
+            .spawn(move |c| async move { c.execute_command(&thread_id, &line).await });
+        let task = cx.spawn(async move |this, cx| {
+            let result = flatten(job.await);
+            let _ = this.update(cx, |this, cx| {
+                let effect = result.as_ref().ok().and_then(|o| o.effect.clone());
+                this.transcript
+                    .push_command(&text, result.map_err(|e| e.to_string()));
+                this.refresh_rows(cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_end(cx));
+                if let Some(CommandEffect::OpenThread { thread_id }) = effect {
+                    cx.emit(OpenThread(thread_id));
+                }
+            });
+        });
+        self.keep(task);
     }
 
     fn load_timeline(&mut self, cx: &mut Context<Self>) {
@@ -184,7 +402,11 @@ impl ChatView {
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).value().trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() && self.staged.is_empty() {
+            return;
+        }
+        if self.staged.is_empty() && match_command(&text, &self.commands).is_some() {
+            self.run_command(text, window, cx);
             return;
         }
         let Some(channel) = self.channel.clone() else {
@@ -194,16 +416,19 @@ impl ChatView {
         self.composer
             .update(cx, |state, cx| state.clean(window, cx));
         self.error = None;
-        let pending = self.transcript.push_pending_user(&text);
+        let files = std::mem::take(&mut self.staged);
+        let names: Vec<String> = files.iter().map(|f| f.filename.clone()).collect();
+        let pending = self.transcript.push_pending_user(&text, &names);
         self.refresh_rows(cx);
         self.scroller
             .update(cx, |state, cx| state.scroll_to_end(cx));
 
         let thread_id = self.thread_id.clone();
         let body = text.clone();
+        let wire = files.iter().map(StagedFile::to_wire).collect();
         let job = self
             .backend
-            .spawn(move |c| async move { c.send_message(&channel, &thread_id, &body).await });
+            .spawn(move |c| async move { c.send_message(&channel, &thread_id, &body, wire).await });
         let task = cx.spawn_in(window, async move |this, cx| {
             let result = flatten(job.await);
             let _ = this.update_in(cx, |this, window, cx| match result {
@@ -216,6 +441,8 @@ impl ChatView {
                 }
                 Err(e) => {
                     this.transcript.drop_pending_user(pending);
+                    // Put the files back so a retry needs no re-picking.
+                    this.staged = files;
                     this.composer
                         .update(cx, |state, cx| state.set_value(text.clone(), window, cx));
                     this.set_error(e.to_string(), cx);
@@ -302,6 +529,8 @@ impl Render for ChatView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows.clone();
         let weak = cx.weak_entity();
+        let menu = self.menu(cx);
+        let menu_index = self.menu_index.min(menu.len().saturating_sub(1));
         let running = self.transcript.active_run().is_some();
         let stopping = self.transcript.is_stopping();
         // Fill the silence between send and the first streamed token.
@@ -333,8 +562,13 @@ impl Render for ChatView {
         };
 
         v_flex()
+            .id("chat")
             .size_full()
             .bg(cx.theme().background)
+            .drag_over::<ExternalPaths>(|this, _, _, cx| this.bg(cx.theme().accent))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.attach(paths.paths().to_vec(), cx)
+            }))
             .when_some(banner, |this, text| {
                 this.child(
                     div()
@@ -377,6 +611,49 @@ impl Render for ChatView {
                     ),
                 )
             })
+            .when(!self.staged.is_empty(), |this| {
+                this.child(
+                    h_flex().justify_center().px_4().pt_2().child(
+                        h_flex()
+                            .w_full()
+                            .max_w(px(CONTENT_MAX_WIDTH))
+                            .flex_wrap()
+                            .gap_1()
+                            .children(self.staged.iter().enumerate().map(|(ix, file)| {
+                                file_chip(
+                                    SharedString::from(format!("staged-{ix}")),
+                                    &file.filename,
+                                    Some(file.bytes.len() as u64),
+                                    cx,
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("unstage-{ix}")))
+                                        .icon(IconName::Close)
+                                        .xsmall()
+                                        .ghost()
+                                        .tooltip("Remove")
+                                        .accessibility_label("Remove")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if ix < this.staged.len() {
+                                                this.staged.remove(ix);
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                            })),
+                    ),
+                )
+            })
+            .when(!menu.is_empty(), |this| {
+                this.child(
+                    h_flex().justify_center().px_4().child(
+                        div()
+                            .w_full()
+                            .max_w(px(CONTENT_MAX_WIDTH))
+                            .child(render_menu(&menu, menu_index, cx)),
+                    ),
+                )
+            })
             .child(
                 h_flex().justify_center().px_4().pb_4().pt_2().child(
                     h_flex()
@@ -384,7 +661,22 @@ impl Render for ChatView {
                         .max_w(px(CONTENT_MAX_WIDTH))
                         .gap_2()
                         .items_end()
-                        .child(div().flex_1().child(Textarea::new(&self.composer)))
+                        .child(
+                            Button::new("attach")
+                                .icon(IconName::Plus)
+                                .ghost()
+                                .tooltip("Attach files")
+                                .accessibility_label("Attach files")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.pick_files(window, cx)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .capture_key_down(cx.listener(Self::on_composer_key))
+                                .child(Textarea::new(&self.composer)),
+                        )
                         .child(if running {
                             Button::new("stop")
                                 .icon(IconName::Square)
@@ -406,7 +698,39 @@ impl Render for ChatView {
 
 fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
     match row {
-        Row::User { text, pending, .. } => user_bubble(text.clone(), *pending).into_any_element(),
+        Row::User {
+            key,
+            text,
+            pending,
+            attachments,
+        } => v_flex()
+            .w_full()
+            .items_end()
+            .gap_1()
+            .when(!text.is_empty(), |this| {
+                this.child(user_bubble(text.clone(), *pending))
+            })
+            .when(!attachments.is_empty(), |this| {
+                this.child(h_flex().flex_wrap().justify_end().gap_1().children(
+                    attachments.iter().enumerate().map(|(ix, chip)| {
+                        let weak = weak.clone();
+                        let open = chip.clone();
+                        file_chip(
+                            SharedString::from(format!("{key}-file-{ix}")),
+                            &chip.filename,
+                            chip.size,
+                            cx,
+                        )
+                        .when(chip.message_id.is_some(), |this| {
+                            this.cursor_pointer().on_click(move |_, _, cx| {
+                                let chip = open.clone();
+                                let _ = weak.update(cx, |this, cx| this.open_attachment(chip, cx));
+                            })
+                        })
+                    }),
+                ))
+            })
+            .into_any_element(),
         Row::Assistant {
             key,
             text,
@@ -507,7 +831,122 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
                 )
             })
             .into_any_element(),
+        Row::Command {
+            input,
+            title,
+            fields,
+            lines,
+            failed,
+            ..
+        } => card(cx)
+            .text_sm()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(Icon::new(IconName::SquareTerminal).xsmall())
+                    .child(input.clone()),
+            )
+            .when(!title.is_empty(), |this| {
+                this.child(div().font_medium().child(title.clone()))
+            })
+            .children(fields.iter().map(|f| {
+                h_flex()
+                    .gap_3()
+                    .child(
+                        div()
+                            .w(px(120.))
+                            .flex_none()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(f.label.clone()),
+                    )
+                    .child(div().flex_1().min_w_0().child(f.value.clone()))
+            }))
+            .children(lines.iter().map(|line| {
+                div()
+                    .when(*failed, |this| this.text_color(cx.theme().danger))
+                    .child(line.clone())
+            }))
+            .into_any_element(),
     }
+}
+
+/// A file name with its size, used for staged and sent attachments.
+fn file_chip(
+    id: SharedString,
+    name: &str,
+    size: Option<u64>,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    h_flex()
+        .id(id)
+        .gap_1p5()
+        .px_2()
+        .py_1()
+        .max_w(px(260.))
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().secondary)
+        .text_xs()
+        .child(Icon::new(IconName::File).xsmall().flex_none())
+        .child(div().min_w_0().truncate().child(name.to_string()))
+        .when_some(size, |this, size| {
+            this.child(
+                div()
+                    .flex_none()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format_bytes(size)),
+            )
+        })
+}
+
+/// The `/` menu above the composer: name, usage and description per command.
+fn render_menu(
+    items: &[RebornProductCommandInfo],
+    selected: usize,
+    cx: &mut Context<ChatView>,
+) -> impl IntoElement {
+    v_flex()
+        .w_full()
+        .max_h(px(280.))
+        .id("command-menu")
+        .overflow_y_scroll()
+        .p_1()
+        .rounded(cx.theme().radius_lg)
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().popover)
+        .shadow_md()
+        .children(items.iter().enumerate().map(|(ix, command)| {
+            let pick = command.clone();
+            h_flex()
+                .id(SharedString::from(format!("cmd-{}", command.name)))
+                .role(Role::Button)
+                .aria_label(command.usage.clone())
+                .gap_3()
+                .px_2()
+                .py_1()
+                .rounded(cx.theme().radius)
+                .text_sm()
+                .cursor_pointer()
+                .when(ix == selected, |this| this.bg(cx.theme().accent))
+                .hover(|this| this.bg(cx.theme().accent))
+                .child(div().font_medium().flex_none().child(command.usage.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(command.description.clone()),
+                )
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.pick_command(&pick, window, cx)),
+                )
+        }))
 }
 
 #[allow(clippy::too_many_arguments)]
