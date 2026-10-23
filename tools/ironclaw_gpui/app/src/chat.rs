@@ -20,6 +20,8 @@ use ironclaw_gpui_client::{
 use crate::jobs::flatten;
 use crate::ui::*;
 
+mod orchestration;
+
 const TIMELINE_LIMIT: u32 = 200;
 const CONTENT_MAX_WIDTH: f32 = 780.;
 
@@ -55,6 +57,8 @@ pub struct ChatView {
     files: Option<FilesPanel>,
     /// The draft the `/` menu was closed for with Esc; typing reopens it.
     menu_dismissed: Option<SharedString>,
+    /// Delegated tasks, queue and lineage of this thread.
+    orch: orchestration::Orchestration,
     _stream: Option<EventStream>,
     _pump: Task<()>,
 }
@@ -145,6 +149,7 @@ impl ChatView {
             model_menu_open: false,
             files: None,
             menu_dismissed: None,
+            orch: Default::default(),
             _stream: Some(stream),
             _pump: pump,
         };
@@ -152,6 +157,7 @@ impl ChatView {
         this.load_timeline(cx);
         this.load_commands(cx);
         this.load_model_choice(cx);
+        this.refresh_orchestration(cx);
         this
     }
 
@@ -637,6 +643,13 @@ impl ChatView {
         if changed {
             self.refresh_rows(cx);
         }
+        // A run end or reload can move tasks and the queue; a run start only
+        // needs the slow poll armed.
+        if reload || ended.is_some() {
+            self.refresh_orchestration(cx);
+        } else {
+            self.ensure_poll(cx);
+        }
         // Stopping a run is the person's own doing; no alert for that.
         if let Some(end @ (RunEnd::Completed | RunEnd::Failed)) = ended {
             cx.emit(RunEnded {
@@ -857,14 +870,27 @@ impl Render for ChatView {
             .child(div().flex_1().min_h_0().child(list.size_full()))
             .child(
                 div().absolute().top_2().right_4().child(
-                    Button::new("files-toggle")
-                        .icon(IconName::FolderOpen)
-                        .ghost()
-                        .small()
-                        .when(files_open, |b| b.selected(true))
-                        .tooltip("Conversation files")
-                        .accessibility_label("Conversation files")
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx))),
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("fork")
+                                .icon(IconName::Copy)
+                                .ghost()
+                                .small()
+                                .tooltip("Fork this conversation")
+                                .accessibility_label("Fork this conversation")
+                                .on_click(cx.listener(|this, _, _, cx| this.fork(cx))),
+                        )
+                        .child(
+                            Button::new("files-toggle")
+                                .icon(IconName::FolderOpen)
+                                .ghost()
+                                .small()
+                                .when(files_open, |b| b.selected(true))
+                                .tooltip("Conversation files")
+                                .accessibility_label("Conversation files")
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx))),
+                        ),
                 ),
             )
             .when(working, |this| {
@@ -929,6 +955,9 @@ impl Render for ChatView {
                             })),
                     ),
                 )
+            })
+            .when_some(self.render_orchestration(cx), |this, panel| {
+                this.child(panel)
             })
             .when_some(model_menu, |this, list| {
                 this.child(

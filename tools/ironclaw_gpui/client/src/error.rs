@@ -30,6 +30,10 @@ pub enum ClientError {
     },
     #[error("unexpected response from the gateway: {0}")]
     Decode(String),
+    /// A correctable refusal the orchestrator answers with HTTP 200 and
+    /// `{"ok": false, "error": code, "message": text}`.
+    #[error("{message}")]
+    Refused { code: String, message: String },
 }
 
 impl ClientError {
