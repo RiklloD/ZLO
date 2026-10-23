@@ -17,6 +17,24 @@ Open items found while building and testing the GPUI client. Newest first.
 - The suggestion generator leaves an empty, untitled thread in the sidebar
   ("New conversation"). Gateway behavior; the web UI likely shows it too.
 
+## Found during 4.4 Operator (23.10.2026)
+
+- macOS service status always reads "stopped". `launchd_status` in
+  `ironclaw_operator/src/operator_service_lifecycle.rs` parses the table form of
+  `launchctl list`, but `launchctl list com.ironclaw.reborn` prints a dictionary
+  (`"PID" = 4289;`). Upstream-worthy fix. The app treats "gateway answered" as
+  running and says so on the service card.
+- Stop from the app also unloads the launchd job (`launchctl unload -w`); the
+  only way back is `ironclaw service start` in a terminal. Start/install are
+  excluded. Follow-up: let the connect screen run that command locally.
+- `DiagnosticSnapshot`, `PromptDiagnostic` and their response wrappers are
+  Serialize-only, so the client decodes a partial shape. Adding Deserialize
+  upstream removes that.
+- Config validate always returns "the effective config service is not wired
+  yet" on this install.
+- Per-conversation logs are always empty: log lines carry the run id, not the
+  conversation id.
+
 ## Native notifications (fixed 23.10.2026)
 
 macOS refused notifications from the ad-hoc signed bundle ("Notifications are
