@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use ironclaw_gpui_client::usage::ThreadTelemetry;
 use ironclaw_gpui_client::wire::{SessionInfo, ThreadSummary};
 use ironclaw_gpui_client::{Backend, Client, ClientError, Connection};
 
@@ -21,6 +22,7 @@ use crate::pages::operator::OperatorView;
 use crate::pages::projects::ProjectsView;
 use crate::pages::settings::SettingsView;
 use crate::pages::skills::SkillsView;
+use crate::pages::usage::{UsageModel, UsageView};
 use crate::ui::*;
 use gpui_kit::StyledImage as _;
 
@@ -32,6 +34,9 @@ const UNREAD_POLL: Duration = Duration::from_secs(15);
 /// Enough to catch every new item between two polls.
 const ALERT_PAGE: u32 = 20;
 const CONNECT_RETRY: [u64; 5] = [1, 2, 5, 10, 30];
+/// Status bar refresh while the window is in use. Telemetry also refreshes
+/// right after each run; usage windows are cached for a minute upstream.
+const STATUS_POLL: Duration = Duration::from_secs(10);
 
 /// Whether the bottom status bar shows. Toggled app-wide with Cmd+Shift+S.
 pub fn toggle_status_bar(cx: &mut App) {
@@ -49,6 +54,7 @@ enum Page {
     Skills,
     Settings,
     Operator,
+    Usage,
 }
 
 /// Pages are built on first visit and kept, so switching back is instant.
@@ -62,6 +68,7 @@ struct Pages {
     skills: Option<Entity<SkillsView>>,
     settings: Option<Entity<SettingsView>>,
     operator: Option<Entity<OperatorView>>,
+    usage: Option<Entity<UsageView>>,
 }
 
 enum Conn {
@@ -91,6 +98,12 @@ pub struct Workspace {
     alerts: Alerts,
     battery: BatterySaver,
     _activation: Subscription,
+    /// Status bar data: the shared usage report and the open thread's
+    /// telemetry (`None` until known, or when the gateway lacks the route).
+    usage: Option<Entity<UsageModel>>,
+    telemetry: Option<ThreadTelemetry>,
+    _usage_observe: Option<Subscription>,
+    _status_poll: Option<Task<()>>,
 }
 
 impl Workspace {
@@ -112,8 +125,13 @@ impl Workspace {
             alerts: Alerts::default(),
             battery: BatterySaver::new(),
             _activation: cx.observe_window_activation(window, |this, window, cx| {
-                this.battery.set_active(window, cx)
+                this.battery.set_active(window, cx);
+                this.refresh_status(cx);
             }),
+            usage: None,
+            telemetry: None,
+            _usage_observe: None,
+            _status_poll: None,
         };
         this.battery.start(|w: &mut Self| &mut w.battery, cx);
         // Clicking a system notification brings the window up on its thread.
@@ -167,6 +185,7 @@ impl Workspace {
                         crate::titles::set_listed(&this.threads, cx);
                         this.conn = Conn::Ready;
                         this.start_polling(window, cx);
+                        this.start_status(backend.clone(), window, cx);
                         if let Some(first) = this.threads.first().map(|t| t.thread_id.clone()) {
                             this.open_thread(first, window, cx);
                         }
@@ -226,6 +245,7 @@ impl Workspace {
                 this.refresh_unread(window, cx);
             }),
             cx.subscribe_in(&view, window, |this, _, event: &RunEnded, window, cx| {
+                this.refresh_telemetry(cx);
                 if !window.is_window_active() {
                     let title = crate::titles::get(cx, &event.thread_id);
                     this.alerts
@@ -242,6 +262,8 @@ impl Workspace {
             }),
         ];
         self.active = Some((thread_id, view));
+        self.telemetry = None;
+        self.refresh_telemetry(cx);
         cx.notify();
     }
 
@@ -454,6 +476,12 @@ impl Workspace {
             Page::Skills => open!(skills, |cx| SkillsView::new(backend, window, cx)),
             Page::Settings => open!(settings, |cx| SettingsView::new(backend, cx)),
             Page::Operator => open!(operator, |cx| OperatorView::new(backend, cx)),
+            Page::Usage => {
+                let Some(model) = self.usage.clone() else {
+                    return;
+                };
+                open!(usage, |cx| UsageView::new(model, cx))
+            }
         }
         self.page = page;
         cx.notify();
@@ -594,22 +622,146 @@ impl Workspace {
                     .children(rows),
             )
             .child(
-                div().p_2().child(
-                    Button::new("open-browser")
-                        .icon(IconName::ExternalLink)
-                        .label("Open in browser")
-                        .ghost()
-                        .small()
-                        .w_full()
-                        .on_click(cx.listener(|this, _, _, cx| this.open_in_browser(cx))),
-                ),
+                h_flex()
+                    .p_2()
+                    .gap_1()
+                    .child(
+                        Button::new("open-browser")
+                            .icon(IconName::ExternalLink)
+                            .label("Open in browser")
+                            .ghost()
+                            .small()
+                            .flex_1()
+                            .on_click(cx.listener(|this, _, _, cx| this.open_in_browser(cx))),
+                    )
+                    .child(
+                        // gpui-kit's default icon set has no bar chart; the
+                        // full catalog would embed 1,830 SVGs for one glyph.
+                        Button::new("open-usage")
+                            .icon(IconName::ChartPie)
+                            .ghost()
+                            .small()
+                            .selected(self.page == Page::Usage)
+                            .tooltip("Usage")
+                            .accessibility_label("Usage")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show(Page::Usage, window, cx)
+                            })),
+                    ),
             )
     }
 
-    /// The bottom strip. Stage 4 fills its right side with context use,
-    /// tokens per second and cache hit rate.
-    fn render_status_bar(&self, cx: &App) -> impl IntoElement {
-        let p = Palette::of(cx);
+    /// Status bar polling: one timer, skipped while the battery saver holds
+    /// (background or idle window) or the bar is hidden.
+    fn start_status(&mut self, backend: Backend, window: &mut Window, cx: &mut Context<Self>) {
+        let model = cx.new(|_| UsageModel::new(backend));
+        self._usage_observe = Some(cx.observe(&model, |_, _, cx| cx.notify()));
+        self.usage = Some(model);
+        self.refresh_status(cx);
+        self._status_poll = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(STATUS_POLL).await;
+                if this.update(cx, |this, cx| this.refresh_status(cx)).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn refresh_status(&mut self, cx: &mut Context<Self>) {
+        if self.battery.saving() {
+            return;
+        }
+        let usage_visible = self.page == Page::Usage;
+        if Prefs::of(cx).status_bar_hidden && !usage_visible {
+            return;
+        }
+        if let Some(model) = self.usage.clone() {
+            model.update(cx, |m, cx| m.refresh(false, cx));
+        }
+        self.refresh_telemetry(cx);
+    }
+
+    fn refresh_telemetry(&mut self, cx: &mut Context<Self>) {
+        let (Some(backend), Some((thread_id, _))) = (self.backend.clone(), self.active.as_ref())
+        else {
+            return;
+        };
+        let id = thread_id.clone();
+        let asked = id.clone();
+        jobs::run(
+            &backend,
+            cx,
+            move |c| async move { c.thread_telemetry(&id).await },
+            move |this, result, cx| {
+                // The user switched threads while this was in flight.
+                if this.active.as_ref().map(|(id, _)| id.as_str()) != Some(asked.as_str()) {
+                    return;
+                }
+                // silent-ok: the bar shows "—" for anything unknown.
+                let telemetry = result.ok().flatten();
+                if this.telemetry != telemetry {
+                    this.telemetry = telemetry;
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    /// Right side of the bar: context, speed, cache, then the busiest
+    /// usage window (click opens the Usage page).
+    fn render_metrics(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = *Palette::of(cx);
+        let t = self.telemetry.as_ref();
+        let dash = || "—".to_string();
+        let context = match t.and_then(|t| t.context_used.zip(t.context_max)) {
+            Some((used, max)) => {
+                let pct = t
+                    .and_then(|t| t.context_pct)
+                    .unwrap_or(used as f64 * 100. / max.max(1) as f64);
+                format!("{} / {} · {pct:.0}%", tokens(used), tokens(max))
+            }
+            None => dash(),
+        };
+        let tps = t
+            .and_then(|t| t.tps)
+            .map(|v| format!("{v:.0} tok/s"))
+            .unwrap_or_else(dash);
+        let cache = t
+            .and_then(|t| t.cache_hit_rate)
+            .map(|r| format!("{:.0}%", r * 100.))
+            .unwrap_or_else(dash);
+        let peak = self.usage.as_ref().and_then(|m| {
+            m.read(cx)
+                .peak()
+                .map(|(provider, w)| (provider.label.clone(), w.label.clone(), w.used_percent))
+        });
+        h_flex()
+            .gap_3()
+            .child(metric("Context", context))
+            .child(metric("Speed", tps))
+            .child(metric("Cache", cache))
+            .when_some(peak, |d, (provider, window, pct)| {
+                let color = crate::pages::usage::level_color(pct, cx);
+                d.child(
+                    h_flex()
+                        .id("status-usage")
+                        .gap_1()
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(p.text))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.show(Page::Usage, window, cx)),
+                        )
+                        .child(div().size(px(6.)).rounded_full().bg(color))
+                        .child(format!("{provider} {window} {pct:.0}%")),
+                )
+            })
+    }
+
+    /// The bottom strip: connection on the left, metrics on the right.
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = *Palette::of(cx);
         let (dot, label): (_, SharedString) = match &self.conn {
             Conn::Connecting => (p.warning, "Connecting".into()),
             Conn::Failed { .. } => (p.danger, "Disconnected".into()),
@@ -638,7 +790,9 @@ impl Workspace {
             .child(div().size(px(6.)).rounded_full().bg(dot))
             .child(label)
             .child(div().flex_1())
-            .child("⌘⇧S hides this bar")
+            .when(matches!(self.conn, Conn::Ready), |d| {
+                d.child(self.render_metrics(cx))
+            })
     }
 }
 
@@ -662,6 +816,24 @@ fn sidebar_row(
         .cursor_pointer()
         .when(active, |d| d.bg(p.active).text_color(p.text))
         .when(!active, |d| d.hover(|s| s.bg(p.hover).text_color(p.text)))
+}
+
+fn metric(name: &'static str, value: String) -> impl IntoElement {
+    h_flex().gap_1().child(name).child(value)
+}
+
+/// 51200 -> "51.2k", 1000000 -> "1M".
+fn tokens(n: u64) -> String {
+    match n {
+        n if n >= 1_000_000 => format!("{}M", trim(n as f64 / 1e6)),
+        n if n >= 1_000 => format!("{}k", trim(n as f64 / 1e3)),
+        n => n.to_string(),
+    }
+}
+
+fn trim(v: f64) -> String {
+    let s = format!("{v:.1}");
+    s.strip_suffix(".0").map(str::to_string).unwrap_or(s)
 }
 
 /// Turn the two common first-run failures into instructions.
@@ -745,6 +917,7 @@ impl Render for Workspace {
                     Page::Skills => self.pages.skills.clone().map(|v| v.into_any_element()),
                     Page::Settings => self.pages.settings.clone().map(|v| v.into_any_element()),
                     Page::Operator => self.pages.operator.clone().map(|v| v.into_any_element()),
+                    Page::Usage => self.pages.usage.clone().map(|v| v.into_any_element()),
                 };
                 // Replays the entrance on every page or thread switch.
                 let key: SharedString = match (self.page, &self.active) {

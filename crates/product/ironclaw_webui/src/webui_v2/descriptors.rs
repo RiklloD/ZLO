@@ -183,6 +183,10 @@ pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK: &str = "/api/webchat/v2/tasks/{task_id}";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL: &str =
     "/api/webchat/v2/tasks/{task_id}/cancel";
+
+// Usage route (subscription usage windows for the Usage page).
+pub const WEBUI_V2_ROUTE_USAGE_REPORT: &str = "webui.v2.usage.report";
+pub const WEBUI_V2_PATTERN_USAGE_REPORT: &str = "/api/webchat/v2/usage";
 pub const WEBUI_V2_PATTERN_CREATE_THREAD: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_THREADS: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_NOTIFICATIONS: &str = "/api/webchat/v2/notifications";
@@ -382,6 +386,7 @@ pub fn webui_v2_routes_with_artifact_flags(
         orchestrator_thread_merge_back_descriptor(),
         orchestrator_task_descriptor(),
         orchestrator_task_cancel_descriptor(),
+        usage_report_descriptor(),
         resolve_gate_descriptor(),
         retry_run_descriptor(),
         list_commands_descriptor(),
@@ -1433,6 +1438,20 @@ fn orchestrator_thread_tasks_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_TASKS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn usage_report_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_USAGE_REPORT,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_USAGE_REPORT,
         read_policy(
             read_rate_limit(),
             AuditTraceClass::UserAction,

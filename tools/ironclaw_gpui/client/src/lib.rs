@@ -16,6 +16,7 @@ mod pages;
 mod settings;
 mod stream;
 pub mod transcript;
+pub mod usage;
 pub mod wire;
 
 pub use api::{Client, GateDecision, client_action_id};

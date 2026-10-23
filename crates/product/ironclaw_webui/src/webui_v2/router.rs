@@ -68,8 +68,9 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_SUGGESTIONS_GENERATE, WEBUI_V2_PATTERN_SUGGESTIONS_LIST,
     WEBUI_V2_PATTERN_TEST_LLM_CONNECTION, WEBUI_V2_PATTERN_TRACE_ACCOUNT_LOGIN_LINK,
     WEBUI_V2_PATTERN_TRACE_ACCOUNT_TRACES, WEBUI_V2_PATTERN_TRACE_CREDITS,
-    WEBUI_V2_PATTERN_TRACE_HOLD_AUTHORIZE, WEBUI_V2_PATTERN_USER_MODEL_CATALOG,
-    WEBUI_V2_PATTERN_USER_MODEL_POLICY, WEBUI_V2_PATTERN_USER_MODEL_PREFERENCE,
+    WEBUI_V2_PATTERN_TRACE_HOLD_AUTHORIZE, WEBUI_V2_PATTERN_USAGE_REPORT,
+    WEBUI_V2_PATTERN_USER_MODEL_CATALOG, WEBUI_V2_PATTERN_USER_MODEL_POLICY,
+    WEBUI_V2_PATTERN_USER_MODEL_PREFERENCE,
 };
 use crate::webui_v2::handlers;
 use crate::webui_v2::sse_capacity::SseCapacity;
@@ -423,6 +424,7 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             WEBUI_V2_PATTERN_NOTIFICATION_CHANNELS,
             get(handlers::get_notification_channels).post(handlers::set_notification_channels),
         )
+        .route(WEBUI_V2_PATTERN_USAGE_REPORT, get(handlers::usage_report))
         .route(
             WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS,
             get(handlers::orchestrator_thread_tasks),

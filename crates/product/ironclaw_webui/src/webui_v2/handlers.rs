@@ -15,11 +15,13 @@
 // arch-exempt: large_file, ProductSurface service-collapse routes stay in the existing WebUI handler table until the WebUI route split lands, plan #5985
 
 mod orchestrator;
+mod usage;
 pub use orchestrator::{
     orchestrator_queue_mutate, orchestrator_task, orchestrator_task_cancel,
     orchestrator_thread_fork, orchestrator_thread_lineage, orchestrator_thread_merge_back,
     orchestrator_thread_queue, orchestrator_thread_runs, orchestrator_thread_tasks,
 };
+pub use usage::usage_report;
 mod run_artifact;
 pub use run_artifact::{
     admin_get_thread_scrape_artifact, admin_get_thread_scrape_run_artifact,

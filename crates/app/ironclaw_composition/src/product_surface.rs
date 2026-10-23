@@ -318,14 +318,21 @@ pub(crate) fn build_product_surface_with_channel_connection(
     }
 
     // Threads route through the orchestrator when the deployment has one.
-    Ok(match runtime.orchestrator.as_ref() {
+    let surface = match runtime.orchestrator.as_ref() {
         Some(engine) => ironclaw_assistant::orchestration::orchestrate(
             engine,
             Arc::new(api),
             runtime.session_channel_extension_id().map(str::to_string),
         ),
-        None => Arc::new(api),
-    })
+        None => Arc::new(api) as _,
+    };
+    // Subscription usage windows for the Usage page (polled on demand).
+    let usage = ironclaw_usage::UsageMonitor::for_host(
+        crate::RuntimeOperatorSecretValueStore::shared(runtime.secret_store()),
+    );
+    Ok(Arc::new(
+        ironclaw_assistant::usage::UsageProductSurface::new(surface, Arc::new(usage)),
+    ))
 }
 
 /// Compose the operator LLM-config settings service from the runtime's boot

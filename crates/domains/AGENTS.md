@@ -1,8 +1,8 @@
 # `crates/domains/` — one crate per business-record grammar, no authority decisions
 
-**Layer(s):** `substrates` (all 15 manifests declare it; checked by
+**Layer(s):** `substrates` (all 16 manifests declare it; checked by
 `reborn_workspace_crates_declare_layers_and_follow_layer_matrix`) ·
-**Crates:** 15 · **May depend on:** `contracts/`, `substrates/`, `events/`,
+**Crates:** 16 · **May depend on:** `contracts/`, `substrates/`, `events/`,
 plus five inventoried in-family edges (below) · **Depended on by:** `kernel/`,
 `loop/`, `extensions/`, `product/`, `app/` — every tier above wires against
 these contracts.
@@ -38,6 +38,7 @@ no other crate in the family may acquire either property.
 | [`ironclaw_threads`](./ironclaw_threads) | The canonical transcript service: `SessionThreadService` (filesystem + in-memory), message ordering/status/redaction, tool-result records, display projections | Reading or writing thread/message history or transcript-derived views |
 | [`ironclaw_trace_commons`](./ironclaw_trace_commons) | The Trace Commons client: envelope schema, deterministic redaction, submission queue/credits, device-key onboarding, and the autonomous capture pipeline | Contributing traces to the external Trace Commons service |
 | [`ironclaw_triggers`](./ironclaw_triggers) | Scheduled-trigger records, cron/timezone validation, deterministic fire identity, the poller tick, and sealed trusted-submission minting (prompt-scanned at the mint); SQL backends held under ADR 0003 | Trigger records/schedules, or anything on the host-trusted fire path |
+| [`ironclaw_usage`](./ironclaw_usage) | Subscription usage windows for the Usage page: CLI-login 5-hour/weekly windows and coding-plan quotas, fetched through `ironclaw_network` with a per-provider cache and 429 backoff; read-only on credentials; ported from CodexBar (MIT) | Adding a usage provider or changing how a provider window is parsed |
 | [`ironclaw_web_app`](./ironclaw_web_app) | Web Push (RFC 8030/8291/8292) subscription-document types, `aes128gcm` payload encryption, VAPID key-material generation, transport-free push request planning, and the browser channel's identity grammar | Push protocol mechanics (host-owned delivery registrations and their manifest-derived endpoint allowlist live in `ironclaw_auth`/product orchestration; delivery runs through the web-app package) |
 
 Two boundary facts that have been gotten wrong before, stated precisely:

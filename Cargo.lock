@@ -4053,6 +4053,7 @@ dependencies = [
  "ironclaw_trust",
  "ironclaw_turn_runner",
  "ironclaw_turns",
+ "ironclaw_usage",
  "ironclaw_web_app",
  "ironclaw_webui",
  "libc",
@@ -5460,6 +5461,24 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "ironclaw_usage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "ironclaw_host_api",
+ "ironclaw_network",
+ "ironclaw_product_contracts",
+ "secrecy",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
