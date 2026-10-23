@@ -33,6 +33,7 @@ mod in_memory;
 mod libsql;
 mod postgres;
 mod prompt_safety;
+mod time_of_day;
 mod trusted_submit;
 mod worker;
 
@@ -58,6 +59,7 @@ pub use fire_access::{
     trigger_fire_access_denied, trigger_fire_scope_matches,
 };
 pub use ironclaw_host_api::outbound::OutboundDeliveryTargetId as TriggerDeliveryTargetId;
+pub use time_of_day::validate_unattended_prompt;
 pub use trusted_submit::{
     TRIGGER_TRUSTED_ADAPTER_INSTALLATION_ID, TRIGGER_TRUSTED_ADAPTER_KIND,
     TRIGGER_TRUSTED_EXTERNAL_ACTOR_NAMESPACE, TriggerMaterializedPrompt,

@@ -555,6 +555,7 @@ impl ironclaw_supermemory::SupermemoryBindingSource for ProfileSupermemoryBindin
                 return Ok(Some(ironclaw_supermemory::SupermemoryBinding {
                     primary_container: sm.container,
                     read_containers: sm.read_containers,
+                    instructions: sm.instructions,
                 }));
             }
         }
@@ -600,5 +601,6 @@ mod tests {
         let memory = settings.supermemory.unwrap();
         assert_eq!(memory.container, "finance");
         assert_eq!(memory.read_containers, vec!["hermes".to_string()]);
+        assert_eq!(memory.instructions.as_deref(), Some("x"));
     }
 }

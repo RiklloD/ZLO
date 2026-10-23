@@ -146,35 +146,6 @@ CREATE TABLE IF NOT EXISTS orch_telemetry (
 );
 "#;
 
-const LEGACY_IMPORT_MARKER: &str = "legacy_threads_imported_v1";
-
-/// One-shot import of `ironclaw_threads` thread records (the
-/// `session_thread` rows of the root-filesystem table in the same file).
-/// Transcripts stay where they are; only the thread registry moves.
-const LEGACY_IMPORT_SQL: &str = r#"
-INSERT OR IGNORE INTO orch_threads
-  (thread_id, tenant_id, user_id, agent_id, project_id, runtime_id, title, turn_state,
-   created_at, updated_at, imported)
-SELECT
-  json_extract(c, '$.thread_id'),
-  json_extract(c, '$.scope.tenant_id'),
-  COALESCE(json_extract(c, '$.scope.owner_user_id'), json_extract(c, '$.created_by_actor_id')),
-  json_extract(c, '$.scope.agent_id'),
-  json_extract(c, '$.scope.project_id'),
-  ?1,
-  json_extract(c, '$.title'),
-  'idle',
-  CAST((julianday(json_extract(c, '$.created_at')) - 2440587.5) * 86400000 AS INTEGER),
-  CAST((julianday(json_extract(c, '$.updated_at')) - 2440587.5) * 86400000 AS INTEGER),
-  1
-FROM (SELECT CAST(contents AS TEXT) AS c FROM root_filesystem_entries
-      WHERE kind = 'session_thread' AND is_dir = 0)
-WHERE json_valid(c)
-  AND json_extract(c, '$.thread_id') IS NOT NULL
-  AND json_extract(c, '$.scope.tenant_id') IS NOT NULL
-  AND COALESCE(json_extract(c, '$.scope.owner_user_id'), json_extract(c, '$.created_by_actor_id')) IS NOT NULL
-"#;
-
 fn opt<T: Into<Value>>(value: Option<T>) -> Value {
     value.map_or(Value::Null, Into::into)
 }
@@ -399,7 +370,7 @@ pub struct LiveWork {
 
 #[derive(Clone)]
 pub struct Store {
-    db: Arc<LibSqlRuntime>,
+    pub(crate) db: Arc<LibSqlRuntime>,
 }
 
 impl Store {
@@ -456,53 +427,17 @@ impl Store {
 
     // ── schema ──────────────────────────────────────────────────────────
 
-    /// Create the tables (idempotent) and import legacy threads once.
+    /// Create the tables (idempotent) and import legacy threads once
+    /// (`crate::migrate`).
     pub async fn migrate(&self, legacy_runtime: &RuntimeId) -> Result<usize> {
         {
             let conn = self.db.write().await?;
             conn.execute_batch(SCHEMA).await?;
             conn.execute_batch(crate::profiles::PROFILES_SCHEMA).await?;
+            conn.execute_batch(crate::schedules::SCHEDULES_SCHEMA)
+                .await?;
         }
         self.import_legacy_threads(legacy_runtime).await
-    }
-
-    async fn import_legacy_threads(&self, runtime: &RuntimeId) -> Result<usize> {
-        if self.meta(LEGACY_IMPORT_MARKER).await?.is_some() {
-            return Ok(0);
-        }
-        let has_source = self
-            .row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'root_filesystem_entries'",
-                vec![],
-                |r| Cols::new(r).int(),
-            )
-            .await?
-            .is_some();
-        let conn = self.db.write().await?;
-        let tx = conn
-            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
-            .await?;
-        let imported = if has_source {
-            match tx
-                .execute(LEGACY_IMPORT_SQL, vec![s(runtime.as_str())])
-                .await
-            {
-                Ok(n) => n as usize,
-                Err(error) => {
-                    tx.rollback().await?;
-                    return Err(error.into());
-                }
-            }
-        } else {
-            0
-        };
-        tx.execute(
-            "INSERT OR REPLACE INTO orch_meta (key, value) VALUES (?1, ?2)",
-            vec![s(LEGACY_IMPORT_MARKER), s(imported.to_string())],
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(imported)
     }
 
     pub async fn meta(&self, key: &str) -> Result<Option<String>> {

@@ -598,6 +598,7 @@ mod tests {
             ironclaw_supermemory::SupermemoryBinding {
                 primary_container: "ironclaw".to_string(),
                 read_containers: vec!["career".to_string()],
+                instructions: None,
             },
         )));
         Arc::new(Supermemory::new(client, bindings, config))

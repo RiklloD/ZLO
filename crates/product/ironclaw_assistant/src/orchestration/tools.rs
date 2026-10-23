@@ -21,7 +21,7 @@ use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::model::ThreadScope;
 use ironclaw_orchestrator::tools::TOOLS;
 
-/// Build the five orchestrator tools for one run's capability surface.
+/// Build the orchestrator tools (`TOOLS`, `t3_schedule` included) for one run's capability surface.
 pub fn orchestrator_capabilities(
     engine: Arc<Engine>,
     fallback_user_id: UserId,

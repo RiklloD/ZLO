@@ -70,6 +70,7 @@ record_id!(TurnLogId, "turn");
 // Not generated in practice, but the same validated token shape.
 record_id!(RuntimeId, "rt");
 record_id!(ProfileId, "profile");
+record_id!(ScheduleId, "sch");
 
 fn validate_token(kind: &str, raw: &str) -> Result<(), OrchestratorError> {
     if raw.is_empty() || raw.len() > 200 || raw.chars().any(char::is_control) {

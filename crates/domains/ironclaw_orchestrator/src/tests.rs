@@ -566,12 +566,38 @@ async fn legacy_threads_import_once() {
     let store = Store::new(rt);
     let id = RuntimeId::new("ironclaw").unwrap();
     assert_eq!(store.migrate(&id).await.unwrap(), 1);
+    // A legacy row written after the import is not picked up: the second run is a no-op.
+    conn.execute_batch(
+        "INSERT INTO root_filesystem_entries VALUES ('/y/thread.json', CAST('{\"scope\":{\"tenant_id\":\"t1\",\"owner_user_id\":\"u1\"},\"thread_id\":\"old-2\",\"created_at\":\"2026-10-22T21:44:54Z\",\"updated_at\":\"2026-10-22T21:44:54Z\"}' AS BLOB), 0, 'session_thread');",
+    )
+    .await
+    .unwrap();
     assert_eq!(store.migrate(&id).await.unwrap(), 0);
+    assert!(store.thread(&tid("old-2")).await.unwrap().is_none());
+    assert_eq!(
+        store
+            .meta("legacy_threads_imported_v1")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("1")
+    );
     let t = store.thread(&tid("old-1")).await.unwrap().unwrap();
     assert_eq!(t.title.as_deref(), Some("Hello"));
     assert_eq!(t.scope.user_id.as_str(), "u1");
     assert!(t.created_at > 1_700_000_000_000);
     assert!(t.profile_id.is_none());
+    assert_eq!(t.runtime_id.as_str(), "ironclaw");
+    // The import created the owner's default profile; the thread resolves to it.
+    let profile = store.thread_profile(&tid("old-1")).await.unwrap().unwrap();
+    assert!(profile.is_default());
+    // The transcript source is untouched.
+    let mut rows = conn
+        .query("SELECT COUNT(*) FROM root_filesystem_entries", ())
+        .await
+        .unwrap();
+    let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(count, 2);
 }
 
 #[tokio::test]
@@ -720,4 +746,105 @@ async fn profiles_run_on_their_providers_runtime() {
     // Busy: the next message waits in the queue.
     let busy = h.engine.user_turn(&bound, "again").await.unwrap();
     assert!(matches!(busy, UserTurn::Queued { .. }));
+}
+
+/// Fires as soon as it is created, then hourly; refuses prompts containing "evil".
+struct FakePlanner;
+
+impl crate::schedules::SchedulePlanner for FakePlanner {
+    fn normalize(
+        &self,
+        raw: &serde_json::Value,
+    ) -> Result<serde_json::Value, crate::error::OrchestratorError> {
+        Ok(raw.clone())
+    }
+    fn next_after(
+        &self,
+        _spec: &serde_json::Value,
+        last_slot: Option<Millis>,
+        now: Millis,
+    ) -> Result<Option<Millis>, crate::error::OrchestratorError> {
+        Ok(Some(if last_slot.is_some() {
+            now + 3_600_000
+        } else {
+            now
+        }))
+    }
+    fn describe(&self, _spec: &serde_json::Value) -> String {
+        "test".into()
+    }
+    fn check_prompt(&self, prompt: &str) -> Result<(), crate::error::OrchestratorError> {
+        if prompt.contains("evil") {
+            return Err(crate::error::OrchestratorError::invalid("unsafe prompt"));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn schedule_fires_into_a_busy_thread_as_a_queued_item() {
+    let h = harness().await;
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    let off = h
+        .engine
+        .call_tool(
+            "t3_schedule",
+            &ctx("a"),
+            &json!({"action": "create", "prompt": "x", "schedule": {}}),
+        )
+        .await;
+    assert_eq!(off["error"], "schedules_unavailable");
+    h.engine.set_schedule_planner(Arc::new(FakePlanner));
+
+    let bad = json!({"action": "create", "prompt": "evil plan", "schedule": {"type": "interval"}});
+    assert_eq!(
+        h.engine.call_tool("t3_schedule", &ctx("a"), &bad).await["ok"],
+        false
+    );
+
+    h.engine
+        .store()
+        .set_turn_running(&a, Some("r0"), now_ms())
+        .await
+        .unwrap();
+    let create = json!({"action": "create", "prompt": "check mail", "title": "Mail",
+                        "schedule": {"type": "interval", "everyMs": 3600000}});
+    let created = h.engine.call_tool("t3_schedule", &ctx("a"), &create).await;
+    assert_eq!(created["ok"], true, "{created}");
+    assert!(created["schedule"]["nextRunAt"].is_i64());
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    h.engine.tick().await;
+    h.engine.tick().await; // next slot is an hour away: no second fire
+    assert!(h.rt.starts_on(&a).is_empty(), "busy thread must not start");
+    let queue = h.engine.store().queue(&a, false).await.unwrap();
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].created_by, Author::Schedule);
+    assert!(queue[0].text.contains("check mail"));
+
+    finish(&h.engine, &a, TurnOutcome::completed(None)).await;
+    h.engine.tick().await;
+    let started = h.rt.starts_on(&a);
+    assert_eq!(started.len(), 1);
+    assert!(started[0].contains("[Scheduled: Mail]"));
+
+    let list = h
+        .engine
+        .call_tool("t3_schedule", &ctx("a"), &json!({"action": "list"}))
+        .await;
+    assert_eq!(list["schedules"][0]["runCount"], 1);
+    // Another user's thread cannot touch it.
+    let id = list["schedules"][0]["id"].as_str().unwrap().to_string();
+    let mut other = ctx("a");
+    other.scope.user_id = UserId::new("u2").unwrap();
+    let denied = h
+        .engine
+        .call_tool(
+            "t3_schedule",
+            &other,
+            &json!({"action": "delete", "id": id}),
+        )
+        .await;
+    assert_eq!(denied["error"], "schedule_not_found");
 }

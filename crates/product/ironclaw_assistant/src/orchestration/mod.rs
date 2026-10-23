@@ -7,6 +7,7 @@ mod external;
 mod observer;
 mod profiles;
 mod runtime;
+mod schedules;
 mod surface;
 mod telemetry;
 mod tools;
@@ -41,6 +42,7 @@ pub fn orchestrate(
             return inner;
         }
     }
+    engine.set_schedule_planner(Arc::new(schedules::RoutineSchedulePlanner::local()));
     engine.start(std::time::Duration::from_secs(2));
     Arc::new(OrchestratedProductSurface::new(inner, Arc::clone(engine)))
 }

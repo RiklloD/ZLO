@@ -374,6 +374,34 @@ async fn failed_primary_recall_degrades_without_falling_back_to_local_memory() {
 }
 
 #[tokio::test]
+async fn profile_instructions_reach_the_recall_guidance() {
+    let egress = Arc::new(ScriptedEgress::default());
+    let client = SupermemoryClient::new(&config(), egress.clone(), MemoryKeys::with_key())
+        .unwrap()
+        .without_retry_delay();
+    let binding = crate::binding::SupermemoryBinding {
+        primary_container: "career".to_string(),
+        read_containers: vec!["hermes".to_string()],
+        instructions: Some("  Search 'hermes' when career recall comes up empty.  ".to_string()),
+    };
+    let bindings = StaticSupermemoryBindingSource::new(Some(binding));
+    let supermemory = Arc::new(Supermemory::new(client, Arc::new(bindings), config()));
+    egress.respond(
+        "/v4/profile",
+        200,
+        json!({"profile": {"static": [], "dynamic": []}}),
+    );
+    egress.respond("/v4/search", 200, json!({"results": []}));
+    let load = SupermemoryPromptContext::new(supermemory, None)
+        .load_memory_snippets(prompt_request("what about my master's?"))
+        .await
+        .unwrap();
+    let guidance = &load.snippets[0].model_content;
+    assert!(guidance.contains("Primary container: career"));
+    assert!(guidance.ends_with("Search 'hermes' when career recall comes up empty."));
+}
+
+#[tokio::test]
 async fn capture_writes_one_cleaned_turn_document_and_retries_failures() {
     let (supermemory, egress) = build(MemoryKeys::with_key(), "career");
     let recorder = SupermemoryInteractionRecorder::new(

@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, RwLock, Weak};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -56,6 +56,8 @@ pub struct Engine {
     started: AtomicBool,
     booted: AtomicBool,
     pub(crate) shutting_down: AtomicBool,
+    /// Schedule grammar for `t3_schedule`, plugged in by the host.
+    pub(crate) schedule_planner: OnceLock<Arc<dyn crate::schedules::SchedulePlanner>>,
 }
 
 impl Engine {
@@ -87,7 +89,13 @@ impl Engine {
             started: AtomicBool::new(false),
             booted: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
+            schedule_planner: OnceLock::new(),
         }))
+    }
+
+    /// Enable `t3_schedule` with the host's schedule grammar (first call wins).
+    pub fn set_schedule_planner(&self, planner: Arc<dyn crate::schedules::SchedulePlanner>) {
+        let _ = self.schedule_planner.set(planner); // silent-ok: already set by an earlier wiring
     }
 
     pub fn store(&self) -> &Store {
@@ -170,6 +178,7 @@ impl Engine {
             tracing::warn!(%error, "orchestrator boot recovery failed");
         }
         log_step("cancels", self.process_cancels().await);
+        log_step("schedules", self.fire_schedules().await);
         log_step("restarts", self.fire_restarts().await);
         log_step("queues", self.drain_queues().await);
         log_step("results", self.deliver_results().await);

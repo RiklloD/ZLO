@@ -20,6 +20,8 @@ use crate::error::SupermemoryError;
 /// profile's container).
 pub(crate) const DEFAULT_PRIMARY_CONTAINER: &str = "ironclaw";
 const MAX_CONTAINER_TAG_CHARS: usize = 100;
+/// Same budget as a profile's free-text settings (4 KiB).
+pub(crate) const MAX_INSTRUCTIONS_CHARS: usize = 4096;
 
 /// A Supermemory container tag: 1 to 100 ASCII letters, digits, `-`, `_`, `.`
 /// (the API's documented grammar).
@@ -94,6 +96,10 @@ impl From<ContainerTag> for String {
 pub struct SupermemoryBinding {
     pub primary_container: String,
     pub read_containers: Vec<String>,
+    /// Profile-authored guidance on how to use the containers (Hermes
+    /// `custom_container_instructions`), appended to the recall guidance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 impl SupermemoryBinding {
@@ -112,6 +118,12 @@ impl SupermemoryBinding {
             }
         }
         Ok(tags)
+    }
+
+    /// Trimmed instructions, at most [`MAX_INSTRUCTIONS_CHARS`]; `None` when blank.
+    pub fn instructions(&self) -> Option<String> {
+        let text = self.instructions.as_deref()?.trim();
+        (!text.is_empty()).then(|| text.chars().take(MAX_INSTRUCTIONS_CHARS).collect())
     }
 
     /// Primary first, then the read containers.
@@ -222,6 +234,7 @@ impl StaticSupermemoryBindingSource {
         let binding = SupermemoryBinding {
             primary_container: primary,
             read_containers,
+            instructions: None,
         };
         binding.all_containers()?;
         Ok(Self::new(Some(binding)))

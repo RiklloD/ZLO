@@ -1,5 +1,5 @@
 //! Model-facing tools: `t3_capabilities`, `t3_delegate`, `t3_task`,
-//! `t3_thread`, `t3_queue` — the T3 orchestrator surface, same semantics as
+//! `t3_thread`, `t3_queue`, `t3_schedule` — the T3 orchestrator surface, same semantics as
 //! the t3code plugin. Hosts register each [`ToolSpec`] with their tool
 //! system and route calls to [`Engine::call_tool`]. Every call returns a
 //! JSON document; correctable failures come back as `{ok: false, error,
@@ -33,7 +33,7 @@ fn target_schema() -> Value {
     })
 }
 
-pub const TOOLS: [ToolSpec; 5] = [
+pub const TOOLS: [ToolSpec; 6] = [
     ToolSpec {
         name: "t3_capabilities",
         description: "T3 orchestrator: list the providers and models this thread can delegate to, the inherited provider/model, and orchestration features and limits. Call before choosing a target for t3_delegate.",
@@ -106,6 +106,27 @@ pub const TOOLS: [ToolSpec; 5] = [
                     "text": {"type": "string"},
                     "before_id": {"type": ["string", "null"]},
                     "how": {"type": "string", "enum": ["steer", "restart"]}
+                },
+                "required": ["action"]
+            })
+        },
+    },
+    ToolSpec {
+        name: "t3_schedule",
+        description: "T3 orchestrator scheduled prompts that run even when no turn is active. action=create with prompt and schedule as an OBJECT: {type:'interval', everyMs:3600000} (at least 60000) or {type:'fixed_time', timeOfDay:'09:00', weekdays:[1,2,3,4,5], timezone:'Europe/Zurich'} (0=Sunday; timezone defaults to the backend's local zone). Each run posts the prompt into THIS thread as a queued message (it waits while the thread is busy or stopped). Report nextRunAt. Also: list, update (id + fields; enabled=false pauses), delete (id), run_now (id). Webhook schedules are not available yet.",
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["create", "list", "update", "delete", "run_now"]},
+                    "id": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "title": {"type": "string"},
+                    "schedule": {"type": "object"},
+                    "bind_to_current_thread": {"type": "boolean"},
+                    "enabled": {"type": "boolean"},
+                    "signature": {"type": ["object", "null"]},
+                    "client_request_id": {"type": "string"}
                 },
                 "required": ["action"]
             })
@@ -292,6 +313,7 @@ impl Engine {
                     ))),
                 }
             }
+            "t3_schedule" => self.schedule_tool(ctx, args(input)?).await,
             other => Err(OrchestratorError::invalid(format!("unknown tool {other}"))),
         }
     }

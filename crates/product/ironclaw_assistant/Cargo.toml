@@ -28,6 +28,8 @@ test-support = [
 async-trait = "0.1"
 base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
+# Default zone for `t3_schedule` fixed_time schedules (already in the lock via chrono).
+iana-time-zone = "0.1"
 futures = "0.3"
 ironclaw_common = { path = "../../contracts/ironclaw_common", version = "0.4.1" }
 ironclaw_attachments = { path = "../../domains/ironclaw_attachments", version = "0.1.0" }

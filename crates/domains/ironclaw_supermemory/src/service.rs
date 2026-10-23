@@ -30,6 +30,7 @@ struct Active {
     key: SecretString,
     primary: ContainerTag,
     readable: Vec<ContainerTag>,
+    instructions: Option<String>,
 }
 
 /// What recall produced for one turn.
@@ -133,6 +134,7 @@ impl Supermemory {
             key,
             primary: binding.primary()?,
             readable: binding.readable()?,
+            instructions: binding.instructions(),
         }))
     }
 
@@ -163,7 +165,11 @@ impl Supermemory {
         let Some(active) = self.active(caller).await? else {
             return Ok(None);
         };
-        let guidance = guidance(&active.primary, &active.readable);
+        let guidance = guidance(
+            &active.primary,
+            &active.readable,
+            active.instructions.as_deref(),
+        );
         let empty = |degraded| Recall {
             guidance: guidance.clone(),
             primary: active.primary.clone(),
@@ -417,7 +423,13 @@ fn allowed_list(primary: &ContainerTag, readable: &[ContainerTag]) -> String {
         .join(", ")
 }
 
-fn guidance(primary: &ContainerTag, readable: &[ContainerTag]) -> String {
+/// Host guidance, then the profile's own instructions (as the Hermes plugin
+/// appends `custom_container_instructions` to its system prompt block).
+fn guidance(
+    primary: &ContainerTag,
+    readable: &[ContainerTag],
+    instructions: Option<&str>,
+) -> String {
     let readable = if readable.is_empty() {
         "none".to_string()
     } else {
@@ -427,10 +439,14 @@ fn guidance(primary: &ContainerTag, readable: &[ContainerTag]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    GUIDANCE
+    let host = GUIDANCE
         .trim()
         .replace("{primary}", primary.as_str())
-        .replace("{readable}", &readable)
+        .replace("{readable}", &readable);
+    match instructions {
+        Some(text) => format!("{host}\n\n{text}"),
+        None => host,
+    }
 }
 
 /// Supermemory metadata values are strings, numbers, booleans or string lists.
