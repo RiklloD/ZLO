@@ -93,6 +93,8 @@ pub const EASE_OUT_QUINT: CubicBezier = CubicBezier::new(0.22, 1., 0.36, 1.);
 pub const EASE: CubicBezier = CubicBezier::new(0.25, 0.1, 0.25, 1.);
 /// CSS `ease-out`.
 pub const EASE_OUT: CubicBezier = CubicBezier::new(0., 0., 0.58, 1.);
+/// CSS `ease-in-out`.
+pub const EASE_IN_OUT: CubicBezier = CubicBezier::new(0.42, 0., 0.58, 1.);
 
 // Zeron's transcript timings (crates/ui/src/transcript.rs, MIT).
 /// A tool group opening or closing.
@@ -102,6 +104,14 @@ pub const TOOL_ROW_REVEAL: MotionSpec = MotionSpec::new(360, EASE_OUT_EXPO);
 /// The working glyph's wave period.
 pub const GRADIENT_SPIN_MS: u64 = 750;
 /// A word rolling into the place of another.
+/// Rail-tick / jump-to-latest glide: Zeron's 500 ms ease-in-out.
+pub const SCROLL_GLIDE: MotionSpec = MotionSpec::new(500, EASE_IN_OUT);
+/// How far the rows travel as they settle after a jump to latest.
+pub const JUMP_TRAVEL: f32 = 48.;
+/// Disclosure height morph (folds, new sidebar rows): Zeron's 180 ms.
+pub const COLLAPSE: MotionSpec = MotionSpec::new(180, EASE_OUT);
+/// Segmented-control highlight slide: Zeron's 150 ms tab slide.
+pub const TAB_SLIDE: MotionSpec = MotionSpec::new(150, EASE_OUT);
 pub const ROLL: MotionSpec = MotionSpec::new(550, EASE_OUT_QUINT);
 
 /// Gradient-spin cell opacity at local phase `t`: full at the cycle start,
@@ -519,12 +529,74 @@ pub fn settle(key: &str) {
     });
 }
 
+/// A disclosure that morphs its height between closed and open over
+/// `spec`, like Zeron's collapses. The content's natural height comes from
+/// its last prepaint, so the morph lands on the real size; the first open
+/// frame has none yet and draws at zero, which `t` near 0 hides anyway.
+/// `None` once fully closed, so a shut fold builds nothing.
+pub fn collapse(
+    key: &str,
+    open: bool,
+    spec: MotionSpec,
+    reduced: bool,
+    content: impl FnOnce() -> gpui_kit::AnyElement,
+) -> Option<gpui_kit::AnyElement> {
+    let t = state_t(&format!("{key}:collapse"), open, spec, reduced);
+    if t <= 0. {
+        return None;
+    }
+    Some(clip(key, t, content()))
+}
+
+/// A row that grows from nothing to its measured height the first time
+/// `key` is drawn, pushing its neighbours aside smoothly. Rows already
+/// there ([`settle`]d) draw at full size.
+pub fn grow(
+    key: &str,
+    spec: MotionSpec,
+    reduced: bool,
+    content: impl gpui_kit::IntoElement,
+) -> gpui_kit::AnyElement {
+    let t = reveal(key, spec, 0, reduced);
+    clip(key, t, content)
+}
+
+/// Clip `content` to `t` of the height it measured last frame, recording
+/// the new measurement as it prepaints.
+fn clip(key: &str, t: f32, content: impl gpui_kit::IntoElement) -> gpui_kit::AnyElement {
+    use gpui_kit::{IntoElement as _, ParentElement as _, div};
+    let slot: SharedString = key.to_string().into();
+    let wrap = div().w_full().on_children_prepainted(move |bounds, _, _| {
+        if let Some(b) = bounds.first() {
+            let h = f32::from(b.size.height);
+            HEIGHTS.with(|m| {
+                let mut m = m.borrow_mut();
+                if m.len() > 4_096 {
+                    m.clear();
+                }
+                m.insert(slot.clone(), h);
+            });
+        }
+    });
+    let inner = div().w_full().flex_none().child(content);
+    if t >= 1. {
+        return wrap.child(inner).into_any_element();
+    }
+    let natural = HEIGHTS.with(|m| m.borrow().get(key).copied()).unwrap_or(0.);
+    wrap.h(px(natural * t))
+        .overflow_hidden()
+        .opacity(t.max(0.2))
+        .child(inner)
+        .into_any_element()
+}
+
 /// A label's current text and, mid-roll, the text it is leaving.
 type RollState = (SharedString, Option<(SharedString, Instant)>);
 
 thread_local! {
     static BORN: RefCell<HashMap<SharedString, Instant>> = RefCell::new(HashMap::new());
     static ROLLS: RefCell<HashMap<SharedString, RollState>> = RefCell::new(HashMap::new());
+    static HEIGHTS: RefCell<HashMap<SharedString, f32>> = RefCell::new(HashMap::new());
 }
 
 /// A label that rolls when its text changes: the old text lifts away and
@@ -647,7 +719,7 @@ mod tests {
 
     #[test]
     fn curves_hit_their_endpoints_and_stay_monotonic() {
-        for curve in [EASE_OUT_EXPO, EASE, EASE_OUT_QUINT] {
+        for curve in [EASE_OUT_EXPO, EASE, EASE_OUT_QUINT, EASE_IN_OUT] {
             assert_eq!(curve.eval(0.), 0.);
             assert_eq!(curve.eval(1.), 1.);
             let mut last = 0.;

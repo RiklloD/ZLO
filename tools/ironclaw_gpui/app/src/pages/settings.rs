@@ -219,23 +219,25 @@ impl SettingsView {
             cx,
         );
 
-        let rows = self.tools.iter().enumerate().map(|(ix, (id, tool))| {
-            let segments = h_flex().gap_0p5().children(STATES.iter().enumerate().map(
-                |(six, (state, label))| {
-                    let selected = tool.state == *state;
-                    let id = id.clone();
-                    let state = *state;
-                    Button::new(("tool-state", ix * 10 + six))
-                        .label(*label)
-                        .xsmall()
-                        .when(selected, |b| b.primary())
-                        .when(!selected, |b| b.ghost())
-                        .disabled(tool.locked)
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.set_tool(id.clone(), state, cx)),
-                        )
+        let rows = self.tools.iter().map(|(id, tool)| {
+            let selected = STATES
+                .iter()
+                .position(|(state, _)| *state == tool.state)
+                .unwrap_or(0);
+            let labels: Vec<&'static str> = STATES.iter().map(|(_, label)| *label).collect();
+            let pick_id = id.clone();
+            let weak = cx.weak_entity();
+            let segments = crate::design::kit::segmented(
+                &format!("tool-state:{id}"),
+                &labels,
+                selected,
+                tool.locked,
+                move |six, _, cx| {
+                    let (id, state) = (pick_id.clone(), STATES[six].0);
+                    let _ = weak.update(cx, |this, cx| this.set_tool(id, state, cx));
                 },
-            ));
+                cx,
+            );
             let control = h_flex()
                 .gap_2()
                 .items_center()

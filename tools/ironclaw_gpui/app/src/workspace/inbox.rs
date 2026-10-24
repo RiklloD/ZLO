@@ -47,6 +47,8 @@ pub(super) struct Inbox {
     loading: bool,
     stale: bool,
     polling: bool,
+    /// Rows on screen at first load draw settled; later ones grow in.
+    seeded: bool,
     _wake: Option<Task<()>>,
 }
 
@@ -333,9 +335,25 @@ impl Workspace {
 
         let mut list: Vec<AnyElement> = Vec::new();
         let enter = Style::of(cx).enter;
+        let reduced = cx.reduce_motion();
+        let seeding = !self.inbox.seeded && !self.inbox.list.rows.is_empty();
+        if seeding {
+            self.inbox.seeded = true;
+            for row in &self.inbox.list.rows {
+                crate::design::motion::settle(&format!("card-grow-{}", row.thread_id));
+            }
+        }
         for (ix, row) in pinned.iter().chain(main.iter()).enumerate() {
             let is_active = active.as_deref() == Some(row.thread_id.as_str());
             let card = self.render_card(row, is_active, now, cx);
+            // A thread that appears later (a new one, a T3 child) grows
+            // into place, Zeron's 180 ms collapse run in reverse.
+            let card = crate::design::motion::grow(
+                &format!("card-grow-{}", row.thread_id),
+                crate::design::motion::COLLAPSE,
+                reduced,
+                card,
+            );
             // Cards cascade in when they first mount (app start, a filter
             // change); a mounted card never replays.
             list.push(

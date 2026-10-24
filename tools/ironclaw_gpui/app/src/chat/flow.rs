@@ -454,7 +454,7 @@ pub(super) fn render_activity(
 ) -> AnyElement {
     let p = *Palette::of(cx);
     let reduced = cx.reduce_motion();
-    let fold = motion::state_t(&format!("{key}:fold"), open, motion::TOOL_FOLD, reduced);
+    let fold = motion::state_t(&format!("{key}:chevron"), open, motion::TOOL_FOLD, reduced);
     let label = summary(rows);
     let toggle_key = key.to_string();
     let toggle_weak = weak.clone();
@@ -508,14 +508,12 @@ pub(super) fn render_activity(
             });
         });
 
-    // The fold tweens toward the tree's natural height: rows are a fixed
-    // 32 px, an opened row's text is capped at 360 px.
+    // The fold morphs to the tree's measured height.
     let parts: Vec<(&Row, Leaf)> = rows
         .iter()
         .filter_map(|r| leaf(r).map(|l| (r, l)))
         .collect();
     let count = parts.len();
-    let mut natural = 0.;
     let mut leaves = Vec::with_capacity(count);
     for (ix, (row, leaf)) in parts.into_iter().enumerate() {
         let row_key = row.key();
@@ -525,26 +523,19 @@ pub(super) fn render_activity(
             motion::settle(row_key);
         }
         let reveal = motion::reveal(row_key, motion::TOOL_ROW_REVEAL, 0, reduced);
-        natural += TREE_ROW_HEIGHT * reveal + if expanded { 368. } else { 0. };
         let last = ix + 1 == count;
         leaves.push(tree_row(
-            row_key, leaf, last, reveal, expanded, open_key, weak, &p,
+            row_key, leaf, last, reveal, expanded, open_key, weak, &p, reduced,
         ));
     }
 
-    let body = (fold > 0.).then(|| {
-        let tree = v_flex().w_full().children(leaves);
-        if fold >= 1. {
-            tree.into_any_element()
-        } else {
-            div()
-                .w_full()
-                .h(px(natural * fold))
-                .overflow_hidden()
-                .child(tree)
-                .into_any_element()
-        }
-    });
+    let body = motion::collapse(
+        &format!("{key}:fold"),
+        open,
+        motion::TOOL_FOLD,
+        reduced,
+        || v_flex().w_full().children(leaves).into_any_element(),
+    );
     v_flex()
         .w_full()
         .child(header)
@@ -562,10 +553,11 @@ fn tree_row(
     open_key: String,
     weak: &WeakEntity<ChatView>,
     p: &Palette,
+    reduced: bool,
 ) -> AnyElement {
     let tint = if leaf.failed { p.danger } else { p.text_muted };
     let expandable = leaf.body.is_some();
-    let body = leaf.body.clone().filter(|_| expanded);
+    let body = leaf.body.clone();
     let weak = weak.clone();
     let line = h_flex()
         .id(SharedString::from(format!("{key}-leaf")))
@@ -623,10 +615,13 @@ fn tree_row(
     };
     // An opened row's full text hangs under its label, the trunk carrying
     // on beside it unless this is the last row.
-    v_flex()
-        .w_full()
-        .child(line)
-        .child(
+    let p = *p;
+    let detail = motion::collapse(
+        &format!("{key}:body"),
+        expanded,
+        motion::COLLAPSE,
+        reduced,
+        move || {
             h_flex()
                 .w_full()
                 .child(
@@ -643,7 +638,7 @@ fn tree_row(
                                     .top_0()
                                     .bottom_0()
                                     .w(px(1.))
-                                    .bg(rail_color(p)),
+                                    .bg(rail_color(&p)),
                             )
                         }),
                 )
@@ -659,8 +654,14 @@ fn tree_row(
                         .text_color(p.text_muted)
                         .whitespace_normal()
                         .child(body),
-                ),
-        )
+                )
+                .into_any_element()
+        },
+    );
+    v_flex()
+        .w_full()
+        .child(line)
+        .children(detail)
         .into_any_element()
 }
 

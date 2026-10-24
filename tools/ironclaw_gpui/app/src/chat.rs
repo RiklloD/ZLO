@@ -69,6 +69,8 @@ pub struct ChatView {
     /// The view opened from the new-thread screen: its composer glides
     /// down from where that screen's composer sat.
     arrive: bool,
+    /// Jumps to latest so far; each one keys a fresh settle slide.
+    jumps: u32,
     scroller: Entity<MessageScrollerState>,
     composer: Entity<TextareaState>,
     status: StreamStatus,
@@ -192,6 +194,7 @@ impl ChatView {
             reserve: None,
             pin_next: false,
             arrive: false,
+            jumps: 0,
             scroller,
             composer,
             status: StreamStatus::Connecting,
@@ -929,6 +932,7 @@ impl Render for ChatView {
         let since = self.run_started;
 
         let seed = motion::seed(&self.thread_id);
+        let jump_weak = weak.clone();
         let list = MessageScroller::new("transcript", self.scroller.clone(), move |ix, _, cx| {
             let item = &items[ix];
             let top = flow::top_gap(ix.checked_sub(1).map(|i| &items[i]), item);
@@ -967,7 +971,36 @@ impl Render for ChatView {
                 .child(div().w_full().max_w(px(content_width(cx))).child(body))
         })
         // The reserve reads as "scrolled up"; no jump arrow for empty room.
-        .jump_button(self.reserve.is_none());
+        .jump_button(self.reserve.is_none())
+        .with_jump_button_renderer({
+            let weak = jump_weak;
+            move |button| {
+                button.on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.jumps += 1;
+                        this.scroller
+                            .update(cx, |state, cx| state.scroll_to_end(cx));
+                        cx.notify();
+                    });
+                })
+            }
+        })
+        // The list hides its pixel offset, so it cannot glide: it lands on
+        // the tail and the rows settle up into place, Zeron's 500 ms ease.
+        .when(self.jumps > 0, |list| {
+            let t = motion::reveal(
+                &format!("jump:{}:{}", self.thread_id, self.jumps),
+                motion::SCROLL_GLIDE,
+                0,
+                cx.reduce_motion(),
+            );
+            if t >= 1. {
+                return list;
+            }
+            let mut style = gpui_kit::StyleRefinement::default();
+            style = style.relative().top(px(motion::JUMP_TRAVEL * (1. - t)));
+            list.with_content_style(style)
+        });
 
         let banner = match self.status {
             StreamStatus::Reconnecting { delay_secs, .. } => {

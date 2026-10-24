@@ -490,6 +490,73 @@ fn remember_slot(key: &str, v: f32) {
     });
 }
 
+/// A segmented control whose highlight slides between equal-width
+/// segments (Zeron's 150 ms tab slide) instead of jumping.
+pub fn segmented(
+    key: &str,
+    labels: &[&'static str],
+    selected: usize,
+    disabled: bool,
+    on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    const SEG_W: f32 = 54.;
+    const SEG_H: f32 = 24.;
+    const INSET: f32 = 2.;
+    let p = *Palette::of(cx);
+    let x = motion::glide(
+        &format!("{key}:seg"),
+        selected as f32 * SEG_W,
+        motion::TAB_SLIDE,
+        cx.reduce_motion(),
+    );
+    let on_pick = std::rc::Rc::new(on_pick);
+    let knob = if p.light {
+        p.surface_raised
+    } else {
+        white(0.12)
+    };
+    h_flex()
+        .relative()
+        .flex_none()
+        .p(px(INSET))
+        .rounded(px(8.))
+        .bg(hover_wash(&p))
+        .when(disabled, |d| d.opacity(0.5))
+        .child(
+            div()
+                .absolute()
+                .top(px(INSET))
+                .left(px(INSET + x))
+                .w(px(SEG_W))
+                .h(px(SEG_H))
+                .rounded(px(6.))
+                .bg(knob)
+                .when(p.light, |d| d.shadow_xs()),
+        )
+        .children(labels.iter().enumerate().map(|(ix, label)| {
+            let on_pick = on_pick.clone();
+            let on = ix == selected;
+            div()
+                .id(SharedString::from(format!("{key}:seg:{ix}")))
+                .relative()
+                .w(px(SEG_W))
+                .h(px(SEG_H))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(gpui_kit::rems(12. / 16.))
+                .text_color(if on { p.text } else { p.text_muted })
+                .when(!disabled && !on, |d| {
+                    d.cursor_pointer()
+                        .hover(|d| d.text_color(p.text))
+                        .on_click(move |_: &ClickEvent, window, cx| on_pick(ix, window, cx))
+                })
+                .child(*label)
+        }))
+        .into_any_element()
+}
+
 /// A row placed over a [`slide_pill`]: hover wash only, the pill carries
 /// the selection.
 pub fn pill_row(id: impl Into<SharedString>, active: bool, cx: &App) -> Stateful<Div> {
