@@ -18,8 +18,14 @@ const ANTHROPIC_OPUS_LEVELS: &[&str] = &["low", "medium", "high", "max"];
 const GEMINI_LEVEL_LEVELS: &[&str] = &["low", "high"];
 const GEMINI_BUDGET_LEVELS: &[&str] = &["low", "medium", "high"];
 const GROK_MINI_LEVELS: &[&str] = &["low", "high"];
-/// GLM has a thinking switch, no depth.
+/// GLM 4.5 to 5.1 have a thinking switch, no depth.
 const GLM_LEVELS: &[&str] = &["off", "on"];
+/// GLM-5.2 adds `reasoning_effort` high/max on top of the switch.
+const GLM_52_LEVELS: &[&str] = &["off", "high", "max"];
+/// GLM-5.3 and later grade the effort and reject disabled thinking.
+const GLM_53_LEVELS: &[&str] = &["low", "medium", "high", "max"];
+/// Inception Mercury 2 onwards (`reasoning_effort`, "instant" is the lightest).
+const MERCURY_LEVELS: &[&str] = &["instant", "low", "medium", "high"];
 
 /// How a rig-backed protocol carries the effort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,13 +79,15 @@ pub(crate) fn params(
             if !levels.contains(&effort) {
                 return None;
             }
-            if levels == GLM_LEVELS {
-                let kind = if effort == "on" {
-                    "enabled"
-                } else {
-                    "disabled"
-                };
-                return Some(json!({ "thinking": { "type": kind } }));
+            if levels == GLM_LEVELS || levels == GLM_52_LEVELS || levels == GLM_53_LEVELS {
+                return Some(match effort {
+                    "off" => json!({ "thinking": { "type": "disabled" } }),
+                    "on" => json!({ "thinking": { "type": "enabled" } }),
+                    level => json!({
+                        "thinking": { "type": "enabled" },
+                        "reasoning_effort": level,
+                    }),
+                });
             }
             Some(json!({ "reasoning_effort": effort }))
         }
@@ -118,8 +126,16 @@ pub(crate) fn params(
 
 fn openai_chat_levels(provider_id: &str, model: &str) -> &'static [&'static str] {
     let tail = model.rsplit('/').next().unwrap_or(model);
-    if tail.starts_with("glm-") && version_after(tail, "glm-") >= Some((4, 5)) {
-        return GLM_LEVELS;
+    if tail.starts_with("glm-") {
+        return match version_after(tail, "glm-") {
+            Some(v) if v >= (5, 3) => GLM_53_LEVELS,
+            Some((5, 2)) => GLM_52_LEVELS,
+            Some(v) if v >= (4, 5) => GLM_LEVELS,
+            _ => &[],
+        };
+    }
+    if version_after(tail, "mercury-").is_some_and(|(major, _)| major >= 2) {
+        return MERCURY_LEVELS;
     }
     if tail.starts_with("grok-3-mini") {
         return GROK_MINI_LEVELS;
@@ -220,14 +236,23 @@ mod tests {
         assert_eq!(levels(OpenAiCompletions, "openai", "gpt-5-mini").len(), 3);
         assert_eq!(levels(OpenAiCompletions, "openai", "o3").len(), 3);
         assert!(levels(OpenAiCompletions, "openai", "gpt-4o").is_empty());
-        assert_eq!(levels(OpenAiCompletions, "glm", "glm-5.3"), ["off", "on"]);
+        assert_eq!(levels(OpenAiCompletions, "glm", "glm-5.1"), ["off", "on"]);
+        assert_eq!(
+            levels(OpenAiCompletions, "glm", "glm-5.2"),
+            ["off", "high", "max"]
+        );
+        assert_eq!(levels(OpenAiCompletions, "glm", "glm-5.3").len(), 4);
         assert!(levels(OpenAiCompletions, "glm", "glm-4").is_empty());
+        assert_eq!(
+            levels(OpenAiCompletions, "inception", "mercury-3"),
+            ["instant", "low", "medium", "high"]
+        );
+        assert!(levels(OpenAiCompletions, "inception", "mercury-coder").is_empty());
         assert_eq!(
             levels(OpenAiCompletions, "xai", "grok-3-mini"),
             ["low", "high"]
         );
         assert!(levels(OpenAiCompletions, "xai", "grok-4").is_empty());
-        assert!(levels(OpenAiCompletions, "inception", "mercury-2").is_empty());
         assert_eq!(levels(Anthropic, "anthropic", "claude-opus-5-5").len(), 4);
         assert_eq!(levels(Anthropic, "anthropic", "claude-sonnet-4-6").len(), 3);
         assert!(levels(Anthropic, "anthropic", "claude-sonnet-4-5-20250929").is_empty());
@@ -252,7 +277,26 @@ mod tests {
         );
         assert_eq!(
             params(EffortStyle::OpenAiChat, "glm", "glm-5.3", "off", shape),
+            None,
+            "GLM-5.3 rejects disabled thinking"
+        );
+        assert_eq!(
+            params(EffortStyle::OpenAiChat, "glm", "glm-5.2", "off", shape),
             Some(json!({ "thinking": { "type": "disabled" } }))
+        );
+        assert_eq!(
+            params(EffortStyle::OpenAiChat, "glm", "glm-5.3", "medium", shape),
+            Some(json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "medium" }))
+        );
+        assert_eq!(
+            params(
+                EffortStyle::OpenAiChat,
+                "inception",
+                "mercury-3",
+                "instant",
+                shape
+            ),
+            Some(json!({ "reasoning_effort": "instant" }))
         );
         assert_eq!(
             params(
