@@ -1,0 +1,29 @@
+[package]
+name = "ironclaw_computer_use"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+description = "Computer use: the Open Computer Use binary as a stdio MCP server, one session per thread, with Stop, take over and the latest screenshot frame"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.ironclaw]
+layer = "runtimes"
+
+[dependencies]
+async-trait = "0.1"
+ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
+# The session layer implements the MCP lane's `McpClient` seam; the lane's own
+# runtime refuses stdio by charter, so only the client contract is shared.
+ironclaw_mcp = { path = "../ironclaw_mcp" }
+# Declares the `ComputerUseSessions` port this crate implements for product.
+ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }

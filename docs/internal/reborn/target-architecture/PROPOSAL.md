@@ -280,6 +280,7 @@ crates/
 │   ├── ironclaw_wasm                 ▣ [runtimes]               WASM component lane (wit/ lives inside the crate)
 │   ├── ironclaw_wasm_limiter         ▣ [runtimes]               shared wasmtime ResourceLimiter
 │   ├── ironclaw_mcp                  ▣ [runtimes]               MCP lane (host-mediated HTTP only)
+│   ├── ironclaw_computer_use         ▣ [runtimes]               Open Computer Use over stdio MCP: per-thread sessions, Stop, take over, frames (v2 stage 5)
 │   └── ironclaw_sandbox              ▣ [runtimes] (NEW, by merge)
 │                                                                sandbox/process lane: plan contract (ex process_sandbox)
 │                                                                + Docker/broker/CA machinery (ex host_runtime/sandbox_process)

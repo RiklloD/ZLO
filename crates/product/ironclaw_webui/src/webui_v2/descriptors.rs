@@ -202,6 +202,11 @@ pub const WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES: &str = "/api/webchat/v2/profi
 // Usage route (subscription usage windows for the Usage page).
 pub const WEBUI_V2_ROUTE_USAGE_REPORT: &str = "webui.v2.usage.report";
 pub const WEBUI_V2_PATTERN_USAGE_REPORT: &str = "/api/webchat/v2/usage";
+
+// Computer-use routes (a thread's session + latest frame; Stop / take over).
+pub const WEBUI_V2_ROUTE_COMPUTER_USE_SESSION: &str = "webui.v2.computer_use.session";
+pub const WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL: &str = "webui.v2.computer_use.control";
+pub const WEBUI_V2_PATTERN_COMPUTER_USE: &str = "/api/webchat/v2/threads/{thread_id}/computer-use";
 pub const WEBUI_V2_PATTERN_CREATE_THREAD: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_THREADS: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_NOTIFICATIONS: &str = "/api/webchat/v2/notifications";
@@ -438,6 +443,8 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES,
         ),
         usage_report_descriptor(),
+        computer_use_session_descriptor(),
+        computer_use_control_descriptor(),
         resolve_gate_descriptor(),
         retry_run_descriptor(),
         list_commands_descriptor(),
@@ -2518,6 +2525,34 @@ fn rate_limit_per_caller(max: u32, window_secs: u32) -> RateLimitPolicy {
         max_requests: NonZeroU32::new(max).expect("max_requests must be non-zero"), // safety: all call sites pass crate-local positive constants (12, 60, 120)
         window_seconds: NonZeroU32::new(window_secs).expect("window_seconds must be non-zero"), // safety: all call sites pass crate-local positive constants (60)
     }
+}
+
+fn computer_use_session_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_COMPUTER_USE_SESSION,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_COMPUTER_USE,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn computer_use_control_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_COMPUTER_USE,
+        mutation_policy(
+            body_limit_kib(4),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
 }
 
 fn usage_report_descriptor() -> IngressRouteDescriptor {

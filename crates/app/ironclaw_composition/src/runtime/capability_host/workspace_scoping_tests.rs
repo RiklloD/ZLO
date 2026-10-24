@@ -100,6 +100,7 @@ async fn invoke_workspace_tool_as(
         outbound_preferences_service: None,
         orchestrator: None,
         supermemory: None,
+        computer_use: None,
         outbound_preference_write_requires_approval: false,
         approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
         approval_requests: runtime_surfaces.approval_requests_for_test().clone(),

@@ -568,6 +568,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .expect("standalone capability wiring");
 
@@ -617,6 +618,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
         )
         .expect("standalone capability wiring");
@@ -751,6 +753,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
         )
         .expect("standalone capability wiring");
@@ -1825,6 +1828,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             approval_requests: runtime_surfaces.approval_requests_for_test().clone(),
@@ -2203,6 +2207,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             approval_requests: runtime_surfaces.approval_requests_for_test().clone(),
@@ -2846,6 +2851,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             project_service: Arc::clone(&runtime_surfaces.project_service),
@@ -3050,6 +3056,7 @@ mod tests {
             None,
             true,
             None,
+            None,
         )
         .expect("capability wiring");
         let port = wiring
@@ -3131,6 +3138,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             project_service: Arc::clone(&runtime_surfaces.project_service),
@@ -3219,6 +3227,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             approval_requests: runtime_surfaces.approval_requests_for_test().clone(),
@@ -3425,6 +3434,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             approval_requests: runtime_surfaces.approval_requests_for_test().clone(),
@@ -3823,6 +3833,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             approval_requests: runtime_surfaces.approval_requests_for_test().clone(),
@@ -4308,6 +4319,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             approval_requests: runtime_surfaces.approval_requests_for_test().clone(),
@@ -4464,6 +4476,7 @@ mod tests {
             outbound_preferences_service: Some(outbound_preferences_service),
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: true,
             approval_settings,
             project_service: Arc::clone(&runtime_surfaces.project_service),
@@ -4691,6 +4704,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
         )
         .expect("capability wiring");
@@ -4938,6 +4952,7 @@ mod tests {
             None,
             true,
             None,
+            None,
         )
         .expect("capability wiring");
         let port = wiring
@@ -5168,6 +5183,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             project_service: Arc::clone(&runtime_surfaces.project_service),
@@ -5284,6 +5300,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             project_service: Arc::clone(&runtime_surfaces.project_service),
@@ -5535,6 +5552,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             project_service: Arc::clone(&runtime_surfaces.project_service),
@@ -5672,6 +5690,7 @@ mod tests {
             outbound_preferences_service: None,
             orchestrator: None,
             supermemory: None,
+            computer_use: None,
             outbound_preference_write_requires_approval: false,
             approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
             project_service: Arc::clone(&runtime_surfaces.project_service),
@@ -5845,6 +5864,7 @@ mod tests {
             None,
             true,
             None,
+            None,
         )
         .expect("standalone capability wiring");
         assert_github_capabilities_visible(&wiring, &run_context).await;
@@ -5878,6 +5898,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
         )
         .expect("standalone capability wiring");
@@ -6011,6 +6032,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
         )
         .expect("standalone capability wiring");
@@ -6164,6 +6186,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
         )
         .expect("standalone capability wiring");

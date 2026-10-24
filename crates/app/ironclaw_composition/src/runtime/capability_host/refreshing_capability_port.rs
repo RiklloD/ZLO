@@ -65,6 +65,7 @@ pub(crate) struct RefreshingCapabilityPortConfig {
     pub(super) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     /// Swaps local memory tools for Supermemory's on runs it is active for.
     pub(super) supermemory: Option<Arc<ironclaw_supermemory::Supermemory>>,
+    pub(super) computer_use: Option<Arc<ironclaw_computer_use::ComputerUse>>,
     pub(super) outbound_preference_write_requires_approval: bool,
     pub(super) approval_settings: Arc<dyn ApprovalSettingsProvider>,
     pub(super) approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
@@ -129,6 +130,7 @@ pub(crate) async fn create_refreshing_capability_port(
         outbound_preferences_service: config.outbound_preferences_service,
         orchestrator: config.orchestrator,
         supermemory: config.supermemory,
+        computer_use: config.computer_use,
         outbound_preference_write_requires_approval: config
             .outbound_preference_write_requires_approval,
         approval_settings: config.approval_settings,
@@ -173,6 +175,7 @@ struct RefreshingCapabilityPort {
     outbound_preferences_service: Option<Arc<dyn OutboundPreferencesProductService>>,
     orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     supermemory: Option<Arc<ironclaw_supermemory::Supermemory>>,
+    computer_use: Option<Arc<ironclaw_computer_use::ComputerUse>>,
     outbound_preference_write_requires_approval: bool,
     approval_settings: Arc<dyn ApprovalSettingsProvider>,
     approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
@@ -379,6 +382,21 @@ impl RefreshingCapabilityPort {
                         replay_payload_store: Arc::clone(&self.replay_payload_store),
                         gate_record_store: Arc::clone(&self.gate_record_store),
                         write_requires_approval: self.outbound_preference_write_requires_approval,
+                    },
+                    self.fallback_user_id.clone(),
+                )?,
+            );
+        }
+        if let Some(computer_use) = &self.computer_use {
+            synthetic_capabilities.extend(
+                ironclaw_assistant::computer_use::computer_use_capabilities(
+                    Arc::clone(computer_use),
+                    ironclaw_assistant::computer_use::ComputerUseApprovalStores {
+                        approval_requests: Arc::clone(&self.approval_requests),
+                        capability_leases: Arc::clone(&self.capability_leases),
+                        approval_settings: Arc::clone(&self.approval_settings),
+                        replay_payload_store: Arc::clone(&self.replay_payload_store),
+                        gate_record_store: Arc::clone(&self.gate_record_store),
                     },
                     self.fallback_user_id.clone(),
                 )?,
@@ -642,6 +660,7 @@ pub(crate) async fn create_refreshing_capability_port_for_test(
         outbound_preferences_service,
         orchestrator: None,
         supermemory: None,
+        computer_use: None,
         outbound_preference_write_requires_approval,
         approval_settings,
         approval_requests,

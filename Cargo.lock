@@ -4042,6 +4042,7 @@ dependencies = [
  "ironclaw_cli_providers",
  "ironclaw_common",
  "ironclaw_composition",
+ "ironclaw_computer_use",
  "ironclaw_config",
  "ironclaw_conversations",
  "ironclaw_event_log",
@@ -4117,6 +4118,22 @@ dependencies = [
  "tracing-test",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "ironclaw_computer_use"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ironclaw_host_api",
+ "ironclaw_mcp",
+ "ironclaw_product_contracts",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

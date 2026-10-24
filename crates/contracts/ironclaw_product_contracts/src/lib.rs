@@ -73,6 +73,7 @@ pub mod test_support;
 pub mod usage;
 pub mod views;
 pub mod workspace_views;
+pub mod computer_use;
 
 // There is deliberately no flat prelude and no cross-module re-export here.
 // Every contract is reached through the module that owns it —
