@@ -881,11 +881,40 @@ impl Render for ChatView {
                         .child(text),
                 )
             })
-            .child(div().flex_1().min_h_0().child(list.size_full()))
+            // Room for the floating header; rows fade under its lower half.
+            .child(div().flex_1().min_h_0().pt(px(30.)).child(list.size_full()))
+            // The thread header floats over the transcript: its title on
+            // the left, actions on the right, and a fade so rows scroll
+            // softly underneath instead of being cut off.
             .child(
-                div().absolute().top_2().right_4().child(
-                    h_flex()
-                        .gap_1()
+                h_flex()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(44.))
+                    .pl_4()
+                    .pr_3()
+                    .items_center()
+                    .gap_2()
+                    .bg(gpui_kit::linear_gradient(
+                        180.,
+                        gpui_kit::linear_color_stop(palette.bg.opacity(0.92 * style.panel_alpha), 0.45),
+                        gpui_kit::linear_color_stop(palette.bg.opacity(0.), 1.),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .font_medium()
+                            .text_color(palette.text_muted)
+                            .when_some(crate::titles::get(cx, &self.thread_id), |d, t| d.child(t)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
                         .child(
                             Button::new("fork")
                                 .icon(IconName::Copy)
@@ -905,7 +934,7 @@ impl Render for ChatView {
                                 .accessibility_label("Conversation files")
                                 .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx))),
                         ),
-                ),
+                    ),
             )
             .when(working, |this| {
                 this.child(

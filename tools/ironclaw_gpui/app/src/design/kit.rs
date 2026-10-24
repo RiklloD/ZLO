@@ -577,6 +577,7 @@ pub fn pulse_dots(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
     let id = id.into();
     h_flex().gap(px(3.)).items_center().children((0..3).map(move |i| {
         div()
+            .relative()
             .size(px(5.))
             .rounded_full()
             .bg(color)
@@ -584,10 +585,11 @@ pub fn pulse_dots(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
                 ElementId::NamedInteger(format!("{id:?}-dot").into(), i as u64),
                 Animation::new(Duration::from_millis(1200)).repeat(),
                 move |el, t| {
-                    // Each dot peaks a third of a period after the last.
+                    // Each dot peaks 0.2 s after the one before it. The lift is
+                    // a relative inset, so the row never relayouts.
                     let phase = (t - i as f32 * 0.18).rem_euclid(1.);
                     let wave = (phase * std::f32::consts::TAU).sin().max(0.);
-                    el.opacity(0.25 + 0.75 * wave).mt(px(-2. * wave))
+                    el.opacity(0.25 + 0.75 * wave).top(px(-2. * wave))
                 },
             )
     }))
