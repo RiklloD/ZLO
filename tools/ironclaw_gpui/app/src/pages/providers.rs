@@ -156,7 +156,7 @@ impl ProvidersView {
         self.notice = None;
         // With a quick-switch list saved, the gateway runs chats on that
         // list's default (or the person's pick), not the active model. Keep
-        // "Use" honest: make the chosen model the default and clear the pick.
+        // a model pick honest: make the chosen model the default and clear the pick.
         let switcher = self
             .catalog
             .as_ref()
@@ -422,20 +422,6 @@ impl ProvidersView {
 
         let actions = h_flex()
             .gap_1()
-            .when(!p.active && usable, |d| {
-                let id = p.id.clone();
-                d.child(
-                    Button::new(("use-provider", ix))
-                        .label("Use")
-                        .outline()
-                        .small()
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.set_active(id.clone(), None, cx)
-                            }),
-                        ),
-                )
-            })
             .when(p.can_list_models && usable, |d| {
                 let provider = p.clone();
                 d.child(
