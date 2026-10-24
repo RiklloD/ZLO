@@ -46,7 +46,6 @@ mod extension_account_setup;
 mod fakes;
 // Durable filesystem-backed idempotency ledger. The filesystem contract is a
 // base dependency; concrete libSQL/Postgres implementations remain gated.
-pub mod computer_use;
 mod delivery_coordinator;
 mod filesystem_ledger;
 mod gate_state;
@@ -69,6 +68,8 @@ mod reborn_services;
 mod run_delivery;
 pub mod supermemory;
 pub mod usage;
+
+pub mod computer_use;
 
 /// Test-only access to the stable Inbox identity used by production run
 /// notification publishers and lifecycle resolvers.
