@@ -311,11 +311,20 @@ impl TurnRuntime for AgentLoopRuntime {
             .unwrap_or_default();
         // Without an operator model policy the active provider's own list
         // is the choice (the ChatGPT plan's models, for one).
-        let models = if catalog.selection_enabled {
+        let mut models = if catalog.selection_enabled {
             catalog.models
         } else {
             primary_models
         };
+        // The profile's model leads, so a client can show it by name.
+        if let Some(ix) = catalog
+            .workspace_default
+            .as_ref()
+            .filter(|_| catalog.selection_enabled)
+            .and_then(|d| models.iter().position(|m| m == d))
+        {
+            models[..=ix].rotate_right(1);
+        }
         model_efforts.retain(|model, _| models.contains(model));
         let mut providers = vec![CatalogProvider {
             provider: IRONCLAW_RUNTIME_ID.to_string(),

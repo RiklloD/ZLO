@@ -222,7 +222,17 @@ impl NativeModelRoutes for RebornProviderRoutes {
                 model_efforts,
             });
         }
-        Some(self.route_for(def).await)
+        let mut route = self.route_for(def).await;
+        // The configured model leads the list (the profile's model).
+        if let Some(model) = active.model.filter(|m| !m.is_empty()) {
+            route.models.retain(|m| *m != model);
+            route
+                .model_efforts
+                .entry(model.clone())
+                .or_insert_with(|| reasoning_effort::efforts_for(def.protocol, &def.id, &model));
+            route.models.insert(0, model);
+        }
+        Some(route)
     }
 }
 
