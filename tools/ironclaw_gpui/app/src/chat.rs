@@ -1,7 +1,9 @@
 //! One open thread: transcript, live stream, composer, run controls.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use ironclaw_gpui_client::attachments::{self, StagedFile, format_bytes};
 use ironclaw_gpui_client::commands::{match_command, menu_matches, takes_arguments};
@@ -21,10 +23,12 @@ use crate::design::{Palette, kit, motion};
 use crate::jobs::flatten;
 use crate::ui::*;
 
+mod flow;
 mod goals;
 pub mod model_picker;
 mod orchestration;
 
+use flow::Item;
 use model_picker::{ModelPicker, PickerEvent};
 
 const TIMELINE_LIMIT: u32 = 200;
@@ -47,6 +51,19 @@ pub struct ChatView {
     thread_id: String,
     transcript: Transcript,
     rows: Rc<Vec<Row>>,
+    /// What the list shows: `rows` folded, plus the pending and reserve rows.
+    items: Rc<Vec<Item>>,
+    /// Activity groups the reader opened or closed by hand.
+    toggles: HashMap<String, bool>,
+    /// When the live run began, for the pending row's seconds.
+    run_started: Option<Instant>,
+    /// Room kept under a just-sent message while its answer streams.
+    reserve: Option<Reserve>,
+    /// Scroll the newest user message to the top on the next item sync.
+    pin_next: bool,
+    /// The view opened from the new-thread screen: its composer glides
+    /// down from where that screen's composer sat.
+    arrive: bool,
     scroller: Entity<MessageScrollerState>,
     composer: Entity<TextareaState>,
     status: StreamStatus,
@@ -65,6 +82,15 @@ pub struct ChatView {
     orch: orchestration::Orchestration,
     _stream: Option<EventStream>,
     _pump: Task<()>,
+}
+
+struct Reserve {
+    since: Instant,
+    /// A run was seen after the send; its end releases the room.
+    seen_run: bool,
+    held: bool,
+    /// Height drawn last frame, to re-measure the row only while it glides.
+    drawn: f32,
 }
 
 /// Emitted on every timeline load so the sidebar picks up server-set titles.
@@ -155,6 +181,12 @@ impl ChatView {
             thread_id,
             transcript: Transcript::default(),
             rows: Rc::new(Vec::new()),
+            items: Rc::new(Vec::new()),
+            toggles: HashMap::new(),
+            run_started: None,
+            reserve: None,
+            pin_next: false,
+            arrive: false,
             scroller,
             composer,
             status: StreamStatus::Connecting,
@@ -635,18 +667,48 @@ impl ChatView {
         }
     }
 
-    /// Recompute rows and tell the virtual list exactly what moved, so only
-    /// changed rows are re-measured while text streams.
     fn refresh_rows(&mut self, cx: &mut Context<Self>) {
-        let new_rows = self.transcript.rows();
-        let old = self.rows.clone();
+        self.rows = Rc::new(self.transcript.rows());
+        cx.notify();
+    }
+
+    pub(super) fn activity_open(&self, key: &str, live: bool) -> bool {
+        flow::is_open(key, live, &self.toggles)
+    }
+
+    /// Fold rows into list items and tell the virtual list exactly what
+    /// moved, so only changed items are re-measured while text streams.
+    fn sync_items(&mut self, live: bool, stopping: bool, cx: &mut Context<Self>) {
+        if live || stopping {
+            self.run_started.get_or_insert_with(Instant::now);
+        } else {
+            self.run_started = None;
+        }
+        if let Some(r) = self.reserve.as_mut() {
+            if live {
+                r.seen_run = true;
+            } else if r.seen_run || r.since.elapsed() > Duration::from_secs(15) {
+                r.held = false;
+            }
+        }
+        let new_items = flow::fold(&self.rows, live, stopping, self.reserve.is_some());
+        let old = self.items.clone();
+        if *old == new_items && !self.pin_next {
+            return;
+        }
         let prefix = old
             .iter()
-            .zip(new_rows.iter())
+            .zip(new_items.iter())
             .take_while(|(a, b)| a.key() == b.key())
             .count();
-        let changed: Vec<usize> = (0..prefix).filter(|&i| old[i] != new_rows[i]).collect();
-        let (old_len, new_len) = (old.len(), new_rows.len());
+        let changed: Vec<usize> = (0..prefix).filter(|&i| old[i] != new_items[i]).collect();
+        let (old_len, new_len) = (old.len(), new_items.len());
+        let pin = self.pin_next.then(|| {
+            new_items
+                .iter()
+                .rposition(|i| matches!(i, Item::Row(Row::User { .. })))
+        });
+        self.pin_next = false;
         self.scroller.update(cx, |state, cx| {
             if prefix < old_len || prefix < new_len {
                 state.splice(prefix..old_len, new_len - prefix, cx);
@@ -654,9 +716,43 @@ impl ChatView {
             for i in changed {
                 state.remeasure_items(i..i + 1, cx);
             }
+            if let Some(Some(ix)) = pin {
+                state.scroll_to_item(ix, cx);
+            }
         });
-        self.rows = Rc::new(new_rows);
-        cx.notify();
+        self.items = Rc::new(new_items);
+    }
+
+    /// The reserve's height this frame: most of the viewport while held,
+    /// gliding to nothing once the run ends (the transcript then settles
+    /// onto the composer instead of jumping).
+    fn reserve_height(&mut self, window: &Window, cx: &mut Context<Self>) -> f32 {
+        let Some(r) = self.reserve.as_mut() else {
+            return 0.;
+        };
+        let target = if r.held {
+            (f32::from(window.viewport_size().height) - 300.).max(0.)
+        } else {
+            0.
+        };
+        let style = Style::of(cx);
+        let h = motion::glide(
+            &format!("reserve:{}", self.thread_id),
+            target,
+            style.enter,
+            cx.reduce_motion(),
+        );
+        if (h - r.drawn).abs() > 0.25 {
+            r.drawn = h;
+            let last = self.items.len().saturating_sub(1);
+            self.scroller
+                .update(cx, |state, cx| state.remeasure_items(last..last + 1, cx));
+        }
+        if !r.held && h < 0.5 {
+            self.reserve = None;
+            cx.notify();
+        }
+        h
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -684,8 +780,15 @@ impl ChatView {
         let names: Vec<String> = files.iter().map(|f| f.filename.clone()).collect();
         let pending = self.transcript.push_pending_user(&text, &names);
         self.refresh_rows(cx);
-        self.scroller
-            .update(cx, |state, cx| state.scroll_to_end(cx));
+        // Zeron's turn: the message moves to the top and the answer streams
+        // into the room kept below it.
+        self.reserve = Some(Reserve {
+            since: Instant::now(),
+            seen_run: false,
+            held: true,
+            drawn: 0.,
+        });
+        self.pin_next = true;
 
         let thread_id = self.thread_id.clone();
         let body = text.clone();
@@ -707,6 +810,9 @@ impl ChatView {
                 }
                 Err(e) => {
                     this.transcript.drop_pending_user(pending);
+                    if let Some(r) = this.reserve.as_mut() {
+                        r.held = false;
+                    }
                     // Put the files back so a retry needs no re-picking.
                     this.staged = files;
                     this.composer
@@ -721,6 +827,7 @@ impl ChatView {
 
     /// The new-thread screen's first message, sent once the thread exists.
     pub fn send_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.arrive = true;
         self.composer
             .update(cx, |state, cx| state.set_value(text, window, cx));
         self.send(window, cx);
@@ -804,31 +911,48 @@ impl Render for ChatView {
         let style = *Style::of(cx);
         let palette = *Palette::of(cx);
         let focused = self.composer.focus_handle(cx).is_focused(window);
-        let rows = self.rows.clone();
         let weak = cx.weak_entity();
         let menu = self.menu(cx);
         let menu_index = self.menu_index.min(menu.len().saturating_sub(1));
         let running = self.running_run().is_some();
         let stopping = self.transcript.is_stopping();
-        // Fill the silence between send and the first streamed token.
-        let working = stopping
-            || running
-                && !matches!(
-                    self.rows.last(),
-                    Some(Row::Assistant {
-                        streaming: true,
-                        ..
-                    })
-                );
+        self.sync_items(running, stopping, cx);
+        let reserve_h = self.reserve_height(window, cx);
+        let items = self.items.clone();
+        let toggles = self.toggles.clone();
+        let since = self.run_started;
 
         let list = MessageScroller::new("transcript", self.scroller.clone(), move |ix, _, cx| {
-            let row = &rows[ix];
-            h_flex().w_full().justify_center().px_4().py_1p5().child(
-                div()
-                    .w_full()
-                    .max_w(px(CONTENT_MAX_WIDTH))
-                    .child(render_row(row, &weak, cx)),
-            )
+            let item = &items[ix];
+            let (top, bottom) = match item {
+                Item::Row(Row::User { .. }) => (20., 6.),
+                Item::Reserve => (0., 0.),
+                _ => (6., 6.),
+            };
+            let body = match item {
+                Item::Row(row @ Row::Assistant { key, text, streaming: false }) => {
+                    with_copy(key, text, render_row(row, &weak, cx))
+                }
+                Item::Row(Row::Narration { text, .. }) => div()
+                    .text_color(Palette::of(cx).text)
+                    .whitespace_normal()
+                    .child(text.clone())
+                    .into_any_element(),
+                Item::Row(row) => render_row(row, &weak, cx),
+                Item::Activity { key, rows, live } => {
+                    let open = flow::is_open(key, *live, &toggles);
+                    flow::render_activity(key, rows, *live, open, &weak, cx)
+                }
+                Item::Pending { stopping } => flow::render_pending(*stopping, since, cx),
+                Item::Reserve => div().h(px(reserve_h)).into_any_element(),
+            };
+            h_flex()
+                .w_full()
+                .justify_center()
+                .px_4()
+                .pt(px(top))
+                .pb(px(bottom))
+                .child(div().w_full().max_w(px(CONTENT_MAX_WIDTH)).child(body))
         });
 
         let banner = match self.status {
@@ -915,24 +1039,6 @@ impl Render for ChatView {
                         ),
                     ),
             )
-            .when(working, |this| {
-                this.child(
-                    h_flex().justify_center().px_4().child(
-                        h_flex()
-                            .w_full()
-                            .max_w(px(CONTENT_MAX_WIDTH))
-                            .gap_2()
-                            .items_center()
-                            .text_xs()
-                            .child(kit::pulse_dots("working-dots", palette.accent))
-                            .child(kit::shimmer_text(
-                                "working-label",
-                                if stopping { "Stopping…" } else { "Working…" },
-                                cx,
-                            )),
-                    ),
-                )
-            })
             .when_some(self.error.clone(), |this, error| {
                 this.child(
                     h_flex().justify_center().px_4().child(
@@ -997,7 +1103,7 @@ impl Render for ChatView {
                     .px_4()
                     .pb_4()
                     .pt_2()
-                    .child(self.render_composer(running, focused, cx)),
+                    .child(self.render_composer(running, focused, window, cx)),
             );
         h_flex()
             .size_full()
@@ -1189,7 +1295,13 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
 
 impl ChatView {
     /// The composer card: text on top; model pill, attach and send below.
-    fn render_composer(&self, running: bool, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_composer(
+        &self,
+        running: bool,
+        focused: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let style = Style::of(cx);
         let send = if running {
             kit::button("stop")
@@ -1221,7 +1333,7 @@ impl ChatView {
                 .pr_1()
                 .child("↵ to send")
         });
-        composer_card(
+        let card = composer_card(
             "composer",
             focused,
             div()
@@ -1235,7 +1347,13 @@ impl ChatView {
                 .child(attach)
                 .child(send),
             cx,
-        )
+        );
+        if !self.arrive {
+            return card.into_any_element();
+        }
+        // From the new-thread screen: glide down from its centered composer.
+        let from = -(f32::from(window.viewport_size().height) / 2. - 140.).max(0.);
+        motion::slide_in(card, "composer-arrive", style.enter, from).into_any_element()
     }
 }
 
@@ -1285,6 +1403,34 @@ pub(crate) fn composer_card(
                 .child(picker)
                 .child(actions),
         )
+}
+
+/// A finished answer with a copy action that shows on hover, as in Zeron.
+fn with_copy(key: &str, text: &str, body: AnyElement) -> AnyElement {
+    let group = SharedString::from(format!("{key}-group"));
+    let copy = text.to_string();
+    v_flex()
+        .group(group.clone())
+        .gap_1()
+        .child(body)
+        .child(
+            h_flex()
+                .h(px(22.))
+                .opacity(0.)
+                .group_hover(group, |s| s.opacity(1.))
+                .child(
+                    kit::button(SharedString::from(format!("{key}-copy")))
+                        .icon(IconName::Copy)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Copy")
+                        .accessibility_label("Copy message")
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                        }),
+                ),
+        )
+        .into_any_element()
 }
 
 /// A file name with its size, used for staged and sent attachments.
