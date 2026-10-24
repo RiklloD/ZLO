@@ -271,7 +271,8 @@ fn window_row(window: &UsageWindow, now: i64, cx: &App) -> impl IntoElement {
     let pct = window.used_percent.clamp(0., 100.);
     let resets = window.resets_at.map(countdown);
     let elapsed = elapsed_share(window, now);
-    let pace = elapsed.map(|e| pace(pct, e));
+    // Only overspending earns a caption; the tick shows the rest.
+    let ahead = elapsed.and_then(|e| ahead_of_pace(pct, e));
     v_flex()
         .gap_1()
         .child(
@@ -316,13 +317,8 @@ fn window_row(window: &UsageWindow, now: i64, cx: &App) -> impl IntoElement {
                     )
                 }),
         )
-        .when_some(pace, |d, (label, ahead)| {
-            d.child(
-                div()
-                    .text_xs()
-                    .text_color(if ahead { p.warning } else { p.text_faint })
-                    .child(label),
-            )
+        .when_some(ahead, |d, label| {
+            d.child(div().text_xs().text_color(p.warning).child(label))
         })
 }
 
@@ -333,14 +329,11 @@ fn elapsed_share(window: &UsageWindow, now: i64) -> Option<f64> {
     (length > 0.).then(|| ((length - (resets - now) as f64) / length).clamp(0., 1.))
 }
 
-/// t3code's verdict: more than 5 points from even pace either way.
-fn pace(used_pct: f64, elapsed: f64) -> (String, bool) {
+/// t3code's pace verdict, kept only for "ahead": more than 5 points over
+/// even spending for the time gone.
+fn ahead_of_pace(used_pct: f64, elapsed: f64) -> Option<String> {
     let gap = used_pct - elapsed * 100.;
-    match gap {
-        g if g > 5. => (format!("{g:.0}% ahead of pace"), true),
-        g if g < -5. => (format!("{:.0}% under pace", -g), false),
-        _ => ("On pace".to_string(), false),
-    }
+    (gap > 5.).then(|| format!("{gap:.0}% ahead of pace"))
 }
 
 /// Green until 70 %, amber until 90 %, then red.
