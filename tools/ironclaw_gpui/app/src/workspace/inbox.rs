@@ -792,8 +792,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Card row: title and status or age, then profile · branch; hover
-    /// actions pin, snooze, settle. No model readout: the profile names it.
+    /// Card row: profile · branch with the status or age, then the title;
+    /// hover actions pin, snooze, settle. No model readout: the profile names it.
     fn render_card(
         &self,
         row: &InboxRow,
@@ -835,11 +835,8 @@ impl Workspace {
             // Hover flips visibility only: GPUI reads hover per phase, and a
             // display toggle would skip prepaint yet paint ("must call
             // prepaint before paint").
+            // In flow, so the profile name truncates before them.
             h_flex()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .right_0()
                 .gap_px()
                 .items_center()
                 .when(!menu_open, |d| {
@@ -924,34 +921,8 @@ impl Workspace {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_thread(open_id.clone(), window, cx)
                 }))
-                .child(
-                    h_flex()
-                        .gap(px(8.))
-                        .items_center()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(design::SIDEBAR_TITLE_SIZE))
-                                .text_color(if recede { p.text_muted } else { ink })
-                                .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
-                                .child(title_of(row).to_string()),
-                        )
-                        .child(
-                            div()
-                                .relative()
-                                .flex_none()
-                                .text_size(px(design::SIDEBAR_META_SIZE))
-                                .child(
-                                    div()
-                                        .when(menu_open, |d| d.invisible())
-                                        .group_hover(group.clone(), |s| s.invisible())
-                                        .child(status_label(row, active, now, cx)),
-                                )
-                                .child(actions),
-                        ),
-                )
+                // Profile first, with the status or age (or, on hover, the
+                // actions) at its end; the title gets the full width below.
                 .child(
                     h_flex()
                         .gap(px(7.))
@@ -959,8 +930,35 @@ impl Workspace {
                         .text_size(px(design::SIDEBAR_META_SIZE))
                         .text_color(quiet)
                         .child(profile_mark(&row.profile_id, &name, cx))
-                        .child(div().flex_none().max_w(px(140.)).truncate().child(name))
-                        .when_some(branch, |d, b| d.child(branch_label(b, cx))),
+                        .child(div().flex_1().min_w_0().truncate().child(name))
+                        .when_some(branch, |d, b| d.child(branch_label(b, cx)))
+                        .child(
+                            div()
+                                .relative()
+                                .flex_none()
+                                .child(actions)
+                                .child(
+                                    h_flex()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .right_0()
+                                        .items_center()
+                                        .when(menu_open, |d| d.invisible())
+                                        .group_hover(group.clone(), |s| s.invisible())
+                                        .child(status_label(row, active, now, cx)),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(design::SIDEBAR_TITLE_SIZE))
+                        .text_color(if recede { p.text_muted } else { ink })
+                        .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
+                        .child(title_of(row).to_string()),
                 );
         v_flex()
             .child(card)
