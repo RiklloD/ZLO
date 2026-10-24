@@ -3,7 +3,8 @@
 ## Zeron
 
 Parts of `app/src/design/` (the oklch color math, the dark palette values, the
-cubic-bezier solver and the motion catalog) are adapted from Zeron,
+cubic-bezier solver, the motion catalog, the hover-fade and state-morph
+tween stores and the glass plate recipes in `kit.rs`) are adapted from Zeron,
 https://github.com/zeronsh/zeron.
 
 MIT License. Copyright (c) 2026 Wing.

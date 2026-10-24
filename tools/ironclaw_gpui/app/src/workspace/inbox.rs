@@ -20,7 +20,7 @@ use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
 
 use super::{Page, Workspace, sidebar_row};
 use crate::assets::ExtraIcon;
-use crate::design::{self, Palette};
+use crate::design::{self, Palette, Style, kit};
 use crate::jobs;
 use crate::ui::*;
 
@@ -510,13 +510,12 @@ impl Workspace {
                 }))
                 .into_any_element()
         });
-        v_flex()
+        let pop = kit::popover("inbox-filters", cx);
+        pop(v_flex()
             .mx_2()
             .mb_1()
             .p_2()
             .gap_1()
-            .rounded(px(design::CONTROL_RADIUS))
-            .bg(p.surface_raised)
             .child(
                 h_flex()
                     .justify_between()
@@ -539,7 +538,7 @@ impl Workspace {
                     .child(h_flex().flex_wrap().gap_1().children(models))
             })
             .child(group("State"))
-            .child(h_flex().flex_wrap().gap_1().children(states))
+            .child(h_flex().flex_wrap().gap_1().children(states)))
     }
 
     fn render_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -588,15 +587,12 @@ impl Workspace {
                     this.new_thread_in(id.clone(), window, cx)
                 }))
         });
-        v_flex()
+        let pop = kit::popover("profile-picker", cx);
+        pop(v_flex()
             .mx_2()
             .mb_1()
             .p_1()
             .gap_px()
-            .rounded(px(design::CONTROL_RADIUS))
-            .border_1()
-            .border_color(p.border)
-            .bg(p.surface_overlay)
             .child(
                 div()
                     .px_2()
@@ -614,7 +610,7 @@ impl Workspace {
                     .ghost()
                     .xsmall()
                     .on_click(cx.listener(|this, _, window, cx| this.new_profile(window, cx))),
-            )
+            ))
     }
 
     fn render_fold(
@@ -677,6 +673,20 @@ impl Workspace {
         let pinned = row.state == InboxState::Pinned;
         let menu_open = self.inbox.snooze_menu.as_deref() == Some(id.as_str());
         let recede = !active && row.status.is_none();
+        let style = *Style::of(cx);
+        let hover_key: SharedString = format!("card:{id}").into();
+        let h = crate::design::motion::hover_t(&hover_key);
+        let sel = crate::design::motion::state_t(
+            &format!("card:{id}:on"),
+            active,
+            style.slide,
+            cx.reduce_motion(),
+        );
+        let wash = crate::design::motion::mix(
+            crate::design::motion::mix(p.hover.opacity(0.), p.hover, h),
+            if p.light { p.surface_card } else { p.active },
+            sel,
+        );
 
         let actions = {
             let (pin_id, snooze_id, settle_id) = (id.clone(), id.clone(), id.clone());
@@ -741,14 +751,27 @@ impl Workspace {
                 .group(group)
                 .role(Role::Button)
                 .aria_label(title_of(row).to_string())
+                .relative()
                 .w_full()
                 .px_2()
                 .py_1p5()
                 .gap_0p5()
-                .rounded(px(design::CONTROL_RADIUS))
+                .rounded(px(style.control_radius))
                 .cursor_pointer()
-                .when(active, |d| d.bg(p.active))
-                .when(!active, |d| d.hover(|s| s.bg(p.hover)))
+                .bg(wash)
+                .when(sel > 0.01, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .left(px(-1.))
+                            .top(px(10.))
+                            .bottom(px(10.))
+                            .w(px(3.))
+                            .rounded_full()
+                            .bg(p.accent.opacity(sel)),
+                    )
+                })
+                .on_hover(crate::design::motion::hover_listener(hover_key, style.hover))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_thread(open_id.clone(), window, cx)
                 }))
@@ -809,15 +832,8 @@ impl Workspace {
                         this.inbox_mark(id.clone(), InboxAction::Snooze, Some(until), cx)
                     }))
             });
-        v_flex()
-            .mx_2()
-            .mb_1()
-            .p_1()
-            .rounded(px(design::CONTROL_RADIUS))
-            .border_1()
-            .border_color(p.border)
-            .bg(p.surface_overlay)
-            .children(items)
+        let pop = kit::popover(SharedString::from(format!("snooze-{thread_id}")), cx);
+        pop(v_flex().mx_2().mb_1().p_1().children(items))
     }
 
     /// Slim row for Snoozed and Settled: dimmed mark, title, wake or age.
@@ -920,28 +936,8 @@ fn chip(
     on: bool,
     cx: &App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let p = Palette::of(cx);
-    h_flex()
-        .id(id)
-        .role(Role::Button)
-        .aria_label(label.clone())
-        .px_2()
-        .py_0p5()
-        .rounded_full()
-        .text_xs()
-        .cursor_pointer()
-        .border_1()
-        .when(on, |d| {
-            d.bg(p.accent_wash)
-                .border_color(p.accent)
-                .text_color(p.text)
-        })
-        .when(!on, |d| {
-            d.border_color(p.border)
-                .text_color(p.text_muted)
-                .hover(|s| s.bg(p.hover))
-        })
-        .child(label)
+    let id: ElementId = id.into();
+    kit::chip(SharedString::from(format!("{id:?}")), label, on, cx)
 }
 
 /// The profile badge: a colored tile with the first letter.
@@ -1047,7 +1043,10 @@ fn status_label(row: &InboxRow, active: bool, now: i64, cx: &App) -> AnyElement 
             .items_center()
             .text_xs()
             .text_color(p.accent)
-            .child(Spinner::new().xsmall())
+            .child(kit::pulse_dots(
+                SharedString::from(format!("working-{}", row.thread_id)),
+                p.accent,
+            ))
             .child("Working")
             .into_any_element(),
         Some(InboxStatus::Background) => text("Subagents".into(), p.accent),

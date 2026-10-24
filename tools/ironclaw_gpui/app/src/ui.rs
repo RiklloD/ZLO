@@ -102,26 +102,41 @@ pub fn markdown(
         .stream_fade(streaming)
 }
 
-/// One muted line of run activity (thinking, tool call, skill activation).
+/// One line of run activity (thinking, tool call, skill activation): the
+/// icon sits in a small tile, the detail folds to three lines.
 pub fn activity_line(
     icon: IconName,
     title: impl Into<SharedString>,
     detail: Option<SharedString>,
     cx: &App,
 ) -> impl IntoElement {
-    let muted = cx.theme().muted_foreground;
+    let p = crate::design::Palette::of(cx);
+    let s = crate::design::Style::of(cx);
     h_flex()
         .gap_2()
         .items_start()
         .text_xs()
-        .text_color(muted)
-        .child(div().pt(px(1.)).child(Icon::new(icon).xsmall()))
+        .text_color(p.text_muted)
+        .child(
+            div()
+                .flex_none()
+                .size(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(s.control_radius.min(6.)))
+                .bg(p.hover)
+                .border_1()
+                .border_color(p.border)
+                .child(Icon::new(icon).xsmall()),
+        )
         .child(
             v_flex()
                 .flex_1()
                 .min_w_0()
+                .pt(px(3.))
                 .gap_0p5()
-                .child(div().font_medium().child(title.into()))
+                .child(div().font_medium().text_color(p.text).child(title.into()))
                 .when_some(detail, |this, detail| {
                     // line_clamp counts per paragraph; fold to one so the clamp holds.
                     let folded = detail.split_whitespace().collect::<Vec<_>>().join(" ");

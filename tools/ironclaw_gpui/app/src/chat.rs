@@ -1286,27 +1286,15 @@ impl ChatView {
         let menu = self.model_menu_open.then(|| {
             let entries = std::iter::once((None, format!("Default ({default})")))
                 .chain(catalog.models.iter().map(|m| (Some(m.clone()), m.clone())));
-            v_flex()
+            let pop = kit::popover("model-menu", cx);
+            pop(v_flex()
                 .w(px(320.))
                 .p_1()
-                .rounded(cx.theme().radius_lg)
-                .border_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().popover)
-                .shadow_md()
                 .children(entries.enumerate().map(|(ix, (value, label))| {
                     let selected = value == *pick;
-                    h_flex()
-                        .id(("model-option", ix))
+                    kit::row(SharedString::from(format!("model-option-{ix}")), selected, cx)
                         .role(Role::Button)
                         .aria_label(label.clone())
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .rounded(cx.theme().radius)
-                        .text_sm()
-                        .cursor_pointer()
-                        .hover(|this| this.bg(cx.theme().accent))
                         .child(
                             div()
                                 .w(px(14.))
@@ -1316,8 +1304,7 @@ impl ChatView {
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.choose_model(value.clone(), cx)),
                         )
-                }))
-                .into_any_element()
+                })))
         });
         (Some(button), menu)
     }
@@ -1338,8 +1325,8 @@ fn file_chip(
         .max_w(px(260.))
         .rounded(cx.theme().radius)
         .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().secondary)
+        .border_color(Palette::of(cx).border_strong)
+        .bg(Palette::of(cx).hover)
         .text_xs()
         .child(Icon::new(IconName::File).xsmall().flex_none())
         .child(div().min_w_0().truncate().child(name.to_string()))
@@ -1359,31 +1346,19 @@ fn render_menu(
     selected: usize,
     cx: &mut Context<ChatView>,
 ) -> impl IntoElement {
-    v_flex()
+    let pop = kit::popover("command-menu-pop", cx);
+    pop(v_flex().w_full().child(div()
         .w_full()
         .max_h(px(280.))
         .id("command-menu")
         .overflow_y_scroll()
         .p_1()
-        .rounded(cx.theme().radius_lg)
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().popover)
-        .shadow_md()
         .children(items.iter().enumerate().map(|(ix, command)| {
             let pick = command.clone();
-            h_flex()
-                .id(SharedString::from(format!("cmd-{}", command.name)))
+            kit::row(SharedString::from(format!("cmd-{}", command.name)), ix == selected, cx)
                 .role(Role::Button)
                 .aria_label(command.usage.clone())
                 .gap_3()
-                .px_2()
-                .py_1()
-                .rounded(cx.theme().radius)
-                .text_sm()
-                .cursor_pointer()
-                .when(ix == selected, |this| this.bg(cx.theme().accent))
-                .hover(|this| this.bg(cx.theme().accent))
                 .child(div().font_medium().flex_none().child(command.usage.clone()))
                 .child(
                     div()
@@ -1397,7 +1372,7 @@ fn render_menu(
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.pick_command(&pick, window, cx)),
                 )
-        }))
+        }))))
 }
 
 #[allow(clippy::too_many_arguments)]
