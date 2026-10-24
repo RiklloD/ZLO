@@ -30,6 +30,14 @@ pub const TITLEBAR_HEIGHT: f32 = 46.;
 /// Room the macOS traffic lights take at the sidebar's top left.
 pub const TRAFFIC_LIGHTS_WIDTH: f32 = 86.;
 pub const STATUS_BAR_HEIGHT: f32 = 24.;
+// Sidebar density, matched to Hermes desktop: 14 px titles, 12 px meta,
+// 32 px controls.
+pub const SIDEBAR_CARD_MIN_HEIGHT: f32 = 58.;
+pub const SIDEBAR_SLIM_HEIGHT: f32 = 38.;
+pub const SIDEBAR_SEARCH_HEIGHT: f32 = 44.;
+pub const SIDEBAR_TITLE_SIZE: f32 = 14.;
+pub const SIDEBAR_META_SIZE: f32 = 12.;
+pub const SIDEBAR_CONTROL: f32 = 32.;
 pub const PANEL_RADIUS: f32 = 10.;
 pub const CONTROL_RADIUS: f32 = 6.;
 
