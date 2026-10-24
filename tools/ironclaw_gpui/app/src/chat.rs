@@ -27,6 +27,7 @@ mod flow;
 mod goals;
 pub mod model_picker;
 mod orchestration;
+mod outline;
 mod pace;
 
 use flow::Item;
@@ -73,6 +74,7 @@ pub struct ChatView {
     /// Streaming replies revealed at a steady rate.
     pacer: pace::Pacer,
     pacing: bool,
+    outline: Entity<outline::Outline>,
     /// Jumps to latest so far; each one keys a fresh settle slide.
     jumps: u32,
     scroller: Entity<MessageScrollerState>,
@@ -153,6 +155,10 @@ impl ChatView {
                 },
             );
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
+        let outline = {
+            let scroller = scroller.clone();
+            cx.new(|cx| outline::Outline::new(scroller, cx))
+        };
         let picker = {
             let (backend, id) = (backend.clone(), thread_id.clone());
             cx.new(|cx| ModelPicker::new(backend, Some(id), None, window, cx))
@@ -200,6 +206,7 @@ impl ChatView {
             arrive: false,
             pacer: pace::Pacer::default(),
             pacing: false,
+            outline,
             jumps: 0,
             scroller,
             composer,
@@ -748,6 +755,8 @@ impl ChatView {
                 state.scroll_to_item(ix, cx);
             }
         });
+        let prompts = outline_prompts(&new_items);
+        self.outline.update(cx, |o, cx| o.set(prompts, cx));
         self.items = Rc::new(new_items);
     }
 
@@ -1087,6 +1096,7 @@ impl Render for ChatView {
                 };
                 div().flex_1().min_h_0().pt(px(30.)).child(body)
             })
+            .child(self.outline.clone())
             // The thread actions float over the transcript, with a fade so
             // rows scroll softly underneath instead of being cut off.
             .child(
@@ -1550,6 +1560,30 @@ fn with_copy(key: &str, text: &str, body: AnyElement) -> AnyElement {
             ),
         )
         .into_any_element()
+}
+
+/// Each sent message and the start of the reply under it.
+fn outline_prompts(items: &[Item]) -> Vec<outline::Prompt> {
+    let mut out: Vec<outline::Prompt> = Vec::new();
+    for (ix, item) in items.iter().enumerate() {
+        match item {
+            Item::Row(Row::User { text, .. }) => out.push(outline::Prompt {
+                item: ix,
+                label: outline::first_line(text, 160),
+                reply: None,
+            }),
+            Item::Row(Row::Assistant { text, .. }) => {
+                if let Some(last) = out.last_mut()
+                    && last.reply.is_none()
+                    && !text.trim().is_empty()
+                {
+                    last.reply = Some(outline::first_line(text, 120));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 thread_local! {
