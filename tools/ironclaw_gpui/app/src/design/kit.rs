@@ -447,18 +447,19 @@ fn tick(s: &Style, p: &Palette, a: f32) -> impl IntoElement {
         .bg(p.accent.opacity(a))
 }
 
-/// A sliding pill behind a vertical list of fixed-height rows. Put it as
-/// the first child of a `relative` container; `index` is the selected row
-/// (`None` hides it). It glides between rows instead of jumping.
-pub fn slide_pill(key: &str, index: Option<usize>, pitch: f32, cx: &App) -> impl IntoElement {
+/// A sliding pill behind a vertical list of rows. Put it as the first child
+/// of a `relative` container; `top` is the selected row's offset in px
+/// (`None` hides it). It glides between rows, across group gaps, instead of
+/// jumping.
+pub fn slide_pill(key: &str, top: Option<f32>, cx: &App) -> impl IntoElement {
     let s = *Style::of(cx);
     let p = *Palette::of(cx);
     let reduced = cx.reduce_motion();
-    let shown = motion::state_t(&format!("{key}:shown"), index.is_some(), s.slide, reduced);
+    let shown = motion::state_t(&format!("{key}:shown"), top.is_some(), s.slide, reduced);
     // Hidden: hold the last place so the pill fades out where it was.
-    let target = index.map(|i| i as f32).unwrap_or_else(|| last_slot(key));
+    let target = top.unwrap_or_else(|| last_slot(key));
     remember_slot(key, target);
-    let y = motion::glide(key, target, s.slide, reduced) * pitch;
+    let y = motion::glide(key, target, s.slide, reduced);
     div()
         .absolute()
         .left_0()

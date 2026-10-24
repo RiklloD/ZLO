@@ -25,7 +25,7 @@ use crate::pages::operator::OperatorView;
 use crate::pages::profiles::ProfilesView;
 use crate::pages::projects::ProjectsView;
 use crate::pages::providers::ProvidersView;
-use crate::pages::settings::SettingsView;
+use crate::pages::settings::{Section, SettingsView};
 use crate::pages::skills::SkillsView;
 use crate::pages::usage::{UsageModel, UsageView};
 use crate::ui::*;
@@ -65,6 +65,9 @@ enum Page {
     Extensions,
     Skills,
     Settings,
+    Appearance,
+    Permissions,
+    Traces,
     Providers,
     Operator,
     Usage,
@@ -459,7 +462,18 @@ impl Workspace {
             Page::Profiles => open!(profiles, |cx| ProfilesView::new(backend, window, cx)),
             Page::Extensions => open!(extensions, |cx| ExtensionsView::new(backend, cx)),
             Page::Skills => open!(skills, |cx| SkillsView::new(backend, window, cx)),
-            Page::Settings => open!(settings, |cx| SettingsView::new(backend, cx)),
+            Page::Settings | Page::Appearance | Page::Permissions | Page::Traces => {
+                open!(settings, |cx| SettingsView::new(backend, cx));
+                let section = match page {
+                    Page::Appearance => Section::Appearance,
+                    Page::Permissions => Section::Permissions,
+                    Page::Traces => Section::Traces,
+                    _ => Section::General,
+                };
+                if let Some(view) = self.pages.settings.clone() {
+                    view.update(cx, |v, cx| v.set_section(section, cx));
+                }
+            }
             Page::Providers => {
                 // The orchestrator catalog (CLI agents) is read through any thread.
                 let catalog = self.inbox.list.rows.first().map(|r| r.thread_id.clone());
@@ -482,24 +496,40 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Settings pages in sidebar order: label, icon.
-    fn settings_pages(&self) -> Vec<(Page, IconName, &'static str)> {
-        let mut items = vec![
-            (Page::Settings, IconName::Settings, "General"),
-            (Page::Providers, IconName::Bot, "Providers"),
-            (Page::Profiles, IconName::User, "Profiles"),
-            (Page::Skills, IconName::BookOpen, "Skills"),
-            (Page::Extensions, IconName::Frame, "Extensions"),
+    /// Settings pages in sidebar order, in Zeron's groups: the app, what
+    /// the agent can use, what it works on, and what it reports.
+    fn settings_groups(&self) -> Vec<Vec<(Page, IconName, &'static str)>> {
+        let mut work = vec![
             (Page::Automations, IconName::Calendar, "Automations"),
-            (Page::Notifications, IconName::Bell, "Notifications"),
             (Page::Files, IconName::Folder, "Files"),
         ];
         if self.projects_enabled() {
-            items.push((Page::Projects, IconName::LayoutDashboard, "Projects"));
+            work.push((Page::Projects, IconName::LayoutDashboard, "Projects"));
         }
-        items.push((Page::Usage, IconName::ChartPie, "Usage"));
-        items.push((Page::Operator, IconName::SquareTerminal, "Operator"));
-        items
+        vec![
+            vec![
+                (Page::Settings, IconName::Settings, "General"),
+                (Page::Appearance, IconName::Palette, "Appearance"),
+                (Page::Notifications, IconName::Bell, "Notifications"),
+            ],
+            vec![
+                (Page::Providers, IconName::Bot, "Providers"),
+                (Page::Profiles, IconName::User, "Profiles"),
+                (Page::Skills, IconName::BookOpen, "Skills"),
+                (Page::Extensions, IconName::Frame, "Extensions"),
+                (Page::Permissions, IconName::CircleCheck, "Permissions"),
+            ],
+            work,
+            vec![
+                (Page::Usage, IconName::ChartPie, "Usage"),
+                (Page::Traces, IconName::Network, "Trace Commons"),
+                (Page::Operator, IconName::SquareTerminal, "Operator"),
+            ],
+        ]
+    }
+
+    fn settings_pages(&self) -> Vec<(Page, IconName, &'static str)> {
+        self.settings_groups().into_iter().flatten().collect()
     }
 
     fn in_settings(&self) -> bool {
@@ -515,13 +545,46 @@ impl Workspace {
     }
 
     fn render_settings_nav(&self, cx: &Context<Self>) -> impl IntoElement {
+        const GROUP_GAP: f32 = 14.;
         let unread = self.unread;
         let s = *Style::of(cx);
         let p = *Palette::of(cx);
-        let items = self.settings_pages();
-        let selected = items.iter().position(|(page, _, _)| *page == self.page);
-        // Rows have a fixed height, so the selection pill can glide between
-        // them instead of jumping.
+        // Rows have a fixed height and groups a fixed gap, so the selection
+        // pill can glide to any row, across gaps, instead of jumping.
+        let groups = self.settings_groups();
+        let mut selected = None;
+        let mut slot = 0;
+        for (gx, group) in groups.iter().enumerate() {
+            for (page, _, _) in group {
+                if *page == self.page {
+                    selected = Some(slot as f32 * s.row_height + gx as f32 * GROUP_GAP);
+                }
+                slot += 1;
+            }
+        }
+        let mut nav = v_flex()
+            .relative()
+            .child(kit::slide_pill("nav-pill", selected, cx));
+        let mut slot = 0;
+        for (gx, group) in groups.into_iter().enumerate() {
+            let mut rows = v_flex();
+            for (page, icon, label) in group {
+                let on = self.page == page;
+                rows = rows.child(
+                    kit::pill_row(SharedString::from(format!("nav-{slot}")), on, cx)
+                        .role(Role::Button)
+                        .aria_label(label)
+                        .on_click(cx.listener(move |this, _, window, cx| this.show(page, window, cx)))
+                        .child(Icon::new(icon).small().when(on, |i| i.text_color(p.accent)))
+                        .child(div().flex_1().child(label))
+                        .when(page == Page::Notifications && unread > 0, |d| {
+                            d.child(unread_badge(unread))
+                        }),
+                );
+                slot += 1;
+            }
+            nav = nav.child(rows.when(gx > 0, |d| d.mt(px(GROUP_GAP))));
+        }
         v_flex()
             .id("settings-nav")
             .flex_1()
@@ -529,27 +592,7 @@ impl Workspace {
             .overflow_y_scroll()
             .px_2()
             .pb_2()
-            .child(
-                v_flex()
-                    .relative()
-                    .child(kit::slide_pill("nav-pill", selected, s.row_height, cx))
-                    .children(items.into_iter().enumerate().map(
-                        |(ix, (page, icon, label))| {
-                            let on = self.page == page;
-                            kit::pill_row(SharedString::from(format!("nav-{ix}")), on, cx)
-                                .role(Role::Button)
-                                .aria_label(label)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.show(page, window, cx)
-                                }))
-                                .child(Icon::new(icon).small().when(on, |i| i.text_color(p.accent)))
-                                .child(div().flex_1().child(label))
-                                .when(page == Page::Notifications && unread > 0, |d| {
-                                    d.child(unread_badge(unread))
-                                })
-                        },
-                    )),
-            )
+            .child(nav)
     }
 
     fn open_in_browser(&self, cx: &mut App) {
@@ -994,7 +1037,9 @@ impl Render for Workspace {
                     Page::Profiles => self.pages.profiles.clone().map(|v| v.into_any_element()),
                     Page::Extensions => self.pages.extensions.clone().map(|v| v.into_any_element()),
                     Page::Skills => self.pages.skills.clone().map(|v| v.into_any_element()),
-                    Page::Settings => self.pages.settings.clone().map(|v| v.into_any_element()),
+                    Page::Settings | Page::Appearance | Page::Permissions | Page::Traces => {
+                        self.pages.settings.clone().map(|v| v.into_any_element())
+                    }
                     Page::Providers => self.pages.providers.clone().map(|v| v.into_any_element()),
                     Page::Operator => self.pages.operator.clone().map(|v| v.into_any_element()),
                     Page::Usage => self.pages.usage.clone().map(|v| v.into_any_element()),

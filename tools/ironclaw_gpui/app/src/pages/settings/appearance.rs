@@ -5,6 +5,7 @@ use super::SettingsView;
 use crate::design::prefs::{Prefs, Wallpaper};
 use crate::design::styles::{Material, Style, StyleId};
 use crate::design::{self, Palette, kit, motion, themes};
+use crate::pages::{group_header, rows_card, setting_row};
 use crate::ui::*;
 
 /// The four styles as live miniatures of the app: sidebar, a selected row,
@@ -234,54 +235,51 @@ pub fn render(cx: &mut Context<SettingsView>) -> impl IntoElement {
         _ => None,
     };
 
-    v_flex()
-        .gap_3()
-        .child(div().font_semibold().child("Style"))
-        .child(style_gallery(cx))
-        .child(div().pt_2().font_semibold().child("Palette"))
-        .child(h_flex().flex_wrap().gap_2().children(swatches))
+    let wallpaper = h_flex()
+        .gap_1()
+        .child(choice(
+            "wallpaper-none",
+            "None",
+            prefs.wallpaper == Wallpaper::None,
+            Wallpaper::None,
+        ))
+        .child(choice(
+            "wallpaper-aurora",
+            "Aurora",
+            prefs.wallpaper == Wallpaper::Aurora,
+            Wallpaper::Aurora,
+        ))
         .child(
-            card(cx).child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().font_semibold().child("Wallpaper"))
-                            .child(div().text_xs().text_color(p.text_muted).truncate().child(
-                                picture_name.unwrap_or_else(|| {
-                                    "Drawn once behind the window; no cost while idle.".into()
-                                }),
-                            )),
-                    )
-                    .child(choice(
-                        "wallpaper-none",
-                        "None",
-                        prefs.wallpaper == Wallpaper::None,
-                        Wallpaper::None,
-                    ))
-                    .child(choice(
-                        "wallpaper-aurora",
-                        "Aurora",
-                        prefs.wallpaper == Wallpaper::Aurora,
-                        Wallpaper::Aurora,
-                    ))
-                    .child(
-                        Button::new("wallpaper-pick")
-                            .label("Picture…")
-                            .small()
-                            .when(matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| {
-                                b.primary()
-                            })
-                            .when(!matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| {
-                                b.ghost()
-                            })
-                            .on_click(cx.listener(|_, _, window, cx| pick_picture(window, cx))),
-                    ),
-            ),
-        )
+            Button::new("wallpaper-pick")
+                .label("Picture…")
+                .small()
+                .when(matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| b.primary())
+                .when(!matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| b.ghost())
+                .on_click(cx.listener(|_, _, window, cx| pick_picture(window, cx))),
+        );
+    v_flex()
+        .child(group_header(
+            "Style",
+            Some("Geometry, materials and motion. Each style loads its own palette."),
+            cx,
+        ))
+        .child(style_gallery(cx))
+        .child(group_header("Palette", Some("Colors only; the style stays."), cx))
+        .child(h_flex().flex_wrap().gap_2().children(swatches))
+        .child(group_header("Window", None, cx))
+        .child(rows_card(
+            [setting_row(
+                "Wallpaper",
+                Some(
+                    picture_name
+                        .unwrap_or_else(|| "Drawn once behind the window; no cost while idle.".into())
+                        .into(),
+                ),
+                wallpaper,
+                cx,
+            )],
+            cx,
+        ))
 }
 
 fn pick_picture(window: &mut Window, cx: &mut Context<SettingsView>) {

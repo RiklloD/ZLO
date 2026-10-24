@@ -28,9 +28,91 @@ pub fn header(title: &'static str, actions: impl IntoElement) -> gpui_kit::Div {
     h_flex()
         .justify_between()
         .items_center()
-        .pb_6()
-        .child(div().text_2xl().font_semibold().child(title))
+        .pb_5()
+        .child(div().text_xl().font_semibold().child(title))
         .child(h_flex().gap_2().child(actions))
+}
+
+/// A settings group's header, Zeron-style: a muted label above its card,
+/// with an optional line of explanation.
+pub fn group_header(title: impl Into<SharedString>, note: Option<&str>, cx: &App) -> gpui_kit::Div {
+    let p = crate::design::Palette::of(cx);
+    v_flex()
+        .pt_6()
+        .pb_2()
+        .px_1()
+        .gap_0p5()
+        .child(
+            div()
+                .text_sm()
+                .font_medium()
+                .text_color(p.text_muted)
+                .child(title.into()),
+        )
+        .when_some(note, |d, note| {
+            d.child(
+                div()
+                    .text_xs()
+                    .text_color(p.text_faint)
+                    .whitespace_normal()
+                    .child(note.to_string()),
+            )
+        })
+}
+
+/// Related settings in one card, hairlines between rows (inset like
+/// macOS System Settings).
+pub fn rows_card(rows: impl IntoIterator<Item = AnyElement>, cx: &App) -> gpui_kit::Div {
+    let s = crate::design::Style::of(cx);
+    let p = crate::design::Palette::of(cx);
+    let mut card = crate::design::kit::neutral(s, p, 0., 0.5).apply(
+        v_flex()
+            .w_full()
+            .rounded(px(s.panel_radius.clamp(4., 12.)))
+            .overflow_hidden(),
+    );
+    for (ix, row) in rows.into_iter().enumerate() {
+        if ix > 0 {
+            card = card.child(div().mx_4().h(px(1.)).bg(p.border));
+        }
+        card = card.child(row);
+    }
+    card
+}
+
+/// One setting: label and description on the left, its control on the right.
+pub fn setting_row(
+    label: impl Into<SharedString>,
+    description: Option<SharedString>,
+    control: impl IntoElement,
+    cx: &App,
+) -> AnyElement {
+    let p = crate::design::Palette::of(cx);
+    h_flex()
+        .w_full()
+        .min_h(px(56.))
+        .px_4()
+        .py_3()
+        .gap_4()
+        .items_center()
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(div().text_sm().font_medium().text_color(p.text).child(label.into()))
+                .when_some(description, |d, text| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(p.text_muted)
+                            .whitespace_normal()
+                            .child(text),
+                    )
+                }),
+        )
+        .child(div().flex_none().child(control))
+        .into_any_element()
 }
 
 /// Centered, width-capped page body that scrolls.
