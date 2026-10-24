@@ -4,8 +4,12 @@
 
 Parts of `app/src/design/` (the oklch color math, the dark palette values, the
 cubic-bezier solver, the motion catalog, the hover-fade and state-morph
-tween stores and the glass plate recipes in `kit.rs`) are adapted from Zeron,
-https://github.com/zeronsh/zeron.
+tween stores and the glass plate recipes in `kit.rs`), the transcript layout
+and motion in `app/src/chat/flow.rs` (tool fold, task tree, working line,
+rotating verbs, gradient glyph), the composer pill, the Appearance page and
+settings block metrics, the session row, and the light theme and accent
+presets in `design/themes.rs` are adapted from Zeron,
+https://github.com/zeronsh/zeron (read at commit 4231cb7).
 
 MIT License. Copyright (c) 2026 Wing.
 

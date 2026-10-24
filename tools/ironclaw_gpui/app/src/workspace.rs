@@ -634,71 +634,77 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, window, cx| this.back_to_threads(window, cx))),
             )
         } else {
+            // Zeron's footer: the account chip on the left ("Local": this
+            // Mac's gateway), 28 px icon buttons on the right.
+            let foot = |id: &'static str, icon: IconName, label: &'static str| {
+                crate::chat::round_button(id, icon, false, label, cx).tooltip(move |w, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(label).build(w, cx)
+                })
+            };
             h_flex()
-                .p_2()
-                .gap_1()
+                .px(px(8.))
+                .py(px(8.))
+                .gap(px(4.))
                 .items_center()
                 .child(
-                    kit::button("open-settings")
-                        .icon(IconName::Settings)
-                        .ghost()
-                        .small()
-                        .tooltip("Settings")
-                        .accessibility_label("Settings")
-                        .on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.show(Page::Settings, window, cx)
-                            }),
-                        ),
+                    h_flex()
+                        .id("account-local")
+                        .gap(px(8.))
+                        .px(px(6.))
+                        .h(px(28.))
+                        .items_center()
+                        .rounded(px(8.))
+                        .text_size(gpui_kit::rems(13. / 16.))
+                        .text_color(p.text.opacity(0.8))
+                        .child(
+                            div()
+                                .size(px(16.))
+                                .rounded_full()
+                                .bg(p.accent)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(9.))
+                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                .text_color(design::on_accent(p))
+                                .child("L"),
+                        )
+                        .child("Local"),
                 )
+                .child(div().flex_1())
                 .child(
                     div()
                         .relative()
                         .child(
-                            kit::button("open-notifications")
-                                .icon(IconName::Bell)
-                                .ghost()
-                                .small()
-                                .tooltip("Notifications")
-                                .accessibility_label("Notifications")
-                                .on_click(cx.listener(|this, _, window, cx| {
+                            foot("open-notifications", IconName::Bell, "Notifications").on_click(
+                                cx.listener(|this, _, window, cx| {
                                     this.show(Page::Notifications, window, cx)
-                                })),
+                                }),
+                            ),
                         )
                         .when(unread > 0, |d| {
                             d.child(
                                 div()
                                     .absolute()
-                                    .top(px(3.))
-                                    .right(px(3.))
+                                    .top(px(4.))
+                                    .right(px(4.))
                                     .size(px(6.))
                                     .rounded_full()
                                     .bg(p.accent),
                             )
                         }),
                 )
+                .child(foot("open-usage", IconName::ChartPie, "Usage").on_click(
+                    cx.listener(|this, _, window, cx| this.show(Page::Usage, window, cx)),
+                ))
                 .child(
-                    // gpui-kit's default icon set has no bar chart; the
-                    // full catalog would embed 1,830 SVGs for one glyph.
-                    kit::button("open-usage")
-                        .icon(IconName::ChartPie)
-                        .ghost()
-                        .small()
-                        .tooltip("Usage")
-                        .accessibility_label("Usage")
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.show(Page::Usage, window, cx)),
-                        ),
-                )
-                .child(div().flex_1())
-                .child(
-                    kit::button("open-browser")
-                        .icon(IconName::ExternalLink)
-                        .ghost()
-                        .small()
-                        .tooltip("Open in browser")
-                        .accessibility_label("Open in browser")
+                    foot("open-browser", IconName::ExternalLink, "Open in browser")
                         .on_click(cx.listener(|this, _, _, cx| this.open_in_browser(cx))),
+                )
+                .child(
+                    foot("open-settings", IconName::Settings, "Settings").on_click(
+                        cx.listener(|this, _, window, cx| this.show(Page::Settings, window, cx)),
+                    ),
                 )
         };
         v_flex()
@@ -761,18 +767,25 @@ impl Workspace {
                 ("Settings".into(), label.into())
             }
         };
+        // Zeron's titlebar identity: the thread title in the 13 px UI face,
+        // its home quieter beside it; no rule, the content fades under it.
         h_flex()
             .h(px(design::TITLEBAR_HEIGHT))
             .flex_none()
             .px_4()
-            .gap_2()
+            .gap(px(6.))
             .items_center()
-            .text_sm()
-            .border_b_1()
-            .border_color(p.border)
+            .text_size(gpui_kit::rems(13. / 16.))
             .child(div().flex_none().text_color(p.text_muted).child(parent))
             .child(div().flex_none().text_color(p.text_faint).child("/"))
-            .child(div().min_w_0().truncate().text_color(p.text).child(leaf))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                    .text_color(p.text)
+                    .child(leaf),
+            )
     }
 
     /// Status bar polling: one timer, skipped while the battery saver holds

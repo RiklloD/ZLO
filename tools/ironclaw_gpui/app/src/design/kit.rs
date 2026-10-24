@@ -422,8 +422,10 @@ pub fn row(id: impl Into<SharedString>, active: bool, cx: &App) -> Stateful<Div>
     let key: SharedString = format!("row:{id}").into();
     let h = motion::hover_t(&key);
     let a = motion::state_t(&format!("{key}:on"), active, s.slide, cx.reduce_motion());
-    let rest = p.hover.opacity(0.);
-    let wash = mix(mix(rest, p.hover, h), selected_wash(&s, &p), a);
+    let rest = hover_wash(&p).opacity(0.);
+    // Zeron: the selected row never drifts toward the hover wash; the wash
+    // alone marks it, no ring or tick.
+    let wash = mix(mix(rest, hover_wash(&p), h), selected_wash(&s, &p), a);
     h_flex()
         .id(ElementId::Name(id))
         .relative()
@@ -431,36 +433,23 @@ pub fn row(id: impl Into<SharedString>, active: bool, cx: &App) -> Stateful<Div>
         .min_h(px(s.row_height))
         .gap_2()
         .px_2()
-        .rounded(px(s.control_radius))
-        .text_sm()
+        .rounded(px(8.))
+        .text_size(gpui_kit::rems(13. / 16.))
         .cursor_pointer()
         .bg(wash)
-        .text_color(mix(p.text_muted, p.text, h.max(a)))
+        .text_color(mix(p.text.opacity(0.8), p.text, h.max(a)))
         .on_hover(motion::hover_listener(key, s.hover))
-        .when(a > 0.01, |d| d.child(tick(&s, &p, a)))
 }
 
-/// What a selected row looks like in each style.
-fn selected_wash(s: &Style, p: &Palette) -> Hsla {
-    match s.material {
-        Material::Line => p.accent.opacity(0.1),
-        Material::Ink if p.light => p.surface_card,
-        _ => p.active,
-    }
+/// Zeron's `glass_selected_bg`: a wash of the theme's ink, 11 % on dark,
+/// 6 % on light.
+pub fn selected_wash(_s: &Style, p: &Palette) -> Hsla {
+    if p.light { black(0.06) } else { white(0.11) }
 }
 
-/// The selection tick: a short accent bar that grows from the middle.
-fn tick(s: &Style, p: &Palette, a: f32) -> impl IntoElement {
-    let full = (s.row_height - 14.).max(8.);
-    let h = full * a;
-    div()
-        .absolute()
-        .left(px(if s.panel_inset == 0. { 0. } else { -1. }))
-        .top(px((s.row_height - h) / 2.))
-        .w(px(if s.material == Material::Line { 2. } else { 3. }))
-        .h(px(h))
-        .rounded_full()
-        .bg(p.accent.opacity(a))
+/// Zeron's row hover: one step under the selection.
+pub fn hover_wash(p: &Palette) -> Hsla {
+    if p.light { black(0.04) } else { white(0.06) }
 }
 
 /// A sliding pill behind a vertical list of rows. Put it as the first child
@@ -482,28 +471,8 @@ pub fn slide_pill(key: &str, top: Option<f32>, cx: &App) -> impl IntoElement {
         .right_0()
         .top(px(y))
         .h(px(s.row_height))
-        .rounded(px(s.control_radius))
+        .rounded(px(8.))
         .bg(selected_wash(&s, &p).opacity(selected_wash(&s, &p).a * shown))
-        .when(s.material == Material::Ink && p.light, |d| {
-            d.shadow(vec![
-                shadow(black(0.06 * shown), 1., 2., 0., false),
-                shadow(black(0.04 * shown), 0., 0., 1., false),
-            ])
-        })
-        .when(
-            matches!(s.material, Material::Metal | Material::Frost),
-            |d| d.shadow(vec![shadow(white(0.05 * shown), 1., 0., 0., true)]),
-        )
-        .child(
-            div()
-                .absolute()
-                .left(px(if s.panel_inset == 0. { 0. } else { -1. }))
-                .top(px(7.))
-                .bottom(px(7.))
-                .w(px(if s.material == Material::Line { 2. } else { 3. }))
-                .rounded_full()
-                .bg(p.accent.opacity(shown)),
-        )
 }
 
 thread_local! {
@@ -537,11 +506,11 @@ pub fn pill_row(id: impl Into<SharedString>, active: bool, cx: &App) -> Stateful
         .h(px(s.row_height))
         .gap_2()
         .px_2()
-        .rounded(px(s.control_radius))
-        .text_sm()
+        .rounded(px(8.))
+        .text_size(gpui_kit::rems(13. / 16.))
         .cursor_pointer()
-        .bg(mix(p.hover.opacity(0.), p.hover, h * 0.8))
-        .text_color(mix(p.text_muted, p.text, h.max(a)))
+        .bg(mix(hover_wash(&p).opacity(0.), hover_wash(&p), h))
+        .text_color(mix(p.text.opacity(0.8), p.text, h.max(a)))
         .on_hover(motion::hover_listener(key, s.hover))
 }
 

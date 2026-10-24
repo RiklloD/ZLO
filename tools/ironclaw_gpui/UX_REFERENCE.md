@@ -121,3 +121,67 @@ Battery: every animation above is either a `with_animation` (plays once,
 honors reduce_motion) or a `motion::state_t`/`glide` tween that stops
 requesting frames when settled. The pending row is the only looping
 animation and exists only while a run is live.
+
+## Zeron source numbers (round 2, read from zeronsh/zeron 4231cb7)
+
+Zeron is open source (MIT). These come from its code, not from captures.
+File paths are under `crates/ui/src/`.
+
+### Transcript (`transcript.rs`)
+
+| Thing | Value |
+|---|---|
+| Gap above a turn (user message) | 16 (`SPACE_LG`) |
+| Gap around a tool group | 12 (`SPACE_MD`) |
+| Gap between other rows | 8 (`SPACE_SM`); markdown blocks 12 |
+| Body text | 14 px on 22 px (`MD_TEXT_SIZE`, `MD_LINE_HEIGHT`); code 12.5/18 |
+| User bubble | wash 8 % white (dark) / 4 % black (light), radius 16, padding 16×10, max 80 % of column, pending at 65 % opacity |
+| Group header | 26 tall, 12 px muted, hover to text, chevron 14 in a 22 px slot, rotates -90° closed |
+| Group summary | "Thought process · ran 2 commands · edited 1 file · called 2 tools · 1 failed", first letter capitalized |
+| Tree row | 32 tall; gutter 48; trunk x 12.5; bend radius 6; branch to x 28; icon 16 at x 32; text 8 after gutter |
+| Tree line color | hairline 12 % |
+| Fold | 140 ms `ease-out` (0, 0, 0.58, 1), height tween with clip |
+| Row reveal | 360 ms ease-out-expo; first row 90 ms late, 65 ms stagger; trunk draws 0–62 %, elbow 58–100 %, icon fades with the elbow, text rises 4 px |
+| Live title shimmer | 3.4 s sweep, highlight half-width 36 % of the title |
+| Working line | 16 above; gradient glyph (3×3, 2.5 px cells, rows #B6D3EF #EDB185 #F888A0, 750 ms wave, rest 10 %); verb 12 px muted + "…"; seconds 11 px faint, 1 px lower |
+| Verbs | 21 words, rotate every 7 s, seeded per chat (FNV-1a of chat id) |
+| Rolling text | 550 ms ease-out-quint, 0.35 em travel, 30 % stagger per glyph, slight blur and tilt |
+| Elapsed format | "12s", "3m 4s", "1h 2m" |
+
+### Composer (`composer.rs`)
+
+| Thing | Value |
+|---|---|
+| Docked (in a thread) | one line, 49 tall, radius 22 |
+| Open | radius 26, text area min 76 (20 vertical padding), action row 32 + 8 bottom |
+| Max width | 768 |
+| Input | 14 px on 22.75 |
+| Attach / send | 28 px circles; send = text color fill, 14 px arrow in background color; stop = 11 px rounded square |
+| Fill | input glass (dark: a little darker than the panel, measured #2a2a2a on #303030) |
+
+### Settings (`settings/widgets.rs`, `settings/appearance.rs`)
+
+| Thing | Value |
+|---|---|
+| Page column | max 760, padding 40 |
+| Page title | 20 px medium |
+| Section label | 13/17 muted, inset 8, 32 above |
+| Block | radius 12, fill = ink 4.5 %, no border |
+| Row | min 60, padding 16×12, gap 16, divider = border at 60 % |
+| Row title / description | 13 medium / 12 muted |
+| Option card | preview 148 tall, radius 6, border mixes to accent when selected; caption 13 px with 16 px icon, accent when selected |
+| Select | 32 tall |
+| Switch | 44.8 × 28.8, track 20.8, 180 ms cubic ease-out |
+| Appearance order | Color scheme cards → light theme, dark theme, accent → Material and background → Motion → Theme library → Fonts and layout |
+| Accents | Violet #8b7cf6/#5b43e8, Orange #fb923c/#c2410c, Amber #fbbf24/#a16207, Green #4ade80/#15803d, Cyan #22d3ee/#0e7490, Blue #60a5fa/#2563eb, Pink #f472b6/#be185d (dark/light) |
+
+### Sidebar (`shell.rs`)
+
+| Thing | Value |
+|---|---|
+| Session row | 45 tall (29 compact), radius 8, padding 8×6, gap 2 |
+| Selected | wash 11 % (dark) / 6 % (light), no ring or tick |
+| Hover | one step under, 150 ms fade; rest text at 80 % |
+| Harness icon | 13 px at 50 % muted |
+| Footer | 28 px buttons, 4 apart; avatar 16 |
+| Titlebar | 38 tall, content 4 px low; controls 24 wide, 2 apart, groups 8 apart |

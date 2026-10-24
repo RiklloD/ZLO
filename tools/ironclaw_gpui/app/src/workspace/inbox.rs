@@ -728,11 +728,14 @@ impl Workspace {
             style.slide,
             cx.reduce_motion(),
         );
+        // Zeron's session row: the wash alone marks the selection and the
+        // selected row never drifts toward the hover wash.
         let wash = crate::design::motion::mix(
-            crate::design::motion::mix(p.hover.opacity(0.), p.hover, h),
-            if p.light { p.surface_card } else { p.active },
+            crate::design::motion::mix(kit::hover_wash(&p).opacity(0.), kit::hover_wash(&p), h),
+            kit::selected_wash(&style, &p),
             sel,
         );
+        let ink = crate::design::motion::mix(p.text.opacity(0.8), p.text, h.max(sel));
 
         // Like t3code: on hover the actions take the status slot's place.
         let blocker = settle_blocker(row);
@@ -806,6 +809,7 @@ impl Workspace {
         };
 
         let open_id = id.clone();
+        let quiet = p.text_muted.opacity(0.7);
         let card =
             v_flex()
                 .id(SharedString::from(format!("row-{id}")))
@@ -814,24 +818,13 @@ impl Workspace {
                 .aria_label(title_of(row).to_string())
                 .relative()
                 .w_full()
-                .px_3()
-                .py_2p5()
-                .gap_1()
-                .rounded(px(style.control_radius))
+                .min_h(px(45.))
+                .px(px(8.))
+                .py(px(6.))
+                .gap(px(2.))
+                .rounded(px(8.))
                 .cursor_pointer()
                 .bg(wash)
-                .when(sel > 0.01, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .left(px(-1.))
-                            .top(px(10.))
-                            .bottom(px(10.))
-                            .w(px(3.))
-                            .rounded_full()
-                            .bg(p.accent.opacity(sel)),
-                    )
-                })
                 .on_hover(crate::design::motion::hover_listener(
                     hover_key,
                     style.hover,
@@ -841,18 +834,24 @@ impl Workspace {
                 }))
                 .child(
                     h_flex()
-                        .gap_1p5()
+                        .gap(px(8.))
                         .items_center()
-                        .text_xs()
-                        .text_color(p.text_muted)
-                        .child(profile_mark(&row.profile_id, &name, cx))
-                        .child(div().flex_none().max_w(px(96.)).truncate().child(name))
-                        .when_some(branch, |d, b| d.child(branch_label(b, cx)))
-                        .child(div().flex_1())
+                        .child(engines(&row.engines, cx))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(gpui_kit::rems(13. / 16.))
+                                .text_color(if recede { p.text_muted } else { ink })
+                                .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
+                                .child(title_of(row).to_string()),
+                        )
                         .child(
                             div()
                                 .relative()
                                 .flex_none()
+                                .text_size(gpui_kit::rems(11. / 16.))
                                 .child(
                                     div()
                                         .when(menu_open, |d| d.invisible())
@@ -864,19 +863,13 @@ impl Workspace {
                 )
                 .child(
                     h_flex()
-                        .gap_2()
+                        .gap(px(6.))
                         .items_center()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_sm()
-                                .text_color(if recede { p.text_muted } else { p.text })
-                                .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
-                                .child(title_of(row).to_string()),
-                        )
-                        .child(engines(&row.engines, cx)),
+                        .text_size(gpui_kit::rems(11. / 16.))
+                        .text_color(quiet)
+                        .child(profile_mark(&row.profile_id, &name, cx))
+                        .child(div().flex_none().max_w(px(110.)).truncate().child(name))
+                        .when_some(branch, |d, b| d.child(branch_label(b, cx))),
                 );
         v_flex()
             .child(card)

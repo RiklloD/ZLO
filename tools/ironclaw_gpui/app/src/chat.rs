@@ -954,10 +954,13 @@ impl Render for ChatView {
                 Item::Pending { stopping } => flow::render_pending(*stopping, since, seed, cx),
                 Item::Reserve => div().h(px(reserve_h)).into_any_element(),
             };
+            // Zeron's reading type: 14 px on a 22 px line.
             h_flex()
                 .w_full()
                 .justify_center()
                 .px_4()
+                .text_size(flow::ui(14.))
+                .line_height(flow::ui(22.))
                 .pt(px(top))
                 .when(last, |d| d.pb(px(flow::SPACE_LG + 24.)))
                 .child(div().w_full().max_w(px(content_width(cx))).child(body))
