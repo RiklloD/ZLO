@@ -11,6 +11,7 @@ mod observer;
 mod profiles;
 mod runtime;
 mod schedules;
+mod stitched;
 mod surface;
 mod telemetry;
 mod tools;

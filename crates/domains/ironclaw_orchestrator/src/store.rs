@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS orch_telemetry (
 );
 "#;
 
-fn opt<T: Into<Value>>(value: Option<T>) -> Value {
+pub(crate) fn opt<T: Into<Value>>(value: Option<T>) -> Value {
     value.map_or(Value::Null, Into::into)
 }
 
@@ -323,6 +323,30 @@ fn queue_row(row: &libsql::Row) -> Result<QueueItem> {
 const TRANSFER_COLS: &str = "id, kind, source_thread, target_thread, source_point, base_point, strategy, \
     status, delivery, handoff, created_by, created_at, consumed_at";
 
+/// The `INSERT` of one transfer row, for callers that batch it in a `tx`.
+pub(crate) fn insert_transfer_sql(x: &TransferRecord) -> Result<(String, Vec<Value>)> {
+    Ok((
+        format!(
+            "INSERT INTO orch_transfers ({TRANSFER_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"
+        ),
+        vec![
+            s(x.id.as_str()),
+            s(x.kind.as_str()),
+            s(x.source_thread.as_str()),
+            opt(x.target_thread.as_ref().map(|v| v.as_str().to_string())),
+            json_opt(x.source_point.as_ref())?,
+            json_opt(x.base_point.as_ref())?,
+            s(x.strategy.as_str()),
+            s(x.status.as_str()),
+            s(x.delivery.as_str()),
+            opt(x.handoff.clone()),
+            s(x.created_by.as_str()),
+            x.created_at.into(),
+            opt(x.consumed_at),
+        ],
+    ))
+}
+
 fn transfer_row(row: &libsql::Row) -> Result<TransferRecord> {
     let mut c = Cols::new(row);
     Ok(TransferRecord {
@@ -411,7 +435,7 @@ impl Store {
     }
 
     /// Run `body` statements in one IMMEDIATE transaction on the writer.
-    async fn tx(&self, statements: Vec<(String, Vec<Value>)>) -> Result<()> {
+    pub(crate) async fn tx(&self, statements: Vec<(String, Vec<Value>)>) -> Result<()> {
         let conn = self.db.write().await?;
         let tx = conn
             .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
@@ -439,6 +463,7 @@ impl Store {
                 .await?;
             conn.execute_batch(crate::inbox::INBOX_SCHEMA).await?;
             conn.execute_batch(crate::goals::GOALS_SCHEMA).await?;
+            conn.execute_batch(crate::segments::SEGMENTS_SCHEMA).await?;
             conn.execute_batch(crate::cli_approvals::CLI_APPROVALS_SCHEMA)
                 .await?;
         }
@@ -1163,27 +1188,8 @@ impl Store {
     // ── transfers ───────────────────────────────────────────────────────
 
     pub async fn insert_transfer(&self, x: &TransferRecord) -> Result<()> {
-        self.exec(
-            &format!(
-                "INSERT INTO orch_transfers ({TRANSFER_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"
-            ),
-            vec![
-                s(x.id.as_str()),
-                s(x.kind.as_str()),
-                s(x.source_thread.as_str()),
-                opt(x.target_thread.as_ref().map(|v| v.as_str().to_string())),
-                json_opt(x.source_point.as_ref())?,
-                json_opt(x.base_point.as_ref())?,
-                s(x.strategy.as_str()),
-                s(x.status.as_str()),
-                s(x.delivery.as_str()),
-                opt(x.handoff.clone()),
-                s(x.created_by.as_str()),
-                x.created_at.into(),
-                opt(x.consumed_at),
-            ],
-        )
-        .await?;
+        let (sql, params) = insert_transfer_sql(x)?;
+        self.exec(&sql, params).await?;
         Ok(())
     }
 

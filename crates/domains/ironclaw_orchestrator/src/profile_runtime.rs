@@ -215,7 +215,7 @@ impl Engine {
 
     /// Switch the provider/model and reasoning effort of a thread's next
     /// turns. An effort alone (`default` clears it) changes nothing else; a
-    /// switch keeps only the effort it carries, on the thread that continues.
+    /// switch keeps only the effort it carries.
     pub async fn set_route(&self, thread: &ThreadRecord, target: &Target) -> Result<Value> {
         let effort = target
             .reasoning_effort
@@ -236,22 +236,18 @@ impl Engine {
         }
         let mut out = self.switch_route(thread, target).await?;
         if out["ok"] == json!(true) {
-            let id = match out["forkThreadId"].as_str() {
-                Some(fork) => {
-                    ThreadId::new(fork).map_err(|e| OrchestratorError::invalid(e.to_string()))?
-                }
-                None => thread.thread_id.clone(),
-            };
-            self.store.set_thread_effort(&id, effort.as_deref()).await?;
+            self.store
+                .set_thread_effort(&thread.thread_id, effort.as_deref())
+                .await?;
             out["effort"] = json!(effort);
         }
         Ok(out)
     }
 
-    /// Switch the provider/model of a thread's next turns. The same runtime
-    /// switches in place; an unused thread moves to the new runtime; a thread
-    /// with history continues in a fork on the new runtime, carrying a
-    /// portable context handoff, because a transcript cannot change runtime.
+    /// Switch the provider/model of a thread's next turns. An unused thread
+    /// moves to the new runtime; a thread with history stays the same thread
+    /// and opens a new segment (`crate::segments`), whose first turn carries
+    /// a context handoff when the runtime changed.
     /// Model `default` clears the pick (IronClaw's loop then uses the
     /// profile's model).
     async fn switch_route(&self, thread: &ThreadRecord, target: &Target) -> Result<Value> {
@@ -268,19 +264,17 @@ impl Engine {
             model: thread.model.clone(),
         };
         let wants_default = target.model.as_deref().map(str::trim) == Some("default");
-        // "Default" exists only on IronClaw's loop, and a fork cannot carry
-        // it: a thread with history elsewhere gets the provider's first model.
-        let (runtime_id, provider, model) =
-            if wants_default && (thread.runtime_id == self.default_runtime || is_fresh(thread)) {
-                (self.default_runtime.clone(), target.provider.clone(), None)
-            } else {
-                let probe = Target {
-                    model: target.model.clone().filter(|_| !wants_default),
-                    ..target.clone()
-                };
-                self.resolve_target(&probe, &ctx, &thread.runtime_id)
-                    .await?
+        // "Default" exists only on IronClaw's loop.
+        let (runtime_id, provider, model) = if wants_default {
+            (self.default_runtime.clone(), target.provider.clone(), None)
+        } else {
+            let probe = Target {
+                model: target.model.clone().filter(|_| !wants_default),
+                ..target.clone()
             };
+            self.resolve_target(&probe, &ctx, &thread.runtime_id)
+                .await?
+        };
         let id = &thread.thread_id;
         let done =
             |moved: &str, fork: Option<&str>, provider: Option<&str>, model: Option<&str>| {
@@ -289,6 +283,12 @@ impl Engine {
                     "forkThreadId": fork, "provider": provider, "model": model,
                 })
             };
+        // A thread with history keeps its id: the switch opens a segment.
+        if !is_fresh(thread) {
+            return self
+                .switch_in_place(thread, runtime_id, provider, model)
+                .await;
+        }
         if runtime_id == thread.runtime_id {
             self.store
                 .set_thread_runtime(
@@ -306,64 +306,35 @@ impl Engine {
                 model.as_deref(),
             ));
         }
-        if is_fresh(thread) {
-            let (provider, model, session) = if runtime_id == self.default_runtime {
-                (provider, model, None)
-            } else {
-                let created = self
-                    .runtime(&runtime_id)?
-                    .create_thread(CreateThread {
-                        scope: thread.scope.clone(),
-                        title: thread.title.clone(),
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        idempotency_key: format!("route:{id}:{runtime_id}"),
-                    })
-                    .await?;
-                (
-                    created.provider.or(provider),
-                    created.model.or(model),
-                    created.native_session_id,
-                )
-            };
-            self.store
-                .set_thread_runtime(
-                    id,
-                    &runtime_id,
-                    provider.as_deref(),
-                    model.as_deref(),
-                    session.as_deref(),
-                )
+        let (provider, model, session) = if runtime_id == self.default_runtime {
+            (provider, model, None)
+        } else {
+            let created = self
+                .runtime(&runtime_id)?
+                .create_thread(CreateThread {
+                    scope: thread.scope.clone(),
+                    title: thread.title.clone(),
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    idempotency_key: format!("route:{id}:{runtime_id}"),
+                })
                 .await?;
-            return Ok(done("rebound", None, provider.as_deref(), model.as_deref()));
-        }
-        let label = model.clone().or(provider.clone()).unwrap_or_default();
-        let title = format!("{} ({label})", thread.title.as_deref().unwrap_or("thread"));
-        let fork_target = Target {
-            provider: provider.clone(),
-            model: model.clone(),
-            ..Default::default()
+            (
+                created.provider.or(provider),
+                created.model.or(model),
+                created.native_session_id,
+            )
         };
-        let fork = self
-            .fork(
-                &ctx,
-                thread,
-                None,
-                Some(&title),
-                Some(&fork_target),
-                Author::User,
+        self.store
+            .set_thread_runtime(
+                id,
+                &runtime_id,
+                provider.as_deref(),
+                model.as_deref(),
+                session.as_deref(),
             )
             .await?;
-        if fork["ok"] != json!(true) {
-            return Ok(fork);
-        }
-        let fork_id = fork["forkThreadId"].as_str().unwrap_or_default();
-        Ok(done(
-            "forked",
-            Some(fork_id),
-            fork["provider"].as_str(),
-            fork["model"].as_str(),
-        ))
+        Ok(done("rebound", None, provider.as_deref(), model.as_deref()))
     }
 }
 

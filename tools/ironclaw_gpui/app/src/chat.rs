@@ -167,27 +167,19 @@ impl ChatView {
             PickerEvent::Changed(change) => {
                 if let Some(fork) = change.fork_thread_id.clone() {
                     cx.emit(OpenThread(fork));
+                } else if change.moved == "switched" {
+                    // Same thread, new runtime: its live events come from
+                    // elsewhere now, and the timeline gains the marker.
+                    this.resubscribe(cx);
+                    this.load_timeline(cx);
+                } else if change.moved == "in_place" {
+                    this.load_timeline(cx);
                 }
             }
             PickerEvent::Failed(message) => this.set_error(message.clone(), cx),
         });
 
-        let (stream, mut rx) = backend.subscribe(&thread_id);
-        let pump = cx.spawn(async move |this, cx| {
-            while let Some(first) = rx.recv().await {
-                // Drain whatever else is queued so a burst renders once.
-                let mut batch = vec![first];
-                while let Ok(next) = rx.try_recv() {
-                    batch.push(next);
-                }
-                if this
-                    .update(cx, |this, cx| this.on_stream(batch, cx))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
+        let (stream, pump) = Self::open_stream(&backend, &thread_id, cx);
         composer.update(cx, |state, cx| state.focus(window, cx));
 
         let mut this = Self {
@@ -648,6 +640,38 @@ impl ChatView {
             });
         });
         self.keep(task);
+    }
+
+    /// The thread's live event stream and the task feeding it to `on_stream`.
+    fn open_stream(
+        backend: &Backend,
+        thread_id: &str,
+        cx: &mut Context<Self>,
+    ) -> (EventStream, Task<()>) {
+        let (stream, mut rx) = backend.subscribe(thread_id);
+        let pump = cx.spawn(async move |this, cx| {
+            while let Some(first) = rx.recv().await {
+                // Drain whatever else is queued so a burst renders once.
+                let mut batch = vec![first];
+                while let Ok(next) = rx.try_recv() {
+                    batch.push(next);
+                }
+                if this
+                    .update(cx, |this, cx| this.on_stream(batch, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        (stream, pump)
+    }
+
+    /// Reopen the live stream (the thread moved to another runtime).
+    fn resubscribe(&mut self, cx: &mut Context<Self>) {
+        let (stream, pump) = Self::open_stream(&self.backend, &self.thread_id, cx);
+        self._stream = Some(stream);
+        self._pump = pump;
     }
 
     fn load_timeline(&mut self, cx: &mut Context<Self>) {
@@ -1271,6 +1295,7 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
             text,
             streaming,
         } => markdown(SharedString::from(key.clone()), text.clone(), *streaming).into_any_element(),
+        Row::System { text, .. } if text.starts_with("Switched to ") => switch_marker(text, cx),
         Row::System { text, .. } => div()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
@@ -1897,6 +1922,29 @@ fn render_gate(
         })
         .children(actions.map(|a| div().pl(px(28.)).child(a)));
     motion::pop_in(card, SharedString::from(format!("{key}-gate")), s.pop, 8.).into_any_element()
+}
+
+/// The inline marker where a thread switched provider:
+/// "Switched to claude-opus-5-5 · Claude CLI", with the model id prettified.
+fn switch_marker(text: &str, cx: &App) -> AnyElement {
+    let rest = text.trim_start_matches("Switched to ");
+    let label = match rest.split_once(" · ") {
+        Some((model, provider)) => {
+            format!("Switched to {} · {provider}", model_picker::pretty_model(model))
+        }
+        None => text.to_string(),
+    };
+    let rule = || div().h_px().flex_1().bg(cx.theme().border);
+    h_flex()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(rule())
+        .child(label)
+        .child(rule())
+        .into_any_element()
 }
 
 #[cfg(test)]
