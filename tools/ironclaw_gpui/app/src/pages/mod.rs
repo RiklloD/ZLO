@@ -106,7 +106,7 @@ pub fn setting_row(
                         div()
                             .text_xs()
                             .text_color(p.text_muted)
-                            .whitespace_normal()
+                            .line_clamp(2)
                             .child(text),
                     )
                 }),

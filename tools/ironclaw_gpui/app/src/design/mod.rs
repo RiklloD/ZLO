@@ -26,7 +26,7 @@ use gpui_kit::{App, Global, Hsla, hsla, px};
 pub const SIDEBAR_WIDTH: f32 = 296.;
 pub const TITLEBAR_HEIGHT: f32 = 46.;
 /// Room the macOS traffic lights take at the sidebar's top left.
-pub const TRAFFIC_LIGHTS_WIDTH: f32 = 78.;
+pub const TRAFFIC_LIGHTS_WIDTH: f32 = 86.;
 pub const STATUS_BAR_HEIGHT: f32 = 24.;
 pub const PANEL_RADIUS: f32 = 10.;
 pub const CONTROL_RADIUS: f32 = 6.;

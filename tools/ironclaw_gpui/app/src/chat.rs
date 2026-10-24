@@ -986,9 +986,8 @@ impl Render for ChatView {
             })
             // Room for the floating header; rows fade under its lower half.
             .child(div().flex_1().min_h_0().pt(px(30.)).child(list.size_full()))
-            // The thread header floats over the transcript: its title on
-            // the left, actions on the right, and a fade so rows scroll
-            // softly underneath instead of being cut off.
+            // The thread actions float over the transcript, with a fade so
+            // rows scroll softly underneath instead of being cut off.
             .child(
                 h_flex()
                     .absolute()
@@ -1005,16 +1004,8 @@ impl Render for ChatView {
                         gpui_kit::linear_color_stop(palette.bg.opacity(0.92 * style.panel_alpha), 0.45),
                         gpui_kit::linear_color_stop(palette.bg.opacity(0.), 1.),
                     ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .font_medium()
-                            .text_color(palette.text_muted)
-                            .when_some(crate::titles::get(cx, &self.thread_id), |d, t| d.child(t)),
-                    )
+                    // The breadcrumb above names the thread; only actions here.
+                    .child(div().flex_1())
                     .child(
                         h_flex()
                             .gap_1()
