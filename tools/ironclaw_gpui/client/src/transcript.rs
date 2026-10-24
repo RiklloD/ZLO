@@ -212,11 +212,23 @@ pub struct Transcript {
     settled: HashSet<String>,
     /// Answers given in this view, kept after the gate closes for its label.
     decisions: HashMap<String, GateDecision>,
-    pending_user: Vec<(u64, String, bool, Vec<AttachmentChip>)>,
+    pending_user: Vec<PendingUser>,
     /// Command results, each placed after the last durable message it saw.
     notes: Vec<(u64, Row)>,
     latest_run: Option<String>,
     tick: u64,
+}
+
+/// A message sent from this view that the timeline does not show yet.
+#[derive(Debug)]
+struct PendingUser {
+    id: u64,
+    text: String,
+    /// The gateway accepted the send.
+    acked: bool,
+    chips: Vec<AttachmentChip>,
+    /// Newest durable sequence when it was sent; its server copy is newer.
+    after: Option<u64>,
 }
 
 const TERMINAL: [&str; 5] = [
@@ -236,8 +248,41 @@ impl Transcript {
         let mut messages = page.messages;
         messages.sort_by_key(|m| m.sequence);
         self.durable = messages;
-        // The server accepted these sends; the durable copy replaces them.
-        self.pending_user.retain(|(_, _, acked, _)| !acked);
+        self.reconcile_pending();
+    }
+
+    /// Drop each optimistic message once its server copy is in the timeline.
+    /// Accepting a send is not enough: a CLI runtime writes the person's
+    /// message into history later, and the bubble must not vanish meanwhile.
+    fn reconcile_pending(&mut self) {
+        let mut claimed: HashSet<&str> = HashSet::new();
+        let durable = &self.durable;
+        self.pending_user.retain(|p| {
+            let newer = |m: &&TimelineMessage| {
+                m.kind == MessageKind::User
+                    && p.after.is_none_or(|after| m.sequence > after)
+                    && !claimed.contains(m.message_id.as_str())
+            };
+            let same_text = |m: &&TimelineMessage| {
+                let content = m.content.as_deref().unwrap_or_default();
+                content.trim() == p.text.trim()
+                    || (p.text.trim().is_empty() && content == ATTACHMENTS_ONLY_CONTENT)
+            };
+            // Prefer the copy with the same text; once accepted, any newer
+            // message of the person stands for it (the gateway may reword).
+            let found = durable
+                .iter()
+                .filter(newer)
+                .find(same_text)
+                .or_else(|| p.acked.then(|| durable.iter().find(newer)).flatten());
+            match found {
+                Some(m) => {
+                    claimed.insert(m.message_id.as_str());
+                    false
+                }
+                None => true,
+            }
+        });
     }
 
     /// Show a message immediately while the send is in flight.
@@ -253,19 +298,24 @@ impl Transcript {
                 size: None,
             })
             .collect();
-        self.pending_user
-            .push((self.tick, text.to_string(), false, chips));
+        self.pending_user.push(PendingUser {
+            id: self.tick,
+            text: text.to_string(),
+            acked: false,
+            chips,
+            after: self.durable.iter().map(|m| m.sequence).max(),
+        });
         self.tick
     }
 
     pub fn ack_pending_user(&mut self, id: u64) {
-        if let Some(entry) = self.pending_user.iter_mut().find(|(i, _, _, _)| *i == id) {
-            entry.2 = true;
+        if let Some(entry) = self.pending_user.iter_mut().find(|p| p.id == id) {
+            entry.acked = true;
         }
     }
 
     pub fn drop_pending_user(&mut self, id: u64) {
-        self.pending_user.retain(|(i, _, _, _)| *i != id);
+        self.pending_user.retain(|p| p.id != id);
     }
 
     /// Show a slash command and its answer (or rejection) in the transcript.
@@ -690,12 +740,12 @@ impl Transcript {
         }
 
         rows.extend(notes.map(|(_, note)| note.clone()));
-        for (id, text, _, chips) in &self.pending_user {
+        for p in &self.pending_user {
             rows.push(Row::User {
-                key: format!("pending:{id}"),
-                text: text.clone(),
-                pending: true,
-                attachments: chips.clone(),
+                key: format!("pending:{}", p.id),
+                text: p.text.clone(),
+                pending: !p.acked,
+                attachments: p.chips.clone(),
             });
         }
 
@@ -1074,5 +1124,36 @@ mod tests {
                 ..
             } if d == approve
         ));
+    }
+
+    #[test]
+    fn a_sent_message_stays_until_the_timeline_has_its_copy() {
+        let user = |rows: &[Row]| {
+            rows.iter()
+                .filter(|r| matches!(r, Row::User { .. }))
+                .count()
+        };
+        let mut t = Transcript::default();
+        t.set_timeline(timeline(Some("Hello")));
+        let id = t.push_pending_user("again", &[]);
+        assert_eq!(user(&t.rows()), 2, "shown at once");
+
+        // Accepted, but the runtime has not written it into history yet.
+        t.ack_pending_user(id);
+        t.set_timeline(timeline(Some("Hello")));
+        assert_eq!(user(&t.rows()), 2, "an accepted send must not vanish");
+
+        let mut page = timeline(Some("Hello"));
+        page.messages.push(
+            serde_json::from_value(serde_json::json!({
+                "message_id": "m3", "sequence": 3, "kind": "user", "status": "accepted",
+                "content": "again"
+            }))
+            .expect("message decodes"),
+        );
+        t.set_timeline(page);
+        let rows = t.rows();
+        assert_eq!(user(&rows), 2, "the server copy replaces it, no duplicate");
+        assert!(matches!(rows.last(), Some(Row::User { key, .. }) if key == "msg:m3"));
     }
 }
