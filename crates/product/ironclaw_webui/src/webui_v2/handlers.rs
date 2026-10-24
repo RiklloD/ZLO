@@ -28,6 +28,8 @@ pub use profiles::{
     profiles_import_hermes, profiles_list,
 };
 pub use usage::usage_report;
+mod inbox;
+pub use inbox::{inbox_list, inbox_mutate, thread_goal, thread_goal_set};
 mod run_artifact;
 pub use run_artifact::{
     admin_get_thread_scrape_artifact, admin_get_thread_scrape_run_artifact,

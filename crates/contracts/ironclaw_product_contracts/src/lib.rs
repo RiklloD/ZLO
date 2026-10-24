@@ -46,6 +46,7 @@ pub mod descriptors;
 pub mod error;
 pub mod inbound;
 pub mod inbound_requests;
+pub mod inbox;
 pub mod inspector;
 pub mod interaction_commands;
 pub mod ironhub;

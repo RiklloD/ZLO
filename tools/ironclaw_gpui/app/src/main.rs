@@ -6,6 +6,7 @@
 //! `ironclaw_gpui_client::Connection::discover`.
 
 mod alerts;
+mod assets;
 mod chat;
 mod design;
 mod jobs;
@@ -31,7 +32,7 @@ fn main() {
         )
         .init();
 
-    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    let app = gpui_kit::application().with_assets(assets::AppAssets);
     app.on_reopen(|cx| {
         if cx.windows().is_empty() {
             open_main_window(cx);

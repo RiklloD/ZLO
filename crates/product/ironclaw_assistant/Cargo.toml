@@ -113,6 +113,8 @@ ironclaw_assistant = { path = ".", features = ["test-support"] }
 ironclaw_threads = { path = "../../domains/ironclaw_threads", version = "0.1.0", features = ["test-support"] }
 ironclaw_telegram_extension = { path = "../../extensions/packages/telegram" }
 tempfile = "3"
+# The inbox caller test opens the orchestrator engine over a real libSQL file.
+ironclaw_libsql_runtime = { path = "../../substrates/ironclaw_libsql_runtime" }
 tokio = { version = "1", features = ["macros", "rt", "sync", "test-util", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 # Durable-ledger contract tests drive the libSQL/Postgres RootFilesystem

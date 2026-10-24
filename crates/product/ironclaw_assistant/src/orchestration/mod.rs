@@ -4,6 +4,7 @@
 //! that reports turn lifecycle, the per-model-call telemetry tap, and the `t3_*` model tools.
 
 mod external;
+mod inbox;
 mod observer;
 mod profiles;
 mod runtime;

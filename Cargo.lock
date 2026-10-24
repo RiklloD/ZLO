@@ -3847,6 +3847,7 @@ dependencies = [
  "ironclaw_host_api",
  "ironclaw_host_runtime",
  "ironclaw_identity",
+ "ironclaw_libsql_runtime",
  "ironclaw_loop_contracts",
  "ironclaw_loop_host",
  "ironclaw_memory",

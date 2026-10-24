@@ -24,7 +24,9 @@
 pub mod delegation;
 pub mod engine;
 pub mod error;
+pub mod goals;
 pub mod handoff;
+pub mod inbox;
 pub mod model;
 pub mod profile_runtime;
 pub mod profiles;

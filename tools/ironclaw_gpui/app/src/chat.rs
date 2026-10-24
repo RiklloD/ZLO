@@ -20,6 +20,7 @@ use ironclaw_gpui_client::{
 use crate::jobs::flatten;
 use crate::ui::*;
 
+mod goals;
 mod orchestration;
 
 const TIMELINE_LIMIT: u32 = 200;
@@ -687,6 +688,11 @@ impl ChatView {
         let text = self.composer.read(cx).value().trim().to_string();
         if text.is_empty() && self.staged.is_empty() {
             return;
+        }
+        if self.staged.is_empty()
+            && let Some(command) = goals::goal_command(&text)
+        {
+            return self.goal_command(command, window, cx);
         }
         if self.staged.is_empty() && match_command(&text, &self.commands).is_some() {
             self.run_command(text, window, cx);

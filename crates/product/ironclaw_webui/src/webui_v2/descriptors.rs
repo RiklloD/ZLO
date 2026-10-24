@@ -202,6 +202,15 @@ pub const WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES: &str = "/api/webchat/v2/profi
 // Usage route (subscription usage windows for the Usage page).
 pub const WEBUI_V2_ROUTE_USAGE_REPORT: &str = "webui.v2.usage.report";
 pub const WEBUI_V2_PATTERN_USAGE_REPORT: &str = "/api/webchat/v2/usage";
+
+// Inbox and goal routes (v2 stage 5).
+pub const WEBUI_V2_ROUTE_INBOX_LIST: &str = "webui.v2.inbox.list";
+pub const WEBUI_V2_ROUTE_INBOX_MUTATE: &str = "webui.v2.inbox.mutate";
+pub const WEBUI_V2_ROUTE_THREAD_GOAL_GET: &str = "webui.v2.goals.get";
+pub const WEBUI_V2_ROUTE_THREAD_GOAL_SET: &str = "webui.v2.goals.set";
+pub const WEBUI_V2_PATTERN_INBOX: &str = "/api/webchat/v2/inbox";
+pub const WEBUI_V2_PATTERN_INBOX_THREAD: &str = "/api/webchat/v2/inbox/{thread_id}";
+pub const WEBUI_V2_PATTERN_THREAD_GOAL: &str = "/api/webchat/v2/threads/{thread_id}/goal";
 pub const WEBUI_V2_PATTERN_CREATE_THREAD: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_THREADS: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_NOTIFICATIONS: &str = "/api/webchat/v2/notifications";
@@ -438,6 +447,27 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES,
         ),
         usage_report_descriptor(),
+        // Same read/mutation policy shape as the profile routes.
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_INBOX_LIST,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_INBOX,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_INBOX_MUTATE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_INBOX_THREAD,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_THREAD_GOAL_GET,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_THREAD_GOAL,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_THREAD_GOAL_SET,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_THREAD_GOAL,
+        ),
         resolve_gate_descriptor(),
         retry_run_descriptor(),
         list_commands_descriptor(),

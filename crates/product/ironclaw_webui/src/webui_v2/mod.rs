@@ -120,6 +120,10 @@ pub use descriptors::{
     is_webui_v2_operator_webui_config_route_id, webui_v2_routes,
     webui_v2_routes_with_artifact_flags, webui_v2_routes_with_regression_artifact_export,
 };
+pub use descriptors::{
+    WEBUI_V2_ROUTE_INBOX_LIST, WEBUI_V2_ROUTE_INBOX_MUTATE, WEBUI_V2_ROUTE_THREAD_GOAL_GET,
+    WEBUI_V2_ROUTE_THREAD_GOAL_SET,
+};
 pub use error::{WebUiV2HttpError, WebUiV2HttpErrorBody};
 pub use handlers::{
     admin_get_thread_scrape_artifact, admin_get_thread_scrape_run_artifact,

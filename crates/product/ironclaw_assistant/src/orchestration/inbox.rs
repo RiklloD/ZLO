@@ -1,0 +1,581 @@
+//! The inbox and goal views and commands (v2 stage 5, t3code's inbox).
+//!
+//! `inbox.list` joins, for the caller, the orchestrator's threads (profile,
+//! engines of the whole delegation tree, live and recovery state), the
+//! session thread list (titles, activity) and automation runs (which the
+//! thread list leaves out), applies the durable pin/snooze/settle/visit
+//! marks and returns rows ready to render, so the desktop app does one
+//! request. `inbox.mutate` writes one mark for a thread on that list and
+//! answers with the list re-read. Goals are one objective per engine thread.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use chrono::{DateTime, Utc};
+use ironclaw_host_api::ids::ThreadId;
+use ironclaw_orchestrator::engine::Engine;
+use ironclaw_orchestrator::error::OrchestratorError;
+use ironclaw_orchestrator::inbox::{InboxFacts, InboxRecord, classify};
+use ironclaw_orchestrator::model::{Millis, now_ms};
+use ironclaw_orchestrator::profiles::ProfileOwner;
+use ironclaw_product_contracts::inbound_requests::{
+    ProductListAutomationsRequest, ProductListThreadsRequest,
+};
+use ironclaw_product_contracts::inbox::*;
+use ironclaw_product_contracts::product_wire::{
+    RebornAutomationRecentRunInfo, RebornAutomationRecentRunStatus,
+};
+use ironclaw_product_contracts::profiles::DEFAULT_PROFILE_ID;
+use ironclaw_product_contracts::surface::{
+    ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceQueryRequest,
+};
+use serde::Deserialize;
+use serde_json::Value;
+
+use super::profiles::{self, ProfileHome};
+use super::surface::scope_of;
+use crate::reborn_services::{AUTOMATIONS_VIEW, RebornListThreadsResponse, THREADS_VIEW};
+
+/// One page of the session list; older threads stay reachable by search in
+/// the Files and Memory pages.
+const SESSION_THREADS: u32 = 100;
+const AUTOMATIONS: u32 = 50;
+const RUNS_PER_AUTOMATION: u32 = 5;
+const IRONCLAW_RUNTIME: &str = "ironclaw";
+
+/// What the joins collect per thread before classification.
+struct Draft {
+    title: Option<String>,
+    profile_id: String,
+    engines: Vec<InboxEngine>,
+    facts: InboxFacts,
+    parent_thread_id: Option<String>,
+    automation: bool,
+}
+
+fn millis(at: Option<DateTime<Utc>>) -> Option<Millis> {
+    at.map(|t| t.timestamp_millis())
+}
+
+fn ironclaw_engine() -> InboxEngine {
+    InboxEngine {
+        runtime_id: IRONCLAW_RUNTIME.into(),
+        provider: None,
+        model: None,
+    }
+}
+
+async fn query_view(
+    inner: &Arc<dyn ProductSurface>,
+    caller: &ProductSurfaceCaller,
+    view_id: &str,
+    input: Value,
+) -> Result<Value, ProductSurfaceError> {
+    let page = inner
+        .query(
+            caller.clone(),
+            ProductSurfaceQueryRequest {
+                view_id: view_id.to_string(),
+                input,
+                cursor: None,
+                limit: None,
+            },
+        )
+        .await?;
+    Ok(page.items.into_iter().next().unwrap_or(Value::Null))
+}
+
+/// Recent automation runs that reached a thread, newest first per automation.
+async fn automation_runs(
+    inner: &Arc<dyn ProductSurface>,
+    caller: &ProductSurfaceCaller,
+) -> Vec<(String, RebornAutomationRecentRunInfo)> {
+    let request = ProductListAutomationsRequest {
+        limit: Some(AUTOMATIONS),
+        run_limit: Some(RUNS_PER_AUTOMATION),
+        include_completed: true,
+    };
+    let input = match serde_json::to_value(request) {
+        Ok(input) => input,
+        Err(error) => {
+            tracing::debug!(%error, "inbox automations request did not encode");
+            return Vec::new();
+        }
+    };
+    // Automations are optional: a deployment without them still has an inbox.
+    let doc = match query_view(inner, caller, AUTOMATIONS_VIEW.id, input).await {
+        Ok(doc) => doc,
+        Err(error) => {
+            tracing::debug!(?error, "inbox skips automation runs");
+            return Vec::new();
+        }
+    };
+    #[derive(Deserialize)]
+    struct Automation {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        recent_runs: Vec<RebornAutomationRecentRunInfo>,
+    }
+    #[derive(Deserialize)]
+    struct Automations {
+        #[serde(default)]
+        automations: Vec<Automation>,
+    }
+    match serde_json::from_value::<Automations>(doc) {
+        Ok(list) => list
+            .automations
+            .into_iter()
+            .flat_map(|a| {
+                let name = a.name;
+                a.recent_runs
+                    .into_iter()
+                    .map(move |run| (name.clone(), run))
+            })
+            .collect(),
+        Err(error) => {
+            tracing::debug!(%error, "inbox could not read automation runs");
+            Vec::new()
+        }
+    }
+}
+
+fn group(state: InboxState) -> u8 {
+    match state {
+        InboxState::Pinned => 0,
+        InboxState::Inbox | InboxState::Working => 1,
+        InboxState::Snoozed => 2,
+        InboxState::Settled => 3,
+    }
+}
+
+/// Pinned by pin time, the main list by recency, snoozed by wake time,
+/// settled newest first.
+fn sort_rows(rows: &mut [InboxRow], records: &HashMap<String, InboxRecord>) {
+    let pinned_at = |r: &InboxRow| {
+        records
+            .get(&r.thread_id)
+            .and_then(|rec| rec.pinned_at)
+            .unwrap_or(0)
+    };
+    rows.sort_by(|a, b| {
+        group(a.state)
+            .cmp(&group(b.state))
+            .then_with(|| match a.state {
+                InboxState::Pinned => pinned_at(a).cmp(&pinned_at(b)),
+                InboxState::Snoozed => a.snooze_until.cmp(&b.snooze_until),
+                InboxState::Settled => b.settled_at.cmp(&a.settled_at),
+                _ => b.last_activity_at.cmp(&a.last_activity_at),
+            })
+            .then_with(|| a.thread_id.cmp(&b.thread_id))
+    });
+}
+
+pub(super) async fn list(
+    engine: &Engine,
+    home: Option<&ProfileHome>,
+    inner: &Arc<dyn ProductSurface>,
+    caller: &ProductSurfaceCaller,
+) -> Result<InboxListResponse, ProductSurfaceError> {
+    let store = engine.store();
+    let owner = ProfileOwner::from(&scope_of(caller));
+    let internal = ProductSurfaceError::internal_from;
+    let threads = store.inbox_threads(&owner).await.map_err(internal)?;
+    let records = store.inbox_records(&owner).await.map_err(internal)?;
+    let epoch = store.inbox_epoch().await.map_err(internal)?;
+    let profile_records = store.profiles(&owner).await.map_err(internal)?;
+
+    let request = ProductListThreadsRequest::default().set_limit(SESSION_THREADS);
+    let input = serde_json::to_value(request).map_err(ProductSurfaceError::internal_from)?;
+    let sessions: RebornListThreadsResponse =
+        serde_json::from_value(query_view(inner, caller, THREADS_VIEW.id, input).await?)
+            .map_err(ProductSurfaceError::internal_from)?;
+    let runs = automation_runs(inner, caller).await;
+
+    let mut drafts: HashMap<String, Draft> = HashMap::new();
+    for t in threads {
+        drafts.insert(
+            t.thread_id.to_string(),
+            Draft {
+                title: t.title,
+                profile_id: t
+                    .profile_id
+                    .map_or_else(|| DEFAULT_PROFILE_ID.to_string(), |p| p.to_string()),
+                engines: t.engines,
+                facts: t.facts,
+                parent_thread_id: t.parent_thread_id.map(|p| p.to_string()),
+                automation: false,
+            },
+        );
+    }
+    for s in sessions.threads {
+        let activity = millis(s.updated_at.or(s.created_at)).unwrap_or(0);
+        let draft = drafts
+            .entry(s.thread_id.to_string())
+            .or_insert_with(|| Draft {
+                title: None,
+                profile_id: DEFAULT_PROFILE_ID.into(),
+                engines: vec![ironclaw_engine()],
+                facts: InboxFacts {
+                    last_activity_at: activity,
+                    ..InboxFacts::default()
+                },
+                parent_thread_id: None,
+                automation: false,
+            });
+        // The list route computes titles; the engine's copy may be stale.
+        if s.title.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+            draft.title = s.title;
+        }
+        draft.facts.last_activity_at = draft.facts.last_activity_at.max(activity);
+    }
+    for (name, run) in runs {
+        let Some(thread_id) = run.thread_id else {
+            continue;
+        };
+        let submitted = run.submitted_at.timestamp_millis();
+        let ended = millis(run.completed_at);
+        let draft = drafts
+            .entry(thread_id.to_string())
+            .or_insert_with(|| Draft {
+                title: None,
+                profile_id: DEFAULT_PROFILE_ID.into(),
+                engines: vec![ironclaw_engine()],
+                facts: InboxFacts::default(),
+                parent_thread_id: None,
+                automation: true,
+            });
+        draft.automation = true;
+        if draft.title.is_none() && !name.trim().is_empty() {
+            draft.title = Some(name);
+        }
+        let f = &mut draft.facts;
+        f.last_activity_at = f.last_activity_at.max(ended.unwrap_or(submitted));
+        f.last_ended_at = f.last_ended_at.max(ended);
+        f.running |= run.status == RebornAutomationRecentRunStatus::Running;
+        f.failed |= run.status == RebornAutomationRecentRunStatus::Error;
+    }
+
+    let now = now_ms();
+    let mut rows: Vec<InboxRow> = drafts
+        .into_iter()
+        .map(|(thread_id, d)| {
+            let record = records.get(&thread_id);
+            let (state, status) = classify(&d.facts, record, epoch, now);
+            InboxRow {
+                title: d.title,
+                profile_id: d.profile_id,
+                state,
+                status,
+                engines: d.engines,
+                last_activity_at: d.facts.last_activity_at,
+                snooze_until: (state == InboxState::Snoozed)
+                    .then(|| record.and_then(|r| r.snooze_until))
+                    .flatten(),
+                settled_at: (state == InboxState::Settled)
+                    .then(|| record.and_then(|r| r.settled_at))
+                    .flatten(),
+                limit_reset_at: d.facts.limit_reset_at,
+                parent_thread_id: d.parent_thread_id,
+                automation: d.automation,
+                thread_id,
+            }
+        })
+        .collect();
+    sort_rows(&mut rows, &records);
+
+    let last_used_profile_id = profile_records
+        .first()
+        .filter(|r| r.last_used_at.is_some())
+        .map(|r| r.profile_id.to_string());
+    let profiles = profile_records
+        .into_iter()
+        .map(|record| {
+            let last_used_at = record.last_used_at;
+            let (git_branch, display_name, profile_id) = match home {
+                Some(home) => {
+                    let info = profiles::info(home, record);
+                    (info.git_branch, info.settings.display_name, info.profile_id)
+                }
+                None => (
+                    None,
+                    record.settings.display_name,
+                    record.profile_id.to_string(),
+                ),
+            };
+            InboxProfile {
+                profile_id,
+                display_name,
+                git_branch,
+                last_used_at,
+            }
+        })
+        .collect();
+    Ok(InboxListResponse {
+        rows,
+        profiles,
+        last_used_profile_id,
+    })
+}
+
+/// Write one mark on a thread of the caller's inbox, then re-read it.
+pub(super) async fn mutate(
+    engine: &Engine,
+    home: Option<&ProfileHome>,
+    inner: &Arc<dyn ProductSurface>,
+    caller: &ProductSurfaceCaller,
+    request: InboxMutationRequest,
+) -> Result<Result<InboxListResponse, OrchestratorError>, ProductSurfaceError> {
+    let thread = match ThreadId::new(request.thread_id.as_str()) {
+        Ok(id) => id,
+        Err(error) => return Ok(Err(error.into())),
+    };
+    // Only a thread the caller can see gets a record.
+    let before = list(engine, home, inner, caller).await?;
+    if !before.rows.iter().any(|r| r.thread_id == request.thread_id) {
+        return Ok(Err(OrchestratorError::not_found(
+            "thread_not_found",
+            format!("No thread {thread} for this user."),
+        )));
+    }
+    let owner = ProfileOwner::from(&scope_of(caller));
+    if let Err(error) = engine
+        .store()
+        .inbox_mark(&owner, &thread, request.action, request.until, now_ms())
+        .await
+    {
+        return Ok(Err(error));
+    }
+    list(engine, home, inner, caller).await.map(Ok)
+}
+
+pub(super) async fn goal(
+    engine: &Engine,
+    caller: &ProductSurfaceCaller,
+    raw_thread: &str,
+) -> Result<ThreadGoalResponse, OrchestratorError> {
+    let thread = ThreadId::new(raw_thread)?;
+    engine.owned_thread(&thread, &scope_of(caller)).await?;
+    Ok(ThreadGoalResponse {
+        thread_id: thread.to_string(),
+        goal: engine.store().goal(&thread).await?,
+    })
+}
+
+pub(super) async fn set_goal(
+    engine: &Engine,
+    caller: &ProductSurfaceCaller,
+    request: ThreadGoalSetRequest,
+) -> Result<ThreadGoalResponse, OrchestratorError> {
+    let thread = ThreadId::new(request.thread_id.as_str())?;
+    engine.owned_thread(&thread, &scope_of(caller)).await?;
+    let goal = engine
+        .store()
+        .set_goal(
+            &thread,
+            request.objective.as_deref(),
+            request.status,
+            now_ms(),
+        )
+        .await?;
+    Ok(ThreadGoalResponse {
+        thread_id: thread.to_string(),
+        goal,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use ironclaw_host_api::ids::{ActivityId, CapabilityId, TenantId, UserId};
+    use ironclaw_orchestrator::model::ThreadScope;
+    use ironclaw_product_contracts::surface::{
+        ProductSurfaceInvokeRequest, ProductSurfaceInvokeResponse, ProductSurfaceQueryPage,
+        ProductSurfaceStreamRequest, ProductSurfaceStreamResponse,
+    };
+    use serde_json::json;
+
+    use super::*;
+    use crate::orchestration::OrchestratedProductSurface;
+
+    /// The undecorated surface: one session thread and one automation run.
+    struct Inner;
+
+    #[async_trait]
+    impl ProductSurface for Inner {
+        async fn invoke(
+            &self,
+            _caller: ProductSurfaceCaller,
+            _request: ProductSurfaceInvokeRequest,
+        ) -> Result<ProductSurfaceInvokeResponse, ProductSurfaceError> {
+            Err(ProductSurfaceError::not_found())
+        }
+
+        async fn query(
+            &self,
+            _caller: ProductSurfaceCaller,
+            request: ProductSurfaceQueryRequest,
+        ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
+            let scope = json!({"tenant_id": "t1", "agent_id": "a1", "owner_user_id": "u1"});
+            let item = match request.view_id.as_str() {
+                v if v == THREADS_VIEW.id => json!({"threads": [{
+                    "scope": scope, "thread_id": "chat", "created_by_actor_id": "u1",
+                    "title": "Plan the inbox", "metadata_json": null,
+                    "created_at": "2026-01-02T08:00:00Z", "updated_at": "2026-01-02T09:00:00Z"
+                }]}),
+                v if v == AUTOMATIONS_VIEW.id => json!({"automations": [{
+                    "name": "Morning brief",
+                    "recent_runs": [{"thread_id": "auto", "status": "ok",
+                        "submitted_at": "2026-01-02T07:00:00Z",
+                        "completed_at": "2026-01-02T07:01:00Z"}]
+                }]}),
+                _ => return Err(ProductSurfaceError::not_found()),
+            };
+            Ok(ProductSurfaceQueryPage {
+                items: vec![item],
+                next_cursor: None,
+            })
+        }
+
+        async fn stream_events(
+            &self,
+            _caller: ProductSurfaceCaller,
+            _request: ProductSurfaceStreamRequest,
+        ) -> Result<ProductSurfaceStreamResponse, ProductSurfaceError> {
+            Err(ProductSurfaceError::not_found())
+        }
+    }
+
+    fn caller(user: &str) -> ProductSurfaceCaller {
+        ProductSurfaceCaller::new(
+            TenantId::new("t1").unwrap(),
+            UserId::new(user).unwrap(),
+            None,
+            None,
+        )
+    }
+
+    async fn list_of(surface: &OrchestratedProductSurface, user: &str) -> InboxListResponse {
+        let page = surface
+            .query(
+                caller(user),
+                ProductSurfaceQueryRequest {
+                    view_id: INBOX_VIEW.id.into(),
+                    input: json!({}),
+                    cursor: None,
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap();
+        serde_json::from_value(page.items[0].clone()).unwrap()
+    }
+
+    async fn invoke(
+        surface: &OrchestratedProductSurface,
+        operation: &str,
+        input: Value,
+    ) -> Result<Value, ProductSurfaceError> {
+        surface
+            .invoke(
+                caller("u1"),
+                ProductSurfaceInvokeRequest {
+                    operation_id: CapabilityId::new(operation).unwrap(),
+                    input,
+                    activity_id: ActivityId::new(),
+                },
+            )
+            .await
+            .map(|r| r.output)
+    }
+
+    #[tokio::test]
+    async fn inbox_joins_sessions_automations_and_engine_threads_and_persists_marks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            libsql::Builder::new_local(dir.path().join("o.db"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let runtime =
+            Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
+        let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+        let scope = ThreadScope {
+            tenant_id: TenantId::new("t1").unwrap(),
+            user_id: UserId::new("u1").unwrap(),
+            agent_id: None,
+            project_id: None,
+        };
+        engine
+            .ensure_thread(&ThreadId::new("chat").unwrap(), &scope, None)
+            .await
+            .unwrap();
+        let surface = OrchestratedProductSurface::new(Arc::new(Inner), Arc::clone(&engine));
+
+        let list = list_of(&surface, "u1").await;
+        let chat = list.rows.iter().find(|r| r.thread_id == "chat").unwrap();
+        assert_eq!(chat.title.as_deref(), Some("Plan the inbox"));
+        assert_eq!(chat.profile_id, DEFAULT_PROFILE_ID);
+        assert_eq!(chat.engines[0].runtime_id, "ironclaw");
+        let auto = list.rows.iter().find(|r| r.thread_id == "auto").unwrap();
+        assert!(auto.automation, "automation runs join the inbox");
+        assert_eq!(auto.title.as_deref(), Some("Morning brief"));
+        assert_eq!(list.profiles[0].profile_id, DEFAULT_PROFILE_ID);
+
+        // Settle the automation run and pin the chat; the answer is the new list.
+        let out = invoke(
+            &surface,
+            INBOX_MUTATE_COMMAND_ID,
+            json!({"thread_id": "auto", "action": "settle"}),
+        )
+        .await
+        .unwrap();
+        let after: InboxListResponse = serde_json::from_value(out).unwrap();
+        let auto = after.rows.iter().find(|r| r.thread_id == "auto").unwrap();
+        assert_eq!(auto.state, InboxState::Settled);
+        assert_eq!(after.rows.last().unwrap().thread_id, "auto", "settled sorts last");
+        invoke(
+            &surface,
+            INBOX_MUTATE_COMMAND_ID,
+            json!({"thread_id": "chat", "action": "pin"}),
+        )
+        .await
+        .unwrap();
+        let reread = list_of(&surface, "u1").await;
+        assert_eq!(reread.rows[0].thread_id, "chat");
+        assert_eq!(reread.rows[0].state, InboxState::Pinned);
+
+        // A thread outside the caller's inbox gets no record.
+        let refused = invoke(
+            &surface,
+            INBOX_MUTATE_COMMAND_ID,
+            json!({"thread_id": "someone-else", "action": "pin"}),
+        )
+        .await;
+        assert!(refused.is_err(), "unknown thread is a 404");
+
+        // Goals live on engine threads.
+        let out = invoke(
+            &surface,
+            THREAD_GOAL_SET_COMMAND_ID,
+            json!({"thread_id": "chat", "objective": "Ship stage 5"}),
+        )
+        .await
+        .unwrap();
+        let goal: ThreadGoalResponse = serde_json::from_value(out).unwrap();
+        assert_eq!(goal.goal.unwrap().objective, "Ship stage 5");
+        let page = surface
+            .query(
+                caller("u2"),
+                ProductSurfaceQueryRequest {
+                    view_id: THREAD_GOAL_VIEW.id.into(),
+                    input: json!({"thread_id": "chat"}),
+                    cursor: None,
+                    limit: None,
+                },
+            )
+            .await;
+        assert!(page.is_err(), "another user cannot read the goal");
+    }
+}

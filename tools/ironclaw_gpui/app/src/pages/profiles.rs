@@ -196,6 +196,11 @@ impl ProfilesView {
         );
     }
 
+    /// Open the editor on a blank profile (the inbox's New profile button).
+    pub fn new_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.select(None, window, cx);
+    }
+
     fn selected_profile(&self) -> Option<&ProfileInfo> {
         let id = self.selected.as_deref()?;
         self.items.iter().find(|p| p.profile_id == id)
