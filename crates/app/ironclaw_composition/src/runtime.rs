@@ -618,6 +618,9 @@ pub struct RebornRuntime {
     /// IronClaw's agent loop as its runtime) by [`RebornRuntime::product_surface`].
     // arch-exempt: optional_arc, libSQL-only engine absent on other backends, plan #orchestrator-stage-3
     pub(crate) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
+    /// Approvals, live stream and MCP tokens of CLI threads; set with `orchestrator`.
+    // arch-exempt: optional_arc, libSQL-only like the engine it serves, plan #v3-cli-bridge
+    pub(crate) cli_bridge: Option<Arc<ironclaw_cli_providers::bridge::CliBridge>>,
     /// Late-bound manual-fire runner shared by product automation actions and
     /// the scheduler so both surfaces execute through the same worker graph.
     pub(crate) trigger_manual_fire_runner: Arc<dyn ironclaw_triggers::TriggerManualFireRunner>,
@@ -971,6 +974,25 @@ impl RebornRuntime {
                 )
             })
             .transpose()
+    }
+
+    /// The loopback MCP route for CLI agents (orchestrator tools), serving on
+    /// `listener`. `None` off libSQL, where there is no engine.
+    pub fn cli_bridge_route_mount(
+        &self,
+        listener: std::net::SocketAddr,
+    ) -> Result<Option<ironclaw_host_ingress::PublicRouteMount>, RebornBuildError> {
+        let (Some(engine), Some(bridge)) = (&self.orchestrator, &self.cli_bridge) else {
+            return Ok(None);
+        };
+        crate::cli_bridge_serve::cli_bridge_route_mount(
+            crate::cli_bridge_serve::CliBridgeRouteState::new(
+                Arc::clone(bridge),
+                Arc::clone(engine),
+            ),
+            listener,
+        )
+        .map(Some)
     }
 
     pub fn product_auth_services(&self) -> Arc<RebornProductAuthServices> {
@@ -3129,9 +3151,7 @@ pub(crate) async fn build_runtime_with_resource_governor(
     Box::pin(assemble_runtime(input)).await
 }
 
-async fn assemble_runtime(
-    input: RebornRuntimeInput,
-) -> Result<BuiltRuntime, RebornRuntimeError> {
+async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, RebornRuntimeError> {
     let RebornRuntimeInput {
         services: services_input,
         llm,
@@ -4846,6 +4866,7 @@ async fn assemble_runtime(
         diagnostic_store,
         trigger_repository: trigger_repository.clone(),
         orchestrator: services.orchestrator.clone(),
+        cli_bridge: services.cli_bridge.clone(),
         trigger_manual_fire_runner: services.trigger_manual_fire_runner.clone(),
         #[cfg(any(test, feature = "test-support"))]
         trigger_process_lifecycle_source: Arc::clone(&services.trigger_process_lifecycle_source),

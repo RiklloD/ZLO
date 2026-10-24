@@ -25,6 +25,7 @@ mod backend_store_assembly;
 mod builtin_capability_policy;
 mod capability_authorization;
 mod channel_initialization;
+mod cli_bridge_serve;
 #[cfg(test)]
 #[path = "extension_lifecycle_capabilities_auth_tests.rs"]
 mod composition_extension_lifecycle_auth_tests;

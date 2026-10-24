@@ -15,7 +15,8 @@ found. Antigravity (ACP) and Muse Code drivers follow on the same seam.
 ## How a turn runs
 
 One `claude -p --output-format stream-json --input-format stream-json
---verbose --include-partial-messages` process per turn. The thread's
+--verbose --include-partial-messages` process per turn; stdin stays open
+for the control protocol until the result arrives. The thread's
 `native_session_id` is minted at creation; the first turn passes
 `--session-id`, later turns `--resume`. Stop sends SIGTERM to the process
 group, SIGKILL after 2 s. A rejected `rate_limit_event` (or a limit-shaped
@@ -27,14 +28,41 @@ Wire types come from `claude-codes`, pinned to the checked CLI release
 (`claude::EXPECTED_CLI_VERSION`, `2.1.302`); a different installed version
 is logged at `debug`.
 
-## Tools are off
+## Tools and approvals
 
-The user keeps auto-approve off, and the CLI's permission path cannot reach
-IronClaw's approval queue (`ironclaw_approvals`) yet. Until that bridge
-lands, every turn runs with `--tools ""`, `--strict-mcp-config`,
-`--permission-mode default` and `--permission-prompts none`: no tools, no
-MCP servers, and anything that would prompt is denied. No allow rules are
-passed and `--dangerously-skip-permissions` is never used.
+With a `bridge::CliBridge` (wired by composition next to the engine), the
+CLI has its tools and every call waits for a person:
+
+- Before the prompt, the driver sends a stream-json `initialize` control
+  request that registers a PreToolUse hook (matcher: every tool, MCP tools
+  included). The prompt goes out only after the CLI acknowledges it; a
+  refusal or no ack within 60 s fails the turn.
+- Each `hook_callback` becomes a pending gate on the bridge. The GPUI app
+  shows it as a normal approval in the thread's stream (`gate.resolve`
+  answers it, owner only). The driver answers the CLI with an explicit
+  `allow` or `deny`, never an error frame: on an error the CLI falls back to
+  its own rules, which auto-approve reads. Timeout (10 min), Stop, turn end
+  and any failure deny.
+- No allow rules are passed, "always allow" is not offered, prompts are
+  answered "no" (`--permission-prompts none`), and
+  `--dangerously-skip-permissions` is never used.
+- The orchestrator tools (`t3_*`) come from one loopback MCP route
+  (`POST /api/cli-bridge/mcp`, mounted by composition, 127.0.0.1 peers
+  only). Each CLI process gets its own bearer token in a 0600
+  `--mcp-config` file (`--strict-mcp-config` stays on); the token is bound
+  to the thread and revoked when the turn ends. Calls run as the thread's
+  owner scope.
+
+Without a bridge every turn runs with `--tools ""` as before.
+
+While a turn runs, its reply text streams through the bridge into the
+thread's event stream (`text`, `gate`, `run_status` projection items). The
+prompt's `uuid` is the run id, so the session journal's rows carry it and
+the durable reply replaces the live bubble.
+
+Other drivers can reuse the bridge: `request_approval` for a tool call,
+`turn_started`/`text_delta`/`turn_ended` for live state, `mint_token` +
+`mcp_config_json` for the MCP route.
 
 ## Profiles and limits
 

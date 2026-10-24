@@ -323,6 +323,7 @@ pub(crate) fn build_product_surface_with_channel_connection(
             engine,
             Arc::new(api),
             runtime.session_channel_extension_id().map(str::to_string),
+            runtime.cli_bridge.clone(),
         ),
         None => Arc::new(api) as _,
     };

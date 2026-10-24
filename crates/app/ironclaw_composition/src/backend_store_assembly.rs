@@ -83,9 +83,18 @@ pub(crate) async fn resolve_explicit_or_keychain_master_key(
 /// The orchestration engine over the deployment's libSQL file (one store in
 /// the existing database). Migrates its tables and imports legacy threads
 /// once. Postgres deployments run without it until a Postgres store exists.
+/// The CLI bridge comes with it: CLI runtimes ask it for tool approvals, the
+/// product surface streams their turns, and the loopback MCP route serves
+/// the orchestrator tools through it.
 pub(crate) async fn orchestrator_for_durable_backend(
     backend: &DurableBackend,
-) -> Result<Option<Arc<ironclaw_orchestrator::engine::Engine>>, RebornBuildError> {
+) -> Result<
+    Option<(
+        Arc<ironclaw_orchestrator::engine::Engine>,
+        Arc<ironclaw_cli_providers::bridge::CliBridge>,
+    )>,
+    RebornBuildError,
+> {
     let DurableBackend::LibSql { runtime, .. } = backend else {
         return Ok(None);
     };
@@ -95,9 +104,12 @@ pub(crate) async fn orchestrator_for_durable_backend(
     )
     .await
     .map(|engine| {
+        let bridge = ironclaw_cli_providers::bridge::CliBridge::new(
+            ironclaw_cli_providers::bridge::DEFAULT_APPROVAL_TIMEOUT,
+        );
         // Claude CLI accounts become runtimes when `claude` is installed.
-        ironclaw_cli_providers::register_claude_runtimes(&engine);
-        Some(engine)
+        ironclaw_cli_providers::register_claude_runtimes(&engine, Some(Arc::clone(&bridge)));
+        Some((engine, bridge))
     })
     .map_err(|error| RebornBuildError::InvalidConfig {
         reason: format!("orchestrator store migrations failed: {error}"),

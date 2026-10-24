@@ -368,6 +368,9 @@ pub(crate) struct RebornRuntimeStores {
     /// in-memory graphs run without orchestration.
     // arch-exempt: optional_arc, libSQL-only engine absent on other backends, plan #orchestrator-stage-3
     pub(crate) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
+    /// Approvals, live stream and MCP tokens of CLI threads; set with `orchestrator`.
+    // arch-exempt: optional_arc, libSQL-only like the engine it serves, plan #v3-cli-bridge
+    pub(crate) cli_bridge: Option<Arc<ironclaw_cli_providers::bridge::CliBridge>>,
     pub(crate) trigger_manual_fire_runner:
         Arc<crate::automation::trigger_poller::LateBoundTriggerManualFireRunner>,
     pub(crate) trigger_create_hook: Arc<TriggerCreatorPairingHook>,

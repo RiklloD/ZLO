@@ -214,7 +214,10 @@ const WS0_COMPOSITION_SHARE_BP: usize = 658;
 /// into #7875. Main contributes the resource-block observer wiring and #7875
 /// adds the durable auth notification observer wiring. Both lifecycle policies
 /// remain in `ironclaw_assistant`; composition only supplies dependencies.
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 43_151;
+/// ✎ Re-measured 43_151 -> 43_423 on 2026-10-24 for the CLI approval bridge:
+/// bridge plumbing beside the engine and the loopback MCP route mount; the
+/// bridge logic lives in `ironclaw_cli_providers::bridge`.
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 43_423;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".

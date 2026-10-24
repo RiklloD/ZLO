@@ -4,6 +4,7 @@
 //! account, `claude-cli-2` on `~/.claude-account2`). Antigravity and Muse
 //! Code drivers follow on the same seam.
 
+pub mod bridge;
 pub mod claude;
 
 use std::path::PathBuf;
@@ -13,8 +14,12 @@ use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::runtime::TurnEventSink;
 
 /// Register the Claude CLI runtimes on `engine` when a `claude` binary is
-/// installed. Returns how many were registered.
-pub fn register_claude_runtimes(engine: &Arc<Engine>) -> usize {
+/// installed. With `bridge`, their tools run behind IronClaw approvals;
+/// without, tools are off. Returns how many were registered.
+pub fn register_claude_runtimes(
+    engine: &Arc<Engine>,
+    bridge: Option<Arc<bridge::CliBridge>>,
+) -> usize {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return 0;
     };
@@ -26,7 +31,7 @@ pub fn register_claude_runtimes(engine: &Arc<Engine>) -> usize {
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     let mut registered = 0;
     for config in claude::default_accounts(&home, &binary) {
-        match claude::ClaudeCliRuntime::new(config, sink.clone()) {
+        match claude::ClaudeCliRuntime::new(config, sink.clone(), bridge.clone()) {
             Ok(runtime) => {
                 engine.register_runtime(Arc::new(runtime));
                 registered += 1;
