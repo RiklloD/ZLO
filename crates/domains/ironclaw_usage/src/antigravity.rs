@@ -311,6 +311,14 @@ pub(crate) fn summary_windows(summary: &Value) -> Vec<UsageWindow> {
             }
         }
     }
+    // Per family, the shorter window first; unknown lengths last.
+    windows.sort_by_key(|w| {
+        (
+            !w.id.starts_with("gemini-"),
+            w.label.split(' ').next().map(str::to_string),
+            w.window_minutes.unwrap_or(u32::MAX),
+        )
+    });
     windows
 }
 

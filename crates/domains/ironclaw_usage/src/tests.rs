@@ -369,6 +369,7 @@ fn antigravity_summary_names_shared_and_gemini_buckets() {
         {"bucketId": "gemini-pro-5h", "window": "5h", "remainingFraction": 0.75,
          "resetTime": "2026-10-24T20:00:00Z"},
         {"bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 1.0},
+        {"bucketId": "3p-5h", "window": "5h", "remainingFraction": 0.5},
         {"bucketId": "off", "disabled": true, "remainingFraction": 0.0}]}]});
     let windows = crate::antigravity::summary_windows(&summary);
     let rows: Vec<_> = windows
@@ -379,6 +380,7 @@ fn antigravity_summary_names_shared_and_gemini_buckets() {
         rows,
         [
             ("Gemini 5-hour", 25.0, Some(300)),
+            ("Claude & GPT 5-hour", 50.0, Some(300)),
             ("Claude & GPT Weekly", 0.0, Some(10_080))
         ]
     );
