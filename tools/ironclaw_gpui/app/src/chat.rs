@@ -953,7 +953,9 @@ impl Render for ChatView {
                 .pt(px(top))
                 .pb(px(bottom))
                 .child(div().w_full().max_w(px(CONTENT_MAX_WIDTH)).child(body))
-        });
+        })
+        // The reserve reads as "scrolled up"; no jump arrow for empty room.
+        .jump_button(self.reserve.is_none());
 
         let banner = match self.status {
             StreamStatus::Reconnecting { delay_secs, .. } => {
