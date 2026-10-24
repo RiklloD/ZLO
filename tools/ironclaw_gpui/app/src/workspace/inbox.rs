@@ -448,19 +448,14 @@ impl Workspace {
             .pb_2()
             .gap_1()
             .items_center()
-            .children(
-                self.inbox
-                    .search
-                    .as_ref()
-                    .map(|(input, _)| {
-                        // T3 Code's search: a magnifier and the text, no box.
-                        div().flex_1().child(
-                            Input::new(input)
-                                .appearance(false)
-                                .prefix(Icon::new(IconName::Search).small()),
-                        )
-                    }),
-            )
+            .children(self.inbox.search.as_ref().map(|(input, _)| {
+                // T3 Code's search: a magnifier and the text, no box.
+                div().flex_1().child(
+                    Input::new(input)
+                        .appearance(false)
+                        .prefix(Icon::new(IconName::Search).small()),
+                )
+            }))
             .child(
                 Button::new("inbox-filters")
                     .icon(ExtraIcon::ListFilter)
@@ -608,7 +603,9 @@ impl Workspace {
                 .text_sm()
                 .cursor_pointer()
                 .when(highlighted, |d| d.bg(p.accent_wash).text_color(p.text))
-                .when(!highlighted, |d| kit::smooth_bg(d, format!("pick-profile-{ix}"), cx))
+                .when(!highlighted, |d| {
+                    kit::smooth_bg(d, format!("pick-profile-{ix}"), cx)
+                })
                 .child(profile_mark(&profile.profile_id, &profile.display_name, cx))
                 .child(
                     div()
@@ -835,7 +832,10 @@ impl Workspace {
                             .bg(p.accent.opacity(sel)),
                     )
                 })
-                .on_hover(crate::design::motion::hover_listener(hover_key, style.hover))
+                .on_hover(crate::design::motion::hover_listener(
+                    hover_key,
+                    style.hover,
+                ))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_thread(open_id.clone(), window, cx)
                 }))

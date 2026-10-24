@@ -599,6 +599,15 @@ impl Transcript {
         let mut groups: Vec<(Option<String>, Vec<&str>)> = Vec::new();
         for key in &self.order {
             let run = self.live[key].run.clone();
+            // A frame without a run id (some tool activity arrives bare)
+            // belongs to the run it arrived during, not to a trailing
+            // group drawn under the final answer.
+            if run.is_none()
+                && let Some((_, keys)) = groups.last_mut()
+            {
+                keys.push(key);
+                continue;
+            }
             match groups.iter_mut().find(|(r, _)| *r == run) {
                 Some((_, keys)) => keys.push(key),
                 None => groups.push((run, vec![key])),

@@ -172,7 +172,9 @@ impl FilesView {
                             .when(ix != last, |d| {
                                 d.cursor_pointer()
                                     .text_color(cx.theme().muted_foreground)
-                                    .map(|d| crate::design::kit::smooth_bg(d, format!("crumb-{ix}"), cx))
+                                    .map(|d| {
+                                        crate::design::kit::smooth_bg(d, format!("crumb-{ix}"), cx)
+                                    })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.navigate(mount, path.clone(), cx)
                                     }))
@@ -200,7 +202,9 @@ impl FilesView {
                 .text_sm()
                 .cursor_pointer()
                 .when(selected, |d| d.bg(theme.accent))
-                .when(!selected, |d| crate::design::kit::smooth_bg(d, format!("entry-{ix}"), cx))
+                .when(!selected, |d| {
+                    crate::design::kit::smooth_bg(d, format!("entry-{ix}"), cx)
+                })
                 .on_click(cx.listener(move |this, _, _, cx| this.select(&entry, cx)))
                 .child(
                     div().text_color(theme.muted_foreground).child(

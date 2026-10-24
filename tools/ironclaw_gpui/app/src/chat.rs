@@ -32,7 +32,8 @@ use flow::Item;
 use model_picker::{ModelPicker, PickerEvent};
 
 const TIMELINE_LIMIT: u32 = 200;
-const CONTENT_MAX_WIDTH: f32 = 780.;
+/// Zeron's reading column.
+const CONTENT_MAX_WIDTH: f32 = 720.;
 
 /// One folder of the conversation's own workspace.
 struct FilesPanel {
@@ -922,28 +923,31 @@ impl Render for ChatView {
         let toggles = self.toggles.clone();
         let since = self.run_started;
 
+        let seed = motion::seed(&self.thread_id);
         let list = MessageScroller::new("transcript", self.scroller.clone(), move |ix, _, cx| {
             let item = &items[ix];
-            let (top, bottom) = match item {
-                Item::Row(Row::User { .. }) => (20., 6.),
-                Item::Reserve => (0., 0.),
-                _ => (6., 6.),
-            };
+            let top = flow::top_gap(ix.checked_sub(1).map(|i| &items[i]), item);
+            let last = ix + 1 == items.len();
             let body = match item {
-                Item::Row(row @ Row::Assistant { key, text, streaming: false }) => {
-                    with_copy(key, text, render_row(row, &weak, cx))
-                }
-                Item::Row(Row::Narration { text, .. }) => div()
-                    .text_color(Palette::of(cx).text)
-                    .whitespace_normal()
-                    .child(text.clone())
-                    .into_any_element(),
+                Item::Row(
+                    row @ Row::Assistant {
+                        key,
+                        text,
+                        streaming: false,
+                    },
+                ) => with_copy(key, text, render_row(row, &weak, cx)),
+                Item::Row(Row::Narration { text, .. }) => markdown(
+                    SharedString::from(format!("{}-n", item.key())),
+                    text.clone(),
+                    false,
+                )
+                .into_any_element(),
                 Item::Row(row) => render_row(row, &weak, cx),
                 Item::Activity { key, rows, live } => {
                     let open = flow::is_open(key, *live, &toggles);
-                    flow::render_activity(key, rows, *live, open, &weak, cx)
+                    flow::render_activity(key, rows, *live, open, &toggles, &weak, cx)
                 }
-                Item::Pending { stopping } => flow::render_pending(*stopping, since, cx),
+                Item::Pending { stopping } => flow::render_pending(*stopping, since, seed, cx),
                 Item::Reserve => div().h(px(reserve_h)).into_any_element(),
             };
             h_flex()
@@ -951,7 +955,7 @@ impl Render for ChatView {
                 .justify_center()
                 .px_4()
                 .pt(px(top))
-                .pb(px(bottom))
+                .when(last, |d| d.pb(px(flow::SPACE_LG + 24.)))
                 .child(div().w_full().max_w(px(CONTENT_MAX_WIDTH)).child(body))
         })
         // The reserve reads as "scrolled up"; no jump arrow for empty room.
@@ -1003,7 +1007,10 @@ impl Render for ChatView {
                     .gap_2()
                     .bg(gpui_kit::linear_gradient(
                         180.,
-                        gpui_kit::linear_color_stop(palette.bg.opacity(0.92 * style.panel_alpha), 0.45),
+                        gpui_kit::linear_color_stop(
+                            palette.bg.opacity(0.92 * style.panel_alpha),
+                            0.45,
+                        ),
                         gpui_kit::linear_color_stop(palette.bg.opacity(0.), 1.),
                     ))
                     // The breadcrumb above names the thread; only actions here.
@@ -1011,25 +1018,25 @@ impl Render for ChatView {
                     .child(
                         h_flex()
                             .gap_1()
-                        .child(
-                            Button::new("fork")
-                                .icon(IconName::Copy)
-                                .ghost()
-                                .small()
-                                .tooltip("Fork this conversation")
-                                .accessibility_label("Fork this conversation")
-                                .on_click(cx.listener(|this, _, _, cx| this.fork(cx))),
-                        )
-                        .child(
-                            Button::new("files-toggle")
-                                .icon(IconName::FolderOpen)
-                                .ghost()
-                                .small()
-                                .when(files_open, |b| b.selected(true))
-                                .tooltip("Conversation files")
-                                .accessibility_label("Conversation files")
-                                .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx))),
-                        ),
+                            .child(
+                                Button::new("fork")
+                                    .icon(IconName::Copy)
+                                    .ghost()
+                                    .small()
+                                    .tooltip("Fork this conversation")
+                                    .accessibility_label("Fork this conversation")
+                                    .on_click(cx.listener(|this, _, _, cx| this.fork(cx))),
+                            )
+                            .child(
+                                Button::new("files-toggle")
+                                    .icon(IconName::FolderOpen)
+                                    .ghost()
+                                    .small()
+                                    .when(files_open, |b| b.selected(true))
+                                    .tooltip("Conversation files")
+                                    .accessibility_label("Conversation files")
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx))),
+                            ),
                     ),
             )
             .when_some(self.error.clone(), |this, error| {
@@ -1117,12 +1124,7 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
             .items_end()
             .gap_1()
             .when(!text.is_empty(), |this| {
-                this.child(user_bubble(
-                    SharedString::from(format!("{key}-bubble")),
-                    text.clone(),
-                    *pending,
-                    cx,
-                ))
+                this.child(flow::user_pill(key, text, *pending, cx))
             })
             .when(!attachments.is_empty(), |this| {
                 this.child(h_flex().flex_wrap().justify_end().gap_1().children(
@@ -1363,7 +1365,12 @@ pub(crate) fn composer_card(
 ) -> gpui_kit::Div {
     let style = Style::of(cx);
     let palette = Palette::of(cx);
-    let f = motion::state_t(&format!("{key}:focus"), focused, style.slide, cx.reduce_motion());
+    let f = motion::state_t(
+        &format!("{key}:focus"),
+        focused,
+        style.slide,
+        cx.reduce_motion(),
+    );
     let dock = kit::neutral(style, palette, 0.4 * f, 1.);
     let rim = motion::mix(dock.rim, palette.accent.opacity(0.55), f);
     let halo = gpui_kit::BoxShadow {
@@ -1463,15 +1470,20 @@ fn render_menu(
     cx: &mut Context<ChatView>,
 ) -> impl IntoElement {
     let pop = kit::popover("command-menu-pop", cx);
-    pop(v_flex().w_full().child(div()
-        .w_full()
-        .max_h(px(280.))
-        .id("command-menu")
-        .overflow_y_scroll()
-        .p_1()
-        .children(items.iter().enumerate().map(|(ix, command)| {
-            let pick = command.clone();
-            kit::row(SharedString::from(format!("cmd-{}", command.name)), ix == selected, cx)
+    pop(v_flex().w_full().child(
+        div()
+            .w_full()
+            .max_h(px(280.))
+            .id("command-menu")
+            .overflow_y_scroll()
+            .p_1()
+            .children(items.iter().enumerate().map(|(ix, command)| {
+                let pick = command.clone();
+                kit::row(
+                    SharedString::from(format!("cmd-{}", command.name)),
+                    ix == selected,
+                    cx,
+                )
                 .role(Role::Button)
                 .aria_label(command.usage.clone())
                 .gap_3()
@@ -1488,7 +1500,8 @@ fn render_menu(
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.pick_command(&pick, window, cx)),
                 )
-        }))))
+            })),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1516,32 +1529,8 @@ fn render_gate(
             })
     };
 
-    // A settled gate collapses to one line; the full card is only for asking.
-    if let GateState::Closed(decision) = state {
-        let (icon, verdict) = match decision {
-            Some(GateDecision::Approve { always: true }) => {
-                (IconName::CircleCheck, "Always allowed")
-            }
-            Some(GateDecision::Approve { always: false }) => (IconName::CircleCheck, "Approved"),
-            Some(GateDecision::Decline) => (IconName::CircleX, "Declined"),
-            None => (IconName::Check, "Answered"),
-        };
-        return h_flex()
-            .gap_2()
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .child(Icon::new(icon).xsmall())
-            .child(div().font_medium().child(verdict))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(body.clone().unwrap_or_else(|| headline.to_string())),
-            )
-            .into_any_element();
-    }
-
+    // A settled gate folds into its activity group (see `flow`); this
+    // only draws gates that still ask or are being answered.
     let actions = match (state, kind) {
         (GateState::Closed(_), _) => None,
         (GateState::Resolving(decision), _) => Some(
@@ -1587,43 +1576,85 @@ fn render_gate(
         ),
     };
 
-    // An open approval is the one thing in the transcript waiting on the
-    // person: it gets the warning rim and a soft halo, and arrives on the
-    // style's spring.
+    // Zeron's chip language: a hairline card with an icon tile, a quiet
+    // label and the request. An open approval is the one thing waiting on
+    // the person, so its rim warms toward the warning color.
     let open = matches!(state, GateState::Open);
     let p = *Palette::of(cx);
     let s = *Style::of(cx);
-    let card = card(cx)
-        .when(open, |d| {
-            d.border_color(p.warning.opacity(0.55)).shadow(vec![gpui_kit::BoxShadow {
-                color: p.warning.opacity(0.14),
-                offset: gpui_kit::point(px(0.), px(4.)),
-                blur_radius: px(18.),
-                spread_radius: px(0.),
-                inset: false,
-            }])
+    let ink = |a: f32| {
+        if p.light {
+            gpui_kit::hsla(0., 0., 0., a)
+        } else {
+            gpui_kit::hsla(0., 0., 1., a)
+        }
+    };
+    let label = match kind {
+        ProductGateKind::Auth => "Sign-in",
+        ProductGateKind::Approval => "Approval",
+        _ => "Question",
+    };
+    let card = v_flex()
+        .w_full()
+        .gap_2()
+        .p(px(10.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(if open {
+            p.warning.opacity(0.45)
+        } else {
+            ink(0.08)
         })
+        .bg(ink(0.045))
+        .text_size(flow::ui(12.))
         .child(
             h_flex()
-                .gap_2()
-                .text_sm()
-                .font_medium()
-                .items_start()
+                .gap(px(8.))
+                .items_center()
                 .child(
-                    Icon::new(IconName::TriangleAlert)
+                    div()
                         .flex_none()
-                        .when(open, |i| i.text_color(p.warning)),
+                        .size(px(20.))
+                        .rounded(px(6.))
+                        .bg(ink(0.09))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            Icon::new(IconName::TriangleAlert)
+                                .size(px(12.))
+                                .text_color(if open { p.warning } else { p.text_muted }),
+                        ),
                 )
-                .child(div().flex_1().min_w_0().child(headline.to_string())),
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(p.text_muted)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .text_color(p.text.opacity(0.9))
+                        .child(headline.to_string()),
+                ),
         )
         .when_some(body.clone(), |this, body| {
             this.child(
                 div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
+                    .pl(px(28.))
+                    .max_h(px(160.))
+                    .overflow_hidden()
+                    .font_family(crate::design::FONT_MONO)
+                    .text_size(flow::ui(11.5))
+                    .line_height(px(17.))
+                    .text_color(p.text_muted)
+                    .whitespace_normal()
                     .child(body),
             )
         })
-        .children(actions);
+        .children(actions.map(|a| div().pl(px(28.)).child(a)));
     motion::pop_in(card, SharedString::from(format!("{key}-gate")), s.pop, 8.).into_any_element()
 }

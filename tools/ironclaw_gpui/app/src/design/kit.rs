@@ -10,13 +10,13 @@
 //! highlight, short drop) are adapted from Zeron's `glass.rs` (MIT).
 
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{Icon, Sizable, h_flex, v_flex};
 use gpui_kit::{
     Animation, AnimationExt, App, Background, BoxShadow, ClickEvent, Div, ElementId, Hsla,
     InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, Stateful,
     StatefulInteractiveElement, Styled, Window, div, hsla, linear_color_stop, linear_gradient,
     point, prelude::FluentBuilder, px,
 };
-use gpui_kit::component::{Icon, Sizable, h_flex};
 use std::time::Duration;
 
 use super::motion::{self, mix};
@@ -147,8 +147,20 @@ pub fn floating(s: &Style, p: &Palette) -> Plate {
         _ => p.surface_overlay,
     };
     let mut shadows = vec![
-        shadow(black((if p.light { 0.08 } else { 0.3 }) * e), 8., 24., -4., false),
-        shadow(black((if p.light { 0.06 } else { 0.2 }) * e), 2., 6., 0., false),
+        shadow(
+            black((if p.light { 0.08 } else { 0.3 }) * e),
+            8.,
+            24.,
+            -4.,
+            false,
+        ),
+        shadow(
+            black((if p.light { 0.06 } else { 0.2 }) * e),
+            2.,
+            6.,
+            0.,
+            false,
+        ),
     ];
     if matches!(s.material, Material::Metal | Material::Frost) {
         shadows.push(shadow(white(0.06), 1., 0., 0., true));
@@ -170,7 +182,13 @@ pub fn panel_shadows(s: &Style, p: &Palette) -> Vec<BoxShadow> {
     if e <= 0. {
         return Vec::new();
     }
-    let mut v = vec![shadow(black((if p.light { 0.06 } else { 0.25 }) * e), 4., 16., -6., false)];
+    let mut v = vec![shadow(
+        black((if p.light { 0.06 } else { 0.25 }) * e),
+        4.,
+        16.,
+        -6.,
+        false,
+    )];
     if matches!(s.material, Material::Metal | Material::Frost) {
         v.push(shadow(white(0.04), 1., 0., 0., true));
     }
@@ -369,12 +387,9 @@ impl RenderOnce for Button {
                 .bg(p.danger.opacity(0.1 + 0.08 * h)),
         };
 
-        let dots = self.loading.then(|| {
-            pulse_dots(
-                ElementId::Name(format!("{key}:dots").into()),
-                text,
-            )
-        });
+        let dots = self
+            .loading
+            .then(|| pulse_dots(ElementId::Name(format!("{key}:dots").into()), text));
         el.when(self.disabled, |d| d.opacity(0.45))
             .when(!inert, |d| {
                 d.cursor_pointer()
@@ -475,9 +490,10 @@ pub fn slide_pill(key: &str, top: Option<f32>, cx: &App) -> impl IntoElement {
                 shadow(black(0.04 * shown), 0., 0., 1., false),
             ])
         })
-        .when(matches!(s.material, Material::Metal | Material::Frost), |d| {
-            d.shadow(vec![shadow(white(0.05 * shown), 1., 0., 0., true)])
-        })
+        .when(
+            matches!(s.material, Material::Metal | Material::Frost),
+            |d| d.shadow(vec![shadow(white(0.05 * shown), 1., 0., 0., true)]),
+        )
         .child(
             div()
                 .absolute()
@@ -530,7 +546,12 @@ pub fn pill_row(id: impl Into<SharedString>, active: bool, cx: &App) -> Stateful
 }
 
 /// A toggle chip (filters, tags) with animated on/off.
-pub fn chip(id: impl Into<SharedString>, label: impl Into<SharedString>, on: bool, cx: &App) -> Stateful<Div> {
+pub fn chip(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    on: bool,
+    cx: &App,
+) -> Stateful<Div> {
     let s = *Style::of(cx);
     let p = *Palette::of(cx);
     let id: SharedString = id.into();
@@ -552,7 +573,11 @@ pub fn chip(id: impl Into<SharedString>, label: impl Into<SharedString>, on: boo
         .text_xs()
         .cursor_pointer()
         .border_1()
-        .border_color(mix(mix(p.border, p.border_strong, h), p.accent.opacity(0.8), a))
+        .border_color(mix(
+            mix(p.border, p.border_strong, h),
+            p.accent.opacity(0.8),
+            a,
+        ))
         .bg(mix(mix(p.hover.opacity(0.), p.hover, h), p.accent_wash, a))
         .text_color(mix(mix(p.text_muted, p.text, h), p.text, a))
         .on_hover(motion::hover_listener(key, s.hover))
@@ -577,72 +602,102 @@ pub fn popover(id: impl Into<ElementId>, cx: &App) -> impl FnOnce(Div) -> gpui_k
 /// freezes it.
 pub fn pulse_dots(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
     let id = id.into();
-    h_flex().gap(px(3.)).items_center().children((0..3).map(move |i| {
-        div()
-            .relative()
-            .size(px(5.))
-            .rounded_full()
-            .bg(color)
-            .with_animation(
-                ElementId::NamedInteger(format!("{id:?}-dot").into(), i as u64),
-                Animation::new(Duration::from_millis(1200)).repeat(),
-                move |el, t| {
-                    // Each dot peaks 0.2 s after the one before it. The lift is
-                    // a relative inset, so the row never relayouts.
-                    let phase = (t - i as f32 * 0.18).rem_euclid(1.);
-                    let wave = (phase * std::f32::consts::TAU).sin().max(0.);
-                    el.opacity(0.25 + 0.75 * wave).top(px(-2. * wave))
-                },
-            )
-    }))
+    h_flex()
+        .gap(px(3.))
+        .items_center()
+        .children((0..3).map(move |i| {
+            div()
+                .relative()
+                .size(px(5.))
+                .rounded_full()
+                .bg(color)
+                .with_animation(
+                    ElementId::NamedInteger(format!("{id:?}-dot").into(), i as u64),
+                    Animation::new(Duration::from_millis(1200)).repeat(),
+                    move |el, t| {
+                        // Each dot peaks 0.2 s after the one before it. The lift is
+                        // a relative inset, so the row never relayouts.
+                        let phase = (t - i as f32 * 0.18).rem_euclid(1.);
+                        let wave = (phase * std::f32::consts::TAU).sin().max(0.);
+                        el.opacity(0.25 + 0.75 * wave).top(px(-2. * wave))
+                    },
+                )
+        }))
+}
+
+/// Zeron's working glyph: a 3×3 grid of dots tinted blue, amber and pink
+/// by row, with a brightness wave travelling up from the bottom edge every
+/// 750 ms. One repeating animation; it costs frames only while shown, and
+/// reduced motion freezes it at rest.
+pub fn gradient_spinner(id: impl Into<ElementId>, cell: f32) -> impl IntoElement {
+    const TINTS: [u32; 3] = [0xB6D3EF, 0xEDB185, 0xF888A0];
+    let id = id.into();
+    let gap = cell / 2.;
+    v_flex()
+        .gap(px(gap))
+        .flex_none()
+        .children((0..3).map(move |row| {
+            let id = id.clone();
+            h_flex().gap(px(gap)).children((0..3).map(move |col| {
+                // Distance from the wave origin (bottom row, centre column).
+                let d = 2. - row as f32 + (col as f32 - 1.).abs();
+                let phase = d / 4.;
+                div()
+                    .size(px(cell))
+                    .rounded(px(cell / 2.))
+                    .bg(gpui_kit::rgb(TINTS[row]))
+                    .with_animation(
+                        ElementId::NamedInteger(format!("{id:?}-g").into(), (row * 3 + col) as u64),
+                        Animation::new(Duration::from_millis(motion::GRADIENT_SPIN_MS)).repeat(),
+                        move |el, t| el.opacity(motion::gspin_opacity(t + phase, 0.1)),
+                    )
+            }))
+        }))
 }
 
 /// A shimmer sweeping across a label while something streams in.
-pub fn shimmer_text(id: impl Into<ElementId>, text: impl Into<SharedString>, cx: &App) -> impl IntoElement {
+pub fn shimmer_text(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    cx: &App,
+) -> impl IntoElement {
     let p = *Palette::of(cx);
     let text: SharedString = text.into();
-    div()
-        .text_color(p.text_muted)
-        .child(text)
-        .with_animation(
-            id,
-            Animation::new(Duration::from_millis(1600)).repeat(),
-            move |el, t| {
-                let w = (t * std::f32::consts::TAU).sin() * 0.5 + 0.5;
-                el.text_color(mix(p.text_faint, p.text, w))
-            },
-        )
+    div().text_color(p.text_muted).child(text).with_animation(
+        id,
+        Animation::new(Duration::from_millis(1600)).repeat(),
+        move |el, t| {
+            let w = (t * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+            el.text_color(mix(p.text_faint, p.text, w))
+        },
+    )
 }
 
 /// A small status dot that can pulse a soft halo.
 pub fn status_dot(id: impl Into<ElementId>, color: Hsla, live: bool) -> impl IntoElement {
     let dot = div().size(px(6.)).rounded_full().bg(color);
-    div()
-        .relative()
-        .size(px(6.))
-        .child(dot)
-        .when(live, |d| {
-            d.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size(px(6.))
-                    .rounded_full()
-                    .bg(color)
-                    .with_animation(
-                        id,
-                        Animation::new(Duration::from_millis(1800)).repeat(),
-                        move |el, t| {
-                            let grow = 6. + 8. * t;
-                            el.size(px(grow))
-                                .top(px(-(grow - 6.) / 2.))
-                                .left(px(-(grow - 6.) / 2.))
-                                .opacity(0.45 * (1. - t))
-                        },
-                    ),
-            )
-        })
+    div().relative().size(px(6.)).child(dot).when(live, |d| {
+        d.child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size(px(6.))
+                .rounded_full()
+                .bg(color)
+                .with_animation(
+                    id,
+                    Animation::new(Duration::from_millis(1800)).repeat(),
+                    move |el, t| {
+                        let grow = 6. + 8. * t;
+                        el.size(px(grow))
+                            .top(px(-(grow - 6.) / 2.))
+                            .left(px(-(grow - 6.) / 2.))
+                            .opacity(0.45 * (1. - t))
+                    },
+                ),
+        )
+    })
 }
 
 /// The IronClaw mark: three claw strokes on a raised tile, lit in the

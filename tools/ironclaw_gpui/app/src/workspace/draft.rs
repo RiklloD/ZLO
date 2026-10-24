@@ -11,8 +11,8 @@ use crate::chat::model_picker::{ModelPicker, PickerEvent};
 use crate::design::styles::Style;
 use crate::design::{Palette, motion};
 use crate::jobs;
-use gpui_kit::Focusable as _;
 use crate::ui::*;
+use gpui_kit::Focusable as _;
 
 pub(super) struct Draft {
     pub(super) profile: String,

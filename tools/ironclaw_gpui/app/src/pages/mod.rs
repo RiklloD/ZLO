@@ -100,7 +100,13 @@ pub fn setting_row(
                 .flex_1()
                 .min_w_0()
                 .gap_0p5()
-                .child(div().text_sm().font_medium().text_color(p.text).child(label.into()))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_medium()
+                        .text_color(p.text)
+                        .child(label.into()),
+                )
                 .when_some(description, |d, text| {
                     d.child(
                         div()

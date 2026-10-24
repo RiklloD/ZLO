@@ -21,7 +21,12 @@ fn style_gallery(cx: &mut Context<SettingsView>) -> impl IntoElement {
         .children(StyleId::ALL.into_iter().map(|id| {
             let key: SharedString = format!("style-card-{}", id.key()).into();
             let h = motion::hover_t(&key);
-            let on = motion::state_t(&format!("{key}:on"), current == id, s.slide, cx.reduce_motion());
+            let on = motion::state_t(
+                &format!("{key}:on"),
+                current == id,
+                s.slide,
+                cx.reduce_motion(),
+            );
             v_flex()
                 .id(ElementId::Name(key.clone()))
                 .relative()
@@ -58,15 +63,12 @@ fn style_gallery(cx: &mut Context<SettingsView>) -> impl IntoElement {
                                 .items_center()
                                 .child(div().text_sm().font_semibold().child(id.name()))
                                 .when(current == id, |d| {
-                                    d.child(Icon::new(IconName::Check).xsmall().text_color(p.accent))
+                                    d.child(
+                                        Icon::new(IconName::Check).xsmall().text_color(p.accent),
+                                    )
                                 }),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(p.text_muted)
-                                .child(id.blurb()),
-                        ),
+                        .child(div().text_xs().text_color(p.text_muted).child(id.blurb())),
                 )
         }))
 }
@@ -128,63 +130,72 @@ fn miniature(id: StyleId, h: f32) -> impl IntoElement {
                 .h_full()
                 .p_1p5()
                 .gap_1()
-                .when(st.material == Material::Line, |d| d.border_r_1().border_color(p.border))
-                .child(h_flex().gap(px(3.)).pb_1().children(
-                    [0xff5f57u32, 0xfebc2e, 0x28c840].map(|c| div().size(px(5.)).rounded_full().bg(design::hex(c))),
-                ))
+                .when(st.material == Material::Line, |d| {
+                    d.border_r_1().border_color(p.border)
+                })
+                .child(
+                    h_flex().gap(px(3.)).pb_1().children(
+                        [0xff5f57u32, 0xfebc2e, 0x28c840]
+                            .map(|c| div().size(px(5.)).rounded_full().bg(design::hex(c))),
+                    ),
+                )
                 .child(sidebar_row(30., false))
                 .child(sidebar_row(36., true))
                 .child(sidebar_row(24., false))
                 .child(sidebar_row(32., false)),
         )
         .child(
-            div().flex_1().h_full().py(px(st.panel_inset * 0.6)).pr(px(st.panel_inset * 0.6)).child(
-                v_flex()
-                    .size_full()
-                    .rounded(r(st.panel_radius))
-                    .when(st.panel_inset > 0., |d| d.border_1().border_color(p.border))
-                    .shadow(panel_plate)
-                    .bg(p.bg.opacity(st.panel_alpha.max(0.75)))
-                    .p_2()
-                    .gap_1p5()
-                    .child(
-                        h_flex().justify_end().child(
-                            div()
-                                .px_2()
-                                .py_1()
-                                .rounded(r(st.bubble_radius))
-                                .bg(p.surface_raised.opacity(if p.light { 0.7 } else { 0.9 }))
-                                .child(line(54., p.text_muted)),
-                        ),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(line(110., p.text_muted))
-                            .child(line(90., p.text_muted))
-                            .child(line(64. + 6. * h, p.accent.opacity(0.8))),
-                    )
-                    .child(div().flex_1())
-                    .child({
-                        let dock = kit::neutral(&st, &p, 0., 1.).apply(
-                            h_flex()
-                                .h(px(22.))
-                                .px_1p5()
-                                .items_center()
-                                .rounded(r(st.composer_radius))
-                                .child(line(48., p.text_faint))
-                                .child(div().flex_1()),
-                        );
-                        dock.child(
-                            kit::accent(&st, &p, h).apply(
-                                div().size(px(14.)).rounded(r(st.control_radius.max(6.))),
+            div()
+                .flex_1()
+                .h_full()
+                .py(px(st.panel_inset * 0.6))
+                .pr(px(st.panel_inset * 0.6))
+                .child(
+                    v_flex()
+                        .size_full()
+                        .rounded(r(st.panel_radius))
+                        .when(st.panel_inset > 0., |d| d.border_1().border_color(p.border))
+                        .shadow(panel_plate)
+                        .bg(p.bg.opacity(st.panel_alpha.max(0.75)))
+                        .p_2()
+                        .gap_1p5()
+                        .child(
+                            h_flex().justify_end().child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(r(st.bubble_radius))
+                                    .bg(p.surface_raised.opacity(if p.light { 0.7 } else { 0.9 }))
+                                    .child(line(54., p.text_muted)),
                             ),
                         )
-                    }),
-            ),
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(line(110., p.text_muted))
+                                .child(line(90., p.text_muted))
+                                .child(line(64. + 6. * h, p.accent.opacity(0.8))),
+                        )
+                        .child(div().flex_1())
+                        .child({
+                            let dock = kit::neutral(&st, &p, 0., 1.).apply(
+                                h_flex()
+                                    .h(px(22.))
+                                    .px_1p5()
+                                    .items_center()
+                                    .rounded(r(st.composer_radius))
+                                    .child(line(48., p.text_faint))
+                                    .child(div().flex_1()),
+                            );
+                            dock.child(
+                                kit::accent(&st, &p, h).apply(
+                                    div().size(px(14.)).rounded(r(st.control_radius.max(6.))),
+                                ),
+                            )
+                        }),
+                ),
         )
 }
-
 
 pub fn render(cx: &mut Context<SettingsView>) -> impl IntoElement {
     let prefs = Prefs::of(cx).clone();
@@ -253,8 +264,12 @@ pub fn render(cx: &mut Context<SettingsView>) -> impl IntoElement {
             Button::new("wallpaper-pick")
                 .label("Picture…")
                 .small()
-                .when(matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| b.primary())
-                .when(!matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| b.ghost())
+                .when(matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| {
+                    b.primary()
+                })
+                .when(!matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| {
+                    b.ghost()
+                })
                 .on_click(cx.listener(|_, _, window, cx| pick_picture(window, cx))),
         );
     v_flex()
@@ -264,7 +279,11 @@ pub fn render(cx: &mut Context<SettingsView>) -> impl IntoElement {
             cx,
         ))
         .child(style_gallery(cx))
-        .child(group_header("Palette", Some("Colors only; the style stays."), cx))
+        .child(group_header(
+            "Palette",
+            Some("Colors only; the style stays."),
+            cx,
+        ))
         .child(h_flex().flex_wrap().gap_2().children(swatches))
         .child(group_header("Window", None, cx))
         .child(rows_card(
@@ -272,7 +291,9 @@ pub fn render(cx: &mut Context<SettingsView>) -> impl IntoElement {
                 "Wallpaper",
                 Some(
                     picture_name
-                        .unwrap_or_else(|| "Drawn once behind the window; no cost while idle.".into())
+                        .unwrap_or_else(|| {
+                            "Drawn once behind the window; no cost while idle.".into()
+                        })
                         .into(),
                 ),
                 wallpaper,

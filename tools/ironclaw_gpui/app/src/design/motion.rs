@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    Animation, AnimationExt, App, ElementId, Hsla, IntoElement, Rgba, SharedString, Styled,
-    Window, px,
+    Animation, AnimationExt, App, ElementId, Hsla, IntoElement, Rgba, SharedString, Styled, Window,
+    px,
 };
 
 /// A CSS `cubic-bezier(x1, y1, x2, y2)`, solved by Newton iteration with a
@@ -91,6 +91,79 @@ pub const EASE_OUT_EXPO: CubicBezier = CubicBezier::new(0.16, 1., 0.3, 1.);
 pub const EASE_OUT_QUINT: CubicBezier = CubicBezier::new(0.22, 1., 0.36, 1.);
 /// CSS `ease`.
 pub const EASE: CubicBezier = CubicBezier::new(0.25, 0.1, 0.25, 1.);
+/// CSS `ease-out`.
+pub const EASE_OUT: CubicBezier = CubicBezier::new(0., 0., 0.58, 1.);
+
+// Zeron's transcript timings (crates/ui/src/transcript.rs, MIT).
+/// A tool group opening or closing.
+pub const TOOL_FOLD: MotionSpec = MotionSpec::new(140, EASE_OUT);
+/// A new activity row growing into the tree.
+pub const TOOL_ROW_REVEAL: MotionSpec = MotionSpec::new(360, EASE_OUT_EXPO);
+/// The working glyph's wave period.
+pub const GRADIENT_SPIN_MS: u64 = 750;
+/// A word rolling into the place of another.
+pub const ROLL: MotionSpec = MotionSpec::new(550, EASE_OUT_QUINT);
+
+/// Gradient-spin cell opacity at local phase `t`: full at the cycle start,
+/// down to `dim` by 45 %, resting there until 92 %, then back to full.
+pub fn gspin_opacity(t: f32, dim: f32) -> f32 {
+    let t = t.rem_euclid(1.);
+    if t < 0.45 {
+        lerp(1., dim, t / 0.45)
+    } else if t < 0.92 {
+        dim
+    } else {
+        lerp(dim, 1., (t - 0.92) / 0.08)
+    }
+}
+
+/// Zeron's rotating "working" vocabulary: 21 words, one every 7 s, seeded
+/// per thread so two threads never chant in step.
+pub const FLAVOUR_WORDS: [&str; 21] = [
+    "Clawing",
+    "Thinking",
+    "Pondering",
+    "Scheming",
+    "Brewing",
+    "Weaving",
+    "Tinkering",
+    "Musing",
+    "Composing",
+    "Sifting",
+    "Untangling",
+    "Distilling",
+    "Sketching",
+    "Plotting",
+    "Riffing",
+    "Combobulating",
+    "Percolating",
+    "Marinating",
+    "Noodling",
+    "Puzzling",
+    "Conjuring",
+];
+pub const FLAVOUR_ROTATE_SECS: u64 = 7;
+
+pub fn flavour_word(seed: u64, elapsed_secs: u64) -> &'static str {
+    let step = elapsed_secs / FLAVOUR_ROTATE_SECS;
+    FLAVOUR_WORDS[(seed.wrapping_add(step) % FLAVOUR_WORDS.len() as u64) as usize]
+}
+
+/// FNV-1a, a stable seed from a thread id.
+pub fn seed(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+    })
+}
+
+/// "12s", "3m 4s", "1h 2m": at most two units.
+pub fn format_elapsed(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3_600 => format!("{}m {}s", secs / 60, secs % 60),
+        _ => format!("{}h {}m", secs / 3_600, (secs % 3_600) / 60),
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct MotionSpec {
@@ -198,18 +271,30 @@ where
 /// Slide an element in from `from` px above (negative) or below its place,
 /// without fading: a surface that was already on screen elsewhere moving
 /// to its new home (the composer leaving the new-thread screen).
-pub fn slide_in<E>(element: E, id: impl Into<ElementId>, spec: MotionSpec, from: f32) -> impl IntoElement
+pub fn slide_in<E>(
+    element: E,
+    id: impl Into<ElementId>,
+    spec: MotionSpec,
+    from: f32,
+) -> impl IntoElement
 where
     E: IntoElement + Styled + 'static,
 {
     element
         .relative()
-        .with_animation(id, spec.animation(), move |el, d| el.top(px(from * (1. - d))))
+        .with_animation(id, spec.animation(), move |el, d| {
+            el.top(px(from * (1. - d)))
+        })
 }
 
 /// Popover and menu entrance on a spring: fades in while travelling `from`
 /// px toward its resting place (negative starts above it).
-pub fn pop_in<E>(element: E, id: impl Into<ElementId>, spring: Spring, from: f32) -> impl IntoElement
+pub fn pop_in<E>(
+    element: E,
+    id: impl Into<ElementId>,
+    spring: Spring,
+    from: f32,
+) -> impl IntoElement
 where
     E: IntoElement + Styled + 'static,
 {
@@ -284,6 +369,8 @@ struct Store {
     hovers: HashMap<SharedString, Tween>,
     states: HashMap<SharedString, Tween>,
     frame: u64,
+    /// A reveal or roll drew a mid-flight frame and needs the next one.
+    pending_frame: bool,
 }
 
 thread_local! {
@@ -304,7 +391,11 @@ pub fn set_hover(key: &SharedString, hovered: bool, spec: MotionSpec, reduced: b
         s.hovers.insert(
             key.clone(),
             Tween {
-                origin: if reduced { target } else { current.unwrap_or(0.) },
+                origin: if reduced {
+                    target
+                } else {
+                    current.unwrap_or(0.)
+                },
                 target,
                 started: now,
                 duration: spec.duration(),
@@ -409,6 +500,110 @@ pub fn glide(key: &str, to: f32, spec: MotionSpec, reduced: bool) -> f32 {
     })
 }
 
+/// When `key` was first drawn. Rows that arrive while the reader watches
+/// animate in; rows that were already there (a reloaded history, a row
+/// scrolled back into view) are older than one reveal and draw settled.
+pub fn born(key: &str) -> Instant {
+    BORN.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.len() > 4_096 {
+            b.clear();
+        }
+        *b.entry(key.to_string().into()).or_insert_with(Instant::now)
+    })
+}
+
+/// Eased 0..1 progress of a reveal that started at `born(key)` after
+/// `delay_ms`; 1 when motion is reduced.
+pub fn reveal(key: &str, spec: MotionSpec, delay_ms: u64, reduced: bool) -> f32 {
+    if reduced {
+        return 1.;
+    }
+    let elapsed = born(key).elapsed().as_millis() as u64;
+    let raw = elapsed.saturating_sub(delay_ms) as f32 / spec.duration_ms.max(1) as f32;
+    let t = spec.curve.eval(raw);
+    if t < 1. {
+        STORE.with(|s| s.borrow_mut().pending_frame = true);
+    }
+    t
+}
+
+/// Mark `key` as born long ago, so it draws settled from its first frame.
+pub fn settle(key: &str) {
+    let past = Instant::now()
+        .checked_sub(Duration::from_secs(60))
+        .unwrap_or_else(Instant::now);
+    BORN.with(|b| {
+        b.borrow_mut().entry(key.to_string().into()).or_insert(past);
+    });
+}
+
+thread_local! {
+    static BORN: RefCell<HashMap<SharedString, Instant>> = RefCell::new(HashMap::new());
+    static ROLLS: RefCell<HashMap<SharedString, (SharedString, Option<(SharedString, Instant)>)>> =
+        RefCell::new(HashMap::new());
+}
+
+/// A label that rolls when its text changes: the old text lifts away and
+/// fades while the new one rises in from below, as Zeron's working word
+/// does. Zeron rolls per glyph with a blur; this rolls the whole label,
+/// which reads the same at 12 px and costs two text runs.
+pub fn roll_text(
+    key: impl Into<SharedString>,
+    text: SharedString,
+    reduced: bool,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::{IntoElement as _, ParentElement as _, div};
+    let key = key.into();
+    let now = Instant::now();
+    let roll = ROLLS.with(|r| {
+        let mut r = r.borrow_mut();
+        if r.len() > 256 && !r.contains_key(&key) {
+            r.retain(|_, (_, roll)| roll.is_some());
+        }
+        let entry = r.entry(key).or_insert_with(|| (text.clone(), None));
+        if entry.0 != text {
+            let from = std::mem::replace(&mut entry.0, text.clone());
+            entry.1 = (!reduced).then_some((from, now));
+        }
+        if entry
+            .1
+            .as_ref()
+            .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= ROLL.duration())
+        {
+            entry.1 = None;
+        }
+        entry.1.clone()
+    });
+    let Some((from, at)) = roll else {
+        return div().child(text).into_any_element();
+    };
+    STORE.with(|s| s.borrow_mut().pending_frame = true);
+    let t = ROLL
+        .curve
+        .eval(now.saturating_duration_since(at).as_secs_f32() / ROLL.duration().as_secs_f32());
+    let travel = 5.;
+    div()
+        .relative()
+        .child(
+            div()
+                .relative()
+                .top(px(travel * (1. - t)))
+                .opacity(t)
+                .child(text),
+        )
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(-travel * t))
+                .opacity((1. - t * 1.6).max(0.))
+                .whitespace_nowrap()
+                .child(from),
+        )
+        .into_any_element()
+}
+
 /// Once per window frame, from the root view's render: prune unmounted
 /// entries and ask for the next frame while any tween is mid-flight.
 pub fn pump(window: &mut Window) {
@@ -417,7 +612,7 @@ pub fn pump(window: &mut Window) {
         let mut s = s.borrow_mut();
         s.frame += 1;
         let frame = s.frame;
-        let mut active = false;
+        let mut active = std::mem::take(&mut s.pending_frame);
         s.hovers.retain(|_, t| {
             if t.seen + 1 < frame {
                 return false;
@@ -438,6 +633,29 @@ pub fn pump(window: &mut Window) {
     if active {
         window.request_animation_frame();
     }
+}
+
+/// The window root's last child. It paints after every view has rendered,
+/// so a reveal or roll that started anywhere this frame still gets its next
+/// frame; an idle window asks for nothing.
+pub fn frame_tail() -> impl IntoElement {
+    gpui_kit::canvas(
+        |_, _, _| (),
+        |_, _, window, _| {
+            let now = Instant::now();
+            let busy = STORE.with(|s| {
+                let s = s.borrow();
+                s.pending_frame
+                    || s.states.values().any(|t| !t.settled(now))
+                    || s.hovers.values().any(|t| !t.settled(now))
+            });
+            if busy {
+                window.request_animation_frame();
+            }
+        },
+    )
+    .absolute()
+    .size_0()
 }
 
 #[cfg(test)]

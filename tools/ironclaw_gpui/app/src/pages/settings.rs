@@ -196,7 +196,9 @@ impl SettingsView {
             .checked(auto)
             .disabled(self.auto_approve.is_none())
             .accessibility_label("Approve tools automatically")
-            .on_click(cx.listener(|this, checked: &bool, _, cx| this.set_auto_approve(*checked, cx)));
+            .on_click(
+                cx.listener(|this, checked: &bool, _, cx| this.set_auto_approve(*checked, cx)),
+            );
         let toggle = rows_card(
             [setting_row(
                 "Approve tools automatically",
@@ -234,7 +236,9 @@ impl SettingsView {
             let control = h_flex()
                 .gap_2()
                 .items_center()
-                .when(tool.locked, |d| d.child(Tag::secondary().small().child("Locked")))
+                .when(tool.locked, |d| {
+                    d.child(Tag::secondary().small().child("Locked"))
+                })
                 .when(!tool.locked && !tool.has_override(), |d| {
                     d.child(
                         div()
@@ -252,16 +256,14 @@ impl SettingsView {
             )
         });
 
-        v_flex()
-            .child(toggle)
-            .when(!self.tools.is_empty(), |d| {
-                d.child(group_header(
-                    "Per tool",
-                    Some("Default follows the switch above. Allow and Ask override it for one tool."),
-                    cx,
-                ))
-                .child(rows_card(rows.collect::<Vec<_>>(), cx))
-            })
+        v_flex().child(toggle).when(!self.tools.is_empty(), |d| {
+            d.child(group_header(
+                "Per tool",
+                Some("Default follows the switch above. Allow and Ask override it for one tool."),
+                cx,
+            ))
+            .child(rows_card(rows.collect::<Vec<_>>(), cx))
+        })
     }
 }
 

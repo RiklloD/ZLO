@@ -314,7 +314,9 @@ impl InspectorPanel {
                 .text_sm()
                 .cursor_pointer()
                 .when(selected, |d| d.bg(theme.accent).font_medium())
-                .when(!selected, |d| crate::design::kit::smooth_bg(d, format!("inspect-thread-{ix}"), cx))
+                .when(!selected, |d| {
+                    crate::design::kit::smooth_bg(d, format!("inspect-thread-{ix}"), cx)
+                })
                 .on_click(cx.listener(move |this, _, _, cx| this.select_thread(id.clone(), cx)))
                 .child(
                     div()

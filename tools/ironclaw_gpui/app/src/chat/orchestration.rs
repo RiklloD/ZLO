@@ -542,7 +542,11 @@ impl ChatView {
                 .rounded(theme.radius)
                 .text_sm()
                 .when(child.is_some(), |row| {
-                    crate::design::kit::smooth_bg(row.cursor_pointer(), format!("subagent-{ix}"), cx)
+                    crate::design::kit::smooth_bg(
+                        row.cursor_pointer(),
+                        format!("subagent-{ix}"),
+                        cx,
+                    )
                 })
                 .when_some(child, |row, child| {
                     row.on_click(

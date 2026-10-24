@@ -574,7 +574,9 @@ impl Workspace {
                     kit::pill_row(SharedString::from(format!("nav-{slot}")), on, cx)
                         .role(Role::Button)
                         .aria_label(label)
-                        .on_click(cx.listener(move |this, _, window, cx| this.show(page, window, cx)))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.show(page, window, cx)),
+                        )
                         .child(Icon::new(icon).small().when(on, |i| i.text_color(p.accent)))
                         .child(div().flex_1().child(label))
                         .when(page == Page::Notifications && unread > 0, |d| {
@@ -911,7 +913,11 @@ impl Workspace {
             .items_center()
             .text_xs()
             .text_color(p.text_faint)
-            .when(console, |d| d.border_t_1().border_color(p.border).font_family(design::FONT_MONO))
+            .when(console, |d| {
+                d.border_t_1()
+                    .border_color(p.border)
+                    .font_family(design::FONT_MONO)
+            })
             .child(kit::status_dot("status-dot", dot, live))
             .child(label)
             .child(div().flex_1())
@@ -1140,6 +1146,7 @@ impl Render for Workspace {
             )
             .child(div().flex_1().min_h_0().child(body))
             .when(show_status, |d| d.child(self.render_status_bar(cx)))
+            .child(motion::frame_tail())
     }
 }
 
