@@ -43,6 +43,12 @@ pub struct ProviderUsage {
     /// When these windows were fetched from the provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fetched_at: Option<i64>,
+    /// Subscription tier as the provider names it (`max`, `pro`, `plus`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// One extra line about the account, e.g. spare reset credits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

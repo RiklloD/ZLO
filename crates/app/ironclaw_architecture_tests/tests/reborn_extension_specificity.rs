@@ -1550,6 +1550,13 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "crates/ironclaw_webui/frontend/src/i18n/zh-CN.ts",
         "telegram",
     ),
+    // Antigravity plan quota (desktop Usage page): its quota endpoints live on
+    // Google's API hosts. Google here is the coding-plan vendor, like the
+    // `ironclaw_llm` Gemini carve-out, not the google extensions vendor.
+    (
+        "crates/ironclaw_usage/src/antigravity.rs",
+        "google",
+    ),
 ];
 
 /// WS0 baseline for the extension-specificity allowlist (target-architecture
@@ -1705,7 +1712,10 @@ const ALLOWLIST: &[(&str, &str)] = &[
 // exact header targets. The authorization fold, shell adapter, and direct-argv
 // parser no longer name GitHub or its API audience, retiring all five #7732
 // pilot carve-outs.
-const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 110;
+// 110 -> 111 (2026-10-24, desktop Usage page): Antigravity's plan quota is
+// read from Google's API hosts in `ironclaw_usage/src/antigravity.rs`; Google
+// is the plan vendor there, not the google extensions vendor.
+const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 111;
 
 /// §11.2.8 vendor-scope shrink, armed at the WS0 baseline.
 ///

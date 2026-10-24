@@ -13,10 +13,28 @@ use ironclaw_product_contracts::usage::UsageWindow;
 const RESPONSE_BODY_LIMIT: u64 = 256 * 1024;
 const TIMEOUT_MS: u32 = 15_000;
 
+/// A successful reading: the windows plus what the provider says about the
+/// account.
+#[derive(Debug, Default)]
+pub(crate) struct Reading {
+    pub windows: Vec<UsageWindow>,
+    pub plan: Option<String>,
+    pub detail: Option<String>,
+}
+
+impl From<Vec<UsageWindow>> for Reading {
+    fn from(windows: Vec<UsageWindow>) -> Self {
+        Self {
+            windows,
+            ..Self::default()
+        }
+    }
+}
+
 /// What one provider poll produced.
 #[derive(Debug)]
 pub(crate) enum Fetched {
-    Windows(Vec<UsageWindow>),
+    Windows(Reading),
     /// Read from the CLI's own last turn instead of the provider endpoint.
     Observed {
         windows: Vec<UsageWindow>,
@@ -39,12 +57,34 @@ pub(crate) async fn get(
     url: String,
     headers: Vec<(String, String)>,
 ) -> Result<NetworkHttpResponse, Fetched> {
+    send(egress, NetworkMethod::Get, host, url, headers, Vec::new()).await
+}
+
+/// POST `body` to `url`, same policy as [`get`].
+pub(crate) async fn post(
+    egress: &dyn NetworkHttpEgress,
+    host: &str,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+) -> Result<NetworkHttpResponse, Fetched> {
+    send(egress, NetworkMethod::Post, host, url, headers, body).await
+}
+
+async fn send(
+    egress: &dyn NetworkHttpEgress,
+    method: NetworkMethod,
+    host: &str,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+) -> Result<NetworkHttpResponse, Fetched> {
     let request = NetworkHttpRequest {
         scope: ResourceScope::system(),
-        method: NetworkMethod::Get,
+        method,
         url,
         headers,
-        body: Vec::new(),
+        body,
         policy: NetworkPolicy {
             allowed_targets: vec![NetworkTargetPattern {
                 scheme: Some(NetworkScheme::Https),

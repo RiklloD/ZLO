@@ -78,7 +78,7 @@ impl ZaiKey {
             }
         };
         match parse_limits(&body, now_ms) {
-            Some(windows) if !windows.is_empty() => Fetched::Windows(windows),
+            Some(windows) if !windows.is_empty() => Fetched::Windows(windows.into()),
             Some(_) => Fetched::Error("The plan reported no quota windows.".to_string()),
             None if matches!(body.get("code").and_then(Value::as_i64), Some(401 | 1001)) => {
                 Fetched::Unauthorized("Z.ai rejected the stored key.".to_string())

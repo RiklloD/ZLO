@@ -121,13 +121,13 @@ async fn cli_login_windows_are_cached_and_survive_a_429() {
         Some("oauth-2025-04-20")
     );
 
-    // Inside the 60 s floor the cache answers.
+    // Inside the 120 s floor the cache answers.
     let cached = monitor.report().await.providers.remove(0);
     assert_eq!(cached, first);
     assert_eq!(egress.calls().len(), 1);
 
     // A 429 keeps the last windows and honours Retry-After.
-    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::advance(Duration::from_secs(121)).await;
     egress.reply(429, &[("Retry-After", "600")], "");
     let limited = monitor.report().await.providers.remove(0);
     assert_eq!(limited.status, UsageStatus::RateLimited);
@@ -254,7 +254,7 @@ async fn a_failing_endpoint_falls_back_to_the_clis_own_reading() {
     egress.reply(500, &[], "");
     let usage = monitor.report().await.providers.remove(0);
     assert_eq!(usage.status, UsageStatus::Ok);
-    assert!(usage.message.unwrap().contains("CLI's last reading"));
+    assert!(usage.message.unwrap().contains("CLI's last turn"));
     assert_eq!(usage.fetched_at, Some(1000));
     let five: Vec<_> = usage
         .windows
@@ -265,5 +265,123 @@ async fn a_failing_endpoint_falls_back_to_the_clis_own_reading() {
         five,
         [("five_hour", 42.0)],
         "a window past its reset is dropped"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_turn_reading_newer_than_the_cache_moves_the_bars_live() {
+    let dir = tempfile::tempdir().unwrap();
+    write_credentials(dir.path(), i64::MAX);
+    let observed = dir.path().join("claude-cli.json");
+    let egress = Arc::new(RecordingEgress::default());
+    let monitor = UsageMonitor::with_sources(
+        egress.clone(),
+        vec![UsageSource::Claude(
+            claude_account(dir.path()).with_observed_file(observed.clone()),
+        )],
+    );
+    egress.reply(200, &[], CLAUDE_USAGE);
+    let first = monitor.report().await.providers.remove(0);
+
+    let later = first.fetched_at.unwrap() + 1;
+    let future = chrono::Utc::now().timestamp() + 3_600;
+    std::fs::write(
+        &observed,
+        format!(
+            r#"{{"observedAt": {later}, "windows": {{
+                "five_hour": {{"utilization": 0.5, "resetsAt": {future}}}}}}}"#
+        ),
+    )
+    .unwrap();
+    let live = monitor.report().await.providers.remove(0);
+    assert_eq!(egress.calls().len(), 1, "still served from the cache");
+    assert_eq!(live.fetched_at, Some(later));
+    assert_eq!(live.windows[0].used_percent, 50.0, "five_hour overlaid");
+    assert_eq!(live.windows[1], first.windows[1], "seven_day kept");
+}
+
+#[test]
+fn cli_get_usage_answer_maps_plan_windows_and_model_caps() {
+    let answer = serde_json::json!({"subtype": "success", "request_id": "ic-usage", "response": {
+        "subscription_type": "max", "rate_limits_available": true, "rate_limits": {
+            "five_hour": {"utilization": 11, "resets_at": "2026-10-24T23:50:00.411591+00:00"},
+            "seven_day": {"utilization": 28, "resets_at": "2026-10-25T16:00:00+00:00"},
+            "seven_day_opus": null,
+            "model_scoped": [{"display_name": "Fable", "utilization": 3,
+                "resets_at": "2026-10-25T16:00:00+00:00"}],
+            "extra_usage": {"is_enabled": true, "used_credits": 4, "monthly_limit": 50}}}});
+    let reading = crate::claude::parse_cli_usage(&answer).unwrap();
+    assert_eq!(reading.plan.as_deref(), Some("Max"));
+    let ids: Vec<_> = reading.windows.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!(ids, ["five_hour", "seven_day", "seven_day_fable"]);
+    assert_eq!(reading.windows[2].label, "Weekly Fable");
+    assert_eq!(
+        reading.detail.as_deref(),
+        Some("Extra usage 4 of 50 credits this month")
+    );
+    let failed = serde_json::json!({"subtype": "error", "error": "not logged in"});
+    assert!(crate::claude::parse_cli_usage(&failed).is_none());
+}
+
+#[test]
+fn codex_rate_limits_map_slots_plan_and_reset_credits() {
+    let result = serde_json::json!({
+        "rateLimits": {"primary": {"usedPercent": 99, "windowDurationMins": 1, "resetsAt": 1}},
+        "rateLimitsByLimitId": {"codex": {"planType": "plus", "rateLimitReachedType": null,
+            "primary": {"usedPercent": 3, "windowDurationMins": 300, "resetsAt": 1792887193},
+            "secondary": {"usedPercent": 4, "windowDurationMins": 10080, "resetsAt": 1793385704}}},
+        "rateLimitResetCredits": {"availableCount": 2}});
+    let reading = crate::codex::parse(&result, &serde_json::json!({})).unwrap();
+    assert_eq!(reading.plan.as_deref(), Some("Plus"));
+    let rows: Vec<_> = reading
+        .windows
+        .iter()
+        .map(|w| (w.label.as_str(), w.used_percent, w.resets_at))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("5-hour", 3.0, Some(1_792_887_193_000)),
+            ("Weekly", 4.0, Some(1_793_385_704_000))
+        ]
+    );
+    assert_eq!(
+        reading.detail.as_deref(),
+        Some("2 free limit resets available")
+    );
+}
+
+#[test]
+fn muse_reading_restarts_windows_past_their_reset() {
+    let reading = serde_json::json!({
+        "window": {"usedPercent": 80, "windowDurationMins": 300, "resetsAtMs": 1_000},
+        "weekly": {"usedPercent": 73, "resetsAtMs": 9_000}});
+    let windows = crate::muse::parse(&reading, 5_000);
+    assert_eq!(windows[0].used_percent, 0.0, "the 5-hour window restarted");
+    assert_eq!(windows[0].resets_at, None);
+    assert_eq!(windows[1].used_percent, 73.0);
+    assert_eq!(windows[1].label, "Weekly");
+}
+
+#[test]
+fn antigravity_summary_names_shared_and_gemini_buckets() {
+    let summary = serde_json::json!({"groups": [{"displayName": "Plan", "buckets": [
+        {"bucketId": "gemini-pro-5h", "window": "5h", "remainingFraction": 0.75,
+         "resetTime": "2026-10-24T20:00:00Z"},
+        {"bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 1.0},
+        {"bucketId": "3p-5h", "window": "5h", "remainingFraction": 0.5},
+        {"bucketId": "off", "disabled": true, "remainingFraction": 0.0}]}]});
+    let windows = crate::antigravity::summary_windows(&summary);
+    let rows: Vec<_> = windows
+        .iter()
+        .map(|w| (w.label.as_str(), w.used_percent, w.window_minutes))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("Gemini 5-hour", 25.0, Some(300)),
+            ("Claude & GPT 5-hour", 50.0, Some(300)),
+            ("Claude & GPT Weekly", 0.0, Some(10_080))
+        ]
     );
 }
