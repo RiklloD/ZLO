@@ -997,10 +997,10 @@ impl Render for SettingsView {
                         .child(n),
                 )
             })
-            .child(section_title("Model"))
-            .child(self.render_models(cx))
             .child(section_title("Appearance"))
             .child(appearance::render(cx))
+            .child(section_title("Model"))
+            .child(self.render_models(cx))
             .child(section_title("Desktop app"))
             .child(self.render_desktop(cx))
             .child(section_title("Trace Commons"))
