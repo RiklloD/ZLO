@@ -45,6 +45,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `image_models.rs` | Image-generation model metadata table |
 | `vision_models.rs` | Vision-capable model registry for attachment routing |
 | `reasoning_models.rs` | Reasoning-capable model registry (Codex, R1, o-series, etc.) used for thinking-mode dispatch |
+| `reasoning_effort.rs` | Which reasoning efforts each model takes (`efforts_for`, what the model picker offers) and how each rig-backed protocol spells a routed effort on the wire |
 | `models.rs` | Provider-neutral discovered-model capabilities plus the top-level model-name catalog and helpers |
 | `testing/` | `StubLlm`, `StubErrorKind`, `fault_injection` — gated behind the `test-support` cargo feature for downstream test harnesses |
 
@@ -71,7 +72,7 @@ owner, and a deleted one fails until its entry goes.
 | `registry` | The **provider** catalog: definitions, protocols, base-URL and api-key resolution | Model facts (that is `model-catalog`) | `registry.rs`, `resolution.rs`, `resolution/tests.rs` |
 | `decorators` | Anything that wraps `dyn LlmProvider` and is not credential work: retry, breaker, failover, cache, hot-reload, cost routing | Vendor protocol | `retry.rs`, `circuit_breaker.rs`, `failover.rs`, `response_cache.rs`, `runtime.rs`, `smart_routing.rs`, `provider_routing.rs` |
 | `normalization` | Cross-provider wire hygiene in all three directions: outbound tool schemas, inbound tool arguments, inbound content text | A fix that only one provider needs — that belongs beside it in `providers` | `tool_schema.rs`, `tool_schema/placeholder_stripping.rs`, `tool_args.rs`, `reasoning.rs` |
-| `model-catalog` | Facts about **models**: what an endpoint lists, and which models see images, generate images, or think natively | Provider identity or routing | `models.rs`, `reasoning_models.rs`, `vision_models.rs`, `image_models.rs` |
+| `model-catalog` | Facts about **models**: what an endpoint lists, and which models see images, generate images, or think natively | Provider identity or routing | `models.rs`, `reasoning_models.rs`, `reasoning_effort.rs`, `vision_models.rs`, `image_models.rs` |
 | `recording` | Trace capture and replay, and binding recorded tool arguments to earlier results | Live provider behavior | `recording.rs`, `trace_binding.rs` |
 | `transcription` | The `TranscriptionProvider` trait and its implementations — a **different trait** from `LlmProvider`, sharing only transports | Anything implementing `LlmProvider` | `transcription/mod.rs`, `transcription/chat_completions.rs`, `transcription/openai.rs` |
 | `test-support` | Fixtures and fault injection, including the published `test-support` feature downstream harnesses consume | Production behavior | `testing/mod.rs`, `testing/fault_injection.rs`, `codex_test_helpers.rs`, `rig_adapter/tests/finish_reason_tests.rs`, `anthropic_oauth/tests.rs`, `anthropic_oauth/tests/prompt_cache_tests.rs` |
