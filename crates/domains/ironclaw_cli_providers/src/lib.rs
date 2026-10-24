@@ -2,7 +2,8 @@
 //!
 //! The Claude CLI, as two runtimes (`claude-cli` on the default account,
 //! `claude-cli-2` on `~/.claude-account2`), the Antigravity ACP agent
-//! (`antigravity`) and Meta's Muse Code (`muse-code`). Every tool call any
+//! (`antigravity`), Meta's Muse Code (`muse-code`) and OpenAI's Codex CLI
+//! (`codex`). Every tool call any
 //! of them asks to make waits for an IronClaw approval in
 //! [`bridge::CliBridge`]; without a bridge, it is denied.
 
@@ -10,6 +11,7 @@ pub mod bridge;
 pub mod claude;
 
 pub mod antigravity;
+pub mod codex;
 mod journal;
 pub mod muse;
 pub mod permissions;
@@ -43,6 +45,35 @@ pub fn register_cli_runtimes(engine: &Arc<Engine>, bridge: &Arc<bridge::CliBridg
     register_claude_runtimes(engine, Some(Arc::clone(bridge)))
         + register_antigravity_runtime(engine, Some(Arc::clone(bridge)))
         + register_muse_runtime(engine, Some(Arc::clone(bridge)))
+        + register_codex_runtime(engine, Some(Arc::clone(bridge)))
+}
+
+/// Register the Codex CLI runtime when a `codex` binary is installed. With
+/// `bridge`, it writes in its workspace sandbox and every approval it asks
+/// for is an IronClaw approval; without, the sandbox is read-only. Returns
+/// how many were registered (0 or 1).
+pub fn register_codex_runtime(
+    engine: &Arc<Engine>,
+    bridge: Option<Arc<bridge::CliBridge>>,
+) -> usize {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return 0;
+    };
+    let Some(binary) = codex::find_binary(&home) else {
+        tracing::debug!("codex cli not found; codex runtime not registered");
+        return 0;
+    };
+    let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
+    match codex::CodexRuntime::new(codex::default_config(&home, &binary), sink, bridge) {
+        Ok(runtime) => {
+            engine.register_runtime(Arc::new(runtime));
+            1
+        }
+        Err(error) => {
+            tracing::debug!(%error, "codex runtime id rejected");
+            0
+        }
+    }
 }
 
 /// Register the Claude CLI runtimes on `engine` when a `claude` binary is

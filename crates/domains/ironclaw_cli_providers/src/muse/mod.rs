@@ -171,6 +171,7 @@ impl MuseRuntime {
         thread: &ThreadRecord,
         text: &str,
         goal: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<String, RuntimeError> {
         let session_id = thread
             .native_session_id
@@ -210,6 +211,7 @@ impl MuseRuntime {
             model: thread.model.clone(),
             text: text.to_string(),
             goal: goal.map(str::to_string),
+            effort: effort.map(str::to_string),
             cancelled,
             live,
             windows: window,
@@ -397,6 +399,8 @@ struct Turn {
     text: String,
     /// The thread's goal, sent ahead of `text` but never journaled.
     goal: Option<String>,
+    /// The thread's effort pick; over the configured default.
+    effort: Option<String>,
     cancelled: Arc<AtomicBool>,
     live: Arc<Mutex<Option<LiveTurn>>>,
     /// Context limits by model, from the catalog.
@@ -454,7 +458,11 @@ impl Turn {
             "workspaceRoots": [workspace_root(&self.config.work_dir)],
             "ifBusy": "queue",
         });
-        if let Some(effort) = &self.config.reasoning_effort {
+        if let Some(effort) = self
+            .effort
+            .as_ref()
+            .or(self.config.reasoning_effort.as_ref())
+        {
             params["reasoningEffort"] = json!(effort);
         }
         let admitted = client.request("turn/start", params, COMMAND_TIMEOUT).await;
@@ -772,7 +780,12 @@ impl TurnRuntime for MuseRuntime {
             thread.model = input.model;
         }
         let run_id = self
-            .spawn_turn(&thread, &input.text, input.goal.as_deref())
+            .spawn_turn(
+                &thread,
+                &input.text,
+                input.goal.as_deref(),
+                input.effort.as_deref(),
+            )
             .await?;
         Ok(TurnAdmission::Started {
             run_id: Some(run_id),
@@ -816,7 +829,7 @@ impl TurnRuntime for MuseRuntime {
             }
         }
         self.stop(&thread.thread_id).await;
-        self.spawn_turn(thread, text, None).await?;
+        self.spawn_turn(thread, text, None, None).await?;
         Ok(SteerOutcome::Restarted)
     }
 
@@ -851,6 +864,9 @@ impl TurnRuntime for MuseRuntime {
             authenticated: !models.is_empty(),
             current: false,
             models,
+            efforts: ["minimal", "low", "medium", "high", "xhigh", "max"]
+                .map(str::to_string)
+                .to_vec(),
         }])
     }
 }

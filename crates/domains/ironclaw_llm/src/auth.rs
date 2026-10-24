@@ -329,6 +329,23 @@ async fn start_gemini_login(credentials_path: &Path) -> Result<AuthOutcome, Auth
 async fn start_openai_codex_login(opts: OpenAiCodexLoginOptions) -> Result<AuthOutcome, AuthError> {
     let mgr = OpenAiCodexSessionManager::new(opts.into_codex_config())
         .map_err(|e| AuthError::login("openai_codex", e))?;
+    if mgr.is_plan_mode() {
+        let start = mgr
+            .begin_plan_login()
+            .await
+            .map_err(|e| AuthError::login("openai_codex", e))?;
+        println!(
+            "\nSign in with ChatGPT in your browser:\n\n{}\n",
+            start.auth_url
+        );
+        if open::that(&start.auth_url).is_err() {
+            println!("Open the link above to continue.");
+        }
+        mgr.complete_plan_login(start)
+            .await
+            .map_err(|e| AuthError::login("openai_codex", e))?;
+        return Ok(AuthOutcome::default());
+    }
     mgr.device_code_login()
         .await
         .map_err(|e| AuthError::login("openai_codex", e))?;

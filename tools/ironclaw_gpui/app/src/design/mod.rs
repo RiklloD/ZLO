@@ -9,6 +9,7 @@
 //! and motion; light palettes (by background lightness) get dark ink lines.
 
 pub mod battery;
+pub mod brands;
 pub mod kit;
 pub mod motion;
 pub mod prefs;
@@ -24,6 +25,8 @@ use gpui_kit::{App, Global, Hsla, hsla, px};
 // Layout numbers. Colors are paint; these drive layout and never depend on it.
 pub const SIDEBAR_WIDTH: f32 = 264.;
 pub const TITLEBAR_HEIGHT: f32 = 38.;
+/// Room the macOS traffic lights take at the sidebar's top left.
+pub const TRAFFIC_LIGHTS_WIDTH: f32 = 78.;
 pub const STATUS_BAR_HEIGHT: f32 = 24.;
 pub const PANEL_RADIUS: f32 = 10.;
 pub const CONTROL_RADIUS: f32 = 6.;

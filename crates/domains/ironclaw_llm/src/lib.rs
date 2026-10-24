@@ -16,6 +16,7 @@ mod anthropic_thinking;
 pub mod auth;
 #[cfg(feature = "bedrock")]
 mod bedrock;
+mod chatgpt_plan;
 pub mod circuit_breaker;
 pub(crate) mod codex_auth;
 mod codex_chatgpt;
@@ -30,6 +31,7 @@ pub mod nearai_chat;
 pub mod openai_codex_provider;
 pub(crate) mod openai_codex_session;
 mod provider;
+pub mod provider_routing;
 mod reasoning;
 pub mod recording;
 pub mod registry;
@@ -63,6 +65,7 @@ pub mod models;
 pub mod reasoning_models;
 pub mod vision_models;
 
+pub use chatgpt_plan::PlanLoginStart;
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerProvider};
 pub use config::{
     BedrockConfig, CacheRetention, GeminiOauthConfig, LlmBackendKind, LlmConfig, NearAiConfig,
@@ -902,8 +905,13 @@ async fn create_openai_codex_provider(
 
     let token = session_mgr.get_access_token().await?;
 
+    let build = if codex.is_plan_mode() {
+        OpenAiCodexProvider::new_plan
+    } else {
+        OpenAiCodexProvider::new
+    };
     let provider = Arc::new(
-        OpenAiCodexProvider::new(
+        build(
             &codex.model,
             &codex.api_base_url,
             token.expose_secret(),

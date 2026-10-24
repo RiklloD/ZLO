@@ -42,7 +42,13 @@ pub struct OpenAiCodexProvider {
     api_base_url: String,
     auth: RwLock<AuthState>,
     unsupported_params: HashSet<String>,
+    /// Sign in with ChatGPT plan usage on the public API: no account header,
+    /// function tools grouped in one namespace (the route's requirement).
+    plan: bool,
 }
+
+/// The namespace plan-mode requests group IronClaw's function tools in.
+const PLAN_TOOL_NAMESPACE: &str = "ironclaw";
 
 impl OpenAiCodexProvider {
     /// Create a new provider.
@@ -58,6 +64,35 @@ impl OpenAiCodexProvider {
         request_timeout_secs: u64,
     ) -> Result<Self, LlmError> {
         let account_id = extract_account_id(token)?;
+        Self::build(model, api_base_url, token, account_id, request_timeout_secs)
+    }
+
+    /// A provider on the Sign in with ChatGPT route. Plan tokens carry no
+    /// `chatgpt_account_id` claim, so nothing is extracted.
+    pub fn new_plan(
+        model: &str,
+        api_base_url: &str,
+        token: &str,
+        request_timeout_secs: u64,
+    ) -> Result<Self, LlmError> {
+        let mut provider = Self::build(
+            model,
+            api_base_url,
+            token,
+            String::new(),
+            request_timeout_secs,
+        )?;
+        provider.plan = true;
+        Ok(provider)
+    }
+
+    fn build(
+        model: &str,
+        api_base_url: &str,
+        token: &str,
+        account_id: String,
+        request_timeout_secs: u64,
+    ) -> Result<Self, LlmError> {
         Ok(Self {
             client: crate::config::hardened_streaming_client_builder()
                 .build()
@@ -73,6 +108,7 @@ impl OpenAiCodexProvider {
                 account_id,
             }),
             unsupported_params: HashSet::new(),
+            plan: false,
         })
     }
 
@@ -83,7 +119,11 @@ impl OpenAiCodexProvider {
 
     /// Update the access token after a refresh.
     pub async fn update_token(&self, token: &str) -> Result<(), LlmError> {
-        let account_id = extract_account_id(token)?;
+        let account_id = if self.plan {
+            String::new()
+        } else {
+            extract_account_id(token)?
+        };
         *self.auth.write().await = AuthState {
             token: token.to_string(),
             account_id,
@@ -110,17 +150,19 @@ impl OpenAiCodexProvider {
                 }
             })?,
         );
-        headers.insert(
-            HeaderName::from_static("chatgpt-account-id"),
-            HeaderValue::from_str(&auth.account_id).map_err(|e| LlmError::RequestFailed {
-                provider: "openai_codex".to_string(),
-                reason: format!("Invalid account ID for header: {e}"),
-            })?,
-        );
-        headers.insert(
-            HeaderName::from_static("openai-beta"),
-            HeaderValue::from_static("responses=experimental"),
-        );
+        if !self.plan {
+            headers.insert(
+                HeaderName::from_static("chatgpt-account-id"),
+                HeaderValue::from_str(&auth.account_id).map_err(|e| LlmError::RequestFailed {
+                    provider: "openai_codex".to_string(),
+                    reason: format!("Invalid account ID for header: {e}"),
+                })?,
+            );
+            headers.insert(
+                HeaderName::from_static("openai-beta"),
+                HeaderValue::from_static("responses=experimental"),
+            );
+        }
         headers.insert(
             HeaderName::from_static("originator"),
             HeaderValue::from_static("ironclaw"),
@@ -174,7 +216,7 @@ impl OpenAiCodexProvider {
         }
 
         if crate::reasoning_models::supports_openai_reasoning(&self.model) {
-            body["reasoning"] = crate::responses_reasoning::summary_request();
+            body["reasoning"] = crate::responses_reasoning::summary_request(metadata);
             body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
         }
 
@@ -198,6 +240,10 @@ impl OpenAiCodexProvider {
                 }),
             };
             body["parallel_tool_calls"] = serde_json::Value::Bool(true);
+        }
+
+        if self.plan {
+            namespace_tools(&mut body);
         }
 
         // Stable per-conversation routing key for OpenAI's prompt cache. Only
@@ -499,6 +545,31 @@ fn extract_account_id(token: &str) -> Result<String, LlmError> {
         })?;
 
     Ok(account_id.to_string())
+}
+
+/// Plan route: function tools go inside one `namespace` tool, and every
+/// replayed `function_call` (and a named `tool_choice`) names it.
+fn namespace_tools(body: &mut serde_json::Value) {
+    if let Some(tools) = body.get_mut("tools").map(serde_json::Value::take) {
+        body["tools"] = serde_json::json!([{
+            "type": "namespace",
+            "name": PLAN_TOOL_NAMESPACE,
+            "description": "IronClaw tools",
+            "tools": tools,
+        }]);
+    }
+    if let Some(choice) = body.get_mut("tool_choice")
+        && choice.get("type").and_then(|t| t.as_str()) == Some("function")
+    {
+        choice["namespace"] = serde_json::json!(PLAN_TOOL_NAMESPACE);
+    }
+    if let Some(items) = body.get_mut("input").and_then(|i| i.as_array_mut()) {
+        for item in items {
+            if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                item["namespace"] = serde_json::json!(PLAN_TOOL_NAMESPACE);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1791,6 +1862,51 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
         assert_eq!(tools_arr[0]["type"], "function");
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["parallel_tool_calls"], true);
+    }
+
+    #[test]
+    fn plan_wire_namespaces_tools_and_replayed_calls() {
+        let provider =
+            OpenAiCodexProvider::new_plan("gpt-5.5", "https://api.openai.com/v1", "opaque", 300)
+                .unwrap();
+        let messages = vec![
+            ChatMessage::user("hi"),
+            ChatMessage::assistant_with_tool_calls(
+                None,
+                vec![ToolCall {
+                    id: "c1".into(),
+                    name: "echo".into(),
+                    arguments: serde_json::json!({}),
+                    reasoning: None,
+                    arguments_parse_error: None,
+                    signature: None,
+                }],
+            ),
+            ChatMessage::tool_result("c1", "echo", "ok"),
+        ];
+        let tools = vec![ToolDefinition {
+            name: "echo".to_string(),
+            description: "Echo".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let body = provider.build_request_body(
+            &messages,
+            Some(&tools),
+            Some("echo"),
+            None,
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(body["tools"][0]["type"], "namespace");
+        assert_eq!(body["tools"][0]["tools"][0]["name"], "echo");
+        assert_eq!(body["tool_choice"]["namespace"], PLAN_TOOL_NAMESPACE);
+        let call = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["type"] == "function_call")
+            .unwrap();
+        assert_eq!(call["namespace"], PLAN_TOOL_NAMESPACE);
+        assert_eq!(body["store"], false);
     }
 
     #[test]

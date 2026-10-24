@@ -267,6 +267,62 @@ impl RebornLlmConfigService {
         RebornProviderAdmin::new(self.boot.clone())
     }
 
+    /// Sign in with ChatGPT (plan mode): the returned `verification_uri` is
+    /// the browser authorize URL and `user_code` is empty. A background task
+    /// waits for the loopback callback, saves the session, makes Codex
+    /// active and hot-swaps the provider, like the device-code path.
+    async fn start_plan_login(
+        &self,
+        manager: OpenAiCodexSessionManager,
+        attempt_key: String,
+        attempt_id: uuid::Uuid,
+    ) -> Result<CodexLoginStart, LlmConfigServiceError> {
+        let attempts = Arc::clone(&self.codex_login_attempts);
+        let start = match manager.begin_plan_login().await {
+            Ok(start) => start,
+            Err(error) => {
+                tracing::debug!(%error, "ChatGPT plan login could not start");
+                remove_codex_attempt_if_current(&attempts, &attempt_key, attempt_id).await;
+                return Err(LlmConfigServiceError::Internal);
+            }
+        };
+        let login = CodexLoginStart {
+            user_code: String::new(),
+            verification_uri: start.auth_url.clone(),
+        };
+        {
+            let mut guard = attempts.lock().await;
+            let window = Instant::now() + CODEX_LOGIN_ATTEMPT_TTL;
+            if !finalize_codex_login_slot(&mut guard, &attempt_key, attempt_id, &login, window) {
+                return Err(LlmConfigServiceError::Internal);
+            }
+        }
+        let boot = self.boot.clone();
+        let reload = self.reload.clone();
+        tokio::spawn(async move {
+            let done = manager.complete_plan_login(start).await;
+            let current =
+                remove_codex_attempt_if_current(&attempts, &attempt_key, attempt_id).await;
+            if let Err(error) = done {
+                tracing::debug!(%error, "ChatGPT plan login did not complete");
+                return;
+            }
+            if !current {
+                return;
+            }
+            if let Err(error) = RebornProviderAdmin::new(boot).set_provider("openai_codex", None) {
+                tracing::debug!(%error, "ChatGPT plan login: could not set active provider");
+                return;
+            }
+            if let Some(reload) = reload
+                && let Err(error) = reload.reload().await
+            {
+                tracing::debug!(%error, "ChatGPT plan login: live reload failed; applies on restart");
+            }
+        });
+        Ok(login)
+    }
+
     /// Persist-then-reload: the file write already happened; refresh the
     /// running provider. A reload failure is logged, not fatal — the on-disk
     /// config is authoritative and applies on next restart.
@@ -1079,6 +1135,11 @@ impl LlmConfigService for RebornLlmConfigService {
                 return Err(LlmConfigServiceError::Internal);
             }
         };
+        if manager.is_plan_mode() {
+            return self
+                .start_plan_login(manager, attempt_key, attempt_id)
+                .await;
+        }
         let start = match manager.initiate_device_code().await {
             Ok(start) => start,
             Err(_) => {

@@ -72,6 +72,7 @@ async fn one_turn(rt: &dyn TurnRuntime, recorder: &Recorder) {
             origin: TurnOrigin::UserPrompt,
             model: None,
             goal: None,
+            effort: None,
         },
     )
     .await

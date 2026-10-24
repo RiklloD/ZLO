@@ -80,6 +80,7 @@ const OPERATOR_PRODUCT_DEFINED_TRAIT_RESIDUE_BASELINE: usize = 0;
 const INVERTED_PORTS: &[(&str, &str)] = &[
     ("ActiveModelReader", OPERATOR),
     ("LlmConfigService", OPERATOR),
+    ("NativeModelRoutes", OPERATOR),
     ("OperatorLogsService", OPERATOR),
     // WS3's secrets tightening. Implemented by COMPOSITION for the same reason
     // `OperatorStatusService` is: assembly is the only layer that may name both
@@ -107,6 +108,7 @@ const INVERTED_PORT_DTOS: &[&str] = &[
     "LlmProbeRequest",
     "LlmProbeResult",
     "LlmProviderView",
+    "NativeModelRoute",
     "NearAiAuthProvider",
     "NearAiLoginRequest",
     "NearAiLoginStart",

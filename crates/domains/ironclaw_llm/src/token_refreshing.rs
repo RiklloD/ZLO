@@ -494,6 +494,7 @@ mod tests {
                 refresh_token: "refresh-token".to_string(),
                 expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
                 created_at: chrono::Utc::now(),
+                plan: None,
             })
             .await;
         let inner = Arc::new(StreamingAuthProvider::new(emit_before_auth_failure));

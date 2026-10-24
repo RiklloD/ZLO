@@ -8,8 +8,10 @@
 //! surface sends its user turns, Stop and timeline here.
 
 use ironclaw_host_api::ids::ThreadId;
+use serde_json::{Value, json};
 
-use crate::engine::{Engine, Result};
+use crate::delegation::Target;
+use crate::engine::{CallContext, Engine, Result};
 use crate::error::OrchestratorError;
 use crate::model::*;
 use crate::profiles::ProfileRecord;
@@ -172,4 +174,200 @@ impl Engine {
     pub async fn external_history(&self, thread: &ThreadRecord) -> Result<Vec<HistoryMessage>> {
         self.history(thread).await
     }
+
+    /// The thread's route and every provider it could switch to.
+    pub async fn route_view(&self, thread: &ThreadRecord) -> Result<Value> {
+        let providers: Vec<Value> = self
+            .catalog(&thread.scope)
+            .await
+            .into_iter()
+            .map(|(rt, p)| {
+                json!({
+                    "provider": p.provider, "name": p.name, "runtime": rt.as_str(),
+                    "authenticated": p.authenticated, "models": p.models,
+                    "efforts": p.efforts,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "threadId": thread.thread_id.as_str(),
+            "runtime": thread.runtime_id.as_str(),
+            "provider": thread.provider,
+            "model": thread.model,
+            "effort": self.store.thread_effort(&thread.thread_id).await?,
+            "fresh": is_fresh(thread),
+            "providers": providers,
+            "picker": self.store.settings().await?.model_picker,
+        }))
+    }
+
+    /// Replace the model picker's preferences (the whole document).
+    pub async fn set_model_picker(&self, picker: Value) -> Result<Value> {
+        let prefs: crate::model::ModelPickerPrefs = serde_json::from_value(picker)
+            .map_err(|e| OrchestratorError::invalid(format!("invalid picker: {e}")))?;
+        let prefs = prefs.validated().map_err(OrchestratorError::invalid)?;
+        let settings = self
+            .store
+            .set_settings(&json!({ "model_picker": prefs }))
+            .await?;
+        Ok(json!({ "ok": true, "picker": settings.model_picker }))
+    }
+
+    /// Switch the provider/model and reasoning effort of a thread's next
+    /// turns. An effort alone (`default` clears it) changes nothing else; a
+    /// switch keeps only the effort it carries, on the thread that continues.
+    pub async fn set_route(&self, thread: &ThreadRecord, target: &Target) -> Result<Value> {
+        let effort = target
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty() && *e != "default")
+            .map(str::to_string);
+        if target.reasoning_effort.is_some() && target.provider.is_none() && target.model.is_none()
+        {
+            self.store
+                .set_thread_effort(&thread.thread_id, effort.as_deref())
+                .await?;
+            return Ok(json!({
+                "ok": true, "threadId": thread.thread_id.as_str(), "moved": "in_place",
+                "forkThreadId": null, "provider": thread.provider, "model": thread.model,
+                "effort": effort,
+            }));
+        }
+        let mut out = self.switch_route(thread, target).await?;
+        if out["ok"] == json!(true) {
+            let id = match out["forkThreadId"].as_str() {
+                Some(fork) => {
+                    ThreadId::new(fork).map_err(|e| OrchestratorError::invalid(e.to_string()))?
+                }
+                None => thread.thread_id.clone(),
+            };
+            self.store.set_thread_effort(&id, effort.as_deref()).await?;
+            out["effort"] = json!(effort);
+        }
+        Ok(out)
+    }
+
+    /// Switch the provider/model of a thread's next turns. The same runtime
+    /// switches in place; an unused thread moves to the new runtime; a thread
+    /// with history continues in a fork on the new runtime, carrying a
+    /// portable context handoff, because a transcript cannot change runtime.
+    /// Model `default` clears the pick (IronClaw's loop then uses the
+    /// profile's model).
+    async fn switch_route(&self, thread: &ThreadRecord, target: &Target) -> Result<Value> {
+        if thread.is_running() {
+            return Err(OrchestratorError::request(
+                "thread_busy",
+                "Stop or wait for the running turn before switching model.",
+            ));
+        }
+        let ctx = CallContext {
+            thread_id: thread.thread_id.clone(),
+            scope: thread.scope.clone(),
+            provider: thread.provider.clone(),
+            model: thread.model.clone(),
+        };
+        let wants_default = target.model.as_deref().map(str::trim) == Some("default");
+        // "Default" exists only on IronClaw's loop, and a fork cannot carry
+        // it: a thread with history elsewhere gets the provider's first model.
+        let (runtime_id, provider, model) =
+            if wants_default && (thread.runtime_id == self.default_runtime || is_fresh(thread)) {
+                (self.default_runtime.clone(), target.provider.clone(), None)
+            } else {
+                let probe = Target {
+                    model: target.model.clone().filter(|_| !wants_default),
+                    ..target.clone()
+                };
+                self.resolve_target(&probe, &ctx, &thread.runtime_id)
+                    .await?
+            };
+        let id = &thread.thread_id;
+        let done =
+            |moved: &str, fork: Option<&str>, provider: Option<&str>, model: Option<&str>| {
+                json!({
+                    "ok": true, "threadId": id.as_str(), "moved": moved,
+                    "forkThreadId": fork, "provider": provider, "model": model,
+                })
+            };
+        if runtime_id == thread.runtime_id {
+            self.store
+                .set_thread_runtime(
+                    id,
+                    &runtime_id,
+                    provider.as_deref(),
+                    model.as_deref(),
+                    thread.native_session_id.as_deref(),
+                )
+                .await?;
+            return Ok(done(
+                "in_place",
+                None,
+                provider.as_deref(),
+                model.as_deref(),
+            ));
+        }
+        if is_fresh(thread) {
+            let (provider, model, session) = if runtime_id == self.default_runtime {
+                (provider, model, None)
+            } else {
+                let created = self
+                    .runtime(&runtime_id)?
+                    .create_thread(CreateThread {
+                        scope: thread.scope.clone(),
+                        title: thread.title.clone(),
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        idempotency_key: format!("route:{id}:{runtime_id}"),
+                    })
+                    .await?;
+                (
+                    created.provider.or(provider),
+                    created.model.or(model),
+                    created.native_session_id,
+                )
+            };
+            self.store
+                .set_thread_runtime(
+                    id,
+                    &runtime_id,
+                    provider.as_deref(),
+                    model.as_deref(),
+                    session.as_deref(),
+                )
+                .await?;
+            return Ok(done("rebound", None, provider.as_deref(), model.as_deref()));
+        }
+        let label = model.clone().or(provider.clone()).unwrap_or_default();
+        let title = format!("{} ({label})", thread.title.as_deref().unwrap_or("thread"));
+        let fork_target = Target {
+            provider: provider.clone(),
+            model: model.clone(),
+            ..Default::default()
+        };
+        let fork = self
+            .fork(
+                &ctx,
+                thread,
+                None,
+                Some(&title),
+                Some(&fork_target),
+                Author::User,
+            )
+            .await?;
+        if fork["ok"] != json!(true) {
+            return Ok(fork);
+        }
+        let fork_id = fork["forkThreadId"].as_str().unwrap_or_default();
+        Ok(done(
+            "forked",
+            Some(fork_id),
+            fork["provider"].as_str(),
+            fork["model"].as_str(),
+        ))
+    }
+}
+
+/// No user turn has reached the thread yet.
+fn is_fresh(thread: &ThreadRecord) -> bool {
+    thread.last_user_at.is_none() && thread.turn_started_at.is_none()
 }

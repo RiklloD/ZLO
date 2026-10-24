@@ -28,20 +28,23 @@ use std::sync::Arc;
 
 use ironclaw_cli_providers::bridge::CliBridge;
 use ironclaw_orchestrator::engine::Engine;
+use ironclaw_product_contracts::operator_llm::NativeModelRoutes;
 use ironclaw_product_contracts::surface::ProductSurface;
 
 /// Route threads through `engine`: IronClaw's agent loop becomes its runtime
 /// (acting on the undecorated `inner`, so automatic turns are not mistaken for
 /// user activity), the tick loop starts, and the orchestrating decorator is
 /// returned; `cli_bridge` streams CLI threads and answers their tool-call
-/// approvals. Falls back to `inner` when the runtime cannot be built.
+/// approvals; `routes` lists the other providers a thread may run on. Falls
+/// back to `inner` when the runtime cannot be built.
 pub fn orchestrate(
     engine: &Arc<Engine>,
     inner: Arc<dyn ProductSurface>,
     session_extension_id: Option<String>,
     cli_bridge: Option<Arc<CliBridge>>,
+    routes: Option<Arc<dyn NativeModelRoutes>>,
 ) -> Arc<dyn ProductSurface> {
-    match AgentLoopRuntime::new(Arc::clone(&inner), session_extension_id) {
+    match AgentLoopRuntime::new(Arc::clone(&inner), session_extension_id, routes) {
         Ok(agent_loop) => engine.register_runtime(Arc::new(agent_loop)),
         Err(error) => {
             tracing::warn!(%error, "orchestrator runtime unavailable; threads run unorchestrated");

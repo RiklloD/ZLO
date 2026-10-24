@@ -14,6 +14,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
+use crate::chatgpt_plan::PlanGrant;
 use crate::config::OpenAiCodexConfig;
 use crate::error::LlmError;
 
@@ -26,6 +27,10 @@ pub struct OpenAiCodexSession {
     pub(crate) refresh_token: String,
     pub(crate) expires_at: DateTime<Utc>,
     pub(crate) created_at: DateTime<Utc>,
+    /// Set for Sign in with ChatGPT sessions (plan mode); `None` for the
+    /// legacy Codex-client sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) plan: Option<PlanGrant>,
 }
 
 impl std::fmt::Debug for OpenAiCodexSession {
@@ -208,6 +213,33 @@ impl OpenAiCodexSessionManager {
         Ok(mgr)
     }
 
+    pub(crate) fn config(&self) -> &OpenAiCodexConfig {
+        &self.config
+    }
+
+    pub(crate) fn http(&self) -> &Client {
+        &self.client
+    }
+
+    pub(crate) async fn plan_grant(&self) -> Option<PlanGrant> {
+        self.session
+            .read()
+            .await
+            .as_ref()
+            .and_then(|s| s.plan.clone())
+    }
+
+    /// No usable session: plan mode cannot prompt from here (sign-in needs
+    /// the browser flow the caller starts); legacy mode runs device code.
+    async fn sign_in_required(&self) -> Result<(), LlmError> {
+        if self.is_plan_mode() {
+            return Err(LlmError::AuthFailed {
+                provider: "openai_codex".to_string(),
+            });
+        }
+        self.device_code_login().await
+    }
+
     /// Check if we have a session (may be expired).
     pub async fn has_session(&self) -> bool {
         self.session.read().await.is_some()
@@ -266,7 +298,7 @@ impl OpenAiCodexSessionManager {
 
         if !self.has_session().await {
             // No session at all -- need to authenticate
-            return self.device_code_login().await;
+            return self.sign_in_required().await;
         }
 
         if self.needs_refresh().await {
@@ -275,7 +307,7 @@ impl OpenAiCodexSessionManager {
                 Ok(()) => Ok(()),
                 Err(e) => {
                     tracing::info!("Token refresh failed ({}), re-authenticating...", e);
-                    self.device_code_login().await
+                    self.sign_in_required().await
                 }
             }
         } else {
@@ -472,6 +504,7 @@ impl OpenAiCodexSessionManager {
                     3600
                 } as i64),
             created_at: Utc::now(),
+            plan: None,
         };
 
         self.save_session(&session).await?;
@@ -525,15 +558,18 @@ impl OpenAiCodexSessionManager {
             return Ok(());
         }
 
-        let refresh_token = {
+        let (refresh_token, plan) = {
             let guard = self.session.read().await;
             guard
                 .as_ref()
-                .map(|s| s.refresh_token.clone())
+                .map(|s| (s.refresh_token.clone(), s.plan.clone()))
                 .ok_or_else(|| LlmError::AuthFailed {
                     provider: "openai_codex".to_string(),
                 })?
         };
+        if let Some(grant) = plan {
+            return self.refresh_plan_tokens(&refresh_token, grant).await;
+        }
 
         let token_url = format!("{}/oauth/token", self.config.auth_endpoint);
         let resp = self
@@ -579,6 +615,7 @@ impl OpenAiCodexSessionManager {
                     3600
                 } as i64),
             created_at: Utc::now(),
+            plan: None,
         };
 
         self.save_session(&session).await?;
@@ -667,7 +704,7 @@ impl OpenAiCodexSessionManager {
     pub async fn handle_auth_failure(&self) -> Result<(), LlmError> {
         match self.refresh_tokens().await {
             Ok(()) => Ok(()),
-            Err(_) => self.device_code_login().await,
+            Err(_) => self.sign_in_required().await,
         }
     }
 }
@@ -695,6 +732,7 @@ mod tests {
             refresh_token: "refresh_xyz".to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
             created_at: chrono::Utc::now(),
+            plan: None,
         };
         mgr.save_session(&session).await.unwrap();
         mgr.set_session(session).await;
@@ -720,6 +758,7 @@ mod tests {
             refresh_token: "refresh_xyz".to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
             created_at: chrono::Utc::now(),
+            plan: None,
         };
         mgr.set_session(session).await;
 
@@ -761,6 +800,7 @@ mod tests {
             refresh_token: "refresh_xyz".to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(30),
             created_at: chrono::Utc::now(),
+            plan: None,
         };
         mgr.set_session(session).await;
 

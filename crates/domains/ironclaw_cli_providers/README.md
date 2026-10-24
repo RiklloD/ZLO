@@ -3,9 +3,14 @@
 Coding-agent CLIs as `ironclaw_orchestrator` turn runtimes: the Claude CLI,
 registered twice: `claude-cli` (default account) and `claude-cli-2`
 (`CLAUDE_CONFIG_DIR=~/.claude-account2`), only when a `claude` binary is
-found; `antigravity` (Google's ACP agent) and `muse-code` (Meta's Muse Code),
-each registered when installed (`register_antigravity_runtime`,
-`register_muse_runtime`).
+found; `antigravity` (Google's ACP agent), `muse-code` (Meta's Muse Code)
+and `codex` (OpenAI's Codex CLI over `codex app-server`, on the user's own
+`codex login`), each registered when installed
+(`register_antigravity_runtime`, `register_muse_runtime`,
+`register_codex_runtime`). Codex runs in the `workspace-write` sandbox with
+the `untrusted` approval policy behind the bridge (read-only and never
+asking without one); each approval is answered `accept` or `decline`, never
+for the session.
 
 - **Family / layer:** `domains` / `substrates` · **Package:** `ironclaw_cli_providers`
 - **Use this when:** you change how a CLI agent runs a turn: process spawn,

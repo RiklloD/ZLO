@@ -131,6 +131,7 @@ fn input() -> TurnInput {
         origin: TurnOrigin::DelegatedBrief,
         model: None,
         goal: None,
+        effort: None,
     }
 }
 

@@ -17,6 +17,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `codex_chatgpt.rs` | Custom Responses API provider for Codex ChatGPT backend (`/backend-api/codex`) |
 | `openai_codex_provider.rs` | OpenAI Codex Responses API client (SSE streaming, JWT auth, subscription billing) |
 | `openai_codex_session.rs` | OAuth 2.0 session manager for OpenAI Codex (device code flow, token persistence) |
+| `chatgpt_plan.rs` | Sign in with ChatGPT plan usage: browser PKCE registration (`dynamic_agent_client`), loopback callback, ID-token claims check, plan-scope refresh |
 | `token_refreshing.rs` | Token-refreshing `LlmProvider` decorator for OpenAI Codex (pre-emptive refresh, zero-cost billing) |
 | `reasoning.rs` | Model-response text cleanup (`clean_response` — thinking-tag stripping) and textual tool-call recovery (`contains_codex_text_tool_call_syntax`, `recover_codex_text_tool_calls_from_tool_names`) |
 | `session.rs` | NEAR AI session token management with disk + DB persistence, OAuth login flow |
@@ -35,6 +36,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `github_copilot_auth.rs` | Copilot session-token exchange and refresh (`CopilotTokenManager`) |
 | `host.rs` | Host-side trait surface: `SessionDb`, `SessionSecrets`, `SessionRenewer`, `SessionKeyPersistor` (adapters are the composing binary's to supply; none does today — see "Host Trait Surface") |
 | `runtime.rs` | `SwappableLlmProvider` + `LlmReloadHandle` for hot-reloading the provider chain on settings change |
+| `provider_routing.rs` | `ProviderRouter`: sends a request whose model is `<provider_id>::<model>` to that configured provider (built by a `RoutedProviderSource`), everything else to the primary |
 | `registry.rs` | Provider registry (`ProviderDefinition`, `ProviderProtocol`); resolves backend strings to clients |
 | `resolution.rs` | Full `LlmConfig` resolution for composition roots that select from `providers.json` and need dedicated providers plus the shared provider chain |
 | `tool_args.rs` | Shared sub-step primitives for provider tool-call parsing: fail-loud and silent-fallback JSON arg parsing, ordered reasoning-field probe (Layer 2 of RC3/M9 framework) |
@@ -65,9 +67,9 @@ owner, and a deleted one fails until its entry goes.
 |---|---|---|---|
 | `core-contract` | The `LlmProvider` trait, the request/response vocabulary, the error taxonomy, the config types, shared HTTP hardening, and the factory that assembles everything | A vendor protocol, or reliability behavior | `lib.rs`, `provider.rs`, `agent_message.rs`, `error.rs`, `config.rs`, `url_check.rs` |
 | `providers` | One concrete `LlmProvider` per vendor and the protocol shims used by that vendor alone | Cross-provider normalization (that is `normalization`), or credential lifecycle (that is `auth-sessions`) | `nearai_chat.rs`, `rig_adapter.rs`, `gemini_oauth.rs`, `codex_chatgpt.rs`, `bedrock.rs`, `openai_codex_provider.rs`, `anthropic_oauth.rs`, `github_copilot.rs`, `github_copilot/tests.rs`, `nearai_tool_message_flattening.rs`, `responses_reasoning.rs`, `anthropic_thinking.rs` |
-| `auth-sessions` | Acquiring, persisting, refreshing and revoking provider credentials, plus the host seam that stores them | Request/response shaping | `auth.rs`, `session.rs`, `openai_codex_session.rs`, `github_copilot_auth.rs`, `codex_auth.rs`, `token_refreshing.rs`, `host.rs` |
+| `auth-sessions` | Acquiring, persisting, refreshing and revoking provider credentials, plus the host seam that stores them | Request/response shaping | `auth.rs`, `session.rs`, `openai_codex_session.rs`, `chatgpt_plan.rs`, `github_copilot_auth.rs`, `codex_auth.rs`, `token_refreshing.rs`, `host.rs` |
 | `registry` | The **provider** catalog: definitions, protocols, base-URL and api-key resolution | Model facts (that is `model-catalog`) | `registry.rs`, `resolution.rs`, `resolution/tests.rs` |
-| `decorators` | Anything that wraps `dyn LlmProvider` and is not credential work: retry, breaker, failover, cache, hot-reload, cost routing | Vendor protocol | `retry.rs`, `circuit_breaker.rs`, `failover.rs`, `response_cache.rs`, `runtime.rs`, `smart_routing.rs` |
+| `decorators` | Anything that wraps `dyn LlmProvider` and is not credential work: retry, breaker, failover, cache, hot-reload, cost routing | Vendor protocol | `retry.rs`, `circuit_breaker.rs`, `failover.rs`, `response_cache.rs`, `runtime.rs`, `smart_routing.rs`, `provider_routing.rs` |
 | `normalization` | Cross-provider wire hygiene in all three directions: outbound tool schemas, inbound tool arguments, inbound content text | A fix that only one provider needs — that belongs beside it in `providers` | `tool_schema.rs`, `tool_schema/placeholder_stripping.rs`, `tool_args.rs`, `reasoning.rs` |
 | `model-catalog` | Facts about **models**: what an endpoint lists, and which models see images, generate images, or think natively | Provider identity or routing | `models.rs`, `reasoning_models.rs`, `vision_models.rs`, `image_models.rs` |
 | `recording` | Trace capture and replay, and binding recorded tool arguments to earlier results | Live provider behavior | `recording.rs`, `trace_binding.rs` |
@@ -276,7 +278,7 @@ Set `LLM_EXTRA_HEADERS=Key:Value,Key2:Value2` to inject headers into every reque
 
 ## OpenAI Codex Provider
 
-Uses the Responses API at `chatgpt.com/backend-api/codex/responses` with ChatGPT subscription OAuth tokens (zero API cost — billing through subscription).
+Default (plan mode): OpenAI's documented Sign in with ChatGPT route for open-source/local apps — browser OAuth with PKCE registers IronClaw as a user-defined agent (`chatgpt_plan.rs`), inference goes to the public `https://api.openai.com/v1/responses` with `store: false`, `stream: true`, function tools grouped in one `namespace` tool, and no `chatgpt-account-id` header. Setting `OPENAI_CODEX_API_URL` to `https://chatgpt.com/backend-api/codex` selects the legacy route below (Codex CLI client id, device code).
 
 **Auth flow:** Device code OAuth via `auth.openai.com/api/accounts/deviceauth/*` endpoints. On first run, displays a code for the user to enter at a URL. Tokens are persisted to `~/.ironclaw/openai_codex_session.json` (mode 0600) and auto-refreshed before expiry.
 

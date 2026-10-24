@@ -814,6 +814,8 @@ impl TurnRuntime for AntigravityRuntime {
                 .unwrap_or(false), // silent-ok: an unreadable token reads as signed out
             current: false,
             models: cached_models(&self.config).await,
+            // The effort is part of each model's name (`-low`/`-high`).
+            efforts: Vec::new(),
         }])
     }
 }

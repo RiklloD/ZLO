@@ -14,7 +14,9 @@ use ironclaw_orchestrator::runtime::*;
 use ironclaw_product_contracts::inbound_requests::{
     ProductCancelRunRequest, ProductCreateThreadRequest, ProductSubmitTurnRequest,
 };
-use ironclaw_product_contracts::operator_llm::{USER_MODEL_CATALOG_VIEW, UserModelCatalog};
+use ironclaw_product_contracts::operator_llm::{
+    NativeModelRoute, NativeModelRoutes, USER_MODEL_CATALOG_VIEW, UserModelCatalog,
+};
 use ironclaw_product_contracts::product_wire::{RebornSubmitTurnResponse, RebornTimelineRequest};
 use ironclaw_product_contracts::surface::{
     BoundProductSurface, ProductSurface, ProductSurfaceCaller, ProductSurfaceError,
@@ -41,17 +43,21 @@ pub struct AgentLoopRuntime {
     surface: Arc<dyn ProductSurface>,
     /// Session channel the turns enter through (`None` = legacy session surface).
     session_extension_id: Option<String>,
+    /// Other configured providers a thread can run on (`None`: no LLM admin wired).
+    routes: Option<Arc<dyn NativeModelRoutes>>,
 }
 
 impl AgentLoopRuntime {
     pub fn new(
         surface: Arc<dyn ProductSurface>,
         session_extension_id: Option<String>,
+        routes: Option<Arc<dyn NativeModelRoutes>>,
     ) -> Result<Self, ironclaw_orchestrator::error::OrchestratorError> {
         Ok(Self {
             id: RuntimeId::new(IRONCLAW_RUNTIME_ID)?,
             surface,
             session_extension_id,
+            routes,
         })
     }
 
@@ -89,6 +95,25 @@ impl AgentLoopRuntime {
             .await
             .map_err(surface_error)
     }
+}
+
+/// The turn model for a thread on IronClaw's loop: a pick on another
+/// configured provider (`/route`) runs there, and an effort pick rides along,
+/// both encoded for the model router. CLI runtimes get the plain model.
+pub(crate) fn native_turn_model(
+    thread: &ThreadRecord,
+    model: Option<String>,
+    effort: Option<&str>,
+) -> Option<String> {
+    let model = model.filter(|m| !m.trim().is_empty() && m != "default");
+    if thread.runtime_id.as_str() != IRONCLAW_RUNTIME_ID {
+        return model;
+    }
+    let provider = thread
+        .provider
+        .as_deref()
+        .filter(|p| *p != IRONCLAW_RUNTIME_ID && model.is_some());
+    NativeModelRoute::turn_model(provider, model.as_deref(), effort)
 }
 
 fn surface_error(error: ProductSurfaceError) -> RuntimeError {
@@ -146,7 +171,8 @@ impl TurnRuntime for AgentLoopRuntime {
         thread: &ThreadRecord,
         input: TurnInput,
     ) -> Result<TurnAdmission, RuntimeError> {
-        Ok(match self.submit(thread, &input.text, input.model).await? {
+        let model = native_turn_model(thread, input.model, input.effort.as_deref());
+        Ok(match self.submit(thread, &input.text, model).await? {
             RebornSubmitTurnResponse::Submitted { run_id, .. }
             | RebornSubmitTurnResponse::AlreadySubmitted { run_id, .. } => TurnAdmission::Started {
                 run_id: Some(run_id.to_string()),
@@ -276,12 +302,90 @@ impl TurnRuntime for AgentLoopRuntime {
             .transpose()
             .map_err(|e| RuntimeError::Unavailable(format!("model catalog: {e}")))?
             .unwrap_or_else(UserModelCatalog::disabled);
-        Ok(vec![CatalogProvider {
+        let efforts = match &self.routes {
+            Some(routes) => routes.primary_efforts().await,
+            None => Vec::new(),
+        };
+        let mut providers = vec![CatalogProvider {
             provider: IRONCLAW_RUNTIME_ID.to_string(),
             name: "IronClaw".to_string(),
             authenticated: true,
             current: true,
             models: catalog.models,
-        }])
+            efforts,
+        }];
+        if let Some(routes) = &self.routes {
+            providers.extend(routes.routes().await.into_iter().map(|r| CatalogProvider {
+                provider: r.provider_id,
+                name: r.name,
+                authenticated: true,
+                current: false,
+                models: r.models,
+                efforts: r.efforts,
+            }));
+        }
+        Ok(providers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ironclaw_host_api::ids::ThreadId;
+
+    fn native(provider: Option<&str>, runtime: &str) -> ThreadRecord {
+        let mut thread = ThreadRecord::new(
+            ThreadId::new("t").unwrap(),
+            ThreadScope {
+                tenant_id: ironclaw_host_api::ids::TenantId::new("t1").unwrap(),
+                user_id: ironclaw_host_api::ids::UserId::new("u1").unwrap(),
+                agent_id: None,
+                project_id: None,
+            },
+            RuntimeId::new(runtime).unwrap(),
+        );
+        thread.provider = provider.map(str::to_string);
+        thread
+    }
+
+    #[test]
+    fn a_pick_on_another_provider_is_encoded_for_the_model_router() {
+        let model = || Some("glm-5.3".to_string());
+        assert_eq!(
+            native_turn_model(&native(Some("glm"), "ironclaw"), model(), None).as_deref(),
+            Some("glm::glm-5.3")
+        );
+        for plain in [
+            native(Some("ironclaw"), "ironclaw"),
+            native(None, "ironclaw"),
+        ] {
+            assert_eq!(
+                native_turn_model(&plain, model(), None).as_deref(),
+                Some("glm-5.3")
+            );
+        }
+        assert_eq!(
+            native_turn_model(&native(Some("claude"), "claude-cli"), model(), Some("high"))
+                .as_deref(),
+            Some("glm-5.3"),
+            "CLI runtimes get the plain model; their effort travels in TurnInput"
+        );
+        assert_eq!(
+            native_turn_model(
+                &native(Some("glm"), "ironclaw"),
+                Some("default".into()),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            native_turn_model(&native(Some("glm"), "ironclaw"), model(), Some("low")).as_deref(),
+            Some("glm::glm-5.3::low")
+        );
+        assert_eq!(
+            native_turn_model(&native(None, "ironclaw"), None, Some("xhigh")).as_deref(),
+            Some("::::xhigh"),
+            "an effort alone keeps the active provider and its default model"
+        );
     }
 }

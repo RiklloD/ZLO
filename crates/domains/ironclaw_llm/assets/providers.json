@@ -44,11 +44,11 @@
     "protocol": "openai_codex",
     "api_key_required": false,
     "model_env": "OPENAI_CODEX_MODEL",
-    "default_model": "gpt-5.5",
-    "description": "ChatGPT subscription (Plus/Pro/Max)",
+    "default_model": "gpt-6.1-sol",
+    "description": "ChatGPT plan via Sign in with ChatGPT (Plus/Pro)",
     "setup": {
       "kind": "o_auth_device_code",
-      "display_name": "OpenAI Codex",
+      "display_name": "ChatGPT",
       "backend": "openai_codex"
     }
   },
@@ -64,7 +64,9 @@
     "model_env": "OPENAI_MODEL",
     "default_model": "gpt-5-mini",
     "description": "OpenAI GPT models (direct API)",
-    "unsupported_params": ["temperature"],
+    "unsupported_params": [
+      "temperature"
+    ],
     "setup": {
       "kind": "api_key",
       "secret_name": "llm_openai_api_key",
@@ -163,7 +165,9 @@
     "model_env": "TINFOIL_MODEL",
     "default_model": "kimi-k2-5",
     "description": "Tinfoil private inference (hardware-attested TEE)",
-    "unsupported_params": ["temperature"],
+    "unsupported_params": [
+      "temperature"
+    ],
     "setup": {
       "kind": "api_key",
       "secret_name": "llm_tinfoil_api_key",
@@ -203,7 +207,9 @@
     "model_env": "GROQ_MODEL",
     "default_model": "llama-3.3-70b-versatile",
     "description": "Groq LPU inference (ultra-fast)",
-    "unsupported_params": ["prompt_cache_key"],
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
     "setup": {
       "kind": "api_key",
       "secret_name": "llm_groq_api_key",
@@ -517,6 +523,423 @@
       "display_name": "AWS Bedrock",
       "supports_cross_region": true,
       "supports_profile": true
+    }
+  },
+  {
+    "id": "xai",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.x.ai/v1",
+    "api_key_env": "XAI_API_KEY",
+    "api_key_required": true,
+    "model_env": "XAI_MODEL",
+    "default_model": "grok-4",
+    "description": "xAI Grok models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_xai_api_key",
+      "key_url": "https://console.x.ai",
+      "display_name": "xAI (Grok)",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "huggingface",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://router.huggingface.co/v1",
+    "api_key_env": "HF_TOKEN",
+    "api_key_required": true,
+    "model_env": "HUGGINGFACE_MODEL",
+    "default_model": "openai/gpt-oss-120b",
+    "description": "Hugging Face inference router",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_huggingface_api_key",
+      "key_url": "https://huggingface.co/settings/tokens",
+      "display_name": "Hugging Face",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "moonshot",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.moonshot.ai/v1",
+    "api_key_env": "MOONSHOT_API_KEY",
+    "api_key_required": true,
+    "model_env": "MOONSHOT_MODEL",
+    "default_model": "kimi-k2-0905-preview",
+    "description": "Moonshot Kimi models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_moonshot_api_key",
+      "key_url": "https://platform.moonshot.ai/console/api-keys",
+      "display_name": "Kimi / Moonshot",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "dashscope",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "api_key_required": true,
+    "model_env": "DASHSCOPE_MODEL",
+    "default_model": "qwen3-max",
+    "description": "Alibaba Qwen models via DashScope",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_dashscope_api_key",
+      "key_url": "https://modelstudio.console.alibabacloud.com/",
+      "display_name": "Qwen (DashScope)",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "deepinfra",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.deepinfra.com/v1/openai",
+    "api_key_env": "DEEPINFRA_API_KEY",
+    "api_key_required": true,
+    "model_env": "DEEPINFRA_MODEL",
+    "default_model": "deepseek-ai/DeepSeek-V3.1",
+    "description": "DeepInfra hosted open models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_deepinfra_api_key",
+      "key_url": "https://deepinfra.com/dash/api_keys",
+      "display_name": "DeepInfra",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "nebius",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.tokenfactory.nebius.com/v1",
+    "api_key_env": "NEBIUS_API_KEY",
+    "api_key_required": true,
+    "model_env": "NEBIUS_MODEL",
+    "default_model": "deepseek-ai/DeepSeek-V3",
+    "description": "Nebius hosted open models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_nebius_api_key",
+      "key_url": "https://tokenfactory.nebius.com/",
+      "display_name": "Nebius Token Factory",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "novita",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.novita.ai/openai/v1",
+    "api_key_env": "NOVITA_API_KEY",
+    "api_key_required": true,
+    "model_env": "NOVITA_MODEL",
+    "default_model": "deepseek/deepseek-v3",
+    "description": "Novita hosted open models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_novita_api_key",
+      "key_url": "https://novita.ai/settings/key-management",
+      "display_name": "Novita AI",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "vercel_ai_gateway",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://ai-gateway.vercel.sh/v1",
+    "api_key_env": "AI_GATEWAY_API_KEY",
+    "api_key_required": true,
+    "model_env": "VERCEL_AI_GATEWAY_MODEL",
+    "default_model": "openai/gpt-5",
+    "description": "Vercel AI Gateway (many providers, one key)",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_vercel_ai_gateway_api_key",
+      "key_url": "https://vercel.com/dashboard/ai-gateway",
+      "display_name": "Vercel AI Gateway",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "ollama_cloud",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://ollama.com/v1",
+    "api_key_env": "OLLAMA_API_KEY",
+    "api_key_required": true,
+    "model_env": "OLLAMA_CLOUD_MODEL",
+    "default_model": "gpt-oss:120b",
+    "description": "Ollama hosted models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_ollama_cloud_api_key",
+      "key_url": "https://ollama.com/settings/keys",
+      "display_name": "Ollama Cloud",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "stepfun",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.stepfun.ai/v1",
+    "api_key_env": "STEPFUN_API_KEY",
+    "api_key_required": true,
+    "model_env": "STEPFUN_MODEL",
+    "default_model": "step-3",
+    "description": "StepFun Step models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_stepfun_api_key",
+      "key_url": "https://platform.stepfun.ai/",
+      "display_name": "StepFun",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "arcee",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.arcee.ai/api/v1",
+    "api_key_env": "ARCEEAI_API_KEY",
+    "api_key_required": true,
+    "model_env": "ARCEE_MODEL",
+    "default_model": "trinity-large",
+    "description": "Arcee AI models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_arcee_api_key",
+      "key_url": "https://chat.arcee.ai/",
+      "display_name": "Arcee AI",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "upstage",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.upstage.ai/v1",
+    "api_key_env": "UPSTAGE_API_KEY",
+    "api_key_required": true,
+    "model_env": "UPSTAGE_MODEL",
+    "default_model": "solar-pro2",
+    "description": "Upstage Solar models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_upstage_api_key",
+      "key_url": "https://console.upstage.ai/api-keys",
+      "display_name": "Upstage Solar",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "inception",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.inceptionlabs.ai/v1",
+    "api_key_env": "INCEPTION_API_KEY",
+    "api_key_required": true,
+    "model_env": "INCEPTION_MODEL",
+    "default_model": "mercury-coder",
+    "description": "Inception Mercury diffusion models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_inception_api_key",
+      "key_url": "https://platform.inceptionlabs.ai/",
+      "display_name": "Inception (Mercury)",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "gmi",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.gmi-serving.com/v1",
+    "api_key_env": "GMI_API_KEY",
+    "api_key_required": true,
+    "model_env": "GMI_MODEL",
+    "default_model": "deepseek-ai/DeepSeek-V3.1",
+    "description": "GMI Cloud hosted models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_gmi_api_key",
+      "key_url": "https://console.gmicloud.ai/",
+      "display_name": "GMI Cloud",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "kilocode",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.kilo.ai/api/gateway",
+    "api_key_env": "KILOCODE_API_KEY",
+    "api_key_required": true,
+    "model_env": "KILOCODE_MODEL",
+    "default_model": "anthropic/claude-sonnet-4.5",
+    "description": "Kilo Code model gateway",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_kilocode_api_key",
+      "key_url": "https://app.kilo.ai/",
+      "display_name": "Kilo Code Gateway",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "opencode_zen",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://opencode.ai/zen/v1",
+    "api_key_env": "OPENCODE_ZEN_API_KEY",
+    "api_key_required": true,
+    "model_env": "OPENCODE_ZEN_MODEL",
+    "default_model": "gpt-5",
+    "description": "OpenCode Zen curated coding models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_opencode_zen_api_key",
+      "key_url": "https://opencode.ai/auth",
+      "display_name": "OpenCode Zen",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "xiaomi",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.xiaomimimo.com/v1",
+    "api_key_env": "XIAOMI_API_KEY",
+    "api_key_required": true,
+    "model_env": "XIAOMI_MODEL",
+    "default_model": "mimo-v2-flash",
+    "description": "Xiaomi MiMo models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_xiaomi_api_key",
+      "key_url": "https://platform.xiaomimimo.com/",
+      "display_name": "Xiaomi MiMo",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "meta",
+    "aliases": [],
+    "protocol": "open_ai_completions",
+    "default_base_url": "https://api.meta.ai/v1",
+    "api_key_env": "META_API_KEY",
+    "api_key_required": true,
+    "model_env": "META_MODEL",
+    "default_model": "llama-4-maverick",
+    "description": "Meta Llama models",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "api_key",
+      "secret_name": "llm_meta_api_key",
+      "key_url": "https://llama.developer.meta.com/",
+      "display_name": "Meta Llama API",
+      "can_list_models": true,
+      "models_filter": "chat"
+    }
+  },
+  {
+    "id": "lmstudio",
+    "aliases": [
+      "lm-studio"
+    ],
+    "protocol": "open_ai_completions",
+    "default_base_url": "http://127.0.0.1:1234/v1",
+    "base_url_env": "LMSTUDIO_BASE_URL",
+    "api_key_required": false,
+    "model_env": "LMSTUDIO_MODEL",
+    "default_model": "local-model",
+    "description": "LM Studio local server (no API key needed)",
+    "unsupported_params": [
+      "prompt_cache_key"
+    ],
+    "setup": {
+      "kind": "ollama",
+      "display_name": "LM Studio",
+      "can_list_models": true
     }
   }
 ]

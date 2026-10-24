@@ -44,6 +44,9 @@ use stream::TurnFold;
 pub const EXPECTED_CLI_VERSION: &str = "2.1.302";
 
 /// Models offered in the catalog; the CLI resolves them itself.
+/// `claude --effort` levels.
+const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 const MODELS: [&str; 4] = [
     "claude-opus-5-5",
     "claude-sonnet-5-5",
@@ -130,6 +133,7 @@ impl ClaudeCliRuntime {
         model: Option<&str>,
         mcp: Option<&Path>,
         goal: Option<&str>,
+        effort: Option<&str>,
     ) -> Command {
         let mut cmd = Command::new(&self.config.binary);
         cmd.args([
@@ -159,6 +163,9 @@ impl ClaudeCliRuntime {
         ]);
         if let Some(model) = model {
             cmd.args(["--model", model]);
+        }
+        if let Some(effort) = effort {
+            cmd.args(["--effort", effort]);
         }
         if let Some(goal) = goal {
             cmd.arg("--append-system-prompt")
@@ -232,6 +239,7 @@ impl ClaudeCliRuntime {
         thread: &ThreadRecord,
         text: &str,
         goal: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<String, RuntimeError> {
         let session_id = thread
             .native_session_id
@@ -257,6 +265,7 @@ impl ClaudeCliRuntime {
                 thread.model.as_deref(),
                 mcp.as_ref().map(|m| m.config_file.as_path()),
                 goal,
+                effort,
             )
             .spawn();
         let mut child = match spawned {
@@ -472,7 +481,12 @@ impl TurnRuntime for ClaudeCliRuntime {
             thread.model = input.model;
         }
         let run_id = self
-            .spawn_turn(&thread, &input.text, input.goal.as_deref())
+            .spawn_turn(
+                &thread,
+                &input.text,
+                input.goal.as_deref(),
+                input.effort.as_deref(),
+            )
             .await?;
         Ok(TurnAdmission::Started {
             run_id: Some(run_id),
@@ -486,7 +500,7 @@ impl TurnRuntime for ClaudeCliRuntime {
         _how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
         self.stop(&thread.thread_id).await;
-        self.spawn_turn(thread, text, None).await?;
+        self.spawn_turn(thread, text, None, None).await?;
         Ok(SteerOutcome::Restarted)
     }
 
@@ -513,6 +527,7 @@ impl TurnRuntime for ClaudeCliRuntime {
             authenticated: self.config.login_file.is_file(),
             current: false,
             models: MODELS.iter().map(|m| m.to_string()).collect(),
+            efforts: EFFORTS.iter().map(|e| e.to_string()).collect(),
         }])
     }
 }

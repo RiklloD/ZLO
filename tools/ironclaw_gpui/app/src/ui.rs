@@ -18,10 +18,11 @@ pub use gpui_kit::component::{
 };
 pub use gpui_kit::prelude::FluentBuilder;
 pub use gpui_kit::{
-    AnyElement, App, AppContext, Context, ElementId, Entity, EventEmitter, ExternalPaths, Global,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Render, Role,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, SystemNotification,
-    SystemNotificationResponse, Task, WeakEntity, Window, div, px,
+    AnyElement, App, AppContext, ClipboardItem, Context, ElementId, Entity, EventEmitter,
+    ExternalPaths, Global, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement, PathPromptOptions, Render, Role, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, SystemNotification, SystemNotificationResponse, Task, WeakEntity, Window,
+    div, px,
 };
 
 use gpui_kit::component::text::TextView;

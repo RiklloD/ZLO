@@ -47,8 +47,16 @@ impl SkillLearnedNotifier for LiveSkillLearnedNotifier {
     }
 }
 
+/// What the gateway needs to route a thread to another configured provider:
+/// the boot config (for `providers.json`) and the operator key store.
+pub(crate) struct ProviderRoutesInput {
+    pub(crate) boot: ironclaw_config::RebornBootConfig,
+    pub(crate) keys: ironclaw_operator::LlmKeyStore,
+}
+
 pub(crate) async fn build_production_model_gateway(
     provider_factory: Option<ironclaw_operator::RebornProviderFactory>,
+    routes: Option<ProviderRoutesInput>,
 ) -> Result<
     (
         Arc<dyn ironclaw_loop_host::HostManagedModelGateway>,
@@ -59,7 +67,7 @@ pub(crate) async fn build_production_model_gateway(
 > {
     let LlmGatewayBundle {
         gateway, reload, ..
-    } = build_placeholder_llm_gateway(provider_factory).await?;
+    } = build_placeholder_llm_gateway(provider_factory, routes).await?;
     Ok((gateway, None, Some(reload)))
 }
 
@@ -102,30 +110,47 @@ pub(crate) struct RebornLlmReloadParts {
     pub(crate) session: Arc<ironclaw_llm::SessionManager>,
     pub(crate) nearai_login_states:
         Arc<ironclaw_operator::llm_admin::llm_config_service::NearAiLoginStateStore>,
+    /// Other configured providers a thread can run on; the model picker lists them.
+    pub(crate) provider_routes: Option<Arc<ironclaw_operator::RebornProviderRoutes>>,
 }
 
 async fn build_placeholder_llm_gateway(
     provider_factory: Option<ironclaw_operator::RebornProviderFactory>,
+    routes: Option<ProviderRoutesInput>,
 ) -> Result<LlmGatewayBundle, RebornRuntimeError> {
     let session =
         ironclaw_llm::create_session_manager(ironclaw_llm::SessionConfig::default()).await;
     let raw: Arc<dyn ironclaw_llm::LlmProvider> = Arc::new(PlaceholderLlmProvider);
-    wrap_swappable_gateway(raw, session, provider_factory)
+    let routes = routes.map(|input| {
+        Arc::new(ironclaw_operator::RebornProviderRoutes::new(
+            &input.boot,
+            input.keys,
+            Arc::clone(&session),
+        ))
+    });
+    wrap_swappable_gateway(raw, session, provider_factory, routes)
 }
 
 /// Apply instrumentation outside the swappable provider so it survives reloads.
+/// With `routes`, a turn whose model names another configured provider runs
+/// there (`ProviderRouter`); instrumentation still wraps every call.
 pub(crate) fn wrap_swappable_gateway(
     raw: Arc<dyn ironclaw_llm::LlmProvider>,
     session: Arc<ironclaw_llm::SessionManager>,
     provider_factory: Option<ironclaw_operator::RebornProviderFactory>,
+    routes: Option<Arc<ironclaw_operator::RebornProviderRoutes>>,
 ) -> Result<LlmGatewayBundle, RebornRuntimeError> {
+    use ironclaw_llm::provider_routing::ProviderRouter;
     use ironclaw_llm::{LlmProvider, LlmReloadHandle, SwappableLlmProvider};
     use ironclaw_loop_contracts::ModelProfileId;
     use ironclaw_loop_host::{LlmModelProfilePolicy, LlmProviderModelGateway};
 
     let swappable = Arc::new(SwappableLlmProvider::new(raw));
     let reload_handle = Arc::new(LlmReloadHandle::new(Arc::clone(&swappable), None));
-    let swappable_provider: Arc<dyn LlmProvider> = swappable;
+    let swappable_provider: Arc<dyn LlmProvider> = match &routes {
+        Some(routes) => Arc::new(ProviderRouter::new(swappable, Arc::clone(routes) as _)),
+        None => swappable,
+    };
     let provider: Arc<dyn LlmProvider> = match provider_factory {
         Some(factory) => factory(Arc::clone(&swappable_provider)),
         None => swappable_provider,
@@ -144,6 +169,7 @@ pub(crate) fn wrap_swappable_gateway(
             nearai_login_states: Arc::new(
                 ironclaw_operator::llm_admin::llm_config_service::NearAiLoginStateStore::new(),
             ),
+            provider_routes: routes,
         },
     })
 }

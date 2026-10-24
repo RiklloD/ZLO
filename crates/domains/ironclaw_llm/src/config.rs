@@ -165,7 +165,9 @@ pub struct OpenAiCodexConfig {
     pub model: String,
     /// OAuth authorization server (default: "https://auth.openai.com").
     pub auth_endpoint: String,
-    /// Responses API base URL (default: "https://chatgpt.com/backend-api/codex").
+    /// Responses API base URL (default: the public API, Sign in with ChatGPT
+    /// plan usage). `https://chatgpt.com/backend-api/codex` selects the
+    /// legacy Codex-client route.
     pub api_base_url: String,
     /// OAuth client ID (default: OpenAI's public Codex client).
     pub client_id: String,
@@ -182,7 +184,7 @@ impl Default for OpenAiCodexConfig {
         Self {
             model: "gpt-5.5".to_string(),
             auth_endpoint: "https://auth.openai.com".to_string(),
-            api_base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            api_base_url: crate::chatgpt_plan::PLAN_API_BASE_URL.to_string(),
             client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_string(),
             session_path: ironclaw_base_dir().join("openai_codex_session.json"),
             token_refresh_margin_secs: 300,
@@ -192,6 +194,12 @@ impl Default for OpenAiCodexConfig {
 }
 
 impl OpenAiCodexConfig {
+    /// Plan mode (Sign in with ChatGPT on the public API) unless pointed at
+    /// the legacy ChatGPT backend.
+    pub fn is_plan_mode(&self) -> bool {
+        !self.api_base_url.contains("chatgpt.com/backend-api")
+    }
+
     /// Build a Codex config from already-resolved overrides, falling back to
     /// crate defaults for any field the caller leaves as `None`. Callers
     /// (the binary) own env / settings precedence and SSRF validation; this

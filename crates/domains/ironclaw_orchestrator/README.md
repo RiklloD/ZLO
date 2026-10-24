@@ -36,6 +36,19 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
 - `profiles` — stage 3 profile records (`ProfileOwner`, `ProfileRecord`,
   slug and settings validation) and their `Store` methods. Settings are the
   `ironclaw_product_contracts::profiles::ProfileSettings` wire shape.
+- `schedules` + `schedule_webhooks` — `t3_schedule`: clock schedules fire
+  on the engine tick through the host's `SchedulePlanner`; `{type:'webhook'}`
+  schedules fire per request to their loopback URL
+  (`/api/orchestrator/webhooks/<id>.<token>`, mounted by composition) with
+  optional HMAC-SHA256 signatures, request placeholders in the prompt and
+  the planner's unattended-prompt scan on the rendered text. A run posts
+  into the schedule's thread, or into a fresh thread per run
+  (`bind_to_current_thread=false`) on the same runtime, profile and model.
+- `cli_approvals` — `orch_cli_approvals`, the durable record of CLI tool
+  approvals the `ironclaw_cli_providers` bridge asks; open rows are closed
+  as `interrupted` when the engine opens.
+- `goals` — `orch_goals`; the active goal rides every turn
+  (`TurnInput.goal`, and the profile SOUL context on IronClaw's loop).
 
 ## Tables
 
@@ -44,7 +57,8 @@ route, turn state), `orch_tasks`, `orch_queue`, `orch_holds`,
 `orch_transfers`, `orch_recoveries`, `orch_live_work`, `orch_turns`
 (per-turn status and usage), `orch_profiles` (per user: settings JSON,
 `archived_at`; last use and thread count derive from `orch_threads`),
-`orch_settings`, `orch_meta`. First open imports
+`orch_settings`, `orch_meta`, `orch_schedules`, `orch_inbox`, `orch_goals`,
+`orch_cli_approvals`. First open imports
 the legacy `ironclaw_threads` thread records once (marker
 `legacy_threads_imported_v1`).
 

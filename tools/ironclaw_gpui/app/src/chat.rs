@@ -6,7 +6,6 @@ use std::rc::Rc;
 use ironclaw_gpui_client::attachments::{self, StagedFile, format_bytes};
 use ironclaw_gpui_client::commands::{match_command, menu_matches, takes_arguments};
 use ironclaw_gpui_client::contract::ProductGateKind;
-use ironclaw_gpui_client::operator_llm::UserModelCatalog;
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::transcript::{
     AttachmentChip, GateState, Row, RunEnd, ToolStatus, Transcript,
@@ -23,7 +22,10 @@ use crate::jobs::flatten;
 use crate::ui::*;
 
 mod goals;
+pub mod model_picker;
 mod orchestration;
+
+use model_picker::{ModelPicker, PickerEvent};
 
 const TIMELINE_LIMIT: u32 = 200;
 const CONTENT_MAX_WIDTH: f32 = 780.;
@@ -52,9 +54,8 @@ pub struct ChatView {
     /// Slash commands from the gateway, loaded once per view.
     commands: Rc<Vec<RebornProductCommandInfo>>,
     menu_index: usize,
-    /// Quick model switcher: the switchable models and the person's pick.
-    model_choice: Option<(UserModelCatalog, Option<String>)>,
-    model_menu_open: bool,
+    /// The composer's model pill: any provider, switched per thread.
+    picker: Entity<ModelPicker>,
     /// Task ideas for an empty conversation, loaded once it is known empty.
     /// The conversation's files panel, when open.
     files: Option<FilesPanel>,
@@ -115,6 +116,18 @@ impl ChatView {
                 },
             );
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
+        let picker = {
+            let (backend, id) = (backend.clone(), thread_id.clone());
+            cx.new(|cx| ModelPicker::new(backend, Some(id), None, window, cx))
+        };
+        let picked = cx.subscribe(&picker, |this, _, event: &PickerEvent, cx| match event {
+            PickerEvent::Changed(change) => {
+                if let Some(fork) = change.fork_thread_id.clone() {
+                    cx.emit(OpenThread(fork));
+                }
+            }
+            PickerEvent::Failed(message) => this.set_error(message.clone(), cx),
+        });
 
         let (stream, mut rx) = backend.subscribe(&thread_id);
         let pump = cx.spawn(async move |this, cx| {
@@ -148,59 +161,19 @@ impl ChatView {
             error: None,
             commands: Rc::new(Vec::new()),
             menu_index: 0,
-            model_choice: None,
-            model_menu_open: false,
+            picker,
             files: None,
             menu_dismissed: None,
             orch: Default::default(),
             _stream: Some(stream),
             _pump: pump,
         };
-        cx.on_release(move |_, _| drop(subscription)).detach();
+        cx.on_release(move |_, _| drop((subscription, picked)))
+            .detach();
         this.load_timeline(cx);
         this.load_commands(cx);
-        this.load_model_choice(cx);
         this.refresh_orchestration(cx);
         this
-    }
-
-    fn load_model_choice(&mut self, cx: &mut Context<Self>) {
-        let job = self.backend.spawn(|c| async move {
-            let catalog = c.model_catalog().await?;
-            let preference = c.model_preference().await?;
-            Ok::<_, ClientError>((catalog, preference.model))
-        });
-        let task = cx.spawn(async move |this, cx| {
-            // silent-ok: without the routes the switcher stays hidden.
-            if let Ok(choice) = flatten(job.await) {
-                let _ = this.update(cx, |this, cx| {
-                    this.model_choice = Some(choice);
-                    cx.notify();
-                });
-            }
-        });
-        self.keep(task);
-    }
-
-    /// `None` follows the workspace default.
-    fn choose_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
-        self.model_menu_open = false;
-        let job = self
-            .backend
-            .spawn(move |c| async move { c.set_model_preference(model).await });
-        let task = cx.spawn(async move |this, cx| {
-            let result = flatten(job.await);
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(preference) => {
-                    if let Some((_, pick)) = this.model_choice.as_mut() {
-                        *pick = preference.model;
-                    }
-                    cx.notify();
-                }
-                Err(e) => this.set_error(e.to_string(), cx),
-            });
-        });
-        self.keep(task);
     }
 
     fn load_commands(&mut self, cx: &mut Context<Self>) {
@@ -746,6 +719,13 @@ impl ChatView {
         self.keep(task);
     }
 
+    /// The new-thread screen's first message, sent once the thread exists.
+    pub fn send_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |state, cx| state.set_value(text, window, cx));
+        self.send(window, cx);
+    }
+
     fn stop(&mut self, cx: &mut Context<Self>) {
         let Some(run) = self.running_run() else {
             return;
@@ -828,7 +808,6 @@ impl Render for ChatView {
         let weak = cx.weak_entity();
         let menu = self.menu(cx);
         let menu_index = self.menu_index.min(menu.len().saturating_sub(1));
-        let (model_button, model_menu) = self.render_model_switcher(cx);
         let running = self.running_run().is_some();
         let stopping = self.transcript.is_stopping();
         // Fill the silence between send and the first streamed token.
@@ -1002,14 +981,6 @@ impl Render for ChatView {
             .when_some(self.render_orchestration(cx), |this, panel| {
                 this.child(panel)
             })
-            .when_some(model_menu, |this, list| {
-                this.child(
-                    h_flex()
-                        .justify_center()
-                        .px_4()
-                        .child(div().w_full().max_w(px(CONTENT_MAX_WIDTH)).child(list)),
-                )
-            })
             .when(!menu.is_empty(), |this| {
                 this.child(
                     h_flex().justify_center().px_4().child(
@@ -1020,85 +991,14 @@ impl Render for ChatView {
                     ),
                 )
             })
-            .child({
-                // The composer dock: one raised plate holding the text and
-                // its controls. Focus morphs its rim toward the accent.
-                let f = motion::state_t("composer:focus", focused, style.slide, cx.reduce_motion());
-                let dock = kit::neutral(&style, &palette, 0.4 * f, 1.);
-                let rim = motion::mix(dock.rim, palette.accent.opacity(0.55), f);
-                let halo = gpui_kit::BoxShadow {
-                    color: palette.accent.opacity(0.16 * f),
-                    offset: gpui_kit::point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(3. * f),
-                    inset: false,
-                };
-                let mut shadows = dock.shadows.clone();
-                shadows.extend(kit::floating(&style, &palette).shadows);
-                shadows.push(halo);
-                h_flex().justify_center().px_4().pb_4().pt_2().child(
-                    v_flex()
-                        .w_full()
-                        .max_w(px(CONTENT_MAX_WIDTH))
-                        .p(px(6.))
-                        .gap_1()
-                        .rounded(px(style.composer_radius))
-                        .bg(dock.fill)
-                        .border_1()
-                        .border_color(rim)
-                        .shadow(shadows)
-                        .child(
-                            div()
-                                .w_full()
-                                .px_1()
-                                .capture_key_down(cx.listener(Self::on_composer_key))
-                                .child(Textarea::new(&self.composer).appearance(false)),
-                        )
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    kit::button("attach")
-                                        .icon(IconName::Plus)
-                                        .ghost()
-                                        .small()
-                                        .tooltip("Attach files")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.pick_files(window, cx)
-                                        })),
-                                )
-                                .when_some(model_button, |this, button| this.child(button))
-                                .child(div().flex_1())
-                                .when(!running && style.material != Material::Line, |d| {
-                                    d.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(palette.text_faint)
-                                            .pr_1()
-                                            .child("↵ to send"),
-                                    )
-                                })
-                                .child(if running {
-                                    kit::button("stop")
-                                        .icon(IconName::Square)
-                                        .small()
-                                        .tooltip("Stop")
-                                        .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
-                                } else {
-                                    kit::button("send")
-                                        .icon(IconName::ArrowUp)
-                                        .primary()
-                                        .small()
-                                        .tooltip("Send (Enter)")
-                                        .on_click(
-                                            cx.listener(|this, _, window, cx| this.send(window, cx)),
-                                        )
-                                }),
-                        ),
-                )
-            });
+            .child(
+                h_flex()
+                    .justify_center()
+                    .px_4()
+                    .pb_4()
+                    .pt_2()
+                    .child(self.render_composer(running, focused, cx)),
+            );
         h_flex()
             .size_full()
             .child(main)
@@ -1288,55 +1188,103 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
 }
 
 impl ChatView {
-    /// The quick model switcher, shown once Settings pinned some models.
-    fn render_model_switcher(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> (Option<Button>, Option<AnyElement>) {
-        let Some((catalog, pick)) = self
-            .model_choice
-            .as_ref()
-            .filter(|(c, _)| c.selection_enabled && !c.models.is_empty())
-        else {
-            return (None, None);
+    /// The composer card: text on top; model pill, attach and send below.
+    fn render_composer(&self, running: bool, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let style = Style::of(cx);
+        let send = if running {
+            kit::button("stop")
+                .icon(IconName::Square)
+                .small()
+                .tooltip("Stop")
+                .accessibility_label("Stop")
+                .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
+        } else {
+            kit::button("send")
+                .icon(IconName::ArrowUp)
+                .primary()
+                .small()
+                .tooltip("Send (Enter)")
+                .accessibility_label("Send (Enter)")
+                .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
         };
-        let default = catalog.workspace_default.clone().unwrap_or_default();
-        let current = pick.clone().unwrap_or_else(|| default.clone());
-        let button = Button::new("model-switcher")
-            .label(current.clone())
+        let attach = kit::button("attach")
+            .icon(IconName::Plus)
             .ghost()
             .small()
-            .tooltip("Model for your next messages")
-            .accessibility_label("Choose model")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.model_menu_open = !this.model_menu_open;
-                cx.notify();
-            }));
-        let menu = self.model_menu_open.then(|| {
-            let entries = std::iter::once((None, format!("Default ({default})")))
-                .chain(catalog.models.iter().map(|m| (Some(m.clone()), m.clone())));
-            let pop = kit::popover("model-menu", cx);
-            pop(v_flex()
-                .w(px(320.))
-                .p_1()
-                .children(entries.enumerate().map(|(ix, (value, label))| {
-                    let selected = value == *pick;
-                    kit::row(SharedString::from(format!("model-option-{ix}")), selected, cx)
-                        .role(Role::Button)
-                        .aria_label(label.clone())
-                        .child(
-                            div()
-                                .w(px(14.))
-                                .when(selected, |d| d.child(Icon::new(IconName::Check).xsmall())),
-                        )
-                        .child(label)
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.choose_model(value.clone(), cx)),
-                        )
-                })))
+            .tooltip("Attach files")
+            .accessibility_label("Attach files")
+            .on_click(cx.listener(|this, _, window, cx| this.pick_files(window, cx)));
+        let hint = (!running && style.material != Material::Line).then(|| {
+            div()
+                .text_xs()
+                .text_color(Palette::of(cx).text_faint)
+                .pr_1()
+                .child("↵ to send")
         });
-        (Some(button), menu)
+        composer_card(
+            "composer",
+            focused,
+            div()
+                .capture_key_down(cx.listener(Self::on_composer_key))
+                .child(Textarea::new(&self.composer).appearance(false)),
+            self.picker.clone(),
+            h_flex()
+                .gap_1()
+                .items_center()
+                .children(hint)
+                .child(attach)
+                .child(send),
+            cx,
+        )
     }
+}
+
+/// The composer dock: one raised plate, the text on top and a control row
+/// below (model pill on the left, actions on the right). Focus morphs its
+/// rim toward the accent; `key` scopes that animation per composer.
+pub(crate) fn composer_card(
+    key: &str,
+    focused: bool,
+    input: impl IntoElement,
+    picker: Entity<ModelPicker>,
+    actions: impl IntoElement,
+    cx: &App,
+) -> gpui_kit::Div {
+    let style = Style::of(cx);
+    let palette = Palette::of(cx);
+    let f = motion::state_t(&format!("{key}:focus"), focused, style.slide, cx.reduce_motion());
+    let dock = kit::neutral(style, palette, 0.4 * f, 1.);
+    let rim = motion::mix(dock.rim, palette.accent.opacity(0.55), f);
+    let halo = gpui_kit::BoxShadow {
+        color: palette.accent.opacity(0.16 * f),
+        offset: gpui_kit::point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(3. * f),
+        inset: false,
+    };
+    let mut shadows = dock.shadows.clone();
+    shadows.extend(kit::floating(style, palette).shadows);
+    shadows.push(halo);
+    v_flex()
+        .w_full()
+        .max_w(px(CONTENT_MAX_WIDTH))
+        .px_3()
+        .pt_3()
+        .pb_2()
+        .gap_2()
+        .rounded(px(style.composer_radius))
+        .bg(dock.fill)
+        .border_1()
+        .border_color(rim)
+        .shadow(shadows)
+        .child(input)
+        .child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .child(picker)
+                .child(actions),
+        )
 }
 
 /// A file name with its size, used for staged and sent attachments.
