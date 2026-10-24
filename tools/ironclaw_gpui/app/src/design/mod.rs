@@ -14,6 +14,7 @@ pub mod dock;
 pub mod kit;
 pub mod motion;
 pub mod prefs;
+pub mod pulse;
 pub mod styles;
 pub mod themes;
 pub mod wallpaper;

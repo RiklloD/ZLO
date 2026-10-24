@@ -12,7 +12,7 @@
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable, h_flex, v_flex};
 use gpui_kit::{
-    Animation, AnimationExt, App, Background, BoxShadow, ClickEvent, Div, ElementId, Hsla,
+    App, Background, BoxShadow, ClickEvent, Div, ElementId, Hsla,
     InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, Stateful,
     StatefulInteractiveElement, Styled, Window, div, hsla, linear_color_stop, linear_gradient,
     point, prelude::FluentBuilder, px,
@@ -20,6 +20,7 @@ use gpui_kit::{
 use std::time::Duration;
 
 use super::motion::{self, mix};
+use super::pulse;
 use super::styles::{Material, Style};
 use super::{Palette, lift, on_accent};
 
@@ -637,28 +638,21 @@ pub fn popover(id: impl Into<ElementId>, cx: &App) -> impl FnOnce(Div) -> gpui_k
 /// animation, so it costs frames only while shown, and the battery saver
 /// freezes it.
 pub fn pulse_dots(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
-    let id = id.into();
-    h_flex()
-        .gap(px(3.))
-        .items_center()
-        .children((0..3).map(move |i| {
+    pulse::looping(id, Duration::from_millis(1200), pulse::Rate::Smooth, move |t| {
+        h_flex().gap(px(3.)).items_center().children((0..3).map(move |i| {
+            // Each dot peaks a beat after the one before it. The lift is a
+            // relative inset, so the row never relayouts.
+            let phase = (t - i as f32 * 0.18).rem_euclid(1.);
+            let wave = (phase * std::f32::consts::TAU).sin().max(0.);
             div()
                 .relative()
                 .size(px(5.))
                 .rounded_full()
                 .bg(color)
-                .with_animation(
-                    ElementId::NamedInteger(format!("{id:?}-dot").into(), i as u64),
-                    Animation::new(Duration::from_millis(1200)).repeat(),
-                    move |el, t| {
-                        // Each dot peaks 0.2 s after the one before it. The lift is
-                        // a relative inset, so the row never relayouts.
-                        let phase = (t - i as f32 * 0.18).rem_euclid(1.);
-                        let wave = (phase * std::f32::consts::TAU).sin().max(0.);
-                        el.opacity(0.25 + 0.75 * wave).top(px(-2. * wave))
-                    },
-                )
+                .opacity(0.25 + 0.75 * wave)
+                .top(px(-2. * wave))
         }))
+    })
 }
 
 /// Zeron's working glyph: a 3×3 grid of dots tinted blue, amber and pink
@@ -667,28 +661,21 @@ pub fn pulse_dots(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
 /// reduced motion freezes it at rest.
 pub fn gradient_spinner(id: impl Into<ElementId>, cell: f32) -> impl IntoElement {
     const TINTS: [u32; 3] = [0xB6D3EF, 0xEDB185, 0xF888A0];
-    let id = id.into();
     let gap = cell / 2.;
-    v_flex()
-        .gap(px(gap))
-        .flex_none()
-        .children((0..3).map(move |row| {
-            let id = id.clone();
+    let period = Duration::from_millis(motion::GRADIENT_SPIN_MS);
+    pulse::looping(id, period, pulse::Rate::Smooth, move |t| {
+        v_flex().gap(px(gap)).flex_none().children((0..3).map(move |row| {
             h_flex().gap(px(gap)).children((0..3).map(move |col| {
                 // Distance from the wave origin (bottom row, centre column).
                 let d = 2. - row as f32 + (col as f32 - 1.).abs();
-                let phase = d / 4.;
                 div()
                     .size(px(cell))
                     .rounded(px(cell / 2.))
                     .bg(gpui_kit::rgb(TINTS[row]))
-                    .with_animation(
-                        ElementId::NamedInteger(format!("{id:?}-g").into(), (row * 3 + col) as u64),
-                        Animation::new(Duration::from_millis(motion::GRADIENT_SPIN_MS)).repeat(),
-                        move |el, t| el.opacity(motion::gspin_opacity(t + phase, 0.1)),
-                    )
+                    .opacity(motion::gspin_opacity(t + d / 4., 0.1))
             }))
         }))
+    })
 }
 
 /// A shimmer sweeping across a label while something streams in.
@@ -699,40 +686,32 @@ pub fn shimmer_text(
 ) -> impl IntoElement {
     let p = *Palette::of(cx);
     let text: SharedString = text.into();
-    div().text_color(p.text_muted).child(text).with_animation(
-        id,
-        Animation::new(Duration::from_millis(1600)).repeat(),
-        move |el, t| {
-            let w = (t * std::f32::consts::TAU).sin() * 0.5 + 0.5;
-            el.text_color(mix(p.text_faint, p.text, w))
-        },
-    )
+    pulse::looping(id, Duration::from_millis(1600), pulse::Rate::Smooth, move |t| {
+        let w = (t * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+        div().text_color(mix(p.text_faint, p.text, w)).child(text)
+    })
 }
 
 /// A small status dot that can pulse a soft halo.
 pub fn status_dot(id: impl Into<ElementId>, color: Hsla, live: bool) -> impl IntoElement {
     let dot = div().size(px(6.)).rounded_full().bg(color);
     div().relative().size(px(6.)).child(dot).when(live, |d| {
-        d.child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size(px(6.))
-                .rounded_full()
-                .bg(color)
-                .with_animation(
-                    id,
-                    Animation::new(Duration::from_millis(1800)).repeat(),
-                    move |el, t| {
-                        let grow = 6. + 8. * t;
-                        el.size(px(grow))
-                            .top(px(-(grow - 6.) / 2.))
-                            .left(px(-(grow - 6.) / 2.))
-                            .opacity(0.45 * (1. - t))
-                    },
-                ),
-        )
+        d.child(pulse::looping(
+            id,
+            Duration::from_millis(1800),
+            pulse::Rate::Half,
+            move |t| {
+                let grow = 6. + 8. * t;
+                div()
+                    .absolute()
+                    .top(px(-(grow - 6.) / 2.))
+                    .left(px(-(grow - 6.) / 2.))
+                    .size(px(grow))
+                    .rounded_full()
+                    .bg(color)
+                    .opacity(0.45 * (1. - t))
+            },
+        ))
     })
 }
 

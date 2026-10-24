@@ -27,6 +27,7 @@ mod flow;
 mod goals;
 pub mod model_picker;
 mod orchestration;
+mod pace;
 
 use flow::Item;
 use model_picker::{ModelPicker, PickerEvent};
@@ -69,6 +70,9 @@ pub struct ChatView {
     /// The view opened from the new-thread screen: its composer glides
     /// down from where that screen's composer sat.
     arrive: bool,
+    /// Streaming replies revealed at a steady rate.
+    pacer: pace::Pacer,
+    pacing: bool,
     /// Jumps to latest so far; each one keys a fresh settle slide.
     jumps: u32,
     scroller: Entity<MessageScrollerState>,
@@ -194,6 +198,8 @@ impl ChatView {
             reserve: None,
             pin_next: false,
             arrive: false,
+            pacer: pace::Pacer::default(),
+            pacing: false,
             jumps: 0,
             scroller,
             composer,
@@ -699,7 +705,10 @@ impl ChatView {
                 r.held = false;
             }
         }
-        let new_items = flow::fold(&self.rows, live, stopping, self.reserve.is_some());
+        let rows = self.rows.clone();
+        let (rows, pacing) = self.pacer.apply(&rows, Instant::now(), cx.reduce_motion());
+        self.pacing = pacing;
+        let new_items = flow::fold(&rows, live, stopping, self.reserve.is_some());
         let old = self.items.clone();
         if *old == new_items && !self.pin_next {
             return;
@@ -926,6 +935,9 @@ impl Render for ChatView {
         let running = self.running_run().is_some();
         let stopping = self.transcript.is_stopping();
         self.sync_items(running, stopping, cx);
+        if self.pacing {
+            crate::design::pulse::request(crate::design::pulse::Rate::Smooth, window, cx);
+        }
         let reserve_h = self.reserve_height(window, cx);
         let items = self.items.clone();
         let toggles = self.toggles.clone();
