@@ -569,6 +569,22 @@ impl ChatView {
             return;
         }
         let items = self.menu(cx);
+        // ↑ in an empty composer brings back the last message to edit and
+        // resend (MonoCode's edit-last-turn recall, without the rewind).
+        if items.is_empty()
+            && keys.key == "up"
+            && !keys.modifiers.modified()
+            && self.composer.read(cx).value().is_empty()
+            && let Some(last) = self.rows.iter().rev().find_map(|r| match r {
+                Row::User { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+        {
+            self.composer
+                .update(cx, |state, cx| state.set_value(last, window, cx));
+            cx.stop_propagation();
+            return;
+        }
         if items.is_empty() || event.keystroke.modifiers.modified() {
             return;
         }
