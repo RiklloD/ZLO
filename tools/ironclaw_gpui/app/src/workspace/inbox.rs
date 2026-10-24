@@ -342,9 +342,22 @@ impl Workspace {
         let now = Utc::now().timestamp_millis();
 
         let mut list: Vec<AnyElement> = Vec::new();
-        for row in pinned.iter().chain(main.iter()) {
+        let enter = Style::of(cx).enter;
+        for (ix, row) in pinned.iter().chain(main.iter()).enumerate() {
             let is_active = active.as_deref() == Some(row.thread_id.as_str());
-            list.push(self.render_card(row, is_active, now, cx));
+            let card = self.render_card(row, is_active, now, cx);
+            // Cards cascade in when they first mount (app start, a filter
+            // change); a mounted card never replays.
+            list.push(
+                crate::design::motion::fade_in_after(
+                    div().w_full().child(card),
+                    SharedString::from(format!("card-in-{}", row.thread_id)),
+                    enter,
+                    4.,
+                    (ix.min(12) * 28) as u64,
+                )
+                .into_any_element(),
+            );
         }
         if main.is_empty() && pinned.is_empty() && self.inbox.list.rows.is_empty() {
             list.push(

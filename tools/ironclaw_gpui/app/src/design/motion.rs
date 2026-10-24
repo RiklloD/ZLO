@@ -172,6 +172,29 @@ where
         })
 }
 
+/// [`fade_in`] that waits `delay_ms` first: list rows use it to arrive in
+/// a short cascade, one orchestrated moment instead of a jump.
+pub fn fade_in_after<E>(
+    element: E,
+    id: impl Into<ElementId>,
+    spec: MotionSpec,
+    rise: f32,
+    delay_ms: u64,
+) -> impl IntoElement
+where
+    E: IntoElement + Styled + 'static,
+{
+    let total = (spec.duration_ms + delay_ms).max(1) as f32;
+    let lead = delay_ms as f32 / total;
+    let animation = Animation::new(Duration::from_millis(spec.duration_ms + delay_ms))
+        .with_easing(move |t| spec.curve.eval(((t - lead) / (1. - lead)).clamp(0., 1.)));
+    element
+        .relative()
+        .with_animation(id, animation, move |el, d| {
+            el.opacity(d).top(px(rise * (1. - d)))
+        })
+}
+
 /// Popover and menu entrance on a spring: fades in while travelling `from`
 /// px toward its resting place (negative starts above it).
 pub fn pop_in<E>(element: E, id: impl Into<ElementId>, spring: Spring, from: f32) -> impl IntoElement
