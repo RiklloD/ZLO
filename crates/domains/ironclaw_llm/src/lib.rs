@@ -33,6 +33,7 @@ pub(crate) mod openai_codex_session;
 mod provider;
 pub mod provider_routing;
 mod reasoning;
+pub mod reasoning_effort;
 pub mod recording;
 pub mod registry;
 #[cfg(feature = "registry-provider-factory")]
@@ -455,7 +456,8 @@ fn create_openai_compat_from_registry(
         .with_json_object_support(true)
         .with_prompt_cache_key_support(true)
         .with_unsupported_params(config.unsupported_params.clone())
-        .with_model_listing(models_endpoint);
+        .with_model_listing(models_endpoint)
+        .with_effort_style(crate::reasoning_effort::EffortStyle::OpenAiChat);
     Ok(Arc::new(adapter))
 }
 
@@ -575,7 +577,8 @@ fn create_anthropic_from_registry(
             .with_cache_retention(cache_retention)
             .with_default_max_tokens(DEFAULT_MAX_TOKENS)
             .with_unsupported_params(config.unsupported_params.clone())
-            .with_model_listing(models_endpoint),
+            .with_model_listing(models_endpoint)
+            .with_effort_style(crate::reasoning_effort::EffortStyle::Anthropic),
     ))
 }
 
@@ -791,7 +794,8 @@ fn create_openrouter_from_registry(
             // provider boundary instead of claiming the contract was sent.
             .with_structured_output_support(false)
             .with_prompt_cache_key_support(true)
-            .with_unsupported_params(config.unsupported_params.clone()),
+            .with_unsupported_params(config.unsupported_params.clone())
+            .with_effort_style(crate::reasoning_effort::EffortStyle::OpenRouter),
     ))
 }
 
@@ -856,7 +860,8 @@ fn create_gemini_from_registry(
     Ok(Arc::new(
         RigAdapter::new(model, &config.model)
             .with_provider_id(config.provider_id.clone())
-            .with_unsupported_params(config.unsupported_params.clone()),
+            .with_unsupported_params(config.unsupported_params.clone())
+            .with_effort_style(crate::reasoning_effort::EffortStyle::Gemini),
     ))
 }
 

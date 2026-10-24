@@ -618,9 +618,14 @@ pub struct NativeModelRoute {
     pub provider_id: String,
     pub name: String,
     pub models: Vec<String>,
-    /// Reasoning efforts the provider honors per request; empty: none.
+    /// Reasoning efforts the provider's default model takes per request;
+    /// empty: none.
     #[serde(default)]
     pub efforts: Vec<String>,
+    /// The efforts of each listed model; a model missing here takes
+    /// `efforts`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub model_efforts: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl NativeModelRoute {
@@ -663,9 +668,10 @@ impl NativeModelRoute {
 pub trait NativeModelRoutes: Send + Sync {
     async fn routes(&self) -> Vec<NativeModelRoute>;
 
-    /// Reasoning efforts the active provider honors per request.
-    async fn primary_efforts(&self) -> Vec<String> {
-        Vec::new()
+    /// The active provider: its listed models and their efforts. `None`
+    /// when it cannot be read.
+    async fn primary(&self) -> Option<NativeModelRoute> {
+        None
     }
 }
 

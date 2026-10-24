@@ -8,7 +8,7 @@
 //! Clients and model lists are cached for [`CACHE_TTL`], so a key or catalog
 //! edit reaches new turns within that window without a restart.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use ironclaw_config::{LlmSlotSelection, RebornBootConfig};
 use ironclaw_llm::provider_routing::RoutedProviderSource;
+use ironclaw_llm::reasoning_effort;
 use ironclaw_llm::registry::{ProviderDefinition, ProviderProtocol, ProviderRegistry};
 use ironclaw_llm::{LlmError, LlmProvider, SessionManager};
 use ironclaw_product_contracts::operator_llm::{NativeModelRoute, NativeModelRoutes};
@@ -56,6 +57,24 @@ impl RebornProviderRoutes {
             .map_err(|error| error.to_string())
     }
 
+    async fn route_for(&self, def: &ProviderDefinition) -> NativeModelRoute {
+        let name = def
+            .setup
+            .as_ref()
+            .map(|setup| setup.display_name().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| def.description.clone());
+        let models = self.models_for(def).await;
+        let (efforts, model_efforts) = efforts_for(def, &models);
+        NativeModelRoute {
+            provider_id: def.id.clone(),
+            name,
+            models,
+            efforts,
+            model_efforts,
+        }
+    }
+
     async fn models_for(&self, def: &ProviderDefinition) -> Vec<String> {
         if let Some(hit) = cached(&self.models, &def.id) {
             return hit;
@@ -83,15 +102,15 @@ impl RebornProviderRoutes {
     }
 }
 
-/// Reasoning efforts a provider honors per request: the Responses API
-/// providers read the router's effort; the others have no such knob wired.
-fn efforts_for(def: &ProviderDefinition) -> Vec<String> {
-    match def.protocol {
-        ProviderProtocol::OpenAiCodex => ["low", "medium", "high", "xhigh"]
-            .map(str::to_string)
-            .to_vec(),
-        _ => Vec::new(),
-    }
+/// The efforts of a provider's default model, and of each listed model
+/// (`ironclaw_llm` knows which levels each model takes on each protocol).
+fn efforts_for(
+    def: &ProviderDefinition,
+    models: &[String],
+) -> (Vec<String>, BTreeMap<String, Vec<String>>) {
+    let of = |model: &str| reasoning_effort::efforts_for(def.protocol, &def.id, model);
+    let per_model = models.iter().map(|m| (m.clone(), of(m))).collect();
+    (of(&def.default_model), per_model)
 }
 
 fn cached<T: Clone>(cache: &Cache<T>, key: &str) -> Option<T> {
@@ -174,36 +193,36 @@ impl NativeModelRoutes for RebornProviderRoutes {
             .filter(|def| ids.contains(&def.id) && seen.insert(def.id.clone()))
             .filter_map(|def| registry.find(&def.id));
         for def in defs {
-            let name = def
-                .setup
-                .as_ref()
-                .map(|setup| setup.display_name().to_string())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| def.description.clone());
-            routes.push(NativeModelRoute {
-                provider_id: def.id.clone(),
-                name,
-                models: self.models_for(def).await,
-                efforts: efforts_for(def),
-            });
+            routes.push(self.route_for(def).await);
         }
         routes.sort_by_key(|route| route.name.to_lowercase());
         routes
     }
 
-    async fn primary_efforts(&self) -> Vec<String> {
-        // silent-ok: no effort choice when the active provider cannot be read.
+    async fn primary(&self) -> Option<NativeModelRoute> {
+        // silent-ok: the picker offers the active provider's default model
+        // alone when its config or the catalog cannot be read.
         let active = ironclaw_config::RebornConfigFile::load(&self.config_path)
             .ok()
             .flatten()
-            .and_then(|file| {
-                file.default_llm_slot()
-                    .and_then(|slot| slot.provider_id.clone())
+            .and_then(|file| file.default_llm_slot().cloned())?;
+        let registry = self.registry().ok()?;
+        let def = registry.find(active.provider_id.as_deref()?)?;
+        if def.protocol == ProviderProtocol::OpenAiCodex {
+            // A second plan client could refresh (and rotate) the OAuth
+            // token under the live one; the plan's list needs no client.
+            let configured = active.model.as_deref().unwrap_or(&def.default_model);
+            let models = ironclaw_llm::openai_codex_provider::plan_models(configured).await;
+            let (efforts, model_efforts) = efforts_for(def, &models);
+            return Some(NativeModelRoute {
+                provider_id: def.id.clone(),
+                name: def.description.clone(),
+                models,
+                efforts,
+                model_efforts,
             });
-        let (Some(id), Ok(registry)) = (active, self.registry()) else {
-            return Vec::new();
-        };
-        registry.find(&id).map(efforts_for).unwrap_or_default()
+        }
+        Some(self.route_for(def).await)
     }
 }
 
@@ -211,6 +230,26 @@ impl NativeModelRoutes for RebornProviderRoutes {
 mod tests {
     use super::*;
     use ironclaw_llm::provider_routing::ModelRoute;
+
+    #[test]
+    fn each_listed_model_carries_the_levels_it_takes() {
+        let registry = ProviderRegistry::try_load_from_path(None).unwrap();
+        let anthropic = registry.find("anthropic").unwrap();
+        let models = vec![
+            "claude-opus-5-5".to_string(),
+            "claude-3-5-haiku".to_string(),
+        ];
+        let (default_efforts, per_model) = efforts_for(anthropic, &models);
+        assert!(
+            default_efforts.is_empty(),
+            "the catalog default (Sonnet 4) has no effort knob"
+        );
+        assert_eq!(
+            per_model["claude-opus-5-5"],
+            ["low", "medium", "high", "max"]
+        );
+        assert!(per_model["claude-3-5-haiku"].is_empty());
+    }
 
     /// The product side encodes the turn model, the LLM router decodes it;
     /// this crate sees both, so it pins that they agree.

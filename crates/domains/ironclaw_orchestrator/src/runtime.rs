@@ -255,6 +255,10 @@ pub struct CatalogProvider {
     /// Reasoning efforts a turn may pick; empty: the provider has no knob.
     #[serde(default)]
     pub efforts: Vec<String>,
+    /// Per-model efforts where they differ by model; a model missing here
+    /// takes `efforts`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub model_efforts: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

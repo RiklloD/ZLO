@@ -177,9 +177,16 @@ impl OpenAiCodexProvider {
         Ok(headers)
     }
 
+    /// The model a request runs: its override (a plan model the picker
+    /// chose), else the configured one.
+    fn request_model<'a>(&'a self, requested: Option<&'a str>) -> &'a str {
+        crate::provider::normalized_model_override(requested).unwrap_or(&self.model)
+    }
+
     /// Build the request body for the Responses API.
     fn build_request_body(
         &self,
+        model: &str,
         messages: &[ChatMessage],
         tools: Option<&[ToolDefinition]>,
         tool_choice: Option<&str>,
@@ -203,7 +210,7 @@ impl OpenAiCodexProvider {
             .collect();
 
         let mut body = serde_json::json!({
-            "model": self.model,
+            "model": model,
             "store": false,
             "stream": true,
             "input": input,
@@ -215,7 +222,7 @@ impl OpenAiCodexProvider {
             body["text"]["format"] = format;
         }
 
-        if crate::reasoning_models::supports_openai_reasoning(&self.model) {
+        if crate::reasoning_models::supports_openai_reasoning(model) {
             body["reasoning"] = crate::responses_reasoning::summary_request(metadata);
             body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
         }
@@ -353,6 +360,7 @@ impl OpenAiCodexProvider {
         let mut messages = request.messages;
         crate::provider::sanitize_tool_messages(&mut messages);
         let body = self.build_request_body(
+            self.request_model(request.model.as_deref()),
             &messages,
             None,
             None,
@@ -392,6 +400,7 @@ impl OpenAiCodexProvider {
             })
             .collect();
         let body = self.build_request_body(
+            self.request_model(request.model.as_deref()),
             &messages,
             Some(&request.tools),
             request.tool_choice.as_deref(),
@@ -475,10 +484,8 @@ impl LlmProvider for OpenAiCodexProvider {
         self.complete_with_tools_inner(request, Some(sink)).await
     }
 
-    /// Returns empty — Codex uses subscription-based access with a fixed model,
-    /// no model enumeration API is available.
     async fn list_models(&self) -> Result<Vec<String>, LlmError> {
-        Ok(vec![])
+        Ok(plan_models(&self.model).await)
     }
 
     async fn model_metadata(&self) -> Result<ModelMetadata, LlmError> {
@@ -495,8 +502,64 @@ impl LlmProvider for OpenAiCodexProvider {
         })
     }
 
-    fn effective_model_name(&self, _requested_model: Option<&str>) -> String {
-        self.model.clone()
+    fn effective_model_name(&self, requested_model: Option<&str>) -> String {
+        self.request_model(requested_model).to_string()
+    }
+}
+
+/// The plan's models: `configured` first, then what the same ChatGPT
+/// account's Codex CLI last fetched (`$CODEX_HOME/models_cache.json`),
+/// listed models the public API serves. The plan has no list endpoint of its
+/// own; without that cache only `configured` is offered. Reads a file only,
+/// so callers need no signed-in client.
+pub async fn plan_models(configured: &str) -> Vec<String> {
+    let mut models = vec![configured.to_string()];
+    let Some(path) = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .map(|dir| dir.join("models_cache.json"))
+    else {
+        return models;
+    };
+    // silent-ok: the cache is optional; the configured model stays listed.
+    let Ok(bytes) = tokio::fs::read(&path).await else {
+        return models;
+    };
+    for model in plan_models_from_cache(&bytes) {
+        if !models.contains(&model) {
+            models.push(model);
+        }
+    }
+    models
+}
+
+/// Listed, API-served model slugs from a Codex CLI `models_cache.json`.
+fn plan_models_from_cache(bytes: &[u8]) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct Cache {
+        #[serde(default)]
+        models: Vec<CachedModel>,
+    }
+    #[derive(Deserialize)]
+    struct CachedModel {
+        slug: String,
+        #[serde(default)]
+        visibility: Option<String>,
+        #[serde(default)]
+        supported_in_api: Option<bool>,
+    }
+    match serde_json::from_slice::<Cache>(bytes) {
+        Ok(cache) => cache
+            .models
+            .into_iter()
+            .filter(|m| m.visibility.as_deref().is_none_or(|v| v == "list"))
+            .filter(|m| m.supported_in_api != Some(false))
+            .map(|m| m.slug)
+            .collect(),
+        Err(error) => {
+            tracing::debug!(%error, "Codex models cache unreadable; listing the configured model");
+            Vec::new()
+        }
     }
 }
 
@@ -1648,6 +1711,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
         ];
 
         let body = provider.build_request_body(
+            &provider.model,
             &messages,
             None,
             None,
@@ -1687,7 +1751,8 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
             "thread-abc-123".to_string(),
         );
 
-        let body = provider.build_request_body(&messages, None, None, None, &metadata);
+        let body =
+            provider.build_request_body(&provider.model, &messages, None, None, None, &metadata);
 
         assert_eq!(body["prompt_cache_key"], "thread-abc-123");
     }
@@ -1810,6 +1875,54 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
         assert_eq!(body["prompt_cache_key"], "hashed-cache-key-xyz");
     }
 
+    /// A plan model picked per turn, with its effort, reaches the wire
+    /// through the router: the request's model wins over the configured one.
+    #[tokio::test]
+    async fn a_routed_plan_model_and_effort_reach_the_wire() {
+        struct NoRoutes;
+        #[async_trait]
+        impl crate::provider_routing::RoutedProviderSource for NoRoutes {
+            async fn provider(&self, id: &str) -> Result<Arc<dyn LlmProvider>, LlmError> {
+                Err(LlmError::RequestFailed {
+                    provider: id.to_string(),
+                    reason: "no routes in this test".to_string(),
+                })
+            }
+        }
+        let (base_url, captured) = capture_one_request().await;
+        let jwt = make_test_jwt("acct_test");
+        let provider = OpenAiCodexProvider::new("gpt-6.1-sol", &base_url, &jwt, 5).unwrap();
+        let router =
+            crate::provider_routing::ProviderRouter::new(Arc::new(provider), Arc::new(NoRoutes));
+        assert_eq!(
+            router.effective_model_name(Some("::gpt-6-sol::high")),
+            "gpt-6-sol"
+        );
+
+        let mut request = CompletionRequest::new(vec![ChatMessage::user("hello")]);
+        request.model = Some("::gpt-6-sol::high".to_string());
+        let _ = router.complete(request).await;
+        let body = captured_json(captured).await;
+
+        assert_eq!(body["model"], "gpt-6-sol");
+        assert_eq!(body["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn plan_models_come_from_the_listed_api_models_of_the_codex_cache() {
+        let cache = serde_json::json!({ "models": [
+            { "slug": "gpt-6.1-sol", "visibility": "list", "supported_in_api": true },
+            { "slug": "gpt-reserve", "visibility": "hide", "supported_in_api": true },
+            { "slug": "gpt-6-luna", "visibility": "list" },
+            { "slug": "cli-only", "visibility": "list", "supported_in_api": false },
+        ]});
+        assert_eq!(
+            plan_models_from_cache(cache.to_string().as_bytes()),
+            ["gpt-6.1-sol", "gpt-6-luna"]
+        );
+        assert!(plan_models_from_cache(b"not json").is_empty());
+    }
+
     #[tokio::test]
     async fn complete_public_path_omits_prompt_cache_key_when_unsupported() {
         let (base_url, captured) = capture_one_request().await;
@@ -1849,6 +1962,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
         }];
 
         let body = provider.build_request_body(
+            &provider.model,
             &messages,
             Some(&tools),
             None,
@@ -1890,6 +2004,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
             parameters: serde_json::json!({"type": "object"}),
         }];
         let body = provider.build_request_body(
+            &provider.model,
             &messages,
             Some(&tools),
             Some("echo"),
@@ -1926,6 +2041,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
         let format = crate::provider::CompletionResponseFormat::JsonSchema(schema.clone());
 
         let body = provider.build_request_body(
+            &provider.model,
             &[ChatMessage::user("Return suggestions")],
             None,
             None,
@@ -2108,6 +2224,7 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
         .unwrap();
 
         let body = provider.build_request_body(
+            &provider.model,
             &messages,
             None,
             None,

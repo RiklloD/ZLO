@@ -78,6 +78,7 @@ const OPENAI_REASONING_PATTERNS: &[&str] = &["o1", "o3", "o4", "/reasoning/", "g
 pub fn supports_openai_reasoning(model: &str) -> bool {
     let lower = model.to_ascii_lowercase();
     OPENAI_REASONING_PATTERNS.iter().any(|p| lower.contains(p))
+        || crate::reasoning_effort::openai_reasoning(&lower)
 }
 
 /// Anthropic models that use the `adaptive` thinking mode (4.6+/4.7+).

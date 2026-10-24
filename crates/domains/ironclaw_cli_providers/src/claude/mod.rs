@@ -528,6 +528,7 @@ impl TurnRuntime for ClaudeCliRuntime {
             current: false,
             models: MODELS.iter().map(|m| m.to_string()).collect(),
             efforts: EFFORTS.iter().map(|e| e.to_string()).collect(),
+            model_efforts: Default::default(),
         }])
     }
 }

@@ -92,6 +92,9 @@ pub struct RigAdapter<M: CompletionModel> {
     /// `CompletionModel` does not expose model discovery, so this is wired
     /// explicitly per protocol (OpenAI-compatible, Anthropic, Ollama).
     models_endpoint: Option<ModelsEndpoint>,
+    /// How this protocol carries a routed reasoning effort; `None`: it has
+    /// no effort knob and the metadata is ignored.
+    effort_style: Option<crate::reasoning_effort::EffortStyle>,
 }
 
 /// Auth scheme applied to a model-discovery request.
@@ -291,7 +294,46 @@ impl<M: CompletionModel> RigAdapter<M> {
             json_object_supported: false,
             prompt_cache_key_supported: false,
             models_endpoint: None,
+            effort_style: None,
         }
+    }
+
+    /// Send a routed reasoning effort the way this protocol spells it.
+    pub(crate) fn with_effort_style(mut self, style: crate::reasoning_effort::EffortStyle) -> Self {
+        self.effort_style = Some(style);
+        self
+    }
+
+    /// Merge the effort the router put in `metadata` into the request, when
+    /// the model takes that level.
+    fn apply_reasoning_effort(
+        &self,
+        rig_req: &mut RigRequest,
+        metadata: &std::collections::HashMap<String, String>,
+        model_override: Option<&str>,
+    ) {
+        let Some(style) = self.effort_style else {
+            return;
+        };
+        let Some(effort) = metadata.get(crate::provider_routing::REASONING_EFFORT_METADATA) else {
+            return;
+        };
+        let shape = crate::reasoning_effort::RequestShape {
+            temperature: rig_req.temperature.is_some(),
+            forced_tool: matches!(
+                rig_req.tool_choice,
+                Some(RigToolChoice::Required | RigToolChoice::Specific { .. })
+            ),
+            structured_output: rig_req.output_schema.is_some()
+                || rig_req
+                    .additional_params
+                    .as_ref()
+                    .is_some_and(|p| p.get("response_format").is_some()),
+        };
+        let model = model_override.unwrap_or(&self.model_name);
+        let params =
+            crate::reasoning_effort::params(style, &self.provider_id, model, effort, shape);
+        merge_additional_params(rig_req, params.as_ref());
     }
 
     /// Set the stable provider identity used in typed provider errors.
@@ -1422,6 +1464,7 @@ where
                 })),
             );
         }
+        self.apply_reasoning_effort(&mut rig_req, &request.metadata, model_override.as_deref());
         inject_model_override(&mut rig_req, model_override.as_deref());
 
         let response = self
@@ -1502,6 +1545,7 @@ where
                 })),
             );
         }
+        self.apply_reasoning_effort(&mut rig_req, &request.metadata, model_override.as_deref());
         inject_model_override(&mut rig_req, model_override.as_deref());
 
         let stream = self
@@ -1578,6 +1622,7 @@ where
                 })),
             );
         }
+        self.apply_reasoning_effort(&mut rig_req, &request.metadata, model_override.as_deref());
         inject_model_override(&mut rig_req, model_override.as_deref());
 
         let response = self
@@ -1688,6 +1733,7 @@ where
                 })),
             );
         }
+        self.apply_reasoning_effort(&mut rig_req, &request.metadata, model_override.as_deref());
         inject_model_override(&mut rig_req, model_override.as_deref());
 
         let stream = self
@@ -2154,6 +2200,110 @@ mod tests {
         let body = captured_request_body(captured_body).await;
         let body: serde_json::Value = serde_json::from_str(&body).expect("request JSON");
         assert_eq!(body["prompt_cache_key"], "thread-cache-key-abc");
+    }
+
+    /// A routed `provider::model::effort` turn: the router strips the model
+    /// to its plain id and the adapter spells the effort in the wire body.
+    async fn routed_effort_body(
+        build: impl FnOnce(&str) -> Arc<dyn LlmProvider>,
+        turn_model: &str,
+    ) -> serde_json::Value {
+        struct NoRoutes;
+        #[async_trait]
+        impl crate::provider_routing::RoutedProviderSource for NoRoutes {
+            async fn provider(&self, id: &str) -> Result<Arc<dyn LlmProvider>, LlmError> {
+                Err(LlmError::RequestFailed {
+                    provider: id.to_string(),
+                    reason: "no routes in this test".to_string(),
+                })
+            }
+        }
+        let (base_url, captured_body) = capture_one_http_request().await;
+        let router =
+            crate::provider_routing::ProviderRouter::new(build(&base_url), Arc::new(NoRoutes));
+        let mut request = CompletionRequest::new(vec![ChatMessage::user("hello")]);
+        request.model = Some(turn_model.to_string());
+        router
+            .complete(request)
+            .await
+            .expect_err("capture server intentionally rejects the request");
+        let body = captured_request_body(captured_body).await;
+        serde_json::from_str(&body).expect("request JSON")
+    }
+
+    fn openai_chat(base_url: &str) -> Arc<dyn LlmProvider> {
+        use rig::client::CompletionClient;
+        let client = rig::providers::openai::Client::builder()
+            .api_key("test-key")
+            .base_url(base_url)
+            .build()
+            .expect("build OpenAI-compatible client")
+            .completions_api();
+        Arc::new(
+            RigAdapter::new(client.completion_model("gpt-4o"), "gpt-4o")
+                .with_provider_id("openai")
+                .with_effort_style(crate::reasoning_effort::EffortStyle::OpenAiChat),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_routed_effort_reaches_each_api_protocol_on_the_wire() {
+        let body = routed_effort_body(openai_chat, "::gpt-5.2::high").await;
+        assert_eq!(body["model"], "gpt-5.2");
+        assert_eq!(body["reasoning_effort"], "high");
+
+        let body = routed_effort_body(openai_chat, "::gpt-4o::high").await;
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "a model without the knob gets no field: {body}"
+        );
+
+        let body = routed_effort_body(openai_chat, "::glm-5.3::off").await;
+        assert_eq!(body["thinking"], serde_json::json!({ "type": "disabled" }));
+
+        let anthropic = |base_url: &str| -> Arc<dyn LlmProvider> {
+            use rig::client::CompletionClient;
+            let client: rig::providers::anthropic::Client =
+                rig::providers::anthropic::Client::builder()
+                    .api_key("test-key")
+                    .base_url(base_url)
+                    .build()
+                    .expect("build Anthropic client");
+            Arc::new(
+                RigAdapter::new(
+                    client.completion_model("claude-opus-5-5"),
+                    "claude-opus-5-5",
+                )
+                .with_provider_id("anthropic")
+                .with_default_max_tokens(8192)
+                .with_effort_style(crate::reasoning_effort::EffortStyle::Anthropic),
+            )
+        };
+        let body = routed_effort_body(anthropic, "::claude-opus-5-5::max").await;
+        assert_eq!(
+            body["output_config"],
+            serde_json::json!({ "effort": "max" })
+        );
+        assert_eq!(body["thinking"], serde_json::json!({ "type": "adaptive" }));
+
+        let gemini = |base_url: &str| -> Arc<dyn LlmProvider> {
+            use rig::client::CompletionClient;
+            let client: rig::providers::gemini::Client = rig::providers::gemini::Client::builder()
+                .api_key("test-key")
+                .base_url(base_url)
+                .build()
+                .expect("build Gemini client");
+            Arc::new(
+                RigAdapter::new(client.completion_model("gemini-4-argon"), "gemini-4-argon")
+                    .with_provider_id("gemini")
+                    .with_effort_style(crate::reasoning_effort::EffortStyle::Gemini),
+            )
+        };
+        let body = routed_effort_body(gemini, "::gemini-4-argon::low").await;
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"],
+            serde_json::json!({ "thinkingLevel": "low" })
+        );
     }
 
     /// Absent metadata must not synthesize the field.

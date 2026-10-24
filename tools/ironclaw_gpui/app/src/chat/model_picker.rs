@@ -9,12 +9,14 @@
 //! every thread returns the same list.
 //!
 //! Like t3code, the user can star models (the star tab lists them) and hide
-//! models or whole providers (hover icons; right-click a rail icon). The
-//! preferences live in the backend settings, written through the same route.
+//! models or whole providers (hover icons on a row or a group title;
+//! right-click a rail icon). Hidden providers sit as chips under the list,
+//! one click shows them again. The preferences live in the backend settings,
+//! written through the same route.
 //!
 //! Beside the model pill, a thinking pill picks the reasoning effort when the
-//! provider has one (t3code's "Reasoning" option): the levels come from the
-//! catalog, and the pick rides the same route, per thread.
+//! model has one (t3code's "Reasoning" option): the levels come from the
+//! catalog per model, and the pick rides the same route, per thread.
 
 use ironclaw_gpui_client::Backend;
 use ironclaw_gpui_client::orchestration::{PickerPrefs, RouteChange, RouteProvider, ThreadRoute};
@@ -145,12 +147,12 @@ impl ModelPicker {
             .map_or(NATIVE, |(provider, _)| provider)
     }
 
-    /// The efforts `provider` offers; empty when it has no knob.
-    fn efforts_of(&self, provider: &str) -> &[String] {
+    /// The efforts `model` on `provider` takes; empty when it has no knob.
+    fn efforts_of(&self, provider: &str, model: &str) -> &[String] {
         self.providers()
             .iter()
             .find(|p| p.provider == provider)
-            .map_or(&[], |p| p.efforts.as_slice())
+            .map_or(&[], |p| p.efforts_for(model))
     }
 
     fn pick_effort(&mut self, effort: Option<String>, cx: &mut Context<Self>) {
@@ -197,11 +199,11 @@ impl ModelPicker {
 
     fn pick(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
         self.open = false;
-        // The effort carries over when the new provider offers the same level.
+        // The effort carries over when the new model takes the same level.
         let effort = self
             .effort
             .clone()
-            .filter(|e| self.efforts_of(&provider).contains(e));
+            .filter(|e| self.efforts_of(&provider, &model).contains(e));
         let Some(thread_id) = self.thread_id.clone() else {
             self.current = Some((provider, model));
             self.effort = effort;
@@ -355,13 +357,7 @@ impl ModelPicker {
                 }))
                 .on_mouse_down(
                     MouseButton::Right,
-                    cx.listener(move |this, _, _, cx| {
-                        let key = toggle_key.clone();
-                        if this.rail == Rail::Provider(key.clone()) {
-                            this.rail = Rail::All;
-                        }
-                        this.edit_prefs(|prefs| prefs.toggle_provider(&key), cx);
-                    }),
+                    cx.listener(move |this, _, _, cx| this.toggle_provider(toggle_key.clone(), cx)),
                 )
                 .into_any_element(),
             );
@@ -374,7 +370,13 @@ impl ModelPicker {
                 || pretty_model(model).to_lowercase().contains(&query)
                 || provider.name.to_lowercase().contains(&query)
         };
-        let mut groups: Vec<(String, Vec<(&RouteProvider, String)>)> = Vec::new();
+        // `None` provider: the favorites group, which has no hide button.
+        type Group<'a> = (
+            String,
+            Option<&'a RouteProvider>,
+            Vec<(&'a RouteProvider, String)>,
+        );
+        let mut groups: Vec<Group> = Vec::new();
         if self.rail == Rail::Favorites {
             let picks = self
                 .prefs
@@ -385,7 +387,7 @@ impl ModelPicker {
                     matches(provider, &f.model).then(|| (provider, f.model.clone()))
                 })
                 .collect();
-            groups.push(("Favorites".into(), picks));
+            groups.push(("Favorites".into(), None, picks));
         } else {
             for provider in self.providers() {
                 if let Rail::Provider(only) = &self.rail
@@ -407,26 +409,16 @@ impl ModelPicker {
                     .filter(|m| self.show_hidden || !self.prefs.model_hidden(&provider.provider, m))
                     .map(|m| (provider, m))
                     .collect();
-                groups.push((provider.name.clone(), picks));
+                groups.push((provider.name.clone(), Some(provider), picks));
             }
         }
 
         let mut rows: Vec<AnyElement> = Vec::new();
-        for (title, picks) in groups {
+        for (title, provider, picks) in groups {
             if picks.is_empty() {
                 continue;
             }
-            rows.push(
-                div()
-                    .px_2()
-                    .pt_2()
-                    .pb_1()
-                    .text_xs()
-                    .font_medium()
-                    .text_color(p.text_faint)
-                    .child(title.to_uppercase())
-                    .into_any_element(),
-            );
+            rows.push(self.group_header(title, provider, cx));
             for (provider, model) in picks {
                 rows.push(self.model_row(provider, model, fresh, current_runtime.as_deref(), cx));
             }
@@ -448,6 +440,7 @@ impl ModelPicker {
             );
         }
         let hidden = self.hidden_count();
+        let hidden_providers = self.render_hidden_providers(cx);
 
         h_flex()
             .id("model-popover")
@@ -487,6 +480,7 @@ impl ModelPicker {
                             .pb_1()
                             .children(rows),
                     )
+                    .children(hidden_providers)
                     .when(hidden > 0, |d| {
                         d.child(
                             div()
@@ -511,6 +505,120 @@ impl ModelPicker {
                         )
                     }),
             )
+    }
+
+    /// A provider group's title; hovering shows a button that hides (or,
+    /// while hidden ones are shown, restores) the whole provider.
+    fn group_header(
+        &self,
+        title: String,
+        provider: Option<&RouteProvider>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = *Palette::of(cx);
+        let header = h_flex()
+            .px_2()
+            .pt_2()
+            .pb_1()
+            .gap_1()
+            .items_center()
+            .text_xs()
+            .font_medium()
+            .text_color(p.text_faint)
+            .child(div().flex_1().truncate().child(title.to_uppercase()));
+        let Some(provider) = provider else {
+            return header.into_any_element();
+        };
+        let key = provider.provider.clone();
+        let hidden = self.prefs.provider_hidden(&key);
+        let group = SharedString::from(format!("pick-group-{key}"));
+        header
+            .id(SharedString::from(format!("group-{key}")))
+            .group(group.clone())
+            .child(
+                div()
+                    .when(!hidden, |d| {
+                        d.invisible().group_hover(group, |s| s.visible())
+                    })
+                    .child(
+                        Button::new(SharedString::from(format!("hide-provider-{key}")))
+                            .icon(if hidden {
+                                IconName::Eye
+                            } else {
+                                IconName::EyeOff
+                            })
+                            .ghost()
+                            .xsmall()
+                            .tooltip(if hidden {
+                                "Show this provider"
+                            } else {
+                                "Hide this provider"
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_provider(key.clone(), cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn toggle_provider(&mut self, key: String, cx: &mut Context<Self>) {
+        if self.rail == Rail::Provider(key.clone()) {
+            self.rail = Rail::All;
+        }
+        self.edit_prefs(|prefs| prefs.toggle_provider(&key), cx);
+    }
+
+    /// The hidden providers as chips; clicking one shows it again.
+    fn render_hidden_providers(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = *Palette::of(cx);
+        let hidden: Vec<&RouteProvider> = self
+            .providers()
+            .iter()
+            .filter(|x| self.prefs.provider_hidden(&x.provider))
+            .collect();
+        if hidden.is_empty() {
+            return None;
+        }
+        let chips = hidden.into_iter().map(|provider| {
+            let key = provider.provider.clone();
+            h_flex()
+                .id(SharedString::from(format!("unhide-{key}")))
+                .role(Role::Button)
+                .aria_label(format!("Show {}", provider.name))
+                .gap_1()
+                .px_1p5()
+                .py_0p5()
+                .items_center()
+                .rounded(px(design::CONTROL_RADIUS))
+                .border_1()
+                .border_color(p.border)
+                .cursor_pointer()
+                .hover(|s| s.bg(p.hover).text_color(p.text))
+                .child(provider_mark(
+                    &provider.runtime,
+                    &provider.provider,
+                    12.,
+                    cx,
+                ))
+                .child(provider.name.clone())
+                .child(Icon::new(IconName::Eye).xsmall())
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_provider(key.clone(), cx)))
+        });
+        Some(
+            v_flex()
+                .px_3()
+                .py_1p5()
+                .gap_1()
+                .border_t_1()
+                .border_color(p.border)
+                .text_xs()
+                .text_color(p.text_faint)
+                .child("Hidden providers")
+                .child(h_flex().flex_wrap().gap_1().children(chips))
+                .into_any_element(),
+        )
     }
 
     /// One pickable model, with hover actions to star and hide it.
@@ -689,9 +797,10 @@ impl ModelPicker {
             .children(rows)
     }
 
-    /// The thinking pill, when the current provider has levels.
+    /// The thinking pill, when the current model has levels.
     fn render_effort(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let efforts = self.efforts_of(self.current_provider()).to_vec();
+        let model = self.current.as_ref().map_or("default", |(_, m)| m.as_str());
+        let efforts = self.efforts_of(self.current_provider(), model).to_vec();
         if efforts.is_empty() {
             return None;
         }

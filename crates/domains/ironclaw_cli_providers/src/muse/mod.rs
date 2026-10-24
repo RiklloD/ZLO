@@ -867,6 +867,7 @@ impl TurnRuntime for MuseRuntime {
             efforts: ["minimal", "low", "medium", "high", "xhigh", "max"]
                 .map(str::to_string)
                 .to_vec(),
+            model_efforts: Default::default(),
         }])
     }
 }
