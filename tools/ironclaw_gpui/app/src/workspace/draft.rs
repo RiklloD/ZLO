@@ -42,7 +42,7 @@ impl Workspace {
             let input = cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 10)
-                    .placeholder("Ask anything, attach files after the thread starts")
+                    .placeholder("Do anything…")
                     .submit_on_enter(true)
             });
             let picker = cx.new(|cx| ModelPicker::new(backend, None, catalog, window, cx));
@@ -169,13 +169,8 @@ impl Workspace {
             return div().into_any_element();
         };
         let name = self.draft_profile_name();
-        let send = Button::new("draft-send")
-            .icon(IconName::ArrowUp)
-            .primary()
-            .small()
-            .loading(draft.sending)
-            .tooltip("Send (Enter)")
-            .accessibility_label("Send (Enter)")
+        let send = crate::chat::round_button("draft-send", IconName::ArrowUp, true, "Send", cx)
+            .when(draft.sending, |d| d.opacity(0.35))
             .on_click(cx.listener(|this, _, window, cx| this.send_draft(window, cx)));
         let profile_switch = div()
             .relative()
@@ -236,6 +231,8 @@ impl Workspace {
                 composer_card(
                     "draft-composer",
                     draft.input.focus_handle(cx).is_focused(window),
+                    false,
+                    None,
                     gpui_kit::div().child(Textarea::new(&draft.input).appearance(false)),
                     draft.picker.clone(),
                     send,

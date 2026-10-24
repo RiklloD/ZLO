@@ -1,294 +1,441 @@
-//! Settings → Appearance: the design style, theme presets and the window
-//! wallpaper. All client-side preferences (`design::prefs`), applied live.
+//! Settings → Appearance, laid out after Zeron's page
+//! (`crates/ui/src/settings/appearance.rs`, MIT): color scheme cards with
+//! live previews, the light and dark theme, an accent, then material,
+//! motion and layout. All client-side preferences (`design::prefs`),
+//! applied live.
+
+use std::rc::Rc;
 
 use super::SettingsView;
 use crate::design::prefs::{Prefs, Wallpaper};
-use crate::design::styles::{Material, Style, StyleId};
+use crate::design::styles::{Style, StyleId};
 use crate::design::{self, Palette, kit, motion, themes};
-use crate::pages::{group_header, rows_card, setting_row};
+use crate::pages::{block_fill, group_header, rows_card, setting_row};
 use crate::ui::*;
 
-/// The four styles as live miniatures of the app: sidebar, a selected row,
-/// two messages and the composer, each painted with that style's palette,
-/// radii and material.
-fn style_gallery(cx: &mut Context<SettingsView>) -> impl IntoElement {
-    let current = Style::of(cx).id;
-    let p = *Palette::of(cx);
-    let s = *Style::of(cx);
-    h_flex()
-        .flex_wrap()
-        .gap_3()
-        .children(StyleId::ALL.into_iter().map(|id| {
-            let key: SharedString = format!("style-card-{}", id.key()).into();
-            let h = motion::hover_t(&key);
-            let on = motion::state_t(
-                &format!("{key}:on"),
-                current == id,
-                s.slide,
-                cx.reduce_motion(),
-            );
-            v_flex()
-                .id(ElementId::Name(key.clone()))
-                .relative()
-                .w(px(232.))
-                .gap_2()
-                .p(px(8.))
-                .rounded(px(s.panel_radius.max(8.) + 2.))
-                .border_1()
-                .border_color(motion::mix(
-                    motion::mix(p.border, p.border_strong, h),
-                    p.accent,
-                    on,
-                ))
-                .bg(motion::mix(p.hover.opacity(0.), p.hover, h * 0.6))
-                .shadow(vec![gpui_kit::BoxShadow {
-                    color: p.accent.opacity(0.28 * on),
-                    offset: gpui_kit::point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(2. * on),
-                    inset: false,
-                }])
-                .cursor_pointer()
-                .on_hover(motion::hover_listener(key.clone(), s.hover))
-                .active(|st| st.top(px(1.)))
-                .on_click(move |_, _, cx| design::set_style(id, cx))
-                .child(miniature(id, h))
-                .child(
-                    v_flex()
-                        .px_1()
-                        .gap_0p5()
-                        .child(
-                            h_flex()
-                                .gap_1p5()
-                                .items_center()
-                                .child(div().text_sm().font_semibold().child(id.name()))
-                                .when(current == id, |d| {
-                                    d.child(
-                                        Icon::new(IconName::Check).xsmall().text_color(p.accent),
-                                    )
-                                }),
-                        )
-                        .child(div().text_xs().text_color(p.text_muted).child(id.blurb())),
-                )
-        }))
+const CARD_HEIGHT: f32 = 148.;
+const CARD_RADIUS: f32 = 6.;
+
+fn rem(px_at_16: f32) -> gpui_kit::Rems {
+    gpui_kit::rems(px_at_16 / 16.)
 }
 
-fn miniature(id: StyleId, h: f32) -> impl IntoElement {
-    let st = Style::get(id);
-    let t = themes::find(id.theme());
-    let p = Palette::from_seed(t);
-    let r = |v: f32| px((v * 0.55).max(if v > 0. { 2. } else { 0. }));
+/// A small painting of the app in palette `p`: sidebar, a selected row, a
+/// message, some answer lines and the composer pill.
+fn preview(p: Palette) -> gpui_kit::Div {
     let line = |w: f32, c: gpui_kit::Hsla| div().h(px(4.)).w(px(w)).rounded_full().bg(c);
-    let sidebar_row = |w: f32, on: bool| {
-        h_flex()
-            .relative()
-            .h(px(14.))
-            .px_1p5()
-            .items_center()
-            .rounded(r(st.control_radius))
-            .when(on, |d| {
-                d.bg(match st.material {
-                    Material::Line => p.accent.opacity(0.12),
-                    Material::Ink => p.surface_card,
-                    _ => p.active,
-                })
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top(px(3.))
-                        .w(px(2.))
-                        .h(px(8.))
-                        .rounded_full()
-                        .bg(p.accent),
-                )
-            })
-            .child(line(w, if on { p.text } else { p.text_faint }))
-    };
-    let shell = if st.vibrancy {
-        // No desktop behind a miniature: suggest the blur with a wash.
-        gpui_kit::linear_gradient(
-            135.,
-            gpui_kit::linear_color_stop(motion::mix(p.surface, p.accent, 0.35), 0.),
-            gpui_kit::linear_color_stop(motion::mix(p.surface, design::hex(0xff7ac8), 0.25), 1.),
-        )
-    } else {
-        gpui_kit::Background::from(p.surface)
-    };
-    let panel_plate = kit::panel_shadows(&st, &p);
     h_flex()
-        .h(px(132.))
-        .w_full()
-        .overflow_hidden()
-        .rounded(px(st.panel_radius.max(4.)))
-        .bg(shell)
-        .border_1()
-        .border_color(p.border)
+        .size_full()
+        .bg(p.surface)
         .child(
             v_flex()
-                .w(px(62.))
+                .w(px(54.))
                 .h_full()
-                .p_1p5()
-                .gap_1()
-                .when(st.material == Material::Line, |d| {
-                    d.border_r_1().border_color(p.border)
-                })
+                .p(px(7.))
+                .gap(px(6.))
                 .child(
-                    h_flex().gap(px(3.)).pb_1().children(
+                    h_flex().gap(px(3.)).pb(px(2.)).children(
                         [0xff5f57u32, 0xfebc2e, 0x28c840]
                             .map(|c| div().size(px(5.)).rounded_full().bg(design::hex(c))),
                     ),
                 )
-                .child(sidebar_row(30., false))
-                .child(sidebar_row(36., true))
-                .child(sidebar_row(24., false))
-                .child(sidebar_row(32., false)),
+                .child(line(30., p.text_faint))
+                .child(
+                    div()
+                        .px(px(3.))
+                        .py(px(3.))
+                        .rounded(px(3.))
+                        .bg(p.active)
+                        .child(line(28., p.text)),
+                )
+                .child(line(24., p.text_faint))
+                .child(line(32., p.text_faint)),
         )
         .child(
-            div()
+            v_flex()
                 .flex_1()
                 .h_full()
-                .py(px(st.panel_inset * 0.6))
-                .pr(px(st.panel_inset * 0.6))
+                .my(px(5.))
+                .mr(px(5.))
+                .rounded(px(4.))
+                .bg(p.bg)
+                .p(px(8.))
+                .gap(px(6.))
                 .child(
-                    v_flex()
-                        .size_full()
-                        .rounded(r(st.panel_radius))
-                        .when(st.panel_inset > 0., |d| d.border_1().border_color(p.border))
-                        .shadow(panel_plate)
-                        .bg(p.bg.opacity(st.panel_alpha.max(0.75)))
-                        .p_2()
-                        .gap_1p5()
-                        .child(
-                            h_flex().justify_end().child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(r(st.bubble_radius))
-                                    .bg(p.surface_raised.opacity(if p.light { 0.7 } else { 0.9 }))
-                                    .child(line(54., p.text_muted)),
-                            ),
-                        )
-                        .child(
-                            v_flex()
-                                .gap_1()
-                                .child(line(110., p.text_muted))
-                                .child(line(90., p.text_muted))
-                                .child(line(64. + 6. * h, p.accent.opacity(0.8))),
-                        )
+                    h_flex().justify_end().child(
+                        div()
+                            .px(px(6.))
+                            .py(px(4.))
+                            .rounded(px(6.))
+                            .bg(p.text.opacity(0.08))
+                            .child(line(40., p.text_muted)),
+                    ),
+                )
+                .child(line(90., p.text_muted))
+                .child(line(70., p.text_muted))
+                .child(line(46., p.accent))
+                .child(div().flex_1())
+                .child(
+                    h_flex()
+                        .h(px(18.))
+                        .px(px(6.))
+                        .items_center()
+                        .rounded(px(9.))
+                        .border_1()
+                        .border_color(p.border_strong)
+                        .child(line(36., p.text_faint))
                         .child(div().flex_1())
-                        .child({
-                            let dock = kit::neutral(&st, &p, 0., 1.).apply(
-                                h_flex()
-                                    .h(px(22.))
-                                    .px_1p5()
-                                    .items_center()
-                                    .rounded(r(st.composer_radius))
-                                    .child(line(48., p.text_faint))
-                                    .child(div().flex_1()),
-                            );
-                            dock.child(
-                                kit::accent(&st, &p, h).apply(
-                                    div().size(px(14.)).rounded(r(st.control_radius.max(6.))),
-                                ),
-                            )
-                        }),
+                        .child(div().size(px(10.)).rounded_full().bg(p.text)),
                 ),
         )
 }
 
-pub fn render(cx: &mut Context<SettingsView>) -> impl IntoElement {
-    let prefs = Prefs::of(cx).clone();
+/// Zeron's option card: the preview is the control, a quiet accent edge
+/// marks the choice and the caption sits underneath.
+fn option_card(
+    id: &'static str,
+    icon: IconName,
+    label: &'static str,
+    selected: bool,
+    body: gpui_kit::Div,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let p = *Palette::of(cx);
+    let s = *Style::of(cx);
+    let t = motion::state_t(&format!("{id}:on"), selected, s.slide, cx.reduce_motion());
+    let key = SharedString::from(id);
+    let h = motion::hover_t(&key);
+    let caption = motion::mix(p.text_muted, p.accent, t);
+    v_flex()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .items_center()
+        .gap(px(8.))
+        .cursor_pointer()
+        .on_hover(motion::hover_listener(key, s.hover))
+        .child(
+            div()
+                .h(px(CARD_HEIGHT))
+                .w_full()
+                .flex_none()
+                .rounded(px(CARD_RADIUS))
+                .overflow_hidden()
+                .border_1()
+                .border_color(motion::mix(
+                    motion::mix(p.border, p.border_strong, h),
+                    p.accent,
+                    t,
+                ))
+                .child(body.rounded(px(CARD_RADIUS - 1.))),
+        )
+        .child(
+            h_flex()
+                .gap(px(6.))
+                .items_center()
+                .text_size(rem(13.))
+                .when(selected, |d| d.font_weight(gpui_kit::FontWeight::MEDIUM))
+                .text_color(caption)
+                .child(Icon::new(icon).size(px(16.)).text_color(caption))
+                .child(label),
+        )
+}
 
-    let swatches = themes::THEMES.iter().enumerate().map(|(ix, t)| {
-        let selected = prefs.theme == t.id;
-        let dot = |c: u32| div().size(px(10.)).rounded_full().bg(design::hex(c));
-        v_flex()
-            .id(("theme", ix))
-            .w(px(132.))
-            .gap_1p5()
-            .p_2()
-            .rounded(px(design::CONTROL_RADIUS + 2.))
-            .border_1()
-            .border_color(if selected { p.accent } else { p.border })
-            .bg(design::hex(t.bg))
-            .cursor_pointer()
-            .hover(|s| s.border_color(p.border_strong))
-            .on_click(move |_, _, cx| design::set_theme(t.id, cx))
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(dot(t.accent))
-                    .child(dot(t.success))
-                    .child(dot(t.warning))
-                    .child(dot(t.danger)),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(design::hex(t.text))
-                    .truncate()
-                    .child(t.name),
-            )
+/// Zeron's select: a 32 px button naming the choice, opening a menu of the
+/// options under it. `open` is this select's id when its menu is showing.
+fn select(
+    id: &'static str,
+    current: String,
+    options: Vec<(String, String)>,
+    open: bool,
+    pick: impl Fn(&str, &mut App) + 'static,
+    cx: &mut Context<SettingsView>,
+) -> AnyElement {
+    let p = *Palette::of(cx);
+    let pick = Rc::new(pick);
+    let label = options
+        .iter()
+        .find(|(v, _)| *v == current)
+        .map(|(_, l)| l.clone())
+        .unwrap_or_else(|| current.clone());
+    let key = SharedString::from(format!("select-{id}"));
+    let h = motion::hover_t(&key);
+    let button = h_flex()
+        .id(key.clone())
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .h(px(32.))
+        .min_w(px(140.))
+        .px(px(12.))
+        .gap(px(8.))
+        .items_center()
+        .justify_between()
+        .rounded(px(8.))
+        .bg(motion::mix(block_fill(cx), p.hover, h))
+        .border_1()
+        .border_color(p.border)
+        .text_size(rem(13.))
+        .text_color(p.text)
+        .cursor_pointer()
+        .on_hover(motion::hover_listener(key, Style::of(cx).hover))
+        .child(div().truncate().child(label))
+        .child(
+            Icon::new(IconName::ChevronsUpDown)
+                .size(px(13.))
+                .text_color(p.text_muted),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.appearance_menu = if this.appearance_menu == Some(id) {
+                None
+            } else {
+                Some(id)
+            };
+            cx.notify();
+        }));
+    let menu = open.then(|| {
+        let pop = kit::popover(SharedString::from(format!("{id}-menu")), cx);
+        let rows = options.into_iter().map(|(value, label)| {
+            let on = value == current;
+            let pick = pick.clone();
+            kit::row(SharedString::from(format!("{id}-opt-{value}")), on, cx)
+                .gap_2()
+                .text_size(rem(13.))
+                .child(div().flex_1().truncate().child(label))
+                .when(on, |d| {
+                    d.child(
+                        Icon::new(IconName::Check)
+                            .size(px(13.))
+                            .text_color(p.text_muted),
+                    )
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.appearance_menu = None;
+                    pick(&value, cx);
+                    cx.notify();
+                }))
+        });
+        gpui_kit::deferred(
+            div()
+                .absolute()
+                .top(px(36.))
+                .right_0()
+                .w(px(220.))
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.appearance_menu = None;
+                    cx.notify();
+                }))
+                .child(pop(v_flex().w_full().child(
+                    div()
+                        .id(SharedString::from(format!("{id}-scroll")))
+                        .max_h(px(300.))
+                        .overflow_y_scroll()
+                        .p_1()
+                        .children(rows),
+                ))),
+        )
+        .with_priority(1)
     });
+    div()
+        .relative()
+        .child(button)
+        .children(menu)
+        .into_any_element()
+}
 
-    let choice = |id: &'static str, label: &'static str, active: bool, pick: Wallpaper| {
-        Button::new(id)
-            .label(label)
-            .small()
-            .when(active, |b| b.primary())
-            .when(!active, |b| b.ghost())
-            .on_click(move |_, _, cx| design::set_wallpaper(pick.clone(), cx))
+/// The accent row: the theme's own accent, then Zeron's seven presets.
+fn accent_swatches(prefs: &Prefs, cx: &App) -> impl IntoElement {
+    let p = *Palette::of(cx);
+    let light = p.light;
+    let theme_accent = Palette::from_seed(themes::find(if light {
+        &prefs.light_theme
+    } else {
+        &prefs.theme
+    }))
+    .accent;
+    let choices = std::iter::once(("", "Theme default", theme_accent)).chain(
+        themes::ACCENTS
+            .iter()
+            .map(|(id, name, d, l)| (*id, *name, design::hex(if light { *l } else { *d }))),
+    );
+    h_flex()
+        .gap(px(8.))
+        .children(choices.map(|(id, name, color)| {
+            let on = prefs.accent == id;
+            let id_owned = id.to_string();
+            div()
+                .id(SharedString::from(format!(
+                    "accent-{}",
+                    if id.is_empty() { "theme" } else { id }
+                )))
+                .role(Role::Button)
+                .aria_label(name)
+                .size(px(30.))
+                .flex_none()
+                .rounded_full()
+                .p(px(3.))
+                .border_2()
+                .border_color(if on {
+                    p.text.opacity(0.85)
+                } else {
+                    gpui_kit::transparent_black()
+                })
+                .cursor_pointer()
+                .hover(|d| d.border_color(p.text.opacity(0.35)))
+                .on_click(move |_, _, cx| {
+                    let id = id_owned.clone();
+                    design::update_appearance(cx, |p| p.accent = id);
+                })
+                .child(div().size_full().rounded_full().bg(color))
+        }))
+}
+
+pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> impl IntoElement {
+    let prefs = Prefs::of(cx).clone();
+    let dark_now = design::scheme_is_dark(cx);
+    let dark_palette = Palette::from_seed(themes::find(&prefs.theme));
+    let light_palette = Palette::from_seed(themes::find(&prefs.light_theme));
+
+    let scheme = |id: &'static str, value: &'static str, icon, label, body| {
+        let on = prefs.scheme == value;
+        option_card(id, icon, label, on, body, cx)
+            .on_click(move |_, _, cx| design::update_appearance(cx, |p| p.scheme = value.into()))
+    };
+    let system_body = h_flex()
+        .size_full()
+        .child(
+            div()
+                .w_1_2()
+                .h_full()
+                .overflow_hidden()
+                .child(preview(light_palette)),
+        )
+        .child(
+            div()
+                .w_1_2()
+                .h_full()
+                .overflow_hidden()
+                .child(preview(dark_palette)),
+        );
+    let cards = h_flex()
+        .w_full()
+        .items_start()
+        .gap(px(16.))
+        .child(scheme(
+            "scheme-system",
+            "system",
+            IconName::Settings2,
+            "System",
+            system_body,
+        ))
+        .child(scheme(
+            "scheme-light",
+            "light",
+            IconName::Sun,
+            "Light",
+            preview(light_palette),
+        ))
+        .child(scheme(
+            "scheme-dark",
+            "dark",
+            IconName::Moon,
+            "Dark",
+            preview(dark_palette),
+        ));
+
+    let themes_of = |light: bool| {
+        themes::THEMES
+            .iter()
+            .filter(|t| t.is_light() == light)
+            .map(|t| (t.id.to_string(), t.name.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let light_select = select(
+        "light-theme",
+        prefs.light_theme.clone(),
+        themes_of(true),
+        menu == Some("light-theme"),
+        design::set_theme,
+        cx,
+    );
+    let dark_select = select(
+        "dark-theme",
+        prefs.theme.clone(),
+        themes_of(false),
+        menu == Some("dark-theme"),
+        design::set_theme,
+        cx,
+    );
+    let color_rows = rows_card(
+        [
+            setting_row(
+                "Light theme",
+                Some("Used when the scheme is light.".into()),
+                light_select,
+                cx,
+            ),
+            setting_row(
+                "Dark theme",
+                Some("Used when the scheme is dark.".into()),
+                dark_select,
+                cx,
+            ),
+            setting_row(
+                "Accent color",
+                Some("Links, selection and the one loud button.".into()),
+                accent_swatches(&prefs, cx),
+                cx,
+            ),
+        ],
+        cx,
+    );
+
+    let style_select = select(
+        "style",
+        Style::of(cx).id.key().to_string(),
+        StyleId::ALL
+            .into_iter()
+            .map(|s| (s.key().to_string(), s.name().to_string()))
+            .collect(),
+        menu == Some("style"),
+        |v, cx| design::set_style(StyleId::parse(v), cx),
+        cx,
+    );
+    let background_value = match &prefs.wallpaper {
+        Wallpaper::None => "none",
+        Wallpaper::Aurora => "aurora",
+        Wallpaper::Image { .. } => "image",
     };
     let picture_name = match &prefs.wallpaper {
         Wallpaper::Image { path } => path.file_name().map(|n| n.to_string_lossy().to_string()),
         _ => None,
     };
-
-    let wallpaper = h_flex()
-        .gap_1()
-        .child(choice(
-            "wallpaper-none",
-            "None",
-            prefs.wallpaper == Wallpaper::None,
-            Wallpaper::None,
-        ))
-        .child(choice(
-            "wallpaper-aurora",
-            "Aurora",
-            prefs.wallpaper == Wallpaper::Aurora,
-            Wallpaper::Aurora,
-        ))
-        .child(
-            Button::new("wallpaper-pick")
-                .label("Picture…")
-                .small()
-                .when(matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| {
-                    b.primary()
-                })
-                .when(!matches!(prefs.wallpaper, Wallpaper::Image { .. }), |b| {
-                    b.ghost()
-                })
-                .on_click(cx.listener(|_, _, window, cx| pick_picture(window, cx))),
-        );
-    v_flex()
-        .child(group_header(
-            "Style",
-            Some("Geometry, materials and motion. Each style loads its own palette."),
-            cx,
-        ))
-        .child(style_gallery(cx))
-        .child(group_header(
-            "Palette",
-            Some("Colors only; the style stays."),
-            cx,
-        ))
-        .child(h_flex().flex_wrap().gap_2().children(swatches))
-        .child(group_header("Window", None, cx))
-        .child(rows_card(
-            [setting_row(
-                "Wallpaper",
+    let background_select = select(
+        "background",
+        background_value.into(),
+        vec![
+            ("none".into(), "None".into()),
+            ("aurora".into(), "Aurora".into()),
+            ("image".into(), "Picture…".into()),
+        ],
+        menu == Some("background"),
+        |v, cx| match v {
+            "none" => design::set_wallpaper(Wallpaper::None, cx),
+            "aurora" => design::set_wallpaper(Wallpaper::Aurora, cx),
+            _ => pick_picture(cx),
+        },
+        cx,
+    );
+    let material_rows = rows_card(
+        [
+            setting_row(
+                "Style",
+                Some(Style::of(cx).id.blurb().into()),
+                style_select,
+                cx,
+            ),
+            setting_row(
+                "Background",
                 Some(
                     picture_name
                         .unwrap_or_else(|| {
@@ -296,25 +443,124 @@ pub fn render(cx: &mut Context<SettingsView>) -> impl IntoElement {
                         })
                         .into(),
                 ),
-                wallpaper,
+                background_select,
                 cx,
-            )],
+            ),
+        ],
+        cx,
+    );
+
+    let motion_select = select(
+        "reduce-motion",
+        prefs.reduce_motion.clone(),
+        vec![
+            ("system".into(), "System".into()),
+            ("on".into(), "On".into()),
+            ("off".into(), "Off".into()),
+        ],
+        menu == Some("reduce-motion"),
+        |v, cx| {
+            let v = v.to_string();
+            design::update_appearance(cx, |p| p.reduce_motion = v);
+        },
+        cx,
+    );
+    let motion_rows = rows_card(
+        [setting_row(
+            "Reduce motion",
+            Some("On holds every animation still. System lets the battery saver pause motion when idle.".into()),
+            motion_select,
+            cx,
+        )],
+        cx,
+    );
+
+    let size_now = if prefs.ui_font_size > 0. {
+        prefs.ui_font_size
+    } else {
+        Style::of(cx).font_size
+    };
+    let size_select = select(
+        "ui-size",
+        format!("{}", size_now as u32),
+        [12, 13, 14, 15, 16, 17, 18, 20]
+            .into_iter()
+            .map(|n| (n.to_string(), format!("{n} px")))
+            .collect(),
+        menu == Some("ui-size"),
+        |v, cx| {
+            let n: f32 = v.parse().unwrap_or(0.);
+            design::update_appearance(cx, |p| p.ui_font_size = n);
+        },
+        cx,
+    );
+    let width_select = select(
+        "width",
+        format!("{}", prefs.conversation_width as u32),
+        vec![
+            ("640".into(), "Narrow".into()),
+            ("720".into(), "Default".into()),
+            ("880".into(), "Wide".into()),
+            ("1040".into(), "Widest".into()),
+        ],
+        menu == Some("width"),
+        |v, cx| {
+            let n: f32 = v.parse().unwrap_or(720.);
+            design::update_appearance(cx, |p| p.conversation_width = n);
+        },
+        cx,
+    );
+    let layout_rows = rows_card(
+        [
+            setting_row(
+                "Interface size",
+                Some("Menus and conversations.".into()),
+                size_select,
+                cx,
+            ),
+            setting_row(
+                "Conversation width",
+                Some("How wide the reading column runs.".into()),
+                width_select,
+                cx,
+            ),
+        ],
+        cx,
+    );
+
+    v_flex()
+        .child(group_header(
+            "Color scheme",
+            Some(if dark_now {
+                "Showing the dark theme."
+            } else {
+                "Showing the light theme."
+            }),
             cx,
         ))
+        .child(cards)
+        .child(div().h(px(16.)))
+        .child(color_rows)
+        .child(group_header("Material and background", None, cx))
+        .child(material_rows)
+        .child(group_header("Motion", None, cx))
+        .child(motion_rows)
+        .child(group_header("Fonts and layout", None, cx))
+        .child(layout_rows)
 }
 
-fn pick_picture(window: &mut Window, cx: &mut Context<SettingsView>) {
+fn pick_picture(cx: &mut App) {
     let picked = cx.prompt_for_paths(PathPromptOptions {
         files: true,
         directories: false,
         multiple: false,
-        prompt: Some("Use as wallpaper".into()),
+        prompt: Some("Use as background".into()),
     });
-    cx.spawn_in(window, async move |_, cx| {
+    cx.spawn(async move |cx| {
         if let Ok(Ok(Some(mut paths))) = picked.await
             && let Some(path) = paths.pop()
         {
-            let _ = cx.update(|_, cx| design::set_wallpaper(Wallpaper::Image { path }, cx));
+            cx.update(|cx| design::set_wallpaper(Wallpaper::Image { path }, cx));
         }
     })
     .detach();

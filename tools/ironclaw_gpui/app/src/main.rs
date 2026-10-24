@@ -98,6 +98,14 @@ fn open_main_window(cx: &mut App) {
         ..Default::default()
     };
     if let Err(e) = gpui_kit::open_window(options, cx, |window, cx| {
+        // The System color scheme follows macOS as it flips.
+        window
+            .observe_window_appearance(|_, cx| {
+                if design::prefs::Prefs::of(cx).scheme == "system" {
+                    design::reapply(cx);
+                }
+            })
+            .detach();
         cx.new(|cx| workspace::Workspace::new(window, cx))
     }) {
         eprintln!("ironclaw-desktop: cannot open a window: {e}");

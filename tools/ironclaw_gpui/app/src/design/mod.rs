@@ -139,7 +139,16 @@ impl Global for HaveFonts {}
 pub fn set_style(id: styles::StyleId, cx: &mut App) {
     prefs::Prefs::update(cx, |p| {
         p.style = id.key().into();
-        p.theme = id.theme().into();
+        // The style's signature palette goes in the slot of its brightness
+        // and the scheme follows, so picking Paper shows Paper.
+        let seed = themes::find(id.theme());
+        if seed.is_light() {
+            p.light_theme = id.theme().into();
+            p.scheme = "light".into();
+        } else {
+            p.theme = id.theme().into();
+            p.scheme = "dark".into();
+        }
         // Paper and Console read best on a bare backdrop. A picture the
         // person picked stays.
         if !matches!(p.wallpaper, prefs::Wallpaper::Image { .. }) {
@@ -171,7 +180,14 @@ pub use styles::Style;
 /// Switch preset: repaint gpui-kit's theme and rebuild the wallpaper.
 pub fn set_theme(id: &str, cx: &mut App) {
     let id = id.to_string();
-    prefs::Prefs::update(cx, |p| p.theme = id);
+    let light = themes::find(&id).is_light();
+    prefs::Prefs::update(cx, |p| {
+        if light {
+            p.light_theme = id;
+        } else {
+            p.theme = id;
+        }
+    });
     apply_theme(cx, true);
 }
 
@@ -180,9 +196,60 @@ pub fn set_wallpaper(choice: prefs::Wallpaper, cx: &mut App) {
     wallpaper::reload(cx);
 }
 
+/// Whether the color scheme resolves to dark right now: Zeron's System
+/// card follows macOS.
+pub fn scheme_is_dark(cx: &App) -> bool {
+    match prefs::Prefs::of(cx).scheme.as_str() {
+        "light" => false,
+        "system" => matches!(
+            cx.window_appearance(),
+            gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+        ),
+        _ => true,
+    }
+}
+
+/// The palette the preferences ask for: the scheme's theme, then the
+/// accent preset over it.
+pub fn resolve_palette(cx: &App) -> Palette {
+    let prefs = prefs::Prefs::of(cx);
+    let dark = scheme_is_dark(cx);
+    let seed = themes::find(if dark {
+        &prefs.theme
+    } else {
+        &prefs.light_theme
+    });
+    let mut p = Palette::from_seed(seed);
+    if let Some((_, _, on_dark, on_light)) =
+        themes::ACCENTS.iter().find(|(id, ..)| *id == prefs.accent)
+    {
+        p.accent = hex(if p.light { *on_light } else { *on_dark });
+        p.accent_strong = Hsla {
+            l: p.accent.l * 0.85,
+            ..p.accent
+        };
+        p.accent_wash = p.accent_strong.opacity(if p.light { 0.12 } else { 0.18 });
+    }
+    p
+}
+
+/// Re-resolve the palette after a preference or the system appearance
+/// changed.
+pub fn reapply(cx: &mut App) {
+    let fonts = cx.try_global::<HaveFonts>().is_none_or(|f| f.0);
+    apply_theme(cx, fonts);
+}
+
+/// Edit appearance preferences and repaint.
+pub fn update_appearance(cx: &mut App, edit: impl FnOnce(&mut prefs::Prefs)) {
+    prefs::Prefs::update(cx, edit);
+    reapply(cx);
+}
+
 fn apply_theme(cx: &mut App, have_fonts: bool) {
-    let p = Palette::from_seed(themes::find(&prefs::Prefs::of(cx).theme));
+    let p = resolve_palette(cx);
     let style = Style::get(styles::StyleId::parse(&prefs::Prefs::of(cx).style));
+    let ui_size = prefs::Prefs::of(cx).ui_font_size;
     cx.set_global(p);
     cx.set_global(style);
     // Load the base first; a mode switch reloads colors, so the palette
@@ -201,7 +268,11 @@ fn apply_theme(cx: &mut App, have_fonts: bool) {
             t.font_family = if style.mono_ui { FONT_MONO } else { FONT_SANS }.into();
             t.mono_font_family = FONT_MONO.into();
         }
-        t.font_size = px(style.font_size);
+        t.font_size = px(if ui_size > 0. {
+            ui_size
+        } else {
+            style.font_size
+        });
         t.mono_font_size = px(14.);
         t.radius = px(style.control_radius);
         t.radius_lg = px(style.panel_radius.max(style.control_radius));

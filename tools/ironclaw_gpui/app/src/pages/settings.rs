@@ -44,6 +44,8 @@ pub struct SettingsView {
     traces: Entity<traces::TracePanel>,
     error: Option<SharedString>,
     notice: Option<SharedString>,
+    /// The Appearance select whose menu is open.
+    pub(super) appearance_menu: Option<&'static str>,
 }
 
 impl EventEmitter<PageEvent> for SettingsView {}
@@ -58,6 +60,7 @@ impl SettingsView {
             traces: cx.new(|cx| traces::TracePanel::new(backend.clone(), cx)),
             error: None,
             notice: None,
+            appearance_menu: None,
         };
         this.refresh(cx);
         this
@@ -293,7 +296,7 @@ impl Render for SettingsView {
             Section::General => body
                 .child(group_header("Desktop app", None, cx))
                 .child(self.render_desktop(cx)),
-            Section::Appearance => body.child(appearance::render(cx)),
+            Section::Appearance => body.child(appearance::render(self.appearance_menu, cx)),
             Section::Permissions => body.child(self.render_tools(cx)),
             Section::Traces => body
                 .child(group_header(

@@ -17,7 +17,7 @@ use ironclaw_gpui_client::orchestration::{
     ForkOptions, HoldReason, Lineage, QueueAction, QueueDoc, TaskStatus, TaskView,
 };
 
-use super::{CONTENT_MAX_WIDTH, ChatView, OpenThread};
+use super::{ChatView, OpenThread, content_width};
 use crate::jobs::run;
 use crate::ui::*;
 
@@ -354,7 +354,7 @@ impl ChatView {
                 .child(
                     v_flex()
                         .w_full()
-                        .max_w(px(CONTENT_MAX_WIDTH))
+                        .max_w(px(content_width(cx)))
                         .gap_2()
                         .children(goal)
                         .children(queue)

@@ -538,10 +538,12 @@ pub fn settle(key: &str) {
     });
 }
 
+/// A label's current text and, mid-roll, the text it is leaving.
+type RollState = (SharedString, Option<(SharedString, Instant)>);
+
 thread_local! {
     static BORN: RefCell<HashMap<SharedString, Instant>> = RefCell::new(HashMap::new());
-    static ROLLS: RefCell<HashMap<SharedString, (SharedString, Option<(SharedString, Instant)>)>> =
-        RefCell::new(HashMap::new());
+    static ROLLS: RefCell<HashMap<SharedString, RollState>> = RefCell::new(HashMap::new());
 }
 
 /// A label that rolls when its text changes: the old text lifts away and

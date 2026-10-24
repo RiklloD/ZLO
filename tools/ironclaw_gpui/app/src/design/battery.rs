@@ -62,7 +62,12 @@ impl BatterySaver {
     }
 
     fn apply(&self, cx: &mut App) {
-        cx.set_reduce_motion(self.idle || !self.active);
+        // "Reduce motion: On" in Appearance holds it regardless; "Off" lets
+        // only the battery saver decide, as "System" does.
+        let forced = cx
+            .try_global::<super::prefs::Prefs>()
+            .is_some_and(|p| p.reduce_motion == "on");
+        cx.set_reduce_motion(forced || self.idle || !self.active);
     }
 
     /// One timer that wakes at the idle deadline and re-sleeps for whatever

@@ -23,7 +23,19 @@ pub enum Wallpaper {
 pub struct Prefs {
     /// Design style key, see `styles::StyleId`.
     pub style: String,
+    /// The dark theme (the field predates light/dark pairs).
     pub theme: String,
+    pub light_theme: String,
+    /// "system", "light" or "dark", as Zeron's color scheme cards.
+    pub scheme: String,
+    /// A Zeron accent preset id, or empty for the theme's own.
+    pub accent: String,
+    /// "system" (the battery saver decides), "on" or "off".
+    pub reduce_motion: String,
+    /// Interface text size in px; 0 keeps the style's own.
+    pub ui_font_size: f32,
+    /// Reading column width in px.
+    pub conversation_width: f32,
     pub wallpaper: Wallpaper,
     pub status_bar_hidden: bool,
 }
@@ -33,6 +45,12 @@ impl Default for Prefs {
         Self {
             style: "forge".into(),
             theme: super::themes::DEFAULT_THEME.into(),
+            light_theme: "zeron-light".into(),
+            scheme: "dark".into(),
+            accent: String::new(),
+            reduce_motion: "system".into(),
+            ui_font_size: 0.,
+            conversation_width: 720.,
             wallpaper: Wallpaper::Aurora,
             status_bar_hidden: false,
         }

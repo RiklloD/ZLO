@@ -18,7 +18,7 @@ use ironclaw_gpui_client::{
     Backend, ClientError, EventStream, GateDecision, StreamMessage, StreamStatus,
 };
 
-use crate::design::styles::{Material, Style};
+use crate::design::styles::Style;
 use crate::design::{Palette, kit, motion};
 use crate::jobs::flatten;
 use crate::ui::*;
@@ -32,8 +32,12 @@ use flow::Item;
 use model_picker::{ModelPicker, PickerEvent};
 
 const TIMELINE_LIMIT: u32 = 200;
-/// Zeron's reading column.
-const CONTENT_MAX_WIDTH: f32 = 720.;
+/// Zeron's reading column; Appearance → Conversation width moves it.
+fn content_width(cx: &App) -> f32 {
+    crate::design::prefs::Prefs::of(cx)
+        .conversation_width
+        .clamp(480., 1200.)
+}
 
 /// One folder of the conversation's own workspace.
 struct FilesPanel {
@@ -126,7 +130,7 @@ impl ChatView {
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 8)
-                .placeholder("Message IronClaw")
+                .placeholder("Do anything…")
                 .submit_on_enter(true)
         });
         let subscription =
@@ -956,7 +960,7 @@ impl Render for ChatView {
                 .px_4()
                 .pt(px(top))
                 .when(last, |d| d.pb(px(flow::SPACE_LG + 24.)))
-                .child(div().w_full().max_w(px(CONTENT_MAX_WIDTH)).child(body))
+                .child(div().w_full().max_w(px(content_width(cx))).child(body))
         })
         // The reserve reads as "scrolled up"; no jump arrow for empty room.
         .jump_button(self.reserve.is_none());
@@ -1044,7 +1048,7 @@ impl Render for ChatView {
                     h_flex().justify_center().px_4().child(
                         div()
                             .w_full()
-                            .max_w(px(CONTENT_MAX_WIDTH))
+                            .max_w(px(content_width(cx)))
                             .text_sm()
                             .text_color(cx.theme().danger)
                             .child(error),
@@ -1056,7 +1060,7 @@ impl Render for ChatView {
                     h_flex().justify_center().px_4().pt_2().child(
                         h_flex()
                             .w_full()
-                            .max_w(px(CONTENT_MAX_WIDTH))
+                            .max_w(px(content_width(cx)))
                             .flex_wrap()
                             .gap_1()
                             .children(self.staged.iter().enumerate().map(|(ix, file)| {
@@ -1092,7 +1096,7 @@ impl Render for ChatView {
                     h_flex().justify_center().px_4().child(
                         div()
                             .w_full()
-                            .max_w(px(CONTENT_MAX_WIDTH))
+                            .max_w(px(content_width(cx)))
                             .child(render_menu(&menu, menu_index, cx)),
                     ),
                 )
@@ -1299,48 +1303,34 @@ impl ChatView {
     ) -> AnyElement {
         let style = Style::of(cx);
         let send = if running {
-            kit::button("stop")
-                .icon(IconName::Square)
-                .small()
-                .tooltip("Stop")
-                .accessibility_label("Stop")
+            round_button("stop", IconName::Square, true, "Stop", cx)
+                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Stop").build(w, cx))
                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
         } else {
-            kit::button("send")
-                .icon(IconName::ArrowUp)
-                .primary()
-                .small()
-                .tooltip("Send (Enter)")
-                .accessibility_label("Send (Enter)")
+            round_button("send", IconName::ArrowUp, true, "Send", cx)
+                .tooltip(|w, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new("Send (Enter)").build(w, cx)
+                })
                 .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
         };
-        let attach = kit::button("attach")
-            .icon(IconName::Plus)
-            .ghost()
-            .small()
-            .tooltip("Attach files")
-            .accessibility_label("Attach files")
+        let attach = round_button("attach", IconName::Plus, false, "Attach files", cx)
+            .tooltip(|w, cx| {
+                gpui_kit::component::tooltip::Tooltip::new("Attach files").build(w, cx)
+            })
             .on_click(cx.listener(|this, _, window, cx| this.pick_files(window, cx)));
-        let hint = (!running && style.material != Material::Line).then(|| {
-            div()
-                .text_xs()
-                .text_color(Palette::of(cx).text_faint)
-                .pr_1()
-                .child("↵ to send")
-        });
+        // The pill opens into two rows once the text wraps.
+        let text = self.composer.read(cx).value();
+        let compact = !text.contains('\n') && text.chars().count() < 64;
         let card = composer_card(
             "composer",
             focused,
+            compact,
+            Some(attach.into_any_element()),
             div()
                 .capture_key_down(cx.listener(Self::on_composer_key))
                 .child(Textarea::new(&self.composer).appearance(false)),
             self.picker.clone(),
-            h_flex()
-                .gap_1()
-                .items_center()
-                .children(hint)
-                .child(attach)
-                .child(send),
+            send,
             cx,
         );
         if !self.arrive {
@@ -1352,56 +1342,119 @@ impl ChatView {
     }
 }
 
-/// The composer dock: one raised plate, the text on top and a control row
-/// below (model pill on the left, actions on the right). Focus morphs its
-/// rim toward the accent; `key` scopes that animation per composer.
+/// Zeron's composer pill. In a thread it docks to one 49 px line: attach,
+/// the text, the model and a round send button. It opens into two rows
+/// (text on top, controls below) when the text wraps, and the new-thread
+/// screen always draws it open. The rim brightens with focus.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn composer_card(
     key: &str,
     focused: bool,
+    compact: bool,
+    leading: Option<AnyElement>,
     input: impl IntoElement,
     picker: Entity<ModelPicker>,
     actions: impl IntoElement,
     cx: &App,
 ) -> gpui_kit::Div {
-    let style = Style::of(cx);
     let palette = Palette::of(cx);
     let f = motion::state_t(
         &format!("{key}:focus"),
         focused,
-        style.slide,
+        motion::TOOL_FOLD,
         cx.reduce_motion(),
     );
-    let dock = kit::neutral(style, palette, 0.4 * f, 1.);
-    let rim = motion::mix(dock.rim, palette.accent.opacity(0.55), f);
-    let halo = gpui_kit::BoxShadow {
-        color: palette.accent.opacity(0.16 * f),
-        offset: gpui_kit::point(px(0.), px(0.)),
-        blur_radius: px(0.),
-        spread_radius: px(3. * f),
-        inset: false,
+    let fill = if palette.light {
+        gpui_kit::hsla(0., 0., 1., 0.92)
+    } else {
+        motion::mix(palette.bg, gpui_kit::black(), 0.12)
     };
-    let mut shadows = dock.shadows.clone();
-    shadows.extend(kit::floating(style, palette).shadows);
-    shadows.push(halo);
-    v_flex()
+    let rim = motion::mix(palette.border, palette.border_strong, f);
+    let shell = div()
         .w_full()
-        .max_w(px(CONTENT_MAX_WIDTH))
-        .px_3()
-        .pt_3()
-        .pb_2()
-        .gap_2()
-        .rounded(px(style.composer_radius))
-        .bg(dock.fill)
+        .max_w(px(content_width(cx) + 16.))
+        .rounded(px(if compact { 22. } else { 26. }))
+        .bg(fill)
         .border_1()
         .border_color(rim)
-        .shadow(shadows)
-        .child(input)
-        .child(
+        .text_size(flow::ui(14.))
+        .line_height(px(22.75));
+    let input = div().flex_1().min_w_0().child(input);
+    if compact {
+        return shell.child(
             h_flex()
-                .items_center()
-                .justify_between()
-                .child(picker)
-                .child(actions),
+                .min_h(px(47.))
+                .pl(px(10.))
+                .pr(px(10.))
+                .py(px(6.))
+                .gap(px(8.))
+                .items_end()
+                .children(leading.map(|l| div().pb(px(3.)).child(l)))
+                .child(input.pb(px(6.)))
+                .child(div().pb(px(3.)).child(picker))
+                .child(div().pb(px(3.)).child(actions)),
+        );
+    }
+    shell.child(
+        v_flex()
+            .px(px(18.))
+            .pt(px(16.))
+            .pb(px(8.))
+            .gap(px(8.))
+            .child(input.min_h(px(44.)))
+            .child(
+                h_flex()
+                    .h(px(32.))
+                    .items_center()
+                    .gap(px(8.))
+                    .children(leading)
+                    .child(picker)
+                    .child(div().flex_1())
+                    .child(actions),
+            ),
+    )
+}
+
+/// Zeron's round controls: a 28 px circle, the send one filled with the
+/// text color and an up arrow in the background color.
+pub(crate) fn round_button(
+    id: &'static str,
+    icon: IconName,
+    filled: bool,
+    label: &'static str,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let p = *Palette::of(cx);
+    let hover_key = SharedString::from(format!("round-{id}"));
+    let t = motion::hover_t(&hover_key);
+    let wash = if p.light {
+        gpui_kit::hsla(0., 0., 0., 0.08)
+    } else {
+        gpui_kit::hsla(0., 0., 1., 0.10)
+    };
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .size(px(28.))
+        .flex_none()
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .on_hover(motion::hover_listener(
+            hover_key,
+            motion::MotionSpec::new(150, motion::EASE),
+        ))
+        .when(filled, |d| d.bg(p.text).opacity(1. - 0.15 * t))
+        .when(!filled, |d| {
+            d.bg(wash.opacity(wash.a * t)).text_color(p.text_muted)
+        })
+        .child(
+            Icon::new(icon)
+                .size(px(14.))
+                .text_color(if filled { p.bg } else { p.text_muted }),
         )
 }
 
