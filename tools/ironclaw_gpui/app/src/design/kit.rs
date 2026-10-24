@@ -16,7 +16,7 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, Window, div, hsla, linear_color_stop, linear_gradient,
     point, prelude::FluentBuilder, px,
 };
-use gpui_kit::component::{Icon, IconName, Sizable, h_flex};
+use gpui_kit::component::{Icon, Sizable, h_flex};
 use std::time::Duration;
 
 use super::motion::{self, mix};
@@ -194,11 +194,12 @@ pub struct KitButton {
     variant: Variant,
     small: bool,
     selected: bool,
-    disabled: bool,
     full: bool,
     tooltip: Option<SharedString>,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<ClickHandler>,
 }
+
+type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 pub fn button(id: impl Into<SharedString>) -> KitButton {
     KitButton {
@@ -208,7 +209,6 @@ pub fn button(id: impl Into<SharedString>) -> KitButton {
         variant: Variant::Secondary,
         small: false,
         selected: false,
-        disabled: false,
         full: false,
         tooltip: None,
         on_click: None,
@@ -240,10 +240,6 @@ impl KitButton {
         self.selected = on;
         self
     }
-    pub fn disabled(mut self, on: bool) -> Self {
-        self.disabled = on;
-        self
-    }
     /// Stretch to the parent's width, content left-aligned.
     pub fn full(mut self) -> Self {
         self.full = true;
@@ -264,7 +260,7 @@ impl RenderOnce for KitButton {
         let s = *Style::of(cx);
         let p = *Palette::of(cx);
         let key: SharedString = format!("btn:{}", self.id).into();
-        let h = if self.disabled { 0. } else { motion::hover_t(&key) };
+        let h = motion::hover_t(&key);
         let sel = motion::state_t(
             &format!("{key}:sel"),
             self.selected,
@@ -305,13 +301,10 @@ impl RenderOnce for KitButton {
             }
         };
 
-        el.when(self.disabled, |d| d.opacity(0.45))
-            .when(!self.disabled, |d| {
-                d.cursor_pointer()
-                    .on_hover(motion::hover_listener(key.clone(), s.hover))
-                    // The press: sink one pixel while the pointer is down.
-                    .active(|st| st.top(px(1.)))
-            })
+        el.cursor_pointer()
+            .on_hover(motion::hover_listener(key.clone(), s.hover))
+            // The press: sink one pixel while the pointer is down.
+            .active(|st| st.top(px(1.)))
             .when_some(self.icon, |d, icon| {
                 d.child(if self.small { icon.xsmall() } else { icon.small() })
             })
@@ -319,10 +312,7 @@ impl RenderOnce for KitButton {
             .when_some(self.tooltip, |d, tip| {
                 d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             })
-            .when_some(
-                self.on_click.filter(|_| !self.disabled),
-                |d, f| d.on_click(f),
-            )
+            .when_some(self.on_click, |d, f| d.on_click(f))
     }
 }
 
@@ -539,25 +529,6 @@ pub fn shimmer_text(id: impl Into<ElementId>, text: impl Into<SharedString>, cx:
         )
 }
 
-/// A keyboard hint, like `⌘K`.
-pub fn kbd(keys: impl Into<SharedString>, cx: &App) -> impl IntoElement {
-    let s = *Style::of(cx);
-    let p = *Palette::of(cx);
-    div()
-        .px_1()
-        .h(px(18.))
-        .flex()
-        .items_center()
-        .rounded(px(s.control_radius.min(5.)))
-        .border_1()
-        .border_color(p.border_strong)
-        .bg(p.hover)
-        .text_color(p.text_faint)
-        .text_size(px(11.))
-        .font_family(super::FONT_MONO)
-        .child(keys.into())
-}
-
 /// A small status dot that can pulse a soft halo.
 pub fn status_dot(id: impl Into<ElementId>, color: Hsla, live: bool) -> impl IntoElement {
     let dot = div().size(px(6.)).rounded_full().bg(color);
@@ -587,11 +558,6 @@ pub fn status_dot(id: impl Into<ElementId>, color: Hsla, live: bool) -> impl Int
                     ),
             )
         })
-}
-
-/// Icon helper with the style's muted ink.
-pub fn glyph(name: IconName, cx: &App) -> Icon {
-    Icon::new(name).text_color(Palette::of(cx).text_muted)
 }
 
 /// The IronClaw mark: three claw strokes on a raised tile, lit in the

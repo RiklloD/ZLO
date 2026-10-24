@@ -82,7 +82,6 @@ pub enum Material {
 #[derive(Clone, Copy)]
 pub struct Style {
     pub id: StyleId,
-    pub light: bool,
     pub material: Material,
     /// Ask macOS for the blurred window backdrop (NSVisualEffectView).
     pub vibrancy: bool,
@@ -123,7 +122,6 @@ impl Style {
         match id {
             StyleId::Forge => Self {
                 id,
-                light: false,
                 material: Material::Metal,
                 vibrancy: false,
                 shell_alpha: 1.,
@@ -145,7 +143,6 @@ impl Style {
             },
             StyleId::Glass => Self {
                 id,
-                light: false,
                 material: Material::Frost,
                 vibrancy: true,
                 shell_alpha: 0.42,
@@ -168,7 +165,6 @@ impl Style {
             },
             StyleId::Paper => Self {
                 id,
-                light: true,
                 material: Material::Ink,
                 vibrancy: false,
                 shell_alpha: 1.,
@@ -190,7 +186,6 @@ impl Style {
             },
             StyleId::Console => Self {
                 id,
-                light: false,
                 material: Material::Line,
                 vibrancy: false,
                 shell_alpha: 1.,

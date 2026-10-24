@@ -25,8 +25,6 @@ use gpui_kit::{App, Global, Hsla, hsla, px};
 pub const SIDEBAR_WIDTH: f32 = 264.;
 pub const TITLEBAR_HEIGHT: f32 = 38.;
 pub const STATUS_BAR_HEIGHT: f32 = 24.;
-/// Gap between the window edge and the inset content panel.
-pub const PANEL_INSET: f32 = 6.;
 pub const PANEL_RADIUS: f32 = 10.;
 pub const CONTROL_RADIUS: f32 = 6.;
 
@@ -52,8 +50,7 @@ pub struct Palette {
     pub text: Hsla,
     pub text_muted: Hsla,
     pub text_faint: Hsla,
-    /// Near-white plate for primary buttons, `on_solid` is its label.
-    pub solid: Hsla,
+    /// Label color on solid status fills (danger, warning, success).
     pub on_solid: Hsla,
     pub accent: Hsla,
     pub accent_strong: Hsla,
@@ -95,7 +92,6 @@ impl Palette {
             text,
             text_muted: hex(t.muted),
             text_faint: hex(t.faint),
-            solid: text,
             on_solid: hex(t.card),
             accent,
             accent_strong,

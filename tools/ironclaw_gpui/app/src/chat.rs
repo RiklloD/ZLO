@@ -1471,14 +1471,33 @@ fn render_gate(
         ),
     };
 
-    card(cx)
+    // An open approval is the one thing in the transcript waiting on the
+    // person: it gets the warning rim and a soft halo, and arrives on the
+    // style's spring.
+    let open = matches!(state, GateState::Open);
+    let p = *Palette::of(cx);
+    let s = *Style::of(cx);
+    let card = card(cx)
+        .when(open, |d| {
+            d.border_color(p.warning.opacity(0.55)).shadow(vec![gpui_kit::BoxShadow {
+                color: p.warning.opacity(0.14),
+                offset: gpui_kit::point(px(0.), px(4.)),
+                blur_radius: px(18.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+        })
         .child(
             h_flex()
                 .gap_2()
                 .text_sm()
                 .font_medium()
                 .items_start()
-                .child(Icon::new(IconName::TriangleAlert).flex_none())
+                .child(
+                    Icon::new(IconName::TriangleAlert)
+                        .flex_none()
+                        .when(open, |i| i.text_color(p.warning)),
+                )
                 .child(div().flex_1().min_w_0().child(headline.to_string())),
         )
         .when_some(body.clone(), |this, body| {
@@ -1489,6 +1508,6 @@ fn render_gate(
                     .child(body),
             )
         })
-        .children(actions)
-        .into_any_element()
+        .children(actions);
+    motion::pop_in(card, SharedString::from(format!("{key}-gate")), s.pop, 8.).into_any_element()
 }

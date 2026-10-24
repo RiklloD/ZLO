@@ -546,6 +546,14 @@ impl Workspace {
             .flex_none()
             .text_color(p.text_muted)
             .when(console, |d| d.border_r_1().border_color(p.border))
+            // Forge: a faint brushed-metal falloff down the sidebar.
+            .when(Style::of(cx).id == StyleId::Forge, |d| {
+                d.bg(gpui_kit::linear_gradient(
+                    180.,
+                    gpui_kit::linear_color_stop(design::lift(p.surface, 0.025), 0.),
+                    gpui_kit::linear_color_stop(p.surface, 0.6),
+                ))
+            })
             // Titlebar strip: traffic lights sit on the left, macOS drags
             // the window from the empty space.
             .child(
