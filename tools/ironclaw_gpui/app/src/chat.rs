@@ -73,6 +73,9 @@ pub struct ChatView {
     list_height: Rc<Cell<f32>>,
     /// Scroll the newest user message to the top on the next item sync.
     pin_next: bool,
+    /// When the last message was sent: MonoCode's prompt rise lifts it from
+    /// the composer to its place, then the reply rows slide in.
+    prompt_rise: Option<Instant>,
     /// The view opened from the new-thread screen: its composer glides
     /// down from where that screen's composer sat.
     arrive: bool,
@@ -204,6 +207,7 @@ impl ChatView {
             turn_heights: Rc::default(),
             list_height: Rc::default(),
             pin_next: false,
+            prompt_rise: None,
             arrive: false,
             pacer: pace::Pacer::default(),
             pacing: false,
@@ -887,6 +891,7 @@ impl ChatView {
             drawn: 0.,
         });
         self.turn_heights.borrow_mut().clear();
+        self.prompt_rise = (!cx.reduce_motion()).then(Instant::now);
         self.pin_next = true;
 
         let thread_id = self.thread_id.clone();
@@ -1019,6 +1024,12 @@ impl ChatView {
     }
 }
 
+/// MonoCode's prompt rise, in seconds: the sent message's climb, its fade,
+/// and the end of the reply rows' slide-in.
+const PROMPT_RISE: f32 = 0.56;
+const PROMPT_FADE: f32 = 0.48;
+const PROMPT_RISE_TOTAL: f32 = 0.88;
+
 /// An invisible overlay that records its row's drawn height under `key`,
 /// asking for one more frame when it changed.
 fn measure_height(key: String, heights: Rc<RefCell<HashMap<String, f32>>>) -> AnyElement {
@@ -1061,6 +1072,19 @@ impl Render for ChatView {
             .rposition(|i| matches!(i, Item::Row(Row::User { .. })))
             .filter(|_| self.reserve.is_some());
         let turn_heights = self.turn_heights.clone();
+        // MonoCode's prompt rise: the sent message starts at the composer and
+        // rises into place over 560 ms (fading in over 480 ms); the rows
+        // after it slide up 10 px over the next 320 ms.
+        let rise = self
+            .prompt_rise
+            .map(|born| born.elapsed().as_secs_f32())
+            .filter(|t| *t < PROMPT_RISE_TOTAL);
+        if rise.is_some() {
+            window.request_animation_frame();
+        } else {
+            self.prompt_rise = None;
+        }
+        let travel = (self.list_height.get() - 160.).max(0.);
         let toggles = self.toggles.clone();
         let since = self.run_started;
 
@@ -1096,9 +1120,23 @@ impl Render for ChatView {
             let measure = turn_start
                 .filter(|s| ix >= *s && !matches!(item, Item::Reserve))
                 .map(|_| measure_height(item.key().to_string(), turn_heights.clone()));
+            let (lift, fade) = match (rise, turn_start) {
+                (Some(t), Some(s)) if ix == s => (
+                    travel * (1. - motion::EASE_OUT_QUINT.eval((t / PROMPT_RISE).min(1.))),
+                    motion::EASE_OUT.eval((t / PROMPT_FADE).min(1.)),
+                ),
+                (Some(t), Some(s)) if ix > s => {
+                    let r = motion::EASE_OUT_QUINT
+                        .eval(((t - PROMPT_RISE) / (PROMPT_RISE_TOTAL - PROMPT_RISE)).clamp(0., 1.));
+                    (10. * (1. - r), r)
+                }
+                _ => (0., 1.),
+            };
             // Zeron's reading type: 14 px on a 22 px line.
             h_flex()
                 .relative()
+                .when(lift > 0.01, |d| d.top(px(lift)))
+                .when(fade < 0.999, |d| d.opacity(fade))
                 .w_full()
                 .justify_center()
                 .px_4()
