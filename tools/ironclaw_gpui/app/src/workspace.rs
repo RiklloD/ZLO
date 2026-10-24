@@ -585,6 +585,7 @@ impl Workspace {
                     .label("Back")
                     .ghost()
                     .small()
+                    .full()
                     .on_click(cx.listener(|this, _, window, cx| this.back_to_threads(window, cx))),
             )
         } else {
