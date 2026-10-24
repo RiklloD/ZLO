@@ -22,7 +22,7 @@ use gpui_kit::{
     WindowOptions, point, px, size,
 };
 
-gpui_kit::actions!(ironclaw, [Quit, ToggleStatusBar, NextStyle]);
+gpui_kit::actions!(ironclaw, [Quit, ToggleStatusBar, NextStyle, OpenCommandMenu]);
 
 fn main() {
     tracing_subscriber::fmt()
@@ -63,6 +63,7 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-shift-s", ToggleStatusBar, None),
             KeyBinding::new("cmd-shift-y", NextStyle, None),
+            KeyBinding::new("cmd-k", OpenCommandMenu, None),
         ]);
         cx.set_menus(vec![
             Menu {
@@ -73,6 +74,7 @@ fn main() {
             Menu {
                 name: "View".into(),
                 items: vec![
+                    MenuItem::action("Command Menu…", OpenCommandMenu),
                     MenuItem::action("Toggle Status Bar", ToggleStatusBar),
                     MenuItem::action("Next Design Style", NextStyle),
                 ],

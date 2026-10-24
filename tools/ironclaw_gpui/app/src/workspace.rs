@@ -31,6 +31,7 @@ use crate::pages::usage::{UsageModel, UsageView};
 use crate::ui::*;
 use gpui_kit::StyledImage as _;
 
+mod command;
 mod draft;
 mod inbox;
 
@@ -123,6 +124,9 @@ pub struct Workspace {
     telemetry: Option<ThreadTelemetry>,
     _usage_observe: Option<Subscription>,
     _status_poll: Option<Task<()>>,
+    /// The Cmd+K menu while open.
+    command: Option<command::CommandMenu>,
+    command_opens: u64,
 }
 
 impl Workspace {
@@ -138,6 +142,8 @@ impl Workspace {
             draft: None,
             unread: 0,
             _chat_events: Vec::new(),
+            command: None,
+            command_opens: 0,
             _page_events: Vec::new(),
             _poll: None,
             connect_attempt: 0,
@@ -1118,6 +1124,7 @@ impl Render for Workspace {
             }
         };
         let show_status = !Prefs::of(cx).status_bar_hidden;
+        let command = self.render_command_menu(cx);
         // Glass lets the macOS blur through: the wallpaper only tints it.
         let wall_alpha = if s.vibrancy { 0.45 } else { 1. };
         v_flex()
@@ -1157,8 +1164,14 @@ impl Render for Workspace {
             .capture_key_down(
                 cx.listener(|this, _, _, cx| this.battery.input(|w: &mut Self| &mut w.battery, cx)),
             )
+            .on_action(cx.listener(|this, _: &crate::OpenCommandMenu, window, cx| {
+                if matches!(this.conn, Conn::Ready) {
+                    this.toggle_command_menu(window, cx);
+                }
+            }))
             .child(div().flex_1().min_h_0().child(body))
             .when(show_status, |d| d.child(self.render_status_bar(cx)))
+            .children(command)
             .child(motion::frame_tail())
     }
 }
