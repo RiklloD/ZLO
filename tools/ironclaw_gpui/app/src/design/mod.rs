@@ -5,11 +5,14 @@
 //! `install` writes the palette into gpui-kit's theme, so every existing
 //! screen and component repaints from it. New code reads [`Palette`] for the
 //! tokens gpui-kit has no slot for (raised surfaces, hairlines, washes).
-//! Dark only for now; a light palette is one more constructor here.
+//! A [`styles::Style`] sits beside the palette and owns geometry, material
+//! and motion; light palettes (by background lightness) get dark ink lines.
 
 pub mod battery;
+pub mod kit;
 pub mod motion;
 pub mod prefs;
+pub mod styles;
 pub mod themes;
 pub mod wallpaper;
 
@@ -33,6 +36,7 @@ pub const FONT_MONO: &str = "Geist Mono";
 /// Paint tokens. Read with [`Palette::of`].
 #[derive(Clone, Copy)]
 pub struct Palette {
+    pub light: bool,
     /// Main content panel, the deepest plane.
     pub bg: Hsla,
     /// Shell and sidebar, one step up from `bg`.
@@ -70,16 +74,24 @@ impl Palette {
             ..accent
         };
         let text = hex(t.text);
+        let light = hex(t.bg).l > 0.5;
+        // Lines are ink on light paper and light on dark glass.
+        let line = if light { 0. } else { 1. };
         Self {
+            light,
             bg: hex(t.bg),
             surface: hex(t.shell),
             surface_raised: hex(t.raised),
             surface_card: hex(t.card),
-            surface_overlay: lift(hex(t.card), 0.035),
-            hover: text.opacity(0.07),
-            active: text.opacity(0.11),
-            border: hsla(0., 0., 1., 0.08),
-            border_strong: hsla(0., 0., 1., 0.14),
+            surface_overlay: if light {
+                hex(t.card)
+            } else {
+                lift(hex(t.card), 0.035)
+            },
+            hover: text.opacity(if light { 0.055 } else { 0.07 }),
+            active: text.opacity(if light { 0.085 } else { 0.11 }),
+            border: hsla(0., 0., line, if light { 0.09 } else { 0.08 }),
+            border_strong: hsla(0., 0., line, if light { 0.16 } else { 0.14 }),
             text,
             text_muted: hex(t.muted),
             text_faint: hex(t.faint),
@@ -87,7 +99,7 @@ impl Palette {
             on_solid: hex(t.card),
             accent,
             accent_strong,
-            accent_wash: accent_strong.opacity(0.18),
+            accent_wash: accent_strong.opacity(if light { 0.12 } else { 0.18 }),
             danger: hex(t.danger),
             warning: hex(t.warning),
             success: hex(t.success),
@@ -117,8 +129,37 @@ pub fn install(cx: &mut App) {
     };
 
     cx.set_global(prefs::Prefs::load());
+    cx.set_global(HaveFonts(have_fonts));
     apply_theme(cx, have_fonts);
 }
+
+struct HaveFonts(bool);
+impl Global for HaveFonts {}
+
+/// Switch design style: loads its geometry, motion and signature palette.
+pub fn set_style(id: styles::StyleId, cx: &mut App) {
+    prefs::Prefs::update(cx, |p| {
+        p.style = id.key().into();
+        p.theme = id.theme().into();
+    });
+    let fonts = cx.try_global::<HaveFonts>().is_none_or(|f| f.0);
+    apply_theme(cx, fonts);
+    for window in cx.windows() {
+        let _ = window.update(cx, |_, window, _| apply_window(window, Style::get(id)));
+    }
+}
+
+/// The window backdrop a style asks for. Call when a window opens and when
+/// the style changes.
+pub fn apply_window(window: &mut gpui_kit::Window, style: Style) {
+    window.set_background_appearance(if style.vibrancy {
+        gpui_kit::WindowBackgroundAppearance::Blurred
+    } else {
+        gpui_kit::WindowBackgroundAppearance::Opaque
+    });
+}
+
+pub use styles::Style;
 
 /// Switch preset: repaint gpui-kit's theme and rebuild the wallpaper.
 pub fn set_theme(id: &str, cx: &mut App) {
@@ -134,20 +175,30 @@ pub fn set_wallpaper(choice: prefs::Wallpaper, cx: &mut App) {
 
 fn apply_theme(cx: &mut App, have_fonts: bool) {
     let p = Palette::from_seed(themes::find(&prefs::Prefs::of(cx).theme));
+    let style = Style::get(styles::StyleId::parse(&prefs::Prefs::of(cx).style));
     cx.set_global(p);
-    // Load the dark base first; a mode switch reloads colors, so the palette
+    cx.set_global(style);
+    // Load the base first; a mode switch reloads colors, so the palette
     // goes in a second update (gpui-kit's documented order).
-    Theme::change(ThemeMode::Dark, None, cx);
+    Theme::change(
+        if p.light {
+            ThemeMode::Light
+        } else {
+            ThemeMode::Dark
+        },
+        None,
+        cx,
+    );
     Theme::update(cx, |t| {
         if have_fonts {
-            t.font_family = FONT_SANS.into();
+            t.font_family = if style.mono_ui { FONT_MONO } else { FONT_SANS }.into();
             t.mono_font_family = FONT_MONO.into();
         }
-        t.font_size = px(14.);
+        t.font_size = px(style.font_size);
         t.mono_font_size = px(13.);
-        t.radius = px(CONTROL_RADIUS);
-        t.radius_lg = px(PANEL_RADIUS);
-        t.shadow = false;
+        t.radius = px(style.control_radius);
+        t.radius_lg = px(style.panel_radius.max(style.control_radius));
+        t.shadow = style.elevation > 0.;
 
         let c = &mut t.colors;
         c.background = p.bg;
@@ -163,7 +214,7 @@ fn apply_theme(cx: &mut App, have_fonts: bool) {
         c.accent_foreground = p.text;
         c.popover = p.surface_overlay;
         c.popover_foreground = p.text;
-        c.overlay = hsla(0., 0., 0., 0.6);
+        c.overlay = hsla(0., 0., 0., if p.light { 0.25 } else { 0.6 });
         c.window_border = p.border;
         c.title_bar = p.surface;
         c.title_bar_border = p.border;
@@ -178,26 +229,27 @@ fn apply_theme(cx: &mut App, have_fonts: bool) {
         c.sidebar_primary = p.accent;
         c.sidebar_primary_foreground = p.text;
 
-        c.primary = p.solid;
-        c.primary_hover = lift(p.solid, 0.05);
-        c.primary_active = p.text_muted;
-        c.primary_foreground = p.on_solid;
+        // Primary buttons carry the accent; it is the one loud color.
+        c.primary = p.accent;
+        c.primary_hover = lift(p.accent, 0.05);
+        c.primary_active = p.accent_strong;
+        c.primary_foreground = on_accent(p);
+        c.button_primary = p.accent;
+        c.button_primary_hover = lift(p.accent, 0.05);
+        c.button_primary_active = p.accent_strong;
+        c.button_primary_foreground = on_accent(p);
         c.secondary = p.hover;
         c.secondary_hover = p.active;
-        c.secondary_active = hsla(0., 0., 0.92, 0.16);
+        c.secondary_active = p.text.opacity(0.16);
         c.secondary_foreground = p.text;
 
-        c.button_primary = p.solid;
-        c.button_primary_hover = lift(p.solid, 0.05);
-        c.button_primary_active = p.text_muted;
-        c.button_primary_foreground = p.on_solid;
         c.button = p.hover;
         c.button_hover = p.active;
-        c.button_active = hsla(0., 0., 0.92, 0.16);
+        c.button_active = p.text.opacity(0.16);
         c.button_foreground = p.text;
         c.button_secondary = p.hover;
         c.button_secondary_hover = p.active;
-        c.button_secondary_active = hsla(0., 0., 0.92, 0.16);
+        c.button_secondary_active = p.text.opacity(0.16);
         c.button_secondary_foreground = p.text;
 
         c.list = p.bg;
@@ -223,8 +275,8 @@ fn apply_theme(cx: &mut App, have_fonts: bool) {
         c.group_box_foreground = p.text;
         c.skeleton = p.surface_raised;
         c.scrollbar = hsla(0., 0., 0., 0.);
-        c.scrollbar_thumb = hsla(0., 0., 1., 0.12);
-        c.scrollbar_thumb_hover = hsla(0., 0., 1., 0.2);
+        c.scrollbar_thumb = p.text.opacity(0.12);
+        c.scrollbar_thumb_hover = p.text.opacity(0.2);
         c.switch = p.surface_raised;
         c.switch_thumb = p.text;
         c.slider_bar = p.accent;
@@ -259,8 +311,17 @@ pub fn hex(rgb: u32) -> Hsla {
     gpui_kit::rgb(rgb).into()
 }
 
+/// Label color on an accent fill: dark ink on bright accents.
+pub fn on_accent(p: Palette) -> Hsla {
+    if p.accent.l > 0.6 {
+        hsla(0., 0., 0.06, 1.)
+    } else {
+        hsla(0., 0., 1., 1.)
+    }
+}
+
 /// Lighter by `by` (0..1 of lightness).
-fn lift(c: Hsla, by: f32) -> Hsla {
+pub fn lift(c: Hsla, by: f32) -> Hsla {
     Hsla {
         l: (c.l + by).min(1.),
         ..c

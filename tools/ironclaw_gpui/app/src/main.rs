@@ -22,7 +22,7 @@ use gpui_kit::{
     WindowOptions, point, px, size,
 };
 
-gpui_kit::actions!(ironclaw, [Quit, ToggleStatusBar]);
+gpui_kit::actions!(ironclaw, [Quit, ToggleStatusBar, NextStyle]);
 
 fn main() {
     tracing_subscriber::fmt()
@@ -52,9 +52,17 @@ fn main() {
             cx.quit()
         });
         cx.on_action(|_: &ToggleStatusBar, cx| workspace::toggle_status_bar(cx));
+        // Flip through the four design styles without opening Settings.
+        cx.on_action(|_: &NextStyle, cx| {
+            let all = design::styles::StyleId::ALL;
+            let now = design::Style::of(cx).id;
+            let ix = all.iter().position(|s| *s == now).unwrap_or(0);
+            design::set_style(all[(ix + 1) % all.len()], cx);
+        });
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-shift-s", ToggleStatusBar, None),
+            KeyBinding::new("cmd-shift-y", NextStyle, None),
         ]);
         cx.set_menus(vec![
             Menu {
@@ -64,7 +72,10 @@ fn main() {
             },
             Menu {
                 name: "View".into(),
-                items: vec![MenuItem::action("Toggle Status Bar", ToggleStatusBar)],
+                items: vec![
+                    MenuItem::action("Toggle Status Bar", ToggleStatusBar),
+                    MenuItem::action("Next Design Style", NextStyle),
+                ],
                 disabled: false,
             },
         ]);

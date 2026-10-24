@@ -17,6 +17,8 @@ use ironclaw_gpui_client::{
     Backend, ClientError, EventStream, GateDecision, StreamMessage, StreamStatus,
 };
 
+use crate::design::styles::{Material, Style};
+use crate::design::{Palette, kit, motion};
 use crate::jobs::flatten;
 use crate::ui::*;
 
@@ -817,7 +819,11 @@ impl ChatView {
 }
 
 impl Render for ChatView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::Focusable as _;
+        let style = *Style::of(cx);
+        let palette = *Palette::of(cx);
+        let focused = self.composer.focus_handle(cx).is_focused(window);
         let rows = self.rows.clone();
         let weak = cx.weak_entity();
         let menu = self.menu(cx);
@@ -908,14 +914,14 @@ impl Render for ChatView {
                             .w_full()
                             .max_w(px(CONTENT_MAX_WIDTH))
                             .gap_2()
+                            .items_center()
                             .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(Spinner::new().xsmall())
-                            .child(if stopping {
-                                "Stopping…"
-                            } else {
-                                "Working…"
-                            }),
+                            .child(kit::pulse_dots("working-dots", palette.accent))
+                            .child(kit::shimmer_text(
+                                "working-label",
+                                if stopping { "Stopping…" } else { "Working…" },
+                                cx,
+                            )),
                     ),
                 )
             })
@@ -985,46 +991,85 @@ impl Render for ChatView {
                     ),
                 )
             })
-            .child(
+            .child({
+                // The composer dock: one raised plate holding the text and
+                // its controls. Focus morphs its rim toward the accent.
+                let f = motion::state_t("composer:focus", focused, style.slide, cx.reduce_motion());
+                let dock = kit::neutral(&style, &palette, 0.4 * f, 1.);
+                let rim = motion::mix(dock.rim, palette.accent.opacity(0.55), f);
+                let halo = gpui_kit::BoxShadow {
+                    color: palette.accent.opacity(0.16 * f),
+                    offset: gpui_kit::point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: px(3. * f),
+                    inset: false,
+                };
+                let mut shadows = dock.shadows.clone();
+                shadows.extend(kit::floating(&style, &palette).shadows);
+                shadows.push(halo);
                 h_flex().justify_center().px_4().pb_4().pt_2().child(
-                    h_flex()
+                    v_flex()
                         .w_full()
                         .max_w(px(CONTENT_MAX_WIDTH))
-                        .gap_2()
-                        .items_end()
-                        .when_some(model_button, |this, button| this.child(button))
-                        .child(
-                            Button::new("attach")
-                                .icon(IconName::Plus)
-                                .ghost()
-                                .tooltip("Attach files")
-                                .accessibility_label("Attach files")
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.pick_files(window, cx)),
-                                ),
-                        )
+                        .p(px(6.))
+                        .gap_1()
+                        .rounded(px(style.composer_radius))
+                        .bg(dock.fill)
+                        .border_1()
+                        .border_color(rim)
+                        .shadow(shadows)
                         .child(
                             div()
-                                .flex_1()
+                                .w_full()
+                                .px_1()
                                 .capture_key_down(cx.listener(Self::on_composer_key))
-                                .child(Textarea::new(&self.composer)),
+                                .child(Textarea::new(&self.composer).appearance(false)),
                         )
-                        .child(if running {
-                            Button::new("stop")
-                                .icon(IconName::Square)
-                                .tooltip("Stop")
-                                .accessibility_label("Stop")
-                                .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
-                        } else {
-                            Button::new("send")
-                                .icon(IconName::ArrowUp)
-                                .primary()
-                                .tooltip("Send (Enter)")
-                                .accessibility_label("Send (Enter)")
-                                .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
-                        }),
-                ),
-            );
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap_1()
+                                .items_center()
+                                .child(
+                                    kit::button("attach")
+                                        .icon(IconName::Plus)
+                                        .ghost()
+                                        .small()
+                                        .tooltip("Attach files")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.pick_files(window, cx)
+                                        })),
+                                )
+                                .when_some(model_button, |this, button| this.child(button))
+                                .child(div().flex_1())
+                                .when(!running && style.material != Material::Line, |d| {
+                                    d.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(palette.text_faint)
+                                            .pr_1()
+                                            .child("↵ to send"),
+                                    )
+                                })
+                                .child(if running {
+                                    kit::button("stop")
+                                        .icon(IconName::Square)
+                                        .small()
+                                        .tooltip("Stop")
+                                        .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
+                                } else {
+                                    kit::button("send")
+                                        .icon(IconName::ArrowUp)
+                                        .primary()
+                                        .small()
+                                        .tooltip("Send (Enter)")
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| this.send(window, cx)),
+                                        )
+                                }),
+                        ),
+                )
+            });
         h_flex()
             .size_full()
             .child(main)
@@ -1044,7 +1089,12 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
             .items_end()
             .gap_1()
             .when(!text.is_empty(), |this| {
-                this.child(user_bubble(text.clone(), *pending))
+                this.child(user_bubble(
+                    SharedString::from(format!("{key}-bubble")),
+                    text.clone(),
+                    *pending,
+                    cx,
+                ))
             })
             .when(!attachments.is_empty(), |this| {
                 this.child(h_flex().flex_wrap().justify_end().gap_1().children(

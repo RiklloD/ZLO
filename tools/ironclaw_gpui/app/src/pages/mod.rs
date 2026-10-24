@@ -27,8 +27,8 @@ pub fn header(title: &'static str, actions: impl IntoElement) -> gpui_kit::Div {
     h_flex()
         .justify_between()
         .items_center()
-        .pb_4()
-        .child(div().text_xl().font_semibold().child(title))
+        .pb_6()
+        .child(div().text_2xl().font_semibold().child(title))
         .child(h_flex().gap_2().child(actions))
 }
 
@@ -38,8 +38,9 @@ pub fn page_body(id: &'static str, content: impl IntoElement) -> impl IntoElemen
         h_flex()
             .w_full()
             .justify_center()
-            .px_6()
-            .py_6()
+            .px_8()
+            .pt_8()
+            .pb_12()
             .child(v_flex().w_full().max_w(px(PAGE_MAX_WIDTH)).child(content)),
     )
 }

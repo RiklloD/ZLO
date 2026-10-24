@@ -1,13 +1,26 @@
 //! Motion catalog adapted from Zeron's `motion.rs` (MIT): CSS timing curves
-//! evaluated exactly, and the few entrances the app uses.
+//! evaluated exactly, springs, and two wall-clock tween stores (hover fades
+//! and state morphs) that make interaction feel continuous.
 //!
-//! Every helper goes through gpui's `with_animation`, which honors
-//! `App::reduce_motion`: the battery saver flips that flag and all of these
-//! snap to their end state without scheduling a frame.
+//! Entrances go through gpui's `with_animation`, which honors
+//! `App::reduce_motion`: the battery saver flips that flag and they snap to
+//! their end state without scheduling a frame. The tween stores read the
+//! same flag and snap too.
+//!
+//! gpui's `.hover()` style swaps colors the frame the pointer enters. The
+//! stores below replace that with a short fade: an element reports hover
+//! through [`hover_listener`], reads its progress with [`hover_t`], and the
+//! window root calls [`pump`] once per frame so frames keep coming only
+//! while something is mid-flight. Idle windows schedule nothing.
 
-use std::time::Duration;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-use gpui_kit::{Animation, AnimationExt, ElementId, IntoElement, Styled, px};
+use gpui_kit::{
+    Animation, AnimationExt, App, ElementId, Hsla, IntoElement, Rgba, SharedString, Styled,
+    Window, px,
+};
 
 /// A CSS `cubic-bezier(x1, y1, x2, y2)`, solved by Newton iteration with a
 /// bisection fallback.
@@ -61,8 +74,7 @@ impl CubicBezier {
         (lo + hi) / 2.
     }
 
-    /// Eased output for progress `x` in 0..1. Clamped: gpui asserts the
-    /// delta stays in range and f32 rounding can overshoot by a hair.
+    /// Eased output for progress `x` in 0..1, clamped against f32 rounding.
     pub fn eval(&self, x: f32) -> f32 {
         if x <= 0. {
             return 0.;
@@ -76,6 +88,7 @@ impl CubicBezier {
 
 /// Zeron's entrance curve, `cubic-bezier(0.16, 1, 0.3, 1)`.
 pub const EASE_OUT_EXPO: CubicBezier = CubicBezier::new(0.16, 1., 0.3, 1.);
+pub const EASE_OUT_QUINT: CubicBezier = CubicBezier::new(0.22, 1., 0.36, 1.);
 /// CSS `ease`.
 pub const EASE: CubicBezier = CubicBezier::new(0.25, 0.1, 0.25, 1.);
 
@@ -90,16 +103,55 @@ impl MotionSpec {
         Self { duration_ms, curve }
     }
 
+    pub fn duration(self) -> Duration {
+        Duration::from_millis(self.duration_ms)
+    }
+
     pub fn animation(self) -> Animation {
-        Animation::new(Duration::from_millis(self.duration_ms))
-            .with_easing(move |d| self.curve.eval(d))
+        Animation::new(self.duration()).with_easing(move |d| self.curve.eval(d))
     }
 }
 
-/// Entrances: 0.5 s expo-out fade plus a 4 px rise.
-pub const FADE_IN: MotionSpec = MotionSpec::new(500, EASE_OUT_EXPO);
-/// Quick fade: 0.15 s.
-pub const FADE_QUICK: MotionSpec = MotionSpec::new(150, EASE);
+/// A damped spring squeezed into a fixed duration. `damping` 1 is critical
+/// (no overshoot); below 1 it overshoots and swings back once or twice.
+/// Its output leaves 0..1 mid-flight, so callers clamp opacity.
+#[derive(Clone, Copy)]
+pub struct Spring {
+    pub damping: f32,
+    pub duration_ms: u64,
+}
+
+impl Spring {
+    pub const fn new(damping: f32, duration_ms: u64) -> Self {
+        Self {
+            damping,
+            duration_ms,
+        }
+    }
+
+    pub fn eval(self, t: f32) -> f32 {
+        if t >= 1. {
+            return 1.;
+        }
+        if t <= 0. {
+            return 0.;
+        }
+        let z = self.damping.clamp(0.05, 1.);
+        // The envelope reaches e^-7 (0.1 %) at t = 1.
+        let decay = 7.;
+        if z >= 0.999 {
+            let w = decay;
+            return 1. - (-w * t).exp() * (1. + w * t);
+        }
+        let w = decay / z;
+        let wd = w * (1. - z * z).sqrt();
+        1. - (-z * w * t).exp() * ((wd * t).cos() + (z * w / wd) * (wd * t).sin())
+    }
+
+    pub fn animation(self) -> Animation {
+        Animation::new(Duration::from_millis(self.duration_ms)).with_easing(move |d| self.eval(d))
+    }
+}
 
 /// Fade an element in with a short rise. The rise is a relative `top` inset,
 /// so like a CSS transform it never moves siblings. `id` must change when
@@ -120,13 +172,246 @@ where
         })
 }
 
+/// Popover and menu entrance on a spring: fades in while travelling `from`
+/// px toward its resting place (negative starts above it).
+pub fn pop_in<E>(element: E, id: impl Into<ElementId>, spring: Spring, from: f32) -> impl IntoElement
+where
+    E: IntoElement + Styled + 'static,
+{
+    element
+        .relative()
+        .with_animation(id, spring.animation(), move |el, d| {
+            el.opacity((d * 1.6).clamp(0., 1.)).top(px(from * (1. - d)))
+        })
+}
+
+pub fn lerp(from: f32, to: f32, t: f32) -> f32 {
+    from + (to - from) * t
+}
+
+/// Blend two colors the way a browser transitions them: sRGB with
+/// premultiplied alpha, so a wash fading in from transparent brightens
+/// without passing through grey.
+pub fn mix(from: Hsla, to: Hsla, t: f32) -> Hsla {
+    let t = t.clamp(0., 1.);
+    if t <= 0. {
+        return from;
+    }
+    if t >= 1. {
+        return to;
+    }
+    let (f, g) = (Rgba::from(from), Rgba::from(to));
+    let a = lerp(f.a, g.a, t);
+    if a <= f32::EPSILON {
+        return Hsla::from(Rgba { a: 0., ..g });
+    }
+    Hsla::from(Rgba {
+        r: lerp(f.r * f.a, g.r * g.a, t) / a,
+        g: lerp(f.g * f.a, g.g * g.a, t) / a,
+        b: lerp(f.b * f.a, g.b * g.a, t) / a,
+        a,
+    })
+}
+
+// Wall-clock tween stores. Main-thread `thread_local`s, so free element
+// builders can blend colors without threading `cx` through. An element
+// that unmounts mid-hover never sends its leave event, so every read stamps
+// the entry with the frame counter and [`pump`] drops entries that went a
+// whole frame unread.
+
+#[derive(Clone, Copy)]
+struct Tween {
+    origin: f32,
+    target: f32,
+    started: Instant,
+    duration: Duration,
+    curve: CubicBezier,
+    seen: u64,
+}
+
+impl Tween {
+    fn value(&self, now: Instant) -> f32 {
+        let elapsed = now.saturating_duration_since(self.started);
+        if self.duration.is_zero() || elapsed >= self.duration {
+            return self.target;
+        }
+        let raw = elapsed.as_secs_f32() / self.duration.as_secs_f32();
+        lerp(self.origin, self.target, self.curve.eval(raw))
+    }
+
+    fn settled(&self, now: Instant) -> bool {
+        self.origin == self.target || now.saturating_duration_since(self.started) >= self.duration
+    }
+}
+
+#[derive(Default)]
+struct Store {
+    hovers: HashMap<SharedString, Tween>,
+    states: HashMap<SharedString, Tween>,
+    frame: u64,
+}
+
+thread_local! {
+    static STORE: RefCell<Store> = RefCell::new(Store::default());
+}
+
+/// Record a hover flip for `key`. Reduced motion snaps.
+pub fn set_hover(key: &SharedString, hovered: bool, spec: MotionSpec, reduced: bool) {
+    let now = Instant::now();
+    STORE.with(|s| {
+        let mut s = s.borrow_mut();
+        let target = if hovered { 1. } else { 0. };
+        let current = s.hovers.get(key).map(|t| t.value(now));
+        if !hovered && current.is_none() {
+            return;
+        }
+        let seen = s.frame;
+        s.hovers.insert(
+            key.clone(),
+            Tween {
+                origin: if reduced { target } else { current.unwrap_or(0.) },
+                target,
+                started: now,
+                duration: spec.duration(),
+                curve: spec.curve,
+                seen,
+            },
+        );
+    });
+}
+
+/// Hover progress (0..1) for `key` this frame.
+pub fn hover_t(key: &str) -> f32 {
+    let now = Instant::now();
+    STORE.with(|s| {
+        let mut s = s.borrow_mut();
+        let frame = s.frame;
+        match s.hovers.get_mut(key) {
+            Some(t) => {
+                t.seen = frame;
+                t.value(now)
+            }
+            None => 0.,
+        }
+    })
+}
+
+/// An `.on_hover` listener driving the fade for `key`; pair it with
+/// [`hover_t`] reads of the same key.
+pub fn hover_listener(
+    key: SharedString,
+    spec: MotionSpec,
+) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+    move |hovered, window, cx| {
+        set_hover(&key, *hovered, spec, cx.reduce_motion());
+        // Event context: `request_animation_frame` is draw-only, so mark the
+        // window dirty; the root's `pump` keeps frames coming from there.
+        window.refresh();
+    }
+}
+
+/// Progress (0 off, 1 on) of `key` toward `on`. The first read snaps to the
+/// state, so mounting never replays a morph; a flip mid-flight reverses
+/// from the drawn value.
+pub fn state_t(key: &str, on: bool, spec: MotionSpec, reduced: bool) -> f32 {
+    let now = Instant::now();
+    let target = if on { 1. } else { 0. };
+    STORE.with(|s| {
+        let mut s = s.borrow_mut();
+        let frame = s.frame;
+        let entry = s.states.entry(key.to_string().into()).or_insert(Tween {
+            origin: target,
+            target,
+            started: now,
+            duration: spec.duration(),
+            curve: spec.curve,
+            seen: frame,
+        });
+        if entry.target != target {
+            let current = entry.value(now);
+            *entry = Tween {
+                origin: if reduced { target } else { current },
+                target,
+                started: now,
+                duration: spec.duration(),
+                curve: spec.curve,
+                seen: frame,
+            };
+        }
+        entry.seen = frame;
+        entry.value(now)
+    })
+}
+
+/// Like [`state_t`] for a continuous value (a slot index, a width): glides
+/// from the drawn value to `to` whenever `to` changes.
+pub fn glide(key: &str, to: f32, spec: MotionSpec, reduced: bool) -> f32 {
+    let now = Instant::now();
+    STORE.with(|s| {
+        let mut s = s.borrow_mut();
+        let frame = s.frame;
+        let entry = s.states.entry(key.to_string().into()).or_insert(Tween {
+            origin: to,
+            target: to,
+            started: now,
+            duration: spec.duration(),
+            curve: spec.curve,
+            seen: frame,
+        });
+        if entry.target != to {
+            let current = entry.value(now);
+            *entry = Tween {
+                origin: if reduced { to } else { current },
+                target: to,
+                started: now,
+                duration: spec.duration(),
+                curve: spec.curve,
+                seen: frame,
+            };
+        }
+        entry.seen = frame;
+        entry.value(now)
+    })
+}
+
+/// Once per window frame, from the root view's render: prune unmounted
+/// entries and ask for the next frame while any tween is mid-flight.
+pub fn pump(window: &mut Window) {
+    let now = Instant::now();
+    let active = STORE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.frame += 1;
+        let frame = s.frame;
+        let mut active = false;
+        s.hovers.retain(|_, t| {
+            if t.seen + 1 < frame {
+                return false;
+            }
+            let settled = t.settled(now);
+            active |= !settled;
+            !(settled && t.target == 0.)
+        });
+        s.states.retain(|_, t| {
+            if t.seen + 1 < frame {
+                return false;
+            }
+            active |= !t.settled(now);
+            true
+        });
+        active
+    });
+    if active {
+        window.request_animation_frame();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn curves_hit_their_endpoints_and_stay_monotonic() {
-        for curve in [EASE_OUT_EXPO, EASE] {
+        for curve in [EASE_OUT_EXPO, EASE, EASE_OUT_QUINT] {
             assert_eq!(curve.eval(0.), 0.);
             assert_eq!(curve.eval(1.), 1.);
             let mut last = 0.;
@@ -136,7 +421,16 @@ mod tests {
                 last = y;
             }
         }
-        // ease-out-expo is front-loaded: past 80% at the halfway mark.
         assert!(EASE_OUT_EXPO.eval(0.5) > 0.8);
+    }
+
+    #[test]
+    fn springs_settle_and_only_underdamped_ones_overshoot() {
+        let soft = Spring::new(0.6, 400);
+        let firm = Spring::new(1., 400);
+        assert_eq!(soft.eval(1.), 1.);
+        assert!((soft.eval(0.98) - 1.).abs() < 0.01);
+        assert!((0..100).any(|i| soft.eval(i as f32 / 100.) > 1.01));
+        assert!((0..100).all(|i| firm.eval(i as f32 / 100.) <= 1.0001));
     }
 }

@@ -21,6 +21,8 @@ pub enum Wallpaper {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
+    /// Design style key, see `styles::StyleId`.
+    pub style: String,
     pub theme: String,
     pub wallpaper: Wallpaper,
     pub status_bar_hidden: bool,
@@ -29,6 +31,7 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Self {
+            style: "forge".into(),
             theme: super::themes::DEFAULT_THEME.into(),
             wallpaper: Wallpaper::Aurora,
             status_bar_hidden: false,

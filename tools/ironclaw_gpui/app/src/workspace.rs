@@ -12,7 +12,8 @@ use crate::alerts::Alerts;
 use crate::chat::{ChatView, OpenThread, RunEnded, ThreadUpdated};
 use crate::design::battery::BatterySaver;
 use crate::design::prefs::Prefs;
-use crate::design::{self, Palette, motion, wallpaper};
+use crate::design::styles::{Material, StyleId};
+use crate::design::{self, Palette, Style, kit, motion, wallpaper};
 use crate::jobs;
 use crate::pages::PageEvent;
 use crate::pages::automations::AutomationsView;
@@ -145,6 +146,7 @@ impl Workspace {
             _status_poll: None,
         };
         this.battery.start(|w: &mut Self| &mut w.battery, cx);
+        design::apply_window(window, *Style::of(cx));
         // Clicking a system notification brings the window up on its thread.
         let weak = cx.entity().downgrade();
         let handle = window.window_handle();
@@ -486,31 +488,46 @@ impl Workspace {
         items.push((Page::Skills, IconName::BookOpen, "Skills"));
         items.push((Page::Operator, IconName::SquareTerminal, "Operator"));
         let unread = self.unread;
+        let s = *Style::of(cx);
+        let p = *Palette::of(cx);
+        let selected = items.iter().position(|(page, _, _)| *page == self.page);
+        // Rows have a fixed height, so the selection pill can glide between
+        // them instead of jumping.
         v_flex()
             .px_2()
             .pb_2()
-            .gap_px()
-            .children(
-                items
-                    .into_iter()
-                    .enumerate()
-                    .map(|(ix, (page, icon, label))| {
-                        sidebar_row(("nav", ix), self.page == page, cx)
-                            .aria_label(label)
-                            .on_click(
-                                cx.listener(move |this, _, window, cx| this.show(page, window, cx)),
-                            )
-                            .child(Icon::new(icon).small())
-                            .child(div().flex_1().child(label))
-                            .when(page == Page::Notifications && unread > 0, |d| {
-                                d.child(
-                                    Tag::primary()
-                                        .small()
-                                        .rounded_full()
-                                        .child(unread.to_string()),
-                                )
-                            })
-                    }),
+            .child(
+                v_flex()
+                    .relative()
+                    .child(kit::slide_pill("nav-pill", selected, s.row_height, cx))
+                    .children(items.into_iter().enumerate().map(
+                        |(ix, (page, icon, label))| {
+                            let on = self.page == page;
+                            kit::pill_row(SharedString::from(format!("nav-{ix}")), on, cx)
+                                .role(Role::Button)
+                                .aria_label(label)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.show(page, window, cx)
+                                }))
+                                .child(Icon::new(icon).small().when(on, |i| i.text_color(p.accent)))
+                                .child(div().flex_1().child(label))
+                                .when(page == Page::Notifications && unread > 0, |d| {
+                                    d.child(
+                                        div()
+                                            .px_1p5()
+                                            .h(px(16.))
+                                            .flex()
+                                            .items_center()
+                                            .rounded_full()
+                                            .bg(p.accent)
+                                            .text_color(design::on_accent(p))
+                                            .text_size(px(10.))
+                                            .font_semibold()
+                                            .child(unread.to_string()),
+                                    )
+                                })
+                        },
+                    )),
             )
     }
 
@@ -522,11 +539,13 @@ impl Workspace {
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
+        let console = Style::of(cx).material == Material::Line;
         v_flex()
             .w(px(design::SIDEBAR_WIDTH))
             .h_full()
             .flex_none()
             .text_color(p.text_muted)
+            .when(console, |d| d.border_r_1().border_color(p.border))
             // Titlebar strip: traffic lights sit on the left, macOS drags
             // the window from the empty space.
             .child(
@@ -537,13 +556,12 @@ impl Workspace {
                     .items_center()
                     .pr_2()
                     .child(
-                        Button::new("new-thread")
+                        kit::button("new-thread")
                             .icon(IconName::Plus)
                             .ghost()
                             .small()
                             .selected(self.inbox.picker_open)
                             .tooltip("New thread")
-                            .accessibility_label("New thread")
                             .on_click(cx.listener(|this, _, _, cx| this.new_thread(cx))),
                     ),
             )
@@ -554,36 +572,36 @@ impl Workspace {
                     .p_2()
                     .gap_1()
                     .child(
-                        Button::new("open-settings")
-                            .icon(IconName::Settings)
-                            .label("Settings")
-                            .ghost()
-                            .small()
-                            .flex_1()
-                            .selected(self.page == Page::Settings)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show(Page::Settings, window, cx)
-                            })),
+                        div().flex_1().child(
+                            kit::button("open-settings")
+                                .icon(IconName::Settings)
+                                .label("Settings")
+                                .ghost()
+                                .small()
+                                .full()
+                                .selected(self.page == Page::Settings)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show(Page::Settings, window, cx)
+                                })),
+                        ),
                     )
                     .child(
-                        Button::new("open-browser")
+                        kit::button("open-browser")
                             .icon(IconName::ExternalLink)
                             .ghost()
                             .small()
                             .tooltip("Open in browser")
-                            .accessibility_label("Open in browser")
                             .on_click(cx.listener(|this, _, _, cx| this.open_in_browser(cx))),
                     )
                     .child(
                         // gpui-kit's default icon set has no bar chart; the
                         // full catalog would embed 1,830 SVGs for one glyph.
-                        Button::new("open-usage")
+                        kit::button("open-usage")
                             .icon(IconName::ChartPie)
                             .ghost()
                             .small()
                             .selected(self.page == Page::Usage)
                             .tooltip("Usage")
-                            .accessibility_label("Usage")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.show(Page::Usage, window, cx)
                             })),
@@ -702,6 +720,8 @@ impl Workspace {
     /// The bottom strip: connection on the left, metrics on the right.
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
+        let console = Style::of(cx).material == Material::Line;
+        let live = matches!(self.conn, Conn::Connecting);
         let (dot, label): (_, SharedString) = match &self.conn {
             Conn::Connecting => (p.warning, "Connecting".into()),
             Conn::Failed { .. } => (p.danger, "Disconnected".into()),
@@ -727,7 +747,8 @@ impl Workspace {
             .items_center()
             .text_xs()
             .text_color(p.text_faint)
-            .child(div().size(px(6.)).rounded_full().bg(dot))
+            .when(console, |d| d.border_t_1().border_color(p.border).font_family(design::FONT_MONO))
+            .child(kit::status_dot("status-dot", dot, live))
             .child(label)
             .child(div().flex_1())
             .when(matches!(self.conn, Conn::Ready), |d| {
@@ -736,26 +757,14 @@ impl Workspace {
     }
 }
 
-/// One sidebar row: Zeron's quiet list style, a wash on hover and a
-/// stronger one when selected.
+/// One sidebar row: a fading hover wash and a selection tick that grows in.
 fn sidebar_row(
     id: impl Into<ElementId>,
     active: bool,
     cx: &App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let p = Palette::of(cx);
-    h_flex()
-        .id(id)
-        .role(Role::Button)
-        .w_full()
-        .h(px(30.))
-        .gap_2()
-        .px_2()
-        .rounded(px(design::CONTROL_RADIUS))
-        .text_sm()
-        .cursor_pointer()
-        .when(active, |d| d.bg(p.active).text_color(p.text))
-        .when(!active, |d| d.hover(|s| s.bg(p.hover).text_color(p.text)))
+    let id: ElementId = id.into();
+    kit::row(SharedString::from(format!("{id:?}")), active, cx).role(Role::Button)
 }
 
 fn metric(name: &'static str, value: String) -> impl IntoElement {
@@ -791,8 +800,11 @@ fn friendly(error: &ClientError) -> String {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Keep frames coming only while a hover fade or glide is mid-flight.
+        motion::pump(window);
         let p = *Palette::of(cx);
+        let s = *Style::of(cx);
         let backdrop = wallpaper::current(cx);
         let body: AnyElement = match &self.conn {
             Conn::Connecting => v_flex()
@@ -870,6 +882,16 @@ impl Render for Workspace {
                     (None, Some((_, chat))) => chat.clone().into_any_element(),
                     (None, None) => self.render_empty(cx).into_any_element(),
                 };
+                let panel_alpha = if backdrop.is_some() {
+                    s.panel_alpha.min(0.72)
+                } else {
+                    s.panel_alpha
+                };
+                let rim = match s.material {
+                    Material::Frost => gpui_kit::hsla(0., 0., 1., 0.1),
+                    Material::Ink if p.light => p.border.opacity(0.7),
+                    _ => p.border,
+                };
                 h_flex()
                     .size_full()
                     .min_h_0()
@@ -879,25 +901,21 @@ impl Render for Workspace {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .py(px(design::PANEL_INSET))
-                            .pr(px(design::PANEL_INSET))
+                            .py(px(s.panel_inset))
+                            .pr(px(s.panel_inset))
                             .child(
                                 div()
                                     .size_full()
-                                    .rounded(px(design::PANEL_RADIUS))
-                                    .border_1()
-                                    .border_color(p.border)
-                                    .bg(if backdrop.is_some() {
-                                        p.bg.opacity(0.68)
-                                    } else {
-                                        p.bg
-                                    })
+                                    .rounded(px(s.panel_radius))
+                                    .when(s.panel_inset > 0., |d| d.border_1().border_color(rim))
+                                    .shadow(kit::panel_shadows(&s, &p))
+                                    .bg(p.bg.opacity(panel_alpha))
                                     .overflow_hidden()
                                     .child(motion::fade_in(
                                         div().size_full().child(main),
                                         ElementId::Name(key),
-                                        motion::FADE_QUICK,
-                                        0.,
+                                        s.enter,
+                                        s.enter_rise,
                                     )),
                             ),
                     )
@@ -905,10 +923,12 @@ impl Render for Workspace {
             }
         };
         let show_status = !Prefs::of(cx).status_bar_hidden;
+        // Glass lets the macOS blur through: the wallpaper only tints it.
+        let wall_alpha = if s.vibrancy { 0.45 } else { 1. };
         v_flex()
             .size_full()
             .relative()
-            .bg(p.surface)
+            .bg(p.surface.opacity(s.shell_alpha))
             // The wallpaper sits under everything; shell and panel turn to
             // tinted glass over it.
             .when_some(backdrop.clone(), |d, image| {
@@ -918,6 +938,7 @@ impl Render for Workspace {
                         .top_0()
                         .left_0()
                         .size_full()
+                        .opacity(wall_alpha)
                         .object_fit(gpui_kit::ObjectFit::Cover),
                 )
                 .child(
@@ -926,11 +947,15 @@ impl Render for Workspace {
                         .top_0()
                         .left_0()
                         .size_full()
-                        .bg(p.surface.opacity(0.35)),
+                        .bg(p.surface.opacity(0.35 * s.shell_alpha)),
                 )
             })
             .text_color(p.text)
-            .font_family(design::FONT_SANS)
+            .font_family(if s.mono_ui {
+                design::FONT_MONO
+            } else {
+                design::FONT_SANS
+            })
             .on_mouse_move(
                 cx.listener(|this, _, _, cx| this.battery.input(|w: &mut Self| &mut w.battery, cx)),
             )
@@ -943,47 +968,74 @@ impl Render for Workspace {
 }
 
 impl Workspace {
-    /// No thread open: a soft accent glow at the top of the panel. A static
-    /// gradient, so it costs nothing per frame.
+    /// No thread open: one composed moment per style. Static gradients
+    /// and a single entrance, so it costs nothing per frame once settled.
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
+        let s = *Style::of(cx);
+        let glow = match s.id {
+            StyleId::Forge => Some((p.accent.opacity(0.16), 360.)),
+            StyleId::Glass => Some((p.accent.opacity(0.12), 280.)),
+            StyleId::Paper => None,
+            StyleId::Console => None,
+        };
+        let headline = match s.id {
+            StyleId::Console => "ironclaw ready_",
+            _ => "What are we building?",
+        };
         div()
             .size_full()
             .relative()
-            .child(div().absolute().top_0().left_0().right_0().h(px(320.)).bg(
-                gpui_kit::linear_gradient(
-                    180.,
-                    gpui_kit::linear_color_stop(p.accent_wash, 0.),
-                    gpui_kit::linear_color_stop(p.accent_wash.opacity(0.), 1.),
-                ),
-            ))
+            .when_some(glow, |d, (color, h)| {
+                d.child(div().absolute().top_0().left_0().right_0().h(px(h)).bg(
+                    gpui_kit::linear_gradient(
+                        180.,
+                        gpui_kit::linear_color_stop(color, 0.),
+                        gpui_kit::linear_color_stop(color.opacity(0.), 1.),
+                    ),
+                ))
+            })
             .child(motion::fade_in(
                 v_flex()
                     .size_full()
                     .items_center()
                     .justify_center()
-                    .gap_3()
+                    .gap_4()
+                    .child(crate::design::kit::claw_mark(cx))
                     .child(
-                        div()
-                            .text_xl()
-                            .font_semibold()
-                            .child("What are we building?"),
+                        v_flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .text_size(px(if s.id == StyleId::Console { 18. } else { 26. }))
+                                    .font_weight(if s.id == StyleId::Paper {
+                                        gpui_kit::FontWeight::MEDIUM
+                                    } else {
+                                        gpui_kit::FontWeight::SEMIBOLD
+                                    })
+                                    .when(s.id == StyleId::Console, |d| {
+                                        d.font_family(design::FONT_MONO).text_color(p.accent)
+                                    })
+                                    .child(headline),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(p.text_muted)
+                                    .child("Start a conversation, or pick one from the sidebar."),
+                            ),
                     )
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(p.text_muted)
-                            .child("Start a conversation, or pick one from the sidebar."),
-                    )
-                    .child(
-                        Button::new("start-thread")
+                        kit::button("start-thread")
                             .label("New thread")
+                            .icon(IconName::Plus)
                             .primary()
                             .on_click(cx.listener(|this, _, _, cx| this.new_thread(cx))),
                     ),
                 "empty-state",
-                motion::FADE_IN,
-                4.,
+                s.enter,
+                s.enter_rise * 2.,
             ))
     }
 }
