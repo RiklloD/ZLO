@@ -78,14 +78,18 @@ pub struct OrchestratorMergeBackRequest {
 }
 
 /// Delegated tasks of one thread.
-pub const ORCHESTRATOR_THREAD_TASKS_VIEW: ProductView<OrchestratorThreadRequest, serde_json::Value> =
-    ProductView::unpaginated("orchestrator.thread_tasks");
+pub const ORCHESTRATOR_THREAD_TASKS_VIEW: ProductView<
+    OrchestratorThreadRequest,
+    serde_json::Value,
+> = ProductView::unpaginated("orchestrator.thread_tasks");
 /// One task (status, result, usage). Reading a finished result acknowledges it.
 pub const ORCHESTRATOR_TASK_VIEW: ProductView<OrchestratorTaskRequest, serde_json::Value> =
     ProductView::unpaginated("orchestrator.task");
 /// The thread's durable queue and hold state.
-pub const ORCHESTRATOR_THREAD_QUEUE_VIEW: ProductView<OrchestratorThreadRequest, serde_json::Value> =
-    ProductView::unpaginated("orchestrator.thread_queue");
+pub const ORCHESTRATOR_THREAD_QUEUE_VIEW: ProductView<
+    OrchestratorThreadRequest,
+    serde_json::Value,
+> = ProductView::unpaginated("orchestrator.thread_queue");
 /// Forks out of and merges into/out of the thread.
 pub const ORCHESTRATOR_THREAD_LINEAGE_VIEW: ProductView<
     OrchestratorThreadRequest,

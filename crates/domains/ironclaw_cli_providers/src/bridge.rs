@@ -12,15 +12,21 @@
 //!   thread and run, for the loopback MCP route that serves the orchestrator
 //!   tools ([`handle_mcp`]). Revoked when the turn ends; expired ones fail.
 //!
-//! Nothing here is durable: the CLI child dies with the backend, and so do
-//! its pending calls (they are denied by the process exit).
+//! The live gates are not durable: the CLI child dies with the backend, and
+//! so do its pending calls (they are denied by the process exit). Once
+//! [`CliBridge::record_to`] has a store, every call is also written to
+//! `orch_cli_approvals` when asked and when answered, and a call that cannot
+//! be recorded is denied.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ironclaw_host_api::ids::ThreadId;
+use ironclaw_orchestrator::cli_approvals::{CliApprovalDecision, CliApprovalRecord};
 use ironclaw_orchestrator::engine::{CallContext, Engine};
+use ironclaw_orchestrator::model::now_ms;
+use ironclaw_orchestrator::store::Store;
 use ironclaw_orchestrator::tools::TOOLS;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, oneshot};
@@ -120,7 +126,7 @@ struct TokenEntry {
 
 struct PendingGate {
     view: GateView,
-    answer: oneshot::Sender<ToolDecision>,
+    answer: oneshot::Sender<(ToolDecision, CliApprovalDecision)>,
 }
 
 struct LiveTurn {
@@ -151,6 +157,8 @@ pub struct CliBridge {
     events: broadcast::Sender<LiveEvent>,
     /// The loopback MCP route, known once the gateway listener is bound.
     mcp_url: OnceLock<String>,
+    /// Where approvals are recorded, set once by the host.
+    ledger: OnceLock<Store>,
 }
 
 impl std::fmt::Debug for CliBridge {
@@ -167,6 +175,7 @@ impl CliBridge {
             live: Mutex::new(HashMap::new()),
             events: broadcast::channel(EVENT_BUFFER).0,
             mcp_url: OnceLock::new(),
+            ledger: OnceLock::new(),
         })
     }
 
@@ -177,6 +186,11 @@ impl CliBridge {
     /// Record the loopback MCP endpoint (first call wins).
     pub fn set_mcp_url(&self, url: String) {
         let _ = self.mcp_url.set(url); // silent-ok: the gateway binds once per process
+    }
+
+    /// Record every approval in `store` from now on (first call wins).
+    pub fn record_to(&self, store: Store) {
+        let _ = self.ledger.set(store); // silent-ok: the host wires one store per process
     }
 
     pub fn mcp_url(&self) -> Option<&str> {
@@ -311,9 +325,10 @@ impl CliBridge {
         });
         self.emit_text(thread, run_id, turn.as_mut().and_then(LiveTurn::flush));
         for gate in turn.map(|t| t.gates).unwrap_or_default() {
-            let _ = gate
-                .answer
-                .send(ToolDecision::Deny("The turn ended.".into())); // silent-ok: the waiter already gave up
+            let _ = gate.answer.send((
+                ToolDecision::Deny("The turn ended.".into()),
+                CliApprovalDecision::TurnEnded,
+            )); // silent-ok: the waiter already gave up
         }
         self.emit(LiveEvent::Ended {
             thread: thread.clone(),
@@ -340,6 +355,23 @@ impl CliBridge {
             headline: format!("Allow {tool_name}?"),
             body: gate_body(tool_name, input),
         };
+        if let Some(ledger) = self.ledger.get() {
+            let record = CliApprovalRecord {
+                gate_ref: gate.gate_ref.clone(),
+                thread_id: thread.clone(),
+                run_id: run_id.to_string(),
+                tool_name: tool_name.to_string(),
+                body: gate.body.clone(),
+                requested_at: now_ms(),
+                decision: None,
+                reason: None,
+                decided_at: None,
+            };
+            if let Err(error) = ledger.cli_approval_opened(&record).await {
+                tracing::debug!(%error, "cli bridge: approval not recorded; denied");
+                return ToolDecision::Deny("This call could not be recorded.".into());
+            }
+        }
         let (tx, rx) = oneshot::channel();
         // `Some(unsent text)` once registered: the text before the call shows first.
         let registered = self.live.lock().ok().and_then(|mut live| {
@@ -351,6 +383,8 @@ impl CliBridge {
             Some(turn.flush())
         });
         let Some(unsent) = registered else {
+            self.record_close(&gate.gate_ref, CliApprovalDecision::TurnEnded, None)
+                .await;
             return ToolDecision::Deny("No live turn to approve this call.".into());
         };
         self.emit_text(thread, run_id, unsent);
@@ -358,11 +392,22 @@ impl CliBridge {
             thread: thread.clone(),
             gate: gate.clone(),
         });
-        let decision = match tokio::time::timeout(self.approval_timeout, rx).await {
-            Ok(Ok(decision)) => decision,
-            Ok(Err(_)) => ToolDecision::Deny("The approval was dropped.".into()),
-            Err(_) => ToolDecision::Deny("Nobody approved this call in time.".into()),
+        let (decision, recorded) = match tokio::time::timeout(self.approval_timeout, rx).await {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) => (
+                ToolDecision::Deny("The approval was dropped.".into()),
+                CliApprovalDecision::TurnEnded,
+            ),
+            Err(_) => (
+                ToolDecision::Deny("Nobody approved this call in time.".into()),
+                CliApprovalDecision::TimedOut,
+            ),
         };
+        let reason = match &decision {
+            ToolDecision::Deny(reason) => Some(reason.as_str()),
+            ToolDecision::Allow => None,
+        };
+        self.record_close(&gate.gate_ref, recorded, reason).await;
         // A timeout leaves the gate registered; close it either way.
         if let Ok(mut live) = self.live.lock()
             && let Some(turn) = live.get_mut(thread)
@@ -391,11 +436,30 @@ impl CliBridge {
             return false;
         };
         let decision = if approved {
-            ToolDecision::Allow
+            (ToolDecision::Allow, CliApprovalDecision::Allowed)
         } else {
-            ToolDecision::Deny("The user declined this call.".into())
+            (
+                ToolDecision::Deny("The user declined this call.".into()),
+                CliApprovalDecision::Declined,
+            )
         };
         pending.answer.send(decision).is_ok()
+    }
+
+    async fn record_close(
+        &self,
+        gate_ref: &str,
+        decision: CliApprovalDecision,
+        reason: Option<&str>,
+    ) {
+        if let Some(ledger) = self.ledger.get()
+            && let Err(error) = ledger
+                .cli_approval_closed(gate_ref, decision, reason, now_ms())
+                .await
+        {
+            // The open row stays; the next engine open closes it as interrupted.
+            tracing::debug!(%error, "cli bridge: approval decision not recorded");
+        }
     }
 }
 
@@ -410,7 +474,7 @@ fn gate_body(tool_name: &str, input: &Value) -> Option<String> {
         "WebFetch" => input.get("url"),
         _ => None,
     };
-    let text = match field.and_then(Value::as_str) {
+    let text = match field.or(Some(input)).and_then(Value::as_str) {
         Some(s) => s.to_string(),
         None if input.as_object().is_some_and(|o| o.is_empty()) || input.is_null() => {
             return None;
@@ -616,5 +680,87 @@ mod tests {
                 .await,
             ToolDecision::Deny(_)
         ));
+    }
+
+    /// Every asked call is recorded with its answer, and a call still open
+    /// when the engine reopens (a restart) is closed as interrupted.
+    #[tokio::test]
+    async fn approvals_are_recorded_and_a_restart_closes_open_ones() {
+        use ironclaw_orchestrator::cli_approvals::CliApprovalDecision as D;
+
+        let dir = tempfile::tempdir().unwrap();
+        let open = || async {
+            let db = Arc::new(
+                libsql::Builder::new_local(dir.path().join("o.db"))
+                    .build()
+                    .await
+                    .unwrap(),
+            );
+            let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+            Engine::open_libsql(runtime, "ironclaw").await.unwrap()
+        };
+        let engine = open().await;
+        let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+        bridge.record_to(engine.store().clone());
+        let thread = tid();
+        bridge.turn_started(&thread, "r1");
+
+        let ask = |tool: &'static str| {
+            let (bridge, thread) = (Arc::clone(&bridge), thread.clone());
+            tokio::spawn(async move {
+                bridge
+                    .request_approval(&thread, "r1", tool, &json!({"command": "ls"}))
+                    .await
+            })
+        };
+        let gate_for = |n: usize| {
+            let (bridge, thread) = (Arc::clone(&bridge), thread.clone());
+            async move {
+                loop {
+                    if let Some(g) = bridge
+                        .snapshot(&thread)
+                        .and_then(|s| s.gates.get(n).cloned())
+                    {
+                        break g;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }
+        };
+        let allowed = ask("Bash");
+        let gate = gate_for(0).await;
+        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, true));
+        assert_eq!(allowed.await.unwrap(), ToolDecision::Allow);
+        let declined = ask("Read");
+        let gate = gate_for(0).await;
+        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, false));
+        assert!(matches!(declined.await.unwrap(), ToolDecision::Deny(_)));
+        // Left waiting when the backend "stops".
+        let _pending = ask("Write");
+        gate_for(0).await;
+
+        let rows = engine.store().cli_approvals(&thread).await.unwrap();
+        let seen: Vec<_> = rows
+            .iter()
+            .map(|r| (r.tool_name.as_str(), r.decision))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("Bash", Some(D::Allowed)),
+                ("Read", Some(D::Declined)),
+                ("Write", None)
+            ]
+        );
+        assert_eq!(rows[0].body.as_deref(), Some("ls"));
+
+        let reopened = open().await;
+        let rows = reopened.store().cli_approvals(&thread).await.unwrap();
+        assert_eq!(rows[2].decision, Some(D::Interrupted));
+        assert_eq!(
+            rows[0].decision,
+            Some(D::Allowed),
+            "closed rows keep their answer"
+        );
     }
 }

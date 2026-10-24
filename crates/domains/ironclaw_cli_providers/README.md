@@ -57,6 +57,14 @@ CLI has its tools and every call waits for a person:
 
 Without a bridge every turn runs with `--tools ""` as before.
 
+Every asked call is also recorded in the orchestrator's
+`orch_cli_approvals` table (`register_cli_runtimes` points the bridge at
+the engine's store): the tool, its preview, when it was asked, and how it
+ended (`allowed`, `declined`, `timed_out`, `turn_ended`). A call that
+cannot be recorded is denied. The live gate still dies with the backend
+(so does the CLI process); the next engine open closes such rows as
+`interrupted`.
+
 While a turn runs, its reply text streams through the bridge into the
 thread's event stream (`text`, `gate`, `run_status` projection items). The
 prompt's `uuid` is the run id, so the session journal's rows carry it and
@@ -121,8 +129,10 @@ The protocol is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
   does not, so TPS stays empty).
 - **Tools:** the client offers no file system and no terminal, the session
   stays in the agent's ask-first `default` mode, and every
-  `session/request_permission` goes through `permissions::decide`, which
-  answers `reject_once`. Native questions are cancelled.
+  `session/request_permission` goes through `permissions::decide`: with
+  the bridge it waits as an approval in the thread and answers `allow_once`
+  or `reject_once` (never `allow_always`); without, `reject_once`. Native
+  questions are cancelled.
 
 ## Muse Code (`muse-code`)
 
@@ -151,16 +161,20 @@ dependency: its facade has no `turn/interrupt`, `model/list` or
   (window falls back to the catalog's `contextLimit`), cache hit rate from
   the last `session/tokenUsage`, TPS as output tokens over the summed
   `durationMs` of the turn's model calls.
-- **Tools:** `--disable-shell --disable-write --disable-request-user-input`,
-  no `--trust-workspace` (workspace rules cannot allow anything), approval
-  mode `denyUnmatched`, and any approval Muse still raises goes through
-  `permissions::decide`, which picks the `denied` (else `abort`) choice.
+- **Tools:** `--disable-request-user-input`, no `--trust-workspace`
+  (workspace rules cannot allow anything), approval mode `denyUnmatched`,
+  and every approval Muse raises goes through `permissions::decide`: with
+  the bridge it waits for the owner and picks the once-scoped `approved`
+  choice, else `denied` (or `abort`). Without a bridge, shell and writes
+  are off too (`--disable-shell --disable-write`).
 
 ## The approval seam
 
-`permissions::decide` is the one function both drivers ask about a tool
-call. It denies everything until the bridge into `ironclaw_approvals` lands;
-the bridge replaces its body (async if it waits for the user).
+`permissions::decide` is the one function the Antigravity and Muse drivers
+ask about a tool call. It turns the request into a bridge approval
+(`CliBridge::request_approval`, the same gate the Claude driver uses) and
+denies when there is no bridge. Each answer is for that one call: nothing
+is remembered.
 
 ## Tests
 

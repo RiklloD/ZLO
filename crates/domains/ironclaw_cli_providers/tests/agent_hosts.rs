@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ironclaw_cli_providers::antigravity::{AntigravityConfig, AntigravityRuntime};
+use ironclaw_cli_providers::bridge::{CliBridge, DEFAULT_APPROVAL_TIMEOUT};
 use ironclaw_cli_providers::muse::{MuseConfig, MuseRuntime};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
 use ironclaw_orchestrator::model::{Millis, ThreadRecord, ThreadScope};
@@ -165,6 +166,7 @@ fn antigravity(
             state_dir: dir.join("state"),
         },
         sink(recorder),
+        None,
     )
     .unwrap()
 }
@@ -284,7 +286,15 @@ while IFS= read -r line; do
     *'"method":"session/start"'*|*'"method":"session/resume"'*)
       SID=$(field "$line" sessionId)
       reply "$id" "{\"session\":{\"sessionId\":\"$SID\",\"modelId\":\"muse-spark-1.3\"}}" ;;
-    *'"method":"session/setApprovalMode"'*|*'"method":"session/setModel"'*|*'"method":"approval/decide"'*) reply "$id" '{}' ;;
+    *'"method":"session/setApprovalMode"'*|*'"method":"session/setModel"'*) reply "$id" '{}' ;;
+    *'"method":"approval/decide"'*)
+      reply "$id" '{}'
+      # Like the real host, the turn goes on once the approval is decided.
+      emit session/tokenUsage "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\",\"modelId\":\"muse-spark-1.3\",\"promptTokens\":1000,\"totalTokens\":1050,\"durationMs\":500,\"usage\":{\"inputTokens\":1000,\"outputTokens\":50,\"cachedTokens\":600,\"cacheReadTokens\":600,\"reasoningTokens\":0}}"
+      emit session/contextUsage "{\"sessionId\":\"$SID\",\"usedTokens\":1050,\"windowTokens\":1007997,\"pressure\":\"normal\"}"
+      emit item/completed "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"m1\",\"turnId\":\"$TID\",\"kind\":\"agentMessage\",\"status\":\"completed\",\"revision\":2,\"text\":\"Hello\"}}"
+      emit usage/changed '{"window":{"usedPercent":55}}'
+      emit turn/completed "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\",\"terminal\":\"completed\"}" ;;
     *'"method":"turn/steer"'*) reply "$id" "{\"turnId\":\"$TID\"}" ;;
     *'"method":"turn/interrupt"'*)
       reply "$id" '{}'
@@ -296,17 +306,17 @@ while IFS= read -r line; do
       emit turn/started "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\"}"
       emit item/started "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"m1\",\"turnId\":\"$TID\",\"kind\":\"agentMessage\",\"status\":\"inProgress\",\"revision\":1}}"
       emit item/delta "{\"sessionId\":\"$SID\",\"itemId\":\"m1\",\"field\":\"text\",\"delta\":\"Hel\"}"
-      emit approval/requested "{\"sessionId\":\"$SID\",\"approvalId\":\"a1\",\"turnId\":\"$TID\",\"status\":\"pending\",\"toolName\":\"bash\",\"currentRequirementId\":\"r1\",\"subject\":{\"command\":\"rm -rf /\"},\"availableChoices\":[{\"choiceId\":\"ok\",\"decision\":\"approved\",\"scope\":\"once\"},{\"choiceId\":\"stop\",\"decision\":\"abort\"}]}"
-      emit session/tokenUsage "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\",\"modelId\":\"muse-spark-1.3\",\"promptTokens\":1000,\"totalTokens\":1050,\"durationMs\":500,\"usage\":{\"inputTokens\":1000,\"outputTokens\":50,\"cachedTokens\":600,\"cacheReadTokens\":600,\"reasoningTokens\":0}}"
-      emit session/contextUsage "{\"sessionId\":\"$SID\",\"usedTokens\":1050,\"windowTokens\":1007997,\"pressure\":\"normal\"}"
-      emit item/completed "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"m1\",\"turnId\":\"$TID\",\"kind\":\"agentMessage\",\"status\":\"completed\",\"revision\":2,\"text\":\"Hello\"}}"
-      emit usage/changed '{"window":{"usedPercent":55}}'
-      emit turn/completed "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\",\"terminal\":\"completed\"}" ;;
+      emit approval/requested "{\"sessionId\":\"$SID\",\"approvalId\":\"a1\",\"turnId\":\"$TID\",\"status\":\"pending\",\"toolName\":\"bash\",\"currentRequirementId\":\"r1\",\"subject\":{\"command\":\"rm -rf /\"},\"availableChoices\":[{\"choiceId\":\"ok\",\"decision\":\"approved\",\"scope\":\"once\"},{\"choiceId\":\"stop\",\"decision\":\"abort\"}]}" ;;
   esac
 done
 "#;
 
-fn muse(dir: &Path, pid_file: Option<&Path>, recorder: &Arc<Recorder>) -> MuseRuntime {
+fn muse(
+    dir: &Path,
+    pid_file: Option<&Path>,
+    recorder: &Arc<Recorder>,
+    bridge: Option<Arc<CliBridge>>,
+) -> MuseRuntime {
     let body = MUSE
         .replace("__LOG__", &dir.join("muse.log").display().to_string())
         .replace(
@@ -326,6 +336,7 @@ fn muse(dir: &Path, pid_file: Option<&Path>, recorder: &Arc<Recorder>) -> MuseRu
             reasoning_effort: None,
         },
         sink(recorder),
+        bridge,
     )
     .unwrap()
 }
@@ -334,7 +345,7 @@ fn muse(dir: &Path, pid_file: Option<&Path>, recorder: &Arc<Recorder>) -> MuseRu
 async fn muse_starts_then_resumes_denies_approvals_and_reports_telemetry() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
-    let rt = muse(dir.path(), None, &recorder);
+    let rt = muse(dir.path(), None, &recorder, None);
 
     let catalog = rt.catalog(&scope()).await.unwrap();
     assert!(catalog[0].authenticated);
@@ -350,7 +361,9 @@ async fn muse_starts_then_resumes_denies_approvals_and_reports_telemetry() {
     let log = std::fs::read_to_string(dir.path().join("muse.log")).unwrap();
     for argv in log.lines().filter(|l| l.starts_with("argv")) {
         assert!(
-            argv.contains("serve --disable-shell --disable-write --disable-request-user-input"),
+            argv.contains("--disable-shell")
+                && argv.contains("--disable-write")
+                && argv.contains("--disable-request-user-input"),
             "{argv}"
         );
         assert!(
@@ -410,12 +423,53 @@ async fn muse_starts_then_resumes_denies_approvals_and_reports_telemetry() {
     assert_eq!(history[3].text, "Hello");
 }
 
+/// With the bridge, shell and writes are on and Muse's approval waits as
+/// a gate in the thread; the owner's approval picks the once-scoped allow.
+#[tokio::test]
+async fn muse_with_a_bridge_asks_the_owner_and_runs_the_approved_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let rt = muse(dir.path(), None, &recorder, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt, "default").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+
+    let gate = loop {
+        if let Some(g) = bridge
+            .snapshot(&thread.thread_id)
+            .and_then(|s| s.gates.first().cloned())
+        {
+            break g;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(gate.tool_name, "bash");
+    assert_eq!(gate.body.as_deref(), Some("rm -rf /"));
+    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, true));
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+
+    let log = std::fs::read_to_string(dir.path().join("muse.log")).unwrap();
+    let argv = log.lines().find(|l| l.starts_with("argv")).unwrap();
+    assert!(
+        !argv.contains("--disable-shell") && !argv.contains("--disable-write"),
+        "{argv}"
+    );
+    assert!(argv.contains("--disable-request-user-input"), "{argv}");
+    assert!(log.contains(r#""choiceId":"ok""#), "{log}");
+    assert!(!log.contains(r#""choiceId":"stop""#), "{log}");
+    assert_eq!(
+        recorder.finished.lock().unwrap()[0].status,
+        TurnEndStatus::Completed
+    );
+    assert!(bridge.snapshot(&thread.thread_id).is_none(), "turn ended");
+}
+
 #[tokio::test]
 async fn muse_steers_in_turn_and_stop_interrupts_and_clears_the_group() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let pid_file = dir.path().join("child.pid");
-    let rt = muse(dir.path(), Some(&pid_file), &recorder);
+    let rt = muse(dir.path(), Some(&pid_file), &recorder, None);
     let thread = thread(&rt, "default").await;
 
     rt.start_turn(&thread, input()).await.unwrap();

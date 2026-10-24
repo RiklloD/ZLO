@@ -102,7 +102,7 @@ async fn antigravity_live_turn() {
     config.work_dir = dir.path().join("work");
     let recorder = Arc::new(Recorder::default());
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(&recorder) as Weak<dyn TurnEventSink>;
-    let rt = antigravity::AntigravityRuntime::new(config, sink).unwrap();
+    let rt = antigravity::AntigravityRuntime::new(config, sink, None).unwrap();
     one_turn(&rt, &recorder).await;
 }
 
@@ -117,7 +117,7 @@ async fn muse_live_turn() {
     config.usage_file = Some(dir.path().join("muse-code.json"));
     let recorder = Arc::new(Recorder::default());
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(&recorder) as Weak<dyn TurnEventSink>;
-    let rt = muse::MuseRuntime::new(config, sink).unwrap();
+    let rt = muse::MuseRuntime::new(config, sink, None).unwrap();
     one_turn(&rt, &recorder).await;
     let usage = std::fs::read_to_string(dir.path().join("muse-code.json"));
     eprintln!("usage reading: {usage:?}");

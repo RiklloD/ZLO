@@ -652,9 +652,7 @@ mod tests {
                 .load_identity_candidates(&run, PromptMode::TextOnly)
                 .await
                 .unwrap();
-            let Some(candidate) = candidates.first() else {
-                return None;
-            };
+            let candidate = candidates.first()?;
             let message_ref = candidate.message_ref.clone().unwrap();
             source
                 .resolve_identity_message_content(&run, &message_ref)

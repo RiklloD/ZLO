@@ -14,9 +14,9 @@
 
 // arch-exempt: large_file, ProductSurface service-collapse routes stay in the existing WebUI handler table until the WebUI route split lands, plan #5985
 
+mod computer_use;
 mod orchestrator;
 mod usage;
-mod computer_use;
 pub use orchestrator::{
     orchestrator_queue_mutate, orchestrator_task, orchestrator_task_cancel,
     orchestrator_thread_fork, orchestrator_thread_lineage, orchestrator_thread_merge_back,
@@ -24,12 +24,12 @@ pub use orchestrator::{
     orchestrator_thread_telemetry,
 };
 mod profiles;
+pub use computer_use::{computer_use_control, computer_use_session};
 pub use profiles::{
     profile_create, profile_delete, profile_get, profile_thread_create, profile_update,
     profiles_import_hermes, profiles_list,
 };
 pub use usage::usage_report;
-pub use computer_use::{computer_use_control, computer_use_session};
 mod inbox;
 pub use inbox::{inbox_list, inbox_mutate, thread_goal, thread_goal_set};
 mod run_artifact;

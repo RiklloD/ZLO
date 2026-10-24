@@ -14,8 +14,9 @@
 //!
 //! Tools fail closed: the client offers no file system or terminal, the
 //! session runs in the agent's `default` (ask first) mode, and every
-//! `session/request_permission` goes through [`crate::permissions::decide`],
-//! which denies until the approval bridge lands.
+//! `session/request_permission` goes through [`crate::permissions::decide`]:
+//! an IronClaw approval in the thread when the host has a bridge, a denial
+//! otherwise.
 
 mod fold;
 
@@ -37,6 +38,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
+use crate::bridge::CliBridge;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
@@ -133,6 +135,8 @@ pub struct AntigravityRuntime {
     id: RuntimeId,
     config: Arc<AntigravityConfig>,
     sink: Weak<dyn TurnEventSink>,
+    // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #v3-cli-bridge
+    bridge: Option<Arc<CliBridge>>,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
 }
 
@@ -140,11 +144,13 @@ impl AntigravityRuntime {
     pub fn new(
         config: AntigravityConfig,
         sink: Weak<dyn TurnEventSink>,
+        bridge: Option<Arc<CliBridge>>,
     ) -> Result<Self, ironclaw_orchestrator::error::OrchestratorError> {
         Ok(Self {
             id: RuntimeId::new(config.runtime_id.clone())?,
             config: Arc::new(config),
             sink,
+            bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -245,7 +251,11 @@ impl AntigravityRuntime {
             goal: goal.map(str::to_string),
             cancelled,
             session,
+            bridge: self.bridge.clone(),
+            thread_id: thread.thread_id.clone(),
+            run_id: run_id.clone(),
         };
+        let bridge = self.bridge.clone();
         let sink = self.sink.clone();
         let active = Arc::clone(&self.active);
         let thread_id = thread.thread_id.clone();
@@ -255,8 +265,14 @@ impl AntigravityRuntime {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
                     .await;
             }
+            if let Some(bridge) = &bridge {
+                bridge.turn_started(&thread_id, &run);
+            }
             let (outcome, telemetry) = turn.run(client, inbound).await;
             close_host(&mut child, pgid).await;
+            if let Some(bridge) = &bridge {
+                bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
+            }
             if let Ok(mut map) = active.lock() {
                 map.remove(&thread_id);
             }
@@ -325,6 +341,10 @@ struct Turn {
     goal: Option<String>,
     cancelled: Arc<AtomicBool>,
     session: Arc<Mutex<Option<(RpcClient, String)>>>,
+    // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #v3-cli-bridge
+    bridge: Option<Arc<CliBridge>>,
+    thread_id: ThreadId,
+    run_id: String,
 }
 
 impl Turn {
@@ -575,16 +595,33 @@ impl Turn {
                 }
             }
             Inbound::Request { id, method, params } => {
-                let sent = if method == "session/request_permission" {
-                    client.respond(
-                        &id,
-                        permission_answer(&self.config.runtime_id, session_id, &params),
-                    )
-                } else {
-                    // No file system, no terminal: the client offered neither.
+                if method == "session/request_permission" {
+                    // The answer waits for a person; updates keep flowing meanwhile.
+                    let client = client.clone();
+                    let bridge = self.bridge.clone();
+                    let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
+                    let (runtime, session) =
+                        (self.config.runtime_id.clone(), session_id.to_string());
+                    tokio::spawn(async move {
+                        let answer = permission_answer(
+                            bridge.as_deref(),
+                            &thread,
+                            &run,
+                            &runtime,
+                            &session,
+                            &params,
+                        )
+                        .await;
+                        if let Err(error) = client.respond(&id, answer) {
+                            tracing::debug!(error = %error.label(), "antigravity: reply not sent");
+                        }
+                    });
+                    return;
+                }
+                // No file system, no terminal: the client offered neither.
+                if let Err(error) =
                     client.respond_error(&id, -32601, "method not supported by this client")
-                };
-                if let Err(error) = sent {
+                {
                     tracing::debug!(error = %error.label(), "antigravity: reply not sent");
                 }
             }
@@ -595,7 +632,14 @@ impl Turn {
 /// The ACP answer to one `session/request_permission`, from the shared seam.
 /// Native questions (`interaction_*` ids) are not approvals and are
 /// cancelled; a decision without a matching option is cancelled too.
-fn permission_answer(runtime: &str, session_id: &str, params: &Value) -> Value {
+async fn permission_answer(
+    bridge: Option<&CliBridge>,
+    thread: &ThreadId,
+    run_id: &str,
+    runtime: &str,
+    session_id: &str,
+    params: &Value,
+) -> Value {
     let call = &params["toolCall"];
     let call_id = call
         .get("toolCallId")
@@ -619,7 +663,7 @@ fn permission_answer(runtime: &str, session_id: &str, params: &Value) -> Value {
             .and_then(Value::as_str)
             .map(str::to_string),
     };
-    let kind = match permissions::decide(&request) {
+    let kind = match permissions::decide(bridge, thread, run_id, &request).await {
         PermissionDecision::AllowOnce => "allow_once",
         PermissionDecision::Deny => "reject_once",
     };
@@ -857,8 +901,8 @@ pub fn default_config(home: &Path) -> Option<AntigravityConfig> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn permission_requests_are_rejected_and_questions_cancelled() {
+    #[tokio::test]
+    async fn permission_requests_wait_for_the_owner_and_questions_are_cancelled() {
         let request = json!({
             "sessionId": "s",
             "toolCall": {"toolCallId": "call_1", "kind": "execute", "title": "rm -rf"},
@@ -868,14 +912,43 @@ mod tests {
                 {"optionId": "no", "kind": "reject_once", "name": "Reject"},
             ],
         });
+        let thread = ThreadId::new("t1").unwrap();
+        // No bridge: nobody to ask, so rejected.
         assert_eq!(
-            permission_answer("antigravity", "s", &request),
+            permission_answer(None, &thread, "r1", "antigravity", "s", &request).await,
             json!({"outcome": {"outcome": "selected", "optionId": "no"}})
         );
         let question = json!({"toolCall": {"toolCallId": "interaction_1"}, "options": []});
         assert_eq!(
-            permission_answer("antigravity", "s", &question)["outcome"]["outcome"],
+            permission_answer(None, &thread, "r1", "antigravity", "s", &question).await["outcome"]
+                ["outcome"],
             "cancelled"
+        );
+
+        // With a bridge the call waits as a gate; the owner's approval
+        // picks the once-scoped allow, never "always".
+        let bridge = CliBridge::new(crate::bridge::DEFAULT_APPROVAL_TIMEOUT);
+        bridge.turn_started(&thread, "r1");
+        let waiter = {
+            let (bridge, thread) = (Arc::clone(&bridge), thread.clone());
+            tokio::spawn(async move {
+                permission_answer(Some(&bridge), &thread, "r1", "antigravity", "s", &request).await
+            })
+        };
+        let gate = loop {
+            if let Some(g) = bridge
+                .snapshot(&thread)
+                .and_then(|s| s.gates.first().cloned())
+            {
+                break g;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(gate.body.as_deref(), Some("rm -rf"));
+        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, true));
+        assert_eq!(
+            waiter.await.unwrap(),
+            json!({"outcome": {"outcome": "selected", "optionId": "yes"}})
         );
     }
 }

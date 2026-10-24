@@ -21,6 +21,7 @@
 //! State lives in `orch_*` tables of the deployment's libSQL file
 //! ([`store::Store`]).
 
+pub mod cli_approvals;
 pub mod delegation;
 pub mod engine;
 pub mod error;

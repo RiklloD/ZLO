@@ -438,7 +438,11 @@ impl Store {
                 .await?;
             conn.execute_batch(crate::inbox::INBOX_SCHEMA).await?;
             conn.execute_batch(crate::goals::GOALS_SCHEMA).await?;
+            conn.execute_batch(crate::cli_approvals::CLI_APPROVALS_SCHEMA)
+                .await?;
         }
+        self.close_interrupted_cli_approvals(crate::model::now_ms())
+            .await?;
         self.import_legacy_threads(legacy_runtime).await
     }
 

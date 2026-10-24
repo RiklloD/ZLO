@@ -2,8 +2,9 @@
 //!
 //! The Claude CLI, as two runtimes (`claude-cli` on the default account,
 //! `claude-cli-2` on `~/.claude-account2`), the Antigravity ACP agent
-//! (`antigravity`) and Meta's Muse Code (`muse-code`). Every tool-permission
-//! request of the latter two goes through [`permissions::decide`].
+//! (`antigravity`) and Meta's Muse Code (`muse-code`). Every tool call any
+//! of them asks to make waits for an IronClaw approval in
+//! [`bridge::CliBridge`]; without a bridge, it is denied.
 
 pub mod bridge;
 pub mod claude;
@@ -32,6 +33,16 @@ pub(crate) fn with_goal(text: &str, goal: Option<&str>) -> String {
         Some(goal) => format!("{}\n\n{text}", goal_note(goal)),
         None => text.to_string(),
     }
+}
+
+/// Register every installed coding-agent CLI on `engine`, all with their
+/// tools behind `bridge`'s approvals, which are recorded in the engine's
+/// store. Returns how many runtimes were registered.
+pub fn register_cli_runtimes(engine: &Arc<Engine>, bridge: &Arc<bridge::CliBridge>) -> usize {
+    bridge.record_to(engine.store().clone());
+    register_claude_runtimes(engine, Some(Arc::clone(bridge)))
+        + register_antigravity_runtime(engine, Some(Arc::clone(bridge)))
+        + register_muse_runtime(engine, Some(Arc::clone(bridge)))
 }
 
 /// Register the Claude CLI runtimes on `engine` when a `claude` binary is
@@ -87,9 +98,13 @@ fn spawn_version_check(binary: PathBuf) {
     });
 }
 
-/// Register the Antigravity runtime when its ACP server is installed.
-/// Returns how many were registered (0 or 1).
-pub fn register_antigravity_runtime(engine: &Arc<Engine>) -> usize {
+/// Register the Antigravity runtime when its ACP server is installed. With
+/// `bridge`, its permission requests become IronClaw approvals; without,
+/// they are denied. Returns how many were registered (0 or 1).
+pub fn register_antigravity_runtime(
+    engine: &Arc<Engine>,
+    bridge: Option<Arc<bridge::CliBridge>>,
+) -> usize {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return 0;
     };
@@ -98,7 +113,7 @@ pub fn register_antigravity_runtime(engine: &Arc<Engine>) -> usize {
         return 0;
     };
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
-    match antigravity::AntigravityRuntime::new(config, sink) {
+    match antigravity::AntigravityRuntime::new(config, sink, bridge) {
         Ok(runtime) => {
             engine.register_runtime(Arc::new(runtime));
             1
@@ -110,9 +125,14 @@ pub fn register_antigravity_runtime(engine: &Arc<Engine>) -> usize {
     }
 }
 
-/// Register the Muse Code runtime when a `muse` binary is installed.
+/// Register the Muse Code runtime when a `muse` binary is installed. With
+/// `bridge`, shell and writes are on and every approval Muse asks for is an
+/// IronClaw approval; without, both stay off and approvals are denied.
 /// Returns how many were registered (0 or 1).
-pub fn register_muse_runtime(engine: &Arc<Engine>) -> usize {
+pub fn register_muse_runtime(
+    engine: &Arc<Engine>,
+    bridge: Option<Arc<bridge::CliBridge>>,
+) -> usize {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return 0;
     };
@@ -121,7 +141,7 @@ pub fn register_muse_runtime(engine: &Arc<Engine>) -> usize {
         return 0;
     };
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
-    match muse::MuseRuntime::new(muse::default_config(&home, &binary), sink) {
+    match muse::MuseRuntime::new(muse::default_config(&home, &binary), sink, bridge) {
         Ok(runtime) => {
             engine.register_runtime(Arc::new(runtime));
             1

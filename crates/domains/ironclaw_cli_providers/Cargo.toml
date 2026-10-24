@@ -27,5 +27,8 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "v7"] }
 
 [dev-dependencies]
+# The approval-record test opens the orchestrator store over a real libSQL file.
+ironclaw_libsql_runtime = { path = "../../substrates/ironclaw_libsql_runtime" }
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }

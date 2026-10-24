@@ -41,6 +41,7 @@ pub mod binding;
 pub mod channel_config;
 pub mod channel_workflow;
 pub mod command;
+pub mod computer_use;
 pub mod delivery;
 pub mod descriptors;
 pub mod error;
@@ -54,10 +55,10 @@ pub mod lifecycle_service;
 pub mod notification_inbox;
 pub mod notification_setup;
 pub mod operator_llm;
-pub mod orchestration;
 pub mod operator_secrets;
 pub mod operator_service;
 pub mod operator_tools;
+pub mod orchestration;
 pub mod outbound;
 pub mod package_lifecycle;
 pub mod product_wire;
@@ -74,7 +75,6 @@ pub mod test_support;
 pub mod usage;
 pub mod views;
 pub mod workspace_views;
-pub mod computer_use;
 
 // There is deliberately no flat prelude and no cross-module re-export here.
 // Every contract is reached through the module that owns it —

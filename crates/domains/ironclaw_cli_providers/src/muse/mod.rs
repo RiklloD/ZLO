@@ -8,11 +8,12 @@
 //! (`<state_dir>/transcripts/<session>.jsonl`), which also marks a session as
 //! started. Subscription windows (`usage/changed`) go to `usage_file`.
 //!
-//! Tools fail closed: the host runs with `--disable-shell --disable-write
-//! --disable-request-user-input`, without `--trust-workspace` (no workspace
-//! rules can allow anything), in `denyUnmatched` approval mode, and any
-//! approval Muse still asks for goes through [`crate::permissions::decide`],
-//! which denies until the approval bridge lands.
+//! Tools fail closed: the host runs without `--trust-workspace` (no
+//! workspace rules can allow anything), with `--disable-request-user-input`,
+//! in `denyUnmatched` approval mode, and every approval Muse asks for goes
+//! through [`crate::permissions::decide`]: an IronClaw approval in the
+//! thread when the host has a bridge. Without one, shell and writes are off
+//! too (`--disable-shell --disable-write`) and approvals are denied.
 
 mod fold;
 
@@ -34,6 +35,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
+use crate::bridge::CliBridge;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
@@ -104,6 +106,8 @@ pub struct MuseRuntime {
     id: RuntimeId,
     config: Arc<MuseConfig>,
     sink: Weak<dyn TurnEventSink>,
+    // arch-exempt: optional_arc, a host without the gateway keeps shell and writes off, plan #v3-cli-bridge
+    bridge: Option<Arc<CliBridge>>,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
 }
@@ -112,11 +116,13 @@ impl MuseRuntime {
     pub fn new(
         config: MuseConfig,
         sink: Weak<dyn TurnEventSink>,
+        bridge: Option<Arc<CliBridge>>,
     ) -> Result<Self, ironclaw_orchestrator::error::OrchestratorError> {
         Ok(Self {
             id: RuntimeId::new(config.runtime_id.clone())?,
             config: Arc::new(config),
             sink,
+            bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
         })
@@ -133,11 +139,13 @@ impl MuseRuntime {
         let mut cmd = Command::new(&self.config.binary);
         cmd.args([
             "serve",
-            // Fail closed: no shell, no writes, nobody to answer questions.
-            "--disable-shell",
-            "--disable-write",
+            // Nobody answers the agent's questions mid-turn.
             "--disable-request-user-input",
         ]);
+        // Without approvals there is nobody to ask: no shell, no writes.
+        if self.bridge.is_none() {
+            cmd.args(["--disable-shell", "--disable-write"]);
+        }
         if read_only {
             cmd.arg("--no-session-log");
         }
@@ -205,7 +213,11 @@ impl MuseRuntime {
             cancelled,
             live,
             windows: window,
+            bridge: self.bridge.clone(),
+            thread_id: thread.thread_id.clone(),
+            run_id: run_id.clone(),
         };
+        let bridge = self.bridge.clone();
         let sink = self.sink.clone();
         let active = Arc::clone(&self.active);
         let thread_id = thread.thread_id.clone();
@@ -215,8 +227,14 @@ impl MuseRuntime {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
                     .await;
             }
+            if let Some(bridge) = &bridge {
+                bridge.turn_started(&thread_id, &run);
+            }
             let (outcome, telemetry) = turn.run(client, inbound).await;
             close_host(&mut child, pgid).await;
+            if let Some(bridge) = &bridge {
+                bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
+            }
             if let Ok(mut map) = active.lock() {
                 map.remove(&thread_id);
             }
@@ -383,6 +401,10 @@ struct Turn {
     live: Arc<Mutex<Option<LiveTurn>>>,
     /// Context limits by model, from the catalog.
     windows: HashMap<String, u64>,
+    // arch-exempt: optional_arc, a host without the gateway denies every approval, plan #v3-cli-bridge
+    bridge: Option<Arc<CliBridge>>,
+    thread_id: ThreadId,
+    run_id: String,
 }
 
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
@@ -623,18 +645,25 @@ impl Turn {
                 .find_map(|k| subject.get(*k).and_then(Value::as_str))
                 .map(str::to_string),
         };
-        let Some(choice) = choice_for(approval, permissions::decide(&request)) else {
-            return;
-        };
-        let params = json!({
-            "sessionId": self.session_id,
-            "commandId": command_id(),
-            "approvalId": approval_id,
-            "requirementId": requirement,
-            "choiceId": choice,
-        });
         let client = client.clone();
+        let approval = approval.clone();
+        let approval_id = approval_id.to_string();
+        let session_id = self.session_id.clone();
+        let bridge = self.bridge.clone();
+        let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
+        // The decision waits for a person; the turn's events keep flowing.
         tokio::spawn(async move {
+            let decision = permissions::decide(bridge.as_deref(), &thread, &run, &request).await;
+            let Some(choice) = choice_for(&approval, decision) else {
+                return;
+            };
+            let params = json!({
+                "sessionId": session_id,
+                "commandId": command_id(),
+                "approvalId": approval_id,
+                "requirementId": requirement,
+                "choiceId": choice,
+            });
             // Muse may already have settled it (its own rules decide many).
             if let Err(error) = client
                 .request("approval/decide", params, COMMAND_TIMEOUT)

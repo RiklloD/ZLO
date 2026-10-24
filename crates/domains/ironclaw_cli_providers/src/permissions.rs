@@ -1,10 +1,15 @@
 //! The one place a CLI agent's tool-permission request is decided.
 //!
-//! The user keeps every tool call behind IronClaw's approval queue
-//! (`ironclaw_approvals`), and that bridge is not wired yet. Until it is,
-//! every request is denied: never auto-approved, never remembered. When the
-//! bridge lands, it replaces the body of [`decide`] (made async if it has to
-//! wait for the user) and both the Antigravity and Muse drivers follow.
+//! The user keeps every tool call behind an approval. With the host's
+//! [`CliBridge`], a request waits as a gate in the thread until its owner
+//! answers it (and is recorded with the answer); anything but an explicit
+//! approval is a denial. Without a bridge there is nobody to ask, so every
+//! request is denied. Nothing is ever auto-approved or remembered.
+
+use ironclaw_host_api::ids::ThreadId;
+use serde_json::Value;
+
+use crate::bridge::{CliBridge, ToolDecision};
 
 /// A tool call an agent wants to run, as the drivers can describe it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,12 +30,27 @@ pub enum PermissionDecision {
     Deny,
 }
 
-/// Decide one permission request. Fails closed: denies everything.
-pub fn decide(request: &PermissionRequest) -> PermissionDecision {
-    tracing::debug!(
-        runtime = %request.runtime,
-        tool = %request.tool,
-        "cli agent permission request denied (approval bridge not wired)"
-    );
-    PermissionDecision::Deny
+/// Decide one permission request of `thread`'s running turn `run_id`.
+pub async fn decide(
+    bridge: Option<&CliBridge>,
+    thread: &ThreadId,
+    run_id: &str,
+    request: &PermissionRequest,
+) -> PermissionDecision {
+    let Some(bridge) = bridge else {
+        tracing::debug!(
+            runtime = %request.runtime,
+            tool = %request.tool,
+            "cli agent permission request denied (no approval bridge)"
+        );
+        return PermissionDecision::Deny;
+    };
+    let input = request.subject.clone().map_or(Value::Null, Value::String);
+    match bridge
+        .request_approval(thread, run_id, &request.tool, &input)
+        .await
+    {
+        ToolDecision::Allow => PermissionDecision::AllowOnce,
+        ToolDecision::Deny(_) => PermissionDecision::Deny,
+    }
 }
