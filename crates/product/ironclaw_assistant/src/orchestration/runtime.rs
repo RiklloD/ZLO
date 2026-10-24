@@ -302,17 +302,29 @@ impl TurnRuntime for AgentLoopRuntime {
             .transpose()
             .map_err(|e| RuntimeError::Unavailable(format!("model catalog: {e}")))?
             .unwrap_or_else(UserModelCatalog::disabled);
-        let efforts = match &self.routes {
-            Some(routes) => routes.primary_efforts().await,
-            None => Vec::new(),
+        let primary = match &self.routes {
+            Some(routes) => routes.primary().await,
+            None => None,
         };
+        let (efforts, mut model_efforts, primary_models) = primary
+            .map(|p| (p.efforts, p.model_efforts, p.models))
+            .unwrap_or_default();
+        // Without an operator model policy the active provider's own list
+        // is the choice (the ChatGPT plan's models, for one).
+        let models = if catalog.selection_enabled {
+            catalog.models
+        } else {
+            primary_models
+        };
+        model_efforts.retain(|model, _| models.contains(model));
         let mut providers = vec![CatalogProvider {
             provider: IRONCLAW_RUNTIME_ID.to_string(),
             name: "IronClaw".to_string(),
             authenticated: true,
             current: true,
-            models: catalog.models,
+            models,
             efforts,
+            model_efforts,
         }];
         if let Some(routes) = &self.routes {
             providers.extend(routes.routes().await.into_iter().map(|r| CatalogProvider {
@@ -322,6 +334,7 @@ impl TurnRuntime for AgentLoopRuntime {
                 current: false,
                 models: r.models,
                 efforts: r.efforts,
+                model_efforts: r.model_efforts,
             }));
         }
         Ok(providers)

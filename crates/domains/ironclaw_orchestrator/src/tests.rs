@@ -61,6 +61,7 @@ impl TurnRuntime for FakeRuntime {
                 current: false,
                 models: vec!["m1".into(), "m2".into()],
                 efforts: vec!["low".into(), "high".into()],
+                model_efforts: [("m2".to_string(), vec!["low".to_string()])].into(),
             })
             .into_iter()
             .collect())
@@ -1142,6 +1143,10 @@ async fn an_effort_pick_rides_the_route_and_a_switch_keeps_only_its_own() {
         .find(|p| p["provider"] == "cli")
         .unwrap();
     assert_eq!(cli_row["efforts"], serde_json::json!(["low", "high"]));
+    assert_eq!(
+        cli_row["modelEfforts"],
+        serde_json::json!({ "m2": ["low"] })
+    );
 
     // A switch without an effort clears it; `default` clears it too.
     let switch = crate::delegation::Target {

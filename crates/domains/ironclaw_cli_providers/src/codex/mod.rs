@@ -775,6 +775,7 @@ impl TurnRuntime for CodexRuntime {
             efforts: ["low", "medium", "high", "xhigh"]
                 .map(str::to_string)
                 .to_vec(),
+            model_efforts: Default::default(),
         }])
     }
 }

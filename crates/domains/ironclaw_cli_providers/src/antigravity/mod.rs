@@ -816,6 +816,7 @@ impl TurnRuntime for AntigravityRuntime {
             models: cached_models(&self.config).await,
             // The effort is part of each model's name (`-low`/`-high`).
             efforts: Vec::new(),
+            model_efforts: Default::default(),
         }])
     }
 }
