@@ -1,5 +1,6 @@
 //! One open thread: transcript, live stream, composer, run controls.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -64,8 +65,12 @@ pub struct ChatView {
     toggles: HashMap<String, bool>,
     /// When the live run began, for the pending row's seconds.
     run_started: Option<Instant>,
-    /// Room kept under a just-sent message while its answer streams.
+    /// Room kept under the last sent message so it can sit at the top.
     reserve: Option<Reserve>,
+    /// Drawn heights of the last turn's rows (by item key) and of the list,
+    /// measured at paint: the reserve fills only what the turn leaves.
+    turn_heights: Rc<RefCell<HashMap<String, f32>>>,
+    list_height: Rc<Cell<f32>>,
     /// Scroll the newest user message to the top on the next item sync.
     pin_next: bool,
     /// The view opened from the new-thread screen: its composer glides
@@ -97,10 +102,12 @@ pub struct ChatView {
     _pump: Task<()>,
 }
 
+/// Zeron's last turn: the newest user message and everything after it
+/// fill at least one screen, so the message stays at the top while its
+/// answer streams and the view stays put when the run ends. The room
+/// shrinks as the answer grows and lasts until the next send.
 struct Reserve {
-    since: Instant,
-    /// A run was seen after the send; its end releases the room.
-    seen_run: bool,
+    /// False only when the send failed: the room then glides away.
     held: bool,
     /// Height drawn last frame, to re-measure the row only while it glides.
     drawn: f32,
@@ -194,6 +201,8 @@ impl ChatView {
             toggles: HashMap::new(),
             run_started: None,
             reserve: None,
+            turn_heights: Rc::default(),
+            list_height: Rc::default(),
             pin_next: false,
             arrive: false,
             pacer: pace::Pacer::default(),
@@ -756,13 +765,6 @@ impl ChatView {
         } else {
             self.run_started = None;
         }
-        if let Some(r) = self.reserve.as_mut() {
-            if live {
-                r.seen_run = true;
-            } else if r.seen_run || r.since.elapsed() > Duration::from_secs(15) {
-                r.held = false;
-            }
-        }
         let rows = self.rows.clone();
         let (rows, pacing) = self.pacer.apply(&rows, Instant::now(), cx.reduce_motion());
         self.pacing = pacing;
@@ -798,15 +800,35 @@ impl ChatView {
         self.items = Rc::new(new_items);
     }
 
-    /// The reserve's height this frame: most of the viewport while held,
-    /// gliding to nothing once the run ends (the transcript then settles
-    /// onto the composer instead of jumping).
+    /// The reserve's height this frame: the list's height less the last
+    /// turn's drawn rows while held, tracked exactly so nothing moves;
+    /// gliding to nothing only when a send failed.
     fn reserve_height(&mut self, window: &Window, cx: &mut Context<Self>) -> f32 {
-        let Some(r) = self.reserve.as_mut() else {
+        let Some(held) = self.reserve.as_ref().map(|r| r.held) else {
             return 0.;
         };
-        let target = if r.held {
-            (f32::from(window.viewport_size().height) - 300.).max(0.)
+        let target = if held {
+            let start = self
+                .items
+                .iter()
+                .rposition(|i| matches!(i, Item::Row(Row::User { .. })));
+            let heights = self.turn_heights.borrow();
+            let turn: f32 = start
+                .map(|s| &self.items[s..])
+                .unwrap_or_default()
+                .iter()
+                .filter(|i| !matches!(i, Item::Reserve))
+                .map(|i| heights.get(i.key()).copied().unwrap_or(0.))
+                .sum();
+            let list = match self.list_height.get() {
+                h if h > 0. => h,
+                _ => f32::from(window.viewport_size().height) - 300.,
+            };
+            // The reserve row's own gap and bottom padding.
+            let pad = flow::top_gap(self.items.iter().rev().nth(1), &Item::Reserve)
+                + flow::SPACE_LG
+                + 24.;
+            (list - turn - pad).max(0.)
         } else {
             0.
         };
@@ -815,15 +837,18 @@ impl ChatView {
             &format!("reserve:{}", self.thread_id),
             target,
             style.enter,
-            cx.reduce_motion(),
+            cx.reduce_motion() || held,
         );
+        let Some(r) = self.reserve.as_mut() else {
+            return 0.;
+        };
         if (h - r.drawn).abs() > 0.25 {
             r.drawn = h;
             let last = self.items.len().saturating_sub(1);
             self.scroller
                 .update(cx, |state, cx| state.remeasure_items(last..last + 1, cx));
         }
-        if !r.held && h < 0.5 {
+        if !held && h < 0.5 {
             self.reserve = None;
             cx.notify();
         }
@@ -858,11 +883,10 @@ impl ChatView {
         // Zeron's turn: the message moves to the top and the answer streams
         // into the room kept below it.
         self.reserve = Some(Reserve {
-            since: Instant::now(),
-            seen_run: false,
             held: true,
             drawn: 0.,
         });
+        self.turn_heights.borrow_mut().clear();
         self.pin_next = true;
 
         let thread_id = self.thread_id.clone();
@@ -995,6 +1019,26 @@ impl ChatView {
     }
 }
 
+/// An invisible overlay that records its row's drawn height under `key`,
+/// asking for one more frame when it changed.
+fn measure_height(key: String, heights: Rc<RefCell<HashMap<String, f32>>>) -> AnyElement {
+    gpui_kit::canvas(
+        move |bounds, window, _| {
+            let h = f32::from(bounds.size.height);
+            let old = heights.borrow_mut().insert(key.clone(), h);
+            if old.is_none_or(|o| (o - h).abs() > 0.5) {
+                window.request_animation_frame();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+    .into_any_element()
+}
+
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::Focusable as _;
@@ -1012,6 +1056,11 @@ impl Render for ChatView {
         }
         let reserve_h = self.reserve_height(window, cx);
         let items = self.items.clone();
+        let turn_start = items
+            .iter()
+            .rposition(|i| matches!(i, Item::Row(Row::User { .. })))
+            .filter(|_| self.reserve.is_some());
+        let turn_heights = self.turn_heights.clone();
         let toggles = self.toggles.clone();
         let since = self.run_started;
 
@@ -1043,8 +1092,13 @@ impl Render for ChatView {
                 Item::Pending { stopping } => flow::render_pending(*stopping, since, seed, cx),
                 Item::Reserve => div().h(px(reserve_h)).into_any_element(),
             };
+            // The last turn's rows report their drawn height for the reserve.
+            let measure = turn_start
+                .filter(|s| ix >= *s && !matches!(item, Item::Reserve))
+                .map(|_| measure_height(item.key().to_string(), turn_heights.clone()));
             // Zeron's reading type: 14 px on a 22 px line.
             h_flex()
+                .relative()
                 .w_full()
                 .justify_center()
                 .px_4()
@@ -1053,9 +1107,11 @@ impl Render for ChatView {
                 .pt(px(top))
                 .when(last, |d| d.pb(px(flow::SPACE_LG + 24.)))
                 .child(div().w_full().max_w(px(content_width(cx))).child(body))
+                .children(measure)
         })
-        // The reserve reads as "scrolled up"; no jump arrow for empty room.
-        .jump_button(self.reserve.is_none())
+        // While the reserve is still settling it can read as "scrolled up";
+        // no jump arrow for empty room during a run.
+        .jump_button(self.reserve.is_none() || !running)
         .with_jump_button_renderer({
             let weak = jump_weak;
             move |button| {
@@ -1117,7 +1173,22 @@ impl Render for ChatView {
             })
             // Room for the floating header; rows fade under its lower half.
             .child({
-                let body = div().size_full().child(list.size_full());
+                let list_height = self.list_height.clone();
+                let body = div().relative().size_full().child(list.size_full()).child(
+                    gpui_kit::canvas(
+                        move |bounds, window, _| {
+                            let h = f32::from(bounds.size.height);
+                            if (list_height.replace(h) - h).abs() > 0.5 {
+                                window.request_animation_frame();
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                );
                 // The transcript fades in while the composer docks, on the
                 // 0.20 → 0.65 slice of Zeron's 420 ms route clock.
                 let body = if self.arrive {
