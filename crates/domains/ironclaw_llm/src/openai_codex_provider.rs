@@ -184,26 +184,7 @@ impl OpenAiCodexProvider {
     }
 
     /// Build the request body for the Responses API.
-    #[cfg(test)]
     fn build_request_body(
-        &self,
-        messages: &[ChatMessage],
-        tools: Option<&[ToolDefinition]>,
-        tool_choice: Option<&str>,
-        response_format: Option<&crate::provider::CompletionResponseFormat>,
-        metadata: &std::collections::HashMap<String, String>,
-    ) -> serde_json::Value {
-        self.build_request_body_for(
-            &self.model,
-            messages,
-            tools,
-            tool_choice,
-            response_format,
-            metadata,
-        )
-    }
-
-    fn build_request_body_for(
         &self,
         model: &str,
         messages: &[ChatMessage],
@@ -378,7 +359,7 @@ impl OpenAiCodexProvider {
         )?;
         let mut messages = request.messages;
         crate::provider::sanitize_tool_messages(&mut messages);
-        let body = self.build_request_body_for(
+        let body = self.build_request_body(
             self.request_model(request.model.as_deref()),
             &messages,
             None,
@@ -418,7 +399,7 @@ impl OpenAiCodexProvider {
                 (sanitized != tool.name).then(|| (sanitized, tool.name.clone()))
             })
             .collect();
-        let body = self.build_request_body_for(
+        let body = self.build_request_body(
             self.request_model(request.model.as_deref()),
             &messages,
             Some(&request.tools),
@@ -503,28 +484,8 @@ impl LlmProvider for OpenAiCodexProvider {
         self.complete_with_tools_inner(request, Some(sink)).await
     }
 
-    /// The plan's models: the configured one, then what the same ChatGPT
-    /// account's Codex CLI last fetched (`$CODEX_HOME/models_cache.json`),
-    /// listed models the public API serves. The plan has no list endpoint of
-    /// its own; without that cache only the configured model is offered.
     async fn list_models(&self) -> Result<Vec<String>, LlmError> {
-        let mut models = vec![self.model.clone()];
-        let path = std::env::var_os("CODEX_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
-            .map(|dir| dir.join("models_cache.json"));
-        let cached = match path {
-            Some(path) => tokio::fs::read(&path).await,
-            None => return Ok(models),
-        };
-        // silent-ok: the cache is optional; the configured model stays listed.
-        let Ok(bytes) = cached else { return Ok(models) };
-        for model in plan_models_from_cache(&bytes) {
-            if !models.contains(&model) {
-                models.push(model);
-            }
-        }
-        Ok(models)
+        Ok(plan_models(&self.model).await)
     }
 
     async fn model_metadata(&self) -> Result<ModelMetadata, LlmError> {
@@ -544,6 +505,32 @@ impl LlmProvider for OpenAiCodexProvider {
     fn effective_model_name(&self, requested_model: Option<&str>) -> String {
         self.request_model(requested_model).to_string()
     }
+}
+
+/// The plan's models: `configured` first, then what the same ChatGPT
+/// account's Codex CLI last fetched (`$CODEX_HOME/models_cache.json`),
+/// listed models the public API serves. The plan has no list endpoint of its
+/// own; without that cache only `configured` is offered. Reads a file only,
+/// so callers need no signed-in client.
+pub async fn plan_models(configured: &str) -> Vec<String> {
+    let mut models = vec![configured.to_string()];
+    let Some(path) = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .map(|dir| dir.join("models_cache.json"))
+    else {
+        return models;
+    };
+    // silent-ok: the cache is optional; the configured model stays listed.
+    let Ok(bytes) = tokio::fs::read(&path).await else {
+        return models;
+    };
+    for model in plan_models_from_cache(&bytes) {
+        if !models.contains(&model) {
+            models.push(model);
+        }
+    }
+    models
 }
 
 /// Listed, API-served model slugs from a Codex CLI `models_cache.json`.
@@ -1724,6 +1711,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
         ];
 
         let body = provider.build_request_body(
+            &provider.model,
             &messages,
             None,
             None,
@@ -1763,7 +1751,8 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
             "thread-abc-123".to_string(),
         );
 
-        let body = provider.build_request_body(&messages, None, None, None, &metadata);
+        let body =
+            provider.build_request_body(&provider.model, &messages, None, None, None, &metadata);
 
         assert_eq!(body["prompt_cache_key"], "thread-abc-123");
     }
@@ -1973,6 +1962,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
         }];
 
         let body = provider.build_request_body(
+            &provider.model,
             &messages,
             Some(&tools),
             None,
@@ -2014,6 +2004,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
             parameters: serde_json::json!({"type": "object"}),
         }];
         let body = provider.build_request_body(
+            &provider.model,
             &messages,
             Some(&tools),
             Some("echo"),
@@ -2050,6 +2041,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
         let format = crate::provider::CompletionResponseFormat::JsonSchema(schema.clone());
 
         let body = provider.build_request_body(
+            &provider.model,
             &[ChatMessage::user("Return suggestions")],
             None,
             None,
@@ -2232,6 +2224,7 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
         .unwrap();
 
         let body = provider.build_request_body(
+            &provider.model,
             &messages,
             None,
             None,
