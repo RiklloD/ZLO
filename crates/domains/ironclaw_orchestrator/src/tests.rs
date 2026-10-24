@@ -1016,7 +1016,7 @@ async fn old_schedule_tables_gain_the_new_columns() {
 }
 
 #[tokio::test]
-async fn route_switch_moves_in_place_rebinds_or_forks() {
+async fn route_switch_rebinds_or_switches_in_place_with_handoff() {
     let h = harness().await;
     let cli = Arc::new(FakeRuntime {
         name: Some("cli"),
@@ -1052,34 +1052,78 @@ async fn route_switch_moves_in_place_rebinds_or_forks() {
     assert_eq!(thread.model.as_deref(), Some("m2"));
     assert_eq!(thread.native_session_id.as_deref(), Some("session-1"));
 
-    // History on IronClaw's loop: the switch continues in a fork on the CLI.
+    // History on IronClaw's loop: the thread stays itself and moves to the
+    // CLI, whose first turn gets the whole conversation.
     let b = tid("b");
     h.engine.ensure_thread(&b, &scope(), None).await.unwrap();
     h.engine.on_user_prompt(&b).await.unwrap();
-    h.rt.history
-        .lock()
-        .unwrap()
-        .insert(b.clone(), vec![msg(HistoryRole::User, "hello")]);
+    h.rt.history.lock().unwrap().insert(
+        b.clone(),
+        vec![
+            msg(HistoryRole::User, "hello"),
+            msg(HistoryRole::Assistant, "hi there"),
+        ],
+    );
     let thread = store.thread(&b).await.unwrap().unwrap();
     let r = h
         .engine
         .set_route(&thread, &target("cli", "m1"))
         .await
         .unwrap();
-    assert_eq!(r["moved"], "forked", "{r}");
-    let fork = store
-        .thread(&tid(r["forkThreadId"].as_str().unwrap()))
+    assert_eq!(r["moved"], "switched", "{r}");
+    assert!(r["forkThreadId"].is_null());
+    let thread = store.thread(&b).await.unwrap().unwrap();
+    assert_eq!(thread.runtime_id.as_str(), "cli");
+    assert_eq!(thread.model.as_deref(), Some("m1"));
+    let context = h.engine.take_next_message_context(&b).await.unwrap().unwrap();
+    assert!(context.starts_with("Context handoff (provider switch)"));
+    assert!(context.contains("hello") && context.contains("hi there"));
+
+    // The CLI turn sees the handoff ahead of the typed text; the stitched
+    // transcript shows only what the user typed.
+    cli.history.lock().unwrap().insert(
+        b.clone(),
+        vec![
+            msg(HistoryRole::User, &format!("{context}\n\n---\n\nnext question")),
+            msg(HistoryRole::Assistant, "cli answer"),
+        ],
+    );
+    let texts: Vec<String> = h
+        .engine
+        .history(&thread)
         .await
         .unwrap()
+        .into_iter()
+        .map(|m| m.text)
+        .collect();
+    assert_eq!(texts, ["hello", "hi there", "next question", "cli answer"]);
+
+    // Back to the loop: it resumes its own transcript and gets the delta only.
+    let back = crate::delegation::Target {
+        model: Some("default".into()),
+        ..Default::default()
+    };
+    let r = h.engine.set_route(&thread, &back).await.unwrap();
+    assert_eq!(r["moved"], "switched", "{r}");
+    assert_eq!(r["resumed"], true);
+    let delta = h.engine.take_next_message_context(&b).await.unwrap().unwrap();
+    assert!(delta.contains("next question") && delta.contains("cli answer"));
+    assert!(!delta.contains("hello"), "the loop already holds its own turns");
+    let segments = h.engine.segments(&b).await.unwrap();
+    assert_eq!(segments.len(), 3);
+    assert_eq!(segments[2].runtime_id.as_str(), "fake");
+    assert_eq!((segments[2].start, segments[1].end), (2, Some(2)));
+    assert_eq!(segments[1].marker(), "Switched to m1 · cli");
+
+    // A detour without a turn leaves no segment behind.
+    let thread = store.thread(&b).await.unwrap().unwrap();
+    h.engine
+        .set_route(&thread, &target("cli", "m1"))
+        .await
         .unwrap();
-    assert_eq!(fork.runtime_id.as_str(), "cli");
-    assert_eq!(fork.model.as_deref(), Some("m1"));
-    let source = store.thread(&b).await.unwrap().unwrap();
-    assert_eq!(
-        source.runtime_id.as_str(),
-        "fake",
-        "the source keeps its runtime"
-    );
+    let thread = store.thread(&b).await.unwrap().unwrap();
+    h.engine.set_route(&thread, &back).await.unwrap();
+    assert_eq!(h.engine.segments(&b).await.unwrap().len(), 3);
 }
 
 #[tokio::test]

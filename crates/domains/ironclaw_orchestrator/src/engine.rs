@@ -30,7 +30,7 @@ pub(crate) type Result<T> = std::result::Result<T, OrchestratorError>;
 
 /// Grace before an unanswered cancel is finalized without its terminal event.
 const CANCEL_GRACE_MS: i64 = 20_000;
-const HISTORY_LIMIT: usize = 2_000;
+pub(crate) const HISTORY_LIMIT: usize = 2_000;
 
 /// Who is calling an engine operation: the thread the call comes from and
 /// the authenticated scope it acts as.
@@ -257,7 +257,12 @@ impl Engine {
         }
     }
 
+    /// The thread's transcript; across provider switches when it had any.
     pub(crate) async fn history(&self, thread: &ThreadRecord) -> Result<Vec<HistoryMessage>> {
+        let segments = self.store.segments(&thread.thread_id).await?;
+        if !segments.is_empty() {
+            return self.stitched_history(thread, &segments).await;
+        }
         Ok(self
             .runtime(&thread.runtime_id)?
             .history(thread, HISTORY_LIMIT)

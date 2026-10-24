@@ -210,6 +210,7 @@ text_enum!(TransferKind {
     SubagentSpawn => "subagent_spawn",
     SubagentResult => "subagent_result",
     RestartNote => "restart_note",
+    RouteSwitch => "route_switch",
 });
 
 text_enum!(TransferStatus {

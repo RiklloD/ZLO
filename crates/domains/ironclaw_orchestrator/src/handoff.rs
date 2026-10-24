@@ -129,19 +129,27 @@ pub fn index_after_visible(messages: &[HistoryMessage], n: usize) -> usize {
 }
 
 fn items(messages: &[HistoryMessage]) -> Vec<String> {
+    indexed_items(messages)
+        .into_iter()
+        .map(|(_, item)| item)
+        .collect()
+}
+
+/// Handoff items with the index of the message each came from.
+fn indexed_items(messages: &[HistoryMessage]) -> Vec<(usize, String)> {
     let mut out = Vec::new();
-    for m in messages.iter().filter(|m| !m.hidden) {
+    for (i, m) in messages.iter().enumerate().filter(|(_, m)| !m.hidden) {
         let text = m.text.trim();
         match m.role {
-            HistoryRole::User if !text.is_empty() => out.push(format!("[user]\n{text}")),
+            HistoryRole::User if !text.is_empty() => out.push((i, format!("[user]\n{text}"))),
             HistoryRole::Assistant => {
                 if !m.tool_calls.is_empty() {
                     let calls: Vec<&str> =
                         m.tool_calls.iter().take(12).map(String::as_str).collect();
-                    out.push(format!("[assistant tool calls] {}", calls.join("; ")));
+                    out.push((i, format!("[assistant tool calls] {}", calls.join("; "))));
                 }
                 if !text.is_empty() {
-                    out.push(format!("[assistant]\n{text}"));
+                    out.push((i, format!("[assistant]\n{text}")));
                 }
             }
             // Tool output is summarized by the calls above; raw output is noise here.
@@ -225,6 +233,79 @@ pub fn portable_context(
          attachments are not included; re-check files and state before relying on them."
     );
     body(header, items(messages), budget, "[End of context handoff]")
+}
+
+/// Handoff for a provider switch inside one thread. `delta` = the target
+/// runtime already holds this thread's earlier turns; `messages` is only
+/// what happened since it last ran. Items that do not fit the budget leave
+/// a one-line digest of their user prompts, so the target still sees the
+/// thread's arc.
+pub fn switch_context(
+    messages: &[HistoryMessage],
+    from_route: &str,
+    to_route: &str,
+    delta: bool,
+    budget: usize,
+) -> String {
+    let what = if delta {
+        "Below is what happened in this thread while it ran elsewhere, since you last answered here"
+    } else {
+        "Below is the earlier conversation of this thread"
+    };
+    let header = format!(
+        "Context handoff (provider switch). This thread continues on {to_route}; it last ran on {from_route}.\n\
+         {what}, newest last. Reasoning, raw tool output and attachments are not included; re-check \
+         files and state before relying on them."
+    );
+    let all = indexed_items(messages);
+    let indices: Vec<usize> = all.iter().map(|(i, _)| *i).collect();
+    let budget = budget.saturating_sub(header.len() + 2400).max(1024);
+    let (kept, omitted) = fit(all.into_iter().map(|(_, item)| item).collect(), budget);
+    let digest = if omitted > 0 {
+        // The prompts of the dropped items, oldest first, at most ~2 KB.
+        let boundary = indices.get(omitted).copied().unwrap_or(messages.len());
+        let mut used = 0;
+        let lines: Vec<String> = messages[..boundary]
+            .iter()
+            .filter(|m| m.role == HistoryRole::User && !m.hidden && !m.text.trim().is_empty())
+            .map(|m| {
+                let line = m.text.trim().lines().next().unwrap_or_default();
+                format!("- {}", crate::model::clip(line, 120))
+            })
+            .take_while(|l| {
+                used += l.len() + 1;
+                used <= 2000
+            })
+            .collect();
+        format!(
+            "\n[{omitted} earlier item(s) omitted to fit the handoff budget. Earlier requests in this thread:]\n{}",
+            lines.join("\n")
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "{header}{digest}\n\n{}\n\n[End of context handoff]",
+        kept.join("\n\n")
+    )
+}
+
+/// The user's own text of a message that had pending context prepended to
+/// it (`{context}\n\n---\n\n{typed}`); `None` when it carries none.
+pub fn strip_context(text: &str) -> Option<&str> {
+    if !(text.starts_with("Context handoff (") || text.starts_with("Merged context from fork")) {
+        return None;
+    }
+    ["[End of context handoff]", "[End of merged fork context]"]
+        .iter()
+        .filter_map(|end| text.rfind(end).map(|i| i + end.len()))
+        .max()
+        .map(|i| {
+            text[i..]
+                .trim_start_matches('\n')
+                .trim_start_matches("---")
+                .trim_start()
+        })
 }
 
 /// Merge-back delta: only what happened in the fork after it branched off.

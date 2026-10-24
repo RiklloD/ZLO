@@ -292,8 +292,11 @@ impl Engine {
             model: model.clone(),
             idempotency_key: format!("t3o:{transfer_id}"),
         };
-        let native =
-            runtime.capabilities().native_fork && latest && runtime_id == source.runtime_id;
+        // A thread that switched runtime has no single native session to branch.
+        let native = runtime.capabilities().native_fork
+            && latest
+            && runtime_id == source.runtime_id
+            && self.store.segments(&source.thread_id).await?.is_empty();
         let (created, strategy, handoff_text) = if native {
             (
                 runtime.fork_native(source, request).await?,
