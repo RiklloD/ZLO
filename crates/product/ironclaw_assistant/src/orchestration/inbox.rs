@@ -511,7 +511,7 @@ mod tests {
             .ensure_thread(&ThreadId::new("chat").unwrap(), &scope, None)
             .await
             .unwrap();
-        let surface = OrchestratedProductSurface::new(Arc::new(Inner), Arc::clone(&engine));
+        let surface = OrchestratedProductSurface::new(Arc::new(Inner), Arc::clone(&engine), None);
 
         let list = list_of(&surface, "u1").await;
         let chat = list.rows.iter().find(|r| r.thread_id == "chat").unwrap();
@@ -534,7 +534,11 @@ mod tests {
         let after: InboxListResponse = serde_json::from_value(out).unwrap();
         let auto = after.rows.iter().find(|r| r.thread_id == "auto").unwrap();
         assert_eq!(auto.state, InboxState::Settled);
-        assert_eq!(after.rows.last().unwrap().thread_id, "auto", "settled sorts last");
+        assert_eq!(
+            after.rows.last().unwrap().thread_id,
+            "auto",
+            "settled sorts last"
+        );
         invoke(
             &surface,
             INBOX_MUTATE_COMMAND_ID,

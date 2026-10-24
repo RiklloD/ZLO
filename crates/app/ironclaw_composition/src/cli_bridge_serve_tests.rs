@@ -74,7 +74,7 @@ async fn mcp_route_serves_tools_to_a_live_token_on_loopback_only() {
 
     let (status, body) = post(&router, [127, 0, 0, 1], &token, list.clone()).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 6);
     // A call runs as the token's thread.
     let call = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {"name": "t3_capabilities", "arguments": {}}});

@@ -3,11 +3,12 @@
 //! which this crate does not name):
 //!
 //! - every server tool as a synthetic loop capability (`computer_use.<tool>`)
-//!   that raises a durable approval request on **every** call. Only a tool
-//!   setting of `Disabled` short-circuits (to a denial); there is no
-//!   always-allow or global auto-approve path. A resumed call runs only with
-//!   a matching, claimed lease, then reaches the thread's session through
-//!   the port;
+//!   that raises a durable approval request unless the user chose "always
+//!   allow" for that tool. A tool setting of `Disabled` denies, `AskEachTime`
+//!   always asks, and global auto-approve is ignored: it never hands the
+//!   desktop to the model on its own. A resumed call runs only with a
+//!   matching, claimed lease, then reaches the thread's session through the
+//!   port;
 //! - the thread Stop hook: a turn that is stopped or cancelled ends the
 //!   thread's session (kills the process), any other turn end sends the
 //!   server its turn-ended notification;
@@ -164,27 +165,38 @@ impl SyntheticCapabilityHandler for ToolHandler {
                 .verify_resume(&invocation, &resume, &capability_id)
                 .await?
             {
-                Ok(lease) => lease,
+                Ok(lease) => Some(lease),
                 Err(denied) => return Ok(denied),
             },
             None => {
                 let scope = self.settings_scope(&invocation.run_context);
                 let settings = &self.stores.approval_settings;
-                if settings.tool_override(&scope, &capability_id).await
-                    == Some(ToolPermissionOverride::Disabled)
-                {
-                    return denied("computer use is disabled by tool approval settings");
+                match settings.tool_override(&scope, &capability_id).await {
+                    Some(ToolPermissionOverride::Disabled) => {
+                        return denied("computer use is disabled by tool approval settings");
+                    }
+                    Some(ToolPermissionOverride::AskEachTime) => {
+                        return self.request_approval(&invocation, &capability_id).await;
+                    }
+                    None => {}
                 }
-                return self.request_approval(&invocation, &capability_id).await;
+                if !settings
+                    .tool_always_allow(&scope, &capability_id, &grantee()?)
+                    .await
+                {
+                    return self.request_approval(&invocation, &capability_id).await;
+                }
+                None
             }
         };
-        // The lease is claimed: consume it before acting so it cannot be
-        // replayed if the call is cut short.
-        if let Err(error) = self
-            .stores
-            .capability_leases
-            .consume(&lease.scope, lease.lease_id)
-            .await
+        // A claimed lease is consumed before acting so it cannot be replayed
+        // if the call is cut short.
+        if let Some(lease) = lease
+            && let Err(error) = self
+                .stores
+                .capability_leases
+                .consume(&lease.scope, lease.lease_id)
+                .await
         {
             return lease_outcome("consume_approval_lease", error);
         }

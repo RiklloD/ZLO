@@ -85,9 +85,11 @@ impl ComputerUseSessions for FakeSessions {
     }
 }
 
-/// Auto-approve and always-allow both on: computer use must ignore them.
+/// Global auto-approve is always on (computer use must ignore it);
+/// per-tool always-allow is set by the test.
 struct PermissiveSettings {
     tool_override: Option<ToolPermissionOverride>,
+    always_allow: bool,
 }
 
 #[async_trait]
@@ -110,7 +112,7 @@ impl ApprovalSettingsProvider for PermissiveSettings {
         _capability_id: &CapabilityId,
         _grantee: &Principal,
     ) -> bool {
-        true
+        self.always_allow
     }
 }
 
@@ -156,11 +158,15 @@ impl LoopCapabilityResultWriter for NoWrites {
 fn handler(
     sessions: &Arc<FakeSessions>,
     tool_override: Option<ToolPermissionOverride>,
+    always_allow: bool,
 ) -> (ToolHandler, Arc<ComputerUseApprovalStores>) {
     let stores = Arc::new(ComputerUseApprovalStores {
         approval_requests: Arc::new(in_memory_backed_approval_request_store()),
         capability_leases: Arc::new(in_memory_backed_capability_lease_store()),
-        approval_settings: Arc::new(PermissiveSettings { tool_override }),
+        approval_settings: Arc::new(PermissiveSettings {
+            tool_override,
+            always_allow,
+        }),
         replay_payload_store: Arc::new(MemoryReplay::default()),
         gate_record_store: Arc::new(in_memory_backed_gate_record_store()),
     });
@@ -211,9 +217,9 @@ async fn invocation(
 }
 
 #[tokio::test]
-async fn every_call_raises_an_approval_even_with_auto_approve_and_always_allow_on() {
+async fn every_call_raises_an_approval_when_only_global_auto_approve_is_on() {
     let sessions = FakeSessions::new();
-    let (handler, stores) = handler(&sessions, None);
+    let (handler, stores) = handler(&sessions, None, false);
 
     let first = handler.invoke(invocation(None).await).await.unwrap();
     let Resolution::Blocked(_) = &first else {
@@ -251,7 +257,7 @@ async fn every_call_raises_an_approval_even_with_auto_approve_and_always_allow_o
 #[tokio::test]
 async fn a_disabled_tool_is_denied_without_an_approval_request() {
     let sessions = FakeSessions::new();
-    let (handler, stores) = handler(&sessions, Some(ToolPermissionOverride::Disabled));
+    let (handler, stores) = handler(&sessions, Some(ToolPermissionOverride::Disabled), true);
     let outcome = handler.invoke(invocation(None).await).await.unwrap();
     assert_eq!(outcome.kind(), "denied");
     let scope = run().await.acting_resource_scope(&handler.fallback_user_id);
@@ -270,6 +276,38 @@ async fn a_disabled_tool_is_denied_without_an_approval_request() {
             .is_err(),
         "the schema's required app is enforced before dispatch"
     );
+}
+
+#[tokio::test]
+async fn always_allow_runs_the_tool_without_an_approval_unless_ask_each_time() {
+    let sessions = FakeSessions::new();
+    let (allowed, stores) = handler(&sessions, None, true);
+    // The test result writer refuses writes; what matters is that the call ran.
+    let _ = allowed.invoke(invocation(None).await).await;
+    assert_eq!(
+        sessions.calls().len(),
+        1,
+        "always-allow reaches the session"
+    );
+    let scope = run().await.acting_resource_scope(&allowed.fallback_user_id);
+    assert!(
+        stores
+            .approval_requests
+            .records_for_scope(&scope)
+            .await
+            .unwrap()
+            .is_empty(),
+        "no approval request under always-allow"
+    );
+
+    let sessions = FakeSessions::new();
+    let (asking, _) = handler(&sessions, Some(ToolPermissionOverride::AskEachTime), true);
+    let outcome = asking.invoke(invocation(None).await).await.unwrap();
+    assert!(
+        matches!(outcome, Resolution::Blocked(_)),
+        "ask-each-time wins"
+    );
+    assert!(sessions.calls().is_empty());
 }
 
 fn commit(status: ProcessLifecycleStatus) -> ProcessJournalCommit {

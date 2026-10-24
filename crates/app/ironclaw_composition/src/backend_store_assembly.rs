@@ -109,6 +109,10 @@ pub(crate) async fn orchestrator_for_durable_backend(
         );
         // Claude CLI accounts become runtimes when `claude` is installed.
         ironclaw_cli_providers::register_claude_runtimes(&engine, Some(Arc::clone(&bridge)));
+        // Antigravity and Muse Code when installed; their tools stay denied
+        // until the bridge's approvals reach them.
+        ironclaw_cli_providers::register_antigravity_runtime(&engine);
+        ironclaw_cli_providers::register_muse_runtime(&engine);
         Some((engine, bridge))
     })
     .map_err(|error| RebornBuildError::InvalidConfig {
