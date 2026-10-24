@@ -433,7 +433,7 @@ impl Workspace {
                     .overflow_y_scroll()
                     .px_2()
                     .pb_2()
-                    .gap_px()
+                    .gap_0p5()
                     .children(list),
             )
     }
@@ -443,16 +443,23 @@ impl Workspace {
             || self.inbox.model.is_some()
             || self.inbox.state.is_some();
         h_flex()
-            .px_2()
+            .px_3()
             .pt_2()
-            .pb_1()
+            .pb_2()
             .gap_1()
             .items_center()
             .children(
                 self.inbox
                     .search
                     .as_ref()
-                    .map(|(input, _)| div().flex_1().child(Input::new(input).small())),
+                    .map(|(input, _)| {
+                        // T3 Code's search: a magnifier and the text, no box.
+                        div().flex_1().child(
+                            Input::new(input)
+                                .appearance(false)
+                                .prefix(Icon::new(IconName::Search).small()),
+                        )
+                    }),
             )
             .child(
                 Button::new("inbox-filters")
@@ -810,9 +817,9 @@ impl Workspace {
                 .aria_label(title_of(row).to_string())
                 .relative()
                 .w_full()
-                .px_2()
-                .py_1p5()
-                .gap_0p5()
+                .px_3()
+                .py_2p5()
+                .gap_1()
                 .rounded(px(style.control_radius))
                 .cursor_pointer()
                 .bg(wash)

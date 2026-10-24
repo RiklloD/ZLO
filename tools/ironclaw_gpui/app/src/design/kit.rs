@@ -315,9 +315,9 @@ impl RenderOnce for Button {
         );
         let icon_only = self.label.is_none();
         let height = match self.size {
-            Size::XSmall => 22.,
-            Size::Small => 26.,
-            Size::Medium => 32.,
+            Size::XSmall => 24.,
+            Size::Small => 30.,
+            Size::Medium => 34.,
         };
         let pad = match self.size {
             Size::XSmall => 7.,
@@ -385,8 +385,9 @@ impl RenderOnce for Button {
             .when_some(dots, |d, dots| d.child(dots))
             .when_some(self.icon.filter(|_| !self.loading), |d, icon| {
                 d.child(match self.size {
-                    Size::Medium => icon.small(),
-                    _ => icon.xsmall(),
+                    Size::Medium => icon,
+                    Size::Small => icon.small(),
+                    Size::XSmall => icon.xsmall(),
                 })
             })
             .when_some(self.label, |d, label| d.child(label))

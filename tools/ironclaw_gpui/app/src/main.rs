@@ -93,7 +93,7 @@ fn open_main_window(cx: &mut App) {
         titlebar: Some(TitlebarOptions {
             title: Some("IronClaw".into()),
             appears_transparent: true,
-            traffic_light_position: Some(point(px(14.), px(13.))),
+            traffic_light_position: Some(point(px(16.), px(17.))),
         }),
         ..Default::default()
     };

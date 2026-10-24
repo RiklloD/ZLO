@@ -23,8 +23,8 @@ use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::{App, Global, Hsla, hsla, px};
 
 // Layout numbers. Colors are paint; these drive layout and never depend on it.
-pub const SIDEBAR_WIDTH: f32 = 264.;
-pub const TITLEBAR_HEIGHT: f32 = 38.;
+pub const SIDEBAR_WIDTH: f32 = 296.;
+pub const TITLEBAR_HEIGHT: f32 = 46.;
 /// Room the macOS traffic lights take at the sidebar's top left.
 pub const TRAFFIC_LIGHTS_WIDTH: f32 = 78.;
 pub const STATUS_BAR_HEIGHT: f32 = 24.;
@@ -202,7 +202,7 @@ fn apply_theme(cx: &mut App, have_fonts: bool) {
             t.mono_font_family = FONT_MONO.into();
         }
         t.font_size = px(style.font_size);
-        t.mono_font_size = px(13.);
+        t.mono_font_size = px(14.);
         t.radius = px(style.control_radius);
         t.radius_lg = px(style.panel_radius.max(style.control_radius));
         t.shadow = style.elevation > 0.;
