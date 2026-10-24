@@ -130,6 +130,8 @@ pub struct Workspace {
     command_opens: u64,
     quick: quick::Quick,
     main_window: gpui_kit::AnyWindowHandle,
+    /// Live sidebar width while its edge is dragged; saved on release.
+    sidebar_drag: Option<f32>,
 }
 
 impl Workspace {
@@ -149,6 +151,7 @@ impl Workspace {
             command_opens: 0,
             quick: quick::Quick::default(),
             main_window: window.window_handle(),
+            sidebar_drag: None,
             _page_events: Vec::new(),
             _poll: None,
             connect_attempt: 0,
@@ -720,7 +723,7 @@ impl Workspace {
                 )
         };
         v_flex()
-            .w(px(design::SIDEBAR_WIDTH))
+            .w(px(self.sidebar_width(cx)))
             .h_full()
             .flex_none()
             .text_color(p.text_muted)
@@ -1144,6 +1147,7 @@ impl Render for Workspace {
                     .size_full()
                     .min_h_0()
                     .child(self.render_sidebar(cx))
+                    .child(self.render_sidebar_edge(cx))
                     .child(
                         div()
                             .flex_1()
@@ -1208,8 +1212,13 @@ impl Render for Workspace {
             } else {
                 design::FONT_SANS
             })
-            .on_mouse_move(
-                cx.listener(|this, _, _, cx| this.battery.input(|w: &mut Self| &mut w.battery, cx)),
+            .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, _, cx| {
+                this.battery.input(|w: &mut Self| &mut w.battery, cx);
+                this.drag_sidebar(e, cx);
+            }))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.end_sidebar_drag(cx)),
             )
             .capture_key_down(
                 cx.listener(|this, _, _, cx| this.battery.input(|w: &mut Self| &mut w.battery, cx)),
@@ -1227,6 +1236,74 @@ impl Render for Workspace {
 }
 
 impl Workspace {
+    fn sidebar_width(&self, cx: &App) -> f32 {
+        let saved = Prefs::of(cx).sidebar_width;
+        let width = self.sidebar_drag.unwrap_or(if saved > 0. {
+            saved
+        } else {
+            design::SIDEBAR_WIDTH
+        });
+        width.clamp(design::SIDEBAR_MIN_WIDTH, design::SIDEBAR_MAX_WIDTH)
+    }
+
+    /// A thin strip on the sidebar's right edge: drag it to resize the
+    /// sidebar, double-click it to restore the default width.
+    fn render_sidebar_edge(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = *Palette::of(cx);
+        let dragging = self.sidebar_drag.is_some();
+        div()
+            .id("sidebar-edge")
+            .flex_none()
+            .w(px(6.))
+            .ml(px(-3.))
+            .mr(px(-3.))
+            .h_full()
+            .cursor_col_resize()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(1.))
+                    .h_full()
+                    .when(dragging, |d| d.bg(p.accent.opacity(0.6))),
+            )
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.sidebar_drag = Some(this.sidebar_width(cx));
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_click(cx.listener(|this, e: &gpui_kit::ClickEvent, _, cx| {
+                if e.click_count() == 2 {
+                    this.sidebar_drag = None;
+                    Prefs::update(cx, |p| p.sidebar_width = 0.);
+                }
+            }))
+    }
+
+    fn drag_sidebar(&mut self, e: &gpui_kit::MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.sidebar_drag.is_none() {
+            return;
+        }
+        if e.pressed_button != Some(gpui_kit::MouseButton::Left) {
+            // The release happened outside the window.
+            self.end_sidebar_drag(cx);
+            return;
+        }
+        let width = f32::from(e.position.x)
+            .clamp(design::SIDEBAR_MIN_WIDTH, design::SIDEBAR_MAX_WIDTH);
+        self.sidebar_drag = Some(width);
+        cx.notify();
+    }
+
+    fn end_sidebar_drag(&mut self, cx: &mut Context<Self>) {
+        if let Some(width) = self.sidebar_drag.take() {
+            Prefs::update(cx, |p| p.sidebar_width = width);
+        }
+    }
+
     /// No thread open: one composed moment per style. Static gradients
     /// and a single entrance, so it costs nothing per frame once settled.
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {

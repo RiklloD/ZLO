@@ -1,7 +1,7 @@
 //! The sidebar inbox (t3code's): one list by recency with search and
-//! filters (profile, model, state), a foldable Working shelf and Pinned on
-//! top, Snoozed (N) and Settled (N) folded at the bottom, and the profile menu of the new-thread
-//! screen.
+//! filters (profile, model, state), Pinned on top, the Working, Snoozed (N)
+//! and Settled (N) shelves at the bottom, and the profile menu of the
+//! new-thread screen.
 //!
 //! The backend joins and classifies every row (`GET /inbox`), so this file
 //! only renders and sends marks. Refresh is event-driven: on connect, when
@@ -387,24 +387,8 @@ impl Workspace {
                 crate::design::motion::settle(&format!("card-grow-{}", row.thread_id));
             }
         }
-        let show_working = !working.is_empty();
-        let working_open = self.inbox.show_working || unfold;
-        if show_working {
-            list.push(self.render_fold("working", "Working", working.len(), working_open, cx));
-        }
-        let working_shown = if working_open { working.len() } else { 0 };
-        let cards: Vec<&InboxRow> = working
-            .iter()
-            .take(working_shown)
-            .chain(pinned.iter())
-            .chain(main.iter())
-            .copied()
-            .collect();
+        let cards: Vec<&InboxRow> = pinned.iter().chain(main.iter()).copied().collect();
         for (ix, row) in cards.into_iter().enumerate() {
-            // A gap closes the Working shelf off from the rest.
-            if show_working && ix == working_shown && ix > 0 {
-                list.push(div().flex_none().h(px(6.)).into_any_element());
-            }
             let is_active = active.as_deref() == Some(row.thread_id.as_str());
             let card = self.render_card(row, is_active, now, cx);
             // A thread that appears later (a new one, a T3 child) grows
@@ -443,6 +427,31 @@ impl Workspace {
                     .into_any_element(),
             );
         }
+        // Like t3code: Working, Snoozed and Settled sit at the bottom of
+        // the sidebar and unfold downward, scrolling with the list. Working
+        // keeps full cards; the parked shelves use slim rows.
+        let mut pushed = false;
+        if !working.is_empty() {
+            pushed = true;
+            list.push(div().flex_1().min_h_2().into_any_element());
+            let open = self.inbox.show_working || unfold;
+            list.push(self.render_fold("working", "Working", working.len(), open, cx));
+            if open {
+                for row in &working {
+                    let is_active = active.as_deref() == Some(row.thread_id.as_str());
+                    let card = self.render_card(row, is_active, now, cx);
+                    list.push(
+                        crate::design::motion::grow(
+                            &format!("card-grow-{}", row.thread_id),
+                            crate::design::motion::COLLAPSE,
+                            reduced,
+                            card,
+                        )
+                        .into_any_element(),
+                    );
+                }
+            }
+        }
         let sections = [
             (
                 "snoozed",
@@ -459,9 +468,6 @@ impl Workspace {
                 self.inbox.settled_limit,
             ),
         ];
-        // Like t3code: the shelves sit at the bottom of the sidebar and
-        // unfold downward, scrolling with the list.
-        let mut pushed = false;
         for (key, label, items, open, limit) in sections {
             if items.is_empty() {
                 continue;
@@ -904,10 +910,11 @@ impl Workspace {
                 .relative()
                 .w_full()
                 .min_h(px(design::SIDEBAR_CARD_MIN_HEIGHT))
-                .px(px(10.))
-                .py(px(9.))
-                .gap(px(4.))
-                .rounded(px(8.))
+                .justify_center()
+                .px(px(12.))
+                .py(px(14.))
+                .gap(px(6.))
+                .rounded(px(10.))
                 .cursor_pointer()
                 .bg(wash)
                 .on_hover(crate::design::motion::hover_listener(

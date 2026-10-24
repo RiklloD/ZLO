@@ -42,6 +42,8 @@ pub struct Prefs {
     pub recent_models: Vec<(String, String)>,
     /// The model picker's provider order (provider ids); unlisted ones follow.
     pub provider_order: Vec<String>,
+    /// Sidebar width in px, dragged at its edge; 0 keeps the default.
+    pub sidebar_width: f32,
 }
 
 impl Default for Prefs {
@@ -59,6 +61,7 @@ impl Default for Prefs {
             status_bar_hidden: false,
             recent_models: Vec::new(),
             provider_order: Vec::new(),
+            sidebar_width: 0.,
         }
     }
 }
