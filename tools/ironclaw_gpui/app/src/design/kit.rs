@@ -12,10 +12,9 @@
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable, h_flex, v_flex};
 use gpui_kit::{
-    App, Background, BoxShadow, ClickEvent, Div, ElementId, Hsla,
-    InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Window, div, hsla, linear_color_stop, linear_gradient,
-    point, prelude::FluentBuilder, px,
+    App, Background, BoxShadow, ClickEvent, Div, ElementId, Hsla, InteractiveElement, IntoElement,
+    ParentElement, RenderOnce, SharedString, Stateful, StatefulInteractiveElement, Styled, Window,
+    div, hsla, linear_color_stop, linear_gradient, point, prelude::FluentBuilder, px,
 };
 use std::time::Duration;
 
@@ -638,21 +637,29 @@ pub fn popover(id: impl Into<ElementId>, cx: &App) -> impl FnOnce(Div) -> gpui_k
 /// animation, so it costs frames only while shown, and the battery saver
 /// freezes it.
 pub fn pulse_dots(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
-    pulse::looping(id, Duration::from_millis(1200), pulse::Rate::Smooth, move |t| {
-        h_flex().gap(px(3.)).items_center().children((0..3).map(move |i| {
-            // Each dot peaks a beat after the one before it. The lift is a
-            // relative inset, so the row never relayouts.
-            let phase = (t - i as f32 * 0.18).rem_euclid(1.);
-            let wave = (phase * std::f32::consts::TAU).sin().max(0.);
-            div()
-                .relative()
-                .size(px(5.))
-                .rounded_full()
-                .bg(color)
-                .opacity(0.25 + 0.75 * wave)
-                .top(px(-2. * wave))
-        }))
-    })
+    pulse::looping(
+        id,
+        Duration::from_millis(1200),
+        pulse::Rate::Smooth,
+        move |t| {
+            h_flex()
+                .gap(px(3.))
+                .items_center()
+                .children((0..3).map(move |i| {
+                    // Each dot peaks a beat after the one before it. The lift is a
+                    // relative inset, so the row never relayouts.
+                    let phase = (t - i as f32 * 0.18).rem_euclid(1.);
+                    let wave = (phase * std::f32::consts::TAU).sin().max(0.);
+                    div()
+                        .relative()
+                        .size(px(5.))
+                        .rounded_full()
+                        .bg(color)
+                        .opacity(0.25 + 0.75 * wave)
+                        .top(px(-2. * wave))
+                }))
+        },
+    )
 }
 
 /// Zeron's working glyph: a 3×3 grid of dots tinted blue, amber and pink
@@ -664,17 +671,20 @@ pub fn gradient_spinner(id: impl Into<ElementId>, cell: f32) -> impl IntoElement
     let gap = cell / 2.;
     let period = Duration::from_millis(motion::GRADIENT_SPIN_MS);
     pulse::looping(id, period, pulse::Rate::Smooth, move |t| {
-        v_flex().gap(px(gap)).flex_none().children((0..3).map(move |row| {
-            h_flex().gap(px(gap)).children((0..3).map(move |col| {
-                // Distance from the wave origin (bottom row, centre column).
-                let d = 2. - row as f32 + (col as f32 - 1.).abs();
-                div()
-                    .size(px(cell))
-                    .rounded(px(cell / 2.))
-                    .bg(gpui_kit::rgb(TINTS[row]))
-                    .opacity(motion::gspin_opacity(t + d / 4., 0.1))
+        v_flex()
+            .gap(px(gap))
+            .flex_none()
+            .children((0..3).map(move |row| {
+                h_flex().gap(px(gap)).children((0..3).map(move |col| {
+                    // Distance from the wave origin (bottom row, centre column).
+                    let d = 2. - row as f32 + (col as f32 - 1.).abs();
+                    div()
+                        .size(px(cell))
+                        .rounded(px(cell / 2.))
+                        .bg(gpui_kit::rgb(TINTS[row]))
+                        .opacity(motion::gspin_opacity(t + d / 4., 0.1))
+                }))
             }))
-        }))
     })
 }
 
@@ -686,10 +696,15 @@ pub fn shimmer_text(
 ) -> impl IntoElement {
     let p = *Palette::of(cx);
     let text: SharedString = text.into();
-    pulse::looping(id, Duration::from_millis(1600), pulse::Rate::Smooth, move |t| {
-        let w = (t * std::f32::consts::TAU).sin() * 0.5 + 0.5;
-        div().text_color(mix(p.text_faint, p.text, w)).child(text)
-    })
+    pulse::looping(
+        id,
+        Duration::from_millis(1600),
+        pulse::Rate::Smooth,
+        move |t| {
+            let w = (t * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+            div().text_color(mix(p.text_faint, p.text, w)).child(text)
+        },
+    )
 }
 
 /// A small status dot that can pulse a soft halo.

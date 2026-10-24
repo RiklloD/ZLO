@@ -186,7 +186,10 @@ mod tests {
         let mid = shown(&mid).to_string();
         assert!(!mid.is_empty() && mid.len() < 48, "{mid:?}");
         let full = "one two three four five six seven eight nine ten";
-        assert!(full[mid.len()..].starts_with(' '), "ends on a word: {mid:?}");
+        assert!(
+            full[mid.len()..].starts_with(' '),
+            "ends on a word: {mid:?}"
+        );
         let done = reply("one two three four five six seven eight nine ten", false);
         let mut t = t0 + Duration::from_millis(60);
         for _ in 0..100 {
@@ -197,7 +200,10 @@ mod tests {
         }
         let (last, behind) = pacer.apply(&done, t + Duration::from_millis(33), false);
         assert!(!behind);
-        assert!(matches!(last, Cow::Borrowed(_)), "a settled reply renders as is");
+        assert!(
+            matches!(last, Cow::Borrowed(_)),
+            "a settled reply renders as is"
+        );
     }
 
     #[test]

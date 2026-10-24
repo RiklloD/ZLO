@@ -34,6 +34,7 @@ use gpui_kit::StyledImage as _;
 mod command;
 mod draft;
 mod inbox;
+mod quick;
 
 pub(crate) use inbox::title_of as row_title;
 
@@ -127,6 +128,8 @@ pub struct Workspace {
     /// The Cmd+K menu while open.
     command: Option<command::CommandMenu>,
     command_opens: u64,
+    quick: quick::Quick,
+    main_window: gpui_kit::AnyWindowHandle,
 }
 
 impl Workspace {
@@ -144,6 +147,8 @@ impl Workspace {
             _chat_events: Vec::new(),
             command: None,
             command_opens: 0,
+            quick: quick::Quick::default(),
+            main_window: window.window_handle(),
             _page_events: Vec::new(),
             _poll: None,
             connect_attempt: 0,
@@ -164,6 +169,7 @@ impl Workspace {
             _status_poll: None,
         };
         this.battery.start(|w: &mut Self| &mut w.battery, cx);
+        this.start_quick_composer(cx);
         design::apply_window(window, *Style::of(cx));
         // Clicking a system notification brings the window up on its thread.
         let weak = cx.entity().downgrade();

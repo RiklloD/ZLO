@@ -36,13 +36,10 @@ impl Rate {
     }
 }
 
-type FrameCallback = Box<dyn FnOnce(&mut App)>;
-
 struct Lease {
     rate: Rate,
     /// Painted a loop since the clock last notified it.
     painted: bool,
-    on_tick: Option<FrameCallback>,
 }
 
 #[derive(Default)]
@@ -59,16 +56,6 @@ impl Global for Clock {}
 /// loop is drawn. Returns false, leasing nothing, under reduced motion or
 /// the battery saver: draw the resting frame.
 pub fn request(rate: Rate, window: &Window, cx: &mut App) -> bool {
-    request_inner(rate, window, cx, None)
-}
-
-
-fn request_inner(
-    rate: Rate,
-    window: &Window,
-    cx: &mut App,
-    mut on_tick: Option<FrameCallback>,
-) -> bool {
     if cx.reduce_motion() {
         return false;
     }
@@ -79,17 +66,13 @@ fn request_inner(
         .entry(view)
         .and_modify(|lease| {
             lease.painted = true;
-            if on_tick.is_some() {
-                lease.on_tick = on_tick.take();
-            }
             if lease.rate.stride() > rate.stride() {
                 lease.rate = rate;
             }
         })
-        .or_insert_with(|| Lease {
+        .or_insert(Lease {
             rate,
             painted: true,
-            on_tick,
         });
     if !clock.running {
         clock.running = true;
@@ -126,25 +109,22 @@ fn tick(cx: &mut App) -> bool {
     let mut due = Vec::new();
     clock.leases.retain(|view, lease| {
         let stride = lease.rate.stride() * if background { BACKGROUND_STRIDE } else { 1 };
-        if tick % stride != 0 {
+        if !tick.is_multiple_of(stride) {
             return true;
         }
         if !lease.painted {
             return false;
         }
         lease.painted = false;
-        due.push((*view, lease.on_tick.take()));
+        due.push(*view);
         true
     });
     if clock.leases.is_empty() {
         clock.running = false;
         return false;
     }
-    for (view, callback) in due {
-        match callback {
-            Some(callback) => callback(cx),
-            None => cx.notify(view),
-        }
+    for view in due {
+        cx.notify(view);
     }
     true
 }

@@ -128,7 +128,13 @@ impl Render for Outline {
         let budget = STACK_MAX.min((f32::from(viewport.height) * 0.6).floor());
         let (start, end, gap) = bar_stack(self.prompts.len(), active, budget);
         let hover = self.hovered.filter(|h| (start..end).contains(h));
-        let ink = |a: f32| if p.light { gpui_kit::black().opacity(a) } else { gpui_kit::white().opacity(a) };
+        let ink = |a: f32| {
+            if p.light {
+                gpui_kit::black().opacity(a)
+            } else {
+                gpui_kit::white().opacity(a)
+            }
+        };
 
         let bars = (start..end).map(|ix| {
             let prompt = self.prompts[ix].clone();
@@ -146,7 +152,11 @@ impl Render for Outline {
             );
             let alpha = motion::glide(
                 &format!("{key}:a"),
-                if lit { BAR_OPACITY_LIT } else { BAR_OPACITY_IDLE },
+                if lit {
+                    BAR_OPACITY_LIT
+                } else {
+                    BAR_OPACITY_IDLE
+                },
                 BAR,
                 reduced,
             );
@@ -164,7 +174,13 @@ impl Render for Outline {
                 .justify_end()
                 .h(px(BAR_HEIGHT + gap))
                 .cursor_pointer()
-                .child(div().h(px(BAR_HEIGHT)).w(px(width)).rounded_full().bg(ink(alpha)))
+                .child(
+                    div()
+                        .h(px(BAR_HEIGHT))
+                        .w(px(width))
+                        .rounded_full()
+                        .bg(ink(alpha)),
+                )
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                     if *hovered && this.hovered != Some(ix) {
                         this.hovered = Some(ix);
@@ -188,7 +204,12 @@ impl Render for Outline {
                         .shadow_lg()
                         .text_size(gpui_kit::rems(13. / 16.))
                         .line_height(px(18.))
-                        .child(div().line_clamp(2).text_color(p.text).child(prompt.label.clone()))
+                        .child(
+                            div()
+                                .line_clamp(2)
+                                .text_color(p.text)
+                                .child(prompt.label.clone()),
+                        )
                         .when_some(prompt.reply.clone(), |d, reply| {
                             d.child(div().line_clamp(2).text_color(p.text_muted).child(reply))
                         });
@@ -254,6 +275,9 @@ mod tests {
         assert_eq!(bar_lift(4, Some(4)), 1.);
         assert!(bar_lift(5, Some(4)) > bar_lift(6, Some(4)));
         assert_eq!(bar_lift(8, Some(4)), 0.);
-        assert_eq!(first_line("\n  hello   world \nsecond", 40).as_ref(), "hello world");
+        assert_eq!(
+            first_line("\n  hello   world \nsecond", 40).as_ref(),
+            "hello world"
+        );
     }
 }

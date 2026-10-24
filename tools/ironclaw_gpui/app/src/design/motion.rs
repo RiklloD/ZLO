@@ -521,6 +521,14 @@ pub fn reveal(key: &str, spec: MotionSpec, delay_ms: u64, reduced: bool) -> f32 
     t
 }
 
+/// Restart the reveal for `key` from now.
+pub fn restart(key: &str) {
+    BORN.with(|b| {
+        b.borrow_mut()
+            .insert(key.to_string().into(), Instant::now());
+    });
+}
+
 /// Mark `key` as born long ago, so it draws settled from its first frame.
 pub fn settle(key: &str) {
     let past = Instant::now()

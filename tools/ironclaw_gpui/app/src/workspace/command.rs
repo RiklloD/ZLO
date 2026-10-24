@@ -54,21 +54,24 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search threads, settings and actions"));
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Search threads, settings and actions")
+        });
         input.update(cx, |s, cx| s.focus(window, cx));
-        let subs = vec![cx.subscribe_in(&input, window, |this, _, event, window, cx| {
-            match event {
-                InputEvent::Change => {
-                    if let Some(menu) = this.command.as_mut() {
-                        menu.selected = 0;
-                        menu.scroll.scroll_to_item(0);
+        let subs =
+            vec![
+                cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
+                    InputEvent::Change => {
+                        if let Some(menu) = this.command.as_mut() {
+                            menu.selected = 0;
+                            menu.scroll.scroll_to_item(0);
+                        }
+                        cx.notify();
                     }
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.run_selected(window, cx),
-                _ => {}
-            }
-        })];
+                    InputEvent::PressEnter { .. } => this.run_selected(window, cx),
+                    _ => {}
+                }),
+            ];
         self.command_opens += 1;
         self.command = Some(CommandMenu {
             input,
@@ -234,7 +237,7 @@ impl Workspace {
         let scroll = menu.scroll.clone();
         let entries = self.matches(cx);
         let selected = selected.min(entries.len().saturating_sub(1));
-        let pill_top = (!entries.is_empty()).then(|| selected as f32 * ROW_H);
+        let pill_top = (!entries.is_empty()).then_some(selected as f32 * ROW_H);
 
         let rows = entries.into_iter().enumerate().map(|(ix, e)| {
             let on = ix == selected;

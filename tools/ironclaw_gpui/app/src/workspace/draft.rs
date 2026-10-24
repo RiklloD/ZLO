@@ -75,6 +75,18 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A prompt from the quick composer: the new-thread screen's send, with
+    /// its profile and model choice.
+    pub(super) fn quick_send(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_draft(window, cx);
+        if let Some(draft) = self.draft.as_ref() {
+            draft
+                .input
+                .update(cx, |s, cx| s.set_value(text, window, cx));
+        }
+        self.send_draft(window, cx);
+    }
+
     /// A profile picked in either menu: open the draft screen in it.
     pub(super) fn start_in_profile(
         &mut self,

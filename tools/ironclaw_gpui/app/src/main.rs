@@ -22,7 +22,10 @@ use gpui_kit::{
     WindowOptions, point, px, size,
 };
 
-gpui_kit::actions!(ironclaw, [Quit, ToggleStatusBar, NextStyle, OpenCommandMenu]);
+gpui_kit::actions!(
+    ironclaw,
+    [Quit, ToggleStatusBar, NextStyle, OpenCommandMenu]
+);
 
 fn main() {
     tracing_subscriber::fmt()

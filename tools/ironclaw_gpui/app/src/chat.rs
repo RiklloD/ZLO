@@ -1546,18 +1546,25 @@ fn with_copy(key: &str, text: &str, body: AnyElement) -> AnyElement {
         .on_hover(motion::hover_listener(hover_key, motion::FADE_QUICK))
         .child(body)
         .child(
-            h_flex().h(px(22.)).opacity(if copied { 1. } else { h }).child(
-                kit::button(SharedString::from(format!("{key}-copy")))
-                    .icon(if copied { IconName::Check } else { IconName::Copy })
-                    .ghost()
-                    .xsmall()
-                    .tooltip(if copied { "Copied" } else { "Copy" })
-                    .accessibility_label("Copy message")
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
-                        mark_copied(&copy_key, cx);
-                    }),
-            ),
+            h_flex()
+                .h(px(22.))
+                .opacity(if copied { 1. } else { h })
+                .child(
+                    kit::button(SharedString::from(format!("{key}-copy")))
+                        .icon(if copied {
+                            IconName::Check
+                        } else {
+                            IconName::Copy
+                        })
+                        .ghost()
+                        .xsmall()
+                        .tooltip(if copied { "Copied" } else { "Copy" })
+                        .accessibility_label("Copy message")
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                            mark_copied(&copy_key, cx);
+                        }),
+                ),
         )
         .into_any_element()
 }

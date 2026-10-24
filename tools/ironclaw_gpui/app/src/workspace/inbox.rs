@@ -1121,7 +1121,23 @@ fn settle_blocker(row: &InboxRow) -> Option<&'static str> {
     }
 }
 
+/// The status label, crossfading in whenever the status changes (Working
+/// to Done, Done to Failed) instead of snapping.
 fn status_label(row: &InboxRow, active: bool, now: i64, cx: &App) -> AnyElement {
+    let shown = row
+        .status
+        .filter(|s| !(active && matches!(s, InboxStatus::Done | InboxStatus::Woke)));
+    let key = SharedString::from(format!("status-{}-{:?}", row.thread_id, shown));
+    crate::design::motion::fade_in(
+        div().flex_none().child(status_body(row, active, now, cx)),
+        key,
+        crate::design::motion::FADE_QUICK,
+        2.,
+    )
+    .into_any_element()
+}
+
+fn status_body(row: &InboxRow, active: bool, now: i64, cx: &App) -> AnyElement {
     let p = Palette::of(cx);
     let text = |t: String, color| {
         div()
