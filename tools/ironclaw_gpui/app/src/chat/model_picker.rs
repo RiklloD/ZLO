@@ -474,7 +474,7 @@ impl ModelPicker {
                         18.,
                         cx,
                     )
-                        .into_any_element(),
+                    .into_any_element(),
                     on,
                     format!(
                         "{} (drag to reorder, double-click to {})",
@@ -625,7 +625,12 @@ impl ModelPicker {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(div().flex_none().p_2().child(Input::new(&self.search).small()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .p_2()
+                            .child(Input::new(&self.search).small()),
+                    )
                     .child(
                         v_flex()
                             .id("model-list")

@@ -1292,8 +1292,8 @@ impl Workspace {
             self.end_sidebar_drag(cx);
             return;
         }
-        let width = f32::from(e.position.x)
-            .clamp(design::SIDEBAR_MIN_WIDTH, design::SIDEBAR_MAX_WIDTH);
+        let width =
+            f32::from(e.position.x).clamp(design::SIDEBAR_MIN_WIDTH, design::SIDEBAR_MAX_WIDTH);
         self.sidebar_drag = Some(width);
         cx.notify();
     }

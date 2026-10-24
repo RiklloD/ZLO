@@ -308,11 +308,10 @@ impl TurnRuntime for AgentLoopRuntime {
         };
         // IronClaw's loop is a runtime, not a vendor: the picker names the
         // group after the provider it runs on (ChatGPT, Z.AI, ...).
-        let (name, brand) = primary
-            .as_ref()
-            .map_or_else(|| ("IronClaw".to_string(), None), |p| {
-                (p.name.clone(), Some(p.provider_id.clone()))
-            });
+        let (name, brand) = primary.as_ref().map_or_else(
+            || ("IronClaw".to_string(), None),
+            |p| (p.name.clone(), Some(p.provider_id.clone())),
+        );
         let (efforts, mut model_efforts, primary_models) = primary
             .map(|p| (p.efforts, p.model_efforts, p.models))
             .unwrap_or_default();

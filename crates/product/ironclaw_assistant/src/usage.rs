@@ -1,5 +1,6 @@
-//! `ProductSurface` decorator that answers the `usage.report` view from a
-//! [`UsageReportSource`]; every other request passes through untouched.
+//! `ProductSurface` decorator that answers the `usage.report` and
+//! `usage.history` views from a [`UsageReportSource`]; every other request
+//! passes through untouched.
 //!
 //! The report is machine-level (the CLI logins and coding-plan key of the
 //! host), not per-thread, so any authenticated caller of this surface may
@@ -13,7 +14,9 @@ use ironclaw_product_contracts::surface::{
     ProductSurfaceInvokeResponse, ProductSurfaceQueryPage, ProductSurfaceQueryRequest,
     ProductSurfaceStreamRequest, ProductSurfaceStreamResponse,
 };
-use ironclaw_product_contracts::usage::{USAGE_REPORT_VIEW, UsageReportSource};
+use ironclaw_product_contracts::usage::{
+    USAGE_HISTORY_VIEW, USAGE_REPORT_VIEW, UsageHistoryRequest, UsageReportSource,
+};
 
 pub struct UsageProductSurface {
     inner: Arc<dyn ProductSurface>,
@@ -41,11 +44,22 @@ impl ProductSurface for UsageProductSurface {
         caller: ProductSurfaceCaller,
         request: ProductSurfaceQueryRequest,
     ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
-        if request.view_id != USAGE_REPORT_VIEW.id {
+        let value = if request.view_id == USAGE_REPORT_VIEW.id {
+            serde_json::to_value(self.source.report().await)
+        } else if request.view_id == USAGE_HISTORY_VIEW.id {
+            let input: UsageHistoryRequest =
+                serde_json::from_value(request.input).map_err(|error| {
+                    tracing::debug!(%error, "usage history: invalid input");
+                    ProductSurfaceError::validation(
+                        "days",
+                        ironclaw_product_contracts::surface::ProductSurfaceValidationCode::InvalidValue,
+                    )
+                })?;
+            serde_json::to_value(self.source.history(input).await)
+        } else {
             return self.inner.query(caller, request).await;
         }
-        let report = self.source.report().await;
-        let value = serde_json::to_value(report).map_err(ProductSurfaceError::internal_from)?;
+        .map_err(ProductSurfaceError::internal_from)?;
         Ok(ProductSurfaceQueryPage {
             items: vec![value],
             next_cursor: None,

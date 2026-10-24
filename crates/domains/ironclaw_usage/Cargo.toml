@@ -21,6 +21,7 @@ ironclaw_network = { path = "../../substrates/ironclaw_network" }
 # The report DTO and the operator secret-value port (the coding-plan key).
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
 secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["fs", "io-util", "process", "sync", "time"] }

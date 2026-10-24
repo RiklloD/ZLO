@@ -29,7 +29,7 @@ pub use profiles::{
     profile_create, profile_delete, profile_get, profile_thread_create, profile_update,
     profiles_import_hermes, profiles_list,
 };
-pub use usage::usage_report;
+pub use usage::{usage_history, usage_report};
 mod inbox;
 pub use inbox::{inbox_list, inbox_mutate, thread_goal, thread_goal_set};
 mod run_artifact;

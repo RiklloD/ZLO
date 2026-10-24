@@ -10,6 +10,7 @@
 mod antigravity;
 mod claude;
 mod codex;
+mod history;
 mod http;
 mod monitor;
 mod muse;

@@ -11,7 +11,8 @@ use std::time::Duration;
 use ironclaw_network::NetworkHttpEgress;
 use ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore;
 use ironclaw_product_contracts::usage::{
-    ProviderUsage, UsageReport, UsageReportSource, UsageStatus, UsageWindow,
+    ProviderUsage, UsageHistory, UsageHistoryRequest, UsageReport, UsageReportSource, UsageStatus,
+    UsageWindow,
 };
 use tokio::sync::Mutex;
 use tokio::time::Instant;
@@ -19,6 +20,7 @@ use tokio::time::Instant;
 use crate::antigravity::AntigravityLogin;
 use crate::claude::ClaudeAccount;
 use crate::codex::CodexLogin;
+use crate::history::{HistoryScanner, HistorySource};
 use crate::http::Fetched;
 use crate::muse::MuseReading;
 use crate::zai::ZaiKey;
@@ -78,6 +80,7 @@ struct SlotState {
 pub struct UsageMonitor {
     egress: Arc<dyn NetworkHttpEgress>,
     slots: Vec<Slot>,
+    history: HistoryScanner,
 }
 
 impl UsageMonitor {
@@ -98,7 +101,16 @@ impl UsageMonitor {
             UsageSource::Antigravity(AntigravityLogin::new(home)),
             UsageSource::Muse(MuseReading::new(home)),
         ]);
-        Self::with_sources(egress, sources)
+        let mut monitor = Self::with_sources(egress, sources);
+        monitor.history = HistoryScanner::new(
+            HistorySource::defaults(home),
+            Some(
+                home.join(".ironclaw")
+                    .join("usage")
+                    .join("model-prices.json"),
+            ),
+        );
+        monitor
     }
 
     /// The production monitor: policy-checked egress over the shared reqwest
@@ -129,7 +141,11 @@ impl UsageMonitor {
                 }),
             })
             .collect();
-        Self { egress, slots }
+        Self {
+            egress,
+            slots,
+            history: HistoryScanner::new(Vec::new(), None),
+        }
     }
 
     /// Every provider, fetched concurrently where its cache has expired.
@@ -239,5 +255,11 @@ fn overlay(windows: &mut Vec<UsageWindow>, fresh: Vec<UsageWindow>) {
 impl UsageReportSource for UsageMonitor {
     async fn report(&self) -> UsageReport {
         UsageMonitor::report(self).await
+    }
+
+    async fn history(&self, request: UsageHistoryRequest) -> UsageHistory {
+        self.history
+            .history(self.egress.as_ref(), request.days.unwrap_or(30))
+            .await
     }
 }

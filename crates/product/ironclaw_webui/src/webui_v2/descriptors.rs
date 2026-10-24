@@ -209,6 +209,8 @@ pub const WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES: &str = "/api/webchat/v2/profi
 // Usage route (subscription usage windows for the Usage page).
 pub const WEBUI_V2_ROUTE_USAGE_REPORT: &str = "webui.v2.usage.report";
 pub const WEBUI_V2_PATTERN_USAGE_REPORT: &str = "/api/webchat/v2/usage";
+pub const WEBUI_V2_ROUTE_USAGE_HISTORY: &str = "webui.v2.usage.history";
+pub const WEBUI_V2_PATTERN_USAGE_HISTORY: &str = "/api/webchat/v2/usage/history";
 
 // Computer-use routes (a thread's session + latest frame; Stop / take over).
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_SESSION: &str = "webui.v2.computer_use.session";
@@ -460,6 +462,7 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES,
         ),
         usage_report_descriptor(),
+        usage_history_descriptor(),
         computer_use_session_descriptor(),
         computer_use_control_descriptor(),
         // Same read/mutation policy shape as the profile routes.
@@ -2617,6 +2620,20 @@ fn computer_use_control_descriptor() -> IngressRouteDescriptor {
             mutation_rate_limit(),
             AuditTraceClass::UserAction,
             AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
+fn usage_history_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_USAGE_HISTORY,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_USAGE_HISTORY,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
         ),
     )
 }

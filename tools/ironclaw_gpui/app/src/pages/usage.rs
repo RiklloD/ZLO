@@ -1,14 +1,18 @@
-//! Usage: subscription windows per provider (Claude CLI logins, Codex,
-//! Z.ai, Antigravity, Muse Code) as bars with reset countdowns and a pace
-//! marker, after t3code's limits view; the provider logic behind it is
-//! `ironclaw_usage`. [`UsageModel`] holds the last report; the page and the
-//! status bar both read it, so one request feeds both.
+//! Usage, after t3code's page: Limits shows subscription windows per
+//! provider (Claude CLI logins, Codex, Z.ai, Antigravity, Muse Code) as bars
+//! with reset countdowns and a pace marker; Cost and Tokens show what the
+//! coding CLIs spent over a period (`usage_history`). The provider logic
+//! behind both is `ironclaw_usage`. [`UsageModel`] holds the last answers;
+//! the page and the status bar both read it, so one request feeds both.
 
 use std::time::{Duration, Instant};
 
 use ironclaw_gpui_client::Backend;
-use ironclaw_gpui_client::usage::{ProviderUsage, UsageReport, UsageStatus, UsageWindow};
+use ironclaw_gpui_client::usage::{
+    ProviderUsage, UsageHistory, UsageReport, UsageStatus, UsageWindow,
+};
 
+use super::usage_history::{self, Metric};
 use super::{PageEvent, empty_state, error_line, header, page_body, refresh_button};
 use crate::design::Palette;
 use crate::jobs;
@@ -24,6 +28,11 @@ pub struct UsageModel {
     pub error: Option<SharedString>,
     fetched: Option<Instant>,
     in_flight: bool,
+    /// Token history for the period in `history.0` (days).
+    pub history: Option<(u32, UsageHistory)>,
+    pub history_error: Option<SharedString>,
+    history_fetched: Option<(u32, Instant)>,
+    history_in_flight: bool,
 }
 
 impl UsageModel {
@@ -34,7 +43,45 @@ impl UsageModel {
             error: None,
             fetched: None,
             in_flight: false,
+            history: None,
+            history_error: None,
+            history_fetched: None,
+            history_in_flight: false,
         }
+    }
+
+    /// Fetch `days` of token history unless that period was read within the
+    /// minute (`force` skips that). A scan reads transcripts from disk, so
+    /// it is never polled.
+    pub fn refresh_history(&mut self, days: u32, force: bool, cx: &mut Context<Self>) {
+        let fresh = self
+            .history_fetched
+            .is_some_and(|(d, at)| d == days && at.elapsed() < MIN_REFRESH);
+        if self.history_in_flight || (fresh && !force) {
+            return;
+        }
+        self.history_in_flight = true;
+        jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move { c.usage_history(days).await },
+            move |this, result, cx| {
+                this.history_in_flight = false;
+                this.history_fetched = Some((days, Instant::now()));
+                match result {
+                    Ok(history) => {
+                        this.history = Some((days, history));
+                        this.history_error = None;
+                    }
+                    Err(e) => this.history_error = Some(e.to_string().into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    pub fn history_loading(&self) -> bool {
+        self.history_in_flight
     }
 
     /// Fetch unless the last answer is younger than a minute (`force` skips
@@ -77,8 +124,15 @@ impl UsageModel {
 
 pub struct UsageView {
     model: Entity<UsageModel>,
+    /// t3code's metric switch: Limits, Cost or Tokens.
+    metric: Metric,
+    /// The Cost and Tokens period, in days.
+    days: u32,
     _observe: Subscription,
 }
+
+/// t3code's periods.
+const PERIODS: [(u32, &str); 4] = [(1, "24h"), (7, "7d"), (30, "30d"), (90, "90d")];
 
 impl EventEmitter<PageEvent> for UsageView {}
 
@@ -88,18 +142,134 @@ impl UsageView {
         model.update(cx, |m, cx| m.refresh(false, cx));
         Self {
             model,
+            metric: Metric::Limits,
+            days: 30,
             _observe: observe,
         }
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.model.update(cx, |m, cx| m.refresh(false, cx));
+        let days = self.days;
+        match self.metric {
+            Metric::Limits => self.model.update(cx, |m, cx| m.refresh(false, cx)),
+            _ => self
+                .model
+                .update(cx, |m, cx| m.refresh_history(days, false, cx)),
+        }
     }
+
+    fn set_metric(&mut self, metric: Metric, cx: &mut Context<Self>) {
+        self.metric = metric;
+        self.refresh(cx);
+        cx.notify();
+    }
+
+    fn set_days(&mut self, days: u32, cx: &mut Context<Self>) {
+        self.days = days;
+        self.refresh(cx);
+        cx.notify();
+    }
+}
+
+/// A row of pill buttons, one selected.
+fn segmented<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    options: &[(T, &'static str)],
+    current: T,
+    on_pick: impl Fn(&mut UsageView, T, &mut Context<UsageView>) + Clone + 'static,
+    cx: &mut Context<UsageView>,
+) -> impl IntoElement {
+    let p = *Palette::of(cx);
+    h_flex()
+        .p(px(2.))
+        .gap(px(2.))
+        .rounded(px(8.))
+        .bg(p.surface_raised)
+        .children(options.iter().enumerate().map(|(ix, (value, label))| {
+            let value = *value;
+            let on = value == current;
+            let on_pick = on_pick.clone();
+            div()
+                .id((id, ix))
+                .px_2p5()
+                .py_1()
+                .rounded(px(6.))
+                .text_xs()
+                .cursor_pointer()
+                .text_color(if on { p.text } else { p.text_muted })
+                .when(on, |d| d.bg(p.surface_card).shadow_sm())
+                .hover(|s| s.text_color(p.text))
+                .child(*label)
+                .on_click(cx.listener(move |this, _, _, cx| on_pick(this, value, cx)))
+        }))
 }
 
 impl Render for UsageView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let metric = self.metric;
+        let days = self.days;
+        let switch = segmented(
+            "usage-metric",
+            &[
+                (Metric::Limits, "Limits"),
+                (Metric::Cost, "Cost"),
+                (Metric::Tokens, "Tokens"),
+            ],
+            metric,
+            |this, m, cx| this.set_metric(m, cx),
+            cx,
+        )
+        .into_any_element();
+        let period = (metric != Metric::Limits).then(|| {
+            segmented(
+                "usage-period",
+                &PERIODS,
+                days,
+                |this, d, cx| this.set_days(d, cx),
+                cx,
+            )
+            .into_any_element()
+        });
+        let actions = h_flex()
+            .gap_2()
+            .items_center()
+            .child(switch)
+            .children(period)
+            .child(
+                refresh_button("usage-refresh").on_click(cx.listener(move |this, _, _, cx| {
+                    match this.metric {
+                        Metric::Limits => this.model.update(cx, |m, cx| m.refresh(true, cx)),
+                        _ => this
+                            .model
+                            .update(cx, |m, cx| m.refresh_history(days, true, cx)),
+                    }
+                })),
+            );
         let model = self.model.read(cx);
+        if metric != Metric::Limits {
+            let loading = model.history_loading();
+            let body = match (&model.history, &model.history_error) {
+                (Some((_, history)), _) => usage_history::render(
+                    history,
+                    metric,
+                    loading || model.history.as_ref().is_some_and(|(d, _)| *d != days),
+                    cx,
+                ),
+                (None, Some(_)) => div().into_any_element(),
+                (None, None) => {
+                    empty_state("Reading the CLIs' transcripts…", cx).into_any_element()
+                }
+            };
+            let error = model.history_error.clone();
+            return page_body(
+                "usage-page",
+                v_flex()
+                    .child(header("Usage", actions))
+                    .when_some(error, |d, e| d.child(error_line(&e, cx)))
+                    .child(body),
+            )
+            .into_any_element();
+        }
         let body: AnyElement = match (&model.report, &model.error) {
             (None, None) => empty_state("Loading usage…", cx).into_any_element(),
             (None, Some(_)) => div().into_any_element(),
@@ -139,15 +309,11 @@ impl Render for UsageView {
         page_body(
             "usage-page",
             v_flex()
-                .child(header(
-                    "Usage",
-                    refresh_button("usage-refresh").on_click(cx.listener(|this, _, _, cx| {
-                        this.model.update(cx, |m, cx| m.refresh(true, cx))
-                    })),
-                ))
+                .child(header("Usage", actions))
                 .when_some(error, |d, e| d.child(error_line(&e, cx)))
                 .child(body),
         )
+        .into_any_element()
     }
 }
 

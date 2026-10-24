@@ -1126,8 +1126,9 @@ impl Render for ChatView {
                     motion::EASE_OUT.eval((t / PROMPT_FADE).min(1.)),
                 ),
                 (Some(t), Some(s)) if ix > s => {
-                    let r = motion::EASE_OUT_QUINT
-                        .eval(((t - PROMPT_RISE) / (PROMPT_RISE_TOTAL - PROMPT_RISE)).clamp(0., 1.));
+                    let r = motion::EASE_OUT_QUINT.eval(
+                        ((t - PROMPT_RISE) / (PROMPT_RISE_TOTAL - PROMPT_RISE)).clamp(0., 1.),
+                    );
                     (10. * (1. - r), r)
                 }
                 _ => (0., 1.),
@@ -2039,7 +2040,10 @@ fn switch_marker(text: &str, cx: &App) -> AnyElement {
     let rest = text.trim_start_matches("Switched to ");
     let label = match rest.split_once(" · ") {
         Some((model, provider)) => {
-            format!("Switched to {} · {provider}", model_picker::pretty_model(model))
+            format!(
+                "Switched to {} · {provider}",
+                model_picker::pretty_model(model)
+            )
         }
         None => text.to_string(),
     };

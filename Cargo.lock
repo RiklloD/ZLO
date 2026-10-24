@@ -5557,6 +5557,7 @@ dependencies = [
  "ironclaw_network",
  "ironclaw_product_contracts",
  "secrecy",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",

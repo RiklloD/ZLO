@@ -71,6 +71,26 @@ pub(crate) async fn post(
     send(egress, NetworkMethod::Post, host, url, headers, body).await
 }
 
+/// GET with a larger response cap than a provider answer (a price table).
+pub(crate) async fn get_with_limit(
+    egress: &dyn NetworkHttpEgress,
+    host: &str,
+    url: String,
+    headers: Vec<(String, String)>,
+    limit: u64,
+) -> Result<NetworkHttpResponse, Fetched> {
+    send_limited(
+        egress,
+        NetworkMethod::Get,
+        host,
+        url,
+        headers,
+        Vec::new(),
+        limit,
+    )
+    .await
+}
+
 async fn send(
     egress: &dyn NetworkHttpEgress,
     method: NetworkMethod,
@@ -78,6 +98,27 @@ async fn send(
     url: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+) -> Result<NetworkHttpResponse, Fetched> {
+    send_limited(
+        egress,
+        method,
+        host,
+        url,
+        headers,
+        body,
+        RESPONSE_BODY_LIMIT,
+    )
+    .await
+}
+
+async fn send_limited(
+    egress: &dyn NetworkHttpEgress,
+    method: NetworkMethod,
+    host: &str,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    limit: u64,
 ) -> Result<NetworkHttpResponse, Fetched> {
     let request = NetworkHttpRequest {
         scope: ResourceScope::system(),
@@ -94,7 +135,7 @@ async fn send(
             deny_private_ip_ranges: true,
             max_egress_bytes: None,
         },
-        response_body_limit: Some(RESPONSE_BODY_LIMIT),
+        response_body_limit: Some(limit),
         timeout_ms: Some(TIMEOUT_MS),
     };
     egress.execute(request).await.map_err(|error| {

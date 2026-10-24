@@ -1,12 +1,16 @@
 //! Usage reads for the status bar and the Usage page: subscription windows
-//! (`/usage`) and one thread's live telemetry (`/threads/{id}/telemetry`).
+//! (`/usage`), the coding CLIs' token history (`/usage/history`) and one
+//! thread's live telemetry (`/threads/{id}/telemetry`).
 
 use serde::Deserialize;
 
 use crate::api::{Client, V2, seg};
 use crate::error::ClientError;
 
-pub use ironclaw_product_contracts::usage::{ProviderUsage, UsageReport, UsageStatus, UsageWindow};
+pub use ironclaw_product_contracts::usage::{
+    ProviderUsage, UsageBucket, UsageHistory, UsageHistorySource, UsagePricingStatus, UsageReport,
+    UsageSourceStatus, UsageStatus, UsageWindow,
+};
 
 /// One thread's latest context use, generation speed and cache hit rate.
 /// Every metric is optional: a runtime may not report it, or no turn has
@@ -40,6 +44,11 @@ pub struct ThreadTelemetry {
 impl Client {
     pub async fn usage_report(&self) -> Result<UsageReport, ClientError> {
         self.get(&format!("{V2}/usage")).await
+    }
+
+    /// The last `days` days of token use, today included.
+    pub async fn usage_history(&self, days: u32) -> Result<UsageHistory, ClientError> {
+        self.get(&format!("{V2}/usage/history?days={days}")).await
     }
 
     /// `None` when the gateway has no telemetry route (older build) or
