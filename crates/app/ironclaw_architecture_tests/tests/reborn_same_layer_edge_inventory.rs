@@ -400,6 +400,14 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
         owner: "lanes/",
         decided_in: "WS3",
     },
+    // Computer use implements the MCP lane's `McpClient` seam over stdio.
+    SameLayerEdge {
+        crate_name: "ironclaw_computer_use",
+        dependency_name: "ironclaw_mcp",
+        layer: "runtimes",
+        owner: "lanes/",
+        decided_in: "IronClaw v2 plan (PLAN_V2.md stage 5, computer use)",
+    },
     // ---- substrates ----
     SameLayerEdge {
         crate_name: "ironclaw_attachments",
@@ -799,7 +807,7 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
 // 72 -> 73 (#7688): the dedicated notification-record domain is introduced
 // directly at the substrates layer and stores its grammar through the shared
 // filesystem substrate rather than coupling notification state to outbound.
-const SAME_LAYER_EDGE_BASELINE: usize = 79;
+const SAME_LAYER_EDGE_BASELINE: usize = 80;
 
 /// Sanity floors for the metadata walk. A gate that scans nothing must never
 /// read as success; these are deliberately far below the live values (✎ **65**
@@ -906,6 +914,7 @@ const CRATE_LAYER_ORIGINS: &[(&str, &str)] = &[
     ("ironclaw_turns", "kernel"),
     ("ironclaw_wasm", "runtimes"),
     ("ironclaw_wasm_limiter", "runtimes"),
+    ("ironclaw_computer_use", "runtimes"),
     ("ironclaw_webui", "products"),
 ];
 

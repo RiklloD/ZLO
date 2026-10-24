@@ -157,6 +157,7 @@ candidate module.
 | `orchestrator` | Orchestrator reads and mutations: a thread's delegated tasks, task status/cancel, the durable thread queue, runs, per-turn telemetry, lineage, fork and merge-back — its own file, each handler one `ironclaw_product_contracts::orchestration` descriptor | Turn submission or run control (that is `runs`) | `handlers/orchestrator.rs::thread_view`, `handlers/orchestrator.rs::orchestrator_thread_tasks`, `handlers/orchestrator.rs::orchestrator_thread_queue`, `handlers/orchestrator.rs::orchestrator_thread_lineage`, `handlers/orchestrator.rs::orchestrator_thread_runs`, `handlers/orchestrator.rs::orchestrator_thread_telemetry`, `handlers/orchestrator.rs::orchestrator_task`, `handlers/orchestrator.rs::OrchestratorCancelBody`, `handlers/orchestrator.rs::orchestrator_task_cancel`, `handlers/orchestrator.rs::OrchestratorQueueBody`, `handlers/orchestrator.rs::orchestrator_queue_mutate`, `handlers/orchestrator.rs::OrchestratorForkBody`, `handlers/orchestrator.rs::orchestrator_thread_fork`, `handlers/orchestrator.rs::OrchestratorMergeBackBody`, `handlers/orchestrator.rs::orchestrator_thread_merge_back` |
 | `profiles` | Stage 3 profiles: list/read/create/update/archive the caller's profiles, create a thread on one, and the one-time Hermes import — its own file, each handler one `ironclaw_product_contracts::profiles` descriptor | Thread lifecycle without a profile (that is `threads`) | `handlers/profiles.rs::profiles_list`, `handlers/profiles.rs::profile_get`, `handlers/profiles.rs::profile_create`, `handlers/profiles.rs::profile_update`, `handlers/profiles.rs::profile_delete`, `handlers/profiles.rs::ProfileThreadBody`, `handlers/profiles.rs::profile_thread_create`, `handlers/profiles.rs::profiles_import_hermes` |
 | `usage` | Subscription usage windows for the Usage page (CLI-login 5-hour/weekly windows, coding-plan quotas) — its own file, one `ironclaw_product_contracts::usage` descriptor | Per-thread context/TPS telemetry (that is the thread telemetry route) | `handlers/usage.rs::usage_report` |
+| `computer-use` | A thread's computer-use session (state + latest screenshot frame) and its Stop / take over / hand back — its own file, one `ironclaw_product_contracts::computer_use` descriptor each | Running a computer-use action (that is an approval-gated capability, never a route) | `handlers/computer_use.rs::ComputerUseSessionQuery`, `handlers/computer_use.rs::computer_use_session`, `handlers/computer_use.rs::ComputerUseControlBody`, `handlers/computer_use.rs::computer_use_control` |
 
 Three placement calls worth stating, because each is an item whose *name*
 suggests one owner and whose *use* is another:
@@ -231,6 +232,8 @@ closed (`500`) if that layer is missing (locked by
 | `webui.v2.profiles.thread_create` | POST | `/api/webchat/v2/profiles/{profile_id}/threads` | — | `ProductSurface` |
 | `webui.v2.profiles.import_hermes` | POST | `/api/webchat/v2/profiles/import/hermes` | — | `ProductSurface` |
 | `webui.v2.usage.report` | GET | `/api/webchat/v2/usage` | — | `ProductSurface` |
+| `webui.v2.computer_use.session` | GET | `/api/webchat/v2/threads/{thread_id}/computer-use` | — | `ProductSurface` |
+| `webui.v2.computer_use.control` | POST | `/api/webchat/v2/threads/{thread_id}/computer-use` | — | `ProductSurface` |
 
 ### Orchestrator routes
 

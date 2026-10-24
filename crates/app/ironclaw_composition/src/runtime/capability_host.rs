@@ -125,6 +125,7 @@ pub(super) fn capability_wiring(
     tool_diagnostic_sink: Option<Arc<dyn HostManagedPromptDiagnosticSink>>,
     trigger_poller_enabled: bool,
     supermemory: Option<Arc<ironclaw_supermemory::Supermemory>>,
+    computer_use: Option<Arc<ironclaw_computer_use::ComputerUse>>,
 ) -> Result<CapabilityPortWiring, crate::runtime::RebornRuntimeError> {
     let runtime = services.host_runtime.clone();
     let workspace_mounts = services.workspace_mounts.clone();
@@ -222,6 +223,7 @@ pub(super) fn capability_wiring(
             outbound_preferences_service,
             orchestrator: services.orchestrator.clone(),
             supermemory,
+            computer_use,
             outbound_preference_write_requires_approval,
             approval_settings,
             approval_requests,
@@ -261,6 +263,7 @@ struct RefreshingLoopCapabilityPortFactory {
     outbound_preferences_service: Option<Arc<dyn OutboundPreferencesProductService>>,
     orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     supermemory: Option<Arc<ironclaw_supermemory::Supermemory>>,
+    computer_use: Option<Arc<ironclaw_computer_use::ComputerUse>>,
     outbound_preference_write_requires_approval: bool,
     approval_settings: Arc<dyn ApprovalSettingsProvider>,
     approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
@@ -367,6 +370,7 @@ impl LoopCapabilityPortFactory for RefreshingLoopCapabilityPortFactory {
             outbound_preferences_service: self.outbound_preferences_service.clone(),
             orchestrator: self.orchestrator.clone(),
             supermemory: self.supermemory.clone(),
+            computer_use: self.computer_use.clone(),
             outbound_preference_write_requires_approval: self
                 .outbound_preference_write_requires_approval,
             approval_settings: Arc::clone(&self.approval_settings),

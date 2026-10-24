@@ -618,6 +618,7 @@ pub struct RebornRuntime {
     /// IronClaw's agent loop as its runtime) by [`RebornRuntime::product_surface`].
     // arch-exempt: optional_arc, libSQL-only engine absent on other backends, plan #orchestrator-stage-3
     pub(crate) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
+    pub(crate) computer_use: Option<Arc<ironclaw_computer_use::ComputerUse>>,
     /// Late-bound manual-fire runner shared by product automation actions and
     /// the scheduler so both surfaces execute through the same worker graph.
     pub(crate) trigger_manual_fire_runner: Arc<dyn ironclaw_triggers::TriggerManualFireRunner>,
@@ -3321,6 +3322,20 @@ async fn assemble_runtime(
         .map_err(|error| RebornRuntimeError::MalformedConfig {
             reason: format!("suggestion generation observer wiring failed: {error}"),
         })?;
+    // Computer use is off unless COMPUTER_USE_ENABLED; a thread's Stop ends its session.
+    let computer_use = ironclaw_computer_use::ComputerUse::from_env().map_err(|error| {
+        RebornRuntimeError::MalformedConfig {
+            reason: error.to_string(),
+        }
+    })?;
+    if let Some(computer_use) = &computer_use {
+        let observer = ironclaw_assistant::computer_use::stop_observer(computer_use);
+        processes
+            .subscribe_process_observer(observer)
+            .map_err(|error| RebornRuntimeError::MalformedConfig {
+                reason: format!("computer use stop observer wiring failed: {error}"),
+            })?;
+    }
     if let Some(engine) = &services.orchestrator {
         // Turn lifecycle for the orchestrator, replayed from the durable cursor.
         processes
@@ -3689,6 +3704,7 @@ async fn assemble_runtime(
             Some(tool_diagnostic_sink),
             trigger_poller.enabled,
             Some(Arc::clone(&supermemory)),
+            computer_use.clone(),
         )?;
         _ = reply_projection.bind_display_previews(Arc::clone(&capability_host.display_previews));
         (
@@ -4846,6 +4862,7 @@ async fn assemble_runtime(
         diagnostic_store,
         trigger_repository: trigger_repository.clone(),
         orchestrator: services.orchestrator.clone(),
+        computer_use,
         trigger_manual_fire_runner: services.trigger_manual_fire_runner.clone(),
         #[cfg(any(test, feature = "test-support"))]
         trigger_process_lifecycle_source: Arc::clone(&services.trigger_process_lifecycle_source),

@@ -326,6 +326,8 @@ pub(crate) fn build_product_surface_with_channel_connection(
         ),
         None => Arc::new(api) as _,
     };
+    let surface =
+        ironclaw_assistant::computer_use::wrap_surface(surface, runtime.computer_use.clone());
     // Subscription usage windows for the Usage page (polled on demand).
     let usage = ironclaw_usage::UsageMonitor::for_host(
         crate::RuntimeOperatorSecretValueStore::shared(runtime.secret_store()),

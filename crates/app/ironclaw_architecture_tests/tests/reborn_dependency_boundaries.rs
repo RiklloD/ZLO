@@ -1137,7 +1137,12 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `profiles` module, profile wire DTOs and descriptor ids only;
         // records live in ironclaw_orchestrator, behavior in
         // ironclaw_assistant. Count read from this test's failure message.
-        ("ironclaw_product_contracts", 16_980),
+        // 16_980 -> 17_197 (2026-10-24, IronClaw v2 stage 5 computer use):
+        // the `computer_use` module — session/control descriptors and the
+        // `ComputerUseSessions` port (caller ironclaw_assistant, implementor
+        // ironclaw_computer_use, which product may not name). No behavior.
+        // Count read from this test's failure message.
+        ("ironclaw_product_contracts", 17_197),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

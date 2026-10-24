@@ -23,6 +23,7 @@ an unconfigured lane fails closed, never open.
 | Crate | Charter (one line) | Go here when |
 | --- | --- | --- |
 | [`ironclaw_mcp`](./ironclaw_mcp) | The MCP lane: JSON-RPC over host-mediated HTTP only — no HTTP client dependency in the crate at all | An MCP server's tools must execute behind the egress port |
+| [`ironclaw_computer_use`](./ironclaw_computer_use) | Open Computer Use run as a stdio MCP server, one process per thread, plus sessions, Stop, take over and the latest screenshot frame; implements the `McpClient` seam and product's `ComputerUseSessions` port; off unless `COMPUTER_USE_ENABLED` (v2 stage 5) | An approved computer-use action must run on the user's Mac |
 | [`ironclaw_sandbox`](./ironclaw_sandbox) | The sandboxed-process lane: typed `SandboxProcessPlan` contract + Docker/broker/credential-firewall/CA machinery + the script backend; sole owner of the `bollard`/`rcgen`/`libc` cone | An OS process must run inside a validated, containerized plan |
 | [`ironclaw_wasm`](./ironclaw_wasm) | The WASM component lane: deny-by-default host imports, fresh store per call, fuel/epoch/memory limits; owns the tool/channel ABI in its crate-local [`wit/`](./ironclaw_wasm/wit) | A WASM component must be loaded, metered, and executed |
 | [`ironclaw_wasm_limiter`](./ironclaw_wasm_limiter) | The shared wasmtime `ResourceLimiter`, so the tool lane and the hook engine cannot silently diverge on limits | Any wasmtime host in the workspace needs resource ceilings |
