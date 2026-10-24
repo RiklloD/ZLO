@@ -375,7 +375,7 @@ impl ChatView {
                         .rounded(theme.radius)
                         .text_sm()
                         .cursor_pointer()
-                        .hover(|this| this.bg(theme.accent))
+                        .map(|d| crate::design::kit::smooth_bg(d, format!("file-entry-{ix}"), cx))
                         .child(
                             Icon::new(if dir {
                                 IconName::Folder

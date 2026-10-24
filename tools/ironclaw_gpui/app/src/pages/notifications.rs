@@ -259,7 +259,7 @@ impl NotificationsView {
             .rounded(theme.radius)
             .items_center()
             .cursor_pointer()
-            .hover(|s| s.bg(theme.accent))
+            .map(|d| crate::design::kit::smooth_bg(d, format!("notification-{ix}"), cx))
             .on_click(cx.listener(move |this, _, _, cx| this.open(ix, cx)))
             .child(div().text_color(tint).child(Icon::new(icon).small()))
             .child(

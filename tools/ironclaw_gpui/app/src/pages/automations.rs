@@ -203,7 +203,7 @@ impl AutomationsView {
                 .child(jobs::ago(run.submitted_at))
                 .when_some(thread, |this, thread| {
                     this.cursor_pointer()
-                        .hover(|s| s.bg(theme.accent))
+                        .map(|d| crate::design::kit::smooth_bg(d, format!("run-{ix}-{rix}"), cx))
                         .on_click(cx.listener(move |_, _, _, cx| {
                             cx.emit(PageEvent::OpenThread(thread.clone()))
                         }))

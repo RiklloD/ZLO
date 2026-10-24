@@ -680,3 +680,17 @@ pub fn claw_mark(cx: &App) -> impl IntoElement {
             .child(stroke(22., 4.)),
     )
 }
+
+/// Swap a snapping `.hover(|s| s.bg(..))` for a fading wash. `key` must be
+/// unique among elements on screen; pass the element's own id text.
+pub fn smooth_bg<E>(el: E, key: impl Into<SharedString>, cx: &App) -> E
+where
+    E: StatefulInteractiveElement + Styled,
+{
+    let s = *Style::of(cx);
+    let p = *Palette::of(cx);
+    let key: SharedString = format!("wash:{}", key.into()).into();
+    let h = motion::hover_t(&key);
+    el.bg(mix(p.hover.opacity(0.), p.hover, h))
+        .on_hover(motion::hover_listener(key, s.hover))
+}

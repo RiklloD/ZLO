@@ -568,7 +568,7 @@ impl Workspace {
                 .text_sm()
                 .cursor_pointer()
                 .when(highlighted, |d| d.bg(p.accent_wash).text_color(p.text))
-                .hover(|s| s.bg(p.hover))
+                .when(!highlighted, |d| kit::smooth_bg(d, format!("pick-profile-{ix}"), cx))
                 .child(profile_mark(&profile.profile_id, &profile.display_name, cx))
                 .child(
                     div()
@@ -826,7 +826,7 @@ impl Workspace {
                     .rounded(px(design::CONTROL_RADIUS))
                     .text_xs()
                     .cursor_pointer()
-                    .hover(|s| s.bg(p.hover))
+                    .map(|d| kit::smooth_bg(d, format!("snooze-preset-{ix}"), cx))
                     .child(label)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.inbox_mark(id.clone(), InboxAction::Snooze, Some(until), cx)

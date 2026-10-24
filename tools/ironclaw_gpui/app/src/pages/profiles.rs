@@ -361,7 +361,7 @@ impl ProfilesView {
             .text_sm()
             .cursor_pointer()
             .when(selected, |d| d.bg(palette.active))
-            .when(!selected, |d| d.hover(|s| s.bg(palette.hover)))
+            .when(!selected, |d| crate::design::kit::smooth_bg(d, format!("profile-row-{ix}"), cx))
             .on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, window, cx| this.select(Some(id.clone()), window, cx)
