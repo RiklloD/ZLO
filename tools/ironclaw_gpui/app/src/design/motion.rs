@@ -97,6 +97,8 @@ pub const EASE_OUT: CubicBezier = CubicBezier::new(0., 0., 0.58, 1.);
 pub const EASE_IN_OUT: CubicBezier = CubicBezier::new(0.42, 0., 0.58, 1.);
 
 // Zeron's transcript timings (crates/ui/src/transcript.rs, MIT).
+/// Zeron's quick fade: hover reveals of secondary controls.
+pub const FADE_QUICK: MotionSpec = MotionSpec::new(150, EASE);
 /// A tool group opening or closing.
 pub const TOOL_FOLD: MotionSpec = MotionSpec::new(140, EASE_OUT);
 /// A new activity row growing into the tree.

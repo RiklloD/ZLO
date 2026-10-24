@@ -550,6 +550,17 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // ⌘↵ approves the newest open approval, ⇧⌘↵ always allows it.
+        let keys = &event.keystroke;
+        if keys.modifiers.platform
+            && keys.key == "enter"
+            && let Some((run, gate, allow_always)) = self.open_approval()
+        {
+            let always = keys.modifiers.shift && allow_always;
+            self.resolve_gate(run, gate, GateDecision::Approve { always }, cx);
+            cx.stop_propagation();
+            return;
+        }
         let items = self.menu(cx);
         if items.is_empty() || event.keystroke.modifiers.modified() {
             return;
@@ -868,6 +879,20 @@ impl ChatView {
             .backend
             .spawn(move |c| async move { c.retry_run(&thread_id, &run).await });
         self.run_and_report(job, cx);
+    }
+
+    fn open_approval(&self) -> Option<(String, String, bool)> {
+        self.rows.iter().rev().find_map(|row| match row {
+            Row::Gate {
+                run_id,
+                gate_ref,
+                kind: ProductGateKind::Approval,
+                allow_always,
+                state: GateState::Open,
+                ..
+            } => Some((run_id.clone(), gate_ref.clone(), *allow_always)),
+            _ => None,
+        })
     }
 
     fn resolve_gate(
@@ -1500,29 +1525,58 @@ pub(crate) fn round_button(
 /// A finished answer with a copy action that shows on hover, as in Zeron.
 fn with_copy(key: &str, text: &str, body: AnyElement) -> AnyElement {
     let group = SharedString::from(format!("{key}-group"));
+    let hover_key = SharedString::from(format!("copy-hover:{key}"));
+    let h = motion::hover_t(&hover_key);
+    let copied = copied_recently(key);
     let copy = text.to_string();
+    let copy_key = key.to_string();
     v_flex()
-        .group(group.clone())
+        .id(group.clone())
         .gap_1()
+        .on_hover(motion::hover_listener(hover_key, motion::FADE_QUICK))
         .child(body)
         .child(
-            h_flex()
-                .h(px(22.))
-                .opacity(0.)
-                .group_hover(group, |s| s.opacity(1.))
-                .child(
-                    kit::button(SharedString::from(format!("{key}-copy")))
-                        .icon(IconName::Copy)
-                        .ghost()
-                        .xsmall()
-                        .tooltip("Copy")
-                        .accessibility_label("Copy message")
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
-                        }),
-                ),
+            h_flex().h(px(22.)).opacity(if copied { 1. } else { h }).child(
+                kit::button(SharedString::from(format!("{key}-copy")))
+                    .icon(if copied { IconName::Check } else { IconName::Copy })
+                    .ghost()
+                    .xsmall()
+                    .tooltip(if copied { "Copied" } else { "Copy" })
+                    .accessibility_label("Copy message")
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                        mark_copied(&copy_key, cx);
+                    }),
+            ),
         )
         .into_any_element()
+}
+
+thread_local! {
+    static COPIED: std::cell::RefCell<Option<(String, Instant)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// How long the copy button shows its check.
+const COPIED_FOR: Duration = Duration::from_millis(1400);
+
+fn copied_recently(key: &str) -> bool {
+    COPIED.with(|c| {
+        c.borrow()
+            .as_ref()
+            .is_some_and(|(k, at)| k == key && at.elapsed() < COPIED_FOR)
+    })
+}
+
+/// Show the check, then one redraw when it should turn back: a timer, not
+/// a frame loop.
+fn mark_copied(key: &str, cx: &mut App) {
+    COPIED.with(|c| *c.borrow_mut() = Some((key.to_string(), Instant::now())));
+    cx.refresh_windows();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(COPIED_FOR).await;
+        cx.update(|cx| cx.refresh_windows());
+    })
+    .detach();
 }
 
 /// A file name with its size, used for staged and sent attachments.
@@ -1650,7 +1704,7 @@ fn render_gate(
                 .gap_2()
                 .child(
                     decide(
-                        "Approve",
+                        "Approve  ⌘↵",
                         "approve",
                         GateDecision::Approve { always: false },
                     )
@@ -1658,7 +1712,7 @@ fn render_gate(
                 )
                 .when(allow_always, |this| {
                     this.child(decide(
-                        "Always allow",
+                        "Always allow  ⇧⌘↵",
                         "always",
                         GateDecision::Approve { always: true },
                     ))
