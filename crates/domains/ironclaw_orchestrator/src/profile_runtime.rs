@@ -186,6 +186,7 @@ impl Engine {
                     "provider": p.provider, "name": p.name, "runtime": rt.as_str(),
                     "authenticated": p.authenticated, "models": p.models,
                     "efforts": p.efforts, "modelEfforts": p.model_efforts,
+                    "brand": p.brand,
                 })
             })
             .collect();

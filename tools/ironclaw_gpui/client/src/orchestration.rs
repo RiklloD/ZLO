@@ -485,6 +485,9 @@ pub struct RouteProvider {
     pub efforts: Vec<String>,
     /// Each listed model's own efforts; a model missing here takes `efforts`.
     pub model_efforts: std::collections::BTreeMap<String, Vec<String>>,
+    /// The vendor behind a runtime row (IronClaw's loop on ChatGPT): its
+    /// logo stands for the row.
+    pub brand: Option<String>,
 }
 
 impl RouteProvider {

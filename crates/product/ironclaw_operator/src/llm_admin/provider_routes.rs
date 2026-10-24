@@ -58,12 +58,7 @@ impl RebornProviderRoutes {
     }
 
     async fn route_for(&self, def: &ProviderDefinition) -> NativeModelRoute {
-        let name = def
-            .setup
-            .as_ref()
-            .map(|setup| setup.display_name().to_string())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| def.description.clone());
+        let name = display_name(def);
         let models = self.models_for(def).await;
         let (efforts, model_efforts) = efforts_for(def, &models);
         NativeModelRoute {
@@ -164,6 +159,19 @@ impl RoutedProviderSource for RebornProviderRoutes {
     }
 }
 
+/// The short name a model picker shows for a provider: its setup name, or
+/// "ChatGPT" for the ChatGPT plan, else the catalog description.
+fn display_name(def: &ProviderDefinition) -> String {
+    if def.protocol == ProviderProtocol::OpenAiCodex {
+        return "ChatGPT".to_string();
+    }
+    def.setup
+        .as_ref()
+        .map(|setup| setup.display_name().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| def.description.clone())
+}
+
 #[async_trait]
 impl NativeModelRoutes for RebornProviderRoutes {
     async fn routes(&self) -> Vec<NativeModelRoute> {
@@ -216,7 +224,7 @@ impl NativeModelRoutes for RebornProviderRoutes {
             let (efforts, model_efforts) = efforts_for(def, &models);
             return Some(NativeModelRoute {
                 provider_id: def.id.clone(),
-                name: def.description.clone(),
+                name: display_name(def),
                 models,
                 efforts,
                 model_efforts,

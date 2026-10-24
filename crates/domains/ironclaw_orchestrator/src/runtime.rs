@@ -259,6 +259,11 @@ pub struct CatalogProvider {
     /// takes `efforts`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub model_efforts: std::collections::BTreeMap<String, Vec<String>>,
+    /// The LLM provider actually serving the models when `provider` is a
+    /// runtime rather than a vendor (IronClaw's loop on the profile's
+    /// active provider): clients draw this provider's logo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

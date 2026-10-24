@@ -306,6 +306,13 @@ impl TurnRuntime for AgentLoopRuntime {
             Some(routes) => routes.primary().await,
             None => None,
         };
+        // IronClaw's loop is a runtime, not a vendor: the picker names the
+        // group after the provider it runs on (ChatGPT, Z.AI, ...).
+        let (name, brand) = primary
+            .as_ref()
+            .map_or_else(|| ("IronClaw".to_string(), None), |p| {
+                (p.name.clone(), Some(p.provider_id.clone()))
+            });
         let (efforts, mut model_efforts, primary_models) = primary
             .map(|p| (p.efforts, p.model_efforts, p.models))
             .unwrap_or_default();
@@ -328,12 +335,13 @@ impl TurnRuntime for AgentLoopRuntime {
         model_efforts.retain(|model, _| models.contains(model));
         let mut providers = vec![CatalogProvider {
             provider: IRONCLAW_RUNTIME_ID.to_string(),
-            name: "IronClaw".to_string(),
+            name,
             authenticated: true,
             current: true,
             models,
             efforts,
             model_efforts,
+            brand,
         }];
         if let Some(routes) = &self.routes {
             providers.extend(routes.routes().await.into_iter().map(|r| CatalogProvider {
@@ -344,6 +352,7 @@ impl TurnRuntime for AgentLoopRuntime {
                 models: r.models,
                 efforts: r.efforts,
                 model_efforts: r.model_efforts,
+                brand: None,
             }));
         }
         Ok(providers)

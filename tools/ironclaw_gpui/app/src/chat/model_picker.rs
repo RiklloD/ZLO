@@ -33,7 +33,9 @@ use crate::ui::*;
 /// IronClaw's own loop; its first model is the profile's.
 const NATIVE: &str = "ironclaw";
 const POPOVER_WIDTH: f32 = 380.;
-const POPOVER_LIST_HEIGHT: f32 = 320.;
+/// Fixed popover height: the box keeps its size whatever the rail or
+/// search shows.
+const POPOVER_HEIGHT: f32 = 420.;
 /// Recent picks shown first in "All", after MonoCode's `pickers.rs`.
 const RECENTS: usize = 6;
 
@@ -42,6 +44,7 @@ const RECENTS: usize = 6;
 struct DraggedProvider {
     provider: String,
     runtime: String,
+    brand: Option<String>,
 }
 
 impl Render for DraggedProvider {
@@ -55,7 +58,13 @@ impl Render for DraggedProvider {
             .rounded(px(design::CONTROL_RADIUS))
             .bg(p.active)
             .shadow_md()
-            .child(provider_mark(&self.runtime, &self.provider, 18., cx))
+            .child(provider_mark(
+                self.brand.as_deref(),
+                &self.runtime,
+                &self.provider,
+                18.,
+                cx,
+            ))
     }
 }
 
@@ -383,7 +392,13 @@ impl ModelPicker {
     fn label(&self) -> (String, Option<String>) {
         let provider = self.current.as_ref().map_or(NATIVE, |(p, _)| p.as_str());
         let name = match self.current_model() {
-            Some("default") | None => "IronClaw".to_string(),
+            // No pick yet: the provider's first model is what runs.
+            Some("default") | None => self
+                .providers()
+                .iter()
+                .find(|x| x.provider == provider)
+                .and_then(|x| x.models.first().map(|m| pretty_model(m)))
+                .unwrap_or_else(|| "Model".to_string()),
             Some(model) => pretty_model(model),
         };
         (name, Some(provider.to_string()))
@@ -447,11 +462,18 @@ impl ModelPicker {
             let dragged = DraggedProvider {
                 provider: key.clone(),
                 runtime: provider.runtime.clone(),
+                brand: provider.brand.clone(),
             };
             rail.push(
                 rail_item(
                     ("rail", ix).into(),
-                    provider_mark(&provider.runtime, &provider.provider, 18., cx)
+                    provider_mark(
+                        provider.brand.as_deref(),
+                        &provider.runtime,
+                        &provider.provider,
+                        18.,
+                        cx,
+                    )
                         .into_any_element(),
                     on,
                     format!(
@@ -576,7 +598,8 @@ impl ModelPicker {
         h_flex()
             .id("model-popover")
             .w(px(POPOVER_WIDTH))
-            .items_start()
+            .h(px(POPOVER_HEIGHT))
+            .items_stretch()
             .rounded(px(design::PANEL_RADIUS))
             .border_1()
             .border_color(p.border_strong)
@@ -589,7 +612,7 @@ impl ModelPicker {
                 v_flex()
                     .id("model-rail")
                     .flex_none()
-                    .max_h(px(POPOVER_LIST_HEIGHT + 56.))
+                    .h_full()
                     .overflow_y_scroll()
                     .border_r_1()
                     .border_color(p.border)
@@ -601,11 +624,13 @@ impl ModelPicker {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(div().p_2().child(Input::new(&self.search).small()))
+                    .h_full()
+                    .child(div().flex_none().p_2().child(Input::new(&self.search).small()))
                     .child(
                         v_flex()
                             .id("model-list")
-                            .max_h(px(POPOVER_LIST_HEIGHT))
+                            .flex_1()
+                            .min_h_0()
                             .overflow_y_scroll()
                             .child(v_flex().flex_shrink_0().px_1().pb_1().children(rows)),
                     )
@@ -613,6 +638,7 @@ impl ModelPicker {
                         d.child(
                             div()
                                 .id("model-show-hidden")
+                                .flex_none()
                                 .px_3()
                                 .py_1p5()
                                 .border_t_1()
@@ -734,6 +760,7 @@ impl ModelPicker {
             .when(hidden, |d| d.opacity(0.45))
             .hover(|s| s.bg(p.hover))
             .child(provider_mark(
+                provider.brand.as_deref(),
                 &provider.runtime,
                 &provider.provider,
                 16.,
@@ -927,11 +954,11 @@ impl Render for ModelPicker {
             return div().into_any_element();
         }
         let (label, provider) = self.label();
-        let runtime = self
+        let (runtime, brand) = self
             .providers()
             .iter()
             .find(|x| Some(&x.provider) == provider.as_ref())
-            .map(|x| x.runtime.clone())
+            .map(|x| (x.runtime.clone(), x.brand.clone()))
             .unwrap_or_default();
         let pill = h_flex()
             .id("model-pill")
@@ -948,6 +975,7 @@ impl Render for ModelPicker {
             .when(self.open, |d| d.bg(p.active).text_color(p.text))
             .hover(|s| s.bg(p.hover).text_color(p.text))
             .child(provider_mark(
+                brand.as_deref(),
                 &runtime,
                 provider.as_deref().unwrap_or(NATIVE),
                 14.,
@@ -1038,8 +1066,18 @@ pub fn pretty_model(id: &str) -> String {
 }
 
 /// The provider's logo (t3code and lobe-icons), falling back to a letter.
-pub fn provider_mark(runtime: &str, provider: &str, size: f32, cx: &App) -> impl IntoElement {
-    crate::design::brands::provider_logo(&[provider, runtime], size, cx)
+/// A provider's logo; `brand` (the vendor behind a runtime row) wins.
+pub fn provider_mark(
+    brand: Option<&str>,
+    runtime: &str,
+    provider: &str,
+    size: f32,
+    cx: &App,
+) -> impl IntoElement {
+    match brand {
+        Some(brand) => crate::design::brands::provider_logo(&[brand, provider, runtime], size, cx),
+        None => crate::design::brands::provider_logo(&[provider, runtime], size, cx),
+    }
 }
 
 #[cfg(test)]

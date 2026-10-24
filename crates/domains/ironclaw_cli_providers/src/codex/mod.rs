@@ -776,6 +776,7 @@ impl TurnRuntime for CodexRuntime {
                 .map(str::to_string)
                 .to_vec(),
             model_efforts: Default::default(),
+            brand: None,
         }])
     }
 }
