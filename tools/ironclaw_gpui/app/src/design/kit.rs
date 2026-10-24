@@ -181,41 +181,62 @@ pub fn panel_shadows(s: &Style, p: &Palette) -> Vec<BoxShadow> {
 pub enum Variant {
     Primary,
     Secondary,
+    Outline,
     Ghost,
+    Danger,
 }
 
-/// An animated button. Hover fades in its wash, a press sinks it by a
-/// pixel, `selected` holds the wash, and Primary carries the accent plate.
-#[derive(IntoElement)]
-pub struct KitButton {
-    id: SharedString,
-    label: Option<SharedString>,
-    icon: Option<Icon>,
-    variant: Variant,
-    small: bool,
-    selected: bool,
-    full: bool,
-    tooltip: Option<SharedString>,
-    on_click: Option<ClickHandler>,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Size {
+    XSmall,
+    Small,
+    Medium,
 }
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-pub fn button(id: impl Into<SharedString>) -> KitButton {
-    KitButton {
-        id: id.into(),
-        label: None,
-        icon: None,
-        variant: Variant::Secondary,
-        small: false,
-        selected: false,
-        full: false,
-        tooltip: None,
-        on_click: None,
-    }
+/// The app's button, a drop-in for gpui-kit's (same builder names), so
+/// every screen gets the motion: hover fades in the wash, a press sinks it
+/// by a pixel, `selected` morphs the wash in, Primary carries the accent
+/// plate and spreads a halo on hover, `loading` swaps the icon for
+/// breathing dots.
+#[derive(IntoElement)]
+pub struct Button {
+    id: ElementId,
+    label: Option<SharedString>,
+    icon: Option<Icon>,
+    variant: Variant,
+    size: Size,
+    selected: bool,
+    disabled: bool,
+    loading: bool,
+    full: bool,
+    tooltip: Option<SharedString>,
+    aria: Option<SharedString>,
+    on_click: Option<ClickHandler>,
 }
 
-impl KitButton {
+pub fn button(id: impl Into<ElementId>) -> Button {
+    Button::new(id)
+}
+
+impl Button {
+    pub fn new(id: impl Into<ElementId>) -> Self {
+        Self {
+            id: id.into(),
+            label: None,
+            icon: None,
+            variant: Variant::Secondary,
+            size: Size::Medium,
+            selected: false,
+            disabled: false,
+            loading: false,
+            full: false,
+            tooltip: None,
+            aria: None,
+            on_click: None,
+        }
+    }
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
         self
@@ -232,12 +253,32 @@ impl KitButton {
         self.variant = Variant::Ghost;
         self
     }
+    pub fn outline(mut self) -> Self {
+        self.variant = Variant::Outline;
+        self
+    }
+    pub fn danger(mut self) -> Self {
+        self.variant = Variant::Danger;
+        self
+    }
     pub fn small(mut self) -> Self {
-        self.small = true;
+        self.size = Size::Small;
+        self
+    }
+    pub fn xsmall(mut self) -> Self {
+        self.size = Size::XSmall;
         self
     }
     pub fn selected(mut self, on: bool) -> Self {
         self.selected = on;
+        self
+    }
+    pub fn disabled(mut self, on: bool) -> Self {
+        self.disabled = on;
+        self
+    }
+    pub fn loading(mut self, on: bool) -> Self {
+        self.loading = on;
         self
     }
     /// Stretch to the parent's width, content left-aligned.
@@ -249,18 +290,23 @@ impl KitButton {
         self.tooltip = Some(text.into());
         self
     }
+    pub fn accessibility_label(mut self, text: impl Into<SharedString>) -> Self {
+        self.aria = Some(text.into());
+        self
+    }
     pub fn on_click(mut self, f: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Box::new(f));
         self
     }
 }
 
-impl RenderOnce for KitButton {
+impl RenderOnce for Button {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let s = *Style::of(cx);
         let p = *Palette::of(cx);
-        let key: SharedString = format!("btn:{}", self.id).into();
-        let h = motion::hover_t(&key);
+        let key: SharedString = format!("btn:{:?}", self.id).into();
+        let inert = self.disabled || self.loading;
+        let h = if inert { 0. } else { motion::hover_t(&key) };
         let sel = motion::state_t(
             &format!("{key}:sel"),
             self.selected,
@@ -268,14 +314,25 @@ impl RenderOnce for KitButton {
             cx.reduce_motion(),
         );
         let icon_only = self.label.is_none();
-        let height = if self.small { 26. } else { 32. };
+        let height = match self.size {
+            Size::XSmall => 22.,
+            Size::Small => 26.,
+            Size::Medium => 32.,
+        };
+        let pad = match self.size {
+            Size::XSmall => 7.,
+            Size::Small => 9.,
+            Size::Medium => 12.,
+        };
         let text = match self.variant {
             Variant::Primary => on_accent(p),
+            Variant::Danger => p.danger,
             _ => mix(p.text_muted, p.text, h.max(sel)),
         };
 
         let mut el = h_flex()
-            .id(ElementId::Name(self.id.clone()))
+            .id(self.id.clone())
+            .role(gpui_kit::Role::Button)
             .relative()
             .flex_none()
             .h(px(height))
@@ -284,35 +341,59 @@ impl RenderOnce for KitButton {
             .when(!self.full, |d| d.justify_center())
             .when(self.full, |d| d.w_full())
             .when(icon_only, |d| d.w(px(height)))
-            .when(!icon_only, |d| d.px(px(if self.small { 9. } else { 12. })))
+            .when(!icon_only, |d| d.px(px(pad)))
             .rounded(px(s.control_radius))
             .text_color(text)
-            .when(self.small, |d| d.text_xs())
-            .when(!self.small, |d| d.text_sm())
-            .font_weight(gpui_kit::FontWeight::MEDIUM);
+            .when(self.size != Size::Medium, |d| d.text_xs())
+            .when(self.size == Size::Medium, |d| d.text_sm())
+            .font_weight(gpui_kit::FontWeight::MEDIUM)
+            .when_some(self.aria.or_else(|| self.label.clone()), |d, a| {
+                d.aria_label(a)
+            });
 
         el = match self.variant {
             Variant::Primary => accent(&s, &p, h).apply(el),
-            Variant::Secondary => neutral(&s, &p, h, 0.6).apply(el),
-            Variant::Ghost => {
-                let wash = mix(p.hover.opacity(0.), p.hover, h);
-                let wash = mix(wash, p.active, sel);
-                el.bg(wash)
+            Variant::Secondary => {
+                let plate = neutral(&s, &p, h, 0.6);
+                let rim = mix(plate.rim, p.accent.opacity(0.6), sel);
+                plate.apply(el).border_color(rim)
             }
+            Variant::Outline => el
+                .border_1()
+                .border_color(mix(mix(p.border_strong, p.text_faint, h), p.accent, sel))
+                .bg(mix(mix(p.hover.opacity(0.), p.hover, h), p.active, sel)),
+            Variant::Ghost => el.bg(mix(mix(p.hover.opacity(0.), p.hover, h), p.active, sel)),
+            Variant::Danger => el
+                .border_1()
+                .border_color(p.danger.opacity(0.3 + 0.3 * h))
+                .bg(p.danger.opacity(0.1 + 0.08 * h)),
         };
 
-        el.cursor_pointer()
-            .on_hover(motion::hover_listener(key.clone(), s.hover))
-            // The press: sink one pixel while the pointer is down.
-            .active(|st| st.top(px(1.)))
-            .when_some(self.icon, |d, icon| {
-                d.child(if self.small { icon.xsmall() } else { icon.small() })
+        let dots = self.loading.then(|| {
+            pulse_dots(
+                ElementId::Name(format!("{key}:dots").into()),
+                text,
+            )
+        });
+        el.when(self.disabled, |d| d.opacity(0.45))
+            .when(!inert, |d| {
+                d.cursor_pointer()
+                    .on_hover(motion::hover_listener(key.clone(), s.hover))
+                    // The press: sink one pixel while the pointer is down.
+                    .active(|st| st.top(px(1.)))
+            })
+            .when_some(dots, |d, dots| d.child(dots))
+            .when_some(self.icon.filter(|_| !self.loading), |d, icon| {
+                d.child(match self.size {
+                    Size::Medium => icon.small(),
+                    _ => icon.xsmall(),
+                })
             })
             .when_some(self.label, |d, label| d.child(label))
             .when_some(self.tooltip, |d, tip| {
                 d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             })
-            .when_some(self.on_click, |d, f| d.on_click(f))
+            .when_some(self.on_click.filter(|_| !inert), |d, f| d.on_click(f))
     }
 }
 

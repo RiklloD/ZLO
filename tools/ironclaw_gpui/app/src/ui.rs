@@ -3,7 +3,9 @@
 //! GPUI and gpui-kit are pre-1.0 and change weekly. Screens import from here,
 //! never from `gpui_kit` directly, so a version bump is fixed in this file.
 
-pub use gpui_kit::component::button::{Button, ButtonVariants};
+// Our animated button replaces gpui-kit's under the same name and builder
+// methods, so every screen picks up the design kit's motion.
+pub use crate::design::kit::Button;
 pub use gpui_kit::component::input::{
     Input, InputEvent, InputState, Position, Textarea, TextareaState,
 };

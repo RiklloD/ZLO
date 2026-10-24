@@ -137,6 +137,14 @@ pub fn set_style(id: styles::StyleId, cx: &mut App) {
     prefs::Prefs::update(cx, |p| {
         p.style = id.key().into();
         p.theme = id.theme().into();
+        // Paper and Console read best on a bare backdrop. A picture the
+        // person picked stays.
+        if !matches!(p.wallpaper, prefs::Wallpaper::Image { .. }) {
+            p.wallpaper = match id {
+                styles::StyleId::Forge | styles::StyleId::Glass => prefs::Wallpaper::Aurora,
+                styles::StyleId::Paper | styles::StyleId::Console => prefs::Wallpaper::None,
+            };
+        }
     });
     let fonts = cx.try_global::<HaveFonts>().is_none_or(|f| f.0);
     apply_theme(cx, fonts);
