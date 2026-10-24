@@ -811,7 +811,6 @@ impl Workspace {
     }
 
     fn render_snooze_menu(&self, thread_id: &str, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = *Palette::of(cx);
         let items = snooze_presets()
             .into_iter()
             .enumerate()
