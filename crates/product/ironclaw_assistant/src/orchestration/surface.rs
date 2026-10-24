@@ -721,6 +721,29 @@ impl ProductSurface for OrchestratedProductSurface {
         {
             return Ok(page(value));
         }
+        // A thread that switched provider reads across its segments.
+        if request.view_id == TIMELINE_VIEW.id
+            && let Some(id) = request.input["thread_id"]
+                .as_str()
+                .and_then(|raw| ThreadId::new(raw).ok())
+            && let Ok(thread) = self.engine.owned_thread(&id, &scope).await
+        {
+            match self.engine.segments(&id).await {
+                Ok(segments) if !segments.is_empty() => {
+                    return super::stitched::timeline(
+                        &self.inner,
+                        &self.engine,
+                        caller,
+                        request,
+                        &thread,
+                        &segments,
+                    )
+                    .await;
+                }
+                Ok(_) => {}
+                Err(error) => soft("thread segments", Err::<(), _>(error)),
+            }
+        }
         if request.view_id == TIMELINE_VIEW.id
             && let Some(id) = request.input["thread_id"]
                 .as_str()

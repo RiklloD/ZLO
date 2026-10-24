@@ -215,7 +215,7 @@ impl Engine {
 
     /// Switch the provider/model and reasoning effort of a thread's next
     /// turns. An effort alone (`default` clears it) changes nothing else; a
-    /// switch keeps only the effort it carries, on the thread that continues.
+    /// switch keeps only the effort it carries.
     pub async fn set_route(&self, thread: &ThreadRecord, target: &Target) -> Result<Value> {
         let effort = target
             .reasoning_effort
@@ -236,13 +236,9 @@ impl Engine {
         }
         let mut out = self.switch_route(thread, target).await?;
         if out["ok"] == json!(true) {
-            let id = match out["forkThreadId"].as_str() {
-                Some(fork) => {
-                    ThreadId::new(fork).map_err(|e| OrchestratorError::invalid(e.to_string()))?
-                }
-                None => thread.thread_id.clone(),
-            };
-            self.store.set_thread_effort(&id, effort.as_deref()).await?;
+            self.store
+                .set_thread_effort(&thread.thread_id, effort.as_deref())
+                .await?;
             out["effort"] = json!(effort);
         }
         Ok(out)

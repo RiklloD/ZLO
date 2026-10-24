@@ -1075,7 +1075,12 @@ async fn route_switch_rebinds_or_switches_in_place_with_handoff() {
     let thread = store.thread(&b).await.unwrap().unwrap();
     assert_eq!(thread.runtime_id.as_str(), "cli");
     assert_eq!(thread.model.as_deref(), Some("m1"));
-    let context = h.engine.take_next_message_context(&b).await.unwrap().unwrap();
+    let context = h
+        .engine
+        .take_next_message_context(&b)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(context.starts_with("Context handoff (provider switch)"));
     assert!(context.contains("hello") && context.contains("hi there"));
 
@@ -1084,7 +1089,10 @@ async fn route_switch_rebinds_or_switches_in_place_with_handoff() {
     cli.history.lock().unwrap().insert(
         b.clone(),
         vec![
-            msg(HistoryRole::User, &format!("{context}\n\n---\n\nnext question")),
+            msg(
+                HistoryRole::User,
+                &format!("{context}\n\n---\n\nnext question"),
+            ),
             msg(HistoryRole::Assistant, "cli answer"),
         ],
     );
@@ -1106,9 +1114,17 @@ async fn route_switch_rebinds_or_switches_in_place_with_handoff() {
     let r = h.engine.set_route(&thread, &back).await.unwrap();
     assert_eq!(r["moved"], "switched", "{r}");
     assert_eq!(r["resumed"], true);
-    let delta = h.engine.take_next_message_context(&b).await.unwrap().unwrap();
+    let delta = h
+        .engine
+        .take_next_message_context(&b)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(delta.contains("next question") && delta.contains("cli answer"));
-    assert!(!delta.contains("hello"), "the loop already holds its own turns");
+    assert!(
+        !delta.contains("hello"),
+        "the loop already holds its own turns"
+    );
     let segments = h.engine.segments(&b).await.unwrap();
     assert_eq!(segments.len(), 3);
     assert_eq!(segments[2].runtime_id.as_str(), "fake");
