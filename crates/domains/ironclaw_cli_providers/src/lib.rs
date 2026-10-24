@@ -1,11 +1,18 @@
 //! Coding-agent CLIs as `ironclaw_orchestrator` turn runtimes.
 //!
-//! Today: the Claude CLI, as two runtimes (`claude-cli` on the default
-//! account, `claude-cli-2` on `~/.claude-account2`). Antigravity and Muse
-//! Code drivers follow on the same seam.
+//! The Claude CLI, as two runtimes (`claude-cli` on the default account,
+//! `claude-cli-2` on `~/.claude-account2`), the Antigravity ACP agent
+//! (`antigravity`) and Meta's Muse Code (`muse-code`). Every tool-permission
+//! request of the latter two goes through [`permissions::decide`].
 
 pub mod bridge;
 pub mod claude;
+
+pub mod antigravity;
+mod journal;
+pub mod muse;
+pub mod permissions;
+mod rpc;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
@@ -64,4 +71,50 @@ fn spawn_version_check(binary: PathBuf) {
             );
         }
     });
+}
+
+/// Register the Antigravity runtime when its ACP server is installed.
+/// Returns how many were registered (0 or 1).
+pub fn register_antigravity_runtime(engine: &Arc<Engine>) -> usize {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return 0;
+    };
+    let Some(config) = antigravity::default_config(&home) else {
+        tracing::debug!("antigravity acp runtime not found; antigravity runtime not registered");
+        return 0;
+    };
+    let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
+    match antigravity::AntigravityRuntime::new(config, sink) {
+        Ok(runtime) => {
+            engine.register_runtime(Arc::new(runtime));
+            1
+        }
+        Err(error) => {
+            tracing::debug!(%error, "antigravity runtime id rejected");
+            0
+        }
+    }
+}
+
+/// Register the Muse Code runtime when a `muse` binary is installed.
+/// Returns how many were registered (0 or 1).
+pub fn register_muse_runtime(engine: &Arc<Engine>) -> usize {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return 0;
+    };
+    let Some(binary) = muse::find_binary(&home) else {
+        tracing::debug!("muse cli not found; muse runtime not registered");
+        return 0;
+    };
+    let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
+    match muse::MuseRuntime::new(muse::default_config(&home, &binary), sink) {
+        Ok(runtime) => {
+            engine.register_runtime(Arc::new(runtime));
+            1
+        }
+        Err(error) => {
+            tracing::debug!(%error, "muse runtime id rejected");
+            0
+        }
+    }
 }

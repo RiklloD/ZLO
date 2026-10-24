@@ -3,7 +3,7 @@ name = "ironclaw_cli_providers"
 version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
-description = "Coding-agent CLI drivers (Claude CLI) as ironclaw_orchestrator turn runtimes"
+description = "Coding-agent CLI drivers (Claude CLI, Antigravity, Muse Code) as ironclaw_orchestrator turn runtimes"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -23,7 +23,8 @@ nix = { version = "0.31", default-features = false, features = ["signal"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
 tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
+# v7: Muse command and session ids are UUIDv7.
+uuid = { version = "1", features = ["v4", "v7"] }
 
 [dev-dependencies]
 tempfile = "3"
