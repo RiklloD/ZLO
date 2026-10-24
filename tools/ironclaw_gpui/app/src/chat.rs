@@ -747,13 +747,7 @@ impl ChatView {
         if *old == new_items && !self.pin_next {
             return;
         }
-        let prefix = old
-            .iter()
-            .zip(new_items.iter())
-            .take_while(|(a, b)| a.key() == b.key())
-            .count();
-        let changed: Vec<usize> = (0..prefix).filter(|&i| old[i] != new_items[i]).collect();
-        let (old_len, new_len) = (old.len(), new_items.len());
+        let diff = list_diff(&old, &new_items);
         let pin = self.pin_next.then(|| {
             new_items
                 .iter()
@@ -761,10 +755,14 @@ impl ChatView {
         });
         self.pin_next = false;
         self.scroller.update(cx, |state, cx| {
-            if prefix < old_len || prefix < new_len {
-                state.splice(prefix..old_len, new_len - prefix, cx);
+            // Rows replaced in place (a live reply becoming the durable one,
+            // a sent message getting its server copy) are re-measured, never
+            // spliced: a splice drops the scroll anchor to the top of the
+            // range, which jumped the view up when a run finished.
+            if let Some((at, old_count, new_count)) = diff.splice {
+                state.splice(at..at + old_count, new_count, cx);
             }
-            for i in changed {
+            for i in diff.remeasure {
                 state.remeasure_items(i..i + 1, cx);
             }
             if let Some(Some(ix)) = pin {
@@ -1585,6 +1583,45 @@ fn with_copy(key: &str, text: &str, body: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
+/// How the virtual list moves from `old` to `new`.
+#[derive(Debug, Default, PartialEq)]
+struct ListDiff {
+    /// `(at, removed, inserted)`, applied before `remeasure`.
+    splice: Option<(usize, usize, usize)>,
+    /// Indices (in `new`) whose content changed in place.
+    remeasure: Vec<usize>,
+}
+
+/// Unchanged keys at both ends stay; the middle is re-measured position by
+/// position and only the difference in length is spliced, at its end.
+fn list_diff(old: &[Item], new: &[Item]) -> ListDiff {
+    let prefix = old
+        .iter()
+        .zip(new)
+        .take_while(|(a, b)| a.key() == b.key())
+        .count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a.key() == b.key())
+        .count();
+    let (old_mid, new_mid) = (old.len() - prefix - suffix, new.len() - prefix - suffix);
+    let shared = old_mid.min(new_mid);
+    let splice =
+        (old_mid != new_mid).then(|| (prefix + shared, old_mid - shared, new_mid - shared));
+    let changed = |i: usize, j: usize| old[i] != new[j];
+    let mut remeasure: Vec<usize> = (0..prefix).filter(|&i| changed(i, i)).collect();
+    remeasure.extend((prefix..prefix + shared).filter(|&i| changed(i, i)));
+    let (old_tail, new_tail) = (old.len() - suffix, new.len() - suffix);
+    remeasure.extend(
+        (0..suffix)
+            .filter(|&k| changed(old_tail + k, new_tail + k))
+            .map(|k| new_tail + k),
+    );
+    ListDiff { splice, remeasure }
+}
+
 /// Each sent message and the start of the reply under it.
 fn outline_prompts(items: &[Item]) -> Vec<outline::Prompt> {
     let mut out: Vec<outline::Prompt> = Vec::new();
@@ -1860,4 +1897,67 @@ fn render_gate(
         })
         .children(actions.map(|a| div().pl(px(28.)).child(a)));
     motion::pop_in(card, SharedString::from(format!("{key}-gate")), s.pop, 8.).into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(key: &str) -> Item {
+        Item::Row(Row::User {
+            key: key.into(),
+            text: "hi".into(),
+            pending: false,
+            attachments: Vec::new(),
+        })
+    }
+
+    fn reply(key: &str, streaming: bool) -> Item {
+        Item::Row(Row::Assistant {
+            key: key.into(),
+            text: "answer".into(),
+            streaming,
+        })
+    }
+
+    #[test]
+    fn a_finished_run_remeasures_in_place_instead_of_splicing_the_anchor() {
+        let old = vec![
+            user("msg:1"),
+            reply("msg:2", false),
+            user("pending:3"),
+            reply("text:live", true),
+            Item::Pending { stopping: false },
+            Item::Reserve,
+        ];
+        let new = vec![
+            user("msg:1"),
+            reply("msg:2", false),
+            user("msg:3"),
+            reply("msg:4", false),
+            Item::Reserve,
+        ];
+        let diff = list_diff(&old, &new);
+        // Only the pending row is dropped, after the two replaced rows.
+        assert_eq!(diff.splice, Some((4, 1, 0)));
+        assert_eq!(diff.remeasure, vec![2, 3]);
+    }
+
+    #[test]
+    fn a_row_inserted_before_the_tail_splices_there() {
+        let old = vec![
+            user("msg:1"),
+            Item::Pending { stopping: false },
+            Item::Reserve,
+        ];
+        let new = vec![
+            user("msg:1"),
+            reply("text:live", true),
+            Item::Pending { stopping: false },
+            Item::Reserve,
+        ];
+        let diff = list_diff(&old, &new);
+        assert_eq!(diff.splice, Some((1, 0, 1)));
+        assert!(diff.remeasure.is_empty());
+    }
 }
