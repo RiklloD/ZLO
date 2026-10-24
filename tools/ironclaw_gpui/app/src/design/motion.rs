@@ -268,25 +268,6 @@ where
         })
 }
 
-/// Slide an element in from `from` px above (negative) or below its place,
-/// without fading: a surface that was already on screen elsewhere moving
-/// to its new home (the composer leaving the new-thread screen).
-pub fn slide_in<E>(
-    element: E,
-    id: impl Into<ElementId>,
-    spec: MotionSpec,
-    from: f32,
-) -> impl IntoElement
-where
-    E: IntoElement + Styled + 'static,
-{
-    element
-        .relative()
-        .with_animation(id, spec.animation(), move |el, d| {
-            el.top(px(from * (1. - d)))
-        })
-}
-
 /// Popover and menu entrance on a spring: fades in while travelling `from`
 /// px toward its resting place (negative starts above it).
 pub fn pop_in<E>(

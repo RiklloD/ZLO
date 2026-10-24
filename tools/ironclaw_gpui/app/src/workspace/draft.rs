@@ -238,7 +238,9 @@ impl Workspace {
                     send,
                     cx,
                 )
-                .max_w(px(720.)),
+                .max_w(px(720.))
+                .relative()
+                .child(crate::design::dock::hero_probe()),
             )
             .when_some(draft.error.clone(), |d, error| {
                 d.child(

@@ -44,6 +44,13 @@ pub const TOOL_DISCLOSURE_PROTOCOL_PROMPT: &str =
 /// uses.
 pub const SELF_KNOWLEDGE_PROTOCOL_PROMPT: &str = include_str!("../prompts/self_knowledge.md");
 
+/// Appended to every resolved prompt, after self-knowledge.
+///
+/// Asks for a one-line preamble before tool calls, so a live client shows
+/// what the agent is about to do instead of a silent run of tools. Appended
+/// in memory for the same reason as self-knowledge: existing installs get it.
+pub const PROGRESS_UPDATES_PROTOCOL_PROMPT: &str = include_str!("../prompts/progress_updates.md");
+
 /// Appended only when benchmarking mode is active.
 ///
 /// Tells the model there is no human to ask, overriding the "ask the user...a
@@ -78,6 +85,7 @@ mod tests {
                 TOOL_DISCLOSURE_PROTOCOL_PROMPT,
             ),
             ("self_knowledge.md", SELF_KNOWLEDGE_PROTOCOL_PROMPT),
+            ("progress_updates.md", PROGRESS_UPDATES_PROTOCOL_PROMPT),
             ("benchmarking_mode.md", BENCHMARKING_MODE_PROTOCOL_PROMPT),
             (
                 "scheduled_trigger_mode.md",
@@ -100,6 +108,7 @@ mod tests {
                 TOOL_DISCLOSURE_PROTOCOL_PROMPT,
             ),
             ("self_knowledge.md", SELF_KNOWLEDGE_PROTOCOL_PROMPT),
+            ("progress_updates.md", PROGRESS_UPDATES_PROTOCOL_PROMPT),
             ("benchmarking_mode.md", BENCHMARKING_MODE_PROTOCOL_PROMPT),
             (
                 "scheduled_trigger_mode.md",
@@ -122,6 +131,7 @@ mod tests {
         let appended = [
             TOOL_DISCLOSURE_PROTOCOL_PROMPT,
             SELF_KNOWLEDGE_PROTOCOL_PROMPT,
+            PROGRESS_UPDATES_PROTOCOL_PROMPT,
             BENCHMARKING_MODE_PROTOCOL_PROMPT,
             SCHEDULED_TRIGGER_MODE_PROTOCOL_PROMPT,
         ];

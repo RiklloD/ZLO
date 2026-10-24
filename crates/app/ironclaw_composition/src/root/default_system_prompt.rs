@@ -16,8 +16,9 @@ use ironclaw_loop_contracts::{LoopRunContext, PromptMode};
 use ironclaw_loop_host::{
     BENCHMARKING_MODE_PROTOCOL_PROMPT, DEFAULT_SYSTEM_PROMPT, HostIdentityContextBuildError,
     HostIdentityContextCandidate, HostIdentityContextSource, HostIdentityMessageContent,
-    IdentityApplicability, IdentityFileName, SCHEDULED_TRIGGER_MODE_PROTOCOL_PROMPT,
-    SELF_KNOWLEDGE_PROTOCOL_PROMPT, TOOL_DISCLOSURE_PROTOCOL_PROMPT, identity_message_ref,
+    IdentityApplicability, IdentityFileName, PROGRESS_UPDATES_PROTOCOL_PROMPT,
+    SCHEDULED_TRIGGER_MODE_PROTOCOL_PROMPT, SELF_KNOWLEDGE_PROTOCOL_PROMPT,
+    TOOL_DISCLOSURE_PROTOCOL_PROMPT, identity_message_ref,
 };
 use ironclaw_turns::LoopMessageRef;
 
@@ -108,6 +109,7 @@ impl DefaultSystemPromptIdentitySource {
         // — and so existing installs get them, not just freshly seeded ones.
         let mut content = read_default_system_prompt(&self.storage_root, &self.prompt_path)?;
         append_section(&mut content, SELF_KNOWLEDGE_PROTOCOL_PROMPT);
+        append_section(&mut content, PROGRESS_UPDATES_PROTOCOL_PROMPT);
         if let Some(guidance) = self.protocols.memory_guidance.as_deref() {
             append_section(&mut content, guidance);
         }

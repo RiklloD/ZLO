@@ -833,6 +833,7 @@ impl ChatView {
     /// The new-thread screen's first message, sent once the thread exists.
     pub fn send_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.arrive = true;
+        crate::design::dock::take_off(cx.reduce_motion());
         self.composer
             .update(cx, |state, cx| state.set_value(text, window, cx));
         self.send(window, cx);
@@ -998,7 +999,24 @@ impl Render for ChatView {
                 )
             })
             // Room for the floating header; rows fade under its lower half.
-            .child(div().flex_1().min_h_0().pt(px(30.)).child(list.size_full()))
+            .child({
+                let body = div().size_full().child(list.size_full());
+                // The transcript fades in while the composer docks, on the
+                // 0.20 → 0.65 slice of Zeron's 420 ms route clock.
+                let body = if self.arrive {
+                    motion::fade_in_after(
+                        body,
+                        "arrive-transcript",
+                        motion::MotionSpec::new(190, motion::EASE_OUT),
+                        6.,
+                        84,
+                    )
+                    .into_any_element()
+                } else {
+                    body.into_any_element()
+                };
+                div().flex_1().min_h_0().pt(px(30.)).child(body)
+            })
             // The thread actions float over the transcript, with a fade so
             // rows scroll softly underneath instead of being cut off.
             .child(
@@ -1110,7 +1128,7 @@ impl Render for ChatView {
                     .px_4()
                     .pb_4()
                     .pt_2()
-                    .child(self.render_composer(running, focused, window, cx)),
+                    .child(self.render_composer(running, focused, cx)),
             );
         h_flex()
             .size_full()
@@ -1297,14 +1315,7 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
 
 impl ChatView {
     /// The composer card: text on top; model pill, attach and send below.
-    fn render_composer(
-        &self,
-        running: bool,
-        focused: bool,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let style = Style::of(cx);
+    fn render_composer(&self, running: bool, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let send = if running {
             round_button("stop", IconName::Square, true, "Stop", cx)
                 .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Stop").build(w, cx))
@@ -1321,13 +1332,10 @@ impl ChatView {
                 gpui_kit::component::tooltip::Tooltip::new("Attach files").build(w, cx)
             })
             .on_click(cx.listener(|this, _, window, cx| this.pick_files(window, cx)));
-        // The pill opens into two rows once the text wraps.
-        let text = self.composer.read(cx).value();
-        let compact = !text.contains('\n') && text.chars().count() < 64;
         let card = composer_card(
             "composer",
             focused,
-            compact,
+            true,
             Some(attach.into_any_element()),
             div()
                 .capture_key_down(cx.listener(Self::on_composer_key))
@@ -1336,12 +1344,8 @@ impl ChatView {
             send,
             cx,
         );
-        if !self.arrive {
-            return card.into_any_element();
-        }
-        // From the new-thread screen: glide down from its centered composer.
-        let from = -(f32::from(window.viewport_size().height) / 2. - 140.).max(0.);
-        motion::slide_in(card, "composer-arrive", style.enter, from).into_any_element()
+        // From the new-thread screen it glides down from the hero's spot.
+        crate::design::dock::docked(card).into_any_element()
     }
 }
 
@@ -1376,40 +1380,27 @@ pub(crate) fn composer_card(
     let shell = div()
         .w_full()
         .max_w(px(content_width(cx) + 16.))
-        .rounded(px(if compact { 22. } else { 26. }))
+        .rounded(px(if compact { 20. } else { 26. }))
         .bg(fill)
         .border_1()
         .border_color(rim)
         .text_size(flow::ui(14.))
         .line_height(px(22.75));
-    let input = div().flex_1().min_w_0().child(input);
-    if compact {
-        return shell.child(
-            h_flex()
-                .min_h(px(47.))
-                .pl(px(10.))
-                .pr(px(10.))
-                .py(px(6.))
-                .gap(px(8.))
-                .items_end()
-                .children(leading.map(|l| div().pb(px(3.)).child(l)))
-                .child(input.pb(px(6.)))
-                .child(div().pb(px(3.)).child(picker))
-                .child(div().pb(px(3.)).child(actions)),
-        );
-    }
+    // T3 Code's order: the text on top, then attach and the model picker
+    // on the left of one control row and send on the right.
+    let input = div().w_full().min_w_0().child(input);
     shell.child(
         v_flex()
-            .px(px(18.))
-            .pt(px(16.))
+            .px(px(if compact { 14. } else { 18. }))
+            .pt(px(if compact { 12. } else { 16. }))
             .pb(px(8.))
-            .gap(px(8.))
-            .child(input.min_h(px(44.)))
+            .gap(px(6.))
+            .child(input.min_h(px(if compact { 24. } else { 44. })))
             .child(
                 h_flex()
                     .h(px(32.))
                     .items_center()
-                    .gap(px(8.))
+                    .gap(px(4.))
                     .children(leading)
                     .child(picker)
                     .child(div().flex_1())

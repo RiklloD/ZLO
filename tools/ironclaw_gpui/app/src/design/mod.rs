@@ -10,6 +10,7 @@
 
 pub mod battery;
 pub mod brands;
+pub mod dock;
 pub mod kit;
 pub mod motion;
 pub mod prefs;
