@@ -320,6 +320,12 @@ impl Engine {
             return Ok(false);
         }
         let runtime = self.runtime(&thread.runtime_id)?;
+        let goal = self
+            .store
+            .goal(thread_id)
+            .await?
+            .filter(|g| g.status == ironclaw_product_contracts::inbox::GoalStatus::Active)
+            .map(|g| g.objective);
         let admission = runtime
             .start_turn(
                 &thread,
@@ -327,6 +333,7 @@ impl Engine {
                     text,
                     origin,
                     model: thread.model.clone(),
+                    goal,
                 },
             )
             .await?;

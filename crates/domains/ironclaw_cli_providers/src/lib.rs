@@ -20,6 +20,20 @@ use std::sync::{Arc, Weak};
 use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::runtime::TurnEventSink;
 
+/// How a thread's goal reaches a CLI agent: added to the system prompt, or
+/// put ahead of the prompt where the protocol has no system prompt.
+pub(crate) fn goal_note(goal: &str) -> String {
+    format!("The user set this goal for the thread; keep working toward it: {goal}")
+}
+
+/// The prompt as sent on the wire, with the goal ahead of it.
+pub(crate) fn with_goal(text: &str, goal: Option<&str>) -> String {
+    match goal {
+        Some(goal) => format!("{}\n\n{text}", goal_note(goal)),
+        None => text.to_string(),
+    }
+}
+
 /// Register the Claude CLI runtimes on `engine` when a `claude` binary is
 /// installed. With `bridge`, their tools run behind IronClaw approvals;
 /// without, tools are off. Returns how many were registered.

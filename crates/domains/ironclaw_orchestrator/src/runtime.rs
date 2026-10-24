@@ -152,6 +152,9 @@ pub struct TurnInput {
     pub origin: TurnOrigin,
     /// Model hint for runtimes that pick per turn.
     pub model: Option<String>,
+    /// The thread's active goal (`orch_goals`). Runtimes put it in the
+    /// turn's system prompt, or ahead of the prompt when they have none.
+    pub goal: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

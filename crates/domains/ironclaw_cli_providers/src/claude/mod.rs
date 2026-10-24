@@ -124,7 +124,13 @@ impl ClaudeCliRuntime {
             .join(format!("{session_id}.jsonl"))
     }
 
-    fn command(&self, session_id: &str, model: Option<&str>, mcp: Option<&Path>) -> Command {
+    fn command(
+        &self,
+        session_id: &str,
+        model: Option<&str>,
+        mcp: Option<&Path>,
+        goal: Option<&str>,
+    ) -> Command {
         let mut cmd = Command::new(&self.config.binary);
         cmd.args([
             "-p",
@@ -153,6 +159,10 @@ impl ClaudeCliRuntime {
         ]);
         if let Some(model) = model {
             cmd.args(["--model", model]);
+        }
+        if let Some(goal) = goal {
+            cmd.arg("--append-system-prompt")
+                .arg(crate::goal_note(goal));
         }
         if self.transcript_path(session_id).is_file() {
             cmd.args(["--resume", session_id]);
@@ -217,7 +227,12 @@ impl ClaudeCliRuntime {
         }
     }
 
-    async fn spawn_turn(&self, thread: &ThreadRecord, text: &str) -> Result<String, RuntimeError> {
+    async fn spawn_turn(
+        &self,
+        thread: &ThreadRecord,
+        text: &str,
+        goal: Option<&str>,
+    ) -> Result<String, RuntimeError> {
         let session_id = thread
             .native_session_id
             .clone()
@@ -241,6 +256,7 @@ impl ClaudeCliRuntime {
                 &session_id,
                 thread.model.as_deref(),
                 mcp.as_ref().map(|m| m.config_file.as_path()),
+                goal,
             )
             .spawn();
         let mut child = match spawned {
@@ -455,7 +471,9 @@ impl TurnRuntime for ClaudeCliRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
-        let run_id = self.spawn_turn(&thread, &input.text).await?;
+        let run_id = self
+            .spawn_turn(&thread, &input.text, input.goal.as_deref())
+            .await?;
         Ok(TurnAdmission::Started {
             run_id: Some(run_id),
         })
@@ -468,7 +486,7 @@ impl TurnRuntime for ClaudeCliRuntime {
         _how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
         self.stop(&thread.thread_id).await;
-        self.spawn_turn(thread, text).await?;
+        self.spawn_turn(thread, text, None).await?;
         Ok(SteerOutcome::Restarted)
     }
 

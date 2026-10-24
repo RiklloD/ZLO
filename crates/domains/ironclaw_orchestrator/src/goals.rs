@@ -3,7 +3,7 @@
 //! row with `cleared_at` set, so a goal's history is never deleted.
 
 use ironclaw_host_api::ids::ThreadId;
-use ironclaw_product_contracts::inbox::{GoalStatus, GoalRecord};
+use ironclaw_product_contracts::inbox::{GoalRecord, GoalStatus};
 use libsql::Value;
 
 use crate::error::OrchestratorError;

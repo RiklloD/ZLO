@@ -130,6 +130,7 @@ fn input() -> TurnInput {
         text: "hi".into(),
         origin: TurnOrigin::DelegatedBrief,
         model: None,
+        goal: None,
     }
 }
 
@@ -165,7 +166,10 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
     }
 
     for n in 1..=2 {
-        let admission = rt.start_turn(&thread, input()).await.unwrap();
+        // The second turn carries the thread's goal.
+        let mut turn = input();
+        turn.goal = (n == 2).then(|| "Ship stage 5".to_string());
+        let admission = rt.start_turn(&thread, turn).await.unwrap();
         assert!(matches!(
             admission,
             TurnAdmission::Started { run_id: Some(_) }
@@ -182,6 +186,12 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
     );
     assert!(
         lines[1].contains(&format!("--resume {session}")),
+        "{}",
+        lines[1]
+    );
+    assert!(!lines[0].contains("--append-system-prompt"), "{}", lines[0]);
+    assert!(
+        lines[1].contains("--append-system-prompt") && lines[1].contains("Ship stage 5"),
         "{}",
         lines[1]
     );

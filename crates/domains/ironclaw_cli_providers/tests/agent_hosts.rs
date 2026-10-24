@@ -81,6 +81,7 @@ fn input() -> TurnInput {
         text: "hi".into(),
         origin: TurnOrigin::DelegatedBrief,
         model: None,
+        goal: None,
     }
 }
 

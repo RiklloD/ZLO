@@ -22,6 +22,7 @@ use ironclaw_orchestrator::model::ThreadScope;
 use ironclaw_orchestrator::profiles::{
     ProfileOwner, ProfileRecord, parse_profile_slug, profile_not_found,
 };
+use ironclaw_product_contracts::inbox::GoalStatus;
 use ironclaw_product_contracts::profiles::*;
 use ironclaw_turns::LoopMessageRef;
 use serde::Deserialize;
@@ -382,7 +383,9 @@ impl ProfileIdentityContextSource {
         Self { inner, engine }
     }
 
-    /// The thread's SOUL.md and its message ref, when it has one.
+    /// The thread's SOUL.md and its message ref, when it has one. The
+    /// thread's active goal rides in the same file, after the soul, so the
+    /// model sees it on every turn without a second identity file name.
     async fn soul(
         &self,
         thread: &ThreadId,
@@ -390,23 +393,45 @@ impl ProfileIdentityContextSource {
         Option<(IdentityFileName, LoopMessageRef, String)>,
         HostIdentityContextBuildError,
     > {
-        let profile = match self.engine.store().thread_profile(thread).await {
-            Ok(profile) => profile,
+        let store = self.engine.store();
+        let soul = match store.thread_profile(thread).await {
+            Ok(profile) => profile.map(|p| p.settings.soul),
             Err(error) => {
                 tracing::debug!(%error, "profile lookup failed; turn runs without SOUL.md");
-                return Ok(None); // silent-ok: SYSTEM.md still applies; the soul is additive
+                None // silent-ok: SYSTEM.md still applies; the soul is additive
             }
         };
-        let Some(soul) = profile
-            .map(|p| p.settings.soul)
-            .filter(|s| !s.trim().is_empty())
+        let goal = match store.goal(thread).await {
+            Ok(goal) => goal.filter(|g| g.status == GoalStatus::Active),
+            Err(error) => {
+                tracing::debug!(%error, "goal lookup failed; turn runs without its goal");
+                None // silent-ok: the goal is additive context, the turn still runs
+            }
+        };
+        let Some(content) = profile_context(soul.as_deref(), goal.map(|g| g.objective).as_deref())
         else {
             return Ok(None);
         };
         let name = IdentityFileName::new(SOUL_FILE)?;
-        let message_ref = identity_message_ref(&name, &soul)
+        let message_ref = identity_message_ref(&name, &content)
             .map_err(|_error| HostIdentityContextBuildError::Internal)?;
-        Ok(Some((name, message_ref, soul)))
+        Ok(Some((name, message_ref, content)))
+    }
+}
+
+/// SOUL.md as the turn sees it: the profile soul, then the thread goal.
+fn profile_context(soul: Option<&str>, goal: Option<&str>) -> Option<String> {
+    let soul = soul.map(str::trim).filter(|s| !s.is_empty());
+    let goal = goal.map(str::trim).filter(|g| !g.is_empty()).map(|g| {
+        format!(
+            "## Thread goal\n\nThe user set this goal for the thread; keep working toward it:\n{g}"
+        )
+    });
+    match (soul, goal) {
+        (None, None) => None,
+        (Some(soul), None) => Some(soul.to_string()),
+        (None, Some(goal)) => Some(goal),
+        (Some(soul), Some(goal)) => Some(format!("{soul}\n\n{goal}")),
     }
 }
 
@@ -566,6 +591,96 @@ impl ironclaw_supermemory::SupermemoryBindingSource for ProfileSupermemoryBindin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoIdentityFiles;
+
+    #[async_trait]
+    impl HostIdentityContextSource for NoIdentityFiles {
+        async fn load_identity_candidates(
+            &self,
+            _run_context: &LoopRunContext,
+            _mode: PromptMode,
+        ) -> std::result::Result<Vec<HostIdentityContextCandidate>, HostIdentityContextBuildError>
+        {
+            Ok(Vec::new())
+        }
+
+        async fn resolve_identity_message_content(
+            &self,
+            _run_context: &LoopRunContext,
+            _message_ref: &LoopMessageRef,
+        ) -> std::result::Result<Option<HostIdentityMessageContent>, HostIdentityContextBuildError>
+        {
+            Ok(None)
+        }
+    }
+
+    /// The turn's identity context carries the active goal, and drops it
+    /// once the goal is done.
+    #[tokio::test]
+    async fn active_goal_reaches_the_native_loop_prompt() {
+        use ironclaw_host_api::ids::TenantId;
+        use ironclaw_loop_contracts::{
+            InMemoryRunProfileResolver, RunProfileResolutionRequest, RunProfileResolver,
+        };
+        use ironclaw_turns::{TurnId, TurnRunId, TurnScope};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            libsql::Builder::new_local(dir.path().join("o.db"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let runtime =
+            Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
+        let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+        let thread = ThreadId::new("goal-thread").unwrap();
+        let source = profile_identity_source(Arc::new(NoIdentityFiles), &engine);
+        let profile = InMemoryRunProfileResolver::default()
+            .resolve_run_profile(RunProfileResolutionRequest::interactive_default())
+            .await
+            .unwrap();
+        let run = LoopRunContext::new(
+            TurnScope::new(TenantId::new("t1").unwrap(), None, None, thread.clone()),
+            TurnId::new(),
+            TurnRunId::new(),
+            profile,
+        );
+        let context = || async {
+            let candidates = source
+                .load_identity_candidates(&run, PromptMode::TextOnly)
+                .await
+                .unwrap();
+            let Some(candidate) = candidates.first() else {
+                return None;
+            };
+            let message_ref = candidate.message_ref.clone().unwrap();
+            source
+                .resolve_identity_message_content(&run, &message_ref)
+                .await
+                .unwrap()
+                .map(|c| c.content)
+        };
+        assert_eq!(context().await, None, "no soul and no goal: nothing added");
+
+        engine
+            .store()
+            .set_goal(&thread, Some("Ship stage 5"), None, 1)
+            .await
+            .unwrap();
+        let content = context()
+            .await
+            .expect("the goal is in the identity context");
+        assert!(content.contains("Ship stage 5"), "{content}");
+
+        engine
+            .store()
+            .set_goal(&thread, None, Some(GoalStatus::Done), 2)
+            .await
+            .unwrap();
+        assert_eq!(context().await, None, "a done goal is not sent");
+    }
 
     #[test]
     fn hermes_names_map_to_profiles() {

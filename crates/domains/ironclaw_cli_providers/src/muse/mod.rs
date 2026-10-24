@@ -158,7 +158,12 @@ impl MuseRuntime {
         Ok((child, pgid))
     }
 
-    async fn spawn_turn(&self, thread: &ThreadRecord, text: &str) -> Result<String, RuntimeError> {
+    async fn spawn_turn(
+        &self,
+        thread: &ThreadRecord,
+        text: &str,
+        goal: Option<&str>,
+    ) -> Result<String, RuntimeError> {
         let session_id = thread
             .native_session_id
             .clone()
@@ -196,6 +201,7 @@ impl MuseRuntime {
             session_id,
             model: thread.model.clone(),
             text: text.to_string(),
+            goal: goal.map(str::to_string),
             cancelled,
             live,
             windows: window,
@@ -371,6 +377,8 @@ struct Turn {
     session_id: String,
     model: Option<String>,
     text: String,
+    /// The thread's goal, sent ahead of `text` but never journaled.
+    goal: Option<String>,
     cancelled: Arc<AtomicBool>,
     live: Arc<Mutex<Option<LiveTurn>>>,
     /// Context limits by model, from the catalog.
@@ -419,7 +427,7 @@ impl Turn {
         let mut params = json!({
             "sessionId": self.session_id,
             "commandId": command_id(),
-            "input": [{"type": "text", "text": self.text}],
+            "input": [{"type": "text", "text": crate::with_goal(&self.text, self.goal.as_deref())}],
             "displayText": self.text,
             "workspaceRoots": [workspace_root(&self.config.work_dir)],
             "ifBusy": "queue",
@@ -734,7 +742,9 @@ impl TurnRuntime for MuseRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
-        let run_id = self.spawn_turn(&thread, &input.text).await?;
+        let run_id = self
+            .spawn_turn(&thread, &input.text, input.goal.as_deref())
+            .await?;
         Ok(TurnAdmission::Started {
             run_id: Some(run_id),
         })
@@ -777,7 +787,7 @@ impl TurnRuntime for MuseRuntime {
             }
         }
         self.stop(&thread.thread_id).await;
-        self.spawn_turn(thread, text).await?;
+        self.spawn_turn(thread, text, None).await?;
         Ok(SteerOutcome::Restarted)
     }
 

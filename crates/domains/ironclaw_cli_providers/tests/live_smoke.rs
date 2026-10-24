@@ -71,6 +71,7 @@ async fn one_turn(rt: &dyn TurnRuntime, recorder: &Recorder) {
             text: "Reply with exactly the word pong and nothing else.".into(),
             origin: TurnOrigin::UserPrompt,
             model: None,
+            goal: None,
         },
     )
     .await
