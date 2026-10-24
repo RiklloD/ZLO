@@ -881,9 +881,18 @@ impl Workspace {
             .map(|r| format!("{:.0}%", r * 100.))
             .unwrap_or_else(dash);
         let peak = self.usage.as_ref().and_then(|m| {
-            m.read(cx)
-                .peak()
-                .map(|(provider, w)| (provider.label.clone(), w.label.clone(), w.used_percent))
+            m.read(cx).peak().map(|(provider, w)| {
+                let resets = w
+                    .resets_at
+                    .and_then(crate::pages::usage::short_countdown)
+                    .map(|r| format!(" · {r}"))
+                    .unwrap_or_default();
+                (
+                    provider.label.clone(),
+                    format!("{}{resets}", w.label),
+                    w.used_percent,
+                )
+            })
         });
         h_flex()
             .gap_3()
@@ -903,7 +912,7 @@ impl Workspace {
                             cx.listener(|this, _, window, cx| this.show(Page::Usage, window, cx)),
                         )
                         .child(div().size(px(6.)).rounded_full().bg(color))
-                        .child(format!("{provider} {window} {pct:.0}%")),
+                        .child(format!("{provider} {pct:.0}% {window}")),
                 )
             })
     }
