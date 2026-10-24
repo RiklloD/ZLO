@@ -305,7 +305,12 @@ observed_date = "2026-08-08"
 # registration field, and the surface hand-off. Orchestration behavior lives in
 # ironclaw_orchestrator and ironclaw_assistant::orchestration. Measured with
 # `bash scripts/ci/check-composition-budget.sh --print`, not padded.
-loc_ceiling = 43151
+# Re-measured 43151 -> 43423 on 2026-10-24 for the CLI approval bridge
+# (v3-cli-bridge): the bridge plumbing next to the engine and the loopback MCP
+# route mount (descriptor + thin axum adapter, `cli_bridge_serve.rs`); the
+# JSON-RPC, token and approval logic live in ironclaw_cli_providers::bridge.
+# Tests sit in `cli_bridge_serve_tests.rs`. Measured with `--print`.
+loc_ceiling = 43423
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -316,8 +321,8 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 43151
-loc_observed_date = "2026-10-23"
+loc_observed = 43423
+loc_observed_date = "2026-10-24"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------
 # A companion metric for the "reduce traits & dispatch" goal (issue #6168 / the

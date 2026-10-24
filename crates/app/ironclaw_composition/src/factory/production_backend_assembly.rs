@@ -1462,6 +1462,7 @@ pub(super) async fn build_backend_production(
         thread_service,
         trigger_repository: Arc::clone(&trigger_repository),
         orchestrator: None,
+        cli_bridge: None,
         trigger_manual_fire_runner,
         trigger_create_hook,
         resource_governor: production_resource_governor,

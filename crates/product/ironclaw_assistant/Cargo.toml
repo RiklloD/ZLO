@@ -60,6 +60,8 @@ ironclaw_safety = { path = "../../substrates/ironclaw_safety", version = "0.2.2"
 ironclaw_threads = { path = "../../domains/ironclaw_threads", version = "0.1.0" }
 ironclaw_triggers = { path = "../../domains/ironclaw_triggers", version = "0.1.0" }
 ironclaw_orchestrator = { path = "../../domains/ironclaw_orchestrator", version = "0.1.0" }
+# CLI-thread live stream and approval gates (`orchestration/external.rs`).
+ironclaw_cli_providers = { path = "../../domains/ironclaw_cli_providers", version = "0.1.0" }
 ironclaw_supermemory = { path = "../../domains/ironclaw_supermemory", version = "0.1.0" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_memory = { path = "../../domains/ironclaw_memory", version = "0.1.0" }
@@ -113,6 +115,7 @@ ironclaw_assistant = { path = ".", features = ["test-support"] }
 ironclaw_threads = { path = "../../domains/ironclaw_threads", version = "0.1.0", features = ["test-support"] }
 ironclaw_telegram_extension = { path = "../../extensions/packages/telegram" }
 tempfile = "3"
+ironclaw_libsql_runtime = { path = "../../substrates/ironclaw_libsql_runtime" }
 tokio = { version = "1", features = ["macros", "rt", "sync", "test-util", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 # Durable-ledger contract tests drive the libSQL/Postgres RootFilesystem

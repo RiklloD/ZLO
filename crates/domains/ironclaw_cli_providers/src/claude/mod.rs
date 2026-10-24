@@ -6,13 +6,16 @@
 //! thread's `native_session_id`, so a backend restart loses nothing but the
 //! turn that was running.
 //!
-//! Tools are off (`--tools ""`, no MCP servers, prompts answered "no").
-//! The user keeps every tool call behind IronClaw's approval queue, and the
-//! CLI's own permission path cannot reach that queue yet; until a
-//! `--permission-prompt-tool` bridge into `ironclaw_approvals` lands, the CLI
-//! runs as a plain model. No allow rules, never
-//! `--dangerously-skip-permissions`.
+//! With a [`CliBridge`] the CLI has its tools, and every call waits for the
+//! thread's owner: the driver registers a PreToolUse hook over the
+//! stream-json control protocol before the prompt is sent, and answers each
+//! callback with the person's decision (deny on timeout or any failure).
+//! The orchestrator tools come from the loopback MCP route
+//! (`--mcp-config`, this session's token only, `--strict-mcp-config`).
+//! Without a bridge, tools stay off (`--tools ""`). Either way: no allow
+//! rules, prompts answered "no", never `--dangerously-skip-permissions`.
 
+mod control;
 mod stream;
 mod transcript;
 
@@ -32,6 +35,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::watch;
 
+use crate::bridge::{CliBridge, SESSION_TOKEN_TTL, SessionGrant, mcp_config_json};
+use control::{BridgedTurn, SharedStdin, Step};
 use stream::TurnFold;
 
 /// The CLI release the wire handling was checked against (`claude --version`).
@@ -48,6 +53,8 @@ const MODELS: [&str; 4] = [
 
 /// How long Stop waits after SIGTERM before SIGKILL.
 const KILL_GRACE: Duration = Duration::from_secs(2);
+/// How long the CLI may take to acknowledge the hook registration.
+const INIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One Claude CLI account.
 #[derive(Debug, Clone)]
@@ -81,18 +88,29 @@ pub struct ClaudeCliRuntime {
     id: RuntimeId,
     config: ClaudeCliConfig,
     sink: Weak<dyn TurnEventSink>,
+    // arch-exempt: optional_arc, a host without the gateway runs the CLI tools-off, plan #v3-cli-bridge
+    bridge: Option<Arc<CliBridge>>,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
 }
 
+/// A turn's per-process MCP grant: the token and the 0600 config file.
+struct McpSession {
+    token: String,
+    config_file: PathBuf,
+}
+
 impl ClaudeCliRuntime {
+    /// `bridge: None` runs every turn with tools off.
     pub fn new(
         config: ClaudeCliConfig,
         sink: Weak<dyn TurnEventSink>,
+        bridge: Option<Arc<CliBridge>>,
     ) -> Result<Self, ironclaw_orchestrator::error::OrchestratorError> {
         Ok(Self {
             id: RuntimeId::new(config.runtime_id.clone())?,
             config,
             sink,
+            bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -106,7 +124,7 @@ impl ClaudeCliRuntime {
             .join(format!("{session_id}.jsonl"))
     }
 
-    fn command(&self, session_id: &str, model: Option<&str>) -> Command {
+    fn command(&self, session_id: &str, model: Option<&str>, mcp: Option<&Path>) -> Command {
         let mut cmd = Command::new(&self.config.binary);
         cmd.args([
             "-p",
@@ -116,9 +134,17 @@ impl ClaudeCliRuntime {
             "stream-json",
             "--verbose",
             "--include-partial-messages",
-            // Fail closed: no tools, no MCP servers, nobody to say yes.
-            "--tools",
-            "",
+        ]);
+        // Without the approval hook there is nobody to ask: no tools at all.
+        if self.bridge.is_none() {
+            cmd.args(["--tools", ""]);
+        }
+        if let Some(config) = mcp {
+            cmd.arg("--mcp-config").arg(config);
+        }
+        // Only MCP servers we pass; anything that would prompt is denied (the
+        // hook has already said allow to everything the person approved).
+        cmd.args([
             "--strict-mcp-config",
             "--permission-mode",
             "default",
@@ -152,6 +178,45 @@ impl ClaudeCliRuntime {
             .unwrap_or(false) // silent-ok: a poisoned map only happens after a panic elsewhere
     }
 
+    /// Mint the turn's MCP token and write its config file (0600). `None`
+    /// when no bridge or no gateway URL is known yet.
+    async fn mcp_session(&self, thread: &ThreadId, run_id: &str) -> Option<McpSession> {
+        let bridge = self.bridge.as_ref()?;
+        let url = bridge.mcp_url()?;
+        let token = bridge.mint_token(
+            SessionGrant {
+                thread_id: thread.clone(),
+                run_id: run_id.to_string(),
+            },
+            SESSION_TOKEN_TTL,
+        );
+        let dir = std::env::temp_dir().join("ironclaw-cli-bridge");
+        let config_file = dir.join(format!("{run_id}.json"));
+        let body = mcp_config_json(url, &token);
+        let written = async {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::create_dir_all(&dir).await?;
+            tokio::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).await?;
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&config_file)
+                .await?;
+            file.write_all(body.as_bytes()).await?;
+            file.flush().await
+        }
+        .await;
+        match written {
+            Ok(()) => Some(McpSession { token, config_file }),
+            Err(error) => {
+                tracing::debug!(%error, "claude cli: mcp config not written; orchestrator tools off");
+                bridge.revoke_token(&token);
+                None
+            }
+        }
+    }
+
     async fn spawn_turn(&self, thread: &ThreadRecord, text: &str) -> Result<String, RuntimeError> {
         let session_id = thread
             .native_session_id
@@ -160,37 +225,74 @@ impl ClaudeCliRuntime {
         tokio::fs::create_dir_all(&self.config.work_dir)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("work dir: {}", e.kind())))?;
-        let mut child = self
-            .command(&session_id, thread.model.as_deref())
-            .spawn()
-            .map_err(|e| RuntimeError::Unavailable(format!("spawn claude: {}", e.kind())))?;
-        let pgid = child
-            .id()
-            .and_then(|id| i32::try_from(id).ok())
-            .ok_or_else(|| RuntimeError::Unavailable("claude exited at spawn".into()))?;
-        let (Some(mut stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mcp = self.mcp_session(&thread.thread_id, &run_id).await;
+        let end_mcp = {
+            let bridge = self.bridge.clone();
+            move |mcp: Option<McpSession>| async move {
+                if let (Some(bridge), Some(mcp)) = (bridge, mcp) {
+                    bridge.revoke_token(&mcp.token);
+                    let _ = tokio::fs::remove_file(&mcp.config_file).await; // silent-ok: temp file cleanup
+                }
+            }
+        };
+        let spawned = self
+            .command(
+                &session_id,
+                thread.model.as_deref(),
+                mcp.as_ref().map(|m| m.config_file.as_path()),
+            )
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(e) => {
+                end_mcp(mcp).await;
+                return Err(RuntimeError::Unavailable(format!(
+                    "spawn claude: {}",
+                    e.kind()
+                )));
+            }
+        };
+        let pgid = child.id().and_then(|id| i32::try_from(id).ok());
+        let (Some(pgid), Some(stdin), Some(stdout), Some(stderr)) = (
+            pgid,
+            child.stdin.take(),
+            child.stdout.take(),
+            child.stderr.take(),
+        ) else {
+            end_mcp(mcp).await;
             return Err(RuntimeError::Unavailable("claude stdio unavailable".into()));
         };
-        let message = serde_json::json!({
-            "type": "user",
-            "message": {"role": "user", "content": text},
+        let stdin: SharedStdin = Arc::new(tokio::sync::Mutex::new(Some(stdin)));
+        let prompt = control::prompt_message(&run_id, text);
+        // Bridged: register the hook first; the prompt follows its ack and
+        // stdin stays open for hook answers. Otherwise: prompt, then EOF.
+        let mut bridged = self.bridge.as_ref().map(|bridge| {
+            BridgedTurn::new(
+                Arc::clone(bridge),
+                Arc::clone(&stdin),
+                thread.thread_id.clone(),
+                run_id.clone(),
+                prompt.clone(),
+            )
         });
-        // One message, then EOF: the CLI answers and exits.
-        let write = async {
-            stdin.write_all(format!("{message}\n").as_bytes()).await?;
-            stdin.shutdown().await
+        let first = if bridged.is_some() {
+            control::initialize_request()
+        } else {
+            prompt
         };
-        if let Err(e) = write.await {
+        if let Err(e) = control::write_line(&stdin, &first).await {
             let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: best-effort cleanup of a child that could not take input
+            end_mcp(mcp).await;
             return Err(RuntimeError::Unavailable(format!(
                 "claude stdin: {}",
                 e.kind()
             )));
         }
+        if bridged.is_none() {
+            control::close(&stdin).await;
+        }
 
-        let run_id = uuid::Uuid::new_v4().to_string();
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (done_tx, done_rx) = watch::channel(false);
         if let Ok(mut active) = self.active.lock() {
@@ -212,6 +314,7 @@ impl ClaudeCliRuntime {
         });
 
         let sink = self.sink.clone();
+        let bridge = self.bridge.clone();
         let active = Arc::clone(&self.active);
         let thread_id = thread.thread_id.clone();
         let provider = self.config.runtime_id.clone();
@@ -222,11 +325,35 @@ impl ClaudeCliRuntime {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
                     .await;
             }
+            if let Some(bridge) = &bridge {
+                bridge.turn_started(&thread_id, &run);
+            }
             let mut fold = TurnFold::default();
+            let mut refused = None;
             let mut lines = BufReader::new(stdout).lines();
             loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => fold.push_line(&line, Instant::now()),
+                let waiting = bridged.as_ref().is_some_and(BridgedTurn::awaiting_ack);
+                let next = if waiting {
+                    match tokio::time::timeout(INIT_TIMEOUT, lines.next_line()).await {
+                        Ok(next) => next,
+                        Err(_) => {
+                            refused = Some("claude cli did not acknowledge the approval hook");
+                            let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: the turn fails either way
+                            break;
+                        }
+                    }
+                } else {
+                    lines.next_line().await
+                };
+                match next {
+                    Ok(Some(line)) => {
+                        fold.push_line(&line, Instant::now());
+                        if let Some(turn) = bridged.as_mut()
+                            && turn.on_line(&line).await == Step::InitRefused
+                        {
+                            refused = Some("claude cli refused the approval hook");
+                        }
+                    }
                     Ok(None) => break,
                     Err(error) => {
                         tracing::debug!(%error, "claude cli: stdout read failed");
@@ -235,10 +362,18 @@ impl ClaudeCliRuntime {
                 }
             }
             let exit = child.wait().await.ok().and_then(|s| s.code()); // silent-ok: exit code only labels a failure the fold already detects
-            let outcome = fold.outcome(cancelled.load(std::sync::atomic::Ordering::SeqCst), exit);
+            let mut outcome =
+                fold.outcome(cancelled.load(std::sync::atomic::Ordering::SeqCst), exit);
+            if let Some(reason) = refused {
+                outcome = TurnOutcome::ended(TurnEndStatus::Failed, Some(reason.to_string()));
+            }
             if let Ok(mut map) = active.lock() {
                 map.remove(&thread_id);
             }
+            if let Some(bridge) = &bridge {
+                bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
+            }
+            end_mcp(mcp).await;
             if let (Some(path), Some(windows)) = (usage_file, fold.limit_windows()) {
                 write_limit_windows(&path, windows, now_ms()).await;
             }

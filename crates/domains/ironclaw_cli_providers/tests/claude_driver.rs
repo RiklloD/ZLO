@@ -1,6 +1,8 @@
 //! The Claude driver against a fake `claude` script: arguments (fail-closed
 //! tool flags, session start then resume), stream folding into outcome,
-//! usage and telemetry, and Stop killing the whole process group.
+//! usage and telemetry, Stop killing the whole process group, and the
+//! approval bridge (hook registration, allow and timeout-deny answers, live
+//! text, the per-turn MCP token).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -8,6 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use ironclaw_cli_providers::bridge::{CliBridge, LiveEvent, SessionGrant};
 use ironclaw_cli_providers::claude::{ClaudeCliConfig, ClaudeCliRuntime};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
 use ironclaw_orchestrator::model::{Millis, RuntimeId, ThreadRecord, ThreadScope};
@@ -67,6 +70,15 @@ fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
 }
 
 fn runtime(dir: &Path, binary: PathBuf, sink: &Arc<Recorder>) -> ClaudeCliRuntime {
+    bridged_runtime(dir, binary, sink, None)
+}
+
+fn bridged_runtime(
+    dir: &Path,
+    binary: PathBuf,
+    sink: &Arc<Recorder>,
+    bridge: Option<Arc<CliBridge>>,
+) -> ClaudeCliRuntime {
     let work_dir = dir.join("work");
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(sink) as Weak<dyn TurnEventSink>;
     ClaudeCliRuntime::new(
@@ -81,6 +93,7 @@ fn runtime(dir: &Path, binary: PathBuf, sink: &Arc<Recorder>) -> ClaudeCliRuntim
             usage_file: Some(dir.join("usage").join("claude-cli.json")),
         },
         sink,
+        bridge,
     )
     .unwrap()
 }
@@ -243,4 +256,201 @@ async fn stop_kills_the_process_group_and_reports_cancelled() {
         .unwrap()
         .success();
     assert!(!alive, "tool subprocess {grandchild} survived Stop");
+}
+
+/// Speaks the control side: acks the hook registration, takes the prompt,
+/// asks the hook about one Bash call, logs the answer, streams, finishes.
+const BRIDGED: &str = r#"#!/bin/sh
+echo "$@" >> @DIR@/args.log
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--mcp-config" ]; then cat "$a" >> @DIR@/mcp.log; fi
+  prev="$a"
+done
+read -r init
+echo "$init" >> @DIR@/input.log
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+read -r prompt
+echo "$prompt" >> @DIR@/input.log
+echo '{"type":"control_request","request_id":"h1","request":{"subtype":"hook_callback","callback_id":"ironclaw-approval","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls -la"},"tool_use_id":"tu1"}}}'
+read -r answer
+echo "$answer" >> @DIR@/answer.log
+echo '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"parent_tool_use_id":null,"session_id":"s","uuid":"e1"}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}},"parent_tool_use_id":null,"session_id":"s","uuid":"e2"}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}},"parent_tool_use_id":null,"session_id":"s","uuid":"e3"}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"duration_api_ms":5,"num_turns":1,"result":"Hello","session_id":"s","total_cost_usd":0}'
+read -r _eof
+"#;
+
+fn bridged_script(dir: &Path) -> PathBuf {
+    script(
+        dir,
+        "claude",
+        &BRIDGED.replace("@DIR@", &dir.display().to_string()),
+    )
+}
+
+/// Waits for the turn's gate on the live stream, answering it with
+/// `answer` (`None` leaves it to the timeout); returns every event seen.
+async fn follow_turn(
+    bridge: &CliBridge,
+    events: &mut tokio::sync::broadcast::Receiver<LiveEvent>,
+    thread: &ThreadId,
+    answer: Option<bool>,
+) -> Vec<LiveEvent> {
+    let mut seen = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("live event")
+            .unwrap();
+        if let (LiveEvent::GateOpened { gate, .. }, Some(approved)) = (&event, answer) {
+            assert!(bridge.resolve_gate(thread, &gate.gate_ref, approved));
+        }
+        let ended = matches!(event, LiveEvent::Ended { .. });
+        seen.push(event);
+        if ended {
+            return seen;
+        }
+    }
+}
+
+#[tokio::test]
+async fn bridged_turn_asks_before_each_tool_and_streams_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    bridge.set_mcp_url("http://127.0.0.1:9/api/cli-bridge/mcp".into());
+    let rt = bridged_runtime(
+        dir.path(),
+        bridged_script(dir.path()),
+        &sink,
+        Some(Arc::clone(&bridge)),
+    );
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+
+    let TurnAdmission::Started { run_id: Some(run) } =
+        rt.start_turn(&thread, input()).await.unwrap()
+    else {
+        panic!("turn not started");
+    };
+    let seen = follow_turn(&bridge, &mut events, &thread.thread_id, Some(true)).await;
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+
+    // The person's allow reached the CLI as the hook's decision.
+    let answer = std::fs::read_to_string(dir.path().join("answer.log")).unwrap();
+    assert!(
+        answer.contains(r#""permissionDecision":"allow""#),
+        "{answer}"
+    );
+    assert!(answer.contains(r#""request_id":"h1""#), "{answer}");
+    let gate = seen
+        .iter()
+        .find_map(|e| match e {
+            LiveEvent::GateOpened { gate, .. } => Some(gate.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        (gate.tool_name.as_str(), gate.body.as_deref()),
+        ("Bash", Some("ls -la"))
+    );
+    let texts: Vec<&str> = seen
+        .iter()
+        .filter_map(|e| match e {
+            LiveEvent::Text { body, .. } => Some(body.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["Hel", "Hello"]);
+    assert!(matches!(
+        seen.last(),
+        Some(LiveEvent::Ended {
+            status: "completed",
+            ..
+        })
+    ));
+    let outcome = sink.finished.lock().unwrap()[0].clone();
+    assert_eq!(outcome.status, TurnEndStatus::Completed);
+
+    // Hook registered first; the prompt carries the run id as its uuid.
+    let input_log = std::fs::read_to_string(dir.path().join("input.log")).unwrap();
+    let lines: Vec<&str> = input_log.lines().collect();
+    assert!(lines[0].contains(r#""subtype":"initialize""#) && lines[0].contains("PreToolUse"));
+    assert!(
+        lines[1].contains(&format!(r#""uuid":"{run}""#)),
+        "{}",
+        lines[1]
+    );
+
+    // Tools on, only our MCP server, still no allow rules or bypass.
+    let args = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
+    assert!(!args.contains("--tools"), "{args}");
+    assert!(args.contains("--mcp-config") && args.contains("--strict-mcp-config"));
+    assert!(args.contains("--permission-prompts none"), "{args}");
+    assert!(
+        !args.contains("dangerously") && !args.contains("allowed"),
+        "{args}"
+    );
+
+    // The session token was this turn's only and died with it.
+    let mcp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("mcp.log")).unwrap())
+            .unwrap();
+    let server = &mcp["mcpServers"]["ironclaw"];
+    assert_eq!(server["url"], "http://127.0.0.1:9/api/cli-bridge/mcp");
+    let token = server["headers"]["Authorization"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("Bearer ")
+        .unwrap();
+    assert_eq!(bridge.resolve_token(token), None);
+    let fresh = bridge.mint_token(
+        SessionGrant {
+            thread_id: thread.thread_id.clone(),
+            run_id: run.clone(),
+        },
+        Duration::from_secs(60),
+    );
+    assert!(bridge.resolve_token(&fresh).is_some());
+}
+
+#[tokio::test]
+async fn unanswered_tool_call_is_denied_on_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_millis(200));
+    let rt = bridged_runtime(
+        dir.path(),
+        bridged_script(dir.path()),
+        &sink,
+        Some(Arc::clone(&bridge)),
+    );
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+
+    rt.start_turn(&thread, input()).await.unwrap();
+    let seen = follow_turn(&bridge, &mut events, &thread.thread_id, None).await;
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+
+    let answer = std::fs::read_to_string(dir.path().join("answer.log")).unwrap();
+    assert!(
+        answer.contains(r#""permissionDecision":"deny""#),
+        "{answer}"
+    );
+    assert!(
+        answer.contains(r#""subtype":"success""#),
+        "never an error frame: {answer}"
+    );
+    assert!(
+        seen.iter()
+            .any(|e| matches!(e, LiveEvent::GateClosed { .. }))
+    );
+    // No gateway URL yet: no MCP config, the hook still guards every call.
+    let args = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
+    assert!(
+        !args.contains("--mcp-config") && !args.contains("--tools"),
+        "{args}"
+    );
 }

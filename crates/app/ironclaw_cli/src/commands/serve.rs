@@ -658,6 +658,13 @@ impl ServeCommand {
             if let Some(cli_login_mount) = cli_login_mount {
                 serve_config = serve_config.with_public_route_mount(cli_login_mount);
             }
+            // Loopback MCP route: the orchestrator tools for CLI agents.
+            if let Some(cli_bridge_mount) = runtime
+                .cli_bridge_route_mount(listener.announced_addr(listen_addr))
+                .context("failed to compose the CLI bridge route mount")?
+            {
+                serve_config = serve_config.with_public_route_mount(cli_bridge_mount);
+            }
             let webui_app = webui_v2_app_with_lifecycle(product_surface, serve_config)
                 .context("failed to compose v2 Router")?;
             let (router, public_route_drains) = webui_app.into_parts();

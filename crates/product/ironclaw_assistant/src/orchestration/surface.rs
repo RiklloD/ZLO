@@ -8,7 +8,8 @@
 //!   delegated task beneath it before the run is cancelled;
 //! - the `orchestrator.*` views and commands are answered here;
 //! - a thread bound to another runtime (a profile on a CLI driver) has its
-//!   submit, cancel and timeline answered by the engine (`external.rs`).
+//!   submit, cancel and timeline answered by the engine, and its live stream
+//!   and approval gates by the CLI bridge (`external.rs`).
 //!
 //! Everything else passes through untouched, so existing route shapes keep
 //! working.
@@ -16,12 +17,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use ironclaw_cli_providers::bridge::CliBridge;
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::error::OrchestratorError;
 use ironclaw_orchestrator::model::{Author, QueueItemId, TaskId, ThreadRecord, ThreadScope};
 use ironclaw_product_contracts::inbound_requests::{
-    ProductCancelRunRequest, ProductCreateThreadRequest, ProductSubmitTurnRequest,
+    ProductCancelRunRequest, ProductCreateThreadRequest, ProductResolveGateRequest,
+    ProductSubmitTurnRequest,
 };
 use ironclaw_product_contracts::orchestration::*;
 use ironclaw_product_contracts::profiles::*;
@@ -36,7 +39,8 @@ use serde_json::Value;
 use super::external;
 use super::profiles::{self, ProfileHome};
 use crate::reborn_services::{
-    CANCEL_RUN_COMMAND_ID, CREATE_THREAD_COMMAND_ID, SUBMIT_TURN_COMMAND_ID, TIMELINE_VIEW,
+    CANCEL_RUN_COMMAND_ID, CREATE_THREAD_COMMAND_ID, RESOLVE_GATE_COMMAND_ID,
+    SUBMIT_TURN_COMMAND_ID, TIMELINE_VIEW,
 };
 
 pub struct OrchestratedProductSurface {
@@ -44,14 +48,22 @@ pub struct OrchestratedProductSurface {
     engine: Arc<Engine>,
     /// `None` when the process has no home folder: profile routes then fail.
     home: Option<ProfileHome>,
+    /// Live turns and pending tool calls of CLI threads.
+    // arch-exempt: optional_arc, deployments without CLI runtimes have no bridge, plan #v3-cli-bridge
+    bridge: Option<Arc<CliBridge>>,
 }
 
 impl OrchestratedProductSurface {
-    pub fn new(inner: Arc<dyn ProductSurface>, engine: Arc<Engine>) -> Self {
+    pub fn new(
+        inner: Arc<dyn ProductSurface>,
+        engine: Arc<Engine>,
+        bridge: Option<Arc<CliBridge>>,
+    ) -> Self {
         Self {
             inner,
             engine,
             home: ProfileHome::from_env(),
+            bridge,
         }
     }
 }
@@ -532,6 +544,31 @@ impl ProductSurface for OrchestratedProductSurface {
                 }
                 self.inner.invoke(caller, request).await
             }
+            RESOLVE_GATE_COMMAND_ID => {
+                if let Some(bridge) = &self.bridge
+                    && let Ok(body) =
+                        serde_json::from_value::<ProductResolveGateRequest>(request.input.clone())
+                    && let Some(id) = body
+                        .thread_id
+                        .as_deref()
+                        .and_then(|raw| ThreadId::new(raw).ok())
+                    && self.external(&id, &scope).await.is_some()
+                {
+                    let approved = body.resolution.as_deref() == Some("approved");
+                    let response = external::resolve_gate(
+                        bridge,
+                        &id,
+                        body.run_id.as_deref().unwrap_or_default(),
+                        body.gate_ref.as_deref().unwrap_or_default(),
+                        approved,
+                    )?;
+                    return Ok(ProductSurfaceInvokeResponse {
+                        output: serde_json::to_value(response)
+                            .map_err(ProductSurfaceError::internal_from)?,
+                    });
+                }
+                self.inner.invoke(caller, request).await
+            }
             CREATE_THREAD_COMMAND_ID => {
                 let response = self.inner.invoke(caller, request).await?;
                 if let Some(id) = response.output["thread"]["thread_id"]
@@ -589,6 +626,15 @@ impl ProductSurface for OrchestratedProductSurface {
         caller: ProductSurfaceCaller,
         request: ProductSurfaceStreamRequest,
     ) -> Result<ProductSurfaceStreamResponse, ProductSurfaceError> {
+        if let Some(bridge) = &self.bridge
+            && let Some(id) = request
+                .stream_id
+                .as_deref()
+                .and_then(|raw| ThreadId::new(raw).ok())
+            && self.external(&id, &scope_of(&caller)).await.is_some()
+        {
+            return external::live_stream(Arc::clone(bridge), id);
+        }
         self.inner.stream_events(caller, request).await
     }
 }

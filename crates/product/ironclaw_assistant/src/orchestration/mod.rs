@@ -4,6 +4,8 @@
 //! that reports turn lifecycle, the per-model-call telemetry tap, and the `t3_*` model tools.
 
 mod external;
+#[cfg(test)]
+mod external_tests;
 mod observer;
 mod profiles;
 mod runtime;
@@ -22,17 +24,20 @@ pub use tools::orchestrator_capabilities;
 
 use std::sync::Arc;
 
+use ironclaw_cli_providers::bridge::CliBridge;
 use ironclaw_orchestrator::engine::Engine;
 use ironclaw_product_contracts::surface::ProductSurface;
 
 /// Route threads through `engine`: IronClaw's agent loop becomes its runtime
 /// (acting on the undecorated `inner`, so automatic turns are not mistaken for
 /// user activity), the tick loop starts, and the orchestrating decorator is
-/// returned. Falls back to `inner` when the runtime cannot be built.
+/// returned; `cli_bridge` streams CLI threads and answers their tool-call
+/// approvals. Falls back to `inner` when the runtime cannot be built.
 pub fn orchestrate(
     engine: &Arc<Engine>,
     inner: Arc<dyn ProductSurface>,
     session_extension_id: Option<String>,
+    cli_bridge: Option<Arc<CliBridge>>,
 ) -> Arc<dyn ProductSurface> {
     match AgentLoopRuntime::new(Arc::clone(&inner), session_extension_id) {
         Ok(agent_loop) => engine.register_runtime(Arc::new(agent_loop)),
@@ -42,5 +47,9 @@ pub fn orchestrate(
         }
     }
     engine.start(std::time::Duration::from_secs(2));
-    Arc::new(OrchestratedProductSurface::new(inner, Arc::clone(engine)))
+    Arc::new(OrchestratedProductSurface::new(
+        inner,
+        Arc::clone(engine),
+        cli_bridge,
+    ))
 }

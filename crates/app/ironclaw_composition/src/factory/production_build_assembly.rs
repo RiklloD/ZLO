@@ -371,7 +371,10 @@ async fn build_local_storage_production_shaped(
         },
     )
     .await?;
-    runtime_stores.orchestrator = orchestrator;
+    if let Some((engine, bridge)) = orchestrator {
+        runtime_stores.orchestrator = Some(engine);
+        runtime_stores.cli_bridge = Some(bridge);
+    }
     Ok(runtime_stores)
 }
 
