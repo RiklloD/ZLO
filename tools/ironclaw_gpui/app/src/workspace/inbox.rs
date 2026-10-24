@@ -1,6 +1,6 @@
 //! The sidebar inbox (t3code's): one list by recency with search and
-//! filters (profile, model, state), Pinned on top, Snoozed (N) and
-//! Settled (N) folded at the bottom, and the profile menu of the new-thread
+//! filters (profile, model, state), a foldable Working shelf and Pinned on
+//! top, Snoozed (N) and Settled (N) folded at the bottom, and the profile menu of the new-thread
 //! screen.
 //!
 //! The backend joins and classifies every row (`GET /inbox`), so this file
@@ -176,9 +176,8 @@ fn strip_model_suffix<'a>(title: &'a str, engines: &[InboxEngine]) -> &'a str {
             .flatten()
             .any(|m| m.eq_ignore_ascii_case(inner))
     });
-    let model_like = !inner.contains(' ')
-        && inner.contains('-')
-        && inner.chars().any(|c| c.is_ascii_digit());
+    let model_like =
+        !inner.contains(' ') && inner.contains('-') && inner.chars().any(|c| c.is_ascii_digit());
     let head = head.trim_end();
     if (named || model_like) && !head.is_empty() {
         head
@@ -193,11 +192,7 @@ impl Workspace {
         crate::titles::set_rows(&list.rows, cx);
         // A thread that enters or leaves the Working shelf grows into its
         // new place instead of jumping there.
-        let was_working = |id: &str| {
-            self.inbox
-                .row(id)
-                .map(|r| r.state == InboxState::Working)
-        };
+        let was_working = |id: &str| self.inbox.row(id).map(|r| r.state == InboxState::Working);
         for row in &list.rows {
             if was_working(&row.thread_id)
                 .is_some_and(|was| was != (row.state == InboxState::Working))
@@ -433,7 +428,11 @@ impl Workspace {
                 .into_any_element(),
             );
         }
-        if main.is_empty() && pinned.is_empty() && working.is_empty() && self.inbox.list.rows.is_empty() {
+        if main.is_empty()
+            && pinned.is_empty()
+            && working.is_empty()
+            && self.inbox.list.rows.is_empty()
+        {
             list.push(
                 div()
                     .px_2()
@@ -517,7 +516,7 @@ impl Workspace {
                     .overflow_y_scroll()
                     .px_2()
                     .pb_2()
-                    .gap_0p5()
+                    .gap_1()
                     .children(list),
             )
     }
@@ -527,24 +526,26 @@ impl Workspace {
             || self.inbox.model.is_some()
             || self.inbox.state.is_some();
         h_flex()
+            .h(px(design::SIDEBAR_SEARCH_HEIGHT))
+            .flex_none()
             .px_3()
-            .pt_2()
-            .pb_2()
             .gap_1()
             .items_center()
             .children(self.inbox.search.as_ref().map(|(input, _)| {
                 // T3 Code's search: a magnifier and the text, no box.
-                div().flex_1().child(
-                    Input::new(input)
-                        .appearance(false)
-                        .prefix(Icon::new(IconName::Search).small()),
-                )
+                div()
+                    .flex_1()
+                    .text_size(px(design::SIDEBAR_TITLE_SIZE))
+                    .child(
+                        Input::new(input)
+                            .appearance(false)
+                            .prefix(Icon::new(IconName::Search).size(px(16.))),
+                    )
             }))
             .child(
                 Button::new("inbox-filters")
                     .icon(ExtraIcon::ListFilter)
                     .ghost()
-                    .small()
                     .selected(self.inbox.filters_open || filtered)
                     .tooltip("Filter by profile, model or state")
                     .accessibility_label("Filters")
@@ -557,7 +558,6 @@ impl Workspace {
                 Button::new("new-thread")
                     .icon(ExtraIcon::SquarePen)
                     .ghost()
-                    .small()
                     .selected(self.inbox.new_menu_open)
                     .tooltip("New thread")
                     .accessibility_label("New thread")
@@ -752,11 +752,11 @@ impl Workspace {
             .role(Role::Button)
             .aria_label(format!("{label} ({count})"))
             .flex_none()
-            .h_8()
+            .h_9()
             .px_2()
             .gap_2()
             .items_center()
-            .text_xs()
+            .text_size(px(design::SIDEBAR_META_SIZE + 1.))
             .font_medium()
             .text_color(color)
             .cursor_pointer()
@@ -786,8 +786,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Card row: profile · branch · status or age, title, engines; hover
-    /// actions pin, snooze, settle.
+    /// Card row: title and status or age, then profile · branch; hover
+    /// actions pin, snooze, settle. No model readout: the profile names it.
     fn render_card(
         &self,
         row: &InboxRow,
@@ -903,10 +903,10 @@ impl Workspace {
                 .aria_label(title_of(row).to_string())
                 .relative()
                 .w_full()
-                .min_h(px(45.))
-                .px(px(8.))
-                .py(px(6.))
-                .gap(px(2.))
+                .min_h(px(design::SIDEBAR_CARD_MIN_HEIGHT))
+                .px(px(10.))
+                .py(px(9.))
+                .gap(px(4.))
                 .rounded(px(8.))
                 .cursor_pointer()
                 .bg(wash)
@@ -921,13 +921,12 @@ impl Workspace {
                     h_flex()
                         .gap(px(8.))
                         .items_center()
-                        .child(engines(&row.engines, cx))
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(gpui_kit::rems(13. / 16.))
+                                .text_size(px(design::SIDEBAR_TITLE_SIZE))
                                 .text_color(if recede { p.text_muted } else { ink })
                                 .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
                                 .child(title_of(row).to_string()),
@@ -936,7 +935,7 @@ impl Workspace {
                             div()
                                 .relative()
                                 .flex_none()
-                                .text_size(gpui_kit::rems(11. / 16.))
+                                .text_size(px(design::SIDEBAR_META_SIZE))
                                 .child(
                                     div()
                                         .when(menu_open, |d| d.invisible())
@@ -948,12 +947,12 @@ impl Workspace {
                 )
                 .child(
                     h_flex()
-                        .gap(px(6.))
+                        .gap(px(7.))
                         .items_center()
-                        .text_size(gpui_kit::rems(11. / 16.))
+                        .text_size(px(design::SIDEBAR_META_SIZE))
                         .text_color(quiet)
                         .child(profile_mark(&row.profile_id, &name, cx))
-                        .child(div().flex_none().max_w(px(110.)).truncate().child(name))
+                        .child(div().flex_none().max_w(px(140.)).truncate().child(name))
                         .when_some(branch, |d, b| d.child(branch_label(b, cx))),
                 );
         v_flex()
@@ -1009,6 +1008,8 @@ impl Workspace {
             _ => short_age(row.settled_at.unwrap_or(row.last_activity_at), now),
         };
         sidebar_row(SharedString::from(format!("slim-row-{id}")), active, cx)
+            .min_h(px(design::SIDEBAR_SLIM_HEIGHT))
+            .text_size(px(design::SIDEBAR_TITLE_SIZE))
             .group(group.clone())
             .aria_label(title_of(row).to_string())
             .on_click(
@@ -1110,11 +1111,11 @@ fn profile_mark(profile_id: &str, name: &str, cx: &App) -> impl IntoElement {
         .map_or('·', |c| c.to_ascii_uppercase());
     div()
         .flex_none()
-        .size(px(14.))
-        .rounded(px(3.))
+        .size(px(16.))
+        .rounded(px(4.))
         .bg(color.opacity(0.22))
         .text_color(color)
-        .text_size(px(9.))
+        .text_size(px(10.))
         .font_semibold()
         .flex()
         .items_center()
@@ -1133,49 +1134,6 @@ fn branch_label(branch: String, cx: &App) -> impl IntoElement {
         .text_color(p.text_faint)
         .child(Icon::new(ExtraIcon::GitBranch).xsmall())
         .child(div().truncate().child(branch))
-}
-
-/// One mark per engine that ran in the thread (no brand logos are bundled;
-/// a lettered tile per engine family stands in).
-fn engines(list: &[InboxEngine], cx: &App) -> impl IntoElement {
-    let p = Palette::of(cx);
-    let marks = list.iter().take(4).map(|e| {
-        let (letter, color) = engine_mark(e, p);
-        div()
-            .flex_none()
-            .size(px(14.))
-            .rounded_full()
-            .border_1()
-            .border_color(color.opacity(0.5))
-            .text_color(color)
-            .text_size(px(8.))
-            .font_semibold()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(letter)
-    });
-    h_flex().flex_none().gap_0p5().children(marks)
-}
-
-fn engine_mark(e: &InboxEngine, p: &Palette) -> (&'static str, gpui_kit::Hsla) {
-    let key = format!(
-        "{} {}",
-        e.runtime_id,
-        e.provider.as_deref().unwrap_or_default()
-    )
-    .to_lowercase();
-    if key.contains("claude") || key.contains("anthropic") {
-        ("C", p.warning)
-    } else if key.contains("antigravity") || key.contains("gemini") || key.contains("google") {
-        ("G", p.success)
-    } else if key.contains("muse") || key.contains("meta") {
-        ("M", p.danger)
-    } else if key.contains("codex") || key.contains("openai") {
-        ("O", p.text)
-    } else {
-        ("I", p.accent)
-    }
 }
 
 /// The open thread shows no Done or Woke: the person is looking at it.

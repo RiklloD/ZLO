@@ -647,9 +647,9 @@ impl Workspace {
             )
         } else {
             // Zeron's footer: the account chip on the left ("Local": this
-            // Mac's gateway), 28 px icon buttons on the right.
+            // Mac's gateway), icon buttons on the right at Hermes's 32 px.
             let foot = |id: &'static str, icon: IconName, label: &'static str| {
-                crate::chat::round_button(id, icon, false, label, cx).tooltip(move |w, cx| {
+                foot_button(id, icon, label, cx).tooltip(move |w, cx| {
                     gpui_kit::component::tooltip::Tooltip::new(label).build(w, cx)
                 })
             };
@@ -663,20 +663,20 @@ impl Workspace {
                         .id("account-local")
                         .gap(px(8.))
                         .px(px(6.))
-                        .h(px(28.))
+                        .h(px(design::SIDEBAR_CONTROL))
                         .items_center()
                         .rounded(px(8.))
-                        .text_size(gpui_kit::rems(13. / 16.))
+                        .text_size(px(design::SIDEBAR_TITLE_SIZE))
                         .text_color(p.text.opacity(0.8))
                         .child(
                             div()
-                                .size(px(16.))
+                                .size(px(18.))
                                 .rounded_full()
                                 .bg(p.accent)
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .text_size(px(9.))
+                                .text_size(px(10.))
                                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                 .text_color(design::on_accent(p))
                                 .child("L"),
@@ -698,9 +698,9 @@ impl Workspace {
                             d.child(
                                 div()
                                     .absolute()
-                                    .top(px(4.))
-                                    .right(px(4.))
-                                    .size(px(6.))
+                                    .top(px(5.))
+                                    .right(px(5.))
+                                    .size(px(7.))
                                     .rounded_full()
                                     .bg(p.accent),
                             )
@@ -960,6 +960,41 @@ fn sidebar_row(
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let id: ElementId = id.into();
     kit::row(SharedString::from(format!("{id:?}")), active, cx).role(Role::Button)
+}
+
+/// A sidebar footer icon button: a round hover wash, 16 px glyph.
+fn foot_button(
+    id: &'static str,
+    icon: IconName,
+    label: &'static str,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let p = *Palette::of(cx);
+    let key = SharedString::from(format!("foot-{id}"));
+    let t = crate::design::motion::hover_t(&key);
+    // The composer's round-button wash, so both hovers read the same.
+    let wash = if p.light {
+        gpui_kit::hsla(0., 0., 0., 0.08)
+    } else {
+        gpui_kit::hsla(0., 0., 1., 0.10)
+    };
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .size(px(design::SIDEBAR_CONTROL))
+        .flex_none()
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .on_hover(crate::design::motion::hover_listener(
+            key,
+            Style::of(cx).hover,
+        ))
+        .bg(wash.opacity(wash.a * t))
+        .child(Icon::new(icon).size(px(16.)).text_color(p.text_muted))
 }
 
 fn unread_badge(n: usize) -> impl IntoElement {
