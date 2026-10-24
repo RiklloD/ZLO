@@ -32,7 +32,7 @@ pub fn reload(cx: &mut App) {
     let choice = Prefs::of(cx).wallpaper.clone();
     let palette = *Palette::of(cx);
     if choice == Wallpaper::None {
-        cx.set_global(WallpaperImage(None));
+        replace(None, cx);
         cx.refresh_windows();
         return;
     }
@@ -49,11 +49,22 @@ pub fn reload(cx: &mut App) {
         let pixels = task.await;
         let image = Arc::new(RenderImage::new(vec![Frame::new(to_bgra(pixels))]));
         cx.update(|cx| {
-            cx.set_global(WallpaperImage(Some(image)));
+            replace(Some(image), cx);
             cx.refresh_windows();
         });
     })
     .detach();
+}
+
+/// Swap the picture and give the old one's GPU sprite back: GPUI keeps a
+/// drawn `RenderImage` in its atlas until told otherwise, so every theme
+/// change would otherwise leak a 2.3 MB texture.
+fn replace(image: Option<Arc<RenderImage>>, cx: &mut App) {
+    let old = cx.try_global::<WallpaperImage>().and_then(|w| w.0.clone());
+    cx.set_global(WallpaperImage(image));
+    if let Some(old) = old {
+        cx.drop_image(old, None);
+    }
 }
 
 /// Soft colour fields from the accent and two neighbouring hues on the

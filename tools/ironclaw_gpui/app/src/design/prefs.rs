@@ -38,6 +38,8 @@ pub struct Prefs {
     pub conversation_width: f32,
     pub wallpaper: Wallpaper,
     pub status_bar_hidden: bool,
+    /// The model picker's last picks, newest first: (provider, model).
+    pub recent_models: Vec<(String, String)>,
 }
 
 impl Default for Prefs {
@@ -53,6 +55,7 @@ impl Default for Prefs {
             conversation_width: 720.,
             wallpaper: Wallpaper::Aurora,
             status_bar_hidden: false,
+            recent_models: Vec::new(),
         }
     }
 }

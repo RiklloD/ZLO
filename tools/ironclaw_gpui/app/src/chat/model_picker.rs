@@ -30,6 +30,8 @@ use crate::ui::*;
 const NATIVE: &str = "ironclaw";
 const POPOVER_WIDTH: f32 = 380.;
 const POPOVER_LIST_HEIGHT: f32 = 320.;
+/// Recent picks shown first in "All", after MonoCode's `pickers.rs`.
+const RECENTS: usize = 6;
 
 pub enum PickerEvent {
     /// The backend applied a pick. `fork_thread_id` set: open that thread.
@@ -199,6 +201,12 @@ impl ModelPicker {
 
     fn pick(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
         self.open = false;
+        let recent = (provider.clone(), model.clone());
+        crate::design::prefs::Prefs::update(cx, |p| {
+            p.recent_models.retain(|r| *r != recent);
+            p.recent_models.insert(0, recent);
+            p.recent_models.truncate(RECENTS);
+        });
         // The effort carries over when the new model takes the same level.
         let effort = self
             .effort
@@ -389,6 +397,19 @@ impl ModelPicker {
                 .collect();
             groups.push(("Favorites".into(), None, picks));
         } else {
+            if self.rail == Rail::All && query.is_empty() {
+                let picks: Vec<_> = crate::design::prefs::Prefs::of(cx)
+                    .recent_models
+                    .iter()
+                    .filter_map(|(provider, model)| {
+                        let p = self.providers().iter().find(|p| p.provider == *provider)?;
+                        (!self.prefs.provider_hidden(provider)
+                            && !self.prefs.model_hidden(provider, model))
+                        .then(|| (p, model.clone()))
+                    })
+                    .collect();
+                groups.push(("Recent".into(), None, picks));
+            }
             for provider in self.providers() {
                 if let Rail::Provider(only) = &self.rail
                     && *only != provider.provider
