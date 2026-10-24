@@ -14,6 +14,7 @@ use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::model::now_ms;
 use ironclaw_orchestrator::runtime::TurnEventSink;
 use ironclaw_orchestrator::telemetry::{TurnTelemetry, tokens_per_second};
+use ironclaw_product_contracts::operator_llm::NativeModelRoute;
 
 pub struct OrchestratorTelemetrySink {
     inner: Arc<dyn HostManagedPromptDiagnosticSink>,
@@ -45,10 +46,13 @@ impl OrchestratorTelemetrySink {
         // larger than the input can only be the second shape.
         let fresh = if read > input { input } else { input - read };
         let telemetry = TurnTelemetry {
+            // Routed calls carry `provider::model[::effort]`; show the model.
             model: diagnostic
                 .effective_model
-                .clone()
-                .or_else(|| Some(diagnostic.requested_model.clone())),
+                .as_deref()
+                .and_then(NativeModelRoute::plain_model)
+                .or_else(|| NativeModelRoute::plain_model(&diagnostic.requested_model))
+                .map(str::to_string),
             // Whole-call time (includes time to first token): the loop does
             // not see streamed frames.
             tps: tokens_per_second(u64::from(usage.output_tokens), *duration_ms),

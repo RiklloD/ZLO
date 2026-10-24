@@ -164,6 +164,9 @@ pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_RUNS: &str = "webui.v2.orchestrator
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_TELEMETRY: &str =
     "webui.v2.orchestrator.thread_telemetry";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_FORK: &str = "webui.v2.orchestrator.thread_fork";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ROUTE: &str = "webui.v2.orchestrator.thread_route";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ROUTE_SET: &str =
+    "webui.v2.orchestrator.thread_route_set";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
     "webui.v2.orchestrator.thread_merge_back";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK: &str = "webui.v2.orchestrator.task";
@@ -180,6 +183,10 @@ pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_RUNS: &str =
     "/api/webchat/v2/threads/{thread_id}/runs";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TELEMETRY: &str =
     "/api/webchat/v2/threads/{thread_id}/telemetry";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ROUTE: &str =
+    "/api/webchat/v2/threads/{thread_id}/route";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ROUTE_SET: &str =
+    "/api/webchat/v2/threads/{thread_id}/route";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_FORK: &str =
     "/api/webchat/v2/threads/{thread_id}/fork";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
@@ -412,6 +419,8 @@ pub fn webui_v2_routes_with_artifact_flags(
         orchestrator_thread_runs_descriptor(),
         orchestrator_thread_telemetry_descriptor(),
         orchestrator_thread_fork_descriptor(),
+        orchestrator_thread_route_descriptor(),
+        orchestrator_thread_route_set_descriptor(),
         orchestrator_thread_merge_back_descriptor(),
         orchestrator_task_descriptor(),
         orchestrator_task_cancel_descriptor(),
@@ -1600,6 +1609,34 @@ fn orchestrator_thread_runs_descriptor() -> IngressRouteDescriptor {
             AuditTraceClass::UserAction,
             AllowedEffectPath::ProductSurface,
             StreamingMode::None,
+        ),
+    )
+}
+
+fn orchestrator_thread_route_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ROUTE,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ROUTE,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn orchestrator_thread_route_set_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ROUTE_SET,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ROUTE_SET,
+        mutation_policy(
+            body_limit_kib(16),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
         ),
     )
 }

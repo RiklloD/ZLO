@@ -93,3 +93,24 @@ async fn mcp_route_serves_tools_to_a_live_token_on_loopback_only() {
     let (status, _) = post(&router, [127, 0, 0, 1], &token, list).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// The webhook route is mounted beside MCP: loopback only, and a key that
+/// names no webhook schedule is a 404 (the engine decides the rest).
+#[tokio::test]
+async fn webhook_route_is_loopback_only_and_refuses_unknown_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_bridge, router, _thread) = fixture(dir.path()).await;
+    for (peer, expected) in [
+        ([192, 168, 1, 7], StatusCode::FORBIDDEN),
+        ([127, 0, 0, 1], StatusCode::NOT_FOUND),
+    ] {
+        let mut request = Request::post(format!("{WEBHOOK_PATH_PREFIX}nope.token"))
+            .body(Body::from("{}"))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((peer, 50000))));
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected, "peer {peer:?}");
+    }
+}

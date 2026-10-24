@@ -58,6 +58,8 @@ pub struct Engine {
     pub(crate) shutting_down: AtomicBool,
     /// Schedule grammar for `t3_schedule`, plugged in by the host.
     pub(crate) schedule_planner: OnceLock<Arc<dyn crate::schedules::SchedulePlanner>>,
+    /// Loopback base of the webhook route, known once the gateway is bound.
+    pub(crate) webhook_base: OnceLock<String>,
 }
 
 impl Engine {
@@ -90,6 +92,7 @@ impl Engine {
             booted: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
             schedule_planner: OnceLock::new(),
+            webhook_base: OnceLock::new(),
         }))
     }
 
@@ -334,6 +337,7 @@ impl Engine {
                     origin,
                     model: thread.model.clone(),
                     goal,
+                    effort: self.store.thread_effort(thread_id).await?,
                 },
             )
             .await?;

@@ -8,6 +8,7 @@
 //! Dark only for now; a light palette is one more constructor here.
 
 pub mod battery;
+pub mod brands;
 pub mod motion;
 pub mod prefs;
 pub mod themes;
@@ -21,6 +22,8 @@ use gpui_kit::{App, Global, Hsla, hsla, px};
 // Layout numbers. Colors are paint; these drive layout and never depend on it.
 pub const SIDEBAR_WIDTH: f32 = 264.;
 pub const TITLEBAR_HEIGHT: f32 = 38.;
+/// Room the macOS traffic lights take at the sidebar's top left.
+pub const TRAFFIC_LIGHTS_WIDTH: f32 = 78.;
 pub const STATUS_BAR_HEIGHT: f32 = 24.;
 /// Gap between the window edge and the inset content panel.
 pub const PANEL_INSET: f32 = 6.;

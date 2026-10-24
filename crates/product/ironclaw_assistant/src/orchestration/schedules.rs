@@ -119,11 +119,9 @@ impl SchedulePlanner for RoutineSchedulePlanner {
                 fixed_time(&spec)?;
                 Ok(spec)
             }
-            Some("webhook") => Err(OrchestratorError::request(
-                "unsupported",
-                "Webhook schedules are not available yet; use interval or fixed_time.",
+            _ => Err(invalid(
+                "schedule.type must be 'interval', 'fixed_time' or 'webhook'",
             )),
-            _ => Err(invalid("schedule.type must be 'interval' or 'fixed_time'")),
         }
     }
 

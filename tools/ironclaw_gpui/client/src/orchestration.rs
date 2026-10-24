@@ -8,8 +8,8 @@
 //! an engine that adds fields never breaks the app. A correctable failure is
 //! HTTP 200 with `ok: false`; it comes back as [`ClientError::Refused`].
 
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::api::{Client, V2, seg};
@@ -451,5 +451,164 @@ mod tests {
             reorder.body(),
             json!({"action": "reorder", "item_id": "q2", "before_id": "q1"})
         );
+    }
+}
+
+/// One provider a thread can switch to (`GET /threads/{id}/route`).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RouteProvider {
+    pub provider: String,
+    pub name: String,
+    pub runtime: String,
+    pub authenticated: bool,
+    pub models: Vec<String>,
+    /// Reasoning efforts a turn may pick (t3code's "Reasoning"); empty: none.
+    pub efforts: Vec<String>,
+}
+
+/// A thread's provider/model and its alternatives.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ThreadRoute {
+    pub thread_id: String,
+    pub runtime: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    /// The thread's reasoning effort; `None`: the provider's default.
+    pub effort: Option<String>,
+    /// No user turn yet: any switch stays in this thread.
+    pub fresh: bool,
+    pub providers: Vec<RouteProvider>,
+    /// The user's picker preferences (the same for every thread).
+    pub picker: PickerPrefs,
+}
+
+/// One model of one provider in the picker preferences.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PickerModel {
+    pub provider: String,
+    pub model: String,
+}
+
+impl PickerModel {
+    pub fn new(provider: &str, model: &str) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+        }
+    }
+}
+
+/// What the model picker hides and pins (backend settings, t3code's shape).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PickerPrefs {
+    pub hidden_providers: Vec<String>,
+    pub hidden_models: Vec<PickerModel>,
+    pub favorites: Vec<PickerModel>,
+}
+
+impl PickerPrefs {
+    pub fn provider_hidden(&self, provider: &str) -> bool {
+        self.hidden_providers.iter().any(|p| p == provider)
+    }
+
+    pub fn model_hidden(&self, provider: &str, model: &str) -> bool {
+        self.hidden_models
+            .iter()
+            .any(|m| m.provider == provider && m.model == model)
+    }
+
+    pub fn favorite(&self, provider: &str, model: &str) -> bool {
+        self.favorites
+            .iter()
+            .any(|m| m.provider == provider && m.model == model)
+    }
+
+    pub fn toggle_provider(&mut self, provider: &str) {
+        toggle(&mut self.hidden_providers, provider.to_string());
+    }
+
+    pub fn toggle_model(&mut self, provider: &str, model: &str) {
+        toggle(&mut self.hidden_models, PickerModel::new(provider, model));
+    }
+
+    pub fn toggle_favorite(&mut self, provider: &str, model: &str) {
+        toggle(&mut self.favorites, PickerModel::new(provider, model));
+    }
+}
+
+fn toggle<T: PartialEq>(list: &mut Vec<T>, item: T) {
+    match list.iter().position(|x| *x == item) {
+        Some(ix) => {
+            list.remove(ix);
+        }
+        None => list.push(item),
+    }
+}
+
+/// Where a route switch left the conversation.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RouteChange {
+    /// `in_place`, `rebound` or `forked`.
+    pub moved: String,
+    /// Set when the switch continued in a new thread.
+    pub fork_thread_id: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl Client {
+    pub async fn thread_route(&self, thread_id: &str) -> Result<ThreadRoute, ClientError> {
+        self.orch_get(format!("{V2}/threads/{}/route", seg(thread_id)))
+            .await
+    }
+
+    /// Model `default` clears the pick (IronClaw's loop only). The switch
+    /// keeps `effort` only; `None` returns to the provider's default.
+    pub async fn set_thread_route(
+        &self,
+        thread_id: &str,
+        provider: &str,
+        model: &str,
+        effort: Option<&str>,
+    ) -> Result<RouteChange, ClientError> {
+        let mut body = json!({"provider": provider, "model": model});
+        if let Some(effort) = effort {
+            body["effort"] = json!(effort);
+        }
+        self.orch_post(format!("{V2}/threads/{}/route", seg(thread_id)), body)
+            .await
+    }
+
+    /// Set the reasoning effort alone; `default` clears it.
+    pub async fn set_thread_effort(
+        &self,
+        thread_id: &str,
+        effort: &str,
+    ) -> Result<RouteChange, ClientError> {
+        self.orch_post(
+            format!("{V2}/threads/{}/route", seg(thread_id)),
+            json!({ "effort": effort }),
+        )
+        .await
+    }
+
+    /// Replace the picker preferences; read through any of the user's threads.
+    pub async fn set_model_picker(
+        &self,
+        thread_id: &str,
+        prefs: &PickerPrefs,
+    ) -> Result<(), ClientError> {
+        let _: Value = self
+            .orch_post(
+                format!("{V2}/threads/{}/route", seg(thread_id)),
+                json!({ "picker": prefs }),
+            )
+            .await?;
+        Ok(())
     }
 }

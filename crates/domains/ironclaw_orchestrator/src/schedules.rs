@@ -12,6 +12,11 @@
 //! Fires are at-most-once: the row's `next_run_at` advances with a
 //! conditional update before the queue insert, so two engines (or a retry
 //! after a crash between the two writes) never post the same slot twice.
+//!
+//! A schedule posts into the thread that created it, or (with
+//! `bind_to_current_thread=false`) into a fresh thread per run on the same
+//! engine, profile and model. `{type:'webhook'}` schedules have no clock:
+//! they fire per request to their loopback URL (`crate::schedule_webhooks`).
 
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
 use libsql::Value as Sql;
@@ -46,6 +51,40 @@ CREATE INDEX IF NOT EXISTS orch_schedules_owner ON orch_schedules(tenant_id, use
 CREATE UNIQUE INDEX IF NOT EXISTS orch_schedules_request ON orch_schedules(thread_id, client_request_id)
   WHERE client_request_id IS NOT NULL;
 "#;
+
+/// Columns added after the table first shipped, with their definitions.
+const ADDED_COLUMNS: [(&str, &str); 3] = [
+    ("new_thread", "INTEGER NOT NULL DEFAULT 0"),
+    ("webhook_token", "TEXT"),
+    ("signature", "TEXT"),
+];
+
+/// Bring an existing `orch_schedules` up to the current columns.
+pub(crate) async fn upgrade_schema(store: &crate::store::Store) -> Result<()> {
+    let present = store
+        .rows("PRAGMA table_info(orch_schedules)", vec![], |r| {
+            let mut c = Cols::new(r);
+            c.int()?;
+            c.text()
+        })
+        .await?;
+    for (name, definition) in ADDED_COLUMNS {
+        if !present.iter().any(|p| p == name) {
+            store
+                .exec(
+                    &format!("ALTER TABLE orch_schedules ADD COLUMN {name} {definition}"),
+                    vec![],
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// The webhook spec: no clock, one fire per request.
+pub(crate) fn is_webhook(spec: &Value) -> bool {
+    spec.get("type").and_then(Value::as_str) == Some("webhook")
+}
 
 const MAX_PROMPT_BYTES: usize = 32 * 1024;
 const MAX_TITLE_CHARS: usize = 120;
@@ -87,10 +126,18 @@ pub struct ScheduleRecord {
     pub run_count: i64,
     pub last_error: Option<String>,
     pub created_at: Millis,
+    /// Each run starts a fresh thread instead of posting into `thread_id`.
+    pub new_thread: bool,
+    /// Webhook schedules: the secret part of their URL.
+    pub webhook_token: Option<String>,
+    /// Webhook schedules: the optional HMAC-SHA256 check
+    /// (`{header, encoding, prefix, secret}`).
+    pub signature: Option<Value>,
 }
 
 const COLS: &str = "id, tenant_id, user_id, thread_id, title, prompt, spec, enabled, next_run_at, \
-                    last_run_at, run_count, last_error, created_at";
+                    last_run_at, run_count, last_error, created_at, new_thread, webhook_token, \
+                    signature";
 
 fn schedule_row(row: &libsql::Row) -> Result<ScheduleRecord> {
     let mut c = Cols::new(row);
@@ -108,6 +155,12 @@ fn schedule_row(row: &libsql::Row) -> Result<ScheduleRecord> {
         run_count: c.int()?,
         last_error: c.otext()?,
         created_at: c.int()?,
+        new_thread: c.int()? != 0,
+        webhook_token: c.otext()?,
+        signature: c
+            .otext()?
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()?,
     })
 }
 
@@ -130,7 +183,7 @@ pub(crate) struct ScheduleArgs {
 }
 
 impl Engine {
-    fn planner(&self) -> Result<std::sync::Arc<dyn SchedulePlanner>> {
+    pub(crate) fn planner(&self) -> Result<std::sync::Arc<dyn SchedulePlanner>> {
         self.schedule_planner.get().cloned().ok_or_else(|| {
             OrchestratorError::request(
                 "schedules_unavailable",
@@ -185,17 +238,29 @@ impl Engine {
     }
 
     fn schedule_view(&self, r: &ScheduleRecord) -> Value {
-        let describe = self
-            .schedule_planner
-            .get()
-            .map(|p| p.describe(&r.spec))
-            .unwrap_or_default();
-        json!({
+        let describe = if is_webhook(&r.spec) {
+            "on each webhook request".to_string()
+        } else {
+            self.schedule_planner
+                .get()
+                .map(|p| p.describe(&r.spec))
+                .unwrap_or_default()
+        };
+        let mut view = json!({
             "id": r.id.as_str(), "title": r.title, "prompt": r.prompt, "schedule": r.spec,
             "describe": describe, "enabled": r.enabled, "threadId": r.thread_id.as_str(),
+            "bindToCurrentThread": !r.new_thread,
             "nextRunAt": r.next_run_at, "lastRunAt": r.last_run_at, "runCount": r.run_count,
             "lastError": r.last_error, "createdAt": r.created_at,
-        })
+        });
+        if is_webhook(&r.spec) {
+            view["webhookUrl"] = json!(self.webhook_url(r));
+            // The secret never leaves the store.
+            view["signature"] = r.signature.as_ref().map_or(Value::Null, |s| {
+                json!({"header": s["header"], "encoding": s["encoding"], "prefix": s["prefix"], "hasSecret": true})
+            });
+        }
+        view
     }
 
     /// Read the row back so the tool reports the stored definition.
@@ -239,24 +304,13 @@ impl Engine {
 
     async fn schedule_create(&self, ctx: &CallContext, a: ScheduleArgs) -> Result<Value> {
         let planner = self.planner()?;
-        if a.bind_to_current_thread == Some(false) {
-            return Err(OrchestratorError::request(
-                "unsupported",
-                "Schedules post into this thread; bind_to_current_thread=false is not supported yet.",
-            ));
-        }
-        if a.signature.as_ref().is_some_and(|v| !v.is_null()) {
-            return Err(OrchestratorError::request(
-                "unsupported",
-                "Webhook signatures are not supported: webhook schedules are not available yet.",
-            ));
-        }
         let prompt = Self::check_schedule_text(&*planner, a.prompt.as_deref().unwrap_or(""))?;
         let raw = a
             .schedule
             .as_ref()
             .ok_or_else(|| OrchestratorError::invalid("schedule is required"))?;
-        let spec = planner.normalize(raw)?;
+        let spec = normalize_spec(&*planner, raw)?;
+        let signature = crate::schedule_webhooks::check_signature(&spec, a.signature.as_ref())?;
         let request = a
             .client_request_id
             .as_deref()
@@ -275,7 +329,8 @@ impl Engine {
             return self.schedule_readback(&ScheduleId::new(existing)?).await;
         }
         let now = now_ms();
-        let next = planner.next_after(&spec, None, now)?;
+        let next = next_slot(&*planner, &spec, None, now)?;
+        let token = is_webhook(&spec).then(crate::schedule_webhooks::new_token);
         let title = a
             .title
             .as_deref()
@@ -287,8 +342,9 @@ impl Engine {
         self.store
             .exec(
                 "INSERT INTO orch_schedules (id, tenant_id, user_id, thread_id, title, prompt, spec, \
-                 enabled, next_run_at, client_request_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?10)",
+                 enabled, next_run_at, client_request_id, created_at, updated_at, new_thread, \
+                 webhook_token, signature) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?10, ?11, ?12, ?13)",
                 vec![
                     s(id.as_str()),
                     s(ctx.scope.tenant_id.as_str()),
@@ -300,6 +356,9 @@ impl Engine {
                     opt_int(next),
                     request.map_or(Sql::Null, s),
                     now.into(),
+                    i64::from(a.bind_to_current_thread == Some(false)).into(),
+                    token.map_or(Sql::Null, s),
+                    opt_json(signature.as_ref())?,
                 ],
             )
             .await?;
@@ -313,9 +372,20 @@ impl Engine {
             None => r.prompt.clone(),
         };
         let spec = match &a.schedule {
-            Some(raw) => planner.normalize(raw)?,
+            Some(raw) => normalize_spec(&*planner, raw)?,
             None => r.spec.clone(),
         };
+        // `signature` absent keeps the stored one; `null` removes it.
+        let signature = match &a.signature {
+            None if is_webhook(&spec) => r.signature.clone(),
+            given => crate::schedule_webhooks::check_signature(&spec, given.as_ref())?,
+        };
+        let token = match (is_webhook(&spec), &r.webhook_token) {
+            (true, Some(token)) => Some(token.clone()),
+            (true, None) => Some(crate::schedule_webhooks::new_token()),
+            (false, _) => None,
+        };
+        let new_thread = a.bind_to_current_thread.map_or(r.new_thread, |bind| !bind);
         let enabled = a.enabled.unwrap_or(r.enabled);
         let title = a
             .title
@@ -326,14 +396,15 @@ impl Engine {
             .unwrap_or_else(|| r.title.clone());
         // A new grammar or a re-enable starts from now; otherwise keep the slot.
         let next = if a.schedule.is_some() || (enabled && !r.enabled) {
-            planner.next_after(&spec, None, now_ms())?
+            next_slot(&*planner, &spec, None, now_ms())?
         } else {
             r.next_run_at
         };
         self.store
             .exec(
                 "UPDATE orch_schedules SET title = ?2, prompt = ?3, spec = ?4, enabled = ?5, \
-                 next_run_at = ?6, updated_at = ?7 WHERE id = ?1",
+                 next_run_at = ?6, updated_at = ?7, new_thread = ?8, webhook_token = ?9, \
+                 signature = ?10 WHERE id = ?1",
                 vec![
                     s(r.id.as_str()),
                     s(&title),
@@ -342,6 +413,9 @@ impl Engine {
                     i64::from(enabled).into(),
                     opt_int(next),
                     now_ms().into(),
+                    i64::from(new_thread).into(),
+                    token.map_or(Sql::Null, s),
+                    opt_json(signature.as_ref())?,
                 ],
             )
             .await?;
@@ -359,17 +433,30 @@ impl Engine {
     }
 
     async fn schedule_run_now(&self, r: ScheduleRecord) -> Result<Value> {
-        let queued = self.post_schedule(&r, now_ms()).await?;
+        let (queued, thread) = self.post_schedule(&r, &r.prompt, now_ms()).await?;
         let mut view = self.schedule_readback(&r.id).await?;
         view["queuedId"] = json!(queued.as_str());
+        view["runThreadId"] = json!(thread.as_str());
         Ok(view)
     }
 
-    async fn post_schedule(&self, r: &ScheduleRecord, now: Millis) -> Result<QueueItemId> {
-        let text = format!("[Scheduled: {}]\n\n{}", r.title, r.prompt);
+    /// Queue one run of `r` with `prompt` (the stored prompt, or a
+    /// webhook's rendering of it): into its thread, or a fresh one.
+    pub(crate) async fn post_schedule(
+        &self,
+        r: &ScheduleRecord,
+        prompt: &str,
+        now: Millis,
+    ) -> Result<(QueueItemId, ThreadId)> {
+        let text = format!("[Scheduled: {}]\n\n{}", r.title, prompt);
+        let target = if r.new_thread {
+            self.schedule_run_thread(r, now).await?
+        } else {
+            r.thread_id.clone()
+        };
         let id = self
             .store
-            .queue_add(&r.thread_id, &text, Author::Schedule)
+            .queue_add(&target, &text, Author::Schedule)
             .await?;
         self.store
             .exec(
@@ -378,7 +465,34 @@ impl Engine {
                 vec![s(r.id.as_str()), now.into()],
             )
             .await?;
-        Ok(id)
+        Ok((id, target))
+    }
+
+    /// A fresh thread for one run: the schedule thread's engine, profile,
+    /// provider and model, titled after the schedule.
+    async fn schedule_run_thread(&self, r: &ScheduleRecord, now: Millis) -> Result<ThreadId> {
+        let origin = self.store.thread(&r.thread_id).await?.ok_or_else(|| {
+            OrchestratorError::not_found("thread_not_found", "The schedule's thread is gone.")
+        })?;
+        let runtime = self.runtime(&origin.runtime_id)?;
+        let title = format!("⏰ {}", r.title);
+        let created = runtime
+            .create_thread(crate::runtime::CreateThread {
+                scope: origin.scope.clone(),
+                title: Some(title.clone()),
+                provider: origin.provider.clone(),
+                model: origin.model.clone(),
+                idempotency_key: format!("schedule:{}:{now}", r.id),
+            })
+            .await?;
+        let mut thread = ThreadRecord::new(created.thread_id, origin.scope.clone(), runtime.id());
+        thread.profile_id = origin.profile_id.clone();
+        thread.provider = created.provider.or(origin.provider);
+        thread.model = created.model.or(origin.model);
+        thread.title = Some(title);
+        thread.native_session_id = created.native_session_id;
+        self.store.ensure_thread(&thread).await?;
+        Ok(thread.thread_id)
     }
 
     /// Tick step: post every due schedule into its thread's queue. Missed
@@ -432,8 +546,38 @@ impl Engine {
                     .await?;
                 continue;
             }
-            self.post_schedule(&r, now).await?;
+            self.post_schedule(&r, &r.prompt, now).await?;
         }
         Ok(())
     }
+}
+
+/// The canonical spec: webhooks are ours, every clock goes to the planner.
+fn normalize_spec(planner: &dyn SchedulePlanner, raw: &Value) -> Result<Value> {
+    if is_webhook(raw) {
+        Ok(json!({"type": "webhook"}))
+    } else {
+        planner.normalize(raw)
+    }
+}
+
+/// Next clock slot; a webhook has none.
+fn next_slot(
+    planner: &dyn SchedulePlanner,
+    spec: &Value,
+    last: Option<Millis>,
+    now: Millis,
+) -> Result<Option<Millis>> {
+    if is_webhook(spec) {
+        Ok(None)
+    } else {
+        planner.next_after(spec, last, now)
+    }
+}
+
+fn opt_json(v: Option<&Value>) -> Result<Sql> {
+    Ok(match v {
+        Some(v) => s(serde_json::to_string(v)?),
+        None => Sql::Null,
+    })
 }

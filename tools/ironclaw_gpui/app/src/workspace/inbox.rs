@@ -1,6 +1,7 @@
 //! The sidebar inbox (t3code's): one list by recency with search and
 //! filters (profile, model, state), Pinned on top, Snoozed (N) and
-//! Settled (N) folded at the bottom, and the New thread profile picker.
+//! Settled (N) folded at the bottom, and the profile menu of the new-thread
+//! screen.
 //!
 //! The backend joins and classifies every row (`GET /inbox`), so this file
 //! only renders and sends marks. Refresh is event-driven: on connect, when
@@ -34,13 +35,14 @@ pub(super) struct Inbox {
     pub(super) list: InboxListResponse,
     pub(super) search: Option<(Entity<InputState>, Subscription)>,
     filters_open: bool,
+    /// The new-thread button's profile menu.
+    pub(super) new_menu_open: bool,
     profile: Option<String>,
     model: Option<String>,
     state: Option<InboxState>,
     show_snoozed: bool,
     show_settled: bool,
     settled_limit: usize,
-    pub(super) picker_open: bool,
     snooze_menu: Option<String>,
     loading: bool,
     stale: bool,
@@ -214,6 +216,34 @@ impl Workspace {
         );
     }
 
+    /// Settle a row. Settling the open thread moves on to its neighbour in
+    /// the list, like t3code's forward navigation.
+    fn settle(&mut self, thread_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let open =
+            self.page == Page::Chat && self.active.as_ref().is_some_and(|(id, _)| *id == thread_id);
+        if open {
+            let rows = &self.inbox.list.rows;
+            let order: Vec<&str> = rows
+                .iter()
+                .filter(|r| r.state == InboxState::Pinned)
+                .chain(
+                    rows.iter()
+                        .filter(|r| matches!(r.state, InboxState::Inbox | InboxState::Working)),
+                )
+                .map(|r| r.thread_id.as_str())
+                .collect();
+            let next = order.iter().position(|id| *id == thread_id).and_then(|ix| {
+                order
+                    .get(ix + 1)
+                    .or_else(|| ix.checked_sub(1).and_then(|i| order.get(i)))
+            });
+            if let Some(next) = next.map(|id| id.to_string()) {
+                self.open_thread(next, window, cx);
+            }
+        }
+        self.inbox_mark(thread_id, InboxAction::Settle, None, cx);
+    }
+
     /// Opening a row with an unseen result clears its Done / Woke badge.
     pub(super) fn visit(&mut self, thread_id: &str, cx: &mut Context<Self>) {
         let unseen = self
@@ -263,51 +293,11 @@ impl Workspace {
         });
     }
 
-    /// New thread: open the profile picker (last used first, highlighted).
-    pub(super) fn toggle_picker(&mut self, cx: &mut Context<Self>) {
-        self.inbox.picker_open = !self.inbox.picker_open;
-        if self.inbox.picker_open {
-            self.refresh_inbox(cx);
-        }
-        cx.notify();
-    }
-
-    pub(super) fn new_thread_in(
-        &mut self,
-        profile_id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(backend) = self.backend.clone() else {
-            return;
-        };
-        self.inbox.picker_open = false;
-        jobs::run_in(
-            &backend,
-            window,
-            cx,
-            move |c| async move {
-                match c.create_profile_thread(&profile_id).await {
-                    Ok(created) => Ok(created.thread_id),
-                    // A gateway without profiles creates a plain thread.
-                    Err(e) if e.is_not_found() => {
-                        c.create_thread().await.map(|t| t.thread.thread_id)
-                    }
-                    Err(e) => Err(e),
-                }
-            },
-            |this, result, window, cx| match result {
-                Ok(id) => {
-                    this.refresh_inbox(cx);
-                    this.open_thread(id, window, cx);
-                }
-                Err(e) => this.thread_error(&e, cx),
-            },
-        );
-    }
-
     fn new_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.inbox.picker_open = false;
+        self.inbox.new_menu_open = false;
+        if let Some(draft) = self.draft.as_mut() {
+            draft.menu_open = false;
+        }
         self.show(Page::Profiles, window, cx);
         if let Some(view) = self.pages.profiles.clone() {
             view.update(cx, |v, cx| v.new_profile(window, cx));
@@ -373,9 +363,15 @@ impl Workspace {
                 self.inbox.settled_limit,
             ),
         ];
+        // Like t3code: the shelves sit at the bottom of the sidebar and
+        // unfold downward, scrolling with the list.
+        let mut pushed = false;
         for (key, label, items, open, limit) in sections {
             if items.is_empty() {
                 continue;
+            }
+            if !std::mem::replace(&mut pushed, true) {
+                list.push(div().flex_1().min_h_2().into_any_element());
             }
             list.push(self.render_fold(key, label, items.len(), open, cx));
             if open {
@@ -403,7 +399,16 @@ impl Workspace {
             .flex_1()
             .min_h_0()
             .child(self.render_inbox_header(cx))
-            .when(self.inbox.picker_open, |d| d.child(self.render_picker(cx)))
+            .when(self.inbox.new_menu_open, |d| {
+                d.child(
+                    div()
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.inbox.new_menu_open = false;
+                            cx.notify();
+                        }))
+                        .child(self.render_picker(cx)),
+                )
+            })
             .when(self.inbox.filters_open, |d| {
                 d.child(self.render_filters(cx))
             })
@@ -446,6 +451,19 @@ impl Workspace {
                     .accessibility_label("Filters")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.inbox.filters_open = !this.inbox.filters_open;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("new-thread")
+                    .icon(ExtraIcon::SquarePen)
+                    .ghost()
+                    .small()
+                    .selected(self.inbox.new_menu_open)
+                    .tooltip("New thread")
+                    .accessibility_label("New thread")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.inbox.new_menu_open = !this.inbox.new_menu_open;
                         cx.notify();
                     })),
             )
@@ -542,9 +560,11 @@ impl Workspace {
             .child(h_flex().flex_wrap().gap_1().children(states))
     }
 
-    fn render_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The new-thread screen's profile menu; the current pick is highlighted.
+    pub(super) fn render_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
         let last = self.inbox.list.last_used_profile_id.clone();
+        let chosen = self.draft.as_ref().map(|d| d.profile.clone());
         let mut profiles = self.inbox.list.profiles.clone();
         if profiles.is_empty() {
             profiles.push(InboxProfile {
@@ -555,13 +575,13 @@ impl Workspace {
             });
         }
         let rows = profiles.into_iter().enumerate().map(|(ix, profile)| {
-            let highlighted =
-                last.as_deref() == Some(profile.profile_id.as_str()) || (last.is_none() && ix == 0);
+            let highlighted = chosen.as_deref() == Some(profile.profile_id.as_str());
+            let is_last = last.as_deref() == Some(profile.profile_id.as_str());
             let id = profile.profile_id.clone();
             h_flex()
                 .id(("pick-profile", ix))
                 .role(Role::Button)
-                .aria_label(format!("New thread in {}", profile.display_name))
+                .aria_label(format!("Start in {}", profile.display_name))
                 .gap_2()
                 .px_2()
                 .py_1()
@@ -581,11 +601,11 @@ impl Workspace {
                 .when_some(profile.git_branch.clone(), |d, branch| {
                     d.child(branch_label(branch, cx))
                 })
-                .when(highlighted && last.is_some(), |d| {
+                .when(is_last, |d| {
                     d.child(div().text_xs().text_color(p.text_faint).child("Last used"))
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.new_thread_in(id.clone(), window, cx)
+                    this.start_in_profile(id.clone(), window, cx)
                 }))
         });
         v_flex()
@@ -604,7 +624,7 @@ impl Workspace {
                     .text_xs()
                     .font_medium()
                     .text_color(p.text_faint)
-                    .child("New thread in"),
+                    .child("Start in profile"),
             )
             .children(rows)
             .child(
@@ -626,29 +646,38 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = *Palette::of(cx);
+        let (color, hover) = match key {
+            "snoozed" => (p.accent, p.accent),
+            _ => (p.text_faint, p.text_muted),
+        };
         h_flex()
             .id(SharedString::from(format!("fold-{key}")))
             .role(Role::Button)
             .aria_label(format!("{label} ({count})"))
-            .mt_2()
+            .flex_none()
+            .h_8()
             .px_2()
-            .py_1()
-            .gap_1()
+            .gap_2()
             .items_center()
             .text_xs()
             .font_medium()
-            .text_color(p.text_faint)
+            .text_color(color)
             .cursor_pointer()
-            .hover(|s| s.text_color(p.text_muted))
+            .hover(|s| s.text_color(hover))
+            .child(if open {
+                label.to_string()
+            } else {
+                format!("{label} ({count})")
+            })
+            .child(div().flex_1().min_w_2().h_px().bg(p.border))
             .child(
                 Icon::new(if open {
                     IconName::ChevronDown
                 } else {
-                    IconName::ChevronRight
+                    IconName::ChevronUp
                 })
                 .xsmall(),
             )
-            .child(format!("{label} ({count})"))
             .on_click(cx.listener(move |this, _, _, cx| {
                 match key {
                     "snoozed" => this.inbox.show_snoozed = !this.inbox.show_snoozed,
@@ -678,13 +707,23 @@ impl Workspace {
         let menu_open = self.inbox.snooze_menu.as_deref() == Some(id.as_str());
         let recede = !active && row.status.is_none();
 
+        // Like t3code: on hover the actions take the status slot's place.
+        let blocker = settle_blocker(row);
         let actions = {
             let (pin_id, snooze_id, settle_id) = (id.clone(), id.clone(), id.clone());
+            // Hover flips visibility only: GPUI reads hover per phase, and a
+            // display toggle would skip prepaint yet paint ("must call
+            // prepaint before paint").
             h_flex()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
                 .gap_px()
-                .invisible()
-                .group_hover(group.clone(), |s| s.visible())
-                .when(menu_open, |d| d.visible())
+                .items_center()
+                .when(!menu_open, |d| {
+                    d.invisible().group_hover(group.clone(), |s| s.visible())
+                })
                 .child(
                     Button::new(SharedString::from(format!("pin-{id}")))
                         .icon(if pinned {
@@ -723,13 +762,18 @@ impl Workspace {
                 )
                 .child(
                     Button::new(SharedString::from(format!("settle-{id}")))
-                        .icon(ExtraIcon::Archive)
+                        .icon(IconName::Check)
+                        .label("Settle")
                         .ghost()
                         .xsmall()
-                        .tooltip("Settle")
-                        .accessibility_label("Settle")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.inbox_mark(settle_id.clone(), InboxAction::Settle, None, cx)
+                        .disabled(blocker.is_some())
+                        .tooltip(match blocker {
+                            Some(why) => format!("Can't settle: it {why}, snooze it instead"),
+                            None => "Settle session".into(),
+                        })
+                        .accessibility_label("Settle session")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.settle(settle_id.clone(), window, cx)
                         })),
                 )
         };
@@ -738,7 +782,7 @@ impl Workspace {
         let card =
             v_flex()
                 .id(SharedString::from(format!("row-{id}")))
-                .group(group)
+                .group(group.clone())
                 .role(Role::Button)
                 .aria_label(title_of(row).to_string())
                 .w_full()
@@ -762,8 +806,18 @@ impl Workspace {
                         .child(div().flex_none().max_w(px(96.)).truncate().child(name))
                         .when_some(branch, |d, b| d.child(branch_label(b, cx)))
                         .child(div().flex_1())
-                        .child(actions)
-                        .child(status_label(row, active, now, cx)),
+                        .child(
+                            div()
+                                .relative()
+                                .flex_none()
+                                .child(
+                                    div()
+                                        .when(menu_open, |d| d.invisible())
+                                        .group_hover(group.clone(), |s| s.invisible())
+                                        .child(status_label(row, active, now, cx)),
+                                )
+                                .child(actions),
+                        ),
                 )
                 .child(
                     h_flex()
@@ -869,15 +923,20 @@ impl Workspace {
                     .group_hover(group.clone(), |s| s.visible())
                     .child(
                         Button::new(SharedString::from(format!("unpark-{id}")))
-                            .icon(if snoozed {
-                                ExtraIcon::Bell
-                            } else {
-                                ExtraIcon::ArchiveRestore
-                            })
+                            .when(snoozed, |b| b.icon(ExtraIcon::Bell))
+                            .when(!snoozed, |b| b.icon(IconName::Undo2))
                             .ghost()
                             .xsmall()
-                            .tooltip(if snoozed { "Wake now" } else { "Back to inbox" })
-                            .accessibility_label(if snoozed { "Wake now" } else { "Back to inbox" })
+                            .tooltip(if snoozed {
+                                "Wake now"
+                            } else {
+                                "Un-settle session"
+                            })
+                            .accessibility_label(if snoozed {
+                                "Wake now"
+                            } else {
+                                "Un-settle session"
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let action = if snoozed {
                                     InboxAction::Wake
@@ -1027,6 +1086,15 @@ fn engine_mark(e: &InboxEngine, p: &Palette) -> (&'static str, gpui_kit::Hsla) {
 }
 
 /// The open thread shows no Done or Woke: the person is looking at it.
+/// Why a row can't be settled (t3code refuses live work), or None.
+fn settle_blocker(row: &InboxRow) -> Option<&'static str> {
+    match row.status {
+        Some(InboxStatus::Working) => Some("is working"),
+        Some(InboxStatus::Background) => Some("has subagents running"),
+        _ => None,
+    }
+}
+
 fn status_label(row: &InboxRow, active: bool, now: i64, cx: &App) -> AnyElement {
     let p = Palette::of(cx);
     let text = |t: String, color| {

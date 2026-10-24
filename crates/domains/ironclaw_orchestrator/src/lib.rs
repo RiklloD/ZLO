@@ -35,6 +35,7 @@ pub mod profiles;
 mod recovery;
 pub mod restart;
 pub mod runtime;
+pub mod schedule_webhooks;
 pub mod schedules;
 pub mod store;
 pub mod telemetry;

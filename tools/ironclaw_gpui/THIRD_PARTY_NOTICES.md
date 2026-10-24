@@ -31,3 +31,15 @@ SOFTWARE.
 `app/assets/fonts/` bundles Geist and Geist Mono, copyright 2024 The Geist
 Project Authors (https://github.com/vercel/geist-font), under the SIL Open
 Font License 1.1. The full license is in `app/assets/fonts/Geist-OFL.txt`.
+
+## Provider icons
+
+`app/assets/providers/` holds provider logos.
+
+- `openai.svg`, `claude.svg`, `cursor.svg`, `grok.svg`, `opencode.svg`,
+  `pi.svg`, `muse.svg`, `antigravity.png`: from T3 Code
+  (github.com/pingdotgg/t3code), MIT License, Copyright (c) 2026 T3 Tools Inc.
+- Every other file: from lobe-icons (github.com/lobehub/lobe-icons,
+  `@lobehub/icons-static-svg` 1.98.0), MIT License, Copyright (c) 2023 LobeHub.
+
+The logos are trademarks of their owners and identify the providers only.

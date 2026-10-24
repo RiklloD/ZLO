@@ -227,6 +227,16 @@ impl OrchestratedProductSurface {
                     .await,
                 )
             }
+            v if v == ORCHESTRATOR_THREAD_ROUTE_VIEW.id => {
+                let req: OrchestratorThreadRequest = decode(input)?;
+                answer(
+                    async {
+                        let thread = self.owned(&req.thread_id, scope).await?;
+                        engine.route_view(&thread).await
+                    }
+                    .await,
+                )
+            }
             v if v == ORCHESTRATOR_THREAD_TELEMETRY_VIEW.id => {
                 let req: OrchestratorThreadRequest = decode(input)?;
                 answer(
@@ -393,6 +403,25 @@ impl OrchestratedProductSurface {
                     .await,
                 )
             }
+            ORCHESTRATOR_ROUTE_COMMAND_ID => {
+                let req: OrchestratorRouteRequest = decode(input)?;
+                answer(
+                    async {
+                        let thread = self.owned(&req.thread_id, scope).await?;
+                        if let Some(picker) = req.picker.clone() {
+                            return engine.set_model_picker(picker).await;
+                        }
+                        let target = ironclaw_orchestrator::delegation::Target {
+                            provider: req.provider.clone(),
+                            model: req.model.clone(),
+                            reasoning_effort: req.effort.clone(),
+                            ..Default::default()
+                        };
+                        engine.set_route(&thread, &target).await
+                    }
+                    .await,
+                )
+            }
             ORCHESTRATOR_FORK_COMMAND_ID => {
                 let req: OrchestratorForkRequest = decode(input)?;
                 answer(
@@ -548,19 +577,44 @@ impl ProductSurface for OrchestratedProductSurface {
                         Ok(None) => {}
                         Err(error) => soft("next-message context", Err::<(), _>(error)),
                     }
-                    // A thread without a picked model runs on its profile's default.
+                    // A message without a model runs on the thread's pick
+                    // (`/route`), else on its profile's default; the thread's
+                    // effort pick rides along on IronClaw's loop.
                     let unpicked = body
                         .model
                         .as_deref()
                         .is_none_or(|m| m.trim().is_empty() || m == "default");
+                    let thread = match self.engine.owned_thread(&id, &scope).await {
+                        Ok(thread) => Some(thread),
+                        Err(error) => {
+                            soft("thread route", Err::<(), _>(error));
+                            None
+                        }
+                    };
                     if unpicked {
-                        match profiles::default_model(&self.engine, &id).await {
-                            Ok(Some(model)) => {
-                                body.model = Some(model);
-                                changed = true;
+                        let mut model = thread.as_ref().and_then(|t| t.model.clone());
+                        if model.is_none() {
+                            match profiles::default_model(&self.engine, &id).await {
+                                Ok(found) => model = found,
+                                Err(error) => soft("profile default model", Err::<(), _>(error)),
                             }
-                            Ok(None) => {}
-                            Err(error) => soft("profile default model", Err::<(), _>(error)),
+                        }
+                        let effort = match self.engine.store().thread_effort(&id).await {
+                            Ok(effort) => effort,
+                            Err(error) => {
+                                soft("thread effort", Err::<(), _>(error));
+                                None
+                            }
+                        };
+                        let model = match &thread {
+                            Some(thread) => {
+                                super::runtime::native_turn_model(thread, model, effort.as_deref())
+                            }
+                            None => model,
+                        };
+                        if model.is_some() {
+                            body.model = model;
+                            changed = true;
                         }
                     }
                     if let Some(thread) = self.external(&id, &scope).await {

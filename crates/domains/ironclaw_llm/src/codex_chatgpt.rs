@@ -413,7 +413,7 @@ impl CodexChatGptProvider {
         // Only add `reasoning` for models that support it;
         // the Responses API hard-rejects it on non-reasoning models.
         if crate::reasoning_models::supports_openai_reasoning(model) {
-            body["reasoning"] = crate::responses_reasoning::summary_request();
+            body["reasoning"] = crate::responses_reasoning::summary_request(metadata);
         }
 
         if !api_tools.is_empty() {

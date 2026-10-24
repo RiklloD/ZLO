@@ -60,6 +60,7 @@ impl TurnRuntime for FakeRuntime {
                 authenticated: true,
                 current: false,
                 models: vec!["m1".into(), "m2".into()],
+                efforts: vec!["low".into(), "high".into()],
             })
             .into_iter()
             .collect())
@@ -847,4 +848,318 @@ async fn schedule_fires_into_a_busy_thread_as_a_queued_item() {
         )
         .await;
     assert_eq!(denied["error"], "schedule_not_found");
+}
+
+/// `bind_to_current_thread=false` gives every run its own thread on the
+/// schedule thread's engine; webhook schedules run per request to their
+/// URL, check the signature and the safety scan, and quote the request.
+#[tokio::test]
+async fn schedules_run_in_fresh_threads_and_on_webhooks() {
+    use crate::schedule_webhooks::{WebhookRefusal, WebhookRequest};
+    use hmac::{Hmac, KeyInit, Mac};
+
+    let h = harness().await;
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    h.engine.set_schedule_planner(Arc::new(FakePlanner));
+    h.engine.set_webhook_base("http://127.0.0.1:9".into());
+
+    // Fresh thread per run.
+    let fresh = h
+        .engine
+        .call_tool(
+            "t3_schedule",
+            &ctx("a"),
+            &json!({"action": "create", "prompt": "daily digest", "title": "Digest",
+                    "bind_to_current_thread": false,
+                    "schedule": {"type": "interval", "everyMs": 3600000}}),
+        )
+        .await;
+    assert_eq!(fresh["schedule"]["bindToCurrentThread"], false, "{fresh}");
+    let id = fresh["schedule"]["id"].as_str().unwrap().to_string();
+    let ran = h
+        .engine
+        .call_tool(
+            "t3_schedule",
+            &ctx("a"),
+            &json!({"action": "run_now", "id": id}),
+        )
+        .await;
+    let run_thread = tid(ran["runThreadId"].as_str().unwrap());
+    assert_ne!(run_thread, a);
+    let record = h.engine.store().thread(&run_thread).await.unwrap().unwrap();
+    assert_eq!(record.title.as_deref(), Some("⏰ Digest"));
+    assert_eq!(record.scope, scope());
+    assert!(h.engine.store().queue(&a, false).await.unwrap().is_empty());
+    h.engine.tick().await;
+    assert!(h.rt.starts_on(&run_thread)[0].contains("daily digest"));
+
+    // Webhook with a signature.
+    let hook = h
+        .engine
+        .call_tool(
+            "t3_schedule",
+            &ctx("a"),
+            &json!({"action": "create", "title": "Push",
+                    "prompt": "New push to {{body.repo}} by {{headers.x-user}}",
+                    "schedule": {"type": "webhook"},
+                    "signature": {"header": "X-Sig", "prefix": "sha256=", "secret": "k"}}),
+        )
+        .await;
+    assert_eq!(hook["ok"], true, "{hook}");
+    assert!(hook["schedule"]["nextRunAt"].is_null());
+    assert_eq!(hook["schedule"]["signature"]["hasSecret"], true);
+    assert!(
+        !hook.to_string().contains("\"k\""),
+        "secret never shown: {hook}"
+    );
+    let url = hook["schedule"]["webhookUrl"].as_str().unwrap();
+    let key = url
+        .strip_prefix("http://127.0.0.1:9/api/orchestrator/webhooks/")
+        .unwrap();
+
+    let signed = |body: &str| {
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(b"k").unwrap();
+        mac.update(body.as_bytes());
+        WebhookRequest {
+            method: "POST".into(),
+            path: "/".into(),
+            headers: vec![
+                ("x-user".into(), "lorik".into()),
+                (
+                    "x-sig".into(),
+                    format!("sha256={}", hex::encode(mac.finalize().into_bytes())),
+                ),
+            ],
+            query: vec![],
+            body: body.as_bytes().to_vec(),
+        }
+    };
+    let good = signed(r#"{"repo":"ironclaw"}"#);
+    let (hook_id, _) = key.split_once('.').unwrap();
+    assert_eq!(
+        h.engine
+            .fire_webhook(&format!("{hook_id}.wrong"), &good)
+            .await,
+        Err(WebhookRefusal::NotFound)
+    );
+    let mut forged = good.clone();
+    forged.body = br#"{"repo":"other"}"#.to_vec();
+    assert_eq!(
+        h.engine.fire_webhook(key, &forged).await,
+        Err(WebhookRefusal::Unauthorized)
+    );
+    assert_eq!(
+        h.engine
+            .fire_webhook(key, &signed(r#"{"repo":"evil"}"#))
+            .await,
+        Err(WebhookRefusal::Rejected),
+        "the rendered prompt goes through the safety scan"
+    );
+    let fired = h.engine.fire_webhook(key, &good).await.unwrap();
+    assert_eq!(fired["threadId"], "a");
+    let queue = h.engine.store().queue(&a, false).await.unwrap();
+    assert!(
+        queue[0].text.contains("New push to ironclaw by lorik"),
+        "{}",
+        queue[0].text
+    );
+
+    // Paused: refused, nothing queued.
+    h.engine
+        .call_tool(
+            "t3_schedule",
+            &ctx("a"),
+            &json!({"action": "update", "id": hook_id, "enabled": false}),
+        )
+        .await;
+    assert_eq!(
+        h.engine.fire_webhook(key, &good).await,
+        Err(WebhookRefusal::Paused)
+    );
+    assert_eq!(h.engine.store().queue(&a, false).await.unwrap().len(), 1);
+}
+
+/// A database from before the webhook/fresh-thread columns opens and works.
+#[tokio::test]
+async fn old_schedule_tables_gain_the_new_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    db.connect()
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE orch_schedules (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, \
+             user_id TEXT NOT NULL, thread_id TEXT NOT NULL, title TEXT NOT NULL, \
+             prompt TEXT NOT NULL, spec TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, \
+             next_run_at INTEGER, last_run_at INTEGER, run_count INTEGER NOT NULL DEFAULT 0, \
+             last_error TEXT, client_request_id TEXT, created_at INTEGER NOT NULL, \
+             updated_at INTEGER NOT NULL); \
+             INSERT INTO orch_schedules (id, tenant_id, user_id, thread_id, title, prompt, spec, \
+             created_at, updated_at) VALUES ('s1', 't1', 'u1', 'a', 'Old', 'p', '{}', 1, 1);",
+        )
+        .await
+        .unwrap();
+    let engine = open_engine(&db).await;
+    let _again = open_engine(&db).await; // idempotent
+    let old = engine
+        .schedule(&ScheduleId::new("s1").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!old.new_thread && old.webhook_token.is_none());
+}
+
+#[tokio::test]
+async fn route_switch_moves_in_place_rebinds_or_forks() {
+    let h = harness().await;
+    let cli = Arc::new(FakeRuntime {
+        name: Some("cli"),
+        ..Default::default()
+    });
+    h.engine.register_runtime(cli.clone());
+    let store = h.engine.store();
+    let target = |provider: &str, model: &str| crate::delegation::Target {
+        provider: Some(provider.into()),
+        model: Some(model.into()),
+        ..Default::default()
+    };
+
+    // An unused thread moves runtime; the same runtime switches in place.
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    let thread = store.thread(&a).await.unwrap().unwrap();
+    let r = h
+        .engine
+        .set_route(&thread, &target("cli", "m1"))
+        .await
+        .unwrap();
+    assert_eq!(r["moved"], "rebound");
+    let thread = store.thread(&a).await.unwrap().unwrap();
+    assert_eq!(thread.runtime_id.as_str(), "cli");
+    let r = h
+        .engine
+        .set_route(&thread, &target("cli", "m2"))
+        .await
+        .unwrap();
+    assert_eq!(r["moved"], "in_place");
+    let thread = store.thread(&a).await.unwrap().unwrap();
+    assert_eq!(thread.model.as_deref(), Some("m2"));
+    assert_eq!(thread.native_session_id.as_deref(), Some("session-1"));
+
+    // History on IronClaw's loop: the switch continues in a fork on the CLI.
+    let b = tid("b");
+    h.engine.ensure_thread(&b, &scope(), None).await.unwrap();
+    h.engine.on_user_prompt(&b).await.unwrap();
+    h.rt.history
+        .lock()
+        .unwrap()
+        .insert(b.clone(), vec![msg(HistoryRole::User, "hello")]);
+    let thread = store.thread(&b).await.unwrap().unwrap();
+    let r = h
+        .engine
+        .set_route(&thread, &target("cli", "m1"))
+        .await
+        .unwrap();
+    assert_eq!(r["moved"], "forked", "{r}");
+    let fork = store
+        .thread(&tid(r["forkThreadId"].as_str().unwrap()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fork.runtime_id.as_str(), "cli");
+    assert_eq!(fork.model.as_deref(), Some("m1"));
+    let source = store.thread(&b).await.unwrap().unwrap();
+    assert_eq!(
+        source.runtime_id.as_str(),
+        "fake",
+        "the source keeps its runtime"
+    );
+}
+
+#[tokio::test]
+async fn model_picker_prefs_persist_deduplicated_and_ride_the_route_view() {
+    let h = harness().await;
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    let thread = h.engine.store().thread(&a).await.unwrap().unwrap();
+    let fav = json!({"provider": "glm", "model": "glm-5.3"});
+    let r = h
+        .engine
+        .set_model_picker(json!({
+            "hiddenProviders": ["inception", "inception"],
+            "hiddenModels": [{"provider": "glm", "model": "glm-4.5"}],
+            "favorites": [fav, fav],
+        }))
+        .await
+        .unwrap();
+    assert_eq!(r["picker"]["hiddenProviders"], json!(["inception"]));
+    assert_eq!(r["picker"]["favorites"], json!([fav]));
+
+    let view = h.engine.route_view(&thread).await.unwrap();
+    assert_eq!(view["picker"], r["picker"]);
+    assert!(
+        h.engine
+            .set_model_picker(json!({"hiddenProviders": [""]}))
+            .await
+            .is_err(),
+        "empty ids are rejected"
+    );
+}
+
+#[tokio::test]
+async fn an_effort_pick_rides_the_route_and_a_switch_keeps_only_its_own() {
+    let h = harness().await;
+    let cli = Arc::new(FakeRuntime {
+        name: Some("cli"),
+        ..Default::default()
+    });
+    h.engine.register_runtime(cli.clone());
+    let store = h.engine.store();
+    let a = tid("effort");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    let thread = store.thread(&a).await.unwrap().unwrap();
+    let effort = |e: &str| crate::delegation::Target {
+        reasoning_effort: Some(e.into()),
+        ..Default::default()
+    };
+
+    let r = h.engine.set_route(&thread, &effort("high")).await.unwrap();
+    assert_eq!(
+        (r["moved"].as_str(), r["effort"].as_str()),
+        (Some("in_place"), Some("high"))
+    );
+    let view = h.engine.route_view(&thread).await.unwrap();
+    assert_eq!(view["effort"], "high");
+    let cli_row = view["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["provider"] == "cli")
+        .unwrap();
+    assert_eq!(cli_row["efforts"], serde_json::json!(["low", "high"]));
+
+    // A switch without an effort clears it; `default` clears it too.
+    let switch = crate::delegation::Target {
+        provider: Some("cli".into()),
+        model: Some("m1".into()),
+        ..Default::default()
+    };
+    h.engine.set_route(&thread, &switch).await.unwrap();
+    assert_eq!(store.thread_effort(&a).await.unwrap(), None);
+    let thread = store.thread(&a).await.unwrap().unwrap();
+    h.engine.set_route(&thread, &effort("low")).await.unwrap();
+    assert_eq!(
+        store.thread_effort(&a).await.unwrap().as_deref(),
+        Some("low")
+    );
+    h.engine
+        .set_route(&thread, &effort("default"))
+        .await
+        .unwrap();
+    assert_eq!(store.thread_effort(&a).await.unwrap(), None);
 }

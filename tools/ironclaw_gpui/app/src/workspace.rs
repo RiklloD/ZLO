@@ -1,5 +1,6 @@
-//! Window root: connects to the gateway, lists threads, and switches between
-//! the open chat and the full-width pages.
+//! Window root (t3code's layout): connects to the gateway; the sidebar lists
+//! threads, or the settings pages while one is open; the panel shows the
+//! open chat, the new-thread screen or a settings page under a breadcrumb.
 
 use std::time::Duration;
 
@@ -22,12 +23,14 @@ use crate::pages::notifications::NotificationsView;
 use crate::pages::operator::OperatorView;
 use crate::pages::profiles::ProfilesView;
 use crate::pages::projects::ProjectsView;
+use crate::pages::providers::ProvidersView;
 use crate::pages::settings::SettingsView;
 use crate::pages::skills::SkillsView;
 use crate::pages::usage::{UsageModel, UsageView};
 use crate::ui::*;
 use gpui_kit::StyledImage as _;
 
+mod draft;
 mod inbox;
 
 pub(crate) use inbox::title_of as row_title;
@@ -51,6 +54,8 @@ pub fn toggle_status_bar(cx: &mut App) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Chat,
+    /// The new-thread screen.
+    Draft,
     Notifications,
     Automations,
     Files,
@@ -59,6 +64,7 @@ enum Page {
     Extensions,
     Skills,
     Settings,
+    Providers,
     Operator,
     Usage,
 }
@@ -74,6 +80,7 @@ struct Pages {
     extensions: Option<Entity<ExtensionsView>>,
     skills: Option<Entity<SkillsView>>,
     settings: Option<Entity<SettingsView>>,
+    providers: Option<Entity<ProvidersView>>,
     operator: Option<Entity<OperatorView>>,
     usage: Option<Entity<UsageView>>,
 }
@@ -96,6 +103,7 @@ pub struct Workspace {
     active: Option<(String, Entity<ChatView>)>,
     page: Page,
     pages: Pages,
+    draft: Option<draft::Draft>,
     unread: usize,
     _chat_events: Vec<Subscription>,
     _page_events: Vec<Subscription>,
@@ -123,6 +131,7 @@ impl Workspace {
             active: None,
             page: Page::Chat,
             pages: Pages::default(),
+            draft: None,
             unread: 0,
             _chat_events: Vec::new(),
             _page_events: Vec::new(),
@@ -196,8 +205,9 @@ impl Workspace {
                         this.conn = Conn::Ready;
                         this.start_polling(window, cx);
                         this.start_status(backend.clone(), window, cx);
-                        if let Some(first) = this.inbox.first_open() {
-                            this.open_thread(first, window, cx);
+                        match this.inbox.first_open() {
+                            Some(first) => this.open_thread(first, window, cx),
+                            None => this.open_draft(window, cx),
                         }
                     }
                     Err(e) => this.connect_failed(&e, window, cx),
@@ -284,19 +294,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// New conversation: the profile picker decides where it lives.
-    fn new_thread(&mut self, cx: &mut Context<Self>) {
-        self.toggle_picker(cx);
-    }
-
-    fn thread_error(&mut self, error: &ClientError, cx: &mut Context<Self>) {
-        self.conn = Conn::Failed {
-            message: friendly(error).into(),
-            retry_in: None,
-        };
-        cx.notify();
-    }
-
     fn delete_thread(&mut self, thread_id: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(backend) = self.backend.clone() else {
             return;
@@ -313,8 +310,9 @@ impl Workspace {
                 this.inbox.list.rows.retain(|t| t.thread_id != thread_id);
                 if this.active.as_ref().is_some_and(|(id, _)| *id == thread_id) {
                     this.active = None;
-                    if let Some(next) = this.inbox.first_open() {
-                        this.open_thread(next, window, cx);
+                    match this.inbox.first_open() {
+                        Some(next) => this.open_thread(next, window, cx),
+                        None => this.open_draft(window, cx),
                     }
                 }
                 cx.notify();
@@ -449,7 +447,7 @@ impl Workspace {
             };
         }
         match page {
-            Page::Chat => {}
+            Page::Chat | Page::Draft => {}
             Page::Notifications => {
                 open!(notifications, |cx| NotificationsView::new(backend, cx))
             }
@@ -460,6 +458,16 @@ impl Workspace {
             Page::Extensions => open!(extensions, |cx| ExtensionsView::new(backend, cx)),
             Page::Skills => open!(skills, |cx| SkillsView::new(backend, window, cx)),
             Page::Settings => open!(settings, |cx| SettingsView::new(backend, cx)),
+            Page::Providers => {
+                // The orchestrator catalog (CLI agents) is read through any thread.
+                let catalog = self.inbox.list.rows.first().map(|r| r.thread_id.clone());
+                if let Some(view) = self.pages.providers.clone() {
+                    view.update(cx, |v, _| v.set_catalog_thread(catalog.clone()));
+                }
+                open!(providers, |cx| ProvidersView::new(
+                    backend, catalog, window, cx
+                ))
+            }
             Page::Operator => open!(operator, |cx| OperatorView::new(backend, cx)),
             Page::Usage => {
                 let Some(model) = self.usage.clone() else {
@@ -472,46 +480,62 @@ impl Workspace {
         cx.notify();
     }
 
-    fn render_nav(&self, cx: &Context<Self>) -> impl IntoElement {
+    /// Settings pages in sidebar order: label, icon.
+    fn settings_pages(&self) -> Vec<(Page, IconName, &'static str)> {
         let mut items = vec![
-            (Page::Notifications, IconName::Bell, "Notifications"),
+            (Page::Settings, IconName::Settings, "General"),
+            (Page::Providers, IconName::Bot, "Providers"),
+            (Page::Profiles, IconName::User, "Profiles"),
+            (Page::Skills, IconName::BookOpen, "Skills"),
+            (Page::Extensions, IconName::Frame, "Extensions"),
             (Page::Automations, IconName::Calendar, "Automations"),
+            (Page::Notifications, IconName::Bell, "Notifications"),
             (Page::Files, IconName::Folder, "Files"),
         ];
         if self.projects_enabled() {
             items.push((Page::Projects, IconName::LayoutDashboard, "Projects"));
         }
-        items.push((Page::Profiles, IconName::User, "Profiles"));
-        items.push((Page::Extensions, IconName::Frame, "Extensions"));
-        items.push((Page::Skills, IconName::BookOpen, "Skills"));
+        items.push((Page::Usage, IconName::ChartPie, "Usage"));
         items.push((Page::Operator, IconName::SquareTerminal, "Operator"));
+        items
+    }
+
+    fn in_settings(&self) -> bool {
+        !matches!(self.page, Page::Chat | Page::Draft)
+    }
+
+    /// Leave settings for the open thread, or the new-thread screen.
+    fn back_to_threads(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.active.as_ref().map(|(id, _)| id.clone()) {
+            Some(id) => self.open_thread(id, window, cx),
+            None => self.open_draft(window, cx),
+        }
+    }
+
+    fn render_settings_nav(&self, cx: &Context<Self>) -> impl IntoElement {
         let unread = self.unread;
         v_flex()
+            .id("settings-nav")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
             .px_2()
-            .pb_2()
+            .pt_1()
             .gap_px()
-            .children(
-                items
-                    .into_iter()
-                    .enumerate()
-                    .map(|(ix, (page, icon, label))| {
-                        sidebar_row(("nav", ix), self.page == page, cx)
-                            .aria_label(label)
-                            .on_click(
-                                cx.listener(move |this, _, window, cx| this.show(page, window, cx)),
-                            )
-                            .child(Icon::new(icon).small())
-                            .child(div().flex_1().child(label))
-                            .when(page == Page::Notifications && unread > 0, |d| {
-                                d.child(
-                                    Tag::primary()
-                                        .small()
-                                        .rounded_full()
-                                        .child(unread.to_string()),
-                                )
-                            })
-                    }),
-            )
+            .children(self.settings_pages().into_iter().enumerate().map(
+                |(ix, (page, icon, label))| {
+                    sidebar_row(("nav", ix), self.page == page, cx)
+                        .aria_label(label)
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.show(page, window, cx)),
+                        )
+                        .child(Icon::new(icon).small())
+                        .child(div().flex_1().child(label))
+                        .when(page == Page::Notifications && unread > 0, |d| {
+                            d.child(unread_badge(unread))
+                        })
+                },
+            ))
     }
 
     fn open_in_browser(&self, cx: &mut App) {
@@ -522,73 +546,163 @@ impl Workspace {
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
+        let settings = self.in_settings();
+        let unread = self.unread;
+        // Titlebar strip: traffic lights on the left, then the name; macOS
+        // drags the window from the empty space.
+        let titlebar = h_flex()
+            .h(px(design::TITLEBAR_HEIGHT))
+            .flex_none()
+            .items_center()
+            .pl(px(design::TRAFFIC_LIGHTS_WIDTH))
+            .pr_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(p.text)
+                    .child(if settings { "Settings" } else { "IronClaw" }),
+            );
+        let footer = if settings {
+            h_flex().p_2().child(
+                Button::new("settings-back")
+                    .icon(IconName::ArrowLeft)
+                    .label("Back")
+                    .ghost()
+                    .small()
+                    .on_click(cx.listener(|this, _, window, cx| this.back_to_threads(window, cx))),
+            )
+        } else {
+            h_flex()
+                .p_2()
+                .gap_1()
+                .items_center()
+                .child(
+                    Button::new("open-settings")
+                        .icon(IconName::Settings)
+                        .ghost()
+                        .small()
+                        .tooltip("Settings")
+                        .accessibility_label("Settings")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.show(Page::Settings, window, cx)
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .child(
+                            Button::new("open-notifications")
+                                .icon(IconName::Bell)
+                                .ghost()
+                                .small()
+                                .tooltip("Notifications")
+                                .accessibility_label("Notifications")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show(Page::Notifications, window, cx)
+                                })),
+                        )
+                        .when(unread > 0, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .top(px(3.))
+                                    .right(px(3.))
+                                    .size(px(6.))
+                                    .rounded_full()
+                                    .bg(p.accent),
+                            )
+                        }),
+                )
+                .child(
+                    // gpui-kit's default icon set has no bar chart; the
+                    // full catalog would embed 1,830 SVGs for one glyph.
+                    Button::new("open-usage")
+                        .icon(IconName::ChartPie)
+                        .ghost()
+                        .small()
+                        .tooltip("Usage")
+                        .accessibility_label("Usage")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.show(Page::Usage, window, cx)),
+                        ),
+                )
+                .child(div().flex_1())
+                .child(
+                    Button::new("open-browser")
+                        .icon(IconName::ExternalLink)
+                        .ghost()
+                        .small()
+                        .tooltip("Open in browser")
+                        .accessibility_label("Open in browser")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_in_browser(cx))),
+                )
+        };
         v_flex()
             .w(px(design::SIDEBAR_WIDTH))
             .h_full()
             .flex_none()
             .text_color(p.text_muted)
-            // Titlebar strip: traffic lights sit on the left, macOS drags
-            // the window from the empty space.
-            .child(
-                h_flex()
-                    .h(px(design::TITLEBAR_HEIGHT))
-                    .flex_none()
-                    .justify_end()
-                    .items_center()
-                    .pr_2()
-                    .child(
-                        Button::new("new-thread")
-                            .icon(IconName::Plus)
-                            .ghost()
-                            .small()
-                            .selected(self.inbox.picker_open)
-                            .tooltip("New thread")
-                            .accessibility_label("New thread")
-                            .on_click(cx.listener(|this, _, _, cx| this.new_thread(cx))),
-                    ),
-            )
-            .child(self.render_nav(cx))
-            .child(self.render_inbox(cx))
-            .child(
-                h_flex()
-                    .p_2()
-                    .gap_1()
-                    .child(
-                        Button::new("open-settings")
-                            .icon(IconName::Settings)
-                            .label("Settings")
-                            .ghost()
-                            .small()
-                            .flex_1()
-                            .selected(self.page == Page::Settings)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show(Page::Settings, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("open-browser")
-                            .icon(IconName::ExternalLink)
-                            .ghost()
-                            .small()
-                            .tooltip("Open in browser")
-                            .accessibility_label("Open in browser")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_in_browser(cx))),
-                    )
-                    .child(
-                        // gpui-kit's default icon set has no bar chart; the
-                        // full catalog would embed 1,830 SVGs for one glyph.
-                        Button::new("open-usage")
-                            .icon(IconName::ChartPie)
-                            .ghost()
-                            .small()
-                            .selected(self.page == Page::Usage)
-                            .tooltip("Usage")
-                            .accessibility_label("Usage")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show(Page::Usage, window, cx)
-                            })),
-                    ),
-            )
+            .child(titlebar)
+            .child(if settings {
+                self.render_settings_nav(cx).into_any_element()
+            } else {
+                self.render_inbox(cx).into_any_element()
+            })
+            .child(footer)
+    }
+
+    /// The panel's top strip: where you are, t3code's "project / thread".
+    fn render_breadcrumb(&self, cx: &App) -> gpui_kit::Div {
+        let p = Palette::of(cx);
+        let (parent, leaf): (String, String) = match self.page {
+            Page::Chat => {
+                let id = self
+                    .active
+                    .as_ref()
+                    .map(|(id, _)| id.as_str())
+                    .unwrap_or("");
+                let row = self.inbox.row(id);
+                let profile = row
+                    .and_then(|r| {
+                        self.inbox
+                            .list
+                            .profiles
+                            .iter()
+                            .find(|p| p.profile_id == r.profile_id)
+                            .map(|p| p.display_name.clone())
+                    })
+                    .unwrap_or_else(|| "Default".into());
+                let title = row
+                    .map(|r| row_title(r).to_string())
+                    .or_else(|| crate::titles::get(cx, id))
+                    .unwrap_or_else(|| "New conversation".into());
+                (profile, title)
+            }
+            Page::Draft => (self.draft_profile_name(), "New thread".into()),
+            page => {
+                let label = self
+                    .settings_pages()
+                    .into_iter()
+                    .find(|(p, _, _)| *p == page)
+                    .map_or("Settings", |(_, _, l)| l);
+                ("Settings".into(), label.into())
+            }
+        };
+        h_flex()
+            .h(px(design::TITLEBAR_HEIGHT))
+            .flex_none()
+            .px_4()
+            .gap_2()
+            .items_center()
+            .text_sm()
+            .border_b_1()
+            .border_color(p.border)
+            .child(div().flex_none().text_color(p.text_muted).child(parent))
+            .child(div().flex_none().text_color(p.text_faint).child("/"))
+            .child(div().min_w_0().truncate().text_color(p.text).child(leaf))
     }
 
     /// Status bar polling: one timer, skipped while the battery saver holds
@@ -758,6 +872,10 @@ fn sidebar_row(
         .when(!active, |d| d.hover(|s| s.bg(p.hover).text_color(p.text)))
 }
 
+fn unread_badge(n: usize) -> impl IntoElement {
+    Tag::primary().small().rounded_full().child(n.to_string())
+}
+
 fn metric(name: &'static str, value: String) -> impl IntoElement {
     h_flex().gap_1().child(name).child(value)
 }
@@ -843,6 +961,7 @@ impl Render for Workspace {
             Conn::Ready => {
                 let page: Option<AnyElement> = match self.page {
                     Page::Chat => None,
+                    Page::Draft => Some(self.render_draft(cx)),
                     Page::Notifications => self
                         .pages
                         .notifications
@@ -857,6 +976,7 @@ impl Render for Workspace {
                     Page::Extensions => self.pages.extensions.clone().map(|v| v.into_any_element()),
                     Page::Skills => self.pages.skills.clone().map(|v| v.into_any_element()),
                     Page::Settings => self.pages.settings.clone().map(|v| v.into_any_element()),
+                    Page::Providers => self.pages.providers.clone().map(|v| v.into_any_element()),
                     Page::Operator => self.pages.operator.clone().map(|v| v.into_any_element()),
                     Page::Usage => self.pages.usage.clone().map(|v| v.into_any_element()),
                 };
@@ -865,6 +985,7 @@ impl Render for Workspace {
                     (Page::Chat, Some((id, _))) => format!("main-chat-{id}").into(),
                     (page, _) => format!("main-{}", page as u8).into(),
                 };
+                let breadcrumb = self.render_breadcrumb(cx).into_any_element();
                 let main: AnyElement = match (page, &self.active) {
                     (Some(page), _) => page,
                     (None, Some((_, chat))) => chat.clone().into_any_element(),
@@ -893,8 +1014,11 @@ impl Render for Workspace {
                                         p.bg
                                     })
                                     .overflow_hidden()
+                                    .flex()
+                                    .flex_col()
+                                    .child(breadcrumb)
                                     .child(motion::fade_in(
-                                        div().size_full().child(main),
+                                        div().flex_1().min_h_0().w_full().child(main),
                                         ElementId::Name(key),
                                         motion::FADE_QUICK,
                                         0.,
@@ -979,7 +1103,9 @@ impl Workspace {
                         Button::new("start-thread")
                             .label("New thread")
                             .primary()
-                            .on_click(cx.listener(|this, _, _, cx| this.new_thread(cx))),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_draft(window, cx)),
+                            ),
                     ),
                 "empty-state",
                 motion::FADE_IN,

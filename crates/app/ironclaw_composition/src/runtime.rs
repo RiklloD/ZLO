@@ -1657,6 +1657,15 @@ impl RebornRuntime {
         )))
     }
 
+    /// Configured providers a native thread can switch to (the model
+    /// picker's extra groups); `None` when no LLM provider was wired at boot.
+    pub(crate) fn native_model_routes(
+        &self,
+    ) -> Option<Arc<dyn ironclaw_product_contracts::operator_llm::NativeModelRoutes>> {
+        let routes = self.llm_reload.as_ref()?.provider_routes.clone()?;
+        Some(routes as _)
+    }
+
     /// Diagnostic id for the no-profile run profile selected by this runtime.
     pub fn default_run_profile_id(&self) -> &str {
         &self.default_run_profile_id
@@ -3480,14 +3489,25 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     let boot_provider_factory = llm
         .as_ref()
         .and_then(|resolved| resolved.provider_factory());
+    // Per-thread provider routing needs the boot catalog and the operator keys.
+    let provider_routes =
+        boot.as_ref()
+            .map(|boot| crate::model_gateway_assembly::ProviderRoutesInput {
+                boot: boot.clone(),
+                keys: ironclaw_operator::LlmKeyStore::new(
+                    crate::RuntimeOperatorSecretValueStore::shared(Arc::clone(
+                        &services.secret_store,
+                    )),
+                ),
+            });
     #[cfg(any(test, feature = "test-support"))]
     let (model_gateway, llm_cost_table, llm_reload) = match model_gateway_override {
         Some(override_gateway) => (override_gateway, None, None),
-        None => build_production_model_gateway(boot_provider_factory).await?,
+        None => build_production_model_gateway(boot_provider_factory, provider_routes).await?,
     };
     #[cfg(not(any(test, feature = "test-support")))]
     let (model_gateway, llm_cost_table, llm_reload) =
-        build_production_model_gateway(boot_provider_factory).await?;
+        build_production_model_gateway(boot_provider_factory, provider_routes).await?;
 
     // Resolved cost table is either: the LLM-policy-derived table (real
     // LLM wired), a test override (so tests can drive deterministic

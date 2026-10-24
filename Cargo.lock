@@ -5035,12 +5035,17 @@ name = "ironclaw_orchestrator"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
+ "hex",
+ "hmac 0.13.0",
  "ironclaw_host_api",
  "ironclaw_libsql_runtime",
  "ironclaw_product_contracts",
  "libsql",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "subtle",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

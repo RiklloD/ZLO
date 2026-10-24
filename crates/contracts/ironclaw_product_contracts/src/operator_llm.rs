@@ -611,6 +611,64 @@ pub struct SetUserModelPreferenceRequest {
     pub model: Option<String>,
 }
 
+/// A configured provider IronClaw's own loop can run a thread on, besides
+/// the active one. Models are what the provider advertises, or its default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeModelRoute {
+    pub provider_id: String,
+    pub name: String,
+    pub models: Vec<String>,
+    /// Reasoning efforts the provider honors per request; empty: none.
+    #[serde(default)]
+    pub efforts: Vec<String>,
+}
+
+impl NativeModelRoute {
+    /// The per-turn model value that runs `model` on `provider_id` (`None`:
+    /// the active provider, its default model) at `effort`. The model
+    /// gateway's router decodes it (`ironclaw_llm::provider_routing::ModelRoute`):
+    /// `provider::model`, or `provider::model::effort` with empty parts
+    /// allowed. `None` when nothing differs from the default.
+    pub fn turn_model(
+        provider_id: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Option<String> {
+        match (provider_id, model, effort) {
+            (provider, model, Some(effort)) => Some(format!(
+                "{}::{}::{effort}",
+                provider.unwrap_or_default(),
+                model.unwrap_or_default()
+            )),
+            (Some(provider), Some(model), None) => Some(format!("{provider}::{model}")),
+            (None, Some(model), None) => Some(model.to_string()),
+            (_, None, None) => None,
+        }
+    }
+
+    /// The model a turn model names, for display; `None` when it is the
+    /// provider's default.
+    pub fn plain_model(turn_model: &str) -> Option<&str> {
+        let model = match turn_model.split("::").collect::<Vec<_>>().as_slice() {
+            [_, model] | [_, model, _] => *model,
+            _ => turn_model,
+        };
+        (!model.is_empty()).then_some(model)
+    }
+}
+
+/// The providers a native thread may switch to (the model picker's groups).
+/// Implemented by `ironclaw_operator`, which owns the catalog and the keys.
+#[async_trait]
+pub trait NativeModelRoutes: Send + Sync {
+    async fn routes(&self) -> Vec<NativeModelRoute>;
+
+    /// Reasoning efforts the active provider honors per request.
+    async fn primary_efforts(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
 /// Persistence port for tenant-scoped model policies.
 ///
 /// The filesystem-backed implementation belongs to composition, which owns

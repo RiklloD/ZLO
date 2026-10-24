@@ -2,8 +2,15 @@ use serde_json::{Value, json};
 
 const MAX_REASONING_SUMMARY_BYTES: usize = 64 * 1024;
 
-pub(crate) fn summary_request() -> Value {
-    json!({ "effort": "medium", "summary": "auto" })
+/// The `reasoning` block; the effort is the request's pick
+/// ([`crate::provider_routing::REASONING_EFFORT_METADATA`]), else medium.
+pub(crate) fn summary_request(metadata: &std::collections::HashMap<String, String>) -> Value {
+    let effort = metadata
+        .get(crate::provider_routing::REASONING_EFFORT_METADATA)
+        .map(String::as_str)
+        .filter(|effort| !effort.is_empty())
+        .unwrap_or("medium");
+    json!({ "effort": effort, "summary": "auto" })
 }
 
 pub(crate) fn apply_summary_event(reasoning: &mut String, event_type: &str, data: &Value) -> bool {
@@ -64,9 +71,18 @@ mod tests {
 
     #[test]
     fn summary_request_enables_reasoning_effort() {
+        let mut metadata = std::collections::HashMap::new();
         assert_eq!(
-            summary_request(),
+            summary_request(&metadata),
             json!({ "effort": "medium", "summary": "auto" })
+        );
+        metadata.insert(
+            crate::provider_routing::REASONING_EFFORT_METADATA.to_string(),
+            "xhigh".to_string(),
+        );
+        assert_eq!(
+            summary_request(&metadata),
+            json!({ "effort": "xhigh", "summary": "auto" })
         );
     }
 

@@ -6,7 +6,6 @@ use std::rc::Rc;
 use ironclaw_gpui_client::attachments::{self, StagedFile, format_bytes};
 use ironclaw_gpui_client::commands::{match_command, menu_matches, takes_arguments};
 use ironclaw_gpui_client::contract::ProductGateKind;
-use ironclaw_gpui_client::operator_llm::UserModelCatalog;
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::transcript::{
     AttachmentChip, GateState, Row, RunEnd, ToolStatus, Transcript,
@@ -21,7 +20,10 @@ use crate::jobs::flatten;
 use crate::ui::*;
 
 mod goals;
+pub mod model_picker;
 mod orchestration;
+
+use model_picker::{ModelPicker, PickerEvent};
 
 const TIMELINE_LIMIT: u32 = 200;
 const CONTENT_MAX_WIDTH: f32 = 780.;
@@ -50,9 +52,8 @@ pub struct ChatView {
     /// Slash commands from the gateway, loaded once per view.
     commands: Rc<Vec<RebornProductCommandInfo>>,
     menu_index: usize,
-    /// Quick model switcher: the switchable models and the person's pick.
-    model_choice: Option<(UserModelCatalog, Option<String>)>,
-    model_menu_open: bool,
+    /// The composer's model pill: any provider, switched per thread.
+    picker: Entity<ModelPicker>,
     /// Task ideas for an empty conversation, loaded once it is known empty.
     /// The conversation's files panel, when open.
     files: Option<FilesPanel>,
@@ -113,6 +114,18 @@ impl ChatView {
                 },
             );
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
+        let picker = {
+            let (backend, id) = (backend.clone(), thread_id.clone());
+            cx.new(|cx| ModelPicker::new(backend, Some(id), None, window, cx))
+        };
+        let picked = cx.subscribe(&picker, |this, _, event: &PickerEvent, cx| match event {
+            PickerEvent::Changed(change) => {
+                if let Some(fork) = change.fork_thread_id.clone() {
+                    cx.emit(OpenThread(fork));
+                }
+            }
+            PickerEvent::Failed(message) => this.set_error(message.clone(), cx),
+        });
 
         let (stream, mut rx) = backend.subscribe(&thread_id);
         let pump = cx.spawn(async move |this, cx| {
@@ -146,59 +159,19 @@ impl ChatView {
             error: None,
             commands: Rc::new(Vec::new()),
             menu_index: 0,
-            model_choice: None,
-            model_menu_open: false,
+            picker,
             files: None,
             menu_dismissed: None,
             orch: Default::default(),
             _stream: Some(stream),
             _pump: pump,
         };
-        cx.on_release(move |_, _| drop(subscription)).detach();
+        cx.on_release(move |_, _| drop((subscription, picked)))
+            .detach();
         this.load_timeline(cx);
         this.load_commands(cx);
-        this.load_model_choice(cx);
         this.refresh_orchestration(cx);
         this
-    }
-
-    fn load_model_choice(&mut self, cx: &mut Context<Self>) {
-        let job = self.backend.spawn(|c| async move {
-            let catalog = c.model_catalog().await?;
-            let preference = c.model_preference().await?;
-            Ok::<_, ClientError>((catalog, preference.model))
-        });
-        let task = cx.spawn(async move |this, cx| {
-            // silent-ok: without the routes the switcher stays hidden.
-            if let Ok(choice) = flatten(job.await) {
-                let _ = this.update(cx, |this, cx| {
-                    this.model_choice = Some(choice);
-                    cx.notify();
-                });
-            }
-        });
-        self.keep(task);
-    }
-
-    /// `None` follows the workspace default.
-    fn choose_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
-        self.model_menu_open = false;
-        let job = self
-            .backend
-            .spawn(move |c| async move { c.set_model_preference(model).await });
-        let task = cx.spawn(async move |this, cx| {
-            let result = flatten(job.await);
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(preference) => {
-                    if let Some((_, pick)) = this.model_choice.as_mut() {
-                        *pick = preference.model;
-                    }
-                    cx.notify();
-                }
-                Err(e) => this.set_error(e.to_string(), cx),
-            });
-        });
-        self.keep(task);
     }
 
     fn load_commands(&mut self, cx: &mut Context<Self>) {
@@ -744,6 +717,13 @@ impl ChatView {
         self.keep(task);
     }
 
+    /// The new-thread screen's first message, sent once the thread exists.
+    pub fn send_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |state, cx| state.set_value(text, window, cx));
+        self.send(window, cx);
+    }
+
     fn stop(&mut self, cx: &mut Context<Self>) {
         let Some(run) = self.running_run() else {
             return;
@@ -822,7 +802,6 @@ impl Render for ChatView {
         let weak = cx.weak_entity();
         let menu = self.menu(cx);
         let menu_index = self.menu_index.min(menu.len().saturating_sub(1));
-        let (model_button, model_menu) = self.render_model_switcher(cx);
         let running = self.running_run().is_some();
         let stopping = self.transcript.is_stopping();
         // Fill the silence between send and the first streamed token.
@@ -967,14 +946,6 @@ impl Render for ChatView {
             .when_some(self.render_orchestration(cx), |this, panel| {
                 this.child(panel)
             })
-            .when_some(model_menu, |this, list| {
-                this.child(
-                    h_flex()
-                        .justify_center()
-                        .px_4()
-                        .child(div().w_full().max_w(px(CONTENT_MAX_WIDTH)).child(list)),
-                )
-            })
             .when(!menu.is_empty(), |this| {
                 this.child(
                     h_flex().justify_center().px_4().child(
@@ -986,44 +957,12 @@ impl Render for ChatView {
                 )
             })
             .child(
-                h_flex().justify_center().px_4().pb_4().pt_2().child(
-                    h_flex()
-                        .w_full()
-                        .max_w(px(CONTENT_MAX_WIDTH))
-                        .gap_2()
-                        .items_end()
-                        .when_some(model_button, |this, button| this.child(button))
-                        .child(
-                            Button::new("attach")
-                                .icon(IconName::Plus)
-                                .ghost()
-                                .tooltip("Attach files")
-                                .accessibility_label("Attach files")
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.pick_files(window, cx)),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .capture_key_down(cx.listener(Self::on_composer_key))
-                                .child(Textarea::new(&self.composer)),
-                        )
-                        .child(if running {
-                            Button::new("stop")
-                                .icon(IconName::Square)
-                                .tooltip("Stop")
-                                .accessibility_label("Stop")
-                                .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
-                        } else {
-                            Button::new("send")
-                                .icon(IconName::ArrowUp)
-                                .primary()
-                                .tooltip("Send (Enter)")
-                                .accessibility_label("Send (Enter)")
-                                .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
-                        }),
-                ),
+                h_flex()
+                    .justify_center()
+                    .px_4()
+                    .pb_4()
+                    .pt_2()
+                    .child(self.render_composer(running, cx)),
             );
         h_flex()
             .size_full()
@@ -1209,68 +1148,73 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
 }
 
 impl ChatView {
-    /// The quick model switcher, shown once Settings pinned some models.
-    fn render_model_switcher(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> (Option<Button>, Option<AnyElement>) {
-        let Some((catalog, pick)) = self
-            .model_choice
-            .as_ref()
-            .filter(|(c, _)| c.selection_enabled && !c.models.is_empty())
-        else {
-            return (None, None);
+    /// The composer card: text on top; model pill, attach and send below.
+    fn render_composer(&self, running: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let send = if running {
+            Button::new("stop")
+                .icon(IconName::Square)
+                .small()
+                .rounded_full()
+                .tooltip("Stop")
+                .accessibility_label("Stop")
+                .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
+        } else {
+            Button::new("send")
+                .icon(IconName::ArrowUp)
+                .primary()
+                .small()
+                .rounded_full()
+                .tooltip("Send (Enter)")
+                .accessibility_label("Send (Enter)")
+                .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
         };
-        let default = catalog.workspace_default.clone().unwrap_or_default();
-        let current = pick.clone().unwrap_or_else(|| default.clone());
-        let button = Button::new("model-switcher")
-            .label(current.clone())
+        let attach = Button::new("attach")
+            .icon(IconName::Plus)
             .ghost()
             .small()
-            .tooltip("Model for your next messages")
-            .accessibility_label("Choose model")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.model_menu_open = !this.model_menu_open;
-                cx.notify();
-            }));
-        let menu = self.model_menu_open.then(|| {
-            let entries = std::iter::once((None, format!("Default ({default})")))
-                .chain(catalog.models.iter().map(|m| (Some(m.clone()), m.clone())));
-            v_flex()
-                .w(px(320.))
-                .p_1()
-                .rounded(cx.theme().radius_lg)
-                .border_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().popover)
-                .shadow_md()
-                .children(entries.enumerate().map(|(ix, (value, label))| {
-                    let selected = value == *pick;
-                    h_flex()
-                        .id(("model-option", ix))
-                        .role(Role::Button)
-                        .aria_label(label.clone())
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .rounded(cx.theme().radius)
-                        .text_sm()
-                        .cursor_pointer()
-                        .hover(|this| this.bg(cx.theme().accent))
-                        .child(
-                            div()
-                                .w(px(14.))
-                                .when(selected, |d| d.child(Icon::new(IconName::Check).xsmall())),
-                        )
-                        .child(label)
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.choose_model(value.clone(), cx)),
-                        )
-                }))
-                .into_any_element()
-        });
-        (Some(button), menu)
+            .tooltip("Attach files")
+            .accessibility_label("Attach files")
+            .on_click(cx.listener(|this, _, window, cx| this.pick_files(window, cx)));
+        composer_card(
+            div()
+                .capture_key_down(cx.listener(Self::on_composer_key))
+                .child(Textarea::new(&self.composer).appearance(false)),
+            self.picker.clone(),
+            h_flex().gap_1().items_center().child(attach).child(send),
+            cx,
+        )
     }
+}
+
+/// t3code's composer: one rounded card, the text on top and a control row
+/// below (model pill on the left, actions on the right).
+pub(crate) fn composer_card(
+    input: impl IntoElement,
+    picker: Entity<ModelPicker>,
+    actions: impl IntoElement,
+    cx: &App,
+) -> gpui_kit::Div {
+    let p = crate::design::Palette::of(cx);
+    v_flex()
+        .w_full()
+        .max_w(px(CONTENT_MAX_WIDTH))
+        .px_3()
+        .pt_3()
+        .pb_2()
+        .gap_2()
+        .rounded(px(16.))
+        .border_1()
+        .border_color(p.border)
+        .bg(p.surface_card)
+        .shadow_md()
+        .child(input)
+        .child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .child(picker)
+                .child(actions),
+        )
 }
 
 /// A file name with its size, used for staged and sent attachments.

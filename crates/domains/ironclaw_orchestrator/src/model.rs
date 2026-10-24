@@ -441,6 +441,54 @@ pub struct Settings {
     pub max_depth: u32,
     pub max_running_per_parent: u32,
     pub handoff_bytes: usize,
+    /// What the model picker hides or pins; display only, routing ignores it.
+    pub model_picker: ModelPickerPrefs,
+}
+
+/// One model of one provider, as the picker names it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PickerModel {
+    pub provider: String,
+    pub model: String,
+}
+
+/// The user's model-picker preferences, like t3code's: hidden providers,
+/// hidden models, and favorites (the star tab).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ModelPickerPrefs {
+    pub hidden_providers: Vec<String>,
+    pub hidden_models: Vec<PickerModel>,
+    pub favorites: Vec<PickerModel>,
+}
+
+impl ModelPickerPrefs {
+    const MAX_ENTRIES: usize = 512;
+    const MAX_ID_BYTES: usize = 256;
+
+    /// Bounded, trimmed and de-duplicated.
+    pub fn validated(mut self) -> Result<Self, String> {
+        let id_ok = |s: &str| !s.trim().is_empty() && s.len() <= Self::MAX_ID_BYTES;
+        if self.hidden_providers.len() + self.hidden_models.len() + self.favorites.len()
+            > Self::MAX_ENTRIES
+        {
+            return Err(format!("at most {} picker entries", Self::MAX_ENTRIES));
+        }
+        let bad_model = |m: &PickerModel| !id_ok(&m.provider) || !id_ok(&m.model);
+        if !self.hidden_providers.iter().all(|p| id_ok(p))
+            || self.hidden_models.iter().any(bad_model)
+            || self.favorites.iter().any(bad_model)
+        {
+            return Err("picker ids must be 1-256 bytes".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        self.hidden_providers.retain(|p| seen.insert(p.clone()));
+        let mut seen = std::collections::HashSet::new();
+        self.hidden_models.retain(|m| seen.insert(m.clone()));
+        let mut seen = std::collections::HashSet::new();
+        self.favorites.retain(|m| seen.insert(m.clone()));
+        Ok(self)
+    }
 }
 
 impl Default for Settings {
@@ -452,6 +500,7 @@ impl Default for Settings {
             max_depth: 3,
             max_running_per_parent: 8,
             handoff_bytes: 48_000,
+            model_picker: ModelPickerPrefs::default(),
         }
     }
 }

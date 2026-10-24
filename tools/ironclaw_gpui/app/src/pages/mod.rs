@@ -8,6 +8,7 @@ pub mod notifications;
 pub mod operator;
 pub mod profiles;
 pub mod projects;
+pub mod providers;
 pub mod settings;
 pub mod skills;
 pub mod usage;

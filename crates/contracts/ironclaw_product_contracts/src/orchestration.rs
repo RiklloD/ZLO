@@ -66,6 +66,27 @@ pub struct OrchestratorForkRequest {
     pub model: Option<String>,
 }
 
+/// Switch the provider/model of `thread_id`'s next turns. Model `default`
+/// clears the pick. The answer says whether the thread switched in place,
+/// moved runtime before its first turn, or continued in a fork.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorRouteRequest {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Reasoning effort of the thread's next turns, one of its provider's
+    /// `efforts`; `default` clears it. Alone it changes nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Replaces the user's model-picker preferences (hidden providers and
+    /// models, favorites) instead of switching the thread's route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picker: Option<serde_json::Value>,
+}
+
 /// Merge fork `thread_id` back into its source (or `target_thread_id`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +119,14 @@ pub const ORCHESTRATOR_THREAD_LINEAGE_VIEW: ProductView<
 /// Runs (turns) with status, and the per-turn usage log.
 pub const ORCHESTRATOR_THREAD_RUNS_VIEW: ProductView<OrchestratorThreadRequest, serde_json::Value> =
     ProductView::unpaginated("orchestrator.thread_runs");
+
+/// The thread's provider/model route and every provider it can switch to:
+/// `{threadId, runtime, provider, model, fresh, providers: [{provider, name,
+/// runtime, authenticated, models}]}`.
+pub const ORCHESTRATOR_THREAD_ROUTE_VIEW: ProductView<
+    OrchestratorThreadRequest,
+    serde_json::Value,
+> = ProductView::unpaginated("orchestrator.thread_route");
 
 /// Latest per-turn telemetry of a thread (the desktop status bar).
 pub const ORCHESTRATOR_THREAD_TELEMETRY_VIEW: ProductView<
@@ -140,6 +169,12 @@ pub const ORCHESTRATOR_FORK_COMMAND: ProductSurfaceCommandDescriptor<
     OrchestratorForkRequest,
     serde_json::Value,
 > = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_FORK_COMMAND_ID);
+
+pub const ORCHESTRATOR_ROUTE_COMMAND_ID: &str = "orchestrator.thread_route_set";
+pub const ORCHESTRATOR_ROUTE_COMMAND: ProductSurfaceCommandDescriptor<
+    OrchestratorRouteRequest,
+    serde_json::Value,
+> = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_ROUTE_COMMAND_ID);
 
 pub const ORCHESTRATOR_MERGE_BACK_COMMAND_ID: &str = "orchestrator.thread_merge_back";
 pub const ORCHESTRATOR_MERGE_BACK_COMMAND: ProductSurfaceCommandDescriptor<

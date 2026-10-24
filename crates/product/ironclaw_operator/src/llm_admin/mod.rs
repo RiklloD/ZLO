@@ -8,6 +8,7 @@ pub mod nearai_login_serve;
 pub mod nearai_mcp;
 pub mod provider_admin;
 pub mod provider_repo;
+pub mod provider_routes;
 pub mod resolved_llm;
 mod user_model_preference_store;
 
@@ -25,5 +26,6 @@ pub use model_selection_policy_store::FilesystemModelSelectionPolicyStore;
 pub use nearai_login_serve::nearai_login_callback_mount;
 pub use provider_admin::{RebornProviderAdmin, RebornProviderAdminError};
 pub use provider_repo::{ProviderRepo, ProviderRepoError};
+pub use provider_routes::RebornProviderRoutes;
 pub use resolved_llm::{RebornProviderFactory, ResolvedRebornLlm};
 pub use user_model_preference_store::FilesystemUserModelPreferenceStore;

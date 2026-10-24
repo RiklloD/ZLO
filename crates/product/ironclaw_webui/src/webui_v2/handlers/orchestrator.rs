@@ -58,6 +58,53 @@ pub async fn orchestrator_thread_telemetry(
     ))
 }
 
+/// `GET /api/webchat/v2/threads/{thread_id}/route`
+pub async fn orchestrator_thread_route(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    thread_view(&state, caller, ORCHESTRATOR_THREAD_ROUTE_VIEW, thread_id).await
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorRouteBody {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub picker: Option<Value>,
+}
+
+/// `POST /api/webchat/v2/threads/{thread_id}/route`
+pub async fn orchestrator_thread_route_set(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(thread_id): Path<String>,
+    Json(body): Json<OrchestratorRouteBody>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    let request = OrchestratorRouteRequest {
+        thread_id,
+        provider: body.provider,
+        model: body.model,
+        effort: body.effort,
+        picker: body.picker,
+    };
+    Ok(Json(
+        invoke_product_command(
+            state.services(),
+            caller,
+            ORCHESTRATOR_ROUTE_COMMAND,
+            request,
+        )
+        .await?,
+    ))
+}
+
 /// `GET /api/webchat/v2/threads/{thread_id}/lineage`
 pub async fn orchestrator_thread_lineage(
     State(state): State<WebUiV2State>,

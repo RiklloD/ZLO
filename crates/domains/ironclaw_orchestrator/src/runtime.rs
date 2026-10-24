@@ -155,6 +155,8 @@ pub struct TurnInput {
     /// The thread's active goal (`orch_goals`). Runtimes put it in the
     /// turn's system prompt, or ahead of the prompt when they have none.
     pub goal: Option<String>,
+    /// The thread's reasoning effort pick, one of its provider's `efforts`.
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,6 +252,9 @@ pub struct CatalogProvider {
     pub authenticated: bool,
     pub current: bool,
     pub models: Vec<String>,
+    /// Reasoning efforts a turn may pick; empty: the provider has no knob.
+    #[serde(default)]
+    pub efforts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -1,4 +1,4 @@
-//! The Antigravity (ACP) and Muse Code (MSP) drivers against fake agent
+//! The Antigravity (ACP), Muse Code (MSP) and Codex (app-server) drivers against fake agent
 //! scripts: session create then resume, fail-closed permissions, outcome,
 //! transcript and telemetry folding, steering, and Stop ending the whole
 //! process group. No real model is called.
@@ -11,6 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use ironclaw_cli_providers::antigravity::{AntigravityConfig, AntigravityRuntime};
 use ironclaw_cli_providers::bridge::{CliBridge, DEFAULT_APPROVAL_TIMEOUT};
+use ironclaw_cli_providers::codex::{CodexConfig, CodexRuntime};
 use ironclaw_cli_providers::muse::{MuseConfig, MuseRuntime};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
 use ironclaw_orchestrator::model::{Millis, ThreadRecord, ThreadScope};
@@ -83,6 +84,7 @@ fn input() -> TurnInput {
         origin: TurnOrigin::DelegatedBrief,
         model: None,
         goal: None,
+        effort: None,
     }
 }
 
@@ -500,5 +502,135 @@ async fn muse_steers_in_turn_and_stop_interrupts_and_clears_the_group() {
     assert_eq!(
         history.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
         ["hi", "also this"]
+    );
+}
+
+// ── Codex CLI ───────────────────────────────────────────────────────────────
+
+const CODEX: &str = r#"#!/bin/sh
+LOG=__LOG__
+id_of() { printf '%s' "$1" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p'; }
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+emit() { printf '{"jsonrpc":"2.0","method":"%s","params":%s}\n' "$1" "$2"; }
+printf 'argv %s\n' "$*" >> "$LOG"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$LOG"
+  id=$(id_of "$line")
+  case "$line" in
+    *'"id":99,'*|*'"id":99}'*)
+      emit item/agentMessage/delta '{"threadId":"cx-1","turnId":"tu-1","itemId":"m1","delta":"Hello"}'
+      emit item/completed '{"threadId":"cx-1","turnId":"tu-1","item":{"type":"commandExecution","id":"c1","command":"rm -rf /"}}'
+      emit thread/tokenUsage/updated '{"threadId":"cx-1","turnId":"tu-1","tokenUsage":{"total":{"inputTokens":1000,"cachedInputTokens":600,"outputTokens":50},"last":{"inputTokens":1000,"cachedInputTokens":600,"outputTokens":50},"modelContextWindow":272000}}'
+      emit turn/completed '{"threadId":"cx-1","turn":{"id":"tu-1","status":"completed","error":null}}' ;;
+    *'"method":"initialize"'*) reply "$id" '{"userAgent":"codex"}' ;;
+    *'"method":"initialized"'*) ;;
+    *'"method":"model/list"'*) reply "$id" '{"data":[{"id":"a","model":"gpt-a","isDefault":false,"hidden":false},{"id":"b","model":"gpt-b","isDefault":true,"hidden":false}],"nextCursor":null}' ;;
+    *'"method":"thread/start"'*|*'"method":"thread/resume"'*) reply "$id" '{"thread":{"id":"cx-1"},"model":"gpt-b"}' ;;
+    *'"method":"turn/start"'*)
+      reply "$id" '{"turn":{"id":"tu-1","status":"inProgress"}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"cx-1","turnId":"tu-1","itemId":"c1","command":"rm -rf /","kind":"command","startedAtMs":0}}' ;;
+  esac
+done
+"#;
+
+fn codex(dir: &Path, recorder: &Arc<Recorder>, bridge: Option<Arc<CliBridge>>) -> CodexRuntime {
+    let body = CODEX.replace("__LOG__", &dir.join("codex.log").display().to_string());
+    std::fs::write(dir.join("auth.json"), "{}").unwrap();
+    CodexRuntime::new(
+        CodexConfig {
+            runtime_id: "codex".into(),
+            display_name: "Codex CLI".into(),
+            binary: script(dir, "codex", &body),
+            work_dir: dir.join("work"),
+            state_dir: dir.join("state"),
+            login_file: dir.join("auth.json"),
+            reasoning_effort: None,
+        },
+        sink(recorder),
+        bridge,
+    )
+    .unwrap()
+}
+
+/// Without a bridge: read-only sandbox, nothing asked, every approval the
+/// server still requests is declined; the saved thread id is resumed.
+#[tokio::test]
+async fn codex_starts_then_resumes_and_declines_without_a_bridge() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = codex(dir.path(), &recorder, None);
+
+    let catalog = rt.catalog(&scope()).await.unwrap();
+    assert!(catalog[0].authenticated);
+    assert_eq!(catalog[0].models, ["gpt-b", "gpt-a"]);
+
+    let thread = thread(&rt, "gpt-a").await;
+    for n in 1..=2 {
+        rt.start_turn(&thread, input()).await.unwrap();
+        wait_for(|| recorder.finished.lock().unwrap().len() == n).await;
+    }
+    let log = std::fs::read_to_string(dir.path().join("codex.log")).unwrap();
+    assert!(log.contains("argv app-server --listen stdio://"), "{log}");
+    assert_eq!(
+        log.matches(r#""method":"thread/start""#).count(),
+        1,
+        "{log}"
+    );
+    assert_eq!(
+        log.matches(r#""method":"thread/resume""#).count(),
+        1,
+        "{log}"
+    );
+    assert!(log.contains(r#""threadId":"cx-1""#));
+    assert!(
+        log.contains(r#""sandbox":"read-only""#) && log.contains(r#""approvalPolicy":"never""#)
+    );
+    assert!(log.contains(r#""model":"gpt-a""#));
+    assert_eq!(log.matches(r#""decision":"decline""#).count(), 2, "{log}");
+    assert!(!log.contains(r#""decision":"accept""#));
+
+    let outcome = recorder.finished.lock().unwrap()[1].clone();
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.final_text.as_deref(), Some("Hello"));
+    let t = recorder.telemetry.lock().unwrap()[1].clone();
+    assert_eq!((t.context_max, t.cache_hit_rate), (Some(272000), Some(0.6)));
+    let history = rt.history(&thread, 10).await.unwrap();
+    assert_eq!(history.len(), 4);
+    assert_eq!(history[3].tool_calls, vec!["shell()".to_string()]);
+}
+
+/// With the bridge: workspace sandbox, `untrusted` policy, and the shell
+/// approval waits as a gate; the owner's approval answers `accept`.
+#[tokio::test]
+async fn codex_with_a_bridge_asks_the_owner_and_accepts_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let rt = codex(dir.path(), &recorder, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt, "gpt-b").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+
+    let gate = loop {
+        if let Some(g) = bridge
+            .snapshot(&thread.thread_id)
+            .and_then(|s| s.gates.first().cloned())
+        {
+            break g;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(gate.tool_name, "shell");
+    assert_eq!(gate.body.as_deref(), Some("rm -rf /"));
+    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, true));
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+
+    let log = std::fs::read_to_string(dir.path().join("codex.log")).unwrap();
+    assert!(log.contains(r#""sandbox":"workspace-write""#), "{log}");
+    assert!(log.contains(r#""approvalPolicy":"untrusted""#), "{log}");
+    assert!(log.contains(r#""decision":"accept""#), "{log}");
+    assert!(!log.contains("acceptForSession"), "{log}");
+    assert_eq!(
+        recorder.finished.lock().unwrap()[0].status,
+        TurnEndStatus::Completed
     );
 }

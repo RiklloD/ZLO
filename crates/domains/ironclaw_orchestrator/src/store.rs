@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS orch_threads (
   imported INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS orch_threads_owner ON orch_threads(tenant_id, user_id);
+CREATE TABLE IF NOT EXISTS orch_thread_efforts (thread_id TEXT PRIMARY KEY, effort TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS orch_tasks (
   id TEXT PRIMARY KEY,
   parent_thread TEXT NOT NULL,
@@ -441,6 +442,7 @@ impl Store {
             conn.execute_batch(crate::cli_approvals::CLI_APPROVALS_SCHEMA)
                 .await?;
         }
+        crate::schedules::upgrade_schema(self).await?;
         self.close_interrupted_cli_approvals(crate::model::now_ms())
             .await?;
         self.import_legacy_threads(legacy_runtime).await
@@ -498,6 +500,36 @@ impl Store {
     }
 
     // ── threads ─────────────────────────────────────────────────────────
+
+    /// The reasoning effort picked for a thread's turns; `None`: the default.
+    pub async fn thread_effort(&self, id: &ThreadId) -> Result<Option<String>> {
+        self.row(
+            "SELECT effort FROM orch_thread_efforts WHERE thread_id = ?1",
+            vec![s(id.as_str())],
+            |r| Cols::new(r).text(),
+        )
+        .await
+    }
+
+    pub async fn set_thread_effort(&self, id: &ThreadId, effort: Option<&str>) -> Result<()> {
+        match effort {
+            Some(effort) => {
+                self.exec(
+                    "INSERT OR REPLACE INTO orch_thread_efforts (thread_id, effort) VALUES (?1, ?2)",
+                    vec![s(id.as_str()), s(effort)],
+                )
+                .await?
+            }
+            None => {
+                self.exec(
+                    "DELETE FROM orch_thread_efforts WHERE thread_id = ?1",
+                    vec![s(id.as_str())],
+                )
+                .await?
+            }
+        };
+        Ok(())
+    }
 
     pub async fn thread(&self, id: &ThreadId) -> Result<Option<ThreadRecord>> {
         self.row(
