@@ -408,6 +408,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_model_takes_its_own_efforts_or_the_providers() {
+        let provider: RouteProvider = serde_json::from_value(json!({
+            "provider": "anthropic", "name": "Anthropic", "runtime": "ironclaw",
+            "authenticated": true, "models": ["claude-opus-5-5", "claude-3-5-haiku"],
+            "efforts": [],
+            "modelEfforts": {"claude-opus-5-5": ["low", "max"], "claude-3-5-haiku": []}
+        }))
+        .unwrap();
+        assert_eq!(provider.efforts_for("claude-opus-5-5"), ["low", "max"]);
+        assert!(provider.efforts_for("claude-3-5-haiku").is_empty());
+        assert!(provider.efforts_for("default").is_empty());
+        let older: RouteProvider =
+            serde_json::from_value(json!({"provider": "codex", "efforts": ["low"]})).unwrap();
+        assert_eq!(older.efforts_for("gpt-6-sol"), ["low"]);
+    }
+
+    #[test]
     fn refusal_and_engine_documents_decode() {
         let refused = decode::<QueueDoc>(json!({
             "ok": false, "error": "not_queued", "message": "Already sent."
@@ -463,8 +480,18 @@ pub struct RouteProvider {
     pub runtime: String,
     pub authenticated: bool,
     pub models: Vec<String>,
-    /// Reasoning efforts a turn may pick (t3code's "Reasoning"); empty: none.
+    /// Reasoning efforts of the provider's default model (t3code's
+    /// "Reasoning"); empty: none.
     pub efforts: Vec<String>,
+    /// Each listed model's own efforts; a model missing here takes `efforts`.
+    pub model_efforts: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl RouteProvider {
+    /// The efforts `model` takes; `"default"` is the provider's default.
+    pub fn efforts_for(&self, model: &str) -> &[String] {
+        self.model_efforts.get(model).unwrap_or(&self.efforts)
+    }
 }
 
 /// A thread's provider/model and its alternatives.
