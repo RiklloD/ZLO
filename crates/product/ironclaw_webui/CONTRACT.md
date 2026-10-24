@@ -158,6 +158,7 @@ candidate module.
 | `profiles` | Stage 3 profiles: list/read/create/update/archive the caller's profiles, create a thread on one, and the one-time Hermes import — its own file, each handler one `ironclaw_product_contracts::profiles` descriptor | Thread lifecycle without a profile (that is `threads`) | `handlers/profiles.rs::profiles_list`, `handlers/profiles.rs::profile_get`, `handlers/profiles.rs::profile_create`, `handlers/profiles.rs::profile_update`, `handlers/profiles.rs::profile_delete`, `handlers/profiles.rs::ProfileThreadBody`, `handlers/profiles.rs::profile_thread_create`, `handlers/profiles.rs::profiles_import_hermes` |
 | `usage` | Subscription usage windows for the Usage page (CLI-login 5-hour/weekly windows, coding-plan quotas) — its own file, one `ironclaw_product_contracts::usage` descriptor | Per-thread context/TPS telemetry (that is the thread telemetry route) | `handlers/usage.rs::usage_report` |
 | `computer-use` | A thread's computer-use session (state + latest screenshot frame) and its Stop / take over / hand back — its own file, one `ironclaw_product_contracts::computer_use` descriptor each | Running a computer-use action (that is an approval-gated capability, never a route) | `handlers/computer_use.rs::ComputerUseSessionQuery`, `handlers/computer_use.rs::computer_use_session`, `handlers/computer_use.rs::ComputerUseControlBody`, `handlers/computer_use.rs::computer_use_control` |
+| `inbox` | The v2 inbox and goals: the caller's joined inbox list, one lifecycle mark (pin/snooze/settle/visit) on a thread, and a thread's goal read/write — its own file, each handler one `ironclaw_product_contracts::inbox` descriptor | The plain thread list (that is `threads`) | `handlers/inbox.rs::inbox_list`, `handlers/inbox.rs::InboxMutateBody`, `handlers/inbox.rs::inbox_mutate`, `handlers/inbox.rs::thread_goal`, `handlers/inbox.rs::ThreadGoalBody`, `handlers/inbox.rs::thread_goal_set` |
 
 Three placement calls worth stating, because each is an item whose *name*
 suggests one owner and whose *use* is another:
@@ -234,6 +235,9 @@ closed (`500`) if that layer is missing (locked by
 | `webui.v2.usage.report` | GET | `/api/webchat/v2/usage` | — | `ProductSurface` |
 | `webui.v2.computer_use.session` | GET | `/api/webchat/v2/threads/{thread_id}/computer-use` | — | `ProductSurface` |
 | `webui.v2.computer_use.control` | POST | `/api/webchat/v2/threads/{thread_id}/computer-use` | — | `ProductSurface` |
+| `webui.v2.inbox.list` | GET | `/api/webchat/v2/inbox` | — | `ProductSurface` |
+| `webui.v2.inbox.mutate` | POST | `/api/webchat/v2/inbox/{thread_id}` | — | `ProductSurface` |
+| `webui.v2.goals.get` / `set` | GET/POST | `/api/webchat/v2/threads/{thread_id}/goal` | — | `ProductSurface` |
 
 ### Orchestrator routes
 

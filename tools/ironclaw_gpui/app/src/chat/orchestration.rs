@@ -41,6 +41,8 @@ pub(super) struct Orchestration {
     /// Another refresh was asked for while one was in flight.
     stale: bool,
     polling: bool,
+    /// The thread's goal (strip above the composer).
+    pub(super) goal: super::goals::Goal,
 }
 
 /// Child thread → the task that created it, for threads delegated from a
@@ -61,6 +63,7 @@ impl ChatView {
     /// Re-read tasks and queue (and lineage until loaded). Coalesces: a call
     /// during a refresh only marks it stale.
     pub(super) fn refresh_orchestration(&mut self, cx: &mut Context<Self>) {
+        self.load_goal(cx);
         let o = &mut self.orch;
         if o.loading {
             o.stale = true;
@@ -336,10 +339,11 @@ impl ChatView {
 
     /// Strip, subagent frame and queue panel, stacked above the composer.
     pub(super) fn render_orchestration(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let goal = self.render_goal(cx);
         let strip = self.render_strip(cx);
         let frame = self.render_frame(cx);
         let queue = self.orch.queue_open.then(|| self.render_queue(cx));
-        if strip.is_none() && frame.is_none() && queue.is_none() {
+        if goal.is_none() && strip.is_none() && frame.is_none() && queue.is_none() {
             return None;
         }
         Some(
@@ -352,6 +356,7 @@ impl ChatView {
                         .w_full()
                         .max_w(px(CONTENT_MAX_WIDTH))
                         .gap_2()
+                        .children(goal)
                         .children(queue)
                         .children(frame)
                         .children(strip),

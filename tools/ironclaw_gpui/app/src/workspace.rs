@@ -3,8 +3,9 @@
 
 use std::time::Duration;
 
+use ironclaw_gpui_client::inbox::InboxAction;
 use ironclaw_gpui_client::usage::ThreadTelemetry;
-use ironclaw_gpui_client::wire::{SessionInfo, ThreadSummary};
+use ironclaw_gpui_client::wire::SessionInfo;
 use ironclaw_gpui_client::{Backend, Client, ClientError, Connection};
 
 use crate::alerts::Alerts;
@@ -27,7 +28,10 @@ use crate::pages::usage::{UsageModel, UsageView};
 use crate::ui::*;
 use gpui_kit::StyledImage as _;
 
-const THREAD_PAGE: u32 = 100;
+mod inbox;
+
+pub(crate) use inbox::title_of as row_title;
+
 /// The inbox has no live stream, so the badge polls. One tiny request.
 const UNREAD_POLL: Duration = Duration::from_secs(15);
 /// Retry schedule while the gateway is unreachable (seconds, last repeats).
@@ -88,7 +92,7 @@ pub struct Workspace {
     conn: Conn,
     backend: Option<Backend>,
     session: Option<SessionInfo>,
-    threads: Vec<ThreadSummary>,
+    inbox: inbox::Inbox,
     active: Option<(String, Entity<ChatView>)>,
     page: Page,
     pages: Pages,
@@ -115,7 +119,7 @@ impl Workspace {
             conn: Conn::Connecting,
             backend: None,
             session: None,
-            threads: Vec::new(),
+            inbox: inbox::Inbox::new(window, cx),
             active: None,
             page: Page::Chat,
             pages: Pages::default(),
@@ -130,6 +134,10 @@ impl Workspace {
             _activation: cx.observe_window_activation(window, |this, window, cx| {
                 this.battery.set_active(window, cx);
                 this.refresh_status(cx);
+                // Back in front: catch up on whatever finished meanwhile.
+                if window.is_window_active() {
+                    this.refresh_inbox(cx);
+                }
             }),
             usage: None,
             telemetry: None,
@@ -170,8 +178,8 @@ impl Workspace {
 
         let job = backend.spawn(|c| async move {
             let session = c.session().await?;
-            let threads = c.list_threads(THREAD_PAGE, None).await?;
-            Ok::<_, ClientError>((session, threads))
+            let inbox = c.inbox().await?;
+            Ok::<_, ClientError>((session, inbox))
         });
         let task = cx.spawn_in(window, async move |this, cx| {
             let result = job
@@ -180,16 +188,15 @@ impl Workspace {
                 .and_then(|r| r);
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
-                    Ok((session, page)) => {
+                    Ok((session, inbox)) => {
                         this.connect_attempt = 0;
                         this._retry = None;
                         this.session = Some(session);
-                        this.threads = page.threads;
-                        crate::titles::set_listed(&this.threads, cx);
+                        this.apply_inbox(inbox, cx);
                         this.conn = Conn::Ready;
                         this.start_polling(window, cx);
                         this.start_status(backend.clone(), window, cx);
-                        if let Some(first) = this.threads.first().map(|t| t.thread_id.clone()) {
+                        if let Some(first) = this.inbox.first_open() {
                             this.open_thread(first, window, cx);
                         }
                     }
@@ -229,6 +236,7 @@ impl Workspace {
 
     fn open_thread(&mut self, thread_id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.page = Page::Chat;
+        self.visit(&thread_id, cx);
         if self.active.as_ref().is_some_and(|(id, _)| *id == thread_id) {
             cx.notify();
             return;
@@ -244,11 +252,17 @@ impl Workspace {
         let view = cx.new(|cx| ChatView::new(backend, channel, limits, id, window, cx));
         self._chat_events = vec![
             cx.subscribe_in(&view, window, |this, _, _: &ThreadUpdated, window, cx| {
-                this.refresh_threads(cx);
+                this.refresh_inbox(cx);
                 this.refresh_unread(window, cx);
             }),
             cx.subscribe_in(&view, window, |this, _, event: &RunEnded, window, cx| {
                 this.refresh_telemetry(cx);
+                // Watched live: the result is seen, so no Done badge.
+                if window.is_window_active() && this.page == Page::Chat {
+                    this.inbox_mark(event.thread_id.clone(), InboxAction::Visit, None, cx);
+                } else {
+                    this.refresh_inbox(cx);
+                }
                 if !window.is_window_active() {
                     let title = crate::titles::get(cx, &event.thread_id);
                     this.alerts
@@ -259,7 +273,7 @@ impl Workspace {
             cx.subscribe_in(&view, window, |_, _, event: &OpenThread, window, cx| {
                 let id = event.0.clone();
                 cx.defer_in(window, move |this, window, cx| {
-                    this.refresh_threads(cx);
+                    this.refresh_inbox(cx);
                     this.open_thread(id, window, cx);
                 });
             }),
@@ -270,50 +284,17 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Titles are computed by the list route only, so re-list after a run.
-    fn refresh_threads(&mut self, cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else {
-            return;
-        };
-        let job = backend.spawn(|c| async move { c.list_threads(THREAD_PAGE, None).await });
-        let task = cx.spawn(async move |this, cx| {
-            if let Ok(Ok(page)) = job.await {
-                let _ = this.update(cx, |this, cx| {
-                    this.threads = page.threads;
-                    crate::titles::set_listed(&this.threads, cx);
-                    cx.notify();
-                });
-            }
-        });
-        task.detach();
+    /// New conversation: the profile picker decides where it lives.
+    fn new_thread(&mut self, cx: &mut Context<Self>) {
+        self.toggle_picker(cx);
     }
 
-    fn new_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else {
-            return;
+    fn thread_error(&mut self, error: &ClientError, cx: &mut Context<Self>) {
+        self.conn = Conn::Failed {
+            message: friendly(error).into(),
+            retry_in: None,
         };
-        let job = backend.spawn(|c| async move { c.create_thread().await });
-        let task = cx.spawn_in(window, async move |this, cx| {
-            let result = job
-                .await
-                .map_err(|e| ClientError::Config(e.to_string()))
-                .and_then(|r| r);
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(created) => {
-                    let id = created.thread.thread_id.clone();
-                    this.threads.insert(0, created.thread);
-                    this.open_thread(id, window, cx);
-                }
-                Err(e) => {
-                    this.conn = Conn::Failed {
-                        message: friendly(&e).into(),
-                        retry_in: None,
-                    };
-                    cx.notify();
-                }
-            });
-        });
-        task.detach();
+        cx.notify();
     }
 
     fn delete_thread(&mut self, thread_id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -329,10 +310,10 @@ impl Workspace {
                 if !ok {
                     return;
                 }
-                this.threads.retain(|t| t.thread_id != thread_id);
+                this.inbox.list.rows.retain(|t| t.thread_id != thread_id);
                 if this.active.as_ref().is_some_and(|(id, _)| *id == thread_id) {
                     this.active = None;
-                    if let Some(next) = this.threads.first().map(|t| t.thread_id.clone()) {
+                    if let Some(next) = this.inbox.first_open() {
                         this.open_thread(next, window, cx);
                     }
                 }
@@ -503,7 +484,6 @@ impl Workspace {
         items.push((Page::Profiles, IconName::User, "Profiles"));
         items.push((Page::Extensions, IconName::Frame, "Extensions"));
         items.push((Page::Skills, IconName::BookOpen, "Skills"));
-        items.push((Page::Settings, IconName::Settings, "Settings"));
         items.push((Page::Operator, IconName::SquareTerminal, "Operator"));
         let unread = self.unread;
         v_flex()
@@ -541,44 +521,7 @@ impl Workspace {
     }
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.active.as_ref().map(|(id, _)| id.clone());
         let p = *Palette::of(cx);
-        let rows =
-            self.threads.iter().enumerate().map(|(ix, thread)| {
-                let id = thread.thread_id.clone();
-                let delete_id = id.clone();
-                let is_active = self.page == Page::Chat && active.as_deref() == Some(id.as_str());
-                sidebar_row(("thread", ix), is_active, cx)
-                    .aria_label(thread.display_title().to_string())
-                    .group("thread-row")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_thread(id.clone(), window, cx)
-                    }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(thread.display_title().to_string()),
-                    )
-                    .child(
-                        div()
-                            .invisible()
-                            .group_hover("thread-row", |s| s.visible())
-                            .child(
-                                Button::new(("delete-thread", ix))
-                                    .icon(IconName::Delete)
-                                    .ghost()
-                                    .xsmall()
-                                    .tooltip("Delete conversation")
-                                    .accessibility_label("Delete conversation")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.delete_thread(delete_id.clone(), window, cx)
-                                    })),
-                            ),
-                    )
-            });
-
         v_flex()
             .w(px(design::SIDEBAR_WIDTH))
             .h_full()
@@ -598,45 +541,37 @@ impl Workspace {
                             .icon(IconName::Plus)
                             .ghost()
                             .small()
-                            .tooltip("New conversation")
-                            .accessibility_label("New conversation")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.new_thread(window, cx)),
-                            ),
+                            .selected(self.inbox.picker_open)
+                            .tooltip("New thread")
+                            .accessibility_label("New thread")
+                            .on_click(cx.listener(|this, _, _, cx| this.new_thread(cx))),
                     ),
             )
             .child(self.render_nav(cx))
-            .child(
-                div()
-                    .px_4()
-                    .pt_3()
-                    .pb_1()
-                    .text_xs()
-                    .font_medium()
-                    .text_color(p.text_faint)
-                    .child("Conversations"),
-            )
-            .child(
-                v_flex()
-                    .id("thread-list")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px_2()
-                    .gap_px()
-                    .children(rows),
-            )
+            .child(self.render_inbox(cx))
             .child(
                 h_flex()
                     .p_2()
                     .gap_1()
                     .child(
-                        Button::new("open-browser")
-                            .icon(IconName::ExternalLink)
-                            .label("Open in browser")
+                        Button::new("open-settings")
+                            .icon(IconName::Settings)
+                            .label("Settings")
                             .ghost()
                             .small()
                             .flex_1()
+                            .selected(self.page == Page::Settings)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show(Page::Settings, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("open-browser")
+                            .icon(IconName::ExternalLink)
+                            .ghost()
+                            .small()
+                            .tooltip("Open in browser")
+                            .accessibility_label("Open in browser")
                             .on_click(cx.listener(|this, _, _, cx| this.open_in_browser(cx))),
                     )
                     .child(
@@ -1042,11 +977,9 @@ impl Workspace {
                     )
                     .child(
                         Button::new("start-thread")
-                            .label("New conversation")
+                            .label("New thread")
                             .primary()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.new_thread(window, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, _, cx| this.new_thread(cx))),
                     ),
                 "empty-state",
                 motion::FADE_IN,

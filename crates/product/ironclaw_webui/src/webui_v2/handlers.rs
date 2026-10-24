@@ -30,6 +30,8 @@ pub use profiles::{
 };
 pub use usage::usage_report;
 pub use computer_use::{computer_use_control, computer_use_session};
+mod inbox;
+pub use inbox::{inbox_list, inbox_mutate, thread_goal, thread_goal_set};
 mod run_artifact;
 pub use run_artifact::{
     admin_get_thread_scrape_artifact, admin_get_thread_scrape_run_artifact,

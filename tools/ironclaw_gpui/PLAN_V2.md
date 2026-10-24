@@ -90,6 +90,8 @@ The `result` frame totals add up every tool-loop step, so they are not used for 
 
 ### 5. Inbox UI and the rest
 
+Status 24.10.2026 (branch `v3-inbox-ui`): the inbox replaces the sidebar thread list (`app/src/workspace/inbox.rs`, one `GET /api/webchat/v2/inbox` that the backend joins: profile, title, branch, engines of the whole delegation tree, state). Pin, snooze, settle and visit persist in `orch_inbox` (`ironclaw_orchestrator/src/inbox.rs`). New thread opens the profile picker (last used first, highlighted). The goal strip sits above the composer (`/goal`, `orch_goals`). Engine marks are lettered tiles; no brand logos are bundled yet.
+
 - Inbox exactly like t3code: one list by recency, search, filter (profile, model, state), new-profile button, Settled (N) folded at the bottom. States: pinned, inbox, working, snoozed, settled, plus crash and usage-limit recovery.
 - Row: profile badge and name, title, branch when the folder is a repo, logos of every engine that ran in the thread (parent plus delegated children).
 - Footer: settings and Usage. No PR view.

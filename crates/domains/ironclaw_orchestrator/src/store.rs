@@ -436,6 +436,8 @@ impl Store {
             conn.execute_batch(crate::profiles::PROFILES_SCHEMA).await?;
             conn.execute_batch(crate::schedules::SCHEDULES_SCHEMA)
                 .await?;
+            conn.execute_batch(crate::inbox::INBOX_SCHEMA).await?;
+            conn.execute_batch(crate::goals::GOALS_SCHEMA).await?;
         }
         self.import_legacy_threads(legacy_runtime).await
     }

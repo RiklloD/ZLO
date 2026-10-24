@@ -207,6 +207,14 @@ pub const WEBUI_V2_PATTERN_USAGE_REPORT: &str = "/api/webchat/v2/usage";
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_SESSION: &str = "webui.v2.computer_use.session";
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL: &str = "webui.v2.computer_use.control";
 pub const WEBUI_V2_PATTERN_COMPUTER_USE: &str = "/api/webchat/v2/threads/{thread_id}/computer-use";
+// Inbox and goal routes (v2 stage 5).
+pub const WEBUI_V2_ROUTE_INBOX_LIST: &str = "webui.v2.inbox.list";
+pub const WEBUI_V2_ROUTE_INBOX_MUTATE: &str = "webui.v2.inbox.mutate";
+pub const WEBUI_V2_ROUTE_THREAD_GOAL_GET: &str = "webui.v2.goals.get";
+pub const WEBUI_V2_ROUTE_THREAD_GOAL_SET: &str = "webui.v2.goals.set";
+pub const WEBUI_V2_PATTERN_INBOX: &str = "/api/webchat/v2/inbox";
+pub const WEBUI_V2_PATTERN_INBOX_THREAD: &str = "/api/webchat/v2/inbox/{thread_id}";
+pub const WEBUI_V2_PATTERN_THREAD_GOAL: &str = "/api/webchat/v2/threads/{thread_id}/goal";
 pub const WEBUI_V2_PATTERN_CREATE_THREAD: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_THREADS: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_NOTIFICATIONS: &str = "/api/webchat/v2/notifications";
@@ -445,6 +453,27 @@ pub fn webui_v2_routes_with_artifact_flags(
         usage_report_descriptor(),
         computer_use_session_descriptor(),
         computer_use_control_descriptor(),
+        // Same read/mutation policy shape as the profile routes.
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_INBOX_LIST,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_INBOX,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_INBOX_MUTATE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_INBOX_THREAD,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_THREAD_GOAL_GET,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_THREAD_GOAL,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_THREAD_GOAL_SET,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_THREAD_GOAL,
+        ),
         resolve_gate_descriptor(),
         retry_run_descriptor(),
         list_commands_descriptor(),

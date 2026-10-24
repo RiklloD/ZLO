@@ -2,6 +2,17 @@
 
 Open items found while building and testing the GPUI client. Newest first.
 
+## Closed 24.10.2026 (v2 stage 5 inbox)
+
+- Automation-run threads in the thread list: the sidebar is now the inbox
+  (`app/src/workspace/inbox.rs`, `GET /api/webchat/v2/inbox`). The backend
+  joins automation runs (which the session thread list leaves out) with the
+  automation's name as title, so they show up, and their notifications and
+  alerts name them instead of saying "Conversation".
+- Memory > threads in Files shows titles: done by the titles cache in the
+  23.10 pass; the cache is now filled from the inbox rows, automation runs
+  included, so fewer titles need a fetch.
+
 ## Closed 23.10.2026 (backlog pass)
 
 - Service lifetime: the app loads the launchd job on open and unloads it on
@@ -76,10 +87,7 @@ detected from the live stream instead (`RunEnded` in `chat.rs`).
 
 ## Desktop app follow-ups (23.10.2026)
 
-- Automation-run threads are not in the sidebar list (the gateway lists only
-  session threads), so their notifications say "Conversation" instead of a
-  title.
-- Memory > threads in Files shows thread ids; map them to titles.
+Both closed 24.10.2026, see above.
 
 ## Approval prompts never appear (found 22.10.2026, root cause 23.10.2026)
 

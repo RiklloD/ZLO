@@ -6,6 +6,7 @@
 mod external;
 #[cfg(test)]
 mod external_tests;
+mod inbox;
 mod observer;
 mod profiles;
 mod runtime;

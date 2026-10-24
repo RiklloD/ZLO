@@ -1,11 +1,12 @@
 //! Thread titles for every surface that names a conversation: notifications,
-//! system alerts, Memory > threads. The sidebar's thread list supplies most;
-//! threads it leaves out (automation runs) are fetched once, on demand.
+//! system alerts, Memory > threads. The sidebar inbox supplies them, automation
+//! runs included; a thread it does not list (older than its page) is fetched
+//! once, on demand.
 
 use std::collections::{HashMap, HashSet};
 
 use ironclaw_gpui_client::Backend;
-use ironclaw_gpui_client::wire::ThreadSummary;
+use ironclaw_gpui_client::inbox::InboxRow;
 
 use crate::jobs::flatten;
 use crate::ui::*;
@@ -25,13 +26,14 @@ pub fn get(cx: &App, thread_id: &str) -> Option<String> {
         .cloned()
 }
 
-/// Record the titles the thread list just returned.
-pub fn set_listed(threads: &[ThreadSummary], cx: &mut App) {
+/// Record the titles the inbox just returned.
+pub fn set_rows(rows: &[InboxRow], cx: &mut App) {
     let titles = cx.default_global::<ThreadTitles>();
-    for t in threads {
-        titles
-            .known
-            .insert(t.thread_id.clone(), t.display_title().to_string());
+    for row in rows {
+        titles.known.insert(
+            row.thread_id.clone(),
+            crate::workspace::row_title(row).to_string(),
+        );
     }
 }
 

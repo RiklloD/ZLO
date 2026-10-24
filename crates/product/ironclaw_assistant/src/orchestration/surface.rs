@@ -26,6 +26,10 @@ use ironclaw_product_contracts::inbound_requests::{
     ProductCancelRunRequest, ProductCreateThreadRequest, ProductResolveGateRequest,
     ProductSubmitTurnRequest,
 };
+use ironclaw_product_contracts::inbox::{
+    INBOX_MUTATE_COMMAND_ID, INBOX_VIEW, InboxMutationRequest, THREAD_GOAL_SET_COMMAND_ID,
+    THREAD_GOAL_VIEW, ThreadGoalSetRequest,
+};
 use ironclaw_product_contracts::orchestration::*;
 use ironclaw_product_contracts::profiles::*;
 use ironclaw_product_contracts::surface::{
@@ -37,6 +41,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::external;
+use super::inbox;
 use super::profiles::{self, ProfileHome};
 use crate::reborn_services::{
     CANCEL_RUN_COMMAND_ID, CREATE_THREAD_COMMAND_ID, RESOLVE_GATE_COMMAND_ID,
@@ -442,6 +447,58 @@ impl OrchestratedProductSurface {
     }
 }
 
+impl OrchestratedProductSurface {
+    /// `inbox.list` and `goals.get` (they need the caller, not only its scope).
+    async fn inbox_view(
+        &self,
+        caller: &ProductSurfaceCaller,
+        view: &str,
+        input: Value,
+    ) -> Result<Option<Value>, ProductSurfaceError> {
+        let engine = &self.engine;
+        Ok(Some(match view {
+            v if v == INBOX_VIEW.id => {
+                to_json(inbox::list(engine, self.home.as_ref(), &self.inner, caller).await?)
+                    .map_err(ProductSurfaceError::internal_from)?
+            }
+            v if v == THREAD_GOAL_VIEW.id => {
+                let req: OrchestratorThreadRequest = decode(input)?;
+                answer(
+                    inbox::goal(engine, caller, &req.thread_id)
+                        .await
+                        .and_then(to_json),
+                )?
+            }
+            _ => return Ok(None),
+        }))
+    }
+
+    async fn inbox_command(
+        &self,
+        caller: &ProductSurfaceCaller,
+        operation: &str,
+        input: Value,
+    ) -> Result<Option<Value>, ProductSurfaceError> {
+        let engine = &self.engine;
+        Ok(Some(match operation {
+            INBOX_MUTATE_COMMAND_ID => {
+                let req: InboxMutationRequest = decode(input)?;
+                let home = self.home.as_ref();
+                answer(
+                    inbox::mutate(engine, home, &self.inner, caller, req)
+                        .await?
+                        .and_then(to_json),
+                )?
+            }
+            THREAD_GOAL_SET_COMMAND_ID => {
+                let req: ThreadGoalSetRequest = decode(input)?;
+                answer(inbox::set_goal(engine, caller, req).await.and_then(to_json))?
+            }
+            _ => return Ok(None),
+        }))
+    }
+}
+
 #[async_trait]
 impl ProductSurface for OrchestratedProductSurface {
     async fn invoke(
@@ -451,6 +508,12 @@ impl ProductSurface for OrchestratedProductSurface {
     ) -> Result<ProductSurfaceInvokeResponse, ProductSurfaceError> {
         let scope = scope_of(&caller);
         let operation = request.operation_id.as_str().to_string();
+        if let Some(output) = self
+            .inbox_command(&caller, &operation, request.input.clone())
+            .await?
+        {
+            return Ok(ProductSurfaceInvokeResponse { output });
+        }
         if let Some(output) = self
             .orchestrator_command(&operation, request.input.clone(), &scope)
             .await?
@@ -592,6 +655,12 @@ impl ProductSurface for OrchestratedProductSurface {
         request: ProductSurfaceQueryRequest,
     ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
         let scope = scope_of(&caller);
+        if let Some(value) = self
+            .inbox_view(&caller, &request.view_id, request.input.clone())
+            .await?
+        {
+            return Ok(page(value));
+        }
         if let Some(value) = self
             .orchestrator_view(&request.view_id, request.input.clone(), &scope)
             .await?
