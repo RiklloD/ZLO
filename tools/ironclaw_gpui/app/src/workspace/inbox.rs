@@ -40,6 +40,8 @@ pub(super) struct Inbox {
     profile: Option<String>,
     model: Option<String>,
     state: Option<InboxState>,
+    /// Folded state of the Working shelf; open by default, as in t3code.
+    show_working: bool,
     show_snoozed: bool,
     show_settled: bool,
     settled_limit: usize,
@@ -62,6 +64,7 @@ impl Inbox {
         });
         Self {
             search: Some((input, sub)),
+            show_working: true,
             settled_limit: SETTLED_PAGE,
             ..Self::default()
         }
@@ -149,17 +152,59 @@ impl Inbox {
 }
 
 pub(crate) fn title_of(row: &InboxRow) -> &str {
-    row.title
+    let title = row
+        .title
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .unwrap_or("New conversation")
+        .unwrap_or("New conversation");
+    strip_model_suffix(title, &row.engines)
+}
+
+/// A model switch forks the thread as "<title> (<model>)". The sidebar
+/// names the profile, never the model, so that suffix is dropped.
+fn strip_model_suffix<'a>(title: &'a str, engines: &[InboxEngine]) -> &'a str {
+    let Some((head, inner)) = title
+        .strip_suffix(')')
+        .and_then(|t| t.rfind(" (").map(|at| (&t[..at], &t[at + 2..])))
+    else {
+        return title;
+    };
+    let named = engines.iter().any(|e| {
+        [e.model.as_deref(), e.provider.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|m| m.eq_ignore_ascii_case(inner))
+    });
+    let model_like = !inner.contains(' ')
+        && inner.contains('-')
+        && inner.chars().any(|c| c.is_ascii_digit());
+    let head = head.trim_end();
+    if (named || model_like) && !head.is_empty() {
+        head
+    } else {
+        title
+    }
 }
 
 impl Workspace {
     /// Take a fresh list: titles cache, poll, wake timer.
     pub(super) fn apply_inbox(&mut self, list: InboxListResponse, cx: &mut Context<Self>) {
         crate::titles::set_rows(&list.rows, cx);
+        // A thread that enters or leaves the Working shelf grows into its
+        // new place instead of jumping there.
+        let was_working = |id: &str| {
+            self.inbox
+                .row(id)
+                .map(|r| r.state == InboxState::Working)
+        };
+        for row in &list.rows {
+            if was_working(&row.thread_id)
+                .is_some_and(|was| was != (row.state == InboxState::Working))
+            {
+                crate::design::motion::restart(&format!("card-grow-{}", row.thread_id));
+            }
+        }
         self.inbox.list = list;
         self.ensure_inbox_poll(cx);
         self.schedule_wake(cx);
@@ -325,8 +370,12 @@ impl Workspace {
         let in_state = |s: &[InboxState]| -> Vec<&InboxRow> {
             rows.iter().filter(|r| s.contains(&r.state)).collect()
         };
+        // t3code's Working shelf: a thread with a live run (or live
+        // subagents) leaves the inbox while it works and comes back when it
+        // needs you. Pinned outranks it, as in t3code.
+        let working = in_state(&[InboxState::Working]);
         let pinned = in_state(&[InboxState::Pinned]);
-        let main = in_state(&[InboxState::Inbox, InboxState::Working]);
+        let main = in_state(&[InboxState::Inbox]);
         let snoozed = in_state(&[InboxState::Snoozed]);
         let settled = in_state(&[InboxState::Settled]);
         // Searching or filtering on a parked state unfolds it.
@@ -343,7 +392,24 @@ impl Workspace {
                 crate::design::motion::settle(&format!("card-grow-{}", row.thread_id));
             }
         }
-        for (ix, row) in pinned.iter().chain(main.iter()).enumerate() {
+        let show_working = !working.is_empty();
+        let working_open = self.inbox.show_working || unfold;
+        if show_working {
+            list.push(self.render_fold("working", "Working", working.len(), working_open, cx));
+        }
+        let working_shown = if working_open { working.len() } else { 0 };
+        let cards: Vec<&InboxRow> = working
+            .iter()
+            .take(working_shown)
+            .chain(pinned.iter())
+            .chain(main.iter())
+            .copied()
+            .collect();
+        for (ix, row) in cards.into_iter().enumerate() {
+            // A gap closes the Working shelf off from the rest.
+            if show_working && ix == working_shown && ix > 0 {
+                list.push(div().flex_none().h(px(6.)).into_any_element());
+            }
             let is_active = active.as_deref() == Some(row.thread_id.as_str());
             let card = self.render_card(row, is_active, now, cx);
             // A thread that appears later (a new one, a T3 child) grows
@@ -367,7 +433,7 @@ impl Workspace {
                 .into_any_element(),
             );
         }
-        if main.is_empty() && pinned.is_empty() && self.inbox.list.rows.is_empty() {
+        if main.is_empty() && pinned.is_empty() && working.is_empty() && self.inbox.list.rows.is_empty() {
             list.push(
                 div()
                     .px_2()
@@ -678,7 +744,7 @@ impl Workspace {
     ) -> AnyElement {
         let p = *Palette::of(cx);
         let (color, hover) = match key {
-            "snoozed" => (p.accent, p.accent),
+            "snoozed" | "working" => (p.accent, p.accent),
             _ => (p.text_faint, p.text_muted),
         };
         h_flex()
@@ -711,6 +777,7 @@ impl Workspace {
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 match key {
+                    "working" => this.inbox.show_working = !this.inbox.show_working,
                     "snoozed" => this.inbox.show_snoozed = !this.inbox.show_snoozed,
                     _ => this.inbox.show_settled = !this.inbox.show_settled,
                 }
@@ -1286,6 +1353,22 @@ mod tests {
         inbox.state = Some(InboxState::Settled);
         assert!(!inbox.matches(&a, ""));
         assert!(inbox.matches(&b, ""));
+    }
+
+    #[test]
+    fn titles_drop_a_model_suffix_only() {
+        let mut r = row("a", InboxState::Inbox, Some("gpt-6.1-sol"));
+        let shown = |r: &InboxRow| title_of(r).to_string();
+        r.title = Some("thread (claude-opus-5-5)".into());
+        assert_eq!(shown(&r), "thread");
+        r.title = Some("Plan (gpt-6.1-sol)".into());
+        assert_eq!(shown(&r), "Plan");
+        r.title = Some("Notes (fork)".into());
+        assert_eq!(shown(&r), "Notes (fork)");
+        r.title = Some("Budget (Q3 2026)".into());
+        assert_eq!(shown(&r), "Budget (Q3 2026)");
+        r.title = Some("(claude-opus-5-5)".into());
+        assert_eq!(shown(&r), "(claude-opus-5-5)");
     }
 
     #[test]
