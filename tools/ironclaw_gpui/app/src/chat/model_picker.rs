@@ -10,9 +10,13 @@
 //!
 //! Like t3code, the user can star models (the star tab lists them) and hide
 //! models or whole providers (hover icons on a row or a group title;
-//! right-click a rail icon). Hidden providers sit as chips under the list,
-//! one click shows them again. The preferences live in the backend settings,
-//! written through the same route.
+//! double- or right-click a rail icon). Hidden ones stay out of the picker
+//! until the footer's "Show hidden" brings them back dimmed, to restore.
+//! The preferences live in the backend settings, written through the same
+//! route. Dragging a rail icon reorders the providers (a local pref).
+//!
+//! There is no "Default" row: IronClaw lists its profile model first, and a
+//! new thread preselects the last pick (or that profile model) by name.
 //!
 //! Beside the model pill, a thinking pill picks the reasoning effort when the
 //! model has one (t3code's "Reasoning" option): the levels come from the
@@ -26,12 +30,34 @@ use crate::design::{self, Palette};
 use crate::jobs;
 use crate::ui::*;
 
-/// IronClaw's own loop; the only provider with a "Default" (profile) model.
+/// IronClaw's own loop; its first model is the profile's.
 const NATIVE: &str = "ironclaw";
 const POPOVER_WIDTH: f32 = 380.;
 const POPOVER_LIST_HEIGHT: f32 = 320.;
 /// Recent picks shown first in "All", after MonoCode's `pickers.rs`.
 const RECENTS: usize = 6;
+
+/// A rail icon being dragged to reorder the providers.
+#[derive(Clone)]
+struct DraggedProvider {
+    provider: String,
+    runtime: String,
+}
+
+impl Render for DraggedProvider {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = *Palette::of(cx);
+        div()
+            .size(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(design::CONTROL_RADIUS))
+            .bg(p.active)
+            .shadow_md()
+            .child(provider_mark(&self.runtime, &self.provider, 18., cx))
+    }
+}
 
 pub enum PickerEvent {
     /// The backend applied a pick. `fork_thread_id` set: open that thread.
@@ -57,8 +83,8 @@ pub struct ModelPicker {
     catalog_thread: Option<String>,
     route: Option<ThreadRoute>,
     prefs: PickerPrefs,
-    /// `(provider, model)` shown on the pill; `model` "default" is the
-    /// profile's model.
+    /// `(provider, model)` shown on the pill; `model` "default" (a thread
+    /// with no pick) reads as IronClaw's profile model.
     current: Option<(String, String)>,
     open: bool,
     rail: Rail,
@@ -128,6 +154,9 @@ impl ModelPicker {
                     this.rail = Rail::Favorites;
                 }
                 this.route = Some(route);
+                if this.current.is_none() {
+                    this.current = this.default_pick(cx);
+                }
                 cx.notify();
             },
         );
@@ -141,6 +170,74 @@ impl ModelPicker {
     /// The local effort pick on the new-thread screen.
     pub fn pending_effort(&self) -> Option<String> {
         self.effort.clone()
+    }
+
+    /// A new thread's pick: the last pick still offered, else IronClaw's
+    /// profile model.
+    fn default_pick(&self, cx: &App) -> Option<(String, String)> {
+        let offered = |provider: &str, model: &str| {
+            !self.prefs.provider_hidden(provider)
+                && self
+                    .providers()
+                    .iter()
+                    .any(|p| p.provider == provider && p.models.iter().any(|m| m == model))
+        };
+        crate::design::prefs::Prefs::of(cx)
+            .recent_models
+            .iter()
+            .find(|(p, m)| offered(p, m))
+            .cloned()
+            .or_else(|| Some((NATIVE.into(), self.profile_model()?.to_string())))
+    }
+
+    /// IronClaw's profile model, which its route lists first.
+    fn profile_model(&self) -> Option<&str> {
+        self.providers()
+            .iter()
+            .find(|p| p.provider == NATIVE)
+            .and_then(|p| p.models.first())
+            .map(String::as_str)
+    }
+
+    /// The current model by name: "default" becomes the profile model.
+    fn current_model(&self) -> Option<&str> {
+        let (provider, model) = self.current.as_ref()?;
+        match model.as_str() {
+            "default" if provider == NATIVE => self.profile_model().or(Some("default")),
+            model => Some(model),
+        }
+    }
+
+    /// The providers in the user's order; ones not in it keep the catalog's.
+    fn ordered_providers(&self, cx: &App) -> Vec<&RouteProvider> {
+        let order = &crate::design::prefs::Prefs::of(cx).provider_order;
+        let mut providers: Vec<&RouteProvider> = self.providers().iter().collect();
+        providers.sort_by_key(|p| {
+            order
+                .iter()
+                .position(|id| *id == p.provider)
+                .unwrap_or(usize::MAX)
+        });
+        providers
+    }
+
+    /// Move `dragged` into `target`'s place in the rail and the list.
+    fn reorder(&mut self, dragged: &str, target: &str, cx: &mut Context<Self>) {
+        let mut order: Vec<String> = self
+            .ordered_providers(cx)
+            .iter()
+            .map(|p| p.provider.clone())
+            .collect();
+        let (Some(from), Some(to)) = (
+            order.iter().position(|p| p == dragged),
+            order.iter().position(|p| p == target),
+        ) else {
+            return;
+        };
+        let moved = order.remove(from);
+        order.insert(to, moved);
+        crate::design::prefs::Prefs::update(cx, |p| p.provider_order = order);
+        cx.notify();
     }
 
     fn current_provider(&self) -> &str {
@@ -284,13 +381,12 @@ impl ModelPicker {
     }
 
     fn label(&self) -> (String, Option<String>) {
-        match &self.current {
-            Some((provider, model)) if model != "default" => {
-                (pretty_model(model), Some(provider.clone()))
-            }
-            Some((provider, _)) => ("Default model".into(), Some(provider.clone())),
-            None => ("Default model".into(), Some(NATIVE.into())),
-        }
+        let provider = self.current.as_ref().map_or(NATIVE, |(p, _)| p.as_str());
+        let name = match self.current_model() {
+            Some("default") | None => "IronClaw".to_string(),
+            Some(model) => pretty_model(model),
+        };
+        (name, Some(provider.to_string()))
     }
 
     fn render_popover(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -338,14 +434,20 @@ impl ModelPicker {
                 self,
             ),
         ];
-        for (ix, provider) in self.providers().iter().enumerate() {
+        let ordered = self.ordered_providers(cx);
+        for (ix, provider) in ordered.iter().enumerate() {
             let hidden = self.prefs.provider_hidden(&provider.provider);
             if hidden && !self.show_hidden {
                 continue;
             }
             let key = provider.provider.clone();
             let toggle_key = key.clone();
+            let drop_key = key.clone();
             let on = self.rail == Rail::Provider(key.clone());
+            let dragged = DraggedProvider {
+                provider: key.clone(),
+                runtime: provider.runtime.clone(),
+            };
             rail.push(
                 rail_item(
                     ("rail", ix).into(),
@@ -353,20 +455,31 @@ impl ModelPicker {
                         .into_any_element(),
                     on,
                     format!(
-                        "{} (right-click to {})",
+                        "{} (drag to reorder, double-click to {})",
                         provider.name,
                         if hidden { "show" } else { "hide" }
                     ),
                 )
                 .when(hidden, |d| d.opacity(0.4))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.rail = Rail::Provider(key.clone());
-                    cx.notify();
-                }))
+                .on_click(
+                    cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                        if event.click_count() >= 2 {
+                            this.toggle_provider(key.clone(), cx);
+                        } else {
+                            this.rail = Rail::Provider(key.clone());
+                            cx.notify();
+                        }
+                    }),
+                )
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, _, _, cx| this.toggle_provider(toggle_key.clone(), cx)),
                 )
+                .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                .drag_over::<DraggedProvider>(move |style, _, _, _| style.bg(p.hover))
+                .on_drop(cx.listener(move |this, dragged: &DraggedProvider, _, cx| {
+                    this.reorder(&dragged.provider, &drop_key, cx);
+                }))
                 .into_any_element(),
             );
         }
@@ -392,7 +505,8 @@ impl ModelPicker {
                 .iter()
                 .filter_map(|f| {
                     let provider = self.providers().iter().find(|p| p.provider == f.provider)?;
-                    matches(provider, &f.model).then(|| (provider, f.model.clone()))
+                    let shown = self.show_hidden || !self.prefs.provider_hidden(&f.provider);
+                    (shown && matches(provider, &f.model)).then(|| (provider, f.model.clone()))
                 })
                 .collect();
             groups.push(("Favorites".into(), None, picks));
@@ -410,7 +524,7 @@ impl ModelPicker {
                     .collect();
                 groups.push(("Recent".into(), None, picks));
             }
-            for provider in self.providers() {
+            for provider in ordered.iter().copied() {
                 if let Rail::Provider(only) = &self.rail
                     && *only != provider.provider
                 {
@@ -419,16 +533,12 @@ impl ModelPicker {
                 if self.prefs.provider_hidden(&provider.provider) && !self.show_hidden {
                     continue;
                 }
-                let mut models: Vec<String> = Vec::new();
-                if provider.provider == NATIVE {
-                    models.push("default".into());
-                }
-                models.extend(provider.models.iter().cloned());
-                let picks = models
-                    .into_iter()
+                let picks = provider
+                    .models
+                    .iter()
                     .filter(|m| matches(provider, m))
                     .filter(|m| self.show_hidden || !self.prefs.model_hidden(&provider.provider, m))
-                    .map(|m| (provider, m))
+                    .map(|m| (provider, m.clone()))
                     .collect();
                 groups.push((provider.name.clone(), Some(provider), picks));
             }
@@ -460,8 +570,8 @@ impl ModelPicker {
                     .into_any_element(),
             );
         }
+        let hidden_providers = self.prefs.hidden_providers.len();
         let hidden = self.hidden_count();
-        let hidden_providers = self.render_hidden_providers(cx);
 
         h_flex()
             .id("model-popover")
@@ -481,11 +591,11 @@ impl ModelPicker {
                     .flex_none()
                     .max_h(px(POPOVER_LIST_HEIGHT + 56.))
                     .overflow_y_scroll()
-                    .p_1()
-                    .gap_1()
                     .border_r_1()
                     .border_color(p.border)
-                    .children(rail),
+                    // Children of a height-capped flex column shrink instead
+                    // of overflowing; a non-shrinking inner column scrolls.
+                    .child(v_flex().flex_shrink_0().p_1().gap_1().children(rail)),
             )
             .child(
                 v_flex()
@@ -497,11 +607,8 @@ impl ModelPicker {
                             .id("model-list")
                             .max_h(px(POPOVER_LIST_HEIGHT))
                             .overflow_y_scroll()
-                            .px_1()
-                            .pb_1()
-                            .children(rows),
+                            .child(v_flex().flex_shrink_0().px_1().pb_1().children(rows)),
                     )
-                    .children(hidden_providers)
                     .when(hidden > 0, |d| {
                         d.child(
                             div()
@@ -517,7 +624,7 @@ impl ModelPicker {
                                 .child(if self.show_hidden {
                                     "Done showing hidden".to_string()
                                 } else {
-                                    format!("Show hidden ({hidden})")
+                                    hidden_summary(hidden_providers, hidden - hidden_providers)
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.show_hidden = !this.show_hidden;
@@ -591,57 +698,6 @@ impl ModelPicker {
         self.edit_prefs(|prefs| prefs.toggle_provider(&key), cx);
     }
 
-    /// The hidden providers as chips; clicking one shows it again.
-    fn render_hidden_providers(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let p = *Palette::of(cx);
-        let hidden: Vec<&RouteProvider> = self
-            .providers()
-            .iter()
-            .filter(|x| self.prefs.provider_hidden(&x.provider))
-            .collect();
-        if hidden.is_empty() {
-            return None;
-        }
-        let chips = hidden.into_iter().map(|provider| {
-            let key = provider.provider.clone();
-            h_flex()
-                .id(SharedString::from(format!("unhide-{key}")))
-                .role(Role::Button)
-                .aria_label(format!("Show {}", provider.name))
-                .gap_1()
-                .px_1p5()
-                .py_0p5()
-                .items_center()
-                .rounded(px(design::CONTROL_RADIUS))
-                .border_1()
-                .border_color(p.border)
-                .cursor_pointer()
-                .hover(|s| s.bg(p.hover).text_color(p.text))
-                .child(provider_mark(
-                    &provider.runtime,
-                    &provider.provider,
-                    12.,
-                    cx,
-                ))
-                .child(provider.name.clone())
-                .child(Icon::new(IconName::Eye).xsmall())
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_provider(key.clone(), cx)))
-        });
-        Some(
-            v_flex()
-                .px_3()
-                .py_1p5()
-                .gap_1()
-                .border_t_1()
-                .border_color(p.border)
-                .text_xs()
-                .text_color(p.text_faint)
-                .child("Hidden providers")
-                .child(h_flex().flex_wrap().gap_1().children(chips))
-                .into_any_element(),
-        )
-    }
-
     /// One pickable model, with hover actions to star and hide it.
     fn model_row(
         &self,
@@ -652,19 +708,13 @@ impl ModelPicker {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = *Palette::of(cx);
-        let on = self
-            .current
-            .as_ref()
-            .is_some_and(|(cp, cm)| *cp == provider.provider && *cm == model);
+        let on = self.current_provider() == provider.provider
+            && self.current_model() == Some(model.as_str());
         let favorite = self.prefs.favorite(&provider.provider, &model);
         let hidden = self.prefs.model_hidden(&provider.provider, &model);
         // Another runtime with history: the pick continues in a fork.
         let forks = !fresh && current_runtime != Some(provider.runtime.as_str());
-        let title = if model == "default" {
-            "Default (profile model)".to_string()
-        } else {
-            pretty_model(&model)
-        };
+        let title = pretty_model(&model);
         let id = format!("{}-{model}", provider.provider);
         let group = SharedString::from(format!("pick-row-{id}"));
         let (pv, md) = (provider.provider.clone(), model.clone());
@@ -820,7 +870,7 @@ impl ModelPicker {
 
     /// The thinking pill, when the current model has levels.
     fn render_effort(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let model = self.current.as_ref().map_or("default", |(_, m)| m.as_str());
+        let model = self.current_model().unwrap_or("default");
         let efforts = self.efforts_of(self.current_provider(), model).to_vec();
         if efforts.is_empty() {
             return None;
@@ -936,6 +986,20 @@ fn route_pick(route: &ThreadRoute) -> Option<(String, String)> {
     ))
 }
 
+/// The footer's restore toggle: "Show hidden (2 providers, 25 models)".
+fn hidden_summary(providers: usize, models: usize) -> String {
+    let count = |n: usize, what: &str| match n {
+        0 => None,
+        1 => Some(format!("1 {what}")),
+        n => Some(format!("{n} {what}s")),
+    };
+    let parts: Vec<String> = [count(providers, "provider"), count(models, "model")]
+        .into_iter()
+        .flatten()
+        .collect();
+    format!("Show hidden ({})", parts.join(", "))
+}
+
 /// "xhigh" -> "Extra High", as t3code names the levels.
 fn effort_label(effort: &str) -> String {
     match effort {
@@ -980,7 +1044,16 @@ pub fn provider_mark(runtime: &str, provider: &str, size: f32, cx: &App) -> impl
 
 #[cfg(test)]
 mod tests {
-    use super::{effort_label, pretty_model};
+    use super::{effort_label, hidden_summary, pretty_model};
+
+    #[test]
+    fn the_hidden_footer_counts_both_kinds() {
+        assert_eq!(
+            hidden_summary(3, 25),
+            "Show hidden (3 providers, 25 models)"
+        );
+        assert_eq!(hidden_summary(1, 0), "Show hidden (1 provider)");
+    }
 
     #[test]
     fn effort_levels_read_like_t3code() {

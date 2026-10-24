@@ -40,6 +40,8 @@ pub struct Prefs {
     pub status_bar_hidden: bool,
     /// The model picker's last picks, newest first: (provider, model).
     pub recent_models: Vec<(String, String)>,
+    /// The model picker's provider order (provider ids); unlisted ones follow.
+    pub provider_order: Vec<String>,
 }
 
 impl Default for Prefs {
@@ -56,6 +58,7 @@ impl Default for Prefs {
             wallpaper: Wallpaper::Aurora,
             status_bar_hidden: false,
             recent_models: Vec::new(),
+            provider_order: Vec::new(),
         }
     }
 }
