@@ -19,6 +19,7 @@ use ironclaw_product_contracts::outbound::{
 };
 
 use crate::api::GateDecision;
+use crate::orchestration::MergedFork;
 use crate::wire::{
     ATTACHMENTS_ONLY_CONTENT, CommandField, CommandOutcome, MessageKind, StreamEvent,
     TimelineMessage, TimelinePage,
@@ -219,6 +220,8 @@ pub struct Transcript {
     tick: u64,
     /// A fork's source conversation, shown read-only above its own messages.
     prefix: Vec<TimelineMessage>,
+    /// Forks merged back into this thread, each shown where it arrived.
+    merges: Vec<MergedFork>,
 }
 
 /// A message sent from this view that the timeline does not show yet.
@@ -263,6 +266,32 @@ fn shown_text(message: &TimelineMessage) -> String {
         .to_string()
 }
 
+/// Rows for messages shown from another thread (a fork's source, a merged
+/// fork), keyed under `prefix` so they carry no fork action.
+fn borrowed_rows(messages: &[TimelineMessage], prefix: &str, rows: &mut Vec<Row>) {
+    for message in messages {
+        let key = format!("{prefix}{}", message.message_id);
+        let text = shown_text(message);
+        if text.trim().is_empty() {
+            continue;
+        }
+        rows.push(match message.kind {
+            MessageKind::User => Row::User {
+                key,
+                text,
+                pending: false,
+                attachments: Vec::new(),
+            },
+            MessageKind::Assistant => Row::Assistant {
+                key,
+                text,
+                streaming: false,
+            },
+            _ => Row::System { key, text },
+        });
+    }
+}
+
 /// A thread as Markdown, for handing it to another thread to read:
 /// prompts and answers in order, oldest first.
 pub fn thread_markdown(title: &str, messages: &[TimelineMessage]) -> String {
@@ -304,6 +333,13 @@ impl Transcript {
     pub fn set_prefix(&mut self, mut messages: Vec<TimelineMessage>) {
         messages.retain(TimelineMessage::is_visible);
         self.prefix = messages;
+    }
+
+    pub fn set_merges(&mut self, mut merges: Vec<MergedFork>) {
+        for m in &mut merges {
+            m.messages.retain(TimelineMessage::is_visible);
+        }
+        self.merges = merges;
     }
 
     /// Drop each optimistic message once its server copy is in the timeline.
@@ -737,24 +773,7 @@ impl Transcript {
         };
 
         // A fork's source, keyed apart so its rows carry no fork action.
-        for message in &self.prefix {
-            let key = format!("{PREFIX_KEY}{}", message.message_id);
-            let text = shown_text(message);
-            rows.push(match message.kind {
-                MessageKind::User => Row::User {
-                    key,
-                    text,
-                    pending: false,
-                    attachments: Vec::new(),
-                },
-                MessageKind::Assistant => Row::Assistant {
-                    key,
-                    text,
-                    streaming: false,
-                },
-                _ => Row::System { key, text },
-            });
-        }
+        borrowed_rows(&self.prefix, PREFIX_KEY, &mut rows);
         if !self.prefix.is_empty() {
             rows.push(Row::System {
                 key: format!("{PREFIX_KEY}divider"),
@@ -763,9 +782,28 @@ impl Transcript {
         }
 
         let mut notes = self.notes.iter().peekable();
+        let mut merges = self.merges.iter().peekable();
+        let merge_rows = |merge: &MergedFork, rows: &mut Vec<Row>| {
+            let key = format!("{PREFIX_KEY}merge:{}:", merge.at);
+            rows.push(Row::System {
+                key: format!("{key}head"),
+                text: format!("Merged back from {}", merge.title),
+            });
+            borrowed_rows(&merge.messages, &key, rows);
+            if merge.pending {
+                rows.push(Row::System {
+                    key: format!("{key}tail"),
+                    text: "Goes to the model with your next message".into(),
+                });
+            }
+        };
         for message in self.durable.iter().filter(|m| m.is_visible()) {
             while let Some((_, note)) = notes.next_if(|(anchor, _)| *anchor < message.sequence) {
                 rows.push(note.clone());
+            }
+            let sent = message.created_at.map(|t| t.timestamp_millis());
+            while let Some(merge) = merges.next_if(|m| sent.is_some_and(|at| m.at < at)) {
+                merge_rows(merge, &mut rows);
             }
             let text = shown_text(message);
             // A context turn the engine sent on its own: nothing to read.
@@ -823,6 +861,9 @@ impl Transcript {
             }
         }
 
+        for merge in merges {
+            merge_rows(merge, &mut rows);
+        }
         rows.extend(notes.map(|(_, note)| note.clone()));
         for p in &self.pending_user {
             rows.push(Row::User {

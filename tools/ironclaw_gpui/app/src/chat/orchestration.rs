@@ -70,7 +70,9 @@ impl ChatView {
             return;
         }
         o.loading = true;
-        let want_lineage = !o.lineage_loaded;
+        // A merge waiting for the next message turns sent once it is.
+        let want_lineage =
+            !o.lineage_loaded || o.lineage.merges_in.iter().any(|m| m.status == "pending");
         let thread_id = self.thread_id.clone();
         let job = self.backend.spawn(move |c| async move {
             let (tasks, queue) =
@@ -119,10 +121,14 @@ impl ChatView {
         match s.lineage {
             Some(Ok(lineage)) => {
                 let forked = lineage.forked_from.is_some();
+                let merged = !lineage.merges_in.is_empty();
                 o.lineage = lineage;
                 o.lineage_loaded = true;
                 if forked {
                     self.load_fork_prefix(cx);
+                }
+                if merged {
+                    self.load_merges(cx);
                 }
             }
             Some(Err(e)) => tracing::debug!(error = %e, "thread lineage refresh failed"),
@@ -165,6 +171,23 @@ impl ChatView {
                     this.refresh_rows(cx);
                 }
                 Err(e) => tracing::debug!(error = %e, "fork source load failed"),
+            },
+        );
+    }
+
+    /// Forks merged back into this thread show where they arrived.
+    fn load_merges(&mut self, cx: &mut Context<Self>) {
+        let thread_id = self.thread_id.clone();
+        run(
+            &self.backend,
+            cx,
+            move |c| async move { c.merged_in(&thread_id).await },
+            |this, result, cx| match result {
+                Ok(merges) => {
+                    this.transcript.set_merges(merges);
+                    this.refresh_rows(cx);
+                }
+                Err(e) => tracing::debug!(error = %e, "merged forks load failed"),
             },
         );
     }

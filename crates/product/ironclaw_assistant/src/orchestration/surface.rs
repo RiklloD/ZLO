@@ -21,7 +21,9 @@ use ironclaw_cli_providers::bridge::CliBridge;
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::error::OrchestratorError;
-use ironclaw_orchestrator::model::{Author, QueueItemId, TaskId, ThreadRecord, ThreadScope};
+use ironclaw_orchestrator::model::{
+    Author, QueueItemId, TaskId, ThreadRecord, ThreadScope, TransferDelivery,
+};
 use ironclaw_product_contracts::inbound_requests::{
     ProductCancelRunRequest, ProductCreateThreadRequest, ProductResolveGateRequest,
     ProductSubmitTurnRequest,
@@ -462,7 +464,9 @@ impl OrchestratedProductSurface {
                                 &fork,
                                 target.as_ref(),
                                 req.run.map(|r| r as usize),
-                                None,
+                                // A person's merge starts nothing: the fork's
+                                // work rides on their next message there.
+                                Some(TransferDelivery::NextMessage),
                                 Author::User,
                             )
                             .await
