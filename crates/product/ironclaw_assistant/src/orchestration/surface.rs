@@ -598,9 +598,14 @@ impl ProductSurface for OrchestratedProductSurface {
                     };
                     if unpicked {
                         let mut model = thread.as_ref().and_then(|t| t.model.clone());
+                        let mut provider = thread.as_ref().and_then(|t| t.provider.clone());
                         if model.is_none() {
                             match profiles::default_model(&self.engine, &id).await {
-                                Ok(found) => model = found,
+                                Ok(Some((p, m))) => {
+                                    provider = p;
+                                    model = Some(m);
+                                }
+                                Ok(None) => {}
                                 Err(error) => soft("profile default model", Err::<(), _>(error)),
                             }
                         }
@@ -612,9 +617,12 @@ impl ProductSurface for OrchestratedProductSurface {
                             }
                         };
                         let model = match &thread {
-                            Some(thread) => {
-                                super::runtime::native_turn_model(thread, model, effort.as_deref())
-                            }
+                            Some(thread) => super::runtime::native_turn_model_on(
+                                thread,
+                                provider.as_deref(),
+                                model,
+                                effort.as_deref(),
+                            ),
                             None => model,
                         };
                         if model.is_some() {

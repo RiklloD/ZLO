@@ -105,14 +105,22 @@ pub(crate) fn native_turn_model(
     model: Option<String>,
     effort: Option<&str>,
 ) -> Option<String> {
+    native_turn_model_on(thread, thread.provider.as_deref(), model, effort)
+}
+
+/// [`native_turn_model`] for a model that comes from somewhere other than
+/// the thread's pick, such as its profile's default, with that provider.
+pub(crate) fn native_turn_model_on(
+    thread: &ThreadRecord,
+    provider: Option<&str>,
+    model: Option<String>,
+    effort: Option<&str>,
+) -> Option<String> {
     let model = model.filter(|m| !m.trim().is_empty() && m != "default");
     if thread.runtime_id.as_str() != IRONCLAW_RUNTIME_ID {
         return model;
     }
-    let provider = thread
-        .provider
-        .as_deref()
-        .filter(|p| *p != IRONCLAW_RUNTIME_ID && model.is_some());
+    let provider = provider.filter(|p| *p != IRONCLAW_RUNTIME_ID && model.is_some());
     NativeModelRoute::turn_model(provider, model.as_deref(), effort)
 }
 
@@ -411,6 +419,12 @@ mod tests {
         assert_eq!(
             native_turn_model(&native(Some("glm"), "ironclaw"), model(), Some("low")).as_deref(),
             Some("glm::glm-5.3::low")
+        );
+        // A profile default on another provider routes there even when the
+        // thread has no pick of its own (a bare GLM model reached ChatGPT).
+        assert_eq!(
+            native_turn_model_on(&native(None, "ironclaw"), Some("glm"), model(), None).as_deref(),
+            Some("glm::glm-5.3")
         );
         assert_eq!(
             native_turn_model(&native(None, "ironclaw"), None, Some("xhigh")).as_deref(),

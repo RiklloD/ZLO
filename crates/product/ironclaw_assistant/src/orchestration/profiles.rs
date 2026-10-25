@@ -193,13 +193,17 @@ pub(crate) async fn require_active(
     }
 }
 
-/// Default model of the thread's profile, for submits that pick none.
-pub(crate) async fn default_model(engine: &Engine, thread: &ThreadId) -> Result<Option<String>> {
-    Ok(engine
-        .store()
-        .thread_profile(thread)
-        .await?
-        .and_then(|p| p.settings.default_model))
+/// Default `(provider, model)` of the thread's profile, for submits that
+/// pick none. The provider must travel with the model: a GLM default sent
+/// alone runs on the active provider, which rejects it.
+pub(crate) async fn default_model(
+    engine: &Engine,
+    thread: &ThreadId,
+) -> Result<Option<(Option<String>, String)>> {
+    Ok(engine.store().thread_profile(thread).await?.and_then(|p| {
+        let s = p.settings;
+        s.default_model.map(|m| (s.default_provider, m))
+    }))
 }
 
 // ── Hermes import ───────────────────────────────────────────────────────

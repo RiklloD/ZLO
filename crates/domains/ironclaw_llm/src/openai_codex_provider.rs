@@ -273,10 +273,12 @@ impl OpenAiCodexProvider {
     ) -> Result<ParsedResponse, LlmError> {
         let url = format!("{}/responses", self.api_base_url);
         let headers = self.build_headers().await?;
+        // Errors name the model this request asked for, not the default.
+        let model = body["model"].as_str().unwrap_or(&self.model).to_string();
 
         tracing::debug!(
             url = %url,
-            model = %self.model,
+            model = %model,
             "Sending Responses API request"
         );
 
@@ -334,7 +336,7 @@ impl OpenAiCodexProvider {
             return Err(crate::error::map_provider_http_error(
                 crate::error::ProviderHttpError {
                     adapter: crate::error::ProductionModelAdapter::OpenAiCodex,
-                    model: &self.model,
+                    model: &model,
                     status: status.as_u16(),
                     body: body_text.as_ref(),
                     retry_after,

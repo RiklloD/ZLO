@@ -178,6 +178,8 @@ fn is_correlation_field(name: &str) -> bool {
             | "run_id"
             | "turn_run_id"
             | "submitted_run_id"
+            | "process_id"
+            | "process_kind"
             | "turn_id"
             | "submission_id"
             | "tool_call_id"
@@ -322,6 +324,10 @@ impl OperatorLogBuffer {
 
     fn correlation_from_fields(&self, fields: &[(String, String)]) -> LogCorrelation {
         let mut correlation = LogCorrelation::default();
+        // An agent turn's process span carries its run id as `process_id`.
+        let agent_turn = fields
+            .iter()
+            .any(|(name, value)| name == "process_kind" && value == "AgentTurn");
         for (name, value) in fields.iter().rev() {
             let cleaned = self.sanitize_context_value(value);
             match name.as_str() {
@@ -329,6 +335,7 @@ impl OperatorLogBuffer {
                 "run_id" | "turn_run_id" | "submitted_run_id" => {
                     set_first(&mut correlation.run_id, cleaned)
                 }
+                "process_id" if agent_turn => set_first(&mut correlation.run_id, cleaned),
                 "turn_id" | "submission_id" => set_first(&mut correlation.turn_id, cleaned),
                 "tool_call_id" | "invocation_id" | "capability_invocation_id" => {
                     set_first(&mut correlation.tool_call_id, cleaned)
@@ -1071,6 +1078,27 @@ mod tests {
         assert_eq!(response.entries.len(), 1);
         assert_eq!(response.entries[0].run_id.as_deref(), Some("inner-run"));
         assert_eq!(response.entries[0].source.as_deref(), Some("inner-source"));
+
+        // An agent turn's process span names its run; other processes don't.
+        for (kind, process) in [("AgentTurn", "turn-run"), ("Routine", "routine-run")] {
+            buffer.record_with_fields(
+                RebornLogLevel::Warn,
+                "ironclaw::process",
+                kind.to_string(),
+                &[
+                    ("process_id".to_string(), process.to_string()),
+                    ("process_kind".to_string(), kind.to_string()),
+                ],
+            );
+        }
+        for (process, expected) in [("turn-run", 1), ("routine-run", 0)] {
+            let response = buffer.query(
+                RebornLogQueryRequest::default()
+                    .set_limit(10)
+                    .set_run_id(process),
+            );
+            assert_eq!(response.entries.len(), expected, "{process}");
+        }
     }
 
     #[test]
