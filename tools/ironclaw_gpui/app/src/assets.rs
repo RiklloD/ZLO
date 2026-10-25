@@ -14,6 +14,7 @@ icon_assets!(
         PinOff,
         AlarmClock,
         GitBranch,
+        GitFork,
         ListFilter,
         Target,
         Pencil,

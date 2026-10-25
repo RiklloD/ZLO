@@ -45,6 +45,11 @@ const UNREAD_POLL: Duration = Duration::from_secs(15);
 /// Enough to catch every new item between two polls.
 const ALERT_PAGE: u32 = 20;
 const CONNECT_RETRY: [u64; 5] = [1, 2, 5, 10, 30];
+/// The app starts the gateway itself, so for this long after launch a
+/// refused connect means "still booting": keep the loading screen and poll
+/// fast instead of showing an error.
+const STARTUP_GRACE: Duration = Duration::from_secs(25);
+const STARTUP_POLL: Duration = Duration::from_millis(150);
 /// Status bar refresh while the window is in use. Telemetry also refreshes
 /// right after each run; usage windows are cached for a minute upstream.
 const STATUS_POLL: Duration = Duration::from_secs(10);
@@ -132,6 +137,8 @@ pub struct Workspace {
     main_window: gpui_kit::AnyWindowHandle,
     /// Live sidebar width while its edge is dragged; saved on release.
     sidebar_drag: Option<f32>,
+    /// App launch, for the startup grace window.
+    launched: std::time::Instant,
 }
 
 impl Workspace {
@@ -152,6 +159,7 @@ impl Workspace {
             quick: quick::Quick::default(),
             main_window: window.window_handle(),
             sidebar_drag: None,
+            launched: std::time::Instant::now(),
             _page_events: Vec::new(),
             _poll: None,
             connect_attempt: 0,
@@ -241,8 +249,23 @@ impl Workspace {
     /// Show the error, and retry on a schedule when the gateway is simply not
     /// up yet (it starts after the app at login, or is restarting).
     fn connect_failed(&mut self, error: &ClientError, window: &mut Window, cx: &mut Context<Self>) {
-        let retry_in = matches!(error, ClientError::Network(_))
-            .then(|| CONNECT_RETRY[self.connect_attempt.min(CONNECT_RETRY.len() - 1)]);
+        let network = matches!(error, ClientError::Network(_));
+        if network && self.launched.elapsed() < STARTUP_GRACE {
+            // Still booting: stay on the loading screen and knock again soon.
+            self.conn = Conn::Connecting;
+            self._retry = Some(cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(STARTUP_POLL).await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if matches!(this.conn, Conn::Connecting) {
+                        this.connect(window, cx);
+                        cx.notify();
+                    }
+                });
+            }));
+            return;
+        }
+        let retry_in =
+            network.then(|| CONNECT_RETRY[self.connect_attempt.min(CONNECT_RETRY.len() - 1)]);
         self.conn = Conn::Failed {
             message: friendly(error).into(),
             retry_in,
@@ -1009,6 +1032,36 @@ fn foot_button(
         .child(Icon::new(icon).size(px(16.)).text_color(p.text_muted))
 }
 
+/// Launch screen while the gateway boots: the claw mark breathing on the
+/// shell, its caption fading in late so a fast start shows no text at all.
+fn render_loading(cx: &App) -> impl IntoElement {
+    use gpui_kit::{Animation, AnimationExt as _};
+    let p = *Palette::of(cx);
+    let breathe = Animation::new(Duration::from_millis(1400))
+        .repeat()
+        .with_easing(|t| 0.5 - 0.5 * (t * std::f32::consts::TAU).cos());
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .gap_4()
+        .child(div().child(kit::claw_mark(cx)).with_animation(
+            "loading-breathe",
+            breathe,
+            |el, t| el.opacity(0.55 + 0.45 * t),
+        ))
+        .child(motion::fade_in_after(
+            div()
+                .text_sm()
+                .text_color(p.text_muted)
+                .child("Starting IronClaw"),
+            "loading-caption",
+            motion::MotionSpec::new(300, motion::EASE_OUT_QUINT),
+            4.,
+            700,
+        ))
+}
+
 fn unread_badge(n: usize) -> impl IntoElement {
     Tag::primary().small().rounded_full().child(n.to_string())
 }
@@ -1053,15 +1106,7 @@ impl Render for Workspace {
         let s = *Style::of(cx);
         let backdrop = wallpaper::current(cx);
         let body: AnyElement = match &self.conn {
-            Conn::Connecting => v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .text_color(p.text_muted)
-                .child(Spinner::new())
-                .child("Connecting to IronClaw")
-                .into_any_element(),
+            Conn::Connecting => render_loading(cx).into_any_element(),
             Conn::Failed { message, retry_in } => v_flex()
                 .size_full()
                 .items_center()
@@ -1143,7 +1188,8 @@ impl Render for Workspace {
                     Material::Ink if p.light => p.border.opacity(0.7),
                     _ => p.border,
                 };
-                h_flex()
+                // The loading screen hands over with a quick fade.
+                let shell = h_flex()
                     .size_full()
                     .min_h_0()
                     .child(self.render_sidebar(cx))
@@ -1173,8 +1219,14 @@ impl Render for Workspace {
                                         s.enter_rise,
                                     )),
                             ),
-                    )
-                    .into_any_element()
+                    );
+                motion::fade_in(
+                    shell,
+                    "workspace-ready",
+                    motion::MotionSpec::new(160, motion::EASE_OUT_QUINT),
+                    0.,
+                )
+                .into_any_element()
             }
         };
         let show_status = !Prefs::of(cx).status_bar_hidden;

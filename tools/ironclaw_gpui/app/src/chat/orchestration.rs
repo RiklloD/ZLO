@@ -244,7 +244,9 @@ impl ChatView {
         );
     }
 
-    pub(super) fn fork(&mut self, cx: &mut Context<Self>) {
+    /// Fork the thread into a new one. `run`: keep only the history up to
+    /// and including run `at_run` (1-based); `None` keeps everything.
+    pub(super) fn fork(&mut self, at_run: Option<u32>, cx: &mut Context<Self>) {
         if self.orch.busy {
             return;
         }
@@ -254,7 +256,13 @@ impl ChatView {
         run(
             &self.backend,
             cx,
-            move |c| async move { c.fork_thread(&thread_id, &ForkOptions::default()).await },
+            move |c| async move {
+                let options = ForkOptions {
+                    run: at_run,
+                    ..ForkOptions::default()
+                };
+                c.fork_thread(&thread_id, &options).await
+            },
             |this, result, cx| {
                 this.orch.busy = false;
                 match result {

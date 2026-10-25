@@ -19,6 +19,7 @@ use ironclaw_gpui_client::{
     Backend, ClientError, EventStream, GateDecision, StreamMessage, StreamStatus,
 };
 
+use crate::assets::ExtraIcon;
 use crate::design::styles::Style;
 use crate::design::{Palette, kit, motion};
 use crate::jobs::flatten;
@@ -1042,6 +1043,16 @@ impl Render for ChatView {
         let toggles = self.toggles.clone();
         let since = self.run_started;
 
+        // The run each row belongs to (1-based), for "fork from here".
+        let run_of: Vec<u32> = items
+            .iter()
+            .scan(0u32, |run, item| {
+                if matches!(item, Item::Row(Row::User { .. })) {
+                    *run += 1;
+                }
+                Some(*run)
+            })
+            .collect();
         let seed = motion::seed(&self.thread_id);
         let jump_weak = weak.clone();
         let list = MessageScroller::new("transcript", self.scroller.clone(), move |ix, _, cx| {
@@ -1055,7 +1066,24 @@ impl Render for ChatView {
                         text,
                         streaming: false,
                     },
-                ) => with_copy(key, text, render_row(row, &weak, cx)),
+                ) => with_actions(
+                    key,
+                    text,
+                    false,
+                    Some(run_of[ix]).filter(|r| *r > 0),
+                    &weak,
+                    render_row(row, &weak, cx),
+                ),
+                Item::Row(
+                    row @ Row::User {
+                        key,
+                        text,
+                        pending: false,
+                        ..
+                    },
+                ) if !text.is_empty() => {
+                    with_actions(key, text, true, None, &weak, render_row(row, &weak, cx))
+                }
                 Item::Row(Row::Narration { text, .. }) => markdown(
                     SharedString::from(format!("{}-n", item.key())),
                     text.clone(),
@@ -1221,12 +1249,12 @@ impl Render for ChatView {
                             .gap_1()
                             .child(
                                 Button::new("fork")
-                                    .icon(IconName::Copy)
+                                    .icon(ExtraIcon::GitFork)
                                     .ghost()
                                     .small()
                                     .tooltip("Fork this conversation")
                                     .accessibility_label("Fork this conversation")
-                                    .on_click(cx.listener(|this, _, _, cx| this.fork(cx))),
+                                    .on_click(cx.listener(|this, _, _, cx| this.fork(None, cx))),
                             )
                             .child(
                                 Button::new("files-toggle")
@@ -1629,14 +1657,24 @@ pub(crate) fn round_button(
         )
 }
 
-/// A finished answer with a copy action that shows on hover, as in Zeron.
-fn with_copy(key: &str, text: &str, body: AnyElement) -> AnyElement {
+/// A message with actions that show on hover, as in Zeron: copy, and on
+/// answers "fork from here" (a new thread holding the history up to this
+/// run). `mine`: a sent message, so the bar sits on the right.
+fn with_actions(
+    key: &str,
+    text: &str,
+    mine: bool,
+    fork_run: Option<u32>,
+    weak: &WeakEntity<ChatView>,
+    body: AnyElement,
+) -> AnyElement {
     let group = SharedString::from(format!("{key}-group"));
     let hover_key = SharedString::from(format!("copy-hover:{key}"));
     let h = motion::hover_t(&hover_key);
     let copied = copied_recently(key);
     let copy = text.to_string();
     let copy_key = key.to_string();
+    let weak = weak.clone();
     v_flex()
         .id(group.clone())
         .gap_1()
@@ -1645,6 +1683,8 @@ fn with_copy(key: &str, text: &str, body: AnyElement) -> AnyElement {
         .child(
             h_flex()
                 .h(px(22.))
+                .gap_0p5()
+                .when(mine, |d| d.justify_end())
                 .opacity(if copied { 1. } else { h })
                 .child(
                     kit::button(SharedString::from(format!("{key}-copy")))
@@ -1661,7 +1701,20 @@ fn with_copy(key: &str, text: &str, body: AnyElement) -> AnyElement {
                             cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
                             mark_copied(&copy_key, cx);
                         }),
-                ),
+                )
+                .when_some(fork_run, |d, run| {
+                    d.child(
+                        kit::button(SharedString::from(format!("{key}-fork")))
+                            .icon(ExtraIcon::GitFork)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Fork from here")
+                            .accessibility_label("Fork from this message")
+                            .on_click(move |_, _, cx| {
+                                let _ = weak.update(cx, |this, cx| this.fork(Some(run), cx));
+                            }),
+                    )
+                }),
         )
         .into_any_element()
 }

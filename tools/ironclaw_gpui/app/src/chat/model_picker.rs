@@ -297,6 +297,26 @@ impl ModelPicker {
         cx.notify();
     }
 
+    /// Step to the next (or previous) rail tab, in the order the rail shows.
+    fn cycle_rail(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let mut tabs = vec![Rail::Favorites, Rail::All];
+        tabs.extend(
+            self.ordered_providers(cx)
+                .into_iter()
+                .filter(|p| self.show_hidden || !self.prefs.provider_hidden(&p.provider))
+                .map(|p| Rail::Provider(p.provider.clone())),
+        );
+        let n = tabs.len();
+        let at = tabs.iter().position(|r| *r == self.rail).unwrap_or(0);
+        let next = if forward {
+            (at + 1) % n
+        } else {
+            (at + n - 1) % n
+        };
+        self.rail = tabs.swap_remove(next);
+        cx.notify();
+    }
+
     pub fn close(&mut self, cx: &mut Context<Self>) {
         if self.open || self.effort_open {
             self.open = false;
@@ -608,6 +628,15 @@ impl ModelPicker {
             .overflow_hidden()
             .occlude()
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)))
+            // Ctrl+Tab / Ctrl+Shift+Tab walk the rail, before the search
+            // field sees the key.
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                let k = &e.keystroke;
+                if k.key == "tab" && k.modifiers.control {
+                    this.cycle_rail(!k.modifiers.shift, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .child(
                 v_flex()
                     .id("model-rail")
