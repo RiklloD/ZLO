@@ -608,6 +608,14 @@ pub struct ThreadRoute {
     pub picker: PickerPrefs,
 }
 
+/// Every provider a thread can run on, and the picker preferences.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProviderCatalog {
+    pub providers: Vec<RouteProvider>,
+    pub picker: PickerPrefs,
+}
+
 /// One model of one provider in the picker preferences.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PickerModel {
@@ -686,6 +694,11 @@ pub struct RouteChange {
 }
 
 impl Client {
+    /// The thread route's provider lists without a thread (`GET /providers`).
+    pub async fn providers(&self) -> Result<ProviderCatalog, ClientError> {
+        self.orch_get(format!("{V2}/providers")).await
+    }
+
     pub async fn thread_route(&self, thread_id: &str) -> Result<ThreadRoute, ClientError> {
         self.orch_get(format!("{V2}/threads/{}/route", seg(thread_id)))
             .await

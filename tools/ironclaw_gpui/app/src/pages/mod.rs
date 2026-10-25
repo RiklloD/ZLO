@@ -53,7 +53,7 @@ pub fn group_header(title: impl Into<SharedString>, note: Option<&str>, cx: &App
         .gap(px(2.))
         .child(
             div()
-                .text_size(gpui_kit::rems(16. / 16.))
+                .text_size(gpui_kit::rems(1.))
                 .line_height(gpui_kit::rems(22. / 16.))
                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                 .text_color(p.text)

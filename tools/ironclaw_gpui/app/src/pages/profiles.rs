@@ -1,29 +1,27 @@
 //! Profiles: list (most recently used first), edit, create and archive
 //! profiles, start a thread on one, and run the one-time Hermes import.
 //! Each profile has its own SOUL.md, default model, tool allowlist, folder
-//! and Supermemory container; skills, keys and MCP servers stay shared.
+//! and Supermemory container; skills, keys and MCP servers stay shared, and
+//! a profile only hides or enables some of them. Every field but the id,
+//! name and SOUL.md picks from what IronClaw has (`pickers.rs`).
 
 use ironclaw_gpui_client::Backend;
-use ironclaw_gpui_client::profiles::{
-    HermesImportResponse, ProfileInfo, ProfileSettings, ProfileSupermemory,
-};
+use ironclaw_gpui_client::orchestration::PickerPrefs;
+use ironclaw_gpui_client::profiles::{HermesImportResponse, ProfileInfo, ProfileSettings};
+
+mod pickers;
+
+use pickers::{Catalog, Menu, Picks};
 
 use super::{PageEvent, empty_state, error_line, header, page_body, refresh_button};
 use crate::design::{self, Palette};
 use crate::jobs;
 use crate::ui::*;
 
-/// One text input per editable field.
+/// The free-text fields; every other field is a picker (`pickers.rs`).
 struct Editor {
     id: Entity<TextareaState>,
     name: Entity<TextareaState>,
-    provider: Entity<TextareaState>,
-    model: Entity<TextareaState>,
-    folder: Entity<TextareaState>,
-    memory: Entity<TextareaState>,
-    capabilities: Entity<TextareaState>,
-    hidden_skills: Entity<TextareaState>,
-    mcp_servers: Entity<TextareaState>,
     soul: Entity<TextareaState>,
 }
 
@@ -39,16 +37,6 @@ impl Editor {
         Self {
             id: input("profile-id (lowercase, used as folder name)", 1),
             name: input("Display name", 1),
-            provider: input("Default provider (optional)", 1),
-            model: input("Default model (optional)", 1),
-            folder: input(
-                "Working folder, e.g. ~/ironclaw (default: ~/.ironclaw/profiles/<id>)",
-                1,
-            ),
-            memory: input("Supermemory container (optional)", 1),
-            capabilities: input("Allowed tools, one per line (empty: all)", 6),
-            hidden_skills: input("Hidden skills, one per line (empty: none)", 6),
-            mcp_servers: input("Enabled MCP servers, one per line (empty: all)", 6),
             soul: input("SOUL.md: who this profile is and how it works", 24),
         }
     }
@@ -57,52 +45,19 @@ impl Editor {
         state.read(cx).value().trim().to_string()
     }
 
-    fn optional(state: &Entity<TextareaState>, cx: &App) -> Option<String> {
-        Some(Self::text(state, cx)).filter(|v| !v.is_empty())
-    }
-
-    fn lines(state: &Entity<TextareaState>, cx: &App) -> Vec<String> {
-        state
-            .read(cx)
-            .value()
-            .split(['\n', ','])
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-            .collect()
-    }
-
     /// The settings to save. `base` keeps what this form does not edit.
-    fn settings(&self, base: Option<&ProfileSettings>, cx: &App) -> ProfileSettings {
-        let all_or = |list: Vec<String>| Some(list).filter(|l| !l.is_empty());
-        let supermemory = Self::optional(&self.memory, cx).map(|container| {
-            let previous = base.and_then(|b| b.supermemory.clone());
-            ProfileSupermemory {
-                container,
-                read_containers: previous
-                    .as_ref()
-                    .map(|m| m.read_containers.clone())
-                    .unwrap_or_default(),
-                instructions: previous.and_then(|m| m.instructions),
-            }
-        });
-        ProfileSettings {
+    fn settings(&self, picks: &Picks, base: Option<&ProfileSettings>, cx: &App) -> ProfileSettings {
+        let mut settings = ProfileSettings {
             display_name: Self::text(&self.name, cx),
             soul: self.soul.read(cx).value().to_string(),
-            allowed_capabilities: all_or(Self::lines(&self.capabilities, cx)),
-            hidden_skills: Self::lines(&self.hidden_skills, cx),
-            enabled_mcp_servers: all_or(Self::lines(&self.mcp_servers, cx)),
-            default_provider: Self::optional(&self.provider, cx),
-            default_model: Self::optional(&self.model, cx),
-            working_folder: Self::optional(&self.folder, cx),
-            supermemory,
-        }
+            ..ProfileSettings::default()
+        };
+        picks.apply(&mut settings, base);
+        settings
     }
 
     fn fill(&self, profile: Option<&ProfileInfo>, window: &mut Window, cx: &mut App) {
         let s = profile.map(|p| &p.settings);
-        let opt = |v: Option<&String>| v.cloned().unwrap_or_default();
-        let join = |v: Option<&Vec<String>>| v.map(|l| l.join("\n")).unwrap_or_default();
         let values = [
             (
                 &self.id,
@@ -111,25 +66,6 @@ impl Editor {
             (
                 &self.name,
                 s.map(|s| s.display_name.clone()).unwrap_or_default(),
-            ),
-            (
-                &self.provider,
-                opt(s.and_then(|s| s.default_provider.as_ref())),
-            ),
-            (&self.model, opt(s.and_then(|s| s.default_model.as_ref()))),
-            (&self.folder, opt(s.and_then(|s| s.working_folder.as_ref()))),
-            (
-                &self.memory,
-                opt(s.and_then(|s| s.supermemory.as_ref().map(|m| &m.container))),
-            ),
-            (
-                &self.capabilities,
-                join(s.and_then(|s| s.allowed_capabilities.as_ref())),
-            ),
-            (&self.hidden_skills, join(s.map(|s| &s.hidden_skills))),
-            (
-                &self.mcp_servers,
-                join(s.and_then(|s| s.enabled_mcp_servers.as_ref())),
             ),
             (&self.soul, s.map(|s| s.soul.clone()).unwrap_or_default()),
         ];
@@ -146,6 +82,15 @@ pub struct ProfilesView {
     /// The profile in the editor; `None` while creating a new one.
     selected: Option<String>,
     editor: Editor,
+    picks: Picks,
+    catalog: Catalog,
+    picker_prefs: PickerPrefs,
+    /// The open picker menu.
+    menu: Option<Menu>,
+    /// The provider whose models the model menu lists.
+    rail: Option<String>,
+    search: Entity<InputState>,
+    _search: Subscription,
     saving: bool,
     importing: bool,
     loaded: bool,
@@ -159,12 +104,25 @@ impl EventEmitter<PageEvent> for ProfilesView {}
 impl ProfilesView {
     pub fn new(backend: Backend, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = Editor::new(window, cx);
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        let _search = cx.subscribe(&search, |_, _, event, cx| {
+            if let InputEvent::Change = event {
+                cx.notify();
+            }
+        });
         let mut this = Self {
             backend,
             items: Vec::new(),
             last_used: None,
             selected: None,
             editor,
+            picks: Picks::default(),
+            catalog: Catalog::default(),
+            picker_prefs: PickerPrefs::default(),
+            menu: None,
+            rail: None,
+            search,
+            _search,
             saving: false,
             importing: false,
             loaded: false,
@@ -177,6 +135,7 @@ impl ProfilesView {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.load_catalog(cx);
         jobs::run(
             &self.backend,
             cx,
@@ -196,6 +155,99 @@ impl ProfilesView {
         );
     }
 
+    /// What the pickers offer: signed-in providers, tools, skills, MCP servers.
+    fn load_catalog(&mut self, cx: &mut Context<Self>) {
+        jobs::run(
+            &self.backend,
+            cx,
+            |c| async move { c.providers().await },
+            |this, result, cx| {
+                match result {
+                    Ok(catalog) => {
+                        let prefs = catalog.picker;
+                        this.catalog.providers = catalog
+                            .providers
+                            .into_iter()
+                            .filter(|p| p.authenticated && !prefs.provider_hidden(&p.provider))
+                            .collect();
+                        this.picker_prefs = prefs;
+                    }
+                    Err(e) => this.error = Some(format!("Providers: {e}").into()),
+                }
+                cx.notify();
+            },
+        );
+        jobs::run(
+            &self.backend,
+            cx,
+            |c| async move { c.tool_settings().await },
+            |this, result, cx| {
+                match result {
+                    Ok(list) => {
+                        let mut tools: Vec<(String, String)> =
+                            list.entries
+                                .into_iter()
+                                .filter(|e| e.key.starts_with("tool."))
+                                .filter_map(|e| {
+                                    // silent-ok: a row the gateway shapes differently is skipped.
+                                    serde_json::from_value::<
+                                        ironclaw_gpui_client::wire::ToolPermission,
+                                    >(e.value)
+                                    .ok()
+                                })
+                                .map(|t| (t.name, t.description))
+                                .collect();
+                        tools.sort();
+                        this.catalog.tools = tools;
+                    }
+                    Err(e) => this.error = Some(format!("Tools: {e}").into()),
+                }
+                cx.notify();
+            },
+        );
+        jobs::run(
+            &self.backend,
+            cx,
+            |c| async move { c.skills().await },
+            |this, result, cx| {
+                match result {
+                    Ok(list) => {
+                        let mut skills: Vec<(String, String)> = list
+                            .skills
+                            .into_iter()
+                            .map(|s| (s.name, s.description))
+                            .collect();
+                        skills.sort();
+                        this.catalog.skills = skills;
+                    }
+                    Err(e) => this.error = Some(format!("Skills: {e}").into()),
+                }
+                cx.notify();
+            },
+        );
+        jobs::run(
+            &self.backend,
+            cx,
+            |c| async move { c.extensions().await },
+            |this, result, cx| {
+                match result {
+                    Ok(list) => {
+                        let mut mcp: Vec<(String, String)> = list
+                            .extensions
+                            .into_iter()
+                            .filter(|e| e.runtime == "mcp")
+                            .map(|e| (e.package_ref.id.as_str().to_string(), e.display_name))
+                            .collect();
+                        mcp.sort_by(|a, b| a.1.cmp(&b.1));
+                        this.catalog.mcp = mcp;
+                    }
+                    Err(e) => this.error = Some(format!("MCP servers: {e}").into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
     /// Open the editor on a blank profile (the inbox's New profile button).
     pub fn new_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.select(None, window, cx);
@@ -210,7 +262,9 @@ impl ProfilesView {
         self.selected = id;
         self.confirm_delete = false;
         self.notice = None;
+        self.menu = None;
         let profile = self.selected_profile().cloned();
+        self.picks = Picks::of(profile.as_ref());
         self.editor.fill(profile.as_ref(), window, cx);
         cx.notify();
     }
@@ -219,9 +273,11 @@ impl ProfilesView {
         if self.saving {
             return;
         }
-        let settings = self
-            .editor
-            .settings(self.selected_profile().map(|p| &p.settings), cx);
+        let settings = self.editor.settings(
+            &self.picks,
+            self.selected_profile().map(|p| &p.settings),
+            cx,
+        );
         let existing = self.selected.clone();
         let id = existing
             .clone()
@@ -409,18 +465,56 @@ impl ProfilesView {
             .into_any_element()
     }
 
-    fn render_editor(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let field = |label: &'static str, state: &Entity<TextareaState>| {
-            v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(label),
+    /// The chosen folder (or the default) with Choose and Default buttons.
+    fn folder_row(&self, cx: &Context<Self>) -> AnyElement {
+        let p = *Palette::of(cx);
+        let shown = match (&self.picks.folder, self.selected_profile()) {
+            (Some(folder), _) => folder.clone(),
+            (None, Some(profile)) => format!("Default: {}", profile.effective_folder),
+            (None, None) => "Default: ~/.ironclaw/profiles/<id>".into(),
+        };
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(if self.picks.folder.is_some() {
+                        p.text
+                    } else {
+                        p.text_muted
+                    })
+                    .child(shown),
+            )
+            .child(
+                Button::new("profile-folder-pick")
+                    .icon(IconName::FolderOpen)
+                    .label("Choose…")
+                    .ghost()
+                    .small()
+                    .on_click(cx.listener(|this, _, window, cx| this.pick_folder(window, cx))),
+            )
+            .when(self.picks.folder.is_some(), |d| {
+                d.child(
+                    Button::new("profile-folder-reset")
+                        .label("Use default")
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.picks.folder = None;
+                            cx.notify();
+                        })),
                 )
-                .child(Textarea::new(state))
+            })
+            .into_any_element()
+    }
+
+    fn render_editor(&self, cx: &Context<Self>) -> impl IntoElement {
+        let field = |label: &'static str, state: &Entity<TextareaState>| {
+            labeled(label, Textarea::new(state).into_any_element(), cx)
         };
         let e = &self.editor;
         let profile = self.selected_profile();
@@ -434,36 +528,70 @@ impl ProfilesView {
             .child(div().text_sm().font_semibold().child(title))
             .when(creating, |d| d.child(field("Id", &e.id)))
             .child(field("Display name", &e.name))
+            .child(labeled(
+                "Default provider and model",
+                self.trigger(
+                    Menu::Model,
+                    self.model_summary(),
+                    || self.model_popover(cx),
+                    cx,
+                ),
+                cx,
+            ))
+            .child(labeled("Working folder", self.folder_row(cx), cx))
+            .child(labeled(
+                "Supermemory container",
+                self.trigger(
+                    Menu::Memory,
+                    self.picks.memory.clone().unwrap_or_else(|| "None".into()),
+                    || self.memory_popover(cx),
+                    cx,
+                ),
+                cx,
+            ))
+            .child(labeled(
+                "Tool allowlist",
+                self.trigger(
+                    Menu::Tools,
+                    count_summary(self.picks.tools.len(), "All tools", "tool", "allowed"),
+                    || self.checklist_popover(Menu::Tools, "All tools (no allowlist)", cx),
+                    cx,
+                ),
+                cx,
+            ))
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().flex_1().child(field("Default provider", &e.provider)))
-                    .child(div().flex_1().child(field("Default model", &e.model))),
-            )
-            .child(field("Working folder", &e.folder))
-            .when_some(profile, |d, p| {
-                d.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(format!("Runs in {}", p.effective_folder)),
-                )
-            })
-            .child(field("Supermemory container", &e.memory))
-            .child(field("Tool allowlist", &e.capabilities))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(field("Hidden skills", &e.hidden_skills)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(field("Enabled MCP servers", &e.mcp_servers)),
-                    ),
+                    .child(div().flex_1().child(labeled(
+                        "Hidden skills",
+                        self.trigger(
+                            Menu::Skills,
+                            count_summary(
+                                self.picks.hidden_skills.len(),
+                                "None hidden",
+                                "skill",
+                                "hidden",
+                            ),
+                            || self.checklist_popover(Menu::Skills, "No hidden skills", cx),
+                            cx,
+                        ),
+                        cx,
+                    )))
+                    .child(div().flex_1().child(labeled(
+                        "Enabled MCP servers",
+                        self.trigger(
+                            Menu::Mcp,
+                            count_summary(
+                                self.picks.mcp.len(),
+                                "All MCP servers",
+                                "server",
+                                "enabled",
+                            ),
+                            || self.checklist_popover(Menu::Mcp, "All MCP servers", cx),
+                            cx,
+                        ),
+                        cx,
+                    ))),
             )
             .child(field("SOUL.md", &e.soul))
             .child(
@@ -499,6 +627,28 @@ impl ProfilesView {
                             .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                     ),
             )
+    }
+}
+
+/// A field: its label over its control.
+fn labeled(label: &'static str, control: AnyElement, cx: &App) -> gpui_kit::Div {
+    v_flex()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .text_color(Palette::of(cx).text_muted)
+                .child(label),
+        )
+        .child(control)
+}
+
+/// "All tools" for an empty set, else "3 tools allowed".
+fn count_summary(n: usize, empty: &str, noun: &str, verb: &str) -> String {
+    match n {
+        0 => empty.to_string(),
+        1 => format!("1 {noun} {verb}"),
+        n => format!("{n} {noun}s {verb}"),
     }
 }
 
