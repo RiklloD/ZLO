@@ -116,14 +116,14 @@ impl Engine {
         let profile = match self.store.thread_profile(thread_id).await {
             Ok(profile) => profile?,
             Err(error) => {
-                tracing::debug!(%error, "profile lookup failed; turn runs without profile context");
+                tracing::warn!(%error, "profile lookup failed; turn runs without profile context");
                 return None; // silent-ok: the profile context is additive, the turn still runs
             }
         };
         match source.turn_profile(&profile).await {
             Ok(context) => Some(context),
             Err(error) => {
-                tracing::debug!(%error, "profile context unavailable; turn runs without it");
+                tracing::warn!(%error, "profile context unavailable; turn runs without it");
                 None // silent-ok: the profile context is additive, the turn still runs
             }
         }
