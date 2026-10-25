@@ -263,10 +263,12 @@ impl Engine {
         if !segments.is_empty() {
             return self.stitched_history(thread, &segments).await;
         }
-        Ok(self
+        let mut messages = self
             .runtime(&thread.runtime_id)?
             .history(thread, HISTORY_LIMIT)
-            .await?)
+            .await?;
+        crate::handoff::strip_carried_context(&mut messages);
+        Ok(messages)
     }
 
     /// A user typed into `thread` (through the product surface): lift the

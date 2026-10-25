@@ -118,8 +118,12 @@ impl ChatView {
         }
         match s.lineage {
             Some(Ok(lineage)) => {
+                let forked = lineage.forked_from.is_some();
                 o.lineage = lineage;
                 o.lineage_loaded = true;
+                if forked {
+                    self.load_fork_prefix(cx);
+                }
             }
             Some(Err(e)) => tracing::debug!(error = %e, "thread lineage refresh failed"),
             None => {}
@@ -146,6 +150,23 @@ impl ChatView {
         }
         self.ensure_poll(cx);
         cx.notify();
+    }
+
+    /// A fork shows its source conversation above its own messages.
+    fn load_fork_prefix(&mut self, cx: &mut Context<Self>) {
+        let thread_id = self.thread_id.clone();
+        run(
+            &self.backend,
+            cx,
+            move |c| async move { c.fork_prefix(&thread_id).await },
+            |this, result, cx| match result {
+                Ok(prefix) => {
+                    this.transcript.set_prefix(prefix);
+                    this.refresh_rows(cx);
+                }
+                Err(e) => tracing::debug!(error = %e, "fork source load failed"),
+            },
+        );
     }
 
     fn delegation(&self, cx: &App) -> Option<TaskView> {

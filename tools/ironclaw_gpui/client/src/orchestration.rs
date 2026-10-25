@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use crate::api::{Client, V2, seg};
 use crate::error::ClientError;
+use crate::wire::{MessageKind, TimelineMessage};
 
 /// Unix milliseconds, as the engine sends them.
 pub type Millis = i64;
@@ -224,6 +225,10 @@ pub struct Transfer {
     pub source_thread: String,
     #[serde(default)]
     pub target_thread: Option<String>,
+    /// For a fork: `{run, messages}`, `messages` being how many of the
+    /// source's history messages it was cut after.
+    #[serde(default)]
+    pub source_point: Option<Value>,
     #[serde(default)]
     pub status: String,
     #[serde(default)]
@@ -361,6 +366,42 @@ impl Client {
     pub async fn thread_lineage(&self, thread_id: &str) -> Result<Lineage, ClientError> {
         self.orch_get(format!("{V2}/threads/{}/lineage", seg(thread_id)))
             .await
+    }
+
+    /// What a fork shows above its own messages: the source thread's
+    /// timeline up to the fork point, and that source's own source when it
+    /// was a fork too (oldest first, at most 8 forks deep).
+    pub async fn fork_prefix(&self, thread_id: &str) -> Result<Vec<TimelineMessage>, ClientError> {
+        let mut prefix: Vec<TimelineMessage> = Vec::new();
+        let mut thread = thread_id.to_string();
+        for _ in 0..8 {
+            let Some(from) = self.thread_lineage(&thread).await?.forked_from else {
+                break;
+            };
+            let cut = from
+                .source_point
+                .as_ref()
+                .and_then(|p| p["messages"].as_u64())
+                .unwrap_or(u64::MAX) as usize;
+            let mut messages = self.timeline(&from.source_thread, 500).await?.messages;
+            messages.sort_by_key(|m| m.sequence);
+            // The cut counts the engine's history, which skips checkpoints.
+            let mut seen = 0;
+            let end = messages
+                .iter()
+                .position(|m| {
+                    if m.kind != MessageKind::CheckpointReference {
+                        seen += 1;
+                    }
+                    seen > cut
+                })
+                .unwrap_or(messages.len());
+            messages.truncate(end);
+            messages.append(&mut prefix);
+            prefix = messages;
+            thread = from.source_thread;
+        }
+        Ok(prefix)
     }
 
     pub async fn fork_thread(

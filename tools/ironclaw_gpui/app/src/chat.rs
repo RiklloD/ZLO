@@ -11,7 +11,7 @@ use ironclaw_gpui_client::commands::{match_command, menu_matches, takes_argument
 use ironclaw_gpui_client::contract::ProductGateKind;
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::transcript::{
-    AttachmentChip, GateState, Row, RunEnd, ToolStatus, Transcript,
+    self, AttachmentChip, GateState, PREFIX_KEY, Row, RunEnd, ToolStatus, Transcript,
 };
 use ironclaw_gpui_client::wire::{AttachmentLimits, CommandEffect};
 use ironclaw_gpui_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
@@ -263,6 +263,55 @@ impl ChatView {
     }
 
     /// Read files off the main thread, then stage the ones within limits.
+    /// Attach another thread's transcript (its fork source included) as a
+    /// Markdown file, so this thread can read it.
+    fn attach_thread(&mut self, dragged: &DraggedThread, cx: &mut Context<Self>) {
+        if dragged.id == self.thread_id {
+            return;
+        }
+        let DraggedThread { id, title } = dragged.clone();
+        let limits = self.limits.clone();
+        let job = self.backend.spawn(move |c| async move {
+            let mut messages = c.fork_prefix(&id).await.unwrap_or_default(); // silent-ok: a thread with no fork source has none
+            let mut page = c.timeline(&id, 500).await?.messages;
+            page.sort_by_key(|m| m.sequence);
+            messages.append(&mut page);
+            Ok::<_, ClientError>(transcript::thread_markdown(&title, &messages))
+        });
+        let title = dragged.title.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = flatten(job.await);
+            let _ = this.update(cx, |this, cx| {
+                let staged = result.map_err(|e| e.to_string()).and_then(|text| {
+                    let slug: String = title
+                        .chars()
+                        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                        .take(48)
+                        .collect();
+                    let filename = format!("thread-{}.md", slug.trim_matches('-'));
+                    let mime_type = attachments::mime_for(&filename, &limits)
+                        .or_else(|| attachments::mime_for("a.txt", &limits))
+                        .ok_or("This gateway accepts no text attachments.")?;
+                    let file = StagedFile {
+                        filename,
+                        mime_type,
+                        bytes: text.into_bytes(),
+                    };
+                    attachments::check(&file, &this.staged, &this.limits).map(|()| file)
+                });
+                match staged {
+                    Ok(file) => {
+                        this.staged.push(file);
+                        this.error = None;
+                    }
+                    Err(problem) => this.error = Some(problem.into()),
+                }
+                cx.notify();
+            });
+        });
+        self.keep(task);
+    }
+
     fn attach(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let limits = self.limits.clone();
         let job = self.backend.spawn(move |_| async move {
@@ -1047,7 +1096,9 @@ impl Render for ChatView {
         let run_of: Vec<u32> = items
             .iter()
             .scan(0u32, |run, item| {
-                if matches!(item, Item::Row(Row::User { .. })) {
+                if let Item::Row(Row::User { key, .. }) = item
+                    && !key.starts_with(PREFIX_KEY)
+                {
                     *run += 1;
                 }
                 Some(*run)
@@ -1070,7 +1121,7 @@ impl Render for ChatView {
                     key,
                     text,
                     false,
-                    Some(run_of[ix]).filter(|r| *r > 0),
+                    Some(run_of[ix]).filter(|r| *r > 0 && !key.starts_with(PREFIX_KEY)),
                     &weak,
                     render_row(row, &weak, cx),
                 ),
@@ -1175,6 +1226,10 @@ impl Render for ChatView {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 this.attach(paths.paths().to_vec(), cx)
             }))
+            .drag_over::<DraggedThread>(|this, _, _, cx| this.bg(cx.theme().accent.opacity(0.15)))
+            .on_drop(
+                cx.listener(|this, dragged: &DraggedThread, _, cx| this.attach_thread(dragged, cx)),
+            )
             .when_some(banner, |this, text| {
                 this.child(
                     div()
@@ -1655,6 +1710,39 @@ pub(crate) fn round_button(
                 .size(px(14.))
                 .text_color(if filled { p.bg } else { p.text_muted }),
         )
+}
+
+/// A sidebar thread being dragged. Dropped on a chat, it attaches that
+/// thread's transcript to the message being written.
+#[derive(Clone)]
+pub struct DraggedThread {
+    pub id: String,
+    pub title: String,
+}
+
+impl Render for DraggedThread {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = *Palette::of(cx);
+        h_flex()
+            .max_w(px(260.))
+            .px(px(10.))
+            .py(px(6.))
+            .gap(px(6.))
+            .items_center()
+            .rounded(px(8.))
+            .bg(p.surface_overlay)
+            .border_1()
+            .border_color(p.border_strong)
+            .shadow_md()
+            .text_sm()
+            .text_color(p.text)
+            .child(
+                Icon::new(IconName::File)
+                    .size(px(14.))
+                    .text_color(p.text_muted),
+            )
+            .child(div().min_w_0().truncate().child(self.title.clone()))
+    }
 }
 
 /// A message with actions that show on hover, as in Zeron: copy, and on

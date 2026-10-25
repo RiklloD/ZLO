@@ -521,21 +521,30 @@ async fn fork_hands_off_context_and_merge_back_sends_the_delta() {
         .unwrap();
     assert_eq!(fork["strategy"], "portable_context");
     let fork_id = tid(fork["forkThreadId"].as_str().unwrap());
+    // Nothing runs in the fork until the person sends a message there.
     h.engine.tick().await;
-    let handoff = h.rt.starts_on(&fork_id);
-    assert_eq!(handoff.len(), 1);
-    assert!(handoff[0].contains("the plan"));
-    finish(&h.engine, &fork_id, TurnOutcome::completed(None)).await;
-    h.rt.history
-        .lock()
+    assert!(h.rt.starts_on(&fork_id).is_empty());
+    let context = h
+        .engine
+        .take_next_message_context(&fork_id)
+        .await
         .unwrap()
-        .get_mut(&fork_id)
-        .unwrap()
-        .extend([
-            msg(HistoryRole::Assistant, "ack"),
-            msg(HistoryRole::User, "try B"),
+        .unwrap();
+    assert!(context.contains("the plan"));
+    assert!(
+        h.engine
+            .take_next_message_context(&fork_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    h.rt.history.lock().unwrap().insert(
+        fork_id.clone(),
+        vec![
+            msg(HistoryRole::User, &format!("{context}\n\n---\n\ntry B")),
             msg(HistoryRole::Assistant, "B works"),
-        ]);
+        ],
+    );
     let fork_row = h.engine.store().thread(&fork_id).await.unwrap().unwrap();
     let merge = h
         .engine
@@ -546,7 +555,8 @@ async fn fork_hands_off_context_and_merge_back_sends_the_delta() {
     h.engine.tick().await;
     let merged = h.rt.starts_on(&src);
     assert_eq!(merged.len(), 1);
-    assert!(merged[0].contains("B works") && !merged[0].contains("the plan"));
+    assert!(merged[0].contains("try B") && merged[0].contains("B works"));
+    assert!(!merged[0].contains("the plan"));
 }
 
 #[tokio::test]

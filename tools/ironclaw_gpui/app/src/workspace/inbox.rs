@@ -922,6 +922,14 @@ impl Workspace {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_thread(open_id.clone(), window, cx)
                 }))
+                // Drop it on a chat to hand that chat this thread's transcript.
+                .on_drag(
+                    crate::chat::DraggedThread {
+                        id: id.clone(),
+                        title: title_of(row).to_string(),
+                    },
+                    |dragged, _, _, cx| cx.new(|_| dragged.clone()),
+                )
                 // Profile first, with the status or age (or, on hover, the
                 // actions) at its end; the title gets the full width below.
                 .child(
@@ -934,21 +942,17 @@ impl Workspace {
                         .child(div().flex_1().min_w_0().truncate().child(name))
                         .when_some(branch, |d, b| d.child(branch_label(b, cx)))
                         .child(
-                            div()
-                                .relative()
-                                .flex_none()
-                                .child(actions)
-                                .child(
-                                    h_flex()
-                                        .absolute()
-                                        .top_0()
-                                        .bottom_0()
-                                        .right_0()
-                                        .items_center()
-                                        .when(menu_open, |d| d.invisible())
-                                        .group_hover(group.clone(), |s| s.invisible())
-                                        .child(status_label(row, active, now, cx)),
-                                ),
+                            div().relative().flex_none().child(actions).child(
+                                h_flex()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right_0()
+                                    .items_center()
+                                    .when(menu_open, |d| d.invisible())
+                                    .group_hover(group.clone(), |s| s.invisible())
+                                    .child(status_label(row, active, now, cx)),
+                            ),
                         ),
                 )
                 .child(

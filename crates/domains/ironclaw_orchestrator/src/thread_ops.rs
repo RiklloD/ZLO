@@ -309,7 +309,7 @@ impl Engine {
                 source.provider.as_deref().unwrap_or("default provider"),
                 source.model.as_deref().unwrap_or("default model")
             );
-            let text = handoff::portable_context(
+            let mut text = handoff::portable_context(
                 &messages[..cut],
                 &source_title,
                 source.thread_id.as_str(),
@@ -317,6 +317,16 @@ impl Engine {
                 "fork",
                 self.store.settings().await?.handoff_bytes,
             );
+            // A fork of a fork: its history no longer holds the context it was
+            // seeded with, so carry that along ahead of its own conversation.
+            if let Some(seed) = self
+                .store
+                .fork_origin(&source.thread_id)
+                .await?
+                .and_then(|o| o.handoff)
+            {
+                text = format!("{seed}\n\n{text}");
+            }
             (
                 runtime.create_thread(request).await?,
                 TransferStrategy::PortableContext,
@@ -331,12 +341,13 @@ impl Engine {
         fork.native_session_id = created.native_session_id;
         self.store.ensure_thread(&fork).await?;
         let pending = handoff_text.is_some();
-        // A portable fork starts with one context-handoff run; merge-back skips it.
+        // A portable fork rides its context on the first message sent in it,
+        // so it runs nothing until then and merge-back has no run to skip.
         let point = json!({
             "run": ordinal, "messages": cut,
             "runStatus": all_runs.get(ordinal.saturating_sub(1)).map(|r| r.status),
             "copiedVisible": if native { handoff::visible_count(&messages[..cut]) } else { 0 },
-            "handoffRuns": if native { 0 } else { 1 },
+            "handoffRuns": 0,
         });
         let now = now_ms();
         self.store
@@ -353,8 +364,9 @@ impl Engine {
                 } else {
                     TransferStatus::Consumed
                 },
-                // The fork cannot adopt a transcript: deliver the handoff as its first turn.
-                delivery: TransferDelivery::Now,
+                // The fork cannot adopt a transcript: the handoff waits for the
+                // person's first message there instead of starting a turn.
+                delivery: TransferDelivery::NextMessage,
                 handoff: handoff_text,
                 created_by,
                 created_at: now,

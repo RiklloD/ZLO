@@ -22,7 +22,7 @@ use serde_json::json;
 use crate::engine::{Engine, Result};
 use crate::handoff;
 use crate::model::*;
-use crate::runtime::{CreateThread, HistoryMessage, HistoryRole};
+use crate::runtime::{CreateThread, HistoryMessage};
 use crate::store::{Cols, Store, insert_transfer_sql, opt, s};
 
 pub(crate) const SEGMENTS_SCHEMA: &str = r#"
@@ -227,12 +227,7 @@ impl Engine {
             let all = cache.get(&key).map(Vec::as_slice).unwrap_or_default();
             let end = seg.end.unwrap_or(all.len()).min(all.len());
             let mut slice = all[seg.start.min(end)..end].to_vec();
-            for m in slice.iter_mut().filter(|m| m.role == HistoryRole::User) {
-                if let Some(typed) = handoff::strip_context(&m.text).map(str::to_string) {
-                    m.hidden = typed.is_empty();
-                    m.text = typed;
-                }
-            }
+            handoff::strip_carried_context(&mut slice);
             out.push(slice);
         }
         Ok(out)

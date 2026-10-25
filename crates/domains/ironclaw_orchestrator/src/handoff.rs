@@ -308,6 +308,17 @@ pub fn strip_context(text: &str) -> Option<&str> {
         })
 }
 
+/// Strip prepended context from user messages in place (see
+/// [`strip_context`]); a message that was nothing but context is hidden.
+pub fn strip_carried_context(messages: &mut [HistoryMessage]) {
+    for m in messages.iter_mut().filter(|m| m.role == HistoryRole::User) {
+        if let Some(typed) = strip_context(&m.text).map(str::to_string) {
+            m.hidden = typed.is_empty();
+            m.text = typed;
+        }
+    }
+}
+
 /// Merge-back delta: only what happened in the fork after it branched off.
 pub fn delta_context(
     messages: &[HistoryMessage],

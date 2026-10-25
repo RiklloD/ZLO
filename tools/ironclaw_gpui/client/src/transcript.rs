@@ -217,6 +217,8 @@ pub struct Transcript {
     notes: Vec<(u64, Row)>,
     latest_run: Option<String>,
     tick: u64,
+    /// A fork's source conversation, shown read-only above its own messages.
+    prefix: Vec<TimelineMessage>,
 }
 
 /// A message sent from this view that the timeline does not show yet.
@@ -229,6 +231,54 @@ struct PendingUser {
     chips: Vec<AttachmentChip>,
     /// Newest durable sequence when it was sent; its server copy is newer.
     after: Option<u64>,
+}
+
+/// Key prefix of the rows a fork shows from its source thread.
+pub const PREFIX_KEY: &str = "src:";
+
+/// A message's text as a person reads it: without the attachments-only
+/// marker, and without the context handoff the engine prepends to the first
+/// message sent after a fork or provider switch (`{context}\n\n---\n\n{typed}`).
+fn shown_text(message: &TimelineMessage) -> String {
+    let text = message
+        .content
+        .as_deref()
+        .filter(|c| *c != ATTACHMENTS_ONLY_CONTENT)
+        .unwrap_or_default();
+    if message.kind != MessageKind::User
+        || !(text.starts_with("Context handoff (") || text.starts_with("Merged context from fork"))
+    {
+        return text.to_string();
+    }
+    ["[End of context handoff]", "[End of merged fork context]"]
+        .iter()
+        .filter_map(|end| text.rfind(end).map(|i| i + end.len()))
+        .max()
+        .map_or(text, |i| {
+            text[i..]
+                .trim_start_matches('\n')
+                .trim_start_matches("---")
+                .trim_start()
+        })
+        .to_string()
+}
+
+/// A thread as Markdown, for handing it to another thread to read:
+/// prompts and answers in order, oldest first.
+pub fn thread_markdown(title: &str, messages: &[TimelineMessage]) -> String {
+    let mut out = format!("# Thread: {title}\n");
+    for m in messages.iter().filter(|m| m.is_visible()) {
+        let who = match m.kind {
+            MessageKind::User => "User",
+            MessageKind::Assistant => "Assistant",
+            _ => continue,
+        };
+        let text = shown_text(m);
+        if !text.trim().is_empty() {
+            out.push_str(&format!("\n## {who}\n\n{}\n", text.trim()));
+        }
+    }
+    out
 }
 
 const TERMINAL: [&str; 5] = [
@@ -251,6 +301,11 @@ impl Transcript {
         self.reconcile_pending();
     }
 
+    pub fn set_prefix(&mut self, mut messages: Vec<TimelineMessage>) {
+        messages.retain(TimelineMessage::is_visible);
+        self.prefix = messages;
+    }
+
     /// Drop each optimistic message once its server copy is in the timeline.
     /// Accepting a send is not enough: a CLI runtime writes the person's
     /// message into history later, and the bubble must not vanish meanwhile.
@@ -265,7 +320,7 @@ impl Transcript {
             };
             let same_text = |m: &&TimelineMessage| {
                 let content = m.content.as_deref().unwrap_or_default();
-                content.trim() == p.text.trim()
+                shown_text(m).trim() == p.text.trim()
                     || (p.text.trim().is_empty() && content == ATTACHMENTS_ONLY_CONTENT)
             };
             // Prefer the copy with the same text; once accepted, any newer
@@ -681,16 +736,45 @@ impl Transcript {
                 && !groups.iter().any(|(r, _)| r.as_deref() == Some(run))
         };
 
+        // A fork's source, keyed apart so its rows carry no fork action.
+        for message in &self.prefix {
+            let key = format!("{PREFIX_KEY}{}", message.message_id);
+            let text = shown_text(message);
+            rows.push(match message.kind {
+                MessageKind::User => Row::User {
+                    key,
+                    text,
+                    pending: false,
+                    attachments: Vec::new(),
+                },
+                MessageKind::Assistant => Row::Assistant {
+                    key,
+                    text,
+                    streaming: false,
+                },
+                _ => Row::System { key, text },
+            });
+        }
+        if !self.prefix.is_empty() {
+            rows.push(Row::System {
+                key: format!("{PREFIX_KEY}divider"),
+                text: "Forked here".into(),
+            });
+        }
+
         let mut notes = self.notes.iter().peekable();
         for message in self.durable.iter().filter(|m| m.is_visible()) {
             while let Some((_, note)) = notes.next_if(|(anchor, _)| *anchor < message.sequence) {
                 rows.push(note.clone());
             }
-            let text = message
-                .content
-                .clone()
-                .filter(|c| c != ATTACHMENTS_ONLY_CONTENT)
-                .unwrap_or_default();
+            let text = shown_text(message);
+            // A context turn the engine sent on its own: nothing to read.
+            if message.kind == MessageKind::User
+                && text.is_empty()
+                && message.attachments.is_empty()
+            {
+                continue;
+            }
             let key = format!("msg:{}", message.message_id);
             match message.kind {
                 MessageKind::User => {
