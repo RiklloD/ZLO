@@ -16,6 +16,7 @@ use crate::error::OrchestratorError;
 use crate::model::*;
 use crate::profiles::ProfileRecord;
 use crate::runtime::*;
+use ironclaw_product_contracts::profiles::ProfileSettings;
 
 /// What a user turn on an external-runtime thread did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +72,45 @@ impl Engine {
             _ => p.models.first().cloned(),
         };
         Ok(Some((rt, Some(p.provider), model)))
+    }
+
+    /// Reject defaults no runtime offers, so a saved profile never falls
+    /// back to another model without a word. An empty catalog (no runtime
+    /// answered) checks nothing.
+    pub async fn check_profile_defaults(
+        &self,
+        settings: &ProfileSettings,
+        scope: &ThreadScope,
+    ) -> Result<()> {
+        let Some(provider) = settings
+            .default_provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        else {
+            return Ok(());
+        };
+        let catalog = self.catalog(scope).await;
+        if catalog.is_empty() {
+            return Ok(());
+        }
+        let Some((_, p)) = catalog.iter().find(|(_, p)| p.provider == provider) else {
+            return Err(OrchestratorError::request(
+                "unknown_provider",
+                format!("IronClaw has no provider '{provider}'."),
+            ));
+        };
+        match settings.default_model.as_deref().map(str::trim) {
+            Some(m)
+                if !m.is_empty() && !p.models.is_empty() && !p.models.iter().any(|x| x == m) =>
+            {
+                Err(OrchestratorError::request(
+                    "unknown_model",
+                    format!("Provider '{provider}' has no model '{m}'."),
+                ))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Move a new, idle thread onto its profile's runtime. A thread that has

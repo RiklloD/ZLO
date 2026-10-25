@@ -147,6 +147,9 @@ pub(crate) async fn write(
 ) -> Result<ProfileInfo> {
     let owner = ProfileOwner::from(scope);
     let id = parse_profile_slug(&request.profile_id)?;
+    engine
+        .check_profile_defaults(&request.settings, scope)
+        .await?;
     let record = if create {
         engine
             .store()
@@ -256,6 +259,25 @@ fn non_empty(value: Option<String>) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// Hermes provider and model ids as IronClaw names them: `openai-codex` is
+/// IronClaw's own loop on the ChatGPT plan, `zai` is `glm`, and the `-900k`
+/// context variants run as their base model.
+fn hermes_route(
+    provider: Option<String>,
+    model: Option<String>,
+) -> (Option<String>, Option<String>) {
+    let provider = provider.map(|p| match p.as_str() {
+        "openai-codex" => "ironclaw".to_string(),
+        "zai" => "glm".to_string(),
+        _ => p,
+    });
+    let model = model.map(|m| match m.strip_suffix("-900k") {
+        Some(base) => base.to_string(),
+        None => m,
+    });
+    (provider, model)
+}
+
 /// Read one Hermes profile directory into settings. Never writes there.
 fn read_hermes_profile(
     dir: &Path,
@@ -281,6 +303,8 @@ fn read_hermes_profile(
             Err(error) => return Err(format!("supermemory.json unreadable: {error}")),
         };
     let model = config.model.unwrap_or_default();
+    let (default_provider, default_model) =
+        hermes_route(non_empty(model.provider), non_empty(model.default));
     let supermemory = memory.and_then(|m| {
         let container = non_empty(m.container_tag)?;
         let custom = m.enable_custom_container_tags;
@@ -304,8 +328,8 @@ fn read_hermes_profile(
     Ok(ProfileSettings {
         display_name,
         soul,
-        default_provider: non_empty(model.provider),
-        default_model: non_empty(model.default),
+        default_provider,
+        default_model,
         working_folder: folder,
         supermemory,
         ..ProfileSettings::default()
@@ -806,6 +830,23 @@ mod tests {
 
         let default_policy = policy_for(&on_default).await;
         assert!(default_policy.permits_capability_id(&id("linear.issues")));
+    }
+
+    #[test]
+    fn hermes_routes_map_to_ironclaw_ids() {
+        let route = |p: &str, m: &str| hermes_route(Some(p.into()), Some(m.into()));
+        assert_eq!(
+            route("openai-codex", "gpt-6.1-sol-900k"),
+            (Some("ironclaw".into()), Some("gpt-6.1-sol".into()))
+        );
+        assert_eq!(
+            route("zai", "glm-5.3"),
+            (Some("glm".into()), Some("glm-5.3".into()))
+        );
+        assert_eq!(
+            route("claude-cli-2", "claude-opus-5-5"),
+            (Some("claude-cli-2".into()), Some("claude-opus-5-5".into()))
+        );
     }
 
     #[test]

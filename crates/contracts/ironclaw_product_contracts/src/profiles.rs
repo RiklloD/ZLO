@@ -50,6 +50,9 @@ pub struct ProfileSettings {
     /// Shared MCP server definitions this profile enables. `None` enables all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_mcp_servers: Option<Vec<String>>,
+    /// Provider new threads start on. Saving rejects one the catalog does
+    /// not list (`unknown_provider`), and a model it lists none of
+    /// (`unknown_model`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_provider: Option<String>,
     /// Model for turns on threads that did not pick one.

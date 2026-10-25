@@ -1191,6 +1191,29 @@ async fn model_picker_prefs_persist_deduplicated_and_ride_the_route_view() {
 }
 
 #[tokio::test]
+async fn profile_defaults_must_name_an_offered_provider_and_model() {
+    use ironclaw_product_contracts::profiles::ProfileSettings;
+    let h = harness().await;
+    h.engine.register_runtime(Arc::new(FakeRuntime {
+        name: Some("cli"),
+        ..Default::default()
+    }));
+    let defaults = |p: &str, m: &str| ProfileSettings {
+        default_provider: Some(p.into()),
+        default_model: Some(m.into()),
+        ..ProfileSettings::default()
+    };
+    let check = |s: ProfileSettings| {
+        let engine = h.engine.clone();
+        async move { engine.check_profile_defaults(&s, &scope()).await }
+    };
+    assert!(check(defaults("cli", "m2")).await.is_ok());
+    assert!(check(ProfileSettings::default()).await.is_ok());
+    assert!(check(defaults("openai-codex", "m1")).await.is_err());
+    assert!(check(defaults("cli", "m9")).await.is_err());
+}
+
+#[tokio::test]
 async fn an_effort_pick_rides_the_route_and_a_switch_keeps_only_its_own() {
     let h = harness().await;
     let cli = Arc::new(FakeRuntime {
