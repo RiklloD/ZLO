@@ -126,6 +126,17 @@ impl OperatorView {
         cx.notify();
     }
 
+    /// Open the Logs tab narrowed to one run (a failed run's Logs button).
+    pub fn show_run_logs(&mut self, run_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        build(&mut self.logs, || {
+            cx.new(|cx| LogsPanel::new(backend, window, cx))
+        });
+        self.tab = Tab::Logs;
+        update(&self.logs, cx, |p, cx| p.set_run(Some(run_id), cx));
+        cx.notify();
+    }
+
     fn panel(&self) -> Option<AnyElement> {
         match self.tab {
             Tab::Status => Some(self.status.clone().into_any_element()),

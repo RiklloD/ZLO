@@ -137,6 +137,11 @@ pub struct OpenThread(pub String);
 
 impl EventEmitter<OpenThread> for ChatView {}
 
+/// A failed run's Logs button: show the gateway log lines for this run id.
+pub struct OpenRunLogs(pub String);
+
+impl EventEmitter<OpenRunLogs> for ChatView {}
+
 impl ChatView {
     pub fn new(
         backend: Backend,
@@ -795,6 +800,9 @@ impl ChatView {
         }
         // Stopping a run is the person's own doing; no alert for that.
         if let Some(end @ (RunEnd::Completed | RunEnd::Failed)) = ended {
+            if end == RunEnd::Failed {
+                tracing::warn!(thread_id = %self.thread_id, "run failed");
+            }
             cx.emit(RunEnded {
                 thread_id: self.thread_id.clone(),
                 failed: end == RunEnd::Failed,
@@ -1097,8 +1105,6 @@ const PROMPT_RISE_TOTAL: f32 = 0.88;
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::Focusable as _;
-        let style = *Style::of(cx);
-        let palette = *Palette::of(cx);
         let focused = self.composer.focus_handle(cx).is_focused(window);
         let weak = cx.weak_entity();
         let menu = self.menu(cx);
@@ -1347,29 +1353,16 @@ impl Render for ChatView {
                 div().flex_1().min_h_0().pt(px(30.)).child(body)
             })
             .child(self.outline.clone())
-            // The thread actions float over the transcript, with a fade so
-            // rows scroll softly underneath instead of being cut off.
+            // The thread actions float over the transcript on no plate of
+            // their own, so the wallpaper runs unbroken under them.
             .child(
                 h_flex()
                     .absolute()
                     .top_0()
-                    .left_0()
                     .right_0()
                     .h(px(44.))
-                    .pl_4()
                     .pr_3()
                     .items_center()
-                    .gap_2()
-                    .bg(gpui_kit::linear_gradient(
-                        180.,
-                        gpui_kit::linear_color_stop(
-                            palette.bg.opacity(0.92 * style.panel_alpha),
-                            0.45,
-                        ),
-                        gpui_kit::linear_color_stop(palette.bg.opacity(0.), 1.),
-                    ))
-                    // The breadcrumb above names the thread; only actions here.
-                    .child(div().flex_1())
                     .child(
                         h_flex()
                             .gap_1()
@@ -1588,18 +1581,38 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
                     )
                     .child(div().flex_1().min_w_0().child(text.clone())),
             )
-            .when(*retryable, |this| {
-                let weak = weak.clone();
-                let run = run_id.clone();
+            .when(*retryable || *failed, |this| {
+                let retry = (weak.clone(), run_id.clone());
+                let logs = (weak.clone(), run_id.clone());
                 this.child(
-                    h_flex().child(
-                        Button::new(SharedString::from(format!("{key}-retry")))
-                            .label("Retry")
-                            .small()
-                            .on_click(move |_, _, cx| {
-                                let _ = weak.update(cx, |this, cx| this.retry(run.clone(), cx));
-                            }),
-                    ),
+                    h_flex()
+                        .gap_1()
+                        .when(*retryable, |row| {
+                            row.child(
+                                Button::new(SharedString::from(format!("{key}-retry")))
+                                    .label("Retry")
+                                    .small()
+                                    .on_click(move |_, _, cx| {
+                                        let (weak, run) = &retry;
+                                        let _ =
+                                            weak.update(cx, |this, cx| this.retry(run.clone(), cx));
+                                    }),
+                            )
+                        })
+                        .when(*failed, |row| {
+                            row.child(
+                                Button::new(SharedString::from(format!("{key}-logs")))
+                                    .label("Logs")
+                                    .small()
+                                    .ghost()
+                                    .tooltip("Gateway log lines for this run")
+                                    .on_click(move |_, _, cx| {
+                                        let (weak, run) = &logs;
+                                        let _ = weak
+                                            .update(cx, |_, cx| cx.emit(OpenRunLogs(run.clone())));
+                                    }),
+                            )
+                        }),
                 )
             })
             .into_any_element(),

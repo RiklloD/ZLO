@@ -553,6 +553,7 @@ impl Workspace {
                 Button::new("inbox-filters")
                     .icon(ExtraIcon::ListFilter)
                     .ghost()
+                    .large()
                     .selected(self.inbox.filters_open || filtered)
                     .tooltip("Filter by profile, model or state")
                     .accessibility_label("Filters")
@@ -565,6 +566,9 @@ impl Workspace {
                 Button::new("new-thread")
                     .icon(ExtraIcon::SquarePen)
                     .ghost()
+                    .large()
+                    // The pen fills its box; at 20 px it outweighs the filter.
+                    .icon_size(17.)
                     .selected(self.inbox.new_menu_open)
                     .tooltip("New thread")
                     .accessibility_label("New thread")
@@ -857,6 +861,7 @@ impl Workspace {
                         })
                         .ghost()
                         .xsmall()
+                        .icon_size(14.)
                         .tooltip(if pinned { "Unpin" } else { "Pin" })
                         .accessibility_label(if pinned { "Unpin" } else { "Pin" })
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -873,6 +878,7 @@ impl Workspace {
                         .icon(ExtraIcon::AlarmClock)
                         .ghost()
                         .xsmall()
+                        .icon_size(14.)
                         .selected(menu_open)
                         .tooltip("Snooze")
                         .accessibility_label("Snooze")
@@ -890,6 +896,8 @@ impl Workspace {
                         .label("Settle")
                         .ghost()
                         .xsmall()
+                        .icon_size(14.)
+                        .text_size(13.)
                         .disabled(blocker.is_some())
                         .tooltip(match blocker {
                             Some(why) => format!("Can't settle: it {why}, snooze it instead"),

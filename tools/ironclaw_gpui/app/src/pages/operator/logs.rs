@@ -26,7 +26,11 @@ pub struct LogsPanel {
     next_cursor: Option<String>,
     source: Option<String>,
     level: Option<RebornLogLevel>,
+    /// Only this run's lines (a failed run's Logs button).
+    run: Option<String>,
     target: Entity<InputState>,
+    /// Bumped per load so a slower, older answer can't overwrite a newer one.
+    generation: u64,
     loading: bool,
     loaded: bool,
     error: Option<SharedString>,
@@ -49,7 +53,9 @@ impl LogsPanel {
             next_cursor: None,
             source: None,
             level: None,
+            run: None,
             target,
+            generation: 0,
             loading: false,
             loaded: false,
             error: None,
@@ -70,6 +76,7 @@ impl LogsPanel {
             cursor,
             level: self.level,
             target: (!target.is_empty()).then_some(target),
+            run_id: self.run.clone(),
             ..Default::default()
         }
     }
@@ -78,6 +85,8 @@ impl LogsPanel {
     fn load(&mut self, cursor: Option<String>, cx: &mut Context<Self>) {
         let older = cursor.is_some();
         let query = self.query(cursor, cx);
+        self.generation += 1;
+        let generation = self.generation;
         self.loading = true;
         cx.notify();
         jobs::run(
@@ -85,6 +94,9 @@ impl LogsPanel {
             cx,
             move |c| async move { c.operator_logs(&query).await },
             move |this, result, cx| {
+                if this.generation != generation {
+                    return;
+                }
                 this.loading = false;
                 this.loaded = true;
                 match result.map(|r| (r.logs, r.message)) {
@@ -103,6 +115,11 @@ impl LogsPanel {
                 cx.notify();
             },
         );
+    }
+
+    pub fn set_run(&mut self, run: Option<String>, cx: &mut Context<Self>) {
+        self.run = run;
+        self.refresh(cx);
     }
 
     fn set_level(&mut self, level: Option<RebornLogLevel>, cx: &mut Context<Self>) {
@@ -201,6 +218,22 @@ impl Render for LogsPanel {
                     .child(levels)
                     .child(div().flex_1().child(Input::new(&self.target))),
             )
+            .when_some(self.run.clone(), |d, run| {
+                let short: String = run.chars().take(8).collect();
+                d.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(muted(format!("Run {short}…"), cx))
+                        .child(
+                            Button::new("clear-run")
+                                .label("All runs")
+                                .xsmall()
+                                .ghost()
+                                .on_click(cx.listener(|this, _, _, cx| this.set_run(None, cx))),
+                        ),
+                )
+            })
             .when_some(self.source.as_ref(), |d, s| {
                 d.child(muted(
                     format!(

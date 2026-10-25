@@ -214,25 +214,31 @@ fn select(
                     cx.notify();
                 }))
         });
+        // Anchored under the button's right edge; near the window bottom it
+        // slides up so every option stays on screen.
         gpui_kit::deferred(
-            div()
-                .absolute()
-                .top(px(36.))
-                .right_0()
-                .w(px(220.))
-                .occlude()
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.appearance_menu = None;
-                    cx.notify();
-                }))
-                .child(pop(v_flex().w_full().child(
-                    div()
-                        .id(SharedString::from(format!("{id}-scroll")))
-                        .max_h(px(300.))
-                        .overflow_y_scroll()
-                        .p_1()
-                        .children(rows),
-                ))),
+            div().absolute().top(px(36.)).right_0().child(
+                gpui_kit::anchored()
+                    .anchor(gpui_kit::Anchor::TopRight)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(
+                        div()
+                            .w(px(220.))
+                            .occlude()
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.appearance_menu = None;
+                                cx.notify();
+                            }))
+                            .child(pop(v_flex().w_full().child(
+                                div()
+                                    .id(SharedString::from(format!("{id}-scroll")))
+                                    .max_h(px(300.))
+                                    .overflow_y_scroll()
+                                    .p_1()
+                                    .children(rows),
+                            ))),
+                    ),
+            ),
         )
         .with_priority(1)
     });

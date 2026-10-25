@@ -10,7 +10,7 @@ use ironclaw_gpui_client::wire::SessionInfo;
 use ironclaw_gpui_client::{Backend, Client, ClientError, Connection};
 
 use crate::alerts::Alerts;
-use crate::chat::{ChatView, OpenThread, RunEnded, ThreadUpdated};
+use crate::chat::{ChatView, OpenRunLogs, OpenThread, RunEnded, ThreadUpdated};
 use crate::design::battery::BatterySaver;
 use crate::design::prefs::Prefs;
 use crate::design::{self, Palette, Style, kit, motion, wallpaper};
@@ -203,6 +203,7 @@ impl Workspace {
         {
             Ok(backend) => backend,
             Err(e) => {
+                tracing::warn!(error = %e, "gateway connection settings unavailable");
                 self.conn = Conn::Failed {
                     message: e.to_string().into(),
                     retry_in: None,
@@ -263,6 +264,7 @@ impl Workspace {
             }));
             return;
         }
+        tracing::warn!(error = %error, attempt = self.connect_attempt, "gateway connection failed");
         let retry_in =
             network.then(|| CONNECT_RETRY[self.connect_attempt.min(CONNECT_RETRY.len() - 1)]);
         self.conn = Conn::Failed {
@@ -319,6 +321,13 @@ impl Workspace {
                     let title = crate::titles::get(cx, &event.thread_id);
                     this.alerts
                         .post_run(&event.thread_id, event.failed, title.as_deref(), cx);
+                }
+            }),
+            cx.subscribe_in(&view, window, |this, _, event: &OpenRunLogs, window, cx| {
+                this.show(Page::Operator, window, cx);
+                if let Some(view) = this.pages.operator.clone() {
+                    let run = event.0.clone();
+                    view.update(cx, |v, cx| v.show_run_logs(run, window, cx));
                 }
             }),
             // `/new`: the gateway created the thread; switch after this event.
@@ -1113,16 +1122,29 @@ impl Render for Workspace {
                     )
                 })
                 .child(
-                    Button::new("retry-connect")
-                        .label("Try again")
-                        .primary()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            // Also brings the gateway back after a Stop from
-                            // the Operator page.
-                            crate::service::start();
-                            this.connect_attempt = 0;
-                            this.connect(window, cx)
-                        })),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("retry-connect")
+                                .label("Try again")
+                                .primary()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    // Also brings the gateway back after a Stop
+                                    // from the Operator page.
+                                    crate::service::start();
+                                    this.connect_attempt = 0;
+                                    this.connect(window, cx)
+                                })),
+                        )
+                        .child(
+                            // The gateway is down, so its in-app log ring is
+                            // out of reach: open the files instead.
+                            Button::new("connect-logs")
+                                .label("Logs")
+                                .icon(IconName::File)
+                                .tooltip("Open the app and gateway logs in Console")
+                                .on_click(|_, _, _| crate::logs::open_files()),
+                        ),
                 )
                 .into_any_element(),
             Conn::Ready => {

@@ -11,6 +11,7 @@ mod chat;
 mod design;
 mod jobs;
 mod login_item;
+mod logs;
 mod pages;
 mod service;
 mod titles;
@@ -28,12 +29,11 @@ gpui_kit::actions!(
 );
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("IRONCLAW_DESKTOP_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
+    logs::init();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "IronClaw Desktop started"
+    );
 
     let app = gpui_kit::application().with_assets(assets::AppAssets);
     app.on_reopen(|cx| {

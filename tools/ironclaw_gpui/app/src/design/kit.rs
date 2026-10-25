@@ -179,6 +179,7 @@ enum Size {
     XSmall,
     Small,
     Medium,
+    Large,
 }
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -193,6 +194,8 @@ pub struct Button {
     id: ElementId,
     label: Option<SharedString>,
     icon: Option<Icon>,
+    icon_px: Option<f32>,
+    text_px: Option<f32>,
     variant: Variant,
     size: Size,
     selected: bool,
@@ -214,6 +217,8 @@ impl Button {
             id: id.into(),
             label: None,
             icon: None,
+            icon_px: None,
+            text_px: None,
             variant: Variant::Secondary,
             size: Size::Medium,
             selected: false,
@@ -231,6 +236,16 @@ impl Button {
     }
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+    /// Glyph size over the size preset's, for icons that draw edge to edge.
+    pub fn icon_size(mut self, size: f32) -> Self {
+        self.icon_px = Some(size);
+        self
+    }
+    /// Label size over the size preset's.
+    pub fn text_size(mut self, size: f32) -> Self {
+        self.text_px = Some(size);
         self
     }
     pub fn primary(mut self) -> Self {
@@ -255,6 +270,11 @@ impl Button {
     }
     pub fn xsmall(mut self) -> Self {
         self.size = Size::XSmall;
+        self
+    }
+    /// Icon-first header buttons: a 38 px target with a 20 px glyph.
+    pub fn large(mut self) -> Self {
+        self.size = Size::Large;
         self
     }
     pub fn selected(mut self, on: bool) -> Self {
@@ -306,11 +326,12 @@ impl RenderOnce for Button {
             Size::XSmall => 24.,
             Size::Small => 30.,
             Size::Medium => 34.,
+            Size::Large => 38.,
         };
         let pad = match self.size {
             Size::XSmall => 7.,
             Size::Small => 9.,
-            Size::Medium => 12.,
+            Size::Medium | Size::Large => 12.,
         };
         let text = match self.variant {
             Variant::Primary => on_accent(p),
@@ -332,8 +353,13 @@ impl RenderOnce for Button {
             .when(!icon_only, |d| d.px(px(pad)))
             .rounded(px(s.control_radius))
             .text_color(text)
-            .when(self.size != Size::Medium, |d| d.text_xs())
-            .when(self.size == Size::Medium, |d| d.text_sm())
+            .when(matches!(self.size, Size::XSmall | Size::Small), |d| {
+                d.text_xs()
+            })
+            .when(matches!(self.size, Size::Medium | Size::Large), |d| {
+                d.text_sm()
+            })
+            .when_some(self.text_px, |d, size| d.text_size(px(size)))
             .font_weight(gpui_kit::FontWeight::MEDIUM)
             .when_some(self.aria.or_else(|| self.label.clone()), |d, a| {
                 d.aria_label(a)
@@ -369,10 +395,12 @@ impl RenderOnce for Button {
             })
             .when_some(dots, |d, dots| d.child(dots))
             .when_some(self.icon.filter(|_| !self.loading), |d, icon| {
-                d.child(match self.size {
-                    Size::Medium => icon,
-                    Size::Small => icon.small(),
-                    Size::XSmall => icon.xsmall(),
+                d.child(match (self.icon_px, self.size) {
+                    (Some(size), _) => icon.size(px(size)),
+                    (None, Size::Medium) => icon,
+                    (None, Size::Large) => icon.size(px(20.)),
+                    (None, Size::Small) => icon.small(),
+                    (None, Size::XSmall) => icon.xsmall(),
                 })
             })
             .when_some(self.label, |d, label| d.child(label))

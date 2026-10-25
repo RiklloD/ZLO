@@ -13,6 +13,18 @@ pub fn flatten<T>(
     joined.map_err(|e| ClientError::Config(format!("background task failed: {e}")))?
 }
 
+/// Every failed gateway request lands in the desktop log, named by its view.
+fn logged<V, T>(result: Result<T, ClientError>) -> Result<T, ClientError> {
+    if let Err(e) = &result {
+        let view = std::any::type_name::<V>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("view");
+        tracing::warn!(view, error = %e, "gateway request failed");
+    }
+    result
+}
+
 /// `f` runs on the network runtime; `done` runs on the UI thread if the view
 /// still exists. The task is detached: it holds only a weak handle, and
 /// dropping it would cancel a request already in flight.
@@ -29,7 +41,7 @@ pub fn run<V, F, Fut, T>(
 {
     let job = backend.spawn(f);
     cx.spawn(async move |this, cx| {
-        let result = flatten(job.await);
+        let result = logged::<V, _>(flatten(job.await));
         let _ = this.update(cx, |this, cx| done(this, result, cx));
     })
     .detach();
@@ -50,7 +62,7 @@ pub fn run_in<V, F, Fut, T>(
 {
     let job = backend.spawn(f);
     cx.spawn_in(window, async move |this, cx| {
-        let result = flatten(job.await);
+        let result = logged::<V, _>(flatten(job.await));
         let _ = this.update_in(cx, |this, window, cx| done(this, result, window, cx));
     })
     .detach();
