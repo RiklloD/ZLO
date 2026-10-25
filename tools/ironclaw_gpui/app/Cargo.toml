@@ -1,13 +1,13 @@
 [package]
 name = "ironclaw_gpui"
-description = "IronClaw Desktop: native GPUI frontend for the IronClaw gateway"
+description = "Numoh: native GPUI frontend for the IronClaw gateway"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "ironclaw-desktop"
+name = "numoh"
 path = "src/main.rs"
 
 [dependencies]

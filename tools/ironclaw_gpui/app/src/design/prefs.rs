@@ -94,12 +94,15 @@ impl Default for Prefs {
 impl Global for Prefs {}
 
 impl Prefs {
+    /// Prefs saved before the rename to Numoh move to the new folder once.
     fn file() -> Option<PathBuf> {
-        Some(
-            dirs::config_dir()?
-                .join("IronClaw Desktop")
-                .join("prefs.json"),
-        )
+        let config = dirs::config_dir()?;
+        let dir = config.join("Numoh");
+        let old = config.join("IronClaw Desktop");
+        if !dir.exists() && old.exists() {
+            let _ = std::fs::rename(&old, &dir);
+        }
+        Some(dir.join("prefs.json"))
     }
 
     /// Read the saved file. A file from before the appearance redesign

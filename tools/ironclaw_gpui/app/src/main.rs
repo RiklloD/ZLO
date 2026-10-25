@@ -1,4 +1,4 @@
-//! IronClaw Desktop: a native GPUI window onto the local IronClaw gateway.
+//! Numoh: a native GPUI window onto the local IronClaw gateway.
 //!
 //! Opening the app starts the gateway's launchd job and quitting (Cmd+Q)
 //! stops it (`service.rs`). Closing the window keeps the app and the gateway
@@ -32,7 +32,7 @@ fn main() {
     logs::init();
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
-        "IronClaw Desktop started"
+        "Numoh started"
     );
 
     let app = gpui_kit::application().with_assets(assets::AppAssets);
@@ -65,8 +65,8 @@ fn main() {
         ]);
         cx.set_menus(vec![
             Menu {
-                name: "IronClaw".into(),
-                items: vec![MenuItem::action("Quit IronClaw", Quit)],
+                name: "Numoh".into(),
+                items: vec![MenuItem::action("Quit Numoh", Quit)],
                 disabled: false,
             },
             Menu {
@@ -91,7 +91,7 @@ fn open_main_window(cx: &mut App) {
         // Content runs under a transparent titlebar; the sidebar
         // keeps its top strip free so macOS still drags the window.
         titlebar: Some(TitlebarOptions {
-            title: Some("IronClaw".into()),
+            title: Some("Numoh".into()),
             appears_transparent: true,
             traffic_light_position: Some(point(px(16.), px(17.))),
         }),
@@ -108,7 +108,7 @@ fn open_main_window(cx: &mut App) {
             .detach();
         cx.new(|cx| workspace::Workspace::new(window, cx))
     }) {
-        eprintln!("ironclaw-desktop: cannot open a window: {e}");
+        eprintln!("numoh: cannot open a window: {e}");
         cx.quit();
         return;
     }

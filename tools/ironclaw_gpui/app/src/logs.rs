@@ -1,5 +1,5 @@
 //! Where to look when something breaks: the app writes its own log to
-//! `~/Library/Logs/IronClaw/desktop.log` (stderr too, for `cargo run`), and
+//! `~/Library/Logs/Numoh/desktop.log` (stderr too, for `cargo run`), and
 //! the gateway's launchd job writes `serve.stderr.log` under its home. Both
 //! open in Console from the connection screen.
 //!
@@ -44,7 +44,7 @@ fn open_desktop_log() -> Option<File> {
 
 pub fn desktop_log() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("Library/Logs/IronClaw/desktop.log"))
+    Some(PathBuf::from(home).join("Library/Logs/Numoh/desktop.log"))
 }
 
 pub fn gateway_log() -> Option<PathBuf> {

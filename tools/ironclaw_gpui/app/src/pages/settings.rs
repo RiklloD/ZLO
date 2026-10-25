@@ -172,9 +172,9 @@ impl SettingsView {
                     "Open at login",
                     Some(
                         if bundled {
-                            "Starts IronClaw Desktop when you log in to your Mac."
+                            "Starts Numoh when you log in to your Mac."
                         } else {
-                            "Available when IronClaw runs from IronClaw.app (tools/ironclaw_gpui/bundle.sh)."
+                            "Available when Numoh runs from Numoh.app (tools/ironclaw_gpui/bundle.sh)."
                         }
                         .into(),
                     ),

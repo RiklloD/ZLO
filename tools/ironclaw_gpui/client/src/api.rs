@@ -64,7 +64,7 @@ impl Client {
     pub fn new(conn: Connection) -> Result<Self, ClientError> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
-            .user_agent(concat!("ironclaw-desktop/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("numoh/", env!("CARGO_PKG_VERSION")))
             .build()?;
         Ok(Self {
             inner: Arc::new(Inner { http, conn }),

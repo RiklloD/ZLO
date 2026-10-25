@@ -1,4 +1,4 @@
-# IronClaw Desktop: native GPUI client for the local IronClaw gateway.
+# Numoh: native GPUI client for the local IronClaw gateway.
 #
 # Its own workspace root, so the GPUI dependency tree never enters the main
 # IronClaw build, its Cargo.lock, or its layer gates. The app is a plain HTTP

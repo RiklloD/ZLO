@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build IronClaw Desktop as a macOS app and install it to ~/Applications.
+# Build Numoh as a macOS app and install it to ~/Applications.
 #
 # The bundle is what enables native notifications (macOS only delivers them
 # to an app with a bundle identifier) and "Open at login". The app is signed
@@ -8,13 +8,13 @@
 # refuses its notifications.
 #
 #   sh tools/ironclaw_gpui/bundle.sh             build and install
-#   sh tools/ironclaw_gpui/bundle.sh --no-install build only (target/IronClaw.app)
+#   sh tools/ironclaw_gpui/bundle.sh --no-install build only (target/Numoh.app)
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 icon_src="$here/app/assets/icon.png"
-app="$here/target/IronClaw.app"
-dest="$HOME/Applications/IronClaw.app"
+app="$here/target/Numoh.app"
+dest="$HOME/Applications/Numoh.app"
 
 cd "$here"
 cargo build --release -p ironclaw_gpui
@@ -22,7 +22,7 @@ version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/ironclaw-desktop "$app/Contents/MacOS/ironclaw-desktop"
+cp target/release/numoh "$app/Contents/MacOS/numoh"
 
 # Icon: every size macOS asks for, scaled from the 1024 px app icon.
 iconset=$(mktemp -d)/AppIcon.iconset
@@ -41,13 +41,13 @@ cat > "$app/Contents/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>IronClaw</string>
+    <string>Numoh</string>
     <key>CFBundleDisplayName</key>
-    <string>IronClaw</string>
+    <string>Numoh</string>
     <key>CFBundleIdentifier</key>
-    <string>com.ironclaw.desktop</string>
+    <string>com.numoh.desktop</string>
     <key>CFBundleExecutable</key>
-    <string>ironclaw-desktop</string>
+    <string>numoh</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>
@@ -75,8 +75,8 @@ echo "Built $app ($version)"
 
 # Replace, never overwrite in place: macOS kills a running binary whose
 # signed file changed underneath it.
-if pgrep -f "$dest/Contents/MacOS/ironclaw-desktop" >/dev/null; then
-  echo "Quit IronClaw first (it is running from $dest)." >&2
+if pgrep -f "$dest/Contents/MacOS/numoh" >/dev/null; then
+  echo "Quit Numoh first (it is running from $dest)." >&2
   exit 1
 fi
 mkdir -p "$HOME/Applications"

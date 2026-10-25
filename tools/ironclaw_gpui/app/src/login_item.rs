@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-const LABEL: &str = "com.ironclaw.desktop";
+const LABEL: &str = "com.numoh.desktop";
 
 /// The `.app` this process runs from, if any.
 pub fn bundle_path() -> Option<PathBuf> {
@@ -38,7 +38,7 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
             Err(e) => Err(format!("cannot remove {}: {e}", path.display())),
         };
     }
-    let bundle = bundle_path().ok_or("IronClaw is not running from its .app bundle")?;
+    let bundle = bundle_path().ok_or("Numoh is not running from its .app bundle")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
@@ -83,8 +83,8 @@ mod tests {
 
     #[test]
     fn plist_opens_the_bundle_and_escapes_its_path() {
-        let text = plist(Path::new("/Users/a&b/Applications/IronClaw.app"));
-        assert!(text.contains("<string>/Users/a&amp;b/Applications/IronClaw.app</string>"));
+        let text = plist(Path::new("/Users/a&b/Applications/Numoh.app"));
+        assert!(text.contains("<string>/Users/a&amp;b/Applications/Numoh.app</string>"));
         assert!(text.contains("<key>RunAtLoad</key>\n    <true/>"));
     }
 }

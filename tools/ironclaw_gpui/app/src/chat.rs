@@ -572,7 +572,7 @@ impl ChatView {
             .file_name()
             .map(|n| n.to_owned())
             .unwrap_or_else(|| "file".into());
-        let dir = std::env::temp_dir().join("ironclaw-desktop").join(subdir);
+        let dir = std::env::temp_dir().join("numoh").join(subdir);
         let job = self.backend.spawn(move |c| {
             let fetched = fetch(c);
             async move {

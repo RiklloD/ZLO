@@ -349,7 +349,7 @@ impl Client {
     pub async fn cancel_task(&self, task_id: &str) -> Result<TaskView, ClientError> {
         self.orch_post(
             format!("{V2}/tasks/{}/cancel", seg(task_id)),
-            json!({"reason": "cancelled from IronClaw Desktop"}),
+            json!({"reason": "cancelled from Numoh"}),
         )
         .await
     }

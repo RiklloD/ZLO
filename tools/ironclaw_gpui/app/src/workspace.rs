@@ -666,7 +666,7 @@ impl Workspace {
                     .text_sm()
                     .font_semibold()
                     .text_color(p.text)
-                    .child(if settings { "Settings" } else { "IronClaw" }),
+                    .child(if settings { "Settings" } else { "Numoh" }),
             );
         let footer = if settings {
             h_flex().p_2().child(
