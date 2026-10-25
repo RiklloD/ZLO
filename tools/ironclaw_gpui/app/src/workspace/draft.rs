@@ -59,6 +59,8 @@ impl Workspace {
                     }
                 }),
             ];
+            let id = profile.clone();
+            picker.update(cx, |picker, cx| picker.set_profile(id, cx));
             crate::design::wallpaper::reshuffle(cx);
             self.draft = Some(Draft {
                 profile,
@@ -98,6 +100,9 @@ impl Workspace {
         self.inbox.new_menu_open = false;
         self.open_draft(window, cx);
         if let Some(draft) = self.draft.as_mut() {
+            draft
+                .picker
+                .update(cx, |picker, cx| picker.set_profile(profile.clone(), cx));
             draft.profile = profile;
             draft.menu_open = false;
         }

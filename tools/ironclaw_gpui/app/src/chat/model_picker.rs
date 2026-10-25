@@ -103,6 +103,11 @@ pub struct ModelPicker {
     effort: Option<String>,
     effort_open: bool,
     busy: bool,
+    /// The draft's profile default `(provider, model)`; it wins over the
+    /// recent picks until the user picks by hand.
+    profile_pick: Option<(String, String)>,
+    /// The user picked on the new-thread screen.
+    touched: bool,
     search: Entity<InputState>,
     _search: Subscription,
 }
@@ -136,6 +141,8 @@ impl ModelPicker {
             effort: None,
             effort_open: false,
             busy: false,
+            profile_pick: None,
+            touched: false,
             search,
             _search: sub,
         };
@@ -163,7 +170,8 @@ impl ModelPicker {
                     this.rail = Rail::Favorites;
                 }
                 this.route = Some(route);
-                if this.current.is_none() {
+                // A draft re-picks once the catalog is in: the profile may have loaded first.
+                if this.current.is_none() || (!own && !this.touched) {
                     this.current = this.default_pick(cx);
                 }
                 cx.notify();
@@ -172,8 +180,35 @@ impl ModelPicker {
     }
 
     /// The local pick on the new-thread screen, to apply once it exists.
+    /// `None` while the profile's default stands: the gateway already
+    /// creates the thread on it.
     pub fn pending(&self) -> Option<(String, String)> {
+        if self.profile_pick.is_some() && !self.touched {
+            return None;
+        }
         self.current.clone()
+    }
+
+    /// The new-thread screen's profile: show its default model unless the
+    /// user already picked one.
+    pub fn set_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
+        jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move { c.profile(&profile_id).await },
+            |this, result, cx| {
+                // silent-ok: an unreadable profile leaves the recent pick on the pill.
+                let Ok(info) = result else { return };
+                let s = info.settings;
+                this.profile_pick = s
+                    .default_provider
+                    .map(|p| (p, s.default_model.unwrap_or_default()));
+                if !this.touched {
+                    this.current = this.default_pick(cx);
+                }
+                cx.notify();
+            },
+        );
     }
 
     /// The local effort pick on the new-thread screen.
@@ -184,6 +219,17 @@ impl ModelPicker {
     /// A new thread's pick: the last pick still offered, else IronClaw's
     /// profile model.
     fn default_pick(&self, cx: &App) -> Option<(String, String)> {
+        if let Some((provider, model)) = &self.profile_pick
+            && let Some(p) = self.providers().iter().find(|p| &p.provider == provider)
+        {
+            // An unlisted model runs as the provider's first, as the gateway does.
+            let model = if p.models.iter().any(|m| m == model) {
+                model.clone()
+            } else {
+                p.models.first().cloned().unwrap_or_default()
+            };
+            return Some((provider.clone(), model));
+        }
         let offered = |provider: &str, model: &str| {
             !self.prefs.provider_hidden(provider)
                 && self
@@ -339,6 +385,7 @@ impl ModelPicker {
             .clone()
             .filter(|e| self.efforts_of(&provider, &model).contains(e));
         let Some(thread_id) = self.thread_id.clone() else {
+            self.touched = true;
             self.current = Some((provider, model));
             self.effort = effort;
             cx.notify();

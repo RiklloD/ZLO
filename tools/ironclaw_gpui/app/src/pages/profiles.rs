@@ -184,19 +184,19 @@ impl ProfilesView {
             |this, result, cx| {
                 match result {
                     Ok(list) => {
-                        let mut tools: Vec<(String, String)> =
-                            list.entries
-                                .into_iter()
-                                .filter(|e| e.key.starts_with("tool."))
-                                .filter_map(|e| {
-                                    // silent-ok: a row the gateway shapes differently is skipped.
-                                    serde_json::from_value::<
+                        let mut tools: Vec<(String, String)> = list
+                            .entries
+                            .into_iter()
+                            .filter(|e| e.key.starts_with("tool."))
+                            .filter_map(|e| {
+                                // silent-ok: a row the gateway shapes differently is skipped.
+                                serde_json::from_value::<
                                         ironclaw_gpui_client::wire::ToolPermission,
                                     >(e.value)
                                     .ok()
-                                })
-                                .map(|t| (t.name, t.description))
-                                .collect();
+                            })
+                            .map(|t| (t.name, t.description))
+                            .collect();
                         tools.sort();
                         this.catalog.tools = tools;
                     }
@@ -393,8 +393,21 @@ impl ProfilesView {
             p.thread_count,
             if p.thread_count == 1 { "" } else { "s" }
         )];
-        if let Some(model) = &p.settings.default_model {
-            meta.push(model.clone());
+        // A default no signed-in provider offers runs nowhere; say so.
+        let offered = |provider: &str| {
+            self.catalog.providers.iter().any(|c| {
+                c.provider == provider
+                    && p.settings
+                        .default_model
+                        .as_ref()
+                        .is_none_or(|m| c.models.is_empty() || c.models.contains(m))
+            })
+        };
+        match p.settings.default_provider.as_deref() {
+            Some(provider) if !self.catalog.providers.is_empty() && !offered(provider) => {
+                meta.push("model unavailable".into());
+            }
+            _ => meta.extend(p.settings.default_model.clone()),
         }
         if let Some(branch) = &p.git_branch {
             meta.push(format!("on {branch}"));
