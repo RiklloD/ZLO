@@ -239,6 +239,7 @@ impl OrchestratedProductSurface {
                     .await,
                 )
             }
+            v if v == ORCHESTRATOR_PROVIDERS_VIEW.id => answer(engine.providers_view(scope).await),
             v if v == ORCHESTRATOR_THREAD_TELEMETRY_VIEW.id => {
                 let req: OrchestratorThreadRequest = decode(input)?;
                 answer(

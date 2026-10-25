@@ -177,8 +177,21 @@ impl Engine {
 
     /// The thread's route and every provider it could switch to.
     pub async fn route_view(&self, thread: &ThreadRecord) -> Result<Value> {
+        let mut view = self.providers_view(&thread.scope).await?;
+        view["threadId"] = json!(thread.thread_id.as_str());
+        view["runtime"] = json!(thread.runtime_id.as_str());
+        view["provider"] = json!(thread.provider);
+        view["model"] = json!(thread.model);
+        view["effort"] = json!(self.store.thread_effort(&thread.thread_id).await?);
+        view["fresh"] = json!(is_fresh(thread));
+        Ok(view)
+    }
+
+    /// Every provider a thread of this scope can run on, and the user's
+    /// model-picker preferences: `{providers, picker}`. Needs no thread.
+    pub async fn providers_view(&self, scope: &ThreadScope) -> Result<Value> {
         let providers: Vec<Value> = self
-            .catalog(&thread.scope)
+            .catalog(scope)
             .await
             .into_iter()
             .map(|(rt, p)| {
@@ -191,12 +204,6 @@ impl Engine {
             })
             .collect();
         Ok(json!({
-            "threadId": thread.thread_id.as_str(),
-            "runtime": thread.runtime_id.as_str(),
-            "provider": thread.provider,
-            "model": thread.model,
-            "effort": self.store.thread_effort(&thread.thread_id).await?,
-            "fresh": is_fresh(thread),
             "providers": providers,
             "picker": self.store.settings().await?.model_picker,
         }))

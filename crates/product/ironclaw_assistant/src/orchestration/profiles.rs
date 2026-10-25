@@ -1,15 +1,15 @@
 //! Stage 3 profiles on the product side: the `profiles.*` views and
 //! commands answered by the orchestrating decorator, the one-time Hermes
 //! importer, and the two turn decorators that make a profile matter at run
-//! time: its SOUL.md joins the identity context and its capability allowlist
-//! narrows the visible surface. Records live in `ironclaw_orchestrator`.
+//! time: its SOUL.md joins the identity context, and its capability allowlist
+//! and enabled MCP servers narrow the visible surface. Records live in `ironclaw_orchestrator`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironclaw_host_api::capability_surface::CapabilitySurfacePolicy;
-use ironclaw_host_api::ids::{CapabilityId, ThreadId};
+use ironclaw_host_api::ids::{CapabilityId, ExtensionId, ThreadId};
 use ironclaw_loop_contracts::{LoopRunContext, PromptMode};
 use ironclaw_loop_host::{
     CapabilityResolveError, CapabilitySurfaceProfileResolver, HostIdentityContextBuildError,
@@ -484,15 +484,29 @@ impl HostIdentityContextSource for ProfileIdentityContextSource {
     }
 }
 
-/// Narrows the inner surface to the thread profile's capability allowlist.
+/// Lists the live MCP-runtime capabilities as `(server, capability)`; the
+/// server is the capability's provider extension.
+pub type McpCapabilityLister = Arc<dyn Fn() -> Vec<(ExtensionId, CapabilityId)> + Send + Sync>;
+
+/// Narrows the inner surface to the thread profile's capability allowlist
+/// and hides the tools of MCP servers the profile does not enable.
 pub struct ProfileCapabilitySurfaceResolver {
     inner: Arc<dyn CapabilitySurfaceProfileResolver>,
     engine: Arc<Engine>,
+    mcp_capabilities: McpCapabilityLister,
 }
 
 impl ProfileCapabilitySurfaceResolver {
-    pub fn new(inner: Arc<dyn CapabilitySurfaceProfileResolver>, engine: Arc<Engine>) -> Self {
-        Self { inner, engine }
+    pub fn new(
+        inner: Arc<dyn CapabilitySurfaceProfileResolver>,
+        engine: Arc<Engine>,
+        mcp_capabilities: McpCapabilityLister,
+    ) -> Self {
+        Self {
+            inner,
+            engine,
+            mcp_capabilities,
+        }
     }
 }
 
@@ -502,7 +516,7 @@ impl CapabilitySurfaceProfileResolver for ProfileCapabilitySurfaceResolver {
         &self,
         run_context: &LoopRunContext,
     ) -> std::result::Result<CapabilitySurfacePolicy, CapabilityResolveError> {
-        let policy = self.inner.resolve(run_context).await?;
+        let mut policy = self.inner.resolve(run_context).await?;
         // Fail closed: an unreadable profile must not widen the surface.
         let profile = self
             .engine
@@ -510,17 +524,27 @@ impl CapabilitySurfaceProfileResolver for ProfileCapabilitySurfaceResolver {
             .thread_profile(&run_context.thread_id)
             .await
             .map_err(|error| CapabilityResolveError::unavailable(error.to_string()))?;
-        let Some(allowed) = profile.and_then(|p| p.settings.allowed_capabilities) else {
+        let Some(settings) = profile.map(|p| p.settings) else {
             return Ok(policy);
         };
-        let ids = allowed
-            .iter()
-            .map(|raw| {
-                CapabilityId::new(raw.as_str())
-                    .map_err(|error| CapabilityResolveError::unavailable(error.to_string()))
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(policy.narrow_to_capability_ids(ids))
+        if let Some(allowed) = &settings.allowed_capabilities {
+            let ids = allowed
+                .iter()
+                .map(|raw| {
+                    CapabilityId::new(raw.as_str())
+                        .map_err(|error| CapabilityResolveError::unavailable(error.to_string()))
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            policy = policy.narrow_to_capability_ids(ids);
+        }
+        if let Some(enabled) = &settings.enabled_mcp_servers {
+            let denied = (self.mcp_capabilities)()
+                .into_iter()
+                .filter(|(server, _)| !enabled.iter().any(|e| e == server.as_str()))
+                .map(|(_, id)| id);
+            policy = policy.deny_capability_ids(denied);
+        }
+        Ok(policy)
     }
 }
 
@@ -536,10 +560,12 @@ pub fn profile_identity_source(
 pub fn profile_surface_resolver(
     inner: Arc<dyn CapabilitySurfaceProfileResolver>,
     engine: &Arc<Engine>,
+    mcp_capabilities: McpCapabilityLister,
 ) -> Arc<dyn CapabilitySurfaceProfileResolver> {
     Arc::new(ProfileCapabilitySurfaceResolver::new(
         inner,
         Arc::clone(engine),
+        mcp_capabilities,
     ))
 }
 
@@ -683,6 +709,103 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(context().await, None, "a done goal is not sent");
+    }
+
+    struct AllowAll;
+
+    #[async_trait]
+    impl CapabilitySurfaceProfileResolver for AllowAll {
+        async fn resolve(
+            &self,
+            _run_context: &LoopRunContext,
+        ) -> std::result::Result<CapabilitySurfacePolicy, CapabilityResolveError> {
+            Ok(CapabilitySurfacePolicy::allow_all())
+        }
+    }
+
+    /// A profile that enables some MCP servers loses the tools of the
+    /// others; plain tools and profiles without the list are untouched.
+    #[tokio::test]
+    async fn profile_hides_tools_of_mcp_servers_it_does_not_enable() {
+        use ironclaw_host_api::ids::{TenantId, UserId};
+        use ironclaw_loop_contracts::{
+            InMemoryRunProfileResolver, RunProfileResolutionRequest, RunProfileResolver,
+        };
+        use ironclaw_turns::{TurnId, TurnRunId, TurnScope};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            libsql::Builder::new_local(dir.path().join("o.db"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let runtime =
+            Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
+        let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+        let scope = ThreadScope {
+            tenant_id: TenantId::new("t1").unwrap(),
+            user_id: UserId::new("u1").unwrap(),
+            agent_id: None,
+            project_id: None,
+        };
+        let owner = ProfileOwner::from(&scope);
+        let work = parse_profile_slug("work").unwrap();
+        let settings = ProfileSettings {
+            display_name: "Work".into(),
+            enabled_mcp_servers: Some(vec!["notion".into()]),
+            ..ProfileSettings::default()
+        };
+        engine
+            .store()
+            .create_profile(&owner, &work, &settings)
+            .await
+            .unwrap();
+        let (on_work, on_default) = (
+            ThreadId::new("work-thread").unwrap(),
+            ThreadId::new("default-thread").unwrap(),
+        );
+        engine.ensure_thread(&on_work, &scope, None).await.unwrap();
+        engine
+            .ensure_thread(&on_default, &scope, None)
+            .await
+            .unwrap();
+        engine
+            .store()
+            .set_thread_profile(&on_work, &work)
+            .await
+            .unwrap();
+
+        let id = |raw: &str| CapabilityId::new(raw).unwrap();
+        let mcp: McpCapabilityLister = Arc::new(move || {
+            vec![
+                (ExtensionId::new("notion").unwrap(), id("notion.search")),
+                (ExtensionId::new("linear").unwrap(), id("linear.issues")),
+            ]
+        });
+        let resolver = profile_surface_resolver(Arc::new(AllowAll), &engine, mcp);
+        let run_profile = InMemoryRunProfileResolver::default()
+            .resolve_run_profile(RunProfileResolutionRequest::interactive_default())
+            .await
+            .unwrap();
+        let policy_for = |thread: &ThreadId| {
+            let run = LoopRunContext::new(
+                TurnScope::new(TenantId::new("t1").unwrap(), None, None, thread.clone()),
+                TurnId::new(),
+                TurnRunId::new(),
+                run_profile.clone(),
+            );
+            let resolver = Arc::clone(&resolver);
+            async move { resolver.resolve(&run).await.unwrap() }
+        };
+
+        let work_policy = policy_for(&on_work).await;
+        assert!(work_policy.permits_capability_id(&id("notion.search")));
+        assert!(!work_policy.permits_capability_id(&id("linear.issues")));
+        assert!(work_policy.permits_capability_id(&id("builtin.shell")));
+
+        let default_policy = policy_for(&on_default).await;
+        assert!(default_policy.permits_capability_id(&id("linear.issues")));
     }
 
     #[test]

@@ -128,6 +128,12 @@ pub const ORCHESTRATOR_THREAD_ROUTE_VIEW: ProductView<
     serde_json::Value,
 > = ProductView::unpaginated("orchestrator.thread_route");
 
+/// Every provider the caller's threads can run on, with the model-picker
+/// preferences: `{providers, picker}`, shaped like the thread route's. For
+/// screens without a thread (profile defaults, a fresh install).
+pub const ORCHESTRATOR_PROVIDERS_VIEW: ProductView<serde_json::Value, serde_json::Value> =
+    ProductView::unpaginated("orchestrator.providers");
+
 /// Latest per-turn telemetry of a thread (the desktop status bar).
 pub const ORCHESTRATOR_THREAD_TELEMETRY_VIEW: ProductView<
     OrchestratorThreadRequest,

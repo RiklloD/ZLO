@@ -20,7 +20,8 @@ mod tools;
 pub use observer::OrchestratorProcessObserver;
 pub use profile_context::{CliProfileContext, ProfileSkillFilter, SkillFiles, UserSkillFiles};
 pub use profiles::{
-    ProfileHome, ProfileSupermemoryBindings, profile_identity_source, profile_surface_resolver,
+    McpCapabilityLister, ProfileHome, ProfileSupermemoryBindings, profile_identity_source,
+    profile_surface_resolver,
 };
 pub use runtime::{AgentLoopRuntime, IRONCLAW_RUNTIME_ID};
 pub use surface::OrchestratedProductSurface;

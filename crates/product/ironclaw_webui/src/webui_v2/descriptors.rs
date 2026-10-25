@@ -169,6 +169,7 @@ pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ROUTE_SET: &str =
     "webui.v2.orchestrator.thread_route_set";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
     "webui.v2.orchestrator.thread_merge_back";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS: &str = "webui.v2.orchestrator.providers";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK: &str = "webui.v2.orchestrator.task";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK_CANCEL: &str = "webui.v2.orchestrator.task_cancel";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS: &str =
@@ -191,6 +192,7 @@ pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_FORK: &str =
     "/api/webchat/v2/threads/{thread_id}/fork";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
     "/api/webchat/v2/threads/{thread_id}/merge-back";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS: &str = "/api/webchat/v2/providers";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK: &str = "/api/webchat/v2/tasks/{task_id}";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL: &str =
     "/api/webchat/v2/tasks/{task_id}/cancel";
@@ -423,6 +425,7 @@ pub fn webui_v2_routes_with_artifact_flags(
         orchestrator_thread_fork_descriptor(),
         orchestrator_thread_route_descriptor(),
         orchestrator_thread_route_set_descriptor(),
+        orchestrator_providers_descriptor(),
         orchestrator_thread_merge_back_descriptor(),
         orchestrator_task_descriptor(),
         orchestrator_task_cancel_descriptor(),
@@ -1621,6 +1624,20 @@ fn orchestrator_thread_route_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ROUTE,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ROUTE,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn orchestrator_providers_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS,
         read_policy(
             read_rate_limit(),
             AuditTraceClass::UserAction,

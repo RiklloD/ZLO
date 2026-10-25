@@ -4369,8 +4369,21 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         let parts = &mut planned_runtime_parts;
         parts.identity_context_source =
             profile_identity_source(Arc::clone(&parts.identity_context_source), engine);
-        parts.capability_surface_resolver =
-            profile_surface_resolver(Arc::clone(&parts.capability_surface_resolver), engine);
+        let registry = Arc::clone(&services.shared_extension_registry);
+        let mcp_capabilities: ironclaw_assistant::orchestration::McpCapabilityLister =
+            Arc::new(move || {
+                registry
+                    .snapshot()
+                    .capabilities()
+                    .filter(|c| c.runtime == ironclaw_host_api::runtime::RuntimeKind::Mcp)
+                    .map(|c| (c.provider.clone(), c.id.clone()))
+                    .collect()
+            });
+        parts.capability_surface_resolver = profile_surface_resolver(
+            Arc::clone(&parts.capability_surface_resolver),
+            engine,
+            mcp_capabilities,
+        );
     }
     let composition = build_default_planned_runtime(planned_runtime_parts)?;
     let default_resolved_run_profile = composition

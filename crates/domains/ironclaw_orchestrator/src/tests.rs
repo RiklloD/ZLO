@@ -1174,6 +1174,13 @@ async fn model_picker_prefs_persist_deduplicated_and_ride_the_route_view() {
 
     let view = h.engine.route_view(&thread).await.unwrap();
     assert_eq!(view["picker"], r["picker"]);
+    // Screens without a thread get the same lists.
+    let bare = h.engine.providers_view(&scope()).await.unwrap();
+    assert_eq!(
+        (&bare["providers"], &bare["picker"]),
+        (&view["providers"], &view["picker"])
+    );
+    assert!(bare.get("threadId").is_none());
     assert!(
         h.engine
             .set_model_picker(json!({"hiddenProviders": [""]}))
