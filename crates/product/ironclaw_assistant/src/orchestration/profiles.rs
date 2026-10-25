@@ -70,6 +70,11 @@ impl ProfileHome {
         }
     }
 
+    /// Where each profile's skills are mirrored for CLI agents.
+    pub(crate) fn cli_skills(&self) -> PathBuf {
+        self.user_home.join(".ironclaw/cli-skills")
+    }
+
     fn hermes_profiles(&self) -> PathBuf {
         self.user_home.join(".hermes/profiles")
     }

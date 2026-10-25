@@ -8,6 +8,7 @@ mod external;
 mod external_tests;
 mod inbox;
 mod observer;
+mod profile_context;
 mod profiles;
 mod runtime;
 mod schedules;
@@ -17,6 +18,7 @@ mod telemetry;
 mod tools;
 
 pub use observer::OrchestratorProcessObserver;
+pub use profile_context::{CliProfileContext, ProfileSkillFilter, SkillFiles, UserSkillFiles};
 pub use profiles::{
     ProfileHome, ProfileSupermemoryBindings, profile_identity_source, profile_surface_resolver,
 };

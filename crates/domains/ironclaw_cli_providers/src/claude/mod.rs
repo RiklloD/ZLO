@@ -94,6 +94,17 @@ pub struct ClaudeCliRuntime {
     // arch-exempt: optional_arc, a host without the gateway runs the CLI tools-off, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
+    /// Each thread's last profile context, reused when Stop restarts a turn.
+    profiles: Mutex<HashMap<ThreadId, TurnProfile>>,
+}
+
+/// What one turn's process is started with, besides the session.
+struct TurnPlan<'a> {
+    /// The session's working directory; `--resume` finds it only there.
+    dir: PathBuf,
+    goal: Option<&'a str>,
+    effort: Option<&'a str>,
+    profile: Option<&'a TurnProfile>,
 }
 
 /// A turn's per-process MCP grant: the token and the 0600 config file.
@@ -115,16 +126,43 @@ impl ClaudeCliRuntime {
             sink,
             bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
+            profiles: Mutex::new(HashMap::new()),
         })
     }
 
-    fn transcript_path(&self, session_id: &str) -> PathBuf {
+    fn transcript_path(&self, dir: &Path, session_id: &str) -> PathBuf {
         self.config
             .projects_dir
-            .join(claude_codes::transcript::encode_project_dir(
-                &self.config.work_dir,
-            ))
+            .join(claude_codes::transcript::encode_project_dir(dir))
             .join(format!("{session_id}.jsonl"))
+    }
+
+    /// Where a session runs: the shared work dir when it already started
+    /// there, else the profile's folder, else the shared work dir.
+    fn session_dir(&self, session_id: &str, profile: Option<&TurnProfile>) -> PathBuf {
+        let shared = &self.config.work_dir;
+        match profile.and_then(|p| p.folder.as_ref()) {
+            Some(folder) if !self.transcript_path(shared, session_id).is_file() => folder.clone(),
+            _ => shared.clone(),
+        }
+    }
+
+    /// The session's transcript wherever it ran (session ids are unique
+    /// across project folders).
+    async fn find_transcript(&self, session_id: &str) -> Option<PathBuf> {
+        let shared = self.transcript_path(&self.config.work_dir, session_id);
+        if shared.is_file() {
+            return Some(shared);
+        }
+        let file = format!("{session_id}.jsonl");
+        let mut dirs = tokio::fs::read_dir(&self.config.projects_dir).await.ok()?; // silent-ok: no projects folder means no transcript yet
+        while let Ok(Some(entry)) = dirs.next_entry().await {
+            let path = entry.path().join(&file);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        None
     }
 
     fn command(
@@ -132,8 +170,7 @@ impl ClaudeCliRuntime {
         session_id: &str,
         model: Option<&str>,
         mcp: Option<&Path>,
-        goal: Option<&str>,
-        effort: Option<&str>,
+        plan: &TurnPlan<'_>,
     ) -> Command {
         let mut cmd = Command::new(&self.config.binary);
         cmd.args([
@@ -164,14 +201,17 @@ impl ClaudeCliRuntime {
         if let Some(model) = model {
             cmd.args(["--model", model]);
         }
-        if let Some(effort) = effort {
+        if let Some(effort) = plan.effort {
             cmd.args(["--effort", effort]);
         }
-        if let Some(goal) = goal {
-            cmd.arg("--append-system-prompt")
-                .arg(crate::goal_note(goal));
+        if let Some(note) = crate::system_note(plan.profile, plan.goal) {
+            cmd.arg("--append-system-prompt").arg(note);
         }
-        if self.transcript_path(session_id).is_file() {
+        // The profile's skills load as a plugin, so they are native skills.
+        if let Some(skills) = plan.profile.and_then(|p| p.skills.as_ref()) {
+            cmd.arg("--plugin-dir").arg(&skills.plugin_dir);
+        }
+        if self.transcript_path(&plan.dir, session_id).is_file() {
             cmd.args(["--resume", session_id]);
         } else {
             cmd.args(["--session-id", session_id]);
@@ -179,7 +219,7 @@ impl ClaudeCliRuntime {
         if let Some(dir) = &self.config.config_dir {
             cmd.env("CLAUDE_CONFIG_DIR", dir);
         }
-        cmd.current_dir(&self.config.work_dir)
+        cmd.current_dir(&plan.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -240,12 +280,19 @@ impl ClaudeCliRuntime {
         text: &str,
         goal: Option<&str>,
         effort: Option<&str>,
+        profile: Option<&TurnProfile>,
     ) -> Result<String, RuntimeError> {
         let session_id = thread
             .native_session_id
             .clone()
             .ok_or_else(|| RuntimeError::Rejected("thread has no claude session".into()))?;
-        tokio::fs::create_dir_all(&self.config.work_dir)
+        let plan = TurnPlan {
+            dir: self.session_dir(&session_id, profile),
+            goal,
+            effort,
+            profile,
+        };
+        tokio::fs::create_dir_all(&plan.dir)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("work dir: {}", e.kind())))?;
         let run_id = uuid::Uuid::new_v4().to_string();
@@ -264,8 +311,7 @@ impl ClaudeCliRuntime {
                 &session_id,
                 thread.model.as_deref(),
                 mcp.as_ref().map(|m| m.config_file.as_path()),
-                goal,
-                effort,
+                &plan,
             )
             .spawn();
         let mut child = match spawned {
@@ -480,12 +526,16 @@ impl TurnRuntime for ClaudeCliRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
+        if let (Some(profile), Ok(mut profiles)) = (&input.profile, self.profiles.lock()) {
+            profiles.insert(thread.thread_id.clone(), profile.clone());
+        }
         let run_id = self
             .spawn_turn(
                 &thread,
                 &input.text,
                 input.goal.as_deref(),
                 input.effort.as_deref(),
+                input.profile.as_ref(),
             )
             .await?;
         Ok(TurnAdmission::Started {
@@ -500,7 +550,13 @@ impl TurnRuntime for ClaudeCliRuntime {
         _how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
         self.stop(&thread.thread_id).await;
-        self.spawn_turn(thread, text, None, None).await?;
+        let profile = self
+            .profiles
+            .lock()
+            .ok()
+            .and_then(|p| p.get(&thread.thread_id).cloned()); // silent-ok: a poisoned map only follows a panic elsewhere
+        self.spawn_turn(thread, text, None, None, profile.as_ref())
+            .await?;
         Ok(SteerOutcome::Restarted)
     }
 
@@ -517,7 +573,10 @@ impl TurnRuntime for ClaudeCliRuntime {
         let Some(session) = thread.native_session_id.as_deref() else {
             return Ok(Vec::new());
         };
-        transcript::read(&self.transcript_path(session), limit).await
+        let Some(path) = self.find_transcript(session).await else {
+            return Ok(Vec::new());
+        };
+        transcript::read(&path, limit).await
     }
 
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {

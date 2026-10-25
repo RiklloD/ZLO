@@ -85,6 +85,7 @@ fn input() -> TurnInput {
         model: None,
         goal: None,
         effort: None,
+        profile: None,
     }
 }
 

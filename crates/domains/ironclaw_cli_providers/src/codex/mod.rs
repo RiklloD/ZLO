@@ -106,6 +106,7 @@ pub struct CodexRuntime {
     bridge: Option<Arc<CliBridge>>,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
+    primed: crate::Primed,
 }
 
 impl CodexRuntime {
@@ -121,6 +122,7 @@ impl CodexRuntime {
             bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
+            primed: crate::Primed::default(),
         })
     }
 
@@ -155,7 +157,7 @@ impl CodexRuntime {
         &self,
         thread: &ThreadRecord,
         text: &str,
-        goal: Option<&str>,
+        context: Option<&str>,
         effort: Option<&str>,
     ) -> Result<String, RuntimeError> {
         let session = thread
@@ -188,7 +190,7 @@ impl CodexRuntime {
             session,
             model: thread.model.clone(),
             text: text.to_string(),
-            goal: goal.map(str::to_string),
+            context: context.map(str::to_string),
             effort: effort.map(str::to_string),
             cancelled,
             live,
@@ -355,8 +357,8 @@ struct Turn {
     session: String,
     model: Option<String>,
     text: String,
-    /// The thread's goal, sent ahead of `text` but never journaled.
-    goal: Option<String>,
+    /// Profile preamble and thread goal, sent ahead of `text` but never journaled.
+    context: Option<String>,
     /// The thread's effort pick; over the configured default.
     effort: Option<String>,
     cancelled: Arc<AtomicBool>,
@@ -415,7 +417,7 @@ impl Turn {
         )
         .await;
 
-        let text = crate::with_goal(&self.text, self.goal.as_deref());
+        let text = crate::with_context(&self.text, self.context.as_deref());
         let mut params = json!({
             "threadId": codex_thread,
             "input": [{"type": "text", "text": text, "text_elements": []}],
@@ -688,11 +690,15 @@ impl TurnRuntime for CodexRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
+        let context = crate::prompt_context(
+            self.primed.take(&thread.thread_id, input.profile.as_ref()),
+            input.goal.as_deref(),
+        );
         let run_id = self
             .spawn_turn(
                 &thread,
                 &input.text,
-                input.goal.as_deref(),
+                context.as_deref(),
                 input.effort.as_deref(),
             )
             .await?;

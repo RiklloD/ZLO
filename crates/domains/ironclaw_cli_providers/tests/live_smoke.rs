@@ -73,6 +73,7 @@ async fn one_turn(rt: &dyn TurnRuntime, recorder: &Recorder) {
             model: None,
             goal: None,
             effort: None,
+            profile: None,
         },
     )
     .await

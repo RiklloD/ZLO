@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use ironclaw_host_api::ids::ThreadId;
 use serde::{Deserialize, Serialize};
 
+use crate::error::OrchestratorError;
 use crate::model::{Millis, RuntimeId, ThreadRecord, ThreadScope};
 use crate::telemetry::TurnTelemetry;
 
@@ -157,6 +158,40 @@ pub struct TurnInput {
     pub goal: Option<String>,
     /// The thread's reasoning effort pick, one of its provider's `efforts`.
     pub effort: Option<String>,
+    /// The thread's profile as a CLI agent sees it; `None` without a
+    /// profile or a [`ProfileContextSource`].
+    pub profile: Option<TurnProfile>,
+}
+
+/// A profile's identity, folder and skills for one CLI turn.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TurnProfile {
+    /// SOUL.md text; empty means none.
+    pub soul: String,
+    /// The profile's working folder, when it exists on disk.
+    pub folder: Option<std::path::PathBuf>,
+    pub skills: Option<ProfileSkills>,
+}
+
+/// The skills a profile shows, mirrored to disk for CLI agents.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileSkills {
+    /// A Claude Code plugin folder: `.claude-plugin/plugin.json` plus
+    /// `skills/<name>/SKILL.md` and each skill's other files.
+    pub plugin_dir: std::path::PathBuf,
+    /// One line per skill (name, description, SKILL.md path), for agents
+    /// without a native skill system.
+    pub index: String,
+}
+
+/// Builds [`TurnProfile`]s; plugged in by the host, which owns the skill
+/// store and the profile folders.
+#[async_trait]
+pub trait ProfileContextSource: Send + Sync {
+    async fn turn_profile(
+        &self,
+        profile: &crate::profiles::ProfileRecord,
+    ) -> std::result::Result<TurnProfile, OrchestratorError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

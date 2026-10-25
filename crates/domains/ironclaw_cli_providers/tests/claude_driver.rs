@@ -132,6 +132,7 @@ fn input() -> TurnInput {
         model: None,
         goal: None,
         effort: None,
+        profile: None,
     }
 }
 
@@ -235,6 +236,102 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
     let history = rt.history(&thread, 10).await.unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].role, HistoryRole::User);
+}
+
+/// The profile reaches the CLI: the session runs in the profile folder with
+/// SOUL.md and the goal in its system prompt and the skills as a plugin; a
+/// Stop restart keeps it; a session that began in the shared folder stays
+/// there; history finds a transcript in either folder.
+#[tokio::test]
+async fn profile_soul_skills_and_folder_reach_the_cli() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("profile-args.log");
+    let body = ANSWER
+        .replace(
+            "echo \"$@\" >> \"$ARGS_LOG\"",
+            "{ printf 'PWD=%s ' \"$PWD\"; echo \"$@\" | tr '\\n' ' '; echo; } >> @LOG@",
+        )
+        .replace(
+            "mkdir -p \"$TRANSCRIPT_DIR\" && echo '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}' > \"$TRANSCRIPT_DIR/$SESSION.jsonl\"\n",
+            "",
+        )
+        .replace("@LOG@", &log.display().to_string());
+    let sink = Arc::new(Recorder::default());
+    let rt = runtime(dir.path(), script(dir.path(), "claude", &body), &sink);
+    let folder = dir.path().join("profile-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    let plugin = dir.path().join("cli-skills").join("builder");
+    let profile = TurnProfile {
+        soul: "You are the builder.".into(),
+        folder: Some(folder.clone()),
+        skills: Some(ProfileSkills {
+            plugin_dir: plugin.clone(),
+            index: String::new(),
+        }),
+    };
+
+    let fresh = thread(&rt).await;
+    let mut turn = input();
+    turn.goal = Some("Ship it".into());
+    turn.profile = Some(profile.clone());
+    rt.start_turn(&fresh, turn).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    rt.steer(&fresh, "again", SteerHow::Restart).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 2).await;
+
+    // A session already started in the shared work dir keeps running there.
+    let legacy = thread(&rt).await;
+    let session = legacy.native_session_id.clone().unwrap();
+    let shared = dir
+        .path()
+        .join("projects")
+        .join(claude_codes::transcript::encode_project_dir(
+            &dir.path().join("work"),
+        ));
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join(format!("{session}.jsonl")), "").unwrap();
+    let mut turn = input();
+    turn.profile = Some(profile);
+    rt.start_turn(&legacy, turn).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 3).await;
+
+    let args = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = args.lines().collect();
+    let in_folder = format!("PWD={} ", folder.canonicalize().unwrap().display());
+    let plugin_arg = format!("--plugin-dir {}", plugin.display());
+    for line in &lines[..2] {
+        assert!(line.starts_with(&in_folder), "{line}");
+        assert!(line.contains("You are the builder."), "{line}");
+        assert!(line.contains(&plugin_arg), "{line}");
+    }
+    assert!(lines[0].contains("Ship it"), "{}", lines[0]);
+    assert!(
+        lines[2].starts_with(&format!(
+            "PWD={} ",
+            dir.path().join("work").canonicalize().unwrap().display()
+        )),
+        "{}",
+        lines[2]
+    );
+    assert!(
+        lines[2].contains(&format!("--resume {session}")),
+        "{}",
+        lines[2]
+    );
+
+    // History reads a transcript filed under the profile folder's project.
+    let fresh_session = fresh.native_session_id.clone().unwrap();
+    let theirs = dir
+        .path()
+        .join("projects")
+        .join(claude_codes::transcript::encode_project_dir(&folder));
+    std::fs::create_dir_all(&theirs).unwrap();
+    std::fs::write(
+        theirs.join(format!("{fresh_session}.jsonl")),
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+    )
+    .unwrap();
+    assert_eq!(rt.history(&fresh, 10).await.unwrap().len(), 1);
 }
 
 #[tokio::test]

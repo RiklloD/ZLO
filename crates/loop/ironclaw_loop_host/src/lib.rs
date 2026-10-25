@@ -144,7 +144,8 @@ pub use skill_activation::{
 pub use skill_bundle_context_source::SkillBundleContextSource;
 pub use skill_bundle_source::{
     SkillBundleDescriptor, SkillBundleId, SkillBundleProvenance, SkillBundleSource,
-    SkillBundleSourceError, SkillFilePath, SkillSourceKind, sort_skill_bundle_descriptors,
+    SkillBundleSourceError, SkillFilePath, SkillRunFilter, SkillSourceKind,
+    sort_skill_bundle_descriptors,
 };
 pub use skill_context::{
     HostSkillContextBuildError, HostSkillContextCandidate, HostSkillContextCandidatePayload,

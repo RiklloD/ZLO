@@ -17,7 +17,8 @@ use tracing::warn;
 
 use crate::{
     SkillBundleDescriptor, SkillBundleId, SkillBundleProvenance, SkillBundleSource,
-    SkillBundleSourceError, SkillFilePath, SkillSourceKind, sort_skill_bundle_descriptors,
+    SkillBundleSourceError, SkillFilePath, SkillRunFilter, SkillSourceKind,
+    sort_skill_bundle_descriptors,
 };
 
 const DEFAULT_MAX_BUNDLE_FILE_BYTES: usize = 256 * 1024;
@@ -130,6 +131,8 @@ pub struct FilesystemSkillBundleSource<F> {
     max_skill_md_bytes: usize,
     max_bundle_file_bytes: usize,
     max_bundles_per_root: usize,
+    /// Bound once by the host when thread profiles exist.
+    run_filter: std::sync::OnceLock<Arc<dyn SkillRunFilter>>,
 }
 
 impl<F> std::fmt::Debug for FilesystemSkillBundleSource<F> {
@@ -153,6 +156,7 @@ impl<F> std::fmt::Debug for FilesystemSkillBundleSource<F> {
             .field("max_skill_md_bytes", &self.max_skill_md_bytes)
             .field("max_bundle_file_bytes", &self.max_bundle_file_bytes)
             .field("max_bundles_per_root", &self.max_bundles_per_root)
+            .field("run_filter", &self.run_filter.get().is_some())
             .finish()
     }
 }
@@ -178,7 +182,42 @@ where
             max_skill_md_bytes: MAX_PROMPT_FILE_SIZE as usize,
             max_bundle_file_bytes: DEFAULT_MAX_BUNDLE_FILE_BYTES,
             max_bundles_per_root: DEFAULT_MAX_BUNDLES_PER_ROOT,
+            run_filter: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Hide skills per run (a thread profile's hidden skills). First call wins.
+    pub fn set_run_filter(&self, filter: Arc<dyn SkillRunFilter>) {
+        let _ = self.run_filter.set(filter); // silent-ok: already bound by an earlier wiring
+    }
+
+    async fn hidden_for_run(
+        &self,
+        run_context: &LoopRunContext,
+    ) -> Result<HashSet<String>, SkillBundleSourceError> {
+        match self.run_filter.get() {
+            Some(filter) => Ok(filter
+                .hidden_skills(run_context)
+                .await?
+                .into_iter()
+                .collect()),
+            None => Ok(HashSet::new()),
+        }
+    }
+
+    async fn ensure_not_hidden(
+        &self,
+        run_context: &LoopRunContext,
+        bundle_id: &SkillBundleId,
+    ) -> Result<(), SkillBundleSourceError> {
+        if self
+            .hidden_for_run(run_context)
+            .await?
+            .contains(bundle_id.name())
+        {
+            return Err(SkillBundleSourceError::BundleNotFound);
+        }
+        Ok(())
     }
 
     /// Overrides the maximum allowed `SKILL.md` manifest size in bytes.
@@ -427,6 +466,10 @@ where
             self.list_root_with_cache(&scope, root, &mut descriptors)
                 .await?;
         }
+        let hidden = self.hidden_for_run(run_context).await?;
+        if !hidden.is_empty() {
+            descriptors.retain(|d| !hidden.contains(d.id().name()));
+        }
         sort_skill_bundle_descriptors(&mut descriptors);
         Ok(descriptors)
     }
@@ -437,6 +480,7 @@ where
         bundle_id: &SkillBundleId,
         path: &SkillFilePath,
     ) -> Result<Vec<u8>, SkillBundleSourceError> {
+        self.ensure_not_hidden(run_context, bundle_id).await?;
         let root = self
             .roots
             .iter()
@@ -470,6 +514,7 @@ where
         run_context: &LoopRunContext,
         bundle_id: &SkillBundleId,
     ) -> Result<Vec<SkillFilePath>, SkillBundleSourceError> {
+        self.ensure_not_hidden(run_context, bundle_id).await?;
         let root = self
             .roots
             .iter()
@@ -1016,6 +1061,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bytes, b"policy text");
+    }
+
+    struct HideNamed(&'static str);
+
+    #[async_trait]
+    impl SkillRunFilter for HideNamed {
+        async fn hidden_skills(
+            &self,
+            _run_context: &LoopRunContext,
+        ) -> Result<Vec<String>, SkillBundleSourceError> {
+            Ok(vec![self.0.to_string()])
+        }
+    }
+
+    /// A skill the run filter hides is neither listed nor readable, file by
+    /// file or as a bundle listing; the others stay.
+    #[tokio::test]
+    async fn filesystem_source_hides_skills_the_run_filter_names() {
+        let (root, source) = mounted_source();
+        for name in ["thesis", "full-send"] {
+            write_root(
+                &root,
+                &format!("/tenants/tenant-a/users/user-a/skills/{name}/SKILL.md"),
+                skill_md(name, name),
+            )
+            .await;
+        }
+        source.set_run_filter(Arc::new(HideNamed("thesis")));
+        let run = run_context().await;
+
+        let listed: Vec<String> = source
+            .list_skill_bundles(&run)
+            .await
+            .unwrap()
+            .iter()
+            .map(|d| d.id().name().to_string())
+            .collect();
+        assert!(listed.contains(&"full-send".to_string()), "{listed:?}");
+        assert!(!listed.contains(&"thesis".to_string()), "{listed:?}");
+
+        let hidden = SkillBundleId::new(SkillSourceKind::User, "thesis").unwrap();
+        let read = source
+            .read_skill_bundle_file(&run, &hidden, &SkillFilePath::skill_md())
+            .await;
+        assert_eq!(read, Err(SkillBundleSourceError::BundleNotFound));
+        let files = source.list_skill_bundle_files(&run, &hidden).await;
+        assert_eq!(files, Err(SkillBundleSourceError::BundleNotFound));
     }
 
     #[tokio::test]

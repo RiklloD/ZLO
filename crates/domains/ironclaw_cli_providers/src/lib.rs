@@ -20,8 +20,9 @@ mod rpc;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
+use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::engine::Engine;
-use ironclaw_orchestrator::runtime::TurnEventSink;
+use ironclaw_orchestrator::runtime::{TurnEventSink, TurnProfile};
 
 /// How a thread's goal reaches a CLI agent: added to the system prompt, or
 /// put ahead of the prompt where the protocol has no system prompt.
@@ -29,11 +30,67 @@ pub(crate) fn goal_note(goal: &str) -> String {
     format!("The user set this goal for the thread; keep working toward it: {goal}")
 }
 
-/// The prompt as sent on the wire, with the goal ahead of it.
-pub(crate) fn with_goal(text: &str, goal: Option<&str>) -> String {
-    match goal {
-        Some(goal) => format!("{}\n\n{text}", goal_note(goal)),
+/// What a CLI agent with a system prompt flag gets there: the profile's
+/// SOUL.md, then the thread goal.
+pub(crate) fn system_note(profile: Option<&TurnProfile>, goal: Option<&str>) -> Option<String> {
+    let soul = profile
+        .map(|p| p.soul.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    join_notes([soul, goal.map(goal_note)])
+}
+
+/// The profile context for agents without a system prompt or a skill
+/// system, sent ahead of a session's first prompt: SOUL.md plus the index
+/// of the profile's skills.
+pub(crate) fn session_preamble(profile: &TurnProfile) -> Option<String> {
+    let soul = Some(profile.soul.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let skills = profile
+        .skills
+        .as_ref()
+        .filter(|s| !s.index.trim().is_empty())
+        .map(|s| {
+            format!(
+                "Skills available on this profile. Before a task one of them covers, read its SKILL.md and follow it:\n{}",
+                s.index.trim()
+            )
+        });
+    join_notes([soul, skills])
+}
+
+fn join_notes(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    let parts: Vec<String> = parts.into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+/// What goes ahead of the prompt for agents without a system prompt flag:
+/// the profile preamble (first turn this process runs for the thread), then
+/// the goal.
+pub(crate) fn prompt_context(preamble: Option<String>, goal: Option<&str>) -> Option<String> {
+    join_notes([preamble, goal.map(goal_note)])
+}
+
+/// The prompt as sent on the wire, with its context ahead of it.
+pub(crate) fn with_context(text: &str, context: Option<&str>) -> String {
+    match context {
+        Some(context) => format!("{context}\n\n{text}"),
         None => text.to_string(),
+    }
+}
+
+/// Threads whose session already got the profile preamble in this process.
+/// A backend restart sends it once more, which also refreshes it.
+#[derive(Debug, Default)]
+pub(crate) struct Primed(std::sync::Mutex<std::collections::HashSet<ThreadId>>);
+
+impl Primed {
+    /// The preamble to send now: `Some` only the first time per thread.
+    pub(crate) fn take(&self, thread: &ThreadId, profile: Option<&TurnProfile>) -> Option<String> {
+        let preamble = session_preamble(profile?)?;
+        let mut primed = self.0.lock().ok()?; // silent-ok: a poisoned set only follows a panic elsewhere
+        primed.insert(thread.clone()).then_some(preamble)
     }
 }
 

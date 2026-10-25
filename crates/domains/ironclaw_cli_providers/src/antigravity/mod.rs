@@ -138,6 +138,7 @@ pub struct AntigravityRuntime {
     // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
+    primed: crate::Primed,
 }
 
 impl AntigravityRuntime {
@@ -152,6 +153,7 @@ impl AntigravityRuntime {
             sink,
             bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
+            primed: crate::Primed::default(),
         })
     }
 
@@ -195,7 +197,7 @@ impl AntigravityRuntime {
         &self,
         thread: &ThreadRecord,
         text: &str,
-        goal: Option<&str>,
+        context: Option<&str>,
     ) -> Result<String, RuntimeError> {
         let key = thread
             .native_session_id
@@ -248,7 +250,7 @@ impl AntigravityRuntime {
             key,
             model: thread.model.clone(),
             text: text.to_string(),
-            goal: goal.map(str::to_string),
+            context: context.map(str::to_string),
             cancelled,
             session,
             bridge: self.bridge.clone(),
@@ -337,8 +339,8 @@ struct Turn {
     key: String,
     model: Option<String>,
     text: String,
-    /// The thread's goal, sent ahead of `text` but never journaled.
-    goal: Option<String>,
+    /// Profile preamble and thread goal, sent ahead of `text` but never journaled.
+    context: Option<String>,
     cancelled: Arc<AtomicBool>,
     session: Arc<Mutex<Option<(RpcClient, String)>>>,
     // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #v3-cli-bridge
@@ -395,7 +397,7 @@ impl Turn {
             let client = client.clone();
             let params = json!({
                 "sessionId": session_id,
-                "prompt": [{"type": "text", "text": crate::with_goal(&self.text, self.goal.as_deref())}],
+                "prompt": [{"type": "text", "text": crate::with_context(&self.text, self.context.as_deref())}],
             });
             async move {
                 client
@@ -770,8 +772,12 @@ impl TurnRuntime for AntigravityRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
+        let context = crate::prompt_context(
+            self.primed.take(&thread.thread_id, input.profile.as_ref()),
+            input.goal.as_deref(),
+        );
         let run_id = self
-            .spawn_turn(&thread, &input.text, input.goal.as_deref())
+            .spawn_turn(&thread, &input.text, context.as_deref())
             .await?;
         Ok(TurnAdmission::Started {
             run_id: Some(run_id),

@@ -60,6 +60,8 @@ pub struct Engine {
     pub(crate) schedule_planner: OnceLock<Arc<dyn crate::schedules::SchedulePlanner>>,
     /// Loopback base of the webhook route, known once the gateway is bound.
     pub(crate) webhook_base: OnceLock<String>,
+    /// SOUL.md, folder and skills of a thread's profile for CLI turns.
+    profile_context: OnceLock<Arc<dyn ProfileContextSource>>,
 }
 
 impl Engine {
@@ -93,12 +95,38 @@ impl Engine {
             shutting_down: AtomicBool::new(false),
             schedule_planner: OnceLock::new(),
             webhook_base: OnceLock::new(),
+            profile_context: OnceLock::new(),
         }))
     }
 
     /// Enable `t3_schedule` with the host's schedule grammar (first call wins).
     pub fn set_schedule_planner(&self, planner: Arc<dyn crate::schedules::SchedulePlanner>) {
         let _ = self.schedule_planner.set(planner); // silent-ok: already set by an earlier wiring
+    }
+
+    /// Give CLI turns their profile's soul, folder and skills (first call wins).
+    pub fn set_profile_context(&self, source: Arc<dyn ProfileContextSource>) {
+        let _ = self.profile_context.set(source); // silent-ok: already set by an earlier wiring
+    }
+
+    /// The thread's profile as its CLI agent sees it. Additive context: a
+    /// failure is logged and the turn runs without it.
+    async fn turn_profile(&self, thread_id: &ThreadId) -> Option<TurnProfile> {
+        let source = self.profile_context.get()?;
+        let profile = match self.store.thread_profile(thread_id).await {
+            Ok(profile) => profile?,
+            Err(error) => {
+                tracing::debug!(%error, "profile lookup failed; turn runs without profile context");
+                return None; // silent-ok: the profile context is additive, the turn still runs
+            }
+        };
+        match source.turn_profile(&profile).await {
+            Ok(context) => Some(context),
+            Err(error) => {
+                tracing::debug!(%error, "profile context unavailable; turn runs without it");
+                None // silent-ok: the profile context is additive, the turn still runs
+            }
+        }
     }
 
     pub fn store(&self) -> &Store {
@@ -345,6 +373,7 @@ impl Engine {
                     model: thread.model.clone(),
                     goal,
                     effort: self.store.thread_effort(thread_id).await?,
+                    profile: self.turn_profile(thread_id).await,
                 },
             )
             .await?;

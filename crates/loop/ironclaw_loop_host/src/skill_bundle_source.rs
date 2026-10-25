@@ -5,6 +5,17 @@ use thiserror::Error;
 
 const SKILL_MD_FILE: &str = "SKILL.md";
 
+/// Host policy that hides named skills from one run (a thread profile's
+/// hidden skills). A hidden skill is neither listed nor readable.
+#[async_trait]
+pub trait SkillRunFilter: Send + Sync {
+    /// Skill names `run_context` must not see. Errors fail closed.
+    async fn hidden_skills(
+        &self,
+        run_context: &LoopRunContext,
+    ) -> Result<Vec<String>, SkillBundleSourceError>;
+}
+
 /// Host-owned source of portable skill bundles.
 ///
 /// Implementations may enumerate scoped filesystems, extension state, or other

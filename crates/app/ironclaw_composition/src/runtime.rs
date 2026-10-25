@@ -397,6 +397,7 @@ mod auth_interaction;
 #[path = "runtime/tests/auth_interaction.rs"]
 mod auth_interaction_tests;
 pub(crate) mod capability_host;
+mod cli_skills;
 #[cfg(test)]
 #[path = "runtime/tests/default_system_prompt.rs"]
 mod default_system_prompt_tests;
@@ -3445,6 +3446,26 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
                 .map_err(|error| RebornRuntimeError::InvalidArgument {
                     reason: format!("first-party skills warmup: {error}"),
                 })?;
+            // Profiles: hidden skills leave IronClaw's loop, and CLI threads get
+            // their profile's soul, folder and skills.
+            if let Some(engine) = &services.orchestrator {
+                use ironclaw_assistant::orchestration::{
+                    CliProfileContext, ProfileHome, ProfileSkillFilter,
+                };
+                filesystem_skills
+                    .bundle_source
+                    .set_run_filter(Arc::new(ProfileSkillFilter::new(Arc::clone(engine))));
+                if let Some(home) = ProfileHome::from_env() {
+                    let skills = cli_skills::StoreUserSkillFiles::new(
+                        Arc::clone(&runtime.skill_filesystem),
+                        skill_warm_scope.clone(),
+                    );
+                    engine.set_profile_context(Arc::new(CliProfileContext::new(
+                        home,
+                        Arc::new(skills),
+                    )));
+                }
+            }
             (
                 Some(filesystem_skills.source),
                 Some(filesystem_skills.activation_source),
