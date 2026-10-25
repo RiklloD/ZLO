@@ -201,6 +201,22 @@ const PROVIDER_ICONS: &[(&str, &[u8])] = &[
     ),
 ];
 
+/// Lucide ships at stroke 2; T3 Code's design pass found 1.75 reads lighter
+/// beside text. Rewritten once per icon at load (gpui caches the result).
+fn thin_stroke(path: &str, bytes: Cow<'static, [u8]>) -> Cow<'static, [u8]> {
+    const FROM: &[u8] = br#"stroke-width="2""#;
+    if !path.starts_with("icons/") || !bytes.windows(FROM.len()).any(|w| w == FROM) {
+        return bytes;
+    }
+    match std::str::from_utf8(&bytes) {
+        Ok(svg) => Cow::Owned(
+            svg.replace(r#"stroke-width="2""#, r#"stroke-width="1.75""#)
+                .into_bytes(),
+        ),
+        Err(_) => bytes,
+    }
+}
+
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
@@ -208,10 +224,11 @@ impl AssetSource for AppAssets {
         if let Some((_, bytes)) = PROVIDER_ICONS.iter().find(|(p, _)| *p == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
-        if let Some(bytes) = ExtraIcons.load(path)? {
-            return Ok(Some(bytes));
-        }
-        Assets.load(path)
+        let bytes = match ExtraIcons.load(path)? {
+            Some(bytes) => Some(bytes),
+            None => Assets.load(path)?,
+        };
+        Ok(bytes.map(|b| thin_stroke(path, b)))
     }
 
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {

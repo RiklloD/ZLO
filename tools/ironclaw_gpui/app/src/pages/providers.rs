@@ -827,7 +827,7 @@ impl ProvidersView {
             .id(("tile", ix))
             .w(px(TILE_WIDTH))
             .p_3()
-            .rounded(px(10.))
+            .rounded(px(12.))
             .border_1()
             .border_color(if open { theme.primary } else { theme.border })
             .bg(theme.secondary.opacity(if open { 0.9 } else { 0.4 }))

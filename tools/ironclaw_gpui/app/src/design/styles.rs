@@ -51,7 +51,7 @@ impl Style {
             shell_alpha: if translucent { 0.55 } else { 1. },
             panel_alpha: if translucent { 0.78 } else { 1. },
             panel_inset: 8.,
-            panel_radius: 14.,
+            panel_radius: 12.,
             control_radius: 8.,
             row_height: 34.,
             font_size: 16.,

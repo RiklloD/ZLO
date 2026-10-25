@@ -90,7 +90,7 @@ impl Render for QuickComposer {
         let card = kit::floating(&s, &p).apply(
             v_flex()
                 .size_full()
-                .rounded(px(18.))
+                .rounded(px(16.))
                 .px_4()
                 .pt_3()
                 .pb_2()

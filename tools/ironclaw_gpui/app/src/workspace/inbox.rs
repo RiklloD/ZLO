@@ -697,7 +697,12 @@ impl Workspace {
                 .when(!highlighted, |d| {
                     kit::smooth_bg(d, format!("pick-profile-{ix}"), cx)
                 })
-                .child(profile_mark(&profile.profile_id, &profile.display_name, cx))
+                .child(profile_mark(
+                    &profile.profile_id,
+                    &profile.display_name,
+                    1.,
+                    cx,
+                ))
                 .child(
                     div()
                         .flex_1()
@@ -912,7 +917,7 @@ impl Workspace {
                 .px(px(12.))
                 .py(px(14.))
                 .gap(px(6.))
-                .rounded(px(10.))
+                .rounded(px(8.))
                 .cursor_pointer()
                 .bg(wash)
                 .on_hover(crate::design::motion::hover_listener(
@@ -938,7 +943,7 @@ impl Workspace {
                         .items_center()
                         .text_size(px(design::SIDEBAR_META_SIZE))
                         .text_color(quiet)
-                        .child(profile_mark(&row.profile_id, &name, cx))
+                        .child(profile_mark(&row.profile_id, &name, h.max(sel), cx))
                         .child(div().flex_1().min_w_0().truncate().child(name))
                         .when_some(branch, |d, b| d.child(branch_label(b, cx)))
                         .child(
@@ -1030,7 +1035,7 @@ impl Workspace {
             .child(
                 div()
                     .opacity(0.4)
-                    .child(profile_mark(&row.profile_id, &name, cx)),
+                    .child(profile_mark(&row.profile_id, &name, 0., cx)),
             )
             .child(
                 div()
@@ -1108,13 +1113,15 @@ fn chip(
 }
 
 /// The profile badge: a colored tile with the first letter.
-fn profile_mark(profile_id: &str, name: &str, cx: &App) -> impl IntoElement {
+/// `lit` 0 draws the mark gray, 1 in its profile color (T3 Code: gray
+/// until the row is hovered or open).
+fn profile_mark(profile_id: &str, name: &str, lit: f32, cx: &App) -> impl IntoElement {
     let p = Palette::of(cx);
     let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];
     let hash = profile_id
         .bytes()
         .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    let color = colors[hash as usize % colors.len()];
+    let color = crate::design::motion::mix(p.text_muted, colors[hash as usize % colors.len()], lit);
     let letter = name
         .chars()
         .find(|c| c.is_alphanumeric())

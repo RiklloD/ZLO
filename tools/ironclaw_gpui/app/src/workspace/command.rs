@@ -286,7 +286,7 @@ impl Workspace {
         let card = kit::floating(&s, &p).apply(
             v_flex()
                 .w(px(600.))
-                .rounded(px(s.panel_radius.clamp(10., 16.)))
+                .rounded(px(s.panel_radius.clamp(8., 16.)))
                 .overflow_hidden()
                 .child(
                     h_flex()

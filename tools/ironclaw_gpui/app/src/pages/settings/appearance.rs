@@ -44,7 +44,7 @@ fn preview(p: Palette) -> gpui_kit::Div {
                     div()
                         .px(px(3.))
                         .py(px(3.))
-                        .rounded(px(3.))
+                        .rounded(px(4.))
                         .bg(p.active)
                         .child(line(28., p.text)),
                 )
@@ -80,7 +80,7 @@ fn preview(p: Palette) -> gpui_kit::Div {
                         .h(px(18.))
                         .px(px(6.))
                         .items_center()
-                        .rounded(px(9.))
+                        .rounded(px(8.))
                         .border_1()
                         .border_color(p.border_strong)
                         .child(line(36., p.text_faint))

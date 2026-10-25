@@ -594,7 +594,7 @@ pub fn popover(id: impl Into<ElementId>, cx: &App) -> impl FnOnce(Div) -> gpui_k
     let p = *Palette::of(cx);
     let id = id.into();
     move |content: Div| {
-        let card = floating(&s, &p).apply(content.rounded(px(s.panel_radius.clamp(6., 14.))));
+        let card = floating(&s, &p).apply(content.rounded(px(s.panel_radius.clamp(6., 12.))));
         motion::pop_in(card, id, s.pop, -6.).into_any_element()
     }
 }

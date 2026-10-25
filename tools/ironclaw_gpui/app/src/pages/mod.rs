@@ -53,16 +53,17 @@ pub fn group_header(title: impl Into<SharedString>, note: Option<&str>, cx: &App
         .gap(px(2.))
         .child(
             div()
-                .text_size(gpui_kit::rems(13. / 16.))
-                .line_height(gpui_kit::rems(17. / 16.))
-                .text_color(p.text_muted)
+                .text_size(gpui_kit::rems(16. / 16.))
+                .line_height(gpui_kit::rems(22. / 16.))
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .text_color(p.text)
                 .child(title.into()),
         )
         .when_some(note, |d, note| {
             d.child(
                 div()
                     .text_size(gpui_kit::rems(12. / 16.))
-                    .text_color(p.text_faint)
+                    .text_color(p.text_muted)
                     .whitespace_normal()
                     .child(note.to_string()),
             )
@@ -120,7 +121,7 @@ pub fn setting_row(
                 .gap(px(1.))
                 .child(
                     div()
-                        .text_size(gpui_kit::rems(13. / 16.))
+                        .text_size(gpui_kit::rems(14. / 16.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
                         .text_color(p.text)
                         .child(label.into()),

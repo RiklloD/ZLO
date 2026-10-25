@@ -1652,7 +1652,10 @@ impl ChatView {
                 .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Stop").build(w, cx))
                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
         } else {
-            round_button("send", IconName::ArrowUp, true, "Send", cx)
+            // Nothing to send: a neutral disc, not a faded primary (T3 Code).
+            let ready =
+                !self.staged.is_empty() || !self.composer.read(cx).value().trim().is_empty();
+            round_button("send", IconName::ArrowUp, ready, "Send", cx)
                 .tooltip(|w, cx| {
                     gpui_kit::component::tooltip::Tooltip::new("Send (Enter)").build(w, cx)
                 })
@@ -1795,7 +1798,8 @@ pub(crate) fn round_button(
             motion::MotionSpec::new(150, motion::EASE),
         ))
         .when(filled, |d| d.bg(p.text).opacity(1. - 0.15 * t))
-        .when(!filled, |d| {
+        .when(!filled && id == "send", |d| d.bg(wash))
+        .when(!filled && id != "send", |d| {
             d.bg(wash.opacity(wash.a * t)).text_color(p.text_muted)
         })
         .child(
@@ -2155,7 +2159,7 @@ fn render_gate(
         .w_full()
         .gap_2()
         .p(px(10.))
-        .rounded(px(10.))
+        .rounded(px(12.))
         .border_1()
         .border_color(if open {
             p.warning.opacity(0.45)
