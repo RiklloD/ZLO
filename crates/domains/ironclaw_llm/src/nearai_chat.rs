@@ -742,6 +742,7 @@ impl NearAiChatProvider {
                 {
                     semantic_progress = true;
                     parsed.reasoning.push_str(&reasoning_delta);
+                    sink.reasoning_delta(reasoning_delta).await;
                 }
                 for tool_delta in choice.delta.tool_calls.unwrap_or_default() {
                     let state = tool_calls.entry(tool_delta.index).or_default();

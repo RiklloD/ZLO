@@ -244,6 +244,11 @@ pub trait LoopModelGateway: Send + Sync {
 #[async_trait]
 pub trait LoopModelProgressSink: Send + Sync {
     async fn model_text_update(&self, safe_text: String);
+
+    /// A sanitized fragment of the model's reasoning, appended to what came
+    /// before, while the call is still streaming. Hosts that only surface the
+    /// reasoning after the call may ignore it.
+    async fn model_reasoning_update(&self, _safe_delta: String) {}
 }
 
 /// Provider/model policy guard consulted before dispatching a model call.

@@ -149,6 +149,7 @@ where
         let progress_sink = Arc::new(MilestoneModelProgressSink {
             milestones: self.milestones.clone(),
             emitted_text: AtomicBool::new(false),
+            emitted_reasoning: AtomicBool::new(false),
             progress_generation,
         });
         let gateway_call = self.gateway.stream_model_with_progress(
@@ -211,7 +212,13 @@ where
             }
         };
 
-        for safe_delta in &response.safe_reasoning_deltas {
+        // Streamed reasoning already reached the milestones as it came.
+        let replay_reasoning = if progress_sink.emitted_reasoning() {
+            &[][..]
+        } else {
+            &response.safe_reasoning_deltas[..]
+        };
+        for safe_delta in replay_reasoning {
             log_milestone_failure(
                 self.milestones
                     .model_reasoning_delta(safe_delta.clone())
@@ -262,6 +269,8 @@ where
 {
     milestones: LoopHostMilestoneEmitter<S>,
     emitted_text: AtomicBool,
+    /// Reasoning already went out live, so the after-call copy is skipped.
+    emitted_reasoning: AtomicBool,
     progress_generation: tokio::sync::watch::Sender<u64>,
 }
 
@@ -271,6 +280,10 @@ where
 {
     fn emitted_text(&self) -> bool {
         self.emitted_text.load(Ordering::SeqCst)
+    }
+
+    fn emitted_reasoning(&self) -> bool {
+        self.emitted_reasoning.load(Ordering::SeqCst)
     }
 }
 
@@ -286,6 +299,20 @@ where
         log_milestone_failure(
             self.milestones.model_text_delta(safe_text).await,
             "loop model text progress milestone failed during model stream",
+        );
+    }
+
+    async fn model_reasoning_update(&self, safe_delta: String) {
+        let safe_delta = sanitize_model_visible_text(safe_delta);
+        if safe_delta.is_empty() {
+            return;
+        }
+        self.emitted_reasoning.store(true, Ordering::SeqCst);
+        self.progress_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        log_milestone_failure(
+            self.milestones.model_reasoning_delta(safe_delta).await,
+            "loop model reasoning progress milestone failed during model stream",
         );
     }
 }

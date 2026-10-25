@@ -488,6 +488,7 @@ impl<M: CompletionModel> RigAdapter<M> {
                     streamed_reasoning.push_reasoning(&reasoning);
                 }
                 StreamedAssistantContent::ReasoningDelta { id, reasoning } => {
+                    sink.reasoning_delta(reasoning.clone()).await;
                     streamed_reasoning.push_delta(id, reasoning);
                 }
                 _ => {}

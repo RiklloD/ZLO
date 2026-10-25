@@ -116,6 +116,7 @@ pub(super) struct BridgedTurn {
     pub prompt: Option<String>,
     /// The next text delta opens a new text block.
     new_block: bool,
+    new_thinking_block: bool,
 }
 
 impl BridgedTurn {
@@ -133,6 +134,7 @@ impl BridgedTurn {
             run_id,
             prompt: Some(prompt),
             new_block: false,
+            new_thinking_block: false,
         }
     }
 
@@ -219,6 +221,20 @@ impl BridgedTurn {
         match event["type"].as_str() {
             Some("content_block_start") if event["content_block"]["type"] == "text" => {
                 self.new_block = true;
+            }
+            Some("content_block_start") if event["content_block"]["type"] == "thinking" => {
+                self.new_thinking_block = true;
+            }
+            Some("content_block_delta") if event["delta"]["type"] == "thinking_delta" => {
+                if let Some(text) = event["delta"]["thinking"].as_str() {
+                    self.bridge.thinking_delta(
+                        &self.thread,
+                        &self.run_id,
+                        text,
+                        self.new_thinking_block,
+                    );
+                    self.new_thinking_block = false;
+                }
             }
             Some("content_block_delta") if event["delta"]["type"] == "text_delta" => {
                 if let Some(text) = event["delta"]["text"].as_str() {

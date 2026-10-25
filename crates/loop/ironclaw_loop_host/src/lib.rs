@@ -2359,6 +2359,10 @@ pub trait HostManagedModelStreamSink: Send + Sync {
     }
 
     async fn safe_text_update(&self, safe_text: String);
+
+    /// A sanitized reasoning fragment, appended to the ones before it, while
+    /// the provider still streams. Dropped by default.
+    async fn safe_reasoning_delta(&self, _safe_delta: String) {}
 }
 
 /// Best-effort, process-local observation of the exact text prompt resolved at

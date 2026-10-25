@@ -242,6 +242,35 @@ struct Leaf {
     running: bool,
 }
 
+/// How many finished paragraphs a thought in progress shows.
+const LIVE_THOUGHT_PARAGRAPHS: usize = 3;
+
+/// The finished paragraphs of a thought still being written, newest last:
+/// a paragraph shows once a blank line closes it, never word by word.
+fn finished_paragraphs(text: &str) -> Option<String> {
+    let (done, _open) = text.rsplit_once("\n\n")?;
+    let paragraphs: Vec<&str> = done
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    let skip = paragraphs.len().saturating_sub(LIVE_THOUGHT_PARAGRAPHS);
+    let shown = paragraphs[skip..].join("\n\n");
+    (!shown.is_empty()).then_some(shown)
+}
+
+/// The tail thought of a live group: open under a "Thinking" label.
+fn live_thought(text: &str) -> Leaf {
+    Leaf {
+        icon: IconName::Bot,
+        label: "Thinking".into(),
+        detail: String::new(),
+        body: finished_paragraphs(text),
+        failed: false,
+        running: true,
+    }
+}
+
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -515,10 +544,18 @@ pub(super) fn render_activity(
         .collect();
     let count = parts.len();
     let mut leaves = Vec::with_capacity(count);
-    for (ix, (row, leaf)) in parts.into_iter().enumerate() {
+    for (ix, (row, mut leaf)) in parts.into_iter().enumerate() {
         let row_key = row.key();
         let open_key = format!("leaf:{row_key}");
-        let expanded = leaf.body.is_some() && toggles.get(&open_key).copied().unwrap_or(false);
+        // The thought being written stays open; it folds once it ends.
+        let thinking_now = live && ix + 1 == count && matches!(row, Row::Thinking { .. });
+        if let Row::Thinking { text, .. } = row
+            && thinking_now
+        {
+            leaf = live_thought(text);
+        }
+        let expanded = leaf.body.is_some()
+            && (thinking_now || toggles.get(&open_key).copied().unwrap_or(false));
         if !live {
             motion::settle(row_key);
         }
@@ -758,6 +795,17 @@ mod tests {
             detail: None,
             status: ToolStatus::Completed,
         }
+    }
+
+    #[test]
+    fn a_live_thought_shows_only_its_finished_paragraphs() {
+        assert_eq!(finished_paragraphs("Reading the config"), None);
+        assert_eq!(
+            finished_paragraphs("One.\n\nTwo.\n\nThree is still go"),
+            Some("One.\n\nTwo.".into())
+        );
+        let long = "a\n\nb\n\nc\n\nd\n\ne";
+        assert_eq!(finished_paragraphs(long), Some("b\n\nc\n\nd".into()));
     }
 
     #[test]

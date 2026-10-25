@@ -1043,6 +1043,7 @@ async fn ingest_anthropic_event(
                 Some("thinking_delta") => {
                     if let Some(thinking) = delta.get("thinking").and_then(|value| value.as_str()) {
                         response.reasoning_parts.push(thinking.to_string());
+                        sink.reasoning_delta(thinking.to_string()).await;
                     }
                 }
                 Some("input_json_delta") => {

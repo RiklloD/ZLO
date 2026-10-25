@@ -111,7 +111,7 @@
   them with parity tests.
 - **Model-call idle boundary:** `host_managed_ports/model.rs` wraps the
   primary model call with `PRIMARY_MODEL_CALL_IDLE_TIMEOUT` (75 s). Each
-  model text update resets this watchdog, so healthy long streams can exceed
+  model text or reasoning update resets this watchdog, so healthy long streams can exceed
   75 seconds while a stalled gateway still fails before the 90-second runner
   lease can reclaim the run. An elapsed idle timeout maps to retryable
   `AgentLoopHostErrorKind::Unavailable`; provider-specific semantic
