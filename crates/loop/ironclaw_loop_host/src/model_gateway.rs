@@ -301,6 +301,10 @@ impl HostManagedModelStreamSink for LoopProgressHostStreamSink {
     async fn safe_text_update(&self, safe_text: String) {
         self.inner.model_text_update(safe_text).await;
     }
+
+    async fn safe_reasoning_delta(&self, safe_delta: String) {
+        self.inner.model_reasoning_update(safe_delta).await;
+    }
 }
 
 impl<S, G> ThreadBackedLoopModelGateway<S, G>
@@ -1436,12 +1440,49 @@ const STREAM_COALESCE_MAX_BYTES: usize = 2048;
 // delta (which re-checks the elapsed time) or the streaming call returns
 // and `flush()` runs.
 const STREAM_COALESCE_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+// Reasoning goes out as appended fragments, each one a milestone. A line
+// break, 1 KiB or 250 ms releases what is buffered, cut at the last
+// whitespace so the per-token redactor never sees half a token.
+const REASONING_COALESCE_MAX_BYTES: usize = 1024;
+const REASONING_COALESCE_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 struct ProviderStreamSinkState {
     accumulated_text: String,
     pending_deltas: u32,
     pending_bytes: usize,
     last_emit: Instant,
+    pending_reasoning: String,
+    last_reasoning_emit: Instant,
+}
+
+impl ProviderStreamSinkState {
+    /// The buffered reasoning ready to go out, or `None` while it should
+    /// keep collecting. `force` releases everything (end of the call).
+    fn take_reasoning(&mut self, force: bool) -> Option<String> {
+        if self.pending_reasoning.is_empty() {
+            return None;
+        }
+        let due = force
+            || self.pending_reasoning.contains('\n')
+            || self.pending_reasoning.len() >= REASONING_COALESCE_MAX_BYTES
+            || self.last_reasoning_emit.elapsed() >= REASONING_COALESCE_MAX_INTERVAL;
+        if !due {
+            return None;
+        }
+        let cut = if force {
+            self.pending_reasoning.len()
+        } else {
+            // Keep a trailing partial token for the next fragment.
+            self.pending_reasoning
+                .char_indices()
+                .rev()
+                .find(|(_, ch)| ch.is_whitespace())
+                .map(|(index, ch)| index + ch.len_utf8())?
+        };
+        self.last_reasoning_emit = Instant::now();
+        let rest = self.pending_reasoning.split_off(cut);
+        Some(std::mem::replace(&mut self.pending_reasoning, rest))
+    }
 }
 
 struct ProviderStreamSink {
@@ -1459,6 +1500,8 @@ impl ProviderStreamSink {
                 pending_deltas: 0,
                 pending_bytes: 0,
                 last_emit: Instant::now(),
+                pending_reasoning: String::new(),
+                last_reasoning_emit: Instant::now(),
             }),
             replace_on_next_delta: AtomicBool::new(false),
         }
@@ -1475,29 +1518,70 @@ impl ProviderStreamSink {
         if !self.inner.accepts_safe_text_updates() {
             return;
         }
-        let accumulated_text = {
+        let (reasoning, accumulated_text) = {
             let mut guard = match self.state.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            if guard.pending_deltas == 0 {
-                return;
-            }
-            guard.pending_deltas = 0;
-            guard.pending_bytes = 0;
-            guard.last_emit = Instant::now();
-            guard.accumulated_text.clone()
+            let reasoning = guard.take_reasoning(true);
+            let text = (guard.pending_deltas > 0).then(|| {
+                guard.pending_deltas = 0;
+                guard.pending_bytes = 0;
+                guard.last_emit = Instant::now();
+                guard.accumulated_text.clone()
+            });
+            (reasoning, text)
         };
-        let safe_text = sanitize_model_visible_text(accumulated_text);
-        self.inner.safe_text_update(safe_text).await;
+        if let Some(reasoning) = reasoning {
+            self.emit_reasoning(reasoning).await;
+        }
+        if let Some(accumulated_text) = accumulated_text {
+            let safe_text = sanitize_model_visible_text(accumulated_text);
+            self.inner.safe_text_update(safe_text).await;
+        }
+    }
+
+    async fn emit_reasoning(&self, reasoning: String) {
+        let safe_delta = sanitize_model_visible_text(reasoning);
+        if !safe_delta.is_empty() {
+            self.inner.safe_reasoning_delta(safe_delta).await;
+        }
     }
 }
 
 #[async_trait]
 impl CompletionStreamSink for ProviderStreamSink {
+    async fn reasoning_delta(&self, delta: String) {
+        if delta.is_empty() || !self.inner.accepts_safe_text_updates() {
+            return;
+        }
+        let ready = {
+            let mut guard = match self.state.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.pending_reasoning.push_str(&delta);
+            guard.take_reasoning(false)
+        };
+        if let Some(reasoning) = ready {
+            self.emit_reasoning(reasoning).await;
+        }
+    }
+
     async fn text_delta(&self, delta: String) {
         if delta.is_empty() || !self.inner.accepts_safe_text_updates() {
             return;
+        }
+        // The answer started: whatever thinking is still buffered goes first.
+        let pending_reasoning = {
+            let mut guard = match self.state.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.take_reasoning(true)
+        };
+        if let Some(reasoning) = pending_reasoning {
+            self.emit_reasoning(reasoning).await;
         }
         let pending_text = {
             let mut guard = match self.state.lock() {
@@ -3151,6 +3235,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingSafeTextSink {
         updates: Mutex<Vec<String>>,
+        reasoning: Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -3161,6 +3246,48 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(safe_text);
         }
+
+        async fn safe_reasoning_delta(&self, safe_delta: String) {
+            self.reasoning
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(safe_delta);
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_stream_sink_streams_reasoning_at_line_breaks_before_the_answer() {
+        let inner = Arc::new(RecordingSafeTextSink::default());
+        let sink = ProviderStreamSink::new(inner.clone());
+        let reasoning = || {
+            inner
+                .reasoning
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        };
+
+        sink.reasoning_delta("Checking the ".to_string()).await;
+        assert!(reasoning().is_empty(), "a short fragment waits for more");
+        sink.reasoning_delta("config.\n\nNext st".to_string()).await;
+        // The line break releases it, up to the last whitespace: the
+        // partial token stays back.
+        assert_eq!(
+            reasoning(),
+            vec!["Checking the config.\n\nNext ".to_string()]
+        );
+        sink.reasoning_delta("ep".to_string()).await;
+        sink.text_delta("Done".to_string()).await;
+        // The answer flushes the rest of the thinking first.
+        assert_eq!(
+            reasoning(),
+            vec![
+                "Checking the config.\n\nNext ".to_string(),
+                "step".to_string()
+            ]
+        );
+        sink.flush().await;
+        assert_eq!(reasoning().len(), 2, "nothing left to flush");
     }
 
     struct DiscardingSafeTextSink;

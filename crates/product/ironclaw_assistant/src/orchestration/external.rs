@@ -217,6 +217,7 @@ fn snapshot_events(bridge: &CliBridge, thread: &ThreadId) -> Vec<Value> {
         return Vec::new();
     };
     let mut items = vec![run_status(run, "running")];
+    items.extend(thinking_item(thread, &snap.run_id, &snap.thinking));
     items.extend(text_item(thread, &snap.run_id, &snap.text));
     items.extend(snap.gates.iter().filter_map(gate_item));
     envelope(thread, items).into_iter().collect()
@@ -233,6 +234,11 @@ fn items_for(event: &LiveEvent) -> Option<Vec<ProductProjectionItem>> {
             run_id,
             body,
         } => vec![text_item(thread, run_id, body)?],
+        LiveEvent::Thinking {
+            thread,
+            run_id,
+            body,
+        } => vec![thinking_item(thread, run_id, body)?],
         LiveEvent::GateOpened { gate, .. } => vec![gate_item(gate)?],
         LiveEvent::Ended { run_id, status, .. } => {
             let status = match *status {
@@ -266,6 +272,18 @@ fn text_item(thread: &ThreadId, run_id: &str, body: &str) -> Option<ProductProje
         body: body.to_string(),
         finalized: false,
         narration: false,
+    })
+}
+
+/// The streamed thinking, bounded like the reply.
+fn thinking_item(thread: &ThreadId, run_id: &str, body: &str) -> Option<ProductProjectionItem> {
+    if body.is_empty() || body.len() > PROJECTION_TEXT_MAX_BYTES {
+        return None;
+    }
+    Some(ProductProjectionItem::Thinking {
+        id: format!("thinking:{run_id}:cli:{thread}"),
+        run_id: Some(TurnRunId::parse(run_id).ok()?),
+        body: body.to_string(),
     })
 }
 

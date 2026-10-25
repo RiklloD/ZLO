@@ -74,6 +74,12 @@ pub enum LiveEvent {
         run_id: String,
         body: String,
     },
+    /// The model's thinking so far (cumulative, not a delta).
+    Thinking {
+        thread: ThreadId,
+        run_id: String,
+        body: String,
+    },
     GateOpened {
         thread: ThreadId,
         gate: GateView,
@@ -96,6 +102,7 @@ impl LiveEvent {
         match self {
             Self::Started { thread, .. }
             | Self::Text { thread, .. }
+            | Self::Thinking { thread, .. }
             | Self::GateOpened { thread, .. }
             | Self::GateClosed { thread, .. }
             | Self::Ended { thread, .. } => thread,
@@ -108,6 +115,7 @@ impl LiveEvent {
 pub struct LiveSnapshot {
     pub run_id: String,
     pub text: String,
+    pub thinking: String,
     pub gates: Vec<GateView>,
 }
 
@@ -131,22 +139,62 @@ struct PendingGate {
 
 struct LiveTurn {
     run_id: String,
-    text: String,
+    text: LiveBuffer,
+    thinking: LiveBuffer,
     gates: Vec<PendingGate>,
-    /// When the text was last broadcast; `None` while nothing is unsent.
+}
+
+impl LiveTurn {
+    fn new(run_id: &str) -> Self {
+        Self {
+            run_id: run_id.to_string(),
+            text: LiveBuffer::default(),
+            thinking: LiveBuffer::default(),
+            gates: Vec::new(),
+        }
+    }
+
+    /// Everything not broadcast yet, thinking before text.
+    fn flush(&mut self) -> (Option<String>, Option<String>) {
+        (self.thinking.flush(), self.text.flush())
+    }
+}
+
+/// One cumulative streamed body, broadcast at most every `TEXT_EMIT_EVERY`.
+#[derive(Default)]
+struct LiveBuffer {
+    body: String,
+    /// When the body was last broadcast; `None` while nothing is unsent.
     sent_at: Option<Instant>,
     unsent: bool,
 }
 
-impl LiveTurn {
-    /// The text to broadcast now, if it changed since the last one.
+impl LiveBuffer {
+    /// Append a delta; `new_block` separates blocks with a blank line, the
+    /// same join the durable timeline uses. Returns the body when it is due.
+    fn push(&mut self, delta: &str, new_block: bool) -> Option<String> {
+        if new_block && !self.body.is_empty() {
+            self.body.push_str("\n\n");
+        }
+        self.body.push_str(delta);
+        self.unsent = true;
+        if self
+            .sent_at
+            .is_some_and(|at| at.elapsed() < TEXT_EMIT_EVERY)
+        {
+            return None;
+        }
+        self.flush()
+    }
+
+    /// The body to broadcast now, if it changed since the last one.
     fn flush(&mut self) -> Option<String> {
         if !self.unsent {
             return None;
         }
         self.unsent = false;
         self.sent_at = Some(Instant::now());
-        Some(self.text.clone())
+        Some(self.body.clone())
     }
 }
 
@@ -250,7 +298,8 @@ impl CliBridge {
         let turn = live.get(thread)?;
         Some(LiveSnapshot {
             run_id: turn.run_id.clone(),
-            text: turn.text.clone(),
+            text: turn.text.body.clone(),
+            thinking: turn.thinking.body.clone(),
             gates: turn.gates.iter().map(|g| g.view.clone()).collect(),
         })
     }
@@ -261,16 +310,7 @@ impl CliBridge {
 
     pub fn turn_started(&self, thread: &ThreadId, run_id: &str) {
         if let Ok(mut live) = self.live.lock() {
-            live.insert(
-                thread.clone(),
-                LiveTurn {
-                    run_id: run_id.to_string(),
-                    text: String::new(),
-                    gates: Vec::new(),
-                    sent_at: None,
-                    unsent: false,
-                },
-            );
+            live.insert(thread.clone(), LiveTurn::new(run_id));
         }
         self.emit(LiveEvent::Started {
             thread: thread.clone(),
@@ -281,6 +321,21 @@ impl CliBridge {
     /// Append streamed reply text. `new_block` separates text blocks with a
     /// blank line, the same join the durable timeline uses.
     pub fn text_delta(&self, thread: &ThreadId, run_id: &str, delta: &str, new_block: bool) {
+        let bodies = {
+            let Ok(mut live) = self.live.lock() else {
+                return;
+            };
+            let Some(turn) = live.get_mut(thread).filter(|t| t.run_id == run_id) else {
+                return;
+            };
+            // The answer started: unsent thinking shows first.
+            (turn.thinking.flush(), turn.text.push(delta, new_block))
+        };
+        self.emit_text(thread, run_id, bodies);
+    }
+
+    /// Append streamed thinking, like [`Self::text_delta`].
+    pub fn thinking_delta(&self, thread: &ThreadId, run_id: &str, delta: &str, new_block: bool) {
         let body = {
             let Ok(mut live) = self.live.lock() else {
                 return;
@@ -288,24 +343,25 @@ impl CliBridge {
             let Some(turn) = live.get_mut(thread).filter(|t| t.run_id == run_id) else {
                 return;
             };
-            if new_block && !turn.text.is_empty() {
-                turn.text.push_str("\n\n");
-            }
-            turn.text.push_str(delta);
-            turn.unsent = true;
-            if turn
-                .sent_at
-                .is_some_and(|at| at.elapsed() < TEXT_EMIT_EVERY)
-            {
-                return;
-            }
-            turn.flush()
+            turn.thinking.push(delta, new_block)
         };
-        self.emit_text(thread, run_id, body);
+        self.emit_text(thread, run_id, (body, None));
     }
 
-    fn emit_text(&self, thread: &ThreadId, run_id: &str, body: Option<String>) {
-        if let Some(body) = body {
+    fn emit_text(
+        &self,
+        thread: &ThreadId,
+        run_id: &str,
+        (thinking, text): (Option<String>, Option<String>),
+    ) {
+        if let Some(body) = thinking {
+            self.emit(LiveEvent::Thinking {
+                thread: thread.clone(),
+                run_id: run_id.to_string(),
+                body,
+            });
+        }
+        if let Some(body) = text {
             self.emit(LiveEvent::Text {
                 thread: thread.clone(),
                 run_id: run_id.to_string(),
@@ -323,7 +379,8 @@ impl CliBridge {
                 None
             }
         });
-        self.emit_text(thread, run_id, turn.as_mut().and_then(LiveTurn::flush));
+        let unsent = turn.as_mut().map(LiveTurn::flush).unwrap_or_default();
+        self.emit_text(thread, run_id, unsent);
         for gate in turn.map(|t| t.gates).unwrap_or_default() {
             let _ = gate.answer.send((
                 ToolDecision::Deny("The turn ended.".into()),
@@ -373,7 +430,7 @@ impl CliBridge {
             }
         }
         let (tx, rx) = oneshot::channel();
-        // `Some(unsent text)` once registered: the text before the call shows first.
+        // `Some(unsent bodies)` once registered: what came before the call shows first.
         let registered = self.live.lock().ok().and_then(|mut live| {
             let turn = live.get_mut(thread).filter(|t| t.run_id == run_id)?;
             turn.gates.push(PendingGate {

@@ -760,13 +760,25 @@ impl CodexChatGptProvider {
                     } else {
                         None
                     };
+                    let reasoning_delta = if event_type == "response.reasoning_summary_text.delta" {
+                        parsed
+                            .get("delta")
+                            .and_then(Value::as_str)
+                            .filter(|delta| !delta.is_empty())
+                            .map(str::to_string)
+                    } else {
+                        None
+                    };
                     if Self::handle_sse_event(&mut result, event_type.as_ref(), &parsed)? {
                         return Ok(result);
                     }
-                    if let Some(delta) = text_delta
-                        && let Some(sink) = sink.as_ref()
-                    {
-                        sink.text_delta(delta).await;
+                    if let Some(sink) = sink.as_ref() {
+                        if let Some(delta) = reasoning_delta {
+                            sink.reasoning_delta(delta).await;
+                        }
+                        if let Some(delta) = text_delta {
+                            sink.text_delta(delta).await;
+                        }
                     }
                 }
                 Ok(Some(Err(e))) => {

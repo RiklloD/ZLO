@@ -838,6 +838,16 @@ where
         {
             sink.text_delta(delta.to_string()).await;
         }
+        if let Some(delta) = parsed
+            .as_ref()
+            .filter(|event| event.event_type == "response.reasoning_summary_text.delta")
+            .and_then(|event| event.data.get("delta"))
+            .and_then(|delta| delta.as_str())
+            .filter(|delta| !delta.is_empty())
+            && let Some(sink) = sink.as_ref()
+        {
+            sink.reasoning_delta(delta.to_string()).await;
+        }
 
         if parsed.as_ref().is_some_and(|event| {
             matches!(

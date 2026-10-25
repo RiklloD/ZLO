@@ -69,6 +69,10 @@ impl CompletionStreamSink for AuthRetryStreamSink {
         self.inner.text_delta(delta).await;
     }
 
+    async fn reasoning_delta(&self, delta: String) {
+        self.inner.reasoning_delta(delta).await;
+    }
+
     fn text_is_visible(&self) -> bool {
         self.inner.text_is_visible()
     }

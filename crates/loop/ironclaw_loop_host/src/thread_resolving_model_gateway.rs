@@ -189,4 +189,8 @@ impl HostManagedModelStreamSink for LoopProgressHostStreamSink {
     async fn safe_text_update(&self, safe_text: String) {
         self.inner.model_text_update(safe_text).await;
     }
+
+    async fn safe_reasoning_delta(&self, safe_delta: String) {
+        self.inner.model_reasoning_update(safe_delta).await;
+    }
 }

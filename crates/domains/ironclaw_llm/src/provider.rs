@@ -1107,6 +1107,12 @@ pub trait LlmProvider: Send + Sync {
 pub trait CompletionStreamSink: Send + Sync {
     async fn text_delta(&self, delta: String);
 
+    /// A fragment of the model's reasoning (thinking or reasoning summary) as
+    /// the provider streams it. Append-only and display-only: the final
+    /// response still carries the full reasoning. The default drops it, so
+    /// sinks that only want answer text need not care.
+    async fn reasoning_delta(&self, _delta: String) {}
+
     /// Whether emitted text is visible outside the provider chain. Decorators
     /// use this to avoid suppressing safe retries or failover when a caller is
     /// consuming a stream only for transport progress.
