@@ -215,6 +215,16 @@ impl QueueAction {
     }
 }
 
+/// A fork merged back into a thread, as [`Client::merged_in`] reads it.
+#[derive(Debug, Clone)]
+pub struct MergedFork {
+    pub title: String,
+    pub at: Millis,
+    /// Not sent to the model yet: it rides on the next message.
+    pub pending: bool,
+    pub messages: Vec<TimelineMessage>,
+}
+
 /// One transfer record (fork, merge-back, ...).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -229,6 +239,9 @@ pub struct Transfer {
     /// source's history messages it was cut after.
     #[serde(default)]
     pub source_point: Option<Value>,
+    /// For a merge-back: `{messages}`, where the fork's own work starts.
+    #[serde(default)]
+    pub base_point: Option<Value>,
     #[serde(default)]
     pub status: String,
     #[serde(default)]
@@ -402,6 +415,46 @@ impl Client {
             thread = from.source_thread;
         }
         Ok(prefix)
+    }
+
+    /// The forks merged back into this thread, oldest first: each fork's
+    /// title, when it merged, and the fork messages the merge carried.
+    pub async fn merged_in(&self, thread_id: &str) -> Result<Vec<MergedFork>, ClientError> {
+        let mut out = Vec::new();
+        for merge in self.thread_lineage(thread_id).await?.merges_in {
+            let point = |p: &Option<Value>, default: u64| {
+                p.as_ref()
+                    .and_then(|p| p["messages"].as_u64())
+                    .unwrap_or(default) as usize
+            };
+            let (base, cut) = (
+                point(&merge.base_point, 0),
+                point(&merge.source_point, u64::MAX),
+            );
+            let mut messages = self.timeline(&merge.source_thread, 500).await?.messages;
+            messages.sort_by_key(|m| m.sequence);
+            // Both points count the engine's history, which skips checkpoints.
+            let mut seen = 0;
+            messages.retain(|m| {
+                if m.kind == MessageKind::CheckpointReference {
+                    return false;
+                }
+                seen += 1;
+                seen > base && seen <= cut
+            });
+            let title = self
+                .thread_label(&merge.source_thread)
+                .await
+                .unwrap_or_else(|_| "a fork".into()); // silent-ok: the label is cosmetic
+            out.push(MergedFork {
+                title,
+                at: merge.created_at,
+                pending: merge.status == "pending",
+                messages,
+            });
+        }
+        out.sort_by_key(|m| m.at);
+        Ok(out)
     }
 
     pub async fn fork_thread(
