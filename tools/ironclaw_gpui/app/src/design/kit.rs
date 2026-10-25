@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use super::motion::{self, mix};
 use super::pulse;
-use super::styles::{Material, Style};
+use super::styles::Style;
 use super::{Palette, lift, on_accent};
 
 fn shadow(color: Hsla, y: f32, blur: f32, spread: f32, inset: bool) -> BoxShadow {
@@ -65,132 +65,102 @@ impl Plate {
     }
 }
 
-/// The neutral raised plate (secondary buttons, chips, the composer).
-/// `h` is hover progress, `lit` how raised it reads at rest (0..1).
+/// The neutral raised plate (secondary buttons, chips, cards). `h` is
+/// hover progress, `lit` how raised it reads at rest (0..1). One quiet
+/// recipe: a faint fill lit from above, a hairline rim and a soft drop.
 pub fn neutral(s: &Style, p: &Palette, h: f32, lit: f32) -> Plate {
     let k = lit + 0.5 * h;
-    match s.material {
-        Material::Metal => Plate {
-            fill: vertical(
-                lift(p.surface_raised, 0.03 + 0.03 * h).opacity(0.55 + 0.35 * k),
-                p.surface_raised.opacity(0.4 + 0.3 * k),
-            ),
-            rim: white(0.06 + 0.05 * k),
+    if p.light {
+        return Plate {
+            fill: Background::from(mix(p.surface_card, p.surface, 0.35 * h)),
+            rim: black(0.07 + 0.04 * h),
             shadows: vec![
-                shadow(white(0.06 + 0.05 * k), 1., 0., 0., true),
-                shadow(black(0.35 * k), 1., 2., 0., false),
+                shadow(black(0.04 * k * s.elevation), 1., 2., 0., false),
+                shadow(black(0.04 * k * s.elevation), 4., 12., -4., false),
             ],
-        },
-        Material::Frost => Plate {
-            fill: vertical(white(0.07 + 0.06 * k), white(0.035 + 0.05 * k)),
-            rim: white(0.1 + 0.08 * k),
-            shadows: vec![
-                shadow(white(0.1 * k), 1., 0., 0., true),
-                shadow(black(0.18 * k), 2., 6., 0., false),
-            ],
-        },
-        Material::Ink => Plate {
-            fill: if p.light {
-                Background::from(mix(p.surface_card, p.surface, 0.3 * h))
-            } else {
-                Background::from(p.surface_raised.opacity(0.5 + 0.3 * k))
-            },
-            rim: p.border.opacity(0.6 + 0.4 * h),
-            shadows: vec![
-                shadow(black(0.05 * k), 1., 2., 0., false),
-                shadow(black(0.04 * k), 4., 12., -2., false),
-            ],
-        },
-        Material::Line => Plate {
-            fill: Background::from(p.hover.opacity(0.4 * k + 0.6 * h)),
-            rim: mix(p.border, p.border_strong, h),
-            shadows: Vec::new(),
-        },
+        };
+    }
+    Plate {
+        fill: vertical(white(0.055 + 0.035 * k), white(0.035 + 0.03 * k)),
+        rim: white(0.07 + 0.05 * k),
+        shadows: vec![
+            shadow(white(0.05 * k), 1., 0., 0., true),
+            shadow(black(0.25 * k * s.elevation), 1., 3., 0., false),
+        ],
     }
 }
 
-/// The accent plate (primary buttons, the send button). `glow` spreads a
-/// colored halo, used on hover.
-pub fn accent(s: &Style, p: &Palette, h: f32) -> Plate {
+/// The accent plate (primary buttons, the send button): a flat accent
+/// fill, a lit top edge and a colored halo that spreads on hover.
+pub fn accent(_s: &Style, p: &Palette, h: f32) -> Plate {
     let base = p.accent;
-    match s.material {
-        Material::Metal | Material::Frost => Plate {
-            fill: vertical(lift(base, 0.07 + 0.04 * h), base),
-            rim: lift(base, 0.25).opacity(0.5),
-            shadows: vec![
-                shadow(white(0.28), 1., 0., 0., true),
-                shadow(black(0.12), -1., 0., 0., true),
-                shadow(base.opacity(0.18 + 0.3 * h), 2., 6. + 12. * h, 0., false),
-            ],
-        },
-        Material::Ink => Plate {
-            fill: Background::from(mix(base, p.accent_strong, h)),
-            rim: p.accent_strong,
-            shadows: vec![
-                shadow(base.opacity(0.22 + 0.1 * h), 2., 6. + 6. * h, 0., false),
-                shadow(white(0.18), 1., 0., 0., true),
-            ],
-        },
-        Material::Line => Plate {
-            fill: Background::from(base.opacity(0.14 + 0.1 * h)),
-            rim: base.opacity(0.7 + 0.3 * h),
-            shadows: Vec::new(),
-        },
+    Plate {
+        fill: vertical(lift(base, 0.04 + 0.03 * h), base),
+        rim: lift(base, 0.12).opacity(0.6),
+        shadows: vec![
+            shadow(white(0.22), 1., 0., 0., true),
+            shadow(base.opacity(0.16 + 0.24 * h), 2., 8. + 10. * h, 0., false),
+        ],
     }
 }
 
-/// Floating surfaces: popovers, menus, the composer dock.
+/// Floating surfaces: popovers, menus, the composer.
 pub fn floating(s: &Style, p: &Palette) -> Plate {
     let e = s.elevation;
-    let fill = match s.material {
-        Material::Frost => p.surface_overlay.opacity(0.86),
-        _ => p.surface_overlay,
+    let fill = if s.vibrancy {
+        p.surface_overlay.opacity(0.9)
+    } else {
+        p.surface_overlay
     };
     let mut shadows = vec![
         shadow(
-            black((if p.light { 0.08 } else { 0.3 }) * e),
-            8.,
-            24.,
-            -4.,
+            black((if p.light { 0.1 } else { 0.4 }) * e),
+            12.,
+            32.,
+            -8.,
             false,
         ),
         shadow(
-            black((if p.light { 0.06 } else { 0.2 }) * e),
+            black((if p.light { 0.05 } else { 0.2 }) * e),
             2.,
             6.,
             0.,
             false,
         ),
     ];
-    if matches!(s.material, Material::Metal | Material::Frost) {
+    if !p.light {
         shadows.push(shadow(white(0.06), 1., 0., 0., true));
     }
     Plate {
         fill: Background::from(fill),
-        rim: if s.material == Material::Frost {
-            white(0.12)
-        } else {
-            p.border_strong
-        },
+        rim: if p.light { black(0.08) } else { white(0.09) },
         shadows,
     }
 }
 
-/// Elevation for the content panel (the big rounded plane).
+/// Elevation for the content panel: it floats a step above the sidebar on
+/// a soft shadow, no outline.
 pub fn panel_shadows(s: &Style, p: &Palette) -> Vec<BoxShadow> {
     let e = s.elevation;
-    if e <= 0. {
-        return Vec::new();
-    }
-    let mut v = vec![shadow(
-        black((if p.light { 0.06 } else { 0.25 }) * e),
-        4.,
-        16.,
-        -6.,
-        false,
-    )];
-    if matches!(s.material, Material::Metal | Material::Frost) {
-        v.push(shadow(white(0.04), 1., 0., 0., true));
+    let mut v = vec![
+        shadow(
+            black((if p.light { 0.06 } else { 0.35 }) * e),
+            6.,
+            24.,
+            -8.,
+            false,
+        ),
+        shadow(
+            black((if p.light { 0.04 } else { 0.2 }) * e),
+            1.,
+            2.,
+            0.,
+            false,
+        ),
+    ];
+    if !p.light {
+        // A lit top edge instead of a hairline all round.
+        v.push(shadow(white(0.045), 1., 0., 0., true));
     }
     v
 }
@@ -441,15 +411,15 @@ pub fn row(id: impl Into<SharedString>, active: bool, cx: &App) -> Stateful<Div>
         .on_hover(motion::hover_listener(key, s.hover))
 }
 
-/// Zeron's `glass_selected_bg`: a wash of the theme's ink, 11 % on dark,
-/// 6 % on light.
+/// The selected row: a light tint of the theme's ink, 7 % on dark and
+/// 5.5 % on light, so the selection reads without turning into a slab.
 pub fn selected_wash(_s: &Style, p: &Palette) -> Hsla {
-    if p.light { black(0.06) } else { white(0.11) }
+    if p.light { black(0.055) } else { white(0.07) }
 }
 
-/// Zeron's row hover: one step under the selection.
+/// Row hover: one step under the selection.
 pub fn hover_wash(p: &Palette) -> Hsla {
-    if p.light { black(0.04) } else { white(0.06) }
+    if p.light { black(0.035) } else { white(0.04) }
 }
 
 /// A sliding pill behind a vertical list of rows. Put it as the first child
@@ -601,11 +571,7 @@ pub fn chip(
         .aria_label(label.clone())
         .px_2()
         .py_0p5()
-        .rounded(px(if s.material == Material::Line {
-            s.control_radius
-        } else {
-            999.
-        }))
+        .rounded_full()
         .text_xs()
         .cursor_pointer()
         .border_1()
@@ -744,22 +710,10 @@ pub fn claw_mark(cx: &App) -> impl IntoElement {
             .rounded_full()
             .bg(vertical(lift(p.accent, 0.12), p.accent_strong))
     };
-    let plate = match s.material {
-        Material::Line => Plate {
-            fill: Background::from(p.bg),
-            rim: p.accent.opacity(0.6),
-            shadows: Vec::new(),
-        },
-        _ => neutral(&s, &p, 0., 1.),
-    };
-    plate.apply(
+    neutral(&s, &p, 0., 1.).apply(
         h_flex()
             .size(px(tile))
-            .rounded(px(if s.material == Material::Line {
-                s.control_radius
-            } else {
-                tile * 0.3
-            }))
+            .rounded(px(tile * 0.3))
             .items_start()
             .justify_center()
             .pt(px(12.))

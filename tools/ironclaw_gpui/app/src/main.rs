@@ -24,7 +24,7 @@ use gpui_kit::{
 
 gpui_kit::actions!(
     ironclaw,
-    [Quit, ToggleStatusBar, NextStyle, OpenCommandMenu]
+    [Quit, ToggleStatusBar, ToggleScheme, OpenCommandMenu]
 );
 
 fn main() {
@@ -55,17 +55,12 @@ fn main() {
             cx.quit()
         });
         cx.on_action(|_: &ToggleStatusBar, cx| workspace::toggle_status_bar(cx));
-        // Flip through the four design styles without opening Settings.
-        cx.on_action(|_: &NextStyle, cx| {
-            let all = design::styles::StyleId::ALL;
-            let now = design::Style::of(cx).id;
-            let ix = all.iter().position(|s| *s == now).unwrap_or(0);
-            design::set_style(all[(ix + 1) % all.len()], cx);
-        });
+        // Flip between the light and dark theme without opening Settings.
+        cx.on_action(|_: &ToggleScheme, cx| design::toggle_scheme(cx));
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-shift-s", ToggleStatusBar, None),
-            KeyBinding::new("cmd-shift-y", NextStyle, None),
+            KeyBinding::new("cmd-shift-y", ToggleScheme, None),
             KeyBinding::new("cmd-k", OpenCommandMenu, None),
         ]);
         cx.set_menus(vec![
@@ -79,7 +74,7 @@ fn main() {
                 items: vec![
                     MenuItem::action("Command Menu…", OpenCommandMenu),
                     MenuItem::action("Toggle Status Bar", ToggleStatusBar),
-                    MenuItem::action("Next Design Style", NextStyle),
+                    MenuItem::action("Toggle Light and Dark", ToggleScheme),
                 ],
                 disabled: false,
             },

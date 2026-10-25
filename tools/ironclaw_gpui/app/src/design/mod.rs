@@ -5,14 +5,15 @@
 //! `install` writes the palette into gpui-kit's theme, so every existing
 //! screen and component repaints from it. New code reads [`Palette`] for the
 //! tokens gpui-kit has no slot for (raised surfaces, hairlines, washes).
-//! A [`styles::Style`] sits beside the palette and owns geometry, material
-//! and motion; light palettes (by background lightness) get dark ink lines.
+//! A [`styles::Style`] sits beside the palette and owns geometry and
+//! motion; light palettes (by background lightness) get dark ink lines.
 
 pub mod battery;
 pub mod brands;
 pub mod dock;
 pub mod kit;
 pub mod motion;
+pub mod paint;
 pub mod prefs;
 pub mod pulse;
 pub mod styles;
@@ -148,33 +149,12 @@ pub fn install(cx: &mut App) {
 struct HaveFonts(bool);
 impl Global for HaveFonts {}
 
-/// Switch design style: loads its geometry, motion and signature palette.
-pub fn set_style(id: styles::StyleId, cx: &mut App) {
-    prefs::Prefs::update(cx, |p| {
-        p.style = id.key().into();
-        // The style's signature palette goes in the slot of its brightness
-        // and the scheme follows, so picking Paper shows Paper.
-        let seed = themes::find(id.theme());
-        if seed.is_light() {
-            p.light_theme = id.theme().into();
-            p.scheme = "light".into();
-        } else {
-            p.theme = id.theme().into();
-            p.scheme = "dark".into();
-        }
-        // Paper and Console read best on a bare backdrop. A picture the
-        // person picked stays.
-        if !matches!(p.wallpaper, prefs::Wallpaper::Image { .. }) {
-            p.wallpaper = match id {
-                styles::StyleId::Forge | styles::StyleId::Glass => prefs::Wallpaper::Aurora,
-                styles::StyleId::Paper | styles::StyleId::Console => prefs::Wallpaper::None,
-            };
-        }
-    });
-    let fonts = cx.try_global::<HaveFonts>().is_none_or(|f| f.0);
-    apply_theme(cx, fonts);
+/// Turn the frosted window on or off.
+pub fn set_translucent(on: bool, cx: &mut App) {
+    update_appearance(cx, |p| p.translucent = on);
+    let style = *Style::of(cx);
     for window in cx.windows() {
-        let _ = window.update(cx, |_, window, _| apply_window(window, Style::get(id)));
+        let _ = window.update(cx, |_, window, _| apply_window(window, style));
     }
 }
 
@@ -209,6 +189,15 @@ pub fn set_wallpaper(choice: prefs::Wallpaper, cx: &mut App) {
     wallpaper::reload(cx);
 }
 
+/// Flip to the other side of the scheme (a "system" scheme pins the
+/// opposite of what macOS shows now).
+pub fn toggle_scheme(cx: &mut App) {
+    let dark = scheme_is_dark(cx);
+    update_appearance(cx, |p| {
+        p.scheme = if dark { "light" } else { "dark" }.into()
+    });
+}
+
 /// Whether the color scheme resolves to dark right now: Zeron's System
 /// card follows macOS.
 pub fn scheme_is_dark(cx: &App) -> bool {
@@ -227,11 +216,11 @@ pub fn scheme_is_dark(cx: &App) -> bool {
 pub fn resolve_palette(cx: &App) -> Palette {
     let prefs = prefs::Prefs::of(cx);
     let dark = scheme_is_dark(cx);
-    let seed = themes::find(if dark {
-        &prefs.theme
+    let seed = if dark {
+        themes::find_for(&prefs.theme, false)
     } else {
-        &prefs.light_theme
-    });
+        themes::find_for(&prefs.light_theme, true)
+    };
     let mut p = Palette::from_seed(seed);
     if let Some((_, _, on_dark, on_light)) =
         themes::ACCENTS.iter().find(|(id, ..)| *id == prefs.accent)
@@ -261,7 +250,7 @@ pub fn update_appearance(cx: &mut App, edit: impl FnOnce(&mut prefs::Prefs)) {
 
 fn apply_theme(cx: &mut App, have_fonts: bool) {
     let p = resolve_palette(cx);
-    let style = Style::get(styles::StyleId::parse(&prefs::Prefs::of(cx).style));
+    let style = Style::new(prefs::Prefs::of(cx).translucent);
     let ui_size = prefs::Prefs::of(cx).ui_font_size;
     cx.set_global(p);
     cx.set_global(style);
@@ -278,7 +267,7 @@ fn apply_theme(cx: &mut App, have_fonts: bool) {
     );
     Theme::update(cx, |t| {
         if have_fonts {
-            t.font_family = if style.mono_ui { FONT_MONO } else { FONT_SANS }.into();
+            t.font_family = FONT_SANS.into();
             t.mono_font_family = FONT_MONO.into();
         }
         t.font_size = px(if ui_size > 0. {

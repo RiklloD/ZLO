@@ -59,6 +59,7 @@ impl Workspace {
                     }
                 }),
             ];
+            crate::design::wallpaper::reshuffle(cx);
             self.draft = Some(Draft {
                 profile,
                 input,
@@ -266,16 +267,21 @@ impl Workspace {
             })
             // Room under the card so it sits just above the middle, like t3code.
             .child(div().h(px(80.)));
+        // Without a wallpaper, a soft accent glow from the top stands in.
+        let bare =
+            crate::design::prefs::Prefs::of(cx).wallpaper == crate::design::prefs::Wallpaper::None;
         div()
             .size_full()
             .relative()
-            .child(div().absolute().top_0().left_0().right_0().h(px(320.)).bg(
-                gpui_kit::linear_gradient(
-                    180.,
-                    gpui_kit::linear_color_stop(p.accent_wash, 0.),
-                    gpui_kit::linear_color_stop(p.accent_wash.opacity(0.), 1.),
-                ),
-            ))
+            .when(bare, |d| {
+                d.child(div().absolute().top_0().left_0().right_0().h(px(320.)).bg(
+                    gpui_kit::linear_gradient(
+                        180.,
+                        gpui_kit::linear_color_stop(p.accent_wash, 0.),
+                        gpui_kit::linear_color_stop(p.accent_wash.opacity(0.), 1.),
+                    ),
+                ))
+            })
             .child(motion::fade_in(body, "draft", Style::of(cx).enter, 4.))
             .into_any_element()
     }

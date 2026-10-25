@@ -13,7 +13,6 @@ use crate::alerts::Alerts;
 use crate::chat::{ChatView, OpenThread, RunEnded, ThreadUpdated};
 use crate::design::battery::BatterySaver;
 use crate::design::prefs::Prefs;
-use crate::design::styles::{Material, StyleId};
 use crate::design::{self, Palette, Style, kit, motion, wallpaper};
 use crate::jobs;
 use crate::pages::PageEvent;
@@ -643,7 +642,6 @@ impl Workspace {
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
-        let console = Style::of(cx).material == Material::Line;
         let settings = self.in_settings();
         let unread = self.unread;
         // Titlebar strip: traffic lights on the left, then the name; macOS
@@ -750,15 +748,6 @@ impl Workspace {
             .h_full()
             .flex_none()
             .text_color(p.text_muted)
-            .when(console, |d| d.border_r_1().border_color(p.border))
-            // Forge: a faint brushed-metal falloff down the sidebar.
-            .when(Style::of(cx).id == StyleId::Forge, |d| {
-                d.bg(gpui_kit::linear_gradient(
-                    180.,
-                    gpui_kit::linear_color_stop(design::lift(p.surface, 0.025), 0.),
-                    gpui_kit::linear_color_stop(p.surface, 0.6),
-                ))
-            })
             .child(titlebar)
             .child(if settings {
                 self.render_settings_nav(cx).into_any_element()
@@ -946,7 +935,6 @@ impl Workspace {
     /// The bottom strip: connection on the left, metrics on the right.
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
-        let console = Style::of(cx).material == Material::Line;
         let live = matches!(self.conn, Conn::Connecting);
         let (dot, label): (_, SharedString) = match &self.conn {
             Conn::Connecting => (p.warning, "Connecting".into()),
@@ -973,11 +961,6 @@ impl Workspace {
             .items_center()
             .text_xs()
             .text_color(p.text_faint)
-            .when(console, |d| {
-                d.border_t_1()
-                    .border_color(p.border)
-                    .font_family(design::FONT_MONO)
-            })
             .child(kit::status_dot("status-dot", dot, live))
             .child(label)
             .child(div().flex_1())
@@ -1104,7 +1087,6 @@ impl Render for Workspace {
         motion::pump(window);
         let p = *Palette::of(cx);
         let s = *Style::of(cx);
-        let backdrop = wallpaper::current(cx);
         let body: AnyElement = match &self.conn {
             Conn::Connecting => render_loading(cx).into_any_element(),
             Conn::Failed { message, retry_in } => v_flex()
@@ -1174,20 +1156,32 @@ impl Render for Workspace {
                 };
                 let breadcrumb = self.render_breadcrumb(cx).into_any_element();
                 let main: AnyElement = match (page, &self.active) {
+                    // Appearance floats over the chat at 85 % so a pick
+                    // previews live on the real thread or new-chat screen.
+                    (Some(page), active) if self.page == Page::Appearance => {
+                        let under = match active {
+                            Some((_, chat)) => chat.clone().into_any_element(),
+                            None => self.render_empty(cx).into_any_element(),
+                        };
+                        div()
+                            .size_full()
+                            .relative()
+                            .child(div().absolute().inset_0().child(under))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .occlude()
+                                    .bg(p.bg.opacity(0.85))
+                                    .child(page),
+                            )
+                            .into_any_element()
+                    }
                     (Some(page), _) => page,
                     (None, Some((_, chat))) => chat.clone().into_any_element(),
                     (None, None) => self.render_empty(cx).into_any_element(),
                 };
-                let panel_alpha = if backdrop.is_some() {
-                    s.panel_alpha.min(0.72)
-                } else {
-                    s.panel_alpha
-                };
-                let rim = match s.material {
-                    Material::Frost => gpui_kit::hsla(0., 0., 1., 0.1),
-                    Material::Ink if p.light => p.border.opacity(0.7),
-                    _ => p.border,
-                };
+                let backdrop = self.render_backdrop(window, cx);
                 // The loading screen hands over with a quick fade.
                 let shell = h_flex()
                     .size_full()
@@ -1204,13 +1198,14 @@ impl Render for Workspace {
                             .child(
                                 div()
                                     .size_full()
+                                    .relative()
                                     .rounded(px(s.panel_radius))
-                                    .when(s.panel_inset > 0., |d| d.border_1().border_color(rim))
                                     .shadow(kit::panel_shadows(&s, &p))
-                                    .bg(p.bg.opacity(panel_alpha))
+                                    .bg(p.bg.opacity(s.panel_alpha))
                                     .overflow_hidden()
                                     .flex()
                                     .flex_col()
+                                    .children(backdrop)
                                     .child(breadcrumb)
                                     .child(motion::fade_in(
                                         div().flex_1().min_h_0().w_full().child(main),
@@ -1231,39 +1226,12 @@ impl Render for Workspace {
         };
         let show_status = !Prefs::of(cx).status_bar_hidden;
         let command = self.render_command_menu(cx);
-        // Glass lets the macOS blur through: the wallpaper only tints it.
-        let wall_alpha = if s.vibrancy { 0.45 } else { 1. };
         v_flex()
             .size_full()
             .relative()
             .bg(p.surface.opacity(s.shell_alpha))
-            // The wallpaper sits under everything; shell and panel turn to
-            // tinted glass over it.
-            .when_some(backdrop.clone(), |d, image| {
-                d.child(
-                    gpui_kit::img(image)
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .opacity(wall_alpha)
-                        .object_fit(gpui_kit::ObjectFit::Cover),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .bg(p.surface.opacity(0.35 * s.shell_alpha)),
-                )
-            })
             .text_color(p.text)
-            .font_family(if s.mono_ui {
-                design::FONT_MONO
-            } else {
-                design::FONT_SANS
-            })
+            .font_family(design::FONT_SANS)
             .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, _, cx| {
                 this.battery.input(|w: &mut Self| &mut w.battery, cx);
                 this.drag_sidebar(e, cx);
@@ -1356,76 +1324,97 @@ impl Workspace {
         }
     }
 
-    /// No thread open: one composed moment per style. Static gradients
-    /// and a single entrance, so it costs nothing per frame once settled.
+    /// The wallpaper behind the content panel: full strength on the
+    /// new-chat screen (and the empty one), a faint wash behind threads,
+    /// none on settings pages. Reports the panel size so the picture is
+    /// painted at it.
+    fn render_backdrop(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let prefs = Prefs::of(cx);
+        if prefs.wallpaper == design::prefs::Wallpaper::None {
+            return None;
+        }
+        let p = *Palette::of(cx);
+        // Appearance previews over the chat, so it shows that chat's backdrop.
+        let page = if self.page == Page::Appearance {
+            Page::Chat
+        } else {
+            self.page
+        };
+        let alpha = match (page, &self.active) {
+            (Page::Draft, _) | (Page::Chat, None) => 1.,
+            (Page::Chat, Some(_)) if prefs.wallpaper_in_threads => {
+                if p.light {
+                    0.22
+                } else {
+                    0.16
+                }
+            }
+            _ => return None,
+        };
+        let s = *Style::of(cx);
+        let viewport = window.viewport_size();
+        let status = if prefs.status_bar_hidden {
+            0.
+        } else {
+            design::STATUS_BAR_HEIGHT
+        };
+        wallpaper::ensure(
+            f32::from(viewport.width) - self.sidebar_width(cx) - s.panel_inset,
+            f32::from(viewport.height) - status - 2. * s.panel_inset,
+            cx,
+        );
+        let image = wallpaper::current(cx)?;
+        Some(
+            gpui_kit::img(image)
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .opacity(alpha)
+                .object_fit(gpui_kit::ObjectFit::Cover)
+                .into_any_element(),
+        )
+    }
+
+    /// No thread open: the mark, a line and one button over the wallpaper.
+    /// Static, so it costs nothing per frame once settled.
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
         let s = *Style::of(cx);
-        let glow = match s.id {
-            StyleId::Forge => Some((p.accent.opacity(0.16), 360.)),
-            StyleId::Glass => Some((p.accent.opacity(0.12), 280.)),
-            StyleId::Paper => None,
-            StyleId::Console => None,
-        };
-        let headline = match s.id {
-            StyleId::Console => "ironclaw ready_",
-            _ => "What are we building?",
-        };
-        div()
-            .size_full()
-            .relative()
-            .when_some(glow, |d, (color, h)| {
-                d.child(div().absolute().top_0().left_0().right_0().h(px(h)).bg(
-                    gpui_kit::linear_gradient(
-                        180.,
-                        gpui_kit::linear_color_stop(color, 0.),
-                        gpui_kit::linear_color_stop(color.opacity(0.), 1.),
-                    ),
-                ))
-            })
-            .child(motion::fade_in(
-                v_flex()
-                    .size_full()
-                    .items_center()
-                    .justify_center()
-                    .gap_4()
-                    .child(crate::design::kit::claw_mark(cx))
-                    .child(
-                        v_flex()
-                            .items_center()
-                            .gap_1p5()
-                            .child(
-                                div()
-                                    .text_size(px(if s.id == StyleId::Console { 18. } else { 26. }))
-                                    .font_weight(if s.id == StyleId::Paper {
-                                        gpui_kit::FontWeight::MEDIUM
-                                    } else {
-                                        gpui_kit::FontWeight::SEMIBOLD
-                                    })
-                                    .when(s.id == StyleId::Console, |d| {
-                                        d.font_family(design::FONT_MONO).text_color(p.accent)
-                                    })
-                                    .child(headline),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(p.text_muted)
-                                    .child("Start a conversation, or pick one from the sidebar."),
-                            ),
-                    )
-                    .child(
-                        kit::button("start-thread")
-                            .label("New thread")
-                            .icon(IconName::Plus)
-                            .primary()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_draft(window, cx)),
-                            ),
-                    ),
-                "empty-state",
-                s.enter,
-                s.enter_rise * 2.,
-            ))
+        div().size_full().relative().child(motion::fade_in(
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_4()
+                .child(crate::design::kit::claw_mark(cx))
+                .child(
+                    v_flex()
+                        .items_center()
+                        .gap_1p5()
+                        .child(
+                            div()
+                                .text_size(px(26.))
+                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                .child("What are we building?"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(p.text_muted)
+                                .child("Start a conversation, or pick one from the sidebar."),
+                        ),
+                )
+                .child(
+                    kit::button("start-thread")
+                        .label("New thread")
+                        .icon(IconName::Plus)
+                        .primary()
+                        .on_click(cx.listener(|this, _, window, cx| this.open_draft(window, cx))),
+                ),
+            "empty-state",
+            s.enter,
+            s.enter_rise * 2.,
+        ))
     }
 }

@@ -1,119 +1,196 @@
-//! The picture behind the whole window. Built once on a background thread
-//! (aurora generated from the theme, or a user picture blurred and dimmed),
-//! then drawn as one static texture: no per-frame cost.
-//!
-//! It is rendered small (960x600) on purpose. The content is soft by
-//! design, so GPU upscaling is invisible and the texture stays at ~2 MB.
+//! The new-chat wallpaper, as in Zeron: a painted scene or the person's own
+//! picture, redrawn through a background effect and faded into the panel
+//! at the bottom. The pixels come from `paint` on a background thread and
+//! land as one static texture, sized to the panel in points so the effect's
+//! dots stay crisp. Nothing runs while the app is idle; a resize rebuilds
+//! once the window settles.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui_kit::{App, AppContext as _, Global, Hsla, RenderImage};
-use image::{Frame, Rgba, RgbaImage, imageops};
+use image::{Frame, RgbaImage, imageops};
 
 use super::Palette;
+use super::paint::{self, Canvas};
 use super::prefs::{Prefs, Wallpaper};
 
-const W: u32 = 960;
-const H: u32 = 600;
+/// Smallest and largest texture side, in points.
+const MIN_SIDE: u32 = 320;
+const MAX_SIDE: u32 = 2400;
+/// A resize waits this long for the window to settle before repainting.
+const SETTLE: Duration = Duration::from_millis(280);
 
 #[derive(Default)]
-pub struct WallpaperImage(pub Option<Arc<RenderImage>>);
+pub struct WallpaperImage {
+    image: Option<Arc<RenderImage>>,
+    /// The panel size the next picture is painted at.
+    wanted: (u32, u32),
+    /// Bumped by every request; a finished paint from an older one is
+    /// dropped.
+    generation: u64,
+    /// Which picture of a wallpaper folder is showing.
+    shuffle: u64,
+}
 
 impl Global for WallpaperImage {}
 
 pub fn current(cx: &App) -> Option<Arc<RenderImage>> {
-    cx.try_global::<WallpaperImage>().and_then(|w| w.0.clone())
+    cx.try_global::<WallpaperImage>()
+        .and_then(|w| w.image.clone())
 }
 
-/// Rebuild from the current prefs and palette. Cheap to call; the old
-/// picture stays up until the new one is ready.
+/// Report the panel size (points) from render. Repaints when it changed;
+/// the first paint starts at once, a resize waits for the drag to settle.
+pub fn ensure(width: f32, height: f32, cx: &mut App) {
+    let size = (
+        (width.round() as u32).clamp(MIN_SIDE, MAX_SIDE),
+        (height.round() as u32).clamp(MIN_SIDE, MAX_SIDE),
+    );
+    let state = cx.default_global::<WallpaperImage>();
+    if state.wanted == size {
+        return;
+    }
+    let first = state.wanted == (0, 0);
+    state.wanted = size;
+    schedule(if first { Duration::ZERO } else { SETTLE }, cx);
+}
+
+/// Repaint after a preference or the palette changed. The old picture
+/// stays up until the new one is ready.
 pub fn reload(cx: &mut App) {
-    let choice = Prefs::of(cx).wallpaper.clone();
-    let palette = *Palette::of(cx);
-    if choice == Wallpaper::None {
+    if Prefs::of(cx).wallpaper == Wallpaper::None {
         replace(None, cx);
         cx.refresh_windows();
         return;
     }
-    let task = cx.background_spawn(async move {
-        match &choice {
-            Wallpaper::Image { path } => picture(path, &palette).unwrap_or_else(|e| {
-                tracing::warn!("wallpaper {} unusable, using aurora: {e}", path.display());
-                aurora(&palette)
-            }),
-            _ => aurora(&palette),
-        }
-    });
+    schedule(Duration::ZERO, cx);
+}
+
+/// A new chat opened: a wallpaper folder moves on to another picture.
+pub fn reshuffle(cx: &mut App) {
+    if matches!(Prefs::of(cx).wallpaper, Wallpaper::Folder { .. }) {
+        cx.default_global::<WallpaperImage>().shuffle += 1;
+        schedule(Duration::ZERO, cx);
+    }
+}
+
+fn schedule(delay: Duration, cx: &mut App) {
+    let state = cx.default_global::<WallpaperImage>();
+    state.generation += 1;
+    let generation = state.generation;
     cx.spawn(async move |cx| {
-        let pixels = task.await;
-        let image = Arc::new(RenderImage::new(vec![Frame::new(to_bgra(pixels))]));
+        if !delay.is_zero() {
+            cx.background_executor().timer(delay).await;
+        }
         cx.update(|cx| {
-            replace(Some(image), cx);
-            cx.refresh_windows();
+            if cx.default_global::<WallpaperImage>().generation == generation {
+                paint_now(generation, cx);
+            }
         });
     })
     .detach();
 }
 
+fn paint_now(generation: u64, cx: &mut App) {
+    let state = cx.default_global::<WallpaperImage>();
+    let ((w, h), shuffle) = (state.wanted, state.shuffle);
+    if w == 0 {
+        // No panel measured yet; `ensure` paints on the first frame.
+        return;
+    }
+    let prefs = Prefs::of(cx);
+    let choice = prefs.wallpaper.clone();
+    let effect = prefs.wallpaper_effect.clone();
+    let palette = *Palette::of(cx);
+    if choice == Wallpaper::None {
+        return;
+    }
+    let task = cx.background_spawn(async move {
+        let bg = rgb(palette.bg);
+        let dark = !palette.light;
+        let auto_scene = if dark { "dusk" } else { "sky" };
+        let picture = match &choice {
+            Wallpaper::Image { path } => Some(path.clone()),
+            Wallpaper::Folder { path } => pick_from(path, shuffle),
+            _ => None,
+        };
+        let mut canvas = match picture.map(|p| load(&p, w, h).map_err(|e| (p, e))) {
+            Some(Ok(mut c)) => {
+                paint::tone(&mut c, bg, dark);
+                c
+            }
+            other => {
+                if let Some(Err((path, e))) = other {
+                    tracing::warn!(
+                        "wallpaper {} unusable, painting a scene: {e}",
+                        path.display()
+                    );
+                }
+                let name = match &choice {
+                    Wallpaper::Scene { name } if name != "auto" => name.as_str(),
+                    _ => auto_scene,
+                };
+                paint::scene(name, w, h)
+            }
+        };
+        paint::effect(&mut canvas, &effect);
+        paint::fade(&mut canvas, bg, 0.36, 0.8);
+        to_bgra(canvas.to_image())
+    });
+    cx.spawn(async move |cx| {
+        let pixels = task.await;
+        let image = Arc::new(RenderImage::new(vec![Frame::new(pixels)]));
+        cx.update(|cx| {
+            if cx.default_global::<WallpaperImage>().generation == generation {
+                replace(Some(image), cx);
+                cx.refresh_windows();
+            }
+        });
+    })
+    .detach();
+}
+
+fn load(path: &Path, w: u32, h: u32) -> Result<Canvas, image::ImageError> {
+    let img = image::open(path)?.resize_to_fill(w, h, imageops::FilterType::CatmullRom);
+    Ok(Canvas::from_image(&img.to_rgba8()))
+}
+
+/// The `shuffle`-th picture of a folder, in a stable but scrambled order.
+fn pick_from(dir: &Path, shuffle: u64) -> Option<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                matches!(
+                    e.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "webp"
+                )
+            })
+        })
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    files.sort();
+    // Start somewhere different on every launch, then walk on.
+    let start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() / 3600);
+    let ix = (start.wrapping_mul(2_654_435_761).wrapping_add(shuffle * 7)) as usize % files.len();
+    Some(files.swap_remove(ix))
+}
+
 /// Swap the picture and give the old one's GPU sprite back: GPUI keeps a
-/// drawn `RenderImage` in its atlas until told otherwise, so every theme
-/// change would otherwise leak a 2.3 MB texture.
+/// drawn `RenderImage` in its atlas until told otherwise.
 fn replace(image: Option<Arc<RenderImage>>, cx: &mut App) {
-    let old = cx.try_global::<WallpaperImage>().and_then(|w| w.0.clone());
-    cx.set_global(WallpaperImage(image));
+    let old = cx.default_global::<WallpaperImage>().image.take();
+    cx.default_global::<WallpaperImage>().image = image;
     if let Some(old) = old {
         cx.drop_image(old, None);
     }
-}
-
-/// Soft colour fields from the accent and two neighbouring hues on the
-/// theme background, with a vignette and a little dither against banding.
-fn aurora(p: &Palette) -> RgbaImage {
-    let base = rgb(p.bg);
-    let shift = |h: Hsla, by: f32| Hsla {
-        h: (h.h + by).rem_euclid(1.),
-        ..h
-    };
-    // (centre x, centre y, radius, strength, colour), in 0..1 of the image.
-    let blobs = [
-        (0.12, 0.05, 0.62, 0.55, rgb(p.accent)),
-        (0.92, 0.30, 0.55, 0.42, rgb(shift(p.accent, 0.11))),
-        (0.40, 1.08, 0.70, 0.38, rgb(shift(p.accent, -0.14))),
-        (0.70, 0.75, 0.35, 0.18, rgb(p.accent_strong)),
-    ];
-    RgbaImage::from_fn(W, H, |x, y| {
-        let (u, v) = (x as f32 / W as f32, y as f32 / H as f32);
-        let aspect = W as f32 / H as f32;
-        let mut c = base;
-        for (bx, by, r, k, col) in blobs {
-            let (dx, dy) = ((u - bx) * aspect, v - by);
-            let w = k * (-(dx * dx + dy * dy) / (r * r) * 2.2).exp();
-            for i in 0..3 {
-                c[i] += (col[i] - c[i]) * w;
-            }
-        }
-        let (cu, cv) = (u - 0.5, v - 0.5);
-        let vignette = 1. - 0.35 * (cu * cu + cv * cv) * 2.;
-        let noise = (hash(x, y) - 0.5) / 255.;
-        let px = |ch: f32| ((ch * vignette + noise).clamp(0., 1.) * 255.).round() as u8;
-        Rgba([px(c[0]), px(c[1]), px(c[2]), 255])
-    })
-}
-
-fn picture(path: &Path, p: &Palette) -> Result<RgbaImage, image::ImageError> {
-    let img = image::open(path)?.resize_to_fill(W, H, imageops::FilterType::Triangle);
-    let mut img = imageops::fast_blur(&img.to_rgba8(), 14.);
-    // Dim toward the theme background so text on glass panels stays legible.
-    let base = rgb(p.bg);
-    for px in img.pixels_mut() {
-        for i in 0..3 {
-            let ch = px[i] as f32 / 255.;
-            px[i] = ((ch + (base[i] - ch) * 0.5) * 255.).round() as u8;
-        }
-        px[3] = 255;
-    }
-    Ok(img)
 }
 
 /// gpui textures are BGRA.
@@ -124,13 +201,7 @@ fn to_bgra(mut img: RgbaImage) -> RgbaImage {
     img
 }
 
-fn rgb(c: Hsla) -> [f32; 3] {
+fn rgb(c: Hsla) -> paint::Rgb {
     let c = c.to_rgb();
     [c.r, c.g, c.b]
-}
-
-fn hash(x: u32, y: u32) -> f32 {
-    let mut h = x.wrapping_mul(374_761_393) ^ y.wrapping_mul(668_265_263);
-    h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
-    (h ^ (h >> 16)) as f32 / u32::MAX as f32
 }

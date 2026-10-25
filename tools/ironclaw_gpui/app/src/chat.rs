@@ -858,7 +858,7 @@ impl ChatView {
     /// newest prompt at the top of the list and no more, so the reader can't
     /// scroll it out of sight. It stays after the run ends (the view keeps
     /// its place, as in Zeron); it glides to nothing only when a send failed.
-    fn reserve_height(&mut self, cx: &mut Context<Self>) -> f32 {
+    fn reserve_height(&mut self, window: &Window, cx: &mut Context<Self>) -> f32 {
         let Some(held) = self.reserve.as_ref().map(|r| r.held) else {
             return 0.;
         };
@@ -875,8 +875,12 @@ impl ChatView {
                         .sum()
                 })
                 .unwrap_or(0.);
-            // The last row's bottom padding sits under the reserve.
-            (self.list_height.get() - turn - (flow::SPACE_LG + 24.)).max(0.)
+            // Under the reserve: the last row's own bottom padding and the
+            // list's 0.5 rem. One spare pixel keeps the prompt-at-top view
+            // from counting as "at the bottom", which would turn on tail
+            // following and drag the prompt up as the answer grows.
+            let below = flow::SPACE_LG + 24. + 0.5 * f32::from(window.rem_size()) + 1.;
+            (self.list_height.get() - turn - below).max(0.)
         } else {
             0.
         };
@@ -889,6 +893,20 @@ impl ChatView {
             style.enter,
             held || cx.reduce_motion(),
         );
+        // A fresh thread's list starts in tail following, and its first
+        // frames (before anything is measured) fit the viewport, which keeps
+        // following on. Following would stick to the reserve's bottom instead
+        // of the prompt, so while there is room the prompt is pinned back.
+        if held
+            && h > 0.5
+            && self.scroller.read(cx).is_following_tail()
+            && let Some(ix) = self
+                .items
+                .iter()
+                .rposition(|i| matches!(i, Item::Row(Row::User { .. })))
+        {
+            self.scroller.update(cx, |s, cx| s.scroll_to_item(ix, cx));
+        }
         let Some(r) = self.reserve.as_mut() else {
             return 0.;
         };
@@ -1091,7 +1109,7 @@ impl Render for ChatView {
         if self.pacing {
             crate::design::pulse::request(crate::design::pulse::Rate::Smooth, window, cx);
         }
-        let reserve_h = self.reserve_height(cx);
+        let reserve_h = self.reserve_height(window, cx);
         let turn_heights = self.turn_heights.clone();
         let items = self.items.clone();
         let turn_start = items
@@ -1206,7 +1224,14 @@ impl Render for ChatView {
                         d.child(
                             gpui_kit::canvas(
                                 move |bounds, window, _| {
-                                    let h = f32::from(bounds.size.height);
+                                    // The scroller's row wrapper adds a 2 rem
+                                    // gap under every row but the last.
+                                    let gap = if last {
+                                        0.
+                                    } else {
+                                        2. * f32::from(window.rem_size())
+                                    };
+                                    let h = f32::from(bounds.size.height) + gap;
                                     let old = heights.borrow_mut().insert(key, h);
                                     if old.is_none_or(|o| (o - h).abs() > 0.5) {
                                         window.request_animation_frame();
@@ -1677,19 +1702,41 @@ pub(crate) fn composer_card(
         motion::TOOL_FOLD,
         cx.reduce_motion(),
     );
-    let fill = if palette.light {
-        gpui_kit::hsla(0., 0., 1., 0.92)
-    } else {
-        motion::mix(palette.bg, gpui_kit::black(), 0.12)
+    // A frosted card floating on a soft shadow, as in Zeron: it reads over
+    // the wallpaper and lifts off the transcript.
+    let ink = |a: f32| {
+        if palette.light {
+            gpui_kit::hsla(0., 0., 0., a)
+        } else {
+            gpui_kit::hsla(0., 0., 1., a)
+        }
     };
-    let rim = motion::mix(palette.border, palette.border_strong, f);
+    let fill = if palette.light {
+        gpui_kit::hsla(0., 0., 1., 0.8)
+    } else {
+        motion::mix(palette.surface_card, palette.bg, 0.25).opacity(0.86)
+    };
+    let rim = motion::mix(ink(0.07), ink(0.14), f);
+    let drop = |a: f32, y: f32, blur: f32, spread: f32| gpui_kit::BoxShadow {
+        color: gpui_kit::hsla(0., 0., 0., a),
+        offset: gpui_kit::point(px(0.), px(y)),
+        blur_radius: px(blur),
+        spread_radius: px(spread),
+        inset: false,
+    };
+    let shadows = if palette.light {
+        vec![drop(0.08, 10., 30., -6.), drop(0.04, 1., 3., 0.)]
+    } else {
+        vec![drop(0.45, 12., 32., -8.), drop(0.25, 1., 3., 0.)]
+    };
     let shell = div()
         .w_full()
         .max_w(px(content_width(cx) + 16.))
-        .rounded(px(if compact { 20. } else { 26. }))
+        .rounded(px(if compact { 20. } else { 24. }))
         .bg(fill)
         .border_1()
         .border_color(rim)
+        .shadow(shadows)
         .text_size(flow::ui(14.))
         .line_height(px(22.75));
     // T3 Code's order: the text on top, then attach and the model picker

@@ -1,15 +1,15 @@
 //! Settings → Appearance, laid out after Zeron's page
-//! (`crates/ui/src/settings/appearance.rs`, MIT): color scheme cards with
-//! live previews, the light and dark theme, an accent, then material,
-//! motion and layout. All client-side preferences (`design::prefs`),
-//! applied live.
+//! (`crates/ui/src/settings/appearance.rs`, MIT), one decision per row:
+//! the color scheme, a theme for each side of it, an accent, then the
+//! new-chat wallpaper and its effect, motion and layout. All client-side
+//! preferences (`design::prefs`), applied live.
 
 use std::rc::Rc;
 
 use super::SettingsView;
 use crate::design::prefs::{Prefs, Wallpaper};
-use crate::design::styles::{Style, StyleId};
-use crate::design::{self, Palette, kit, motion, themes};
+use crate::design::styles::Style;
+use crate::design::{self, Palette, kit, motion, paint, themes};
 use crate::pages::{block_fill, group_header, rows_card, setting_row};
 use crate::ui::*;
 
@@ -247,11 +247,11 @@ fn select(
 fn accent_swatches(prefs: &Prefs, cx: &App) -> impl IntoElement {
     let p = *Palette::of(cx);
     let light = p.light;
-    let theme_accent = Palette::from_seed(themes::find(if light {
-        &prefs.light_theme
+    let theme_accent = Palette::from_seed(if light {
+        themes::find_for(&prefs.light_theme, true)
     } else {
-        &prefs.theme
-    }))
+        themes::find_for(&prefs.theme, false)
+    })
     .accent;
     let choices = std::iter::once(("", "Theme default", theme_accent)).chain(
         themes::ACCENTS
@@ -293,8 +293,8 @@ fn accent_swatches(prefs: &Prefs, cx: &App) -> impl IntoElement {
 pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> impl IntoElement {
     let prefs = Prefs::of(cx).clone();
     let dark_now = design::scheme_is_dark(cx);
-    let dark_palette = Palette::from_seed(themes::find(&prefs.theme));
-    let light_palette = Palette::from_seed(themes::find(&prefs.light_theme));
+    let dark_palette = Palette::from_seed(themes::find_for(&prefs.theme, false));
+    let light_palette = Palette::from_seed(themes::find_for(&prefs.light_theme, true));
 
     let scheme = |id: &'static str, value: &'static str, icon, label, body| {
         let on = prefs.scheme == value;
@@ -352,7 +352,7 @@ pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> imp
     };
     let light_select = select(
         "light-theme",
-        prefs.light_theme.clone(),
+        themes::find_for(&prefs.light_theme, true).id.to_string(),
         themes_of(true),
         menu == Some("light-theme"),
         design::set_theme,
@@ -360,7 +360,7 @@ pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> imp
     );
     let dark_select = select(
         "dark-theme",
-        prefs.theme.clone(),
+        themes::find_for(&prefs.theme, false).id.to_string(),
         themes_of(false),
         menu == Some("dark-theme"),
         design::set_theme,
@@ -390,60 +390,98 @@ pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> imp
         cx,
     );
 
-    let style_select = select(
-        "style",
-        Style::of(cx).id.key().to_string(),
-        StyleId::ALL
-            .into_iter()
-            .map(|s| (s.key().to_string(), s.name().to_string()))
-            .collect(),
-        menu == Some("style"),
-        |v, cx| design::set_style(StyleId::parse(v), cx),
-        cx,
+    let wallpaper_value = match &prefs.wallpaper {
+        Wallpaper::None => "none".to_string(),
+        Wallpaper::Aurora => "auto".to_string(),
+        Wallpaper::Scene { name } => name.clone(),
+        Wallpaper::Image { .. } => "image".to_string(),
+        Wallpaper::Folder { .. } => "folder".to_string(),
+    };
+    let mut wallpaper_options = vec![("auto".to_string(), "Painted sky".to_string())];
+    wallpaper_options.extend(
+        paint::SCENES
+            .iter()
+            .map(|(id, name)| (id.to_string(), name.to_string())),
     );
-    let background_value = match &prefs.wallpaper {
-        Wallpaper::None => "none",
-        Wallpaper::Aurora => "aurora",
-        Wallpaper::Image { .. } => "image",
+    wallpaper_options.extend([
+        ("image".to_string(), "Picture…".to_string()),
+        ("folder".to_string(), "Folder…".to_string()),
+        ("none".to_string(), "None".to_string()),
+    ]);
+    let wallpaper_detail = match &prefs.wallpaper {
+        Wallpaper::Image { path } | Wallpaper::Folder { path } => path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        Wallpaper::Scene { name } if name != "auto" => {
+            "Painted in the app, sized to the window.".into()
+        }
+        Wallpaper::None => "A plain panel with a soft accent glow.".into(),
+        _ => "Sky in light mode, Dusk in dark mode.".into(),
     };
-    let picture_name = match &prefs.wallpaper {
-        Wallpaper::Image { path } => path.file_name().map(|n| n.to_string_lossy().to_string()),
-        _ => None,
-    };
-    let background_select = select(
-        "background",
-        background_value.into(),
-        vec![
-            ("none".into(), "None".into()),
-            ("aurora".into(), "Aurora".into()),
-            ("image".into(), "Picture…".into()),
-        ],
-        menu == Some("background"),
+    let wallpaper_select = select(
+        "wallpaper",
+        wallpaper_value,
+        wallpaper_options,
+        menu == Some("wallpaper"),
         |v, cx| match v {
             "none" => design::set_wallpaper(Wallpaper::None, cx),
-            "aurora" => design::set_wallpaper(Wallpaper::Aurora, cx),
-            _ => pick_picture(cx),
+            "image" => pick_picture(false, cx),
+            "folder" => pick_picture(true, cx),
+            name => design::set_wallpaper(Wallpaper::Scene { name: name.into() }, cx),
         },
         cx,
     );
+    let effect_select = select(
+        "wallpaper-effect",
+        prefs.wallpaper_effect.clone(),
+        paint::EFFECTS
+            .iter()
+            .map(|(id, name)| (id.to_string(), name.to_string()))
+            .collect(),
+        menu == Some("wallpaper-effect"),
+        |v, cx| {
+            let v = v.to_string();
+            crate::design::prefs::Prefs::update(cx, |p| p.wallpaper_effect = v);
+            design::wallpaper::reload(cx);
+        },
+        cx,
+    );
+    let in_threads = Switch::new("wallpaper-in-threads")
+        .checked(prefs.wallpaper_in_threads)
+        .accessibility_label("Wallpaper behind threads")
+        .on_click(|on: &bool, _, cx| {
+            let on = *on;
+            crate::design::prefs::Prefs::update(cx, |p| p.wallpaper_in_threads = on);
+        });
+    let translucent = Switch::new("translucent-window")
+        .checked(prefs.translucent)
+        .accessibility_label("Translucent window")
+        .on_click(|on: &bool, _, cx| design::set_translucent(*on, cx));
     let material_rows = rows_card(
         [
             setting_row(
-                "Style",
-                Some(Style::of(cx).id.blurb().into()),
-                style_select,
+                "New chat wallpaper",
+                Some(wallpaper_detail.into()),
+                wallpaper_select,
                 cx,
             ),
             setting_row(
-                "Background",
-                Some(
-                    picture_name
-                        .unwrap_or_else(|| {
-                            "Drawn once behind the window; no cost while idle.".into()
-                        })
-                        .into(),
-                ),
-                background_select,
+                "Effect",
+                Some("Redraws the wallpaper as dots, print or a screen.".into()),
+                effect_select,
+                cx,
+            ),
+            setting_row(
+                "Behind threads",
+                Some("A faint copy of the wallpaper behind open conversations.".into()),
+                in_threads,
+                cx,
+            ),
+            setting_row(
+                "Translucent window",
+                Some("The desktop shows through the sidebar, blurred by macOS.".into()),
+                translucent,
                 cx,
             ),
         ],
@@ -541,7 +579,7 @@ pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> imp
         .child(cards)
         .child(div().h(px(16.)))
         .child(color_rows)
-        .child(group_header("Material and background", None, cx))
+        .child(group_header("Wallpaper and window", None, cx))
         .child(material_rows)
         .child(group_header("Motion", None, cx))
         .child(motion_rows)
@@ -549,18 +587,31 @@ pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> imp
         .child(layout_rows)
 }
 
-fn pick_picture(cx: &mut App) {
+/// Ask for a picture (or a folder of them) and use it as the wallpaper.
+fn pick_picture(folder: bool, cx: &mut App) {
     let picked = cx.prompt_for_paths(PathPromptOptions {
-        files: true,
-        directories: false,
+        files: !folder,
+        directories: folder,
         multiple: false,
-        prompt: Some("Use as background".into()),
+        prompt: Some(
+            if folder {
+                "Use this folder"
+            } else {
+                "Use as wallpaper"
+            }
+            .into(),
+        ),
     });
     cx.spawn(async move |cx| {
         if let Ok(Ok(Some(mut paths))) = picked.await
             && let Some(path) = paths.pop()
         {
-            cx.update(|cx| design::set_wallpaper(Wallpaper::Image { path }, cx));
+            let choice = if folder {
+                Wallpaper::Folder { path }
+            } else {
+                Wallpaper::Image { path }
+            };
+            cx.update(|cx| design::set_wallpaper(choice, cx));
         }
     })
     .detach();

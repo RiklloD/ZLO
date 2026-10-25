@@ -26,7 +26,7 @@ enum Cmd {
     Page(Page),
     Scheme(&'static str),
     StatusBar,
-    NextStyle,
+    ToggleScheme,
     Browser,
 }
 
@@ -152,9 +152,9 @@ impl Workspace {
             hint: "⇧⌘S".into(),
         });
         out.push(Entry {
-            cmd: Cmd::NextStyle,
+            cmd: Cmd::ToggleScheme,
             icon: IconName::Palette,
-            title: "Next design style".into(),
+            title: "Toggle light and dark".into(),
             hint: "⇧⌘Y".into(),
         });
         out.push(Entry {
@@ -215,12 +215,7 @@ impl Workspace {
             Cmd::Page(page) => self.show(page, window, cx),
             Cmd::Scheme(value) => design::update_appearance(cx, |p| p.scheme = value.into()),
             Cmd::StatusBar => super::toggle_status_bar(cx),
-            Cmd::NextStyle => {
-                let all = design::styles::StyleId::ALL;
-                let now = Style::of(cx).id;
-                let ix = all.iter().position(|s| *s == now).unwrap_or(0);
-                design::set_style(all[(ix + 1) % all.len()], cx);
-            }
+            Cmd::ToggleScheme => design::toggle_scheme(cx),
             Cmd::Browser => self.open_in_browser(cx),
         }
         cx.notify();
