@@ -1324,31 +1324,24 @@ impl Workspace {
         }
     }
 
-    /// The wallpaper behind the content panel: full strength on the
-    /// new-chat screen (and the empty one), a faint wash behind threads,
-    /// none on settings pages. Reports the panel size so the picture is
+    /// The wallpaper behind the content panel: the sharp picture on the
+    /// new-chat screen (and the empty one), its veiled copy behind
+    /// threads, none on settings pages. Reports the panel size so the picture is
     /// painted at it.
     fn render_backdrop(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prefs = Prefs::of(cx);
         if prefs.wallpaper == design::prefs::Wallpaper::None {
             return None;
         }
-        let p = *Palette::of(cx);
         // Appearance previews over the chat, so it shows that chat's backdrop.
         let page = if self.page == Page::Appearance {
             Page::Chat
         } else {
             self.page
         };
-        let alpha = match (page, &self.active) {
-            (Page::Draft, _) | (Page::Chat, None) => 1.,
-            (Page::Chat, Some(_)) if prefs.wallpaper_in_threads => {
-                if p.light {
-                    0.22
-                } else {
-                    0.16
-                }
-            }
+        let veiled = match (page, &self.active) {
+            (Page::Draft, _) | (Page::Chat, None) => false,
+            (Page::Chat, Some(_)) if prefs.wallpaper_in_threads => true,
             _ => return None,
         };
         let s = *Style::of(cx);
@@ -1363,14 +1356,13 @@ impl Workspace {
             f32::from(viewport.height) - status - 2. * s.panel_inset,
             cx,
         );
-        let image = wallpaper::current(cx)?;
+        let image = wallpaper::current(veiled, cx)?;
         Some(
             gpui_kit::img(image)
                 .absolute()
                 .top_0()
                 .left_0()
                 .size_full()
-                .opacity(alpha)
                 .object_fit(gpui_kit::ObjectFit::Cover)
                 .into_any_element(),
         )

@@ -22,6 +22,7 @@ pub const EFFECTS: [(&str, &str); 4] = [
 ];
 
 /// A floating-point picture, row-major.
+#[derive(Clone)]
 pub struct Canvas {
     pub w: u32,
     pub h: u32,
@@ -150,6 +151,28 @@ pub fn tone(c: &mut Canvas, bg: Rgb, dark: bool) {
     for p in &mut c.px {
         *p = mix(*p, bg, k);
     }
+}
+
+/// The thread backdrop: the same sharp picture as the new-chat screen,
+/// with a soft veil down the reading column (`column` points wide) so text
+/// reads over it. The sides and the top keep the full artwork; the veil
+/// feathers out over 160 points and deepens a little toward the composer.
+pub fn thread(c: &Canvas, bg: Rgb, dark: bool, column: f32) -> Canvas {
+    let mut out = c.clone();
+    let (w, h) = (c.w, c.h);
+    let half = column / 2. + 32.;
+    let veil = if dark { 0.58 } else { 0.68 };
+    for x in 0..w {
+        let d = (x as f32 - w as f32 / 2.).abs();
+        let side = veil * (1. - smoothstep(half, half + 160., d));
+        for y in 0..h {
+            let v = y as f32 / h as f32;
+            let k = (side + 0.2 * smoothstep(0.7, 1., v)).min(0.9);
+            let i = (y * w + x) as usize;
+            out.px[i] = mix(out.px[i], bg, k);
+        }
+    }
+    out
 }
 
 /// Redraw the picture through an effect id from [`EFFECTS`].

@@ -28,7 +28,7 @@ pub enum Wallpaper {
 }
 
 /// Preference file layout version; see [`Prefs::load`].
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -81,7 +81,7 @@ impl Default for Prefs {
                 name: "auto".into(),
             },
             wallpaper_effect: "dither".into(),
-            wallpaper_in_threads: false,
+            wallpaper_in_threads: true,
             translucent: false,
             status_bar_hidden: false,
             recent_models: Vec::new(),
@@ -110,7 +110,7 @@ impl Prefs {
             .and_then(|f| std::fs::read(f).ok())
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        if prefs.version < VERSION {
+        if prefs.version < 3 {
             let fresh = Self::default();
             prefs.theme = fresh.theme;
             prefs.light_theme = fresh.light_theme;
@@ -118,8 +118,10 @@ impl Prefs {
             if !matches!(prefs.wallpaper, Wallpaper::Image { .. }) {
                 prefs.wallpaper = fresh.wallpaper;
             }
-            // Behind threads the wallpaper read as smudges; new chat only.
-            prefs.wallpaper_in_threads = false;
+        }
+        if prefs.version < VERSION {
+            // Version 4 brings the wallpaper back behind threads.
+            prefs.wallpaper_in_threads = true;
             prefs.version = VERSION;
         }
         prefs
