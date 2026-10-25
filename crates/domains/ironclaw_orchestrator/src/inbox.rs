@@ -1,7 +1,8 @@
 //! Inbox lifecycle (v2 stage 5, t3code's inbox): pin, snooze, settle and
 //! visit records per (tenant, user, thread) in `orch_inbox`, the thread
 //! facts the inbox joins from the engine's own tables, and the pure state
-//! derivation (T3's precedence: snoozed, settled, pinned, working, inbox).
+//! derivation (T3's precedence: snoozed, settled, pinned, working, inbox;
+//! a working thread that waits on the person comes back to the inbox).
 //!
 //! Records are keyed by the caller, not only the thread, so automation-run
 //! threads (which the engine does not own) can be pinned or settled too. A
@@ -34,6 +35,12 @@ CREATE TABLE IF NOT EXISTS orch_inbox (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (tenant_id, user_id, thread_id)
 );
+CREATE TABLE IF NOT EXISTS orch_awaiting (
+  thread_id TEXT PRIMARY KEY,
+  run_id TEXT,
+  kind TEXT NOT NULL,
+  since INTEGER NOT NULL
+);
 INSERT OR IGNORE INTO orch_meta (key, value)
   VALUES ('inbox_epoch_ms', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER));
 "#;
@@ -57,6 +64,8 @@ pub struct InboxRecord {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InboxFacts {
     pub running: bool,
+    /// The running turn waits on the person (an approval or a sign-in).
+    pub awaiting_input: bool,
     pub live_children: bool,
     pub limit_reset_at: Option<Millis>,
     pub interrupted: bool,
@@ -88,6 +97,7 @@ pub fn classify(
     let empty = InboxRecord::default();
     let rec = record.unwrap_or(&empty);
     let live = facts.running || facts.live_children;
+    let needs_input = facts.running && facts.awaiting_input;
     let seen = rec.visited_at.unwrap_or(epoch);
 
     // A snooze wakes early when a turn ends after it was set (a result or
@@ -110,13 +120,15 @@ pub fn classify(
         InboxState::Settled
     } else if rec.pinned_at.is_some() {
         InboxState::Pinned
-    } else if live {
+    } else if live && !needs_input {
         InboxState::Working
     } else {
         InboxState::Inbox
     };
 
-    let status = if facts.running {
+    let status = if needs_input {
+        Some(InboxStatus::NeedsInput)
+    } else if facts.running {
         Some(InboxStatus::Working)
     } else if facts.live_children {
         Some(InboxStatus::Background)
@@ -171,7 +183,56 @@ fn action_columns(action: InboxAction) -> &'static [(&'static str, &'static str)
     }
 }
 
+/// Why a running turn waits on the person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AwaitingKind {
+    Approval,
+    Auth,
+}
+
+impl AwaitingKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Approval => "approval",
+            Self::Auth => "auth",
+        }
+    }
+}
+
 impl Store {
+    /// The thread's running turn parked on a gate the person answers.
+    /// CLI runtimes record theirs in `orch_cli_approvals` instead.
+    pub async fn set_awaiting(
+        &self,
+        thread: &ThreadId,
+        run_id: Option<&str>,
+        kind: AwaitingKind,
+        at: Millis,
+    ) -> Result<()> {
+        self.exec(
+            "INSERT INTO orch_awaiting (thread_id, run_id, kind, since) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(thread_id) DO UPDATE SET run_id = ?2, kind = ?3, since = ?4",
+            vec![
+                s(thread.as_str()),
+                run_id.map_or(Value::Null, s),
+                s(kind.as_str()),
+                Value::Integer(at),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The turn resumed or ended: nothing waits on the person any more.
+    pub async fn clear_awaiting(&self, thread: &ThreadId) -> Result<()> {
+        self.exec(
+            "DELETE FROM orch_awaiting WHERE thread_id = ?1",
+            vec![s(thread.as_str())],
+        )
+        .await?;
+        Ok(())
+    }
+
     /// When the inbox table was created (turns before it count as seen).
     pub async fn inbox_epoch(&self) -> Result<Millis> {
         let raw = self.meta(EPOCH_KEY).await?;
@@ -264,7 +325,10 @@ impl Store {
                (SELECT COUNT(*) FROM orch_tasks k WHERE k.parent_thread = t.thread_id \
                   AND k.{TASK_ACTIVE_SQL}), \
                (SELECT k.parent_thread FROM orch_tasks k WHERE k.child_thread = t.thread_id \
-                  ORDER BY k.created_at LIMIT 1) \
+                  ORDER BY k.created_at LIMIT 1), \
+               (SELECT COUNT(*) FROM orch_awaiting a WHERE a.thread_id = t.thread_id) \
+                 + (SELECT COUNT(*) FROM orch_cli_approvals c WHERE c.thread_id = t.thread_id \
+                  AND c.decision IS NULL) \
              FROM orch_threads t LEFT JOIN orch_telemetry tel ON tel.thread_id = t.thread_id \
              WHERE t.tenant_id = ?1 AND t.user_id = ?2"
         );
@@ -289,6 +353,7 @@ impl Store {
                 let restart_armed = c.int()? > 0;
                 let live_children = c.int()? > 0;
                 let parent = c.otext()?.map(ThreadId::new).transpose()?;
+                let awaiting_input = c.int()? > 0;
                 let last_activity_at = [Some(created), ended, last_user]
                     .into_iter()
                     .flatten()
@@ -302,6 +367,7 @@ impl Store {
                     engines: vec![own],
                     facts: InboxFacts {
                         running: turn_state == TurnState::Running,
+                        awaiting_input,
                         live_children,
                         limit_reset_at,
                         interrupted: restart_armed || hold == Some(HoldReason::Interrupted),
@@ -405,6 +471,21 @@ mod tests {
             classify(&running, Some(&pinned), 0, now).0,
             InboxState::Pinned
         );
+        // Waiting on the person brings a working thread back to the inbox;
+        // a stale gate on an idle thread counts for nothing.
+        let asking = InboxFacts {
+            awaiting_input: true,
+            ..running.clone()
+        };
+        assert_eq!(
+            classify(&asking, None, 0, now),
+            (InboxState::Inbox, Some(InboxStatus::NeedsInput))
+        );
+        let stale = InboxFacts {
+            awaiting_input: true,
+            ..idle(900, None)
+        };
+        assert_eq!(classify(&stale, None, 0, now).1, None);
         // A snooze holds until its time, then wakes (Woke until visited).
         let snoozed = InboxRecord {
             snooze_until: Some(20_000),
@@ -529,6 +610,41 @@ mod tests {
         let row = threads.iter().find(|t| t.thread_id == child).unwrap();
         assert_eq!(row.parent_thread_id.as_ref(), Some(&parent));
         assert!(store.inbox_threads(&other).await.unwrap().is_empty());
+
+        // Waiting on the person: an open CLI approval, then a native gate.
+        let awaiting = |threads: &[InboxThread]| {
+            threads
+                .iter()
+                .find(|t| t.thread_id == child)
+                .unwrap()
+                .facts
+                .awaiting_input
+        };
+        assert!(!awaiting(&store.inbox_threads(&owner).await.unwrap()));
+        store
+            .exec(
+                "INSERT INTO orch_cli_approvals (gate_ref, thread_id, run_id, tool_name, requested_at) \
+                 VALUES ('g1', ?1, 'r1', 'Bash', 1)",
+                vec![s(child.as_str())],
+            )
+            .await
+            .unwrap();
+        assert!(awaiting(&store.inbox_threads(&owner).await.unwrap()));
+        store
+            .exec(
+                "UPDATE orch_cli_approvals SET decision = 'allowed' WHERE gate_ref = 'g1'",
+                vec![],
+            )
+            .await
+            .unwrap();
+        assert!(!awaiting(&store.inbox_threads(&owner).await.unwrap()));
+        store
+            .set_awaiting(&child, Some("r2"), AwaitingKind::Auth, 2)
+            .await
+            .unwrap();
+        assert!(awaiting(&store.inbox_threads(&owner).await.unwrap()));
+        store.clear_awaiting(&child).await.unwrap();
+        assert!(!awaiting(&store.inbox_threads(&owner).await.unwrap()));
 
         let now = now_ms();
         store

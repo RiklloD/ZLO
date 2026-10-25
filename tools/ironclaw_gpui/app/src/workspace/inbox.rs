@@ -1,6 +1,7 @@
 //! The sidebar inbox (t3code's): one list by recency with search and
 //! filters (profile, model, state), Pinned on top, the Working, Snoozed (N)
-//! and Settled (N) shelves at the bottom, and the profile menu of the
+//! and Settled (N) shelves at the bottom (a working thread that waits on an
+//! approval or sign-in comes back up to the inbox, marked "Needs you"), and the profile menu of the
 //! new-thread screen.
 //!
 //! The backend joins and classifies every row (`GET /inbox`), so this file
@@ -92,7 +93,7 @@ impl Inbox {
         self.list.rows.iter().any(|r| {
             matches!(
                 r.status,
-                Some(InboxStatus::Working | InboxStatus::Background)
+                Some(InboxStatus::Working | InboxStatus::Background | InboxStatus::NeedsInput)
             )
         })
     }
@@ -1146,6 +1147,7 @@ fn branch_label(branch: String, cx: &App) -> impl IntoElement {
 fn settle_blocker(row: &InboxRow) -> Option<&'static str> {
     match row.status {
         Some(InboxStatus::Working) => Some("is working"),
+        Some(InboxStatus::NeedsInput) => Some("is waiting on you"),
         Some(InboxStatus::Background) => Some("has subagents running"),
         _ => None,
     }
@@ -1192,6 +1194,16 @@ fn status_body(row: &InboxRow, active: bool, now: i64, cx: &App) -> AnyElement {
                 p.accent,
             ))
             .child("Working")
+            .into_any_element(),
+        // t3code's "needs you": amber, with a dot, until it is answered.
+        Some(InboxStatus::NeedsInput) => h_flex()
+            .flex_none()
+            .gap_1()
+            .items_center()
+            .text_xs()
+            .text_color(p.warning)
+            .child(div().size(px(6.)).rounded_full().bg(p.warning))
+            .child("Needs you")
             .into_any_element(),
         Some(InboxStatus::Background) => text("Subagents".into(), p.accent),
         Some(InboxStatus::Limited) => {

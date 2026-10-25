@@ -28,6 +28,9 @@ pub enum InboxState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InboxStatus {
+    /// A running turn waits on the person: a tool approval, a sign-in, or
+    /// a question the agent asked through one.
+    NeedsInput,
     /// A turn is running.
     Working,
     /// The thread is idle while delegated children run.
