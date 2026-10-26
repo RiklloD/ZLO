@@ -7,7 +7,8 @@
 // methods, so every screen picks up the design kit's motion.
 pub use crate::design::kit::Button;
 pub use gpui_kit::component::input::{
-    Input, InputEvent, InputState, Position, Textarea, TextareaState,
+    InlineToken, InlineTokenContext, Input, InputContent, InputEvent, InputState, Position,
+    Textarea, TextareaState,
 };
 pub use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 pub use gpui_kit::component::spinner::Spinner;
@@ -18,11 +19,11 @@ pub use gpui_kit::component::{
 };
 pub use gpui_kit::prelude::FluentBuilder;
 pub use gpui_kit::{
-    AnyElement, App, AppContext, ClipboardItem, Context, ElementId, Entity, EventEmitter,
-    ExternalPaths, Global, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, PathPromptOptions, Render, Role, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, SystemNotification, SystemNotificationResponse, Task, WeakEntity, Window,
-    div, px,
+    AnyElement, App, AppContext, ClipboardEntry, ClipboardItem, Context, ElementId, Entity,
+    EventEmitter, ExternalPaths, Global, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement, PathPromptOptions, Render, Role, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, SystemNotification,
+    SystemNotificationResponse, Task, WeakEntity, Window, div, px,
 };
 /// Drawing primitives for the computer-use viewer (frames, cursor, ripples).
 pub use gpui_kit::{Bounds, PathBuilder, Pixels, RenderImage, canvas, img, point, rgb, rgba};

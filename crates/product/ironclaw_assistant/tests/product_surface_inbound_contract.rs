@@ -477,12 +477,14 @@ fn decode_attachments_decodes_metadata_kind_and_bytes() {
             mime_type: "application/pdf".to_string(),
             filename: Some("report.pdf".to_string()),
             data_base64: b64(b"%PDF-1.7 body"),
+            path: None,
         },
         ProductInboundAttachment {
             // Uppercase + charset params normalize; kind derives from registry.
             mime_type: "IMAGE/PNG; charset=binary".to_string(),
             filename: None,
             data_base64: b64(&[0x89, 0x50, 0x4E, 0x47]),
+            path: None,
         },
     ]);
 
@@ -507,6 +509,7 @@ fn decode_attachments_rejects_unsupported_mime() {
         mime_type: "image/svg+xml".to_string(),
         filename: None,
         data_base64: b64(b"<svg/>"),
+        path: None,
     }]);
     let err = request
         .decode_attachments()
@@ -524,6 +527,7 @@ fn decode_attachments_rejects_malformed_base64() {
         mime_type: "application/pdf".to_string(),
         filename: None,
         data_base64: "not valid base64!!!".to_string(),
+        path: None,
     }]);
     let err = request.decode_attachments().expect_err("bad base64");
     assert_validation_error(
@@ -539,6 +543,7 @@ fn decode_attachments_rejects_per_file_oversize() {
         mime_type: "application/pdf".to_string(),
         filename: None,
         data_base64: b64(&vec![0u8; 10 * 1024 * 1024 + 1]),
+        path: None,
     }]);
     let err = request.decode_attachments().expect_err("over per-file cap");
     assert_validation_error(&err, "attachments", ProductSurfaceValidationCode::TooLong);
@@ -552,6 +557,7 @@ fn decode_attachments_rejects_total_oversize() {
             mime_type: "application/pdf".to_string(),
             filename: None,
             data_base64: b64(&three_mib),
+            path: None,
         };
         4 // 12 MiB total > 10 MiB cap
     ]);
@@ -566,6 +572,7 @@ fn decode_attachments_rejects_too_many() {
             mime_type: "text/plain".to_string(),
             filename: None,
             data_base64: b64(b"x"),
+            path: None,
         };
         11 // > MAX_INLINE_ATTACHMENTS (10)
     ]);
@@ -573,6 +580,22 @@ fn decode_attachments_rejects_too_many() {
         .decode_attachments()
         .expect_err("too many attachments");
     assert_validation_error(&err, "attachments", ProductSurfaceValidationCode::TooLong);
+}
+
+#[test]
+fn decode_attachments_rejects_unresolved_local_path() {
+    let request = send_with_attachments(vec![ProductInboundAttachment {
+        mime_type: "application/pdf".to_string(),
+        filename: Some("big.pdf".to_string()),
+        data_base64: String::new(),
+        path: Some("/tmp/big.pdf".to_string()),
+    }]);
+    let err = request.decode_attachments().expect_err("path not resolved");
+    assert_validation_error(
+        &err,
+        "attachments.path",
+        ProductSurfaceValidationCode::InvalidValue,
+    );
 }
 
 #[test]

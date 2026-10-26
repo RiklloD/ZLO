@@ -682,6 +682,7 @@ fn product_attachments(attachments: Vec<InboundAttachment>) -> Vec<ProductInboun
             mime_type: attachment.mime_type,
             filename: attachment.filename,
             data_base64: base64::engine::general_purpose::STANDARD.encode(attachment.bytes),
+            path: None,
         })
         .collect()
 }

@@ -542,14 +542,14 @@ pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> imp
         "width",
         format!("{}", prefs.conversation_width as u32),
         vec![
-            ("640".into(), "Narrow".into()),
-            ("720".into(), "Default".into()),
-            ("880".into(), "Wide".into()),
-            ("1040".into(), "Widest".into()),
+            ("680".into(), "Narrow".into()),
+            ("800".into(), "Default".into()),
+            ("920".into(), "Wide".into()),
+            ("1080".into(), "Widest".into()),
         ],
         menu == Some("width"),
         |v, cx| {
-            let n: f32 = v.parse().unwrap_or(720.);
+            let n: f32 = v.parse().unwrap_or(800.);
             design::update_appearance(cx, |p| p.conversation_width = n);
         },
         cx,

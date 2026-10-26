@@ -19,18 +19,19 @@ impl ChatView {
     /// Enter while a turn runs: the message joins that turn, shown as the
     /// person's row inside it rather than as the start of a new turn.
     pub(super) fn steer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).value().trim().to_string();
-        if text.is_empty() && self.staged.is_empty() {
+        let (text, files) = super::inline_files::outgoing(&self.composer, &self.staged, cx);
+        if text.is_empty() && files.is_empty() {
             return;
         }
         let Some(channel) = self.channel.clone() else {
             self.set_error("This gateway has no chat channel configured.", cx);
             return;
         };
+        let draft = self.composer.read(cx).content();
         self.composer
             .update(cx, |state, cx| state.clean(window, cx));
         self.error = None;
-        let files = std::mem::take(&mut self.staged);
+        self.staged.clear();
         let names: Vec<String> = files.iter().map(|f| f.filename.clone()).collect();
         let pending = self.transcript.push_pending_user(&text, &names);
         self.refresh_rows(cx);
@@ -68,7 +69,7 @@ impl ChatView {
                     this.transcript.drop_pending_user(pending);
                     this.staged = files;
                     this.composer
-                        .update(cx, |state, cx| state.set_value(text.clone(), window, cx));
+                        .update(cx, |state, cx| state.set_value(draft, window, cx));
                     this.set_error(e.to_string(), cx);
                     this.refresh_rows(cx);
                 }

@@ -26,7 +26,21 @@ icon_assets!(
         Sparkles,
         LayoutGrid,
         Monitor,
-        Paperclip
+        Paperclip,
+        // Right pane tabs and actions.
+        Activity,
+        FileDiff,
+        FileCode,
+        FolderGit,
+        FolderPlus,
+        GitCommitHorizontal,
+        GitCompare,
+        GitPullRequest,
+        Image,
+        ListTodo,
+        MessageSquarePlus,
+        CircleDot,
+        Upload
     ]
 );
 

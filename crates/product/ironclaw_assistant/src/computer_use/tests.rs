@@ -104,6 +104,7 @@ impl ComputerUseSessions for FakeSessions {
 struct PermissiveSettings {
     tool_override: Option<ToolPermissionOverride>,
     always_allow: bool,
+    full_access: bool,
 }
 
 #[async_trait]
@@ -127,6 +128,10 @@ impl ApprovalSettingsProvider for PermissiveSettings {
         _grantee: &Principal,
     ) -> bool {
         self.always_allow
+    }
+
+    async fn full_access(&self, _scope: &ResourceScope) -> bool {
+        self.full_access
     }
 }
 
@@ -174,13 +179,24 @@ fn handler(
     tool_override: Option<ToolPermissionOverride>,
     always_allow: bool,
 ) -> (ToolHandler, Arc<ComputerUseApprovalStores>) {
+    handler_from(
+        sessions,
+        PermissiveSettings {
+            tool_override,
+            always_allow,
+            full_access: false,
+        },
+    )
+}
+
+fn handler_from(
+    sessions: &Arc<FakeSessions>,
+    settings: PermissiveSettings,
+) -> (ToolHandler, Arc<ComputerUseApprovalStores>) {
     let stores = Arc::new(ComputerUseApprovalStores {
         approval_requests: Arc::new(in_memory_backed_approval_request_store()),
         capability_leases: Arc::new(in_memory_backed_capability_lease_store()),
-        approval_settings: Arc::new(PermissiveSettings {
-            tool_override,
-            always_allow,
-        }),
+        approval_settings: Arc::new(settings),
         replay_payload_store: Arc::new(MemoryReplay::default()),
         gate_record_store: Arc::new(in_memory_backed_gate_record_store()),
     });
@@ -323,6 +339,35 @@ async fn always_allow_runs_the_tool_without_an_approval_unless_ask_each_time() {
         "ask-each-time wins"
     );
     assert!(sessions.calls().is_empty());
+}
+
+#[tokio::test]
+async fn full_access_never_asks_even_with_ask_each_time_but_disabled_denies() {
+    for (tool_override, runs) in [
+        (None, true),
+        (Some(ToolPermissionOverride::AskEachTime), true),
+        (Some(ToolPermissionOverride::Disabled), false),
+    ] {
+        let sessions = FakeSessions::new();
+        let (handler, _) = handler_from(
+            &sessions,
+            PermissiveSettings {
+                tool_override,
+                always_allow: false,
+                full_access: true,
+            },
+        );
+        let outcome = handler.invoke(invocation(None).await).await;
+        assert!(
+            !matches!(outcome, Ok(Resolution::Blocked(_))),
+            "{tool_override:?}: full access never blocks on an approval"
+        );
+        assert_eq!(
+            sessions.calls().len(),
+            usize::from(runs),
+            "{tool_override:?}"
+        );
+    }
 }
 
 #[tokio::test]

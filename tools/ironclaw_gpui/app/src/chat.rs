@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 use ironclaw_gpui_client::attachments::{self, StagedFile, format_bytes};
 use ironclaw_gpui_client::commands::{match_command, menu_matches, takes_arguments};
 use ironclaw_gpui_client::contract::ProductGateKind;
+use ironclaw_gpui_client::inbound_requests::{AnchoredPart, anchored_parts};
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::transcript::{
-    AttachmentChip, GateState, PREFIX_KEY, Row, RunEnd, ToolStatus, Transcript,
+    self, AttachmentChip, GateState, PREFIX_KEY, Row, RunEnd, ToolStatus, Transcript,
 };
 use ironclaw_gpui_client::wire::{AttachmentLimits, CommandEffect};
 use ironclaw_gpui_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
@@ -30,10 +31,12 @@ mod approval_reason;
 mod computer;
 mod flow;
 mod goals;
+pub(crate) mod inline_files;
 pub mod model_picker;
 mod orchestration;
 mod outline;
 mod pace;
+mod side;
 mod snapshot;
 mod steer;
 
@@ -101,7 +104,7 @@ pub struct ChatView {
     menu_index: usize,
     /// The composer's model pill: any provider, switched per thread.
     picker: Entity<ModelPicker>,
-    /// The profile's approval-mode pill beside the model pill.
+    /// The profile's approval-mode pill after the model and thinking pills.
     approval: Entity<approval_mode::ApprovalPill>,
     /// Task ideas for an empty conversation, loaded once it is known empty.
     /// The conversation's files panel, when open.
@@ -113,6 +116,8 @@ pub struct ChatView {
     /// The computer-use screen share of this thread.
     computer: Entity<computer::ComputerShare>,
     _computer_stop: Subscription,
+    /// The right pane: activity, outputs, agents, routines, project tools.
+    side: side::Side,
     _stream: Option<EventStream>,
     _pump: Task<()>,
 }
@@ -175,6 +180,7 @@ impl ChatView {
                     InputEvent::PressEnter { shift: false, .. } => this.send(window, cx),
                     InputEvent::Change => {
                         this.menu_index = 0;
+                        inline_files::prune(&this.composer, &mut this.staged, cx);
                         cx.notify();
                     }
                     _ => {}
@@ -254,6 +260,7 @@ impl ChatView {
             orch: Default::default(),
             computer,
             _computer_stop: computer_stop,
+            side: Default::default(),
             _stream: Some(stream),
             _pump: pump,
         };
@@ -262,6 +269,7 @@ impl ChatView {
         this.load_timeline(cx);
         this.load_commands(cx);
         this.refresh_orchestration(cx);
+        this.side_init(cx);
         this
     }
 
@@ -290,7 +298,7 @@ impl ChatView {
         });
         let task = cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await {
-                let _ = this.update(cx, |this, cx| this.attach(paths, cx));
+                let _ = this.update_in(cx, |this, window, cx| this.attach(paths, window, cx));
             }
         });
         self.keep(task);
@@ -299,7 +307,12 @@ impl ChatView {
     /// Read files off the main thread, then stage the ones within limits.
     /// Attach another thread's transcript (its fork source included) as a
     /// Markdown file, so this thread can read it.
-    fn attach_thread(&mut self, dragged: &DraggedThread, cx: &mut Context<Self>) {
+    fn attach_thread(
+        &mut self,
+        dragged: &DraggedThread,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if dragged.id == self.thread_id {
             return;
         }
@@ -308,15 +321,15 @@ impl ChatView {
         let job = self
             .backend
             .spawn(move |c| async move { c.thread_attachment(&id, &title, &limits).await });
-        let task = cx.spawn(async move |this, cx| {
+        let task = cx.spawn_in(window, async move |this, cx| {
             let result = flatten(job.await);
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 let staged = result.map_err(|e| e.to_string()).and_then(|file| {
                     attachments::check(&file, &this.staged, &this.limits).map(|()| file)
                 });
                 match staged {
                     Ok(file) => {
-                        this.staged.push(file);
+                        this.place(vec![file], window, cx);
                         this.error = None;
                     }
                     Err(problem) => this.error = Some(problem.into()),
@@ -327,7 +340,44 @@ impl ChatView {
         self.keep(task);
     }
 
-    fn attach(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    /// Stage `files` and put their cards at the composer's cursor.
+    pub(crate) fn place(
+        &mut self,
+        files: Vec<StagedFile>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let from = self.staged.len();
+        self.staged.extend(files);
+        inline_files::insert(
+            &self.composer,
+            &self.staged[from..],
+            &self.staged,
+            window,
+            cx,
+        );
+    }
+
+    /// Files or a picture pasted into the composer.
+    fn paste(&mut self, pasted: inline_files::Pasted, window: &mut Window, cx: &mut Context<Self>) {
+        match pasted {
+            inline_files::Pasted::Paths(paths) => self.attach(paths, window, cx),
+            inline_files::Pasted::Image { bytes, mime } => {
+                match inline_files::pasted_image(bytes, mime, &self.staged, &self.limits) {
+                    Ok(file) => self.place(vec![file], window, cx),
+                    Err(problem) => self.error = Some(problem.into()),
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn attach(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let limits = self.limits.clone();
         let job = self.backend.spawn(move |_| async move {
             let mut out = Vec::new();
@@ -336,20 +386,23 @@ impl ChatView {
             }
             Ok::<_, ClientError>(out)
         });
-        let task = cx.spawn(async move |this, cx| {
+        let task = cx.spawn_in(window, async move |this, cx| {
             let Ok(results) = flatten(job.await) else {
                 return;
             };
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 let mut problems = Vec::new();
+                let mut files = Vec::new();
                 for result in results {
+                    // Path files have no limit; only uploads are checked.
                     match result.and_then(|file| {
                         attachments::check(&file, &this.staged, &this.limits).map(|()| file)
                     }) {
-                        Ok(file) => this.staged.push(file),
+                        Ok(file) => files.push(file),
                         Err(problem) => problems.push(problem),
                     }
                 }
+                this.place(files, window, cx);
                 this.error = (!problems.is_empty()).then(|| problems.join(" ").into());
                 cx.notify();
             });
@@ -368,13 +421,6 @@ impl ChatView {
         self.open_fetched(dir, &chip.filename, cx, move |c| async move {
             c.attachment_bytes(&thread_id, &message_id, &id).await
         });
-    }
-
-    fn toggle_files(&mut self, cx: &mut Context<Self>) {
-        if self.files.take().is_none() {
-            self.browse(None, cx);
-        }
-        cx.notify();
     }
 
     fn browse(&mut self, path: Option<String>, cx: &mut Context<Self>) {
@@ -416,150 +462,6 @@ impl ChatView {
             });
         });
         self.keep(task);
-    }
-
-    fn render_files(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let panel = self.files.as_ref()?;
-        let theme = cx.theme();
-        let parent = panel.path.as_deref().map(|p| {
-            let trimmed = p.trim_end_matches('/');
-            // Back to the root once only the top folder is left.
-            trimmed
-                .rsplit_once('/')
-                .map(|(head, _)| head.to_string())
-                .filter(|head| head.matches('/').count() >= 2)
-        });
-        let title = panel
-            .path
-            .as_deref()
-            .and_then(|p| p.trim_end_matches('/').rsplit('/').next())
-            .unwrap_or("Files")
-            .to_string();
-        let body = match (&panel.entries, &panel.error) {
-            (_, Some(e)) => div()
-                .text_sm()
-                .text_color(theme.danger)
-                .whitespace_normal()
-                .child(e.clone())
-                .into_any_element(),
-            (None, None) => h_flex()
-                .justify_center()
-                .py_4()
-                .child(Spinner::new())
-                .into_any_element(),
-            (Some(entries), None) if entries.is_empty() => div()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("No files yet. Files IronClaw writes in this conversation show up here.")
-                .whitespace_normal()
-                .into_any_element(),
-            (Some(entries), None) => v_flex()
-                .children(entries.iter().enumerate().map(|(ix, entry)| {
-                    let dir = matches!(entry.kind, ProjectFsEntryKind::Directory);
-                    let path = entry.path.clone();
-                    h_flex()
-                        .id(("file-entry", ix))
-                        .role(Role::Button)
-                        .aria_label(entry.name.clone())
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .rounded(theme.radius)
-                        .text_sm()
-                        .cursor_pointer()
-                        .map(|d| crate::design::kit::smooth_bg(d, format!("file-entry-{ix}"), cx))
-                        .child(
-                            Icon::new(if dir {
-                                IconName::Folder
-                            } else {
-                                IconName::File
-                            })
-                            .xsmall()
-                            .flex_none(),
-                        )
-                        .child(div().min_w_0().truncate().child(entry.name.clone()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if dir {
-                                this.browse(Some(path.clone()), cx)
-                            } else {
-                                this.open_thread_file(path.clone(), cx)
-                            }
-                        }))
-                }))
-                .into_any_element(),
-        };
-        Some(
-            v_flex()
-                .w(px(280.))
-                .h_full()
-                .flex_none()
-                .border_l_1()
-                .border_color(theme.border)
-                .bg(theme.sidebar)
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .px_3()
-                        .py_2()
-                        .items_center()
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .when_some(parent, |this, parent| {
-                            this.child(
-                                Button::new("files-up")
-                                    .icon(IconName::ChevronLeft)
-                                    .ghost()
-                                    .xsmall()
-                                    .tooltip("Back")
-                                    .accessibility_label("Back")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.browse(parent.clone(), cx)
-                                    })),
-                            )
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .font_medium()
-                                .text_sm()
-                                .child(title),
-                        )
-                        .child(
-                            Button::new("files-close")
-                                .icon(IconName::Close)
-                                .ghost()
-                                .xsmall()
-                                .tooltip("Close")
-                                .accessibility_label("Close files")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.files = None;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("files-list")
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .p_2()
-                        .child(body),
-                )
-                .into_any_element(),
-        )
-    }
-
-    /// Open one of this conversation's own files.
-    fn open_thread_file(&mut self, path: String, cx: &mut Context<Self>) {
-        let thread_id = self.thread_id.clone();
-        let dir = PathBuf::from(&self.thread_id).join("files");
-        let name = path.clone();
-        self.open_fetched(dir, &name, cx, move |c| async move {
-            c.thread_file_bytes(&thread_id, &path).await
-        });
     }
 
     /// Fetch bytes, write them under the app's temp folder and hand the file
@@ -646,7 +548,9 @@ impl ChatView {
             && !keys.modifiers.modified()
             && self.composer.read(cx).value().is_empty()
             && let Some(last) = self.rows.iter().rev().find_map(|r| match r {
-                Row::User { text, .. } => Some(text.clone()),
+                Row::User {
+                    text, attachments, ..
+                } => Some(transcript::readable(text, attachments)),
                 _ => None,
             })
         {
@@ -808,6 +712,9 @@ impl ChatView {
         } else {
             self.ensure_poll(cx);
         }
+        if ended.is_some() {
+            self.side_turn_ended(cx);
+        }
         // Stopping a run is the person's own doing; no alert for that.
         if let Some(end @ (RunEnd::Completed | RunEnd::Failed)) = ended {
             if end == RunEnd::Failed {
@@ -894,10 +801,11 @@ impl ChatView {
                 })
                 .unwrap_or(0.);
             // Under the reserve: the last row's own bottom padding and the
-            // list's 0.5 rem. One spare pixel keeps the prompt-at-top view
-            // from counting as "at the bottom", which would turn on tail
-            // following and drag the prompt up as the answer grows.
-            let below = flow::SPACE_LG + 24. + 0.5 * f32::from(window.rem_size()) + 1.;
+            // list's 0.5 rem. The reserve runs 3 px past the viewport so the
+            // prompt-at-top view never counts as "at the bottom" (GPUI allows
+            // 1 px): there, tail following would switch on, the pin below
+            // would snap back, and the two would fight the wheel every frame.
+            let below = flow::SPACE_LG + 24. + 0.5 * f32::from(window.rem_size()) - 3.;
             (self.list_height.get() - turn - below).max(0.)
         } else {
             0.
@@ -942,16 +850,16 @@ impl ChatView {
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).value().trim().to_string();
-        if text.is_empty() && self.staged.is_empty() {
+        let (text, files) = inline_files::outgoing(&self.composer, &self.staged, cx);
+        if text.is_empty() && files.is_empty() {
             return;
         }
-        if self.staged.is_empty()
+        if files.is_empty()
             && let Some(command) = goals::goal_command(&text)
         {
             return self.goal_command(command, window, cx);
         }
-        if self.staged.is_empty() && match_command(&text, &self.commands).is_some() {
+        if files.is_empty() && match_command(&text, &self.commands).is_some() {
             self.run_command(text, window, cx);
             return;
         }
@@ -962,10 +870,11 @@ impl ChatView {
             self.set_error("This gateway has no chat channel configured.", cx);
             return;
         };
+        let draft = self.composer.read(cx).content();
         self.composer
             .update(cx, |state, cx| state.clean(window, cx));
         self.error = None;
-        let files = std::mem::take(&mut self.staged);
+        self.staged.clear();
         let names: Vec<String> = files.iter().map(|f| f.filename.clone()).collect();
         let pending = self.transcript.push_pending_user(&text, &names);
         self.refresh_rows(cx);
@@ -978,6 +887,8 @@ impl ChatView {
         });
         self.prompt_rise = (!cx.reduce_motion()).then(Instant::now);
         self.pin_next = true;
+        // The project's working tree as it stands now, for the turn's card.
+        self.side_turn_started(cx);
 
         let thread_id = self.thread_id.clone();
         let body = text.clone();
@@ -1002,10 +913,11 @@ impl ChatView {
                     if let Some(r) = this.reserve.as_mut() {
                         r.held = false;
                     }
-                    // Put the files back so a retry needs no re-picking.
+                    // Put the text and its cards back so a retry needs no
+                    // re-picking.
                     this.staged = files;
                     this.composer
-                        .update(cx, |state, cx| state.set_value(text.clone(), window, cx));
+                        .update(cx, |state, cx| state.set_value(draft, window, cx));
                     this.set_error(e.to_string(), cx);
                     this.refresh_rows(cx);
                 }
@@ -1018,7 +930,7 @@ impl ChatView {
     /// thread exists.
     pub fn send_text(
         &mut self,
-        text: String,
+        draft: InputContent,
         files: Vec<StagedFile>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1027,7 +939,7 @@ impl ChatView {
         self.arrive = true;
         crate::design::dock::take_off(cx.reduce_motion());
         self.composer
-            .update(cx, |state, cx| state.set_value(text, window, cx));
+            .update(cx, |state, cx| state.set_value(draft, window, cx));
         self.send(window, cx);
     }
 
@@ -1315,7 +1227,7 @@ impl Render for ChatView {
             _ => None,
         };
 
-        let files_open = self.files.is_some();
+        let side_open = side::side_open(cx);
         let main = v_flex()
             .id("chat")
             .relative()
@@ -1323,13 +1235,13 @@ impl Render for ChatView {
             .min_w_0()
             .h_full()
             .drag_over::<ExternalPaths>(|this, _, _, cx| this.bg(cx.theme().accent))
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                this.attach(paths.paths().to_vec(), cx)
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.attach(paths.paths().to_vec(), window, cx)
             }))
             .drag_over::<DraggedThread>(|this, _, _, cx| this.bg(cx.theme().accent.opacity(0.15)))
-            .on_drop(
-                cx.listener(|this, dragged: &DraggedThread, _, cx| this.attach_thread(dragged, cx)),
-            )
+            .on_drop(cx.listener(|this, dragged: &DraggedThread, window, cx| {
+                this.attach_thread(dragged, window, cx)
+            }))
             .when_some(banner, |this, text| {
                 this.child(
                     div()
@@ -1416,14 +1328,18 @@ impl Render for ChatView {
                                     .on_click(cx.listener(|this, _, _, cx| this.fork(None, cx))),
                             )
                             .child(
-                                Button::new("files-toggle")
-                                    .icon(IconName::FolderOpen)
+                                Button::new("side-toggle")
+                                    .icon(if side_open {
+                                        IconName::PanelRightClose
+                                    } else {
+                                        IconName::PanelRightOpen
+                                    })
                                     .ghost()
                                     .small()
-                                    .when(files_open, |b| b.selected(true))
-                                    .tooltip("Conversation files")
-                                    .accessibility_label("Conversation files")
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx))),
+                                    .when(side_open, |b| b.selected(true))
+                                    .tooltip("Activity, files and changes")
+                                    .accessibility_label("Toggle the right pane")
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_side(cx))),
                             ),
                     ),
             )
@@ -1436,51 +1352,6 @@ impl Render for ChatView {
                             .text_sm()
                             .text_color(cx.theme().danger)
                             .child(error),
-                    ),
-                )
-            })
-            .when(!self.staged.is_empty(), |this| {
-                this.child(
-                    h_flex().justify_center().px_4().pt_2().child(
-                        h_flex()
-                            .w_full()
-                            .max_w(px(content_width(cx)))
-                            .flex_wrap()
-                            .gap_1()
-                            .children(
-                                self.staged
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(_, f)| {
-                                        !crate::snapshot::is_companion(f, &self.staged)
-                                    })
-                                    .map(|(ix, file)| {
-                                        let id = SharedString::from(format!("staged-{ix}"));
-                                        crate::snapshot::chip(id.clone(), file, cx)
-                                            .unwrap_or_else(|| {
-                                                file_chip(
-                                                    id,
-                                                    &file.filename,
-                                                    Some(file.bytes.len() as u64),
-                                                    cx,
-                                                )
-                                            })
-                                            .child(
-                                                Button::new(SharedString::from(format!(
-                                                    "unstage-{ix}"
-                                                )))
-                                                .icon(IconName::Close)
-                                                .xsmall()
-                                                .ghost()
-                                                .tooltip("Remove")
-                                                .accessibility_label("Remove")
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    crate::snapshot::unstage(&mut this.staged, ix);
-                                                    cx.notify();
-                                                })),
-                                            )
-                                    }),
-                            ),
                     ),
                 )
             })
@@ -1505,10 +1376,21 @@ impl Render for ChatView {
                     .pt_2()
                     .child(self.render_composer(running, focused, cx)),
             );
+        let side = self.render_side(window, cx);
         h_flex()
             .size_full()
+            // The pane's edge drag follows the pointer anywhere in the chat.
+            .on_mouse_move(
+                cx.listener(|this, e: &gpui_kit::MouseMoveEvent, window, cx| {
+                    this.side_drag_move(e, window, cx)
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.side_drag_end(cx)),
+            )
             .child(main)
-            .when_some(self.render_files(cx), |this, panel| this.child(panel))
+            .children(side)
     }
 }
 
@@ -1519,34 +1401,46 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
             text,
             pending,
             attachments,
-        } => v_flex()
-            .w_full()
-            .items_end()
-            .gap_1()
-            .when(!text.is_empty(), |this| {
-                this.child(flow::user_pill(key, text, *pending, cx))
-            })
-            .when(!attachments.is_empty(), |this| {
-                this.child(h_flex().flex_wrap().justify_end().gap_1().children(
-                    attachments.iter().enumerate().map(|(ix, chip)| {
-                        let weak = weak.clone();
-                        let open = chip.clone();
-                        file_chip(
-                            SharedString::from(format!("{key}-file-{ix}")),
-                            &chip.filename,
-                            chip.size,
-                            cx,
-                        )
-                        .when(chip.message_id.is_some(), |this| {
-                            this.cursor_pointer().on_click(move |_, _, cx| {
-                                let chip = open.clone();
-                                let _ = weak.update(cx, |this, cx| this.open_attachment(chip, cx));
-                            })
-                        })
-                    }),
-                ))
-            })
-            .into_any_element(),
+        } => {
+            let parts = anchored_parts(text);
+            let placed: std::collections::HashSet<usize> = parts
+                .iter()
+                .filter_map(|part| match part {
+                    AnchoredPart::Attachment(ix) => Some(*ix),
+                    AnchoredPart::Text(_) => None,
+                })
+                .collect();
+            let body = if placed.is_empty() {
+                text.clone().into_any_element()
+            } else {
+                placed_body(key, &parts, attachments, weak, cx)
+            };
+            v_flex()
+                .w_full()
+                .items_end()
+                .gap_1()
+                .when(!text.is_empty(), |this| {
+                    this.child(flow::user_pill(key, body, *pending, cx))
+                })
+                .child(
+                    h_flex().flex_wrap().justify_end().gap_1().children(
+                        attachments
+                            .iter()
+                            .enumerate()
+                            .filter(|(ix, _)| !placed.contains(ix))
+                            .map(|(ix, chip)| {
+                                let card = file_chip(
+                                    SharedString::from(format!("{key}-file-{ix}")),
+                                    &chip.filename,
+                                    sent_subtitle(chip),
+                                    cx,
+                                );
+                                openable(card, chip, weak)
+                            }),
+                    ),
+                )
+                .into_any_element()
+        }
         Row::Assistant {
             key,
             text,
@@ -1728,7 +1622,21 @@ impl ChatView {
             Some(self.approval.clone().into_any_element()),
             div()
                 .capture_key_down(cx.listener(Self::on_composer_key))
-                .child(Textarea::new(&self.composer).appearance(false)),
+                .child(
+                    Textarea::new(&self.composer)
+                        .appearance(false)
+                        .token(inline_files::token_renderer(&self.staged, cx))
+                        .on_paste({
+                            let weak = cx.entity().downgrade();
+                            move |item, window, cx| {
+                                let Some(files) = inline_files::pasted(item) else {
+                                    return false;
+                                };
+                                let _ = weak.update(cx, |this, cx| this.paste(files, window, cx));
+                                true
+                            }
+                        }),
+                ),
             self.picker.clone(),
             h_flex().gap(px(6.)).child(attach).child(send),
             cx,
@@ -1747,7 +1655,7 @@ pub(crate) fn composer_card(
     key: &str,
     focused: bool,
     compact: bool,
-    leading: Option<AnyElement>,
+    access: Option<AnyElement>,
     input: impl IntoElement,
     picker: Entity<ModelPicker>,
     actions: impl IntoElement,
@@ -1789,7 +1697,7 @@ pub(crate) fn composer_card(
     };
     let shell = div()
         .w_full()
-        .max_w(px(content_width(cx) + 16.))
+        .max_w(px(content_width(cx)))
         .rounded(px(if compact { 20. } else { 24. }))
         .bg(fill)
         .border_1()
@@ -1797,8 +1705,8 @@ pub(crate) fn composer_card(
         .shadow(shadows)
         .text_size(flow::ui(14.))
         .line_height(px(22.75));
-    // T3 Code's order: the text on top, then attach and the model picker
-    // on the left of one control row and send on the right.
+    // The text on top; below it the model, its thinking level and the
+    // access pill on the left, attach and send on the right.
     let input = div().w_full().min_w_0().child(input);
     shell.child(
         v_flex()
@@ -1812,8 +1720,8 @@ pub(crate) fn composer_card(
                     .h(px(32.))
                     .items_center()
                     .gap(px(4.))
-                    .children(leading)
                     .child(picker)
+                    .children(access)
                     .child(div().flex_1())
                     .child(actions),
             ),
@@ -2032,9 +1940,11 @@ fn outline_prompts(items: &[Item]) -> Vec<outline::Prompt> {
     let mut out: Vec<outline::Prompt> = Vec::new();
     for (ix, item) in items.iter().enumerate() {
         match item {
-            Item::Row(Row::User { text, .. }) => out.push(outline::Prompt {
+            Item::Row(Row::User {
+                text, attachments, ..
+            }) => out.push(outline::Prompt {
                 item: ix,
-                label: outline::first_line(text, 160),
+                label: outline::first_line(&transcript::readable(text, attachments), 160),
                 reply: None,
             }),
             Item::Row(Row::Assistant { text, .. }) => {
@@ -2078,34 +1988,149 @@ fn mark_copied(key: &str, cx: &mut App) {
     .detach();
 }
 
-/// A file name with its size, used for staged and sent attachments.
+/// An attachment card, the one look for staged and sent files: an icon tile,
+/// the name, and a muted second line (folder, size or type).
+pub(crate) fn attachment_card(
+    id: SharedString,
+    icon: AnyElement,
+    title: &str,
+    subtitle: Option<String>,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let p = Palette::of(cx);
+    h_flex()
+        .id(id)
+        .gap_2()
+        .p_1p5()
+        .pr_2()
+        .max_w(px(300.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(p.border_strong)
+        .bg(p.hover)
+        .child(
+            div()
+                .size(px(32.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(7.))
+                .border_1()
+                .border_color(p.border_strong)
+                .child(icon),
+        )
+        .child(
+            v_flex()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_medium()
+                        .truncate()
+                        .child(title.to_string()),
+                )
+                .when_some(subtitle, |this, line| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(line),
+                    )
+                }),
+        )
+}
+
+/// A sent message whose files sit between its words: each word and each
+/// card is one item of a wrapping row, so the cards flow with the text.
+fn placed_body(
+    key: &str,
+    parts: &[AnchoredPart<'_>],
+    chips: &[AttachmentChip],
+    weak: &WeakEntity<ChatView>,
+    cx: &App,
+) -> AnyElement {
+    let mut items: Vec<AnyElement> = Vec::new();
+    for part in parts {
+        match part {
+            AnchoredPart::Text(run) => {
+                for (n, line) in run.split('\n').enumerate() {
+                    if n > 0 {
+                        // A full-width item ends the row: the line break.
+                        items.push(div().w_full().into_any_element());
+                    }
+                    items.extend(
+                        line.split(' ')
+                            .filter(|word| !word.is_empty())
+                            .map(|word| div().child(word.to_string()).into_any_element()),
+                    );
+                }
+            }
+            AnchoredPart::Attachment(ix) => {
+                let Some(chip) = chips.get(*ix) else {
+                    continue;
+                };
+                let card = inline_files::inline_card(
+                    SharedString::from(format!("{key}-inline-{ix}-{}", items.len())),
+                    None,
+                    &chip.filename,
+                    px(22.),
+                    false,
+                    cx,
+                );
+                items.push(openable(card, chip, weak).into_any_element());
+            }
+        }
+    }
+    h_flex()
+        .flex_wrap()
+        .items_center()
+        .gap_x(px(4.))
+        .children(items)
+        .into_any_element()
+}
+
+/// A sent file opens on click: the backend's copy from disk, or the upload
+/// fetched from the gateway.
+fn openable(
+    card: gpui_kit::Stateful<gpui_kit::Div>,
+    chip: &AttachmentChip,
+    weak: &WeakEntity<ChatView>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let open = chip.clone();
+    let weak = weak.clone();
+    card.when_some(chip.local_path.clone(), |this, path| {
+        this.cursor_pointer().on_click(move |_, _, cx| {
+            cx.open_with_system(std::path::Path::new(&path));
+        })
+    })
+    .when(chip.message_id.is_some(), |this| {
+        this.cursor_pointer().on_click(move |_, _, cx| {
+            let chip = open.clone();
+            let _ = weak.update(cx, |this, cx| this.open_attachment(chip, cx));
+        })
+    })
+}
+
+/// A file's card with the plain file icon.
 pub(crate) fn file_chip(
     id: SharedString,
     name: &str,
-    size: Option<u64>,
+    subtitle: Option<String>,
     cx: &App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
-    h_flex()
-        .id(id)
-        .gap_1p5()
-        .px_2()
-        .py_1()
-        .max_w(px(260.))
-        .rounded(cx.theme().radius)
-        .border_1()
-        .border_color(Palette::of(cx).border_strong)
-        .bg(Palette::of(cx).hover)
-        .text_xs()
-        .child(Icon::new(IconName::File).xsmall().flex_none())
-        .child(div().min_w_0().truncate().child(name.to_string()))
-        .when_some(size, |this, size| {
-            this.child(
-                div()
-                    .flex_none()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format_bytes(size)),
-            )
-        })
+    let icon = Icon::new(IconName::File).small().into_any_element();
+    attachment_card(id, icon, name, subtitle, cx)
+}
+
+/// A sent file's second line: its size, else its type from the extension.
+fn sent_subtitle(chip: &AttachmentChip) -> Option<String> {
+    chip.size.map(format_bytes).or_else(|| {
+        std::path::Path::new(&chip.filename)
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_uppercase())
+    })
 }
 
 /// The `/` menu above the composer: name, usage and description per command.

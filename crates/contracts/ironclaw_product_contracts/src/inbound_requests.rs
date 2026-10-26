@@ -42,12 +42,20 @@ pub struct ProductCreateThreadRequest {
 /// against the shared attachment format registry. This is the only place raw
 /// upload bytes enter the workflow — they are decoded, budgeted, and landed in
 /// storage, never carried on the (serializable) inbound command.
+///
+/// A local client on the backend's own machine may send `path` instead of
+/// bytes: an absolute path to a file the backend copies itself (a clone on
+/// APFS), so a file of any size attaches without an upload. `data_base64` is
+/// then empty.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProductInboundAttachment {
     pub mime_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    #[serde(default)]
     pub data_base64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// Renders the encoded length, never the bytes — the same redaction
@@ -63,6 +71,7 @@ impl std::fmt::Debug for ProductInboundAttachment {
             .field("mime_type", &self.mime_type)
             .field("filename", &self.filename)
             .field("data_base64_len", &self.data_base64.len())
+            .field("path", &self.path)
             .finish()
     }
 }
@@ -301,9 +310,82 @@ pub enum ProductGateResolution {
     CredentialProvided { credential_ref: String },
 }
 
+/// Where an attachment sits in a message: `{{attachment:N}}` inside
+/// `ProductSubmitTurnRequest::content`, `N` being the attachment's index in
+/// `attachments`. The backend puts each file's reference at its anchor, so
+/// the agent reads "compare A with B" in the person's order; an attachment
+/// without an anchor is listed after the text, as before anchors existed.
+pub fn attachment_anchor(index: usize) -> String {
+    format!("{ANCHOR_OPEN}{index}{ANCHOR_CLOSE}")
+}
+
+const ANCHOR_OPEN: &str = "{{attachment:";
+const ANCHOR_CLOSE: &str = "}}";
+
+/// One run of message content: text, or the anchor of attachment `N`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchoredPart<'a> {
+    Text(&'a str),
+    Attachment(usize),
+}
+
+/// `content` split at its attachment anchors, in order. Text that only looks
+/// like an anchor (no closing braces, no index) stays text.
+pub fn anchored_parts(content: &str) -> Vec<AnchoredPart<'_>> {
+    let mut parts = Vec::new();
+    let mut rest = content;
+    let mut text_start = 0;
+    let mut offset = 0;
+    while let Some(at) = rest.find(ANCHOR_OPEN) {
+        let after = &rest[at + ANCHOR_OPEN.len()..];
+        let index = after
+            .find(ANCHOR_CLOSE)
+            .and_then(|end| after[..end].parse::<usize>().ok().map(|n| (n, end)));
+        let Some((index, end)) = index else {
+            offset += at + ANCHOR_OPEN.len();
+            rest = after;
+            continue;
+        };
+        let start = offset + at;
+        if start > text_start {
+            parts.push(AnchoredPart::Text(&content[text_start..start]));
+        }
+        parts.push(AnchoredPart::Attachment(index));
+        let consumed = at + ANCHOR_OPEN.len() + end + ANCHOR_CLOSE.len();
+        offset += consumed;
+        text_start = offset;
+        rest = &rest[consumed..];
+    }
+    if text_start < content.len() {
+        parts.push(AnchoredPart::Text(&content[text_start..]));
+    }
+    parts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_splits_at_attachment_anchors() {
+        let text = format!(
+            "compare {} with {}{{{{attachment:x}}}} {{{{attachment:",
+            attachment_anchor(0),
+            attachment_anchor(12)
+        );
+        assert_eq!(
+            anchored_parts(&text),
+            vec![
+                AnchoredPart::Text("compare "),
+                AnchoredPart::Attachment(0),
+                AnchoredPart::Text(" with "),
+                AnchoredPart::Attachment(12),
+                AnchoredPart::Text("{{attachment:x}} {{attachment:"),
+            ]
+        );
+        assert_eq!(anchored_parts("plain"), vec![AnchoredPart::Text("plain")]);
+        assert!(anchored_parts("").is_empty());
+    }
 
     /// The list-request builders are the only way a caller narrows a read, and
     /// each setter is the difference between a bounded page and a full-table
@@ -382,6 +464,7 @@ mod tests {
             mime_type: "text/plain".to_string(),
             filename: Some("report.txt".to_string()),
             data_base64: "U0VDUkVUUEFZTE9BRA==".to_string(),
+            path: None,
         };
 
         let rendered = format!("{attachment:?}");

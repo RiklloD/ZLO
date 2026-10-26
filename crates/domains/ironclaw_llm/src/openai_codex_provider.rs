@@ -265,6 +265,28 @@ impl OpenAiCodexProvider {
         body
     }
 
+    /// Send a request; if the server rejects replayed reasoning (an expired
+    /// or foreign blob), retry once without it so the turn still runs.
+    async fn send_with_reasoning_recovery(
+        &self,
+        body: serde_json::Value,
+        sink: Option<Arc<dyn CompletionStreamSink>>,
+    ) -> Result<ParsedResponse, LlmError> {
+        let mut stripped = body.clone();
+        if !strip_reasoning_items(&mut stripped) {
+            return self.send_request_with_sink(body, sink).await;
+        }
+        match self.send_request_with_sink(body, sink.clone()).await {
+            Err(LlmError::RequestFailed { reason, .. })
+                if reason.contains("encrypted_content") || reason.contains("reasoning") =>
+            {
+                tracing::debug!(%reason, "replayed codex reasoning rejected; retrying without it");
+                self.send_request_with_sink(stripped, sink).await
+            }
+            other => other,
+        }
+    }
+
     /// Send a request and parse the SSE response stream.
     async fn send_request_with_sink(
         &self,
@@ -369,7 +391,7 @@ impl OpenAiCodexProvider {
             request.response_format.as_ref(),
             &request.metadata,
         );
-        let parsed = self.send_request_with_sink(body, sink).await?;
+        let parsed = self.send_with_reasoning_recovery(body, sink).await?;
 
         Ok(CompletionResponse {
             content: parsed.text_content,
@@ -409,7 +431,7 @@ impl OpenAiCodexProvider {
             request.response_format.as_ref(),
             &request.metadata,
         );
-        let mut parsed = self.send_request_with_sink(body, sink).await?;
+        let mut parsed = self.send_with_reasoning_recovery(body, sink).await?;
 
         for tool_call in &mut parsed.tool_calls {
             if let Some(original) = name_map.get(&tool_call.name) {
@@ -673,10 +695,13 @@ fn convert_message(msg: &ChatMessage, index: usize) -> Vec<serde_json::Value> {
         Role::Assistant => {
             // Check if this message has tool calls
             if let Some(ref tool_calls) = msg.tool_calls {
-                // Emit one function_call item per tool call
-                tool_calls
+                // The turn's reasoning items first, then one function_call
+                // item per tool call.
+                let reasoning = tool_calls
                     .iter()
-                    .map(|tc| {
+                    .flat_map(|tc| reasoning_items_from_signature(tc.signature.as_deref()));
+                reasoning
+                    .chain(tool_calls.iter().map(|tc| {
                         let args_str = if tc.arguments.is_string() {
                             tc.arguments.as_str().unwrap_or("{}").to_string()
                         } else {
@@ -688,7 +713,7 @@ fn convert_message(msg: &ChatMessage, index: usize) -> Vec<serde_json::Value> {
                             "name": sanitize_tool_name(&tc.name),
                             "arguments": args_str,
                         })
-                    })
+                    }))
                     .collect()
             } else {
                 // Plain text assistant message
@@ -714,6 +739,75 @@ fn convert_message(msg: &ChatMessage, index: usize) -> Vec<serde_json::Value> {
             })]
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Encrypted reasoning carry-over
+//
+// With `store: false` the model only keeps its chain of thought across tool
+// calls if the client sends the `reasoning` items back before their
+// `function_call`s. They ride on the first tool call's opaque `signature`
+// (persisted with the call and replayed only on the same provider + model),
+// tagged so a signature from another provider is never mistaken for them.
+// ---------------------------------------------------------------------------
+
+const REASONING_SIGNATURE_KEY: &str = "codex_reasoning";
+
+/// A carry the persisted envelope would refuse (over its size cap, or a blob
+/// that happens to look like a secret) is dropped: the turn still runs, it
+/// only loses continuity for that step.
+fn attach_reasoning_items(tool_calls: &mut [ToolCall], items: &[serde_json::Value]) {
+    let Some(first) = tool_calls.first_mut() else {
+        return;
+    };
+    if items.is_empty() || first.signature.is_some() {
+        return;
+    }
+    let encoded = serde_json::json!({ REASONING_SIGNATURE_KEY: items }).to_string();
+    match ironclaw_safety::validate_optional_provider_metadata_text(
+        Some(&encoded),
+        "codex reasoning",
+        ironclaw_safety::PROVIDER_METADATA_TEXT_MAX_BYTES,
+    ) {
+        Ok(()) => first.signature = Some(encoded),
+        Err(error) => tracing::debug!(
+            bytes = encoded.len(),
+            %error,
+            "codex reasoning carry not persistable; dropped"
+        ),
+    }
+}
+
+fn reasoning_items_from_signature(signature: Option<&str>) -> Vec<serde_json::Value> {
+    signature
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|mut value| {
+            value
+                .get_mut(REASONING_SIGNATURE_KEY)
+                .map(serde_json::Value::take)
+        })
+        .and_then(|items| match items {
+            serde_json::Value::Array(items) => Some(items),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// Drop replayed reasoning items (recovery when the server rejects a blob).
+fn strip_reasoning_items(body: &mut serde_json::Value) -> bool {
+    let Some(input) = body.get_mut("input").and_then(|v| v.as_array_mut()) else {
+        return false;
+    };
+    let before = input.len();
+    input.retain(|item| item.get("type").and_then(|t| t.as_str()) != Some("reasoning"));
+    input.len() != before
+}
+
+/// Plan or quota exhaustion: the user has to wait or switch, so retrying
+/// only burns time (`subscription_sharing_usage_limit_exceeded`,
+/// `usage_limit_reached`, `insufficient_quota`).
+fn is_usage_limit_code(code: &str) -> bool {
+    code.contains("usage_limit") || code == "insufficient_quota"
 }
 
 /// Sanitize a tool name to match the OpenAI Responses API pattern `^[a-zA-Z0-9_-]+$`.
@@ -868,6 +962,7 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
     let mut text_content = String::new();
     let mut reasoning_summary = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut reasoning_items: Vec<serde_json::Value> = Vec::new();
     let mut input_tokens: u32 = 0;
     let mut output_tokens: u32 = 0;
     let mut finish_reason = FinishReason::Stop;
@@ -991,7 +1086,20 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
             "response.output_item.done" => {
                 if let Some(item) = event.data.get("item") {
                     let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    if item_type == "function_call" {
+                    if item_type == "reasoning" {
+                        if let Some(encrypted) = item
+                            .get("encrypted_content")
+                            .and_then(|v| v.as_str())
+                            .filter(|v| !v.is_empty())
+                        {
+                            // `id` is dropped: with store=false a replayed id 404s.
+                            reasoning_items.push(serde_json::json!({
+                                "type": "reasoning",
+                                "summary": item.get("summary").cloned().unwrap_or_else(|| serde_json::json!([])),
+                                "encrypted_content": encrypted,
+                            }));
+                        }
+                    } else if item_type == "function_call" {
                         let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         if let Some(state) = active_function_calls.remove(item_id) {
                             let arguments: serde_json::Value =
@@ -1063,14 +1171,29 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
 
             // Response failed
             "response.failed" => {
-                let reason = event
-                    .data
-                    .get("response")
-                    .and_then(|r| r.get("status_details"))
-                    .and_then(|d| d.get("error"))
+                let response = event.data.get("response");
+                let error = response
+                    .and_then(|r| r.get("error"))
+                    .filter(|e| !e.is_null())
+                    .or_else(|| {
+                        response
+                            .and_then(|r| r.get("status_details"))
+                            .and_then(|d| d.get("error"))
+                    });
+                let reason = error
                     .and_then(|e| e.get("message"))
                     .and_then(|m| m.as_str())
                     .unwrap_or("Unknown error");
+                if error
+                    .and_then(|e| e.get("code"))
+                    .and_then(|c| c.as_str())
+                    .is_some_and(is_usage_limit_code)
+                {
+                    return Err(LlmError::QuotaExceeded {
+                        provider: "openai_codex".to_string(),
+                        reason: reason.to_string(),
+                    });
+                }
                 // Prefer ContextLengthExceeded for context-overflow failures
                 // so the loop's context-shrink recovery fires.
                 if crate::error::is_context_length_error_message(&reason.to_ascii_lowercase()) {
@@ -1086,16 +1209,23 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
 
             // Error event
             "error" => {
-                let code = event
-                    .data
+                // The fields sit under `error` on the live API; older
+                // streams put them at the top level.
+                let error = event.data.get("error").unwrap_or(&event.data);
+                let code = error
                     .get("code")
                     .and_then(|c| c.as_str())
                     .unwrap_or("unknown");
-                let message = event
-                    .data
+                let message = error
                     .get("message")
                     .and_then(|m| m.as_str())
                     .unwrap_or("Unknown error");
+                if is_usage_limit_code(code) {
+                    return Err(LlmError::QuotaExceeded {
+                        provider: "openai_codex".to_string(),
+                        reason: message.to_string(),
+                    });
+                }
                 // A context-overflow surfaced as an SSE error must become
                 // ContextLengthExceeded so the loop's context-shrink recovery
                 // fires instead of a generic failure.
@@ -1150,6 +1280,8 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
             reason: format!("stream ended {produced} before response.completed"),
         });
     }
+
+    attach_reasoning_items(&mut tool_calls, &reasoning_items);
 
     // Map status to finish reason (matching OpenClaw's mapStopReason)
     if !tool_calls.is_empty() {
@@ -1501,6 +1633,61 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
             parsed.reasoning.as_deref(),
             Some("Thinking Steps\n[] Inspect context.")
         );
+    }
+
+    /// Regression: encrypted reasoning was requested but dropped, so the model
+    /// re-planned from scratch on every computer-use step. It must survive the
+    /// parse and come back before its function_call on the next request.
+    #[test]
+    fn encrypted_reasoning_rides_the_tool_call_into_the_next_request() {
+        let sse_body = r#"data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAAAABencryptedblob"}}
+
+data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_abc","name":"computer_use_click","arguments":"{}"}}
+
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":15,"output_tokens":8}}}
+
+"#;
+        let parsed = parse_sse_response(sse_body).unwrap();
+        let call = parsed.tool_calls[0].clone();
+        assert!(call.signature.is_some(), "reasoning carried on the call");
+
+        let assistant = ChatMessage::assistant_with_tool_calls(None, vec![call]);
+        let items = convert_message(&assistant, 1);
+        let types: Vec<&str> = items.iter().filter_map(|i| i["type"].as_str()).collect();
+        assert_eq!(types, ["reasoning", "function_call"]);
+        assert_eq!(items[0]["encrypted_content"], "gAAAAABencryptedblob");
+        assert!(
+            items[0].get("id").is_none(),
+            "store=false ids are not replayed"
+        );
+
+        let mut body = serde_json::json!({ "input": items });
+        assert!(strip_reasoning_items(&mut body));
+        assert_eq!(body["input"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// Regression: the live API nests `code`/`message` under `error`, so a
+    /// plan usage limit surfaced as "Error unknown: Unknown error" and was
+    /// retried as transient for minutes.
+    #[test]
+    fn test_parse_sse_usage_limit_error_is_quota_exceeded() {
+        let sse_body = r#"data: {"type":"error","error":{"type":"invalid_request_error","code":"subscription_sharing_usage_limit_exceeded","message":"The ChatGPT user has reached their Subscription Sharing usage limit.","param":null},"sequence_number":3}
+
+"#;
+        match parse_sse_response(sse_body) {
+            Err(LlmError::QuotaExceeded { reason, .. }) => {
+                assert!(reason.contains("usage limit"), "{reason}");
+            }
+            other => panic!("expected QuotaExceeded, got {other:?}"),
+        }
+
+        let failed = r#"data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"boom"}}}
+
+"#;
+        match parse_sse_response(failed) {
+            Err(LlmError::RequestFailed { reason, .. }) => assert!(reason.contains("boom")),
+            other => panic!("expected RequestFailed, got {other:?}"),
+        }
     }
 
     #[test]

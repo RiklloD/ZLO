@@ -54,12 +54,15 @@ pub(crate) async fn inline_images(text: &str) -> Vec<InlineImage> {
     out
 }
 
+/// Every image line's path, wherever it sits: a line may stand alone or
+/// sit inside a sentence, where the person placed the picture.
 fn image_paths(text: &str) -> Vec<PathBuf> {
-    text.lines()
-        .filter_map(|line| {
-            let rest = line.trim().strip_prefix(MARKER_PREFIX)?;
+    text.match_indices(MARKER_PREFIX)
+        .filter_map(|(at, _)| {
+            let rest = &text[at + MARKER_PREFIX.len()..];
+            let rest = rest.lines().next()?;
             let (_, path) = rest.split_once(MARKER_PATH)?;
-            let path = path.strip_suffix(']')?;
+            let (path, _) = path.split_once(']')?;
             Some(PathBuf::from(path))
         })
         .collect()
@@ -114,7 +117,7 @@ mod tests {
         std::fs::write(dir.path().join("outside.png"), b"png").unwrap();
         std::fs::write(root.join("t1/notes.txt"), b"txt").unwrap();
         let text = format!(
-            "look\n\n[Attached image \"a.png\" is saved at: {a}]\n\
+            "look at [Attached image \"a.png\" is saved at: {a}] here\n\
              [Attached image \"x.png\" is saved at: {root}/../outside.png]\n\
              [Attached file \"notes.txt\" is saved at: {root}/t1/notes.txt]",
             a = root.join("t1/a.png").display(),

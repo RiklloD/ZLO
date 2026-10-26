@@ -74,6 +74,15 @@ impl DecodeInboundAttachments for ProductSubmitTurnRequest {
         let mut decoded = Vec::with_capacity(self.attachments.len());
         let mut total_bytes = 0usize;
         for (index, attachment) in self.attachments.iter().enumerate() {
+            // Local-path attachments are copied by the orchestration surface
+            // before the request reaches this decoder; one arriving here was
+            // not resolved and must not be dropped silently.
+            if attachment.path.is_some() {
+                return Err(validation_error(
+                    "attachments.path",
+                    ProductSurfaceValidationCode::InvalidValue,
+                ));
+            }
             let mime = ironclaw_common::normalize_mime_type(&attachment.mime_type);
             if !ironclaw_common::is_supported_mime(&mime) {
                 return Err(validation_error(

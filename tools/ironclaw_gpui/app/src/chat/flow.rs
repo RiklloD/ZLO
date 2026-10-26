@@ -712,7 +712,7 @@ fn tree_row(
 
 /// The person's message: Zeron's pill, right-aligned, at most 80 % of the
 /// column, a faint wash rather than a colored bubble.
-pub(super) fn user_pill(key: &str, text: &str, pending: bool, cx: &App) -> AnyElement {
+pub(super) fn user_pill(key: &str, body: impl IntoElement, pending: bool, cx: &App) -> AnyElement {
     let p = *Palette::of(cx);
     let wash = if p.light {
         gpui_kit::hsla(0., 0., 0., 0.05)
@@ -741,7 +741,7 @@ pub(super) fn user_pill(key: &str, text: &str, pending: bool, cx: &App) -> AnyEl
                 .relative()
                 .top(px(6. * (1. - t)))
                 .opacity(if pending { 0.65 * t.max(0.3) } else { t })
-                .child(text.to_string()),
+                .child(body),
         )
         .into_any_element()
 }

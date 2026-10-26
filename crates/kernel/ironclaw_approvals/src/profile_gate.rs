@@ -134,6 +134,14 @@ pub trait ApprovalSettingsProvider: Send + Sync {
         capability_id: &CapabilityId,
         grantee: &Principal,
     ) -> bool;
+
+    /// Whether the dispatching thread runs on "Full access": every tool call
+    /// runs without asking, hard floors and `ask_each_time` included; only an
+    /// explicit per-tool `disabled` still denies. Off unless an implementation
+    /// knows the thread's profile chose it.
+    async fn full_access(&self, _scope: &ResourceScope) -> bool {
+        false
+    }
 }
 
 /// No stored overrides and global auto-approve off: the gate behaves exactly as
@@ -367,6 +375,11 @@ async fn require_approval_for_profile_policy(
     // resume context. This predicate therefore recognizes the already selected
     // resume lease; it is not the lease lookup boundary.
     if has_matching_one_shot_approval_grant(context, descriptor, &gate_effects) {
+        return decision;
+    }
+    // 2b. A "Full access" thread never asks: the person chose to run every
+    //     call unattended, hard floors included.
+    if settings.full_access(&context.resource_scope).await {
         return decision;
     }
     // 3. Hard floor: never auto-approve / never satisfiable by a stored grant.
@@ -709,6 +722,85 @@ mod tests {
             matches!(decision, Decision::RequireApproval { .. }),
             "hard-floor (Financial) must gate even with global auto-approve on, got {decision:?}"
         );
+    }
+
+    /// A "Full access" thread: ask-each-time on every tool, nothing else set.
+    struct FullAccessSettings(Option<ToolPermissionOverride>);
+
+    #[async_trait]
+    impl ApprovalSettingsProvider for FullAccessSettings {
+        async fn tool_override(
+            &self,
+            _scope: &ResourceScope,
+            _capability_id: &CapabilityId,
+        ) -> Option<ToolPermissionOverride> {
+            self.0
+        }
+        async fn global_auto_approve(&self, _scope: &ResourceScope) -> bool {
+            false
+        }
+        async fn tool_always_allow(
+            &self,
+            _scope: &ResourceScope,
+            _capability_id: &CapabilityId,
+            _grantee: &Principal,
+        ) -> bool {
+            false
+        }
+        async fn full_access(&self, _scope: &ResourceScope) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn full_access_never_asks_but_disabled_still_denies() {
+        let shell_id = CapabilityId::new("builtin.shell").unwrap();
+        let effects = vec![EffectKind::Financial, EffectKind::SpawnProcess];
+        let descriptor = test_descriptor_with_id(shell_id.clone(), effects.clone());
+        let ctx = test_context(CapabilitySet {
+            grants: vec![CapabilityGrant {
+                id: CapabilityGrantId::new(),
+                capability: shell_id,
+                grantee: Principal::Extension(ExtensionId::new("builtin").unwrap()),
+                issued_by: Principal::HostRuntime,
+                constraints: GrantConstraints {
+                    allowed_effects: effects.clone(),
+                    mounts: MountView::default(),
+                    network: NetworkPolicy::default(),
+                    secrets: Vec::new(),
+                    resource_ceiling: None,
+                    expires_at: None,
+                    max_invocations: None,
+                },
+            }],
+        });
+        let trust = TrustDecision {
+            effective_trust: EffectiveTrustClass::user_trusted(),
+            authority_ceiling: AuthorityCeiling {
+                allowed_effects: effects,
+                max_resource_ceiling: None,
+            },
+            provenance: TrustProvenance::AdminConfig,
+            evaluated_at: chrono::Utc::now(),
+        };
+        for (setting, allowed) in [
+            (Some(ToolPermissionOverride::AskEachTime), true),
+            (None, true),
+            (Some(ToolPermissionOverride::Disabled), false),
+        ] {
+            let decision = profile_approval_authorizer(
+                ApprovalPolicy::AskDestructive,
+                Arc::new(TestGatePolicy),
+                Arc::new(FullAccessSettings(setting)),
+            )
+            .authorize_dispatch_with_trust(&ctx, &descriptor, &ResourceEstimate::default(), &trust)
+            .await;
+            assert_eq!(
+                matches!(decision, Decision::Allow { .. }),
+                allowed,
+                "{setting:?}: {decision:?}"
+            );
+        }
     }
 
     fn test_descriptor(effects: Vec<EffectKind>) -> CapabilityDescriptor {

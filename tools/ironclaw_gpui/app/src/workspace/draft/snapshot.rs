@@ -18,7 +18,7 @@ impl Workspace {
         if self.page == Page::Chat
             && let Some((_, chat)) = self.active.clone()
         {
-            chat.update(cx, |chat, cx| chat.stage_snapshot(snap, cx));
+            chat.update(cx, |chat, cx| chat.stage_snapshot(snap, window, cx));
             cx.notify();
             return;
         }
@@ -27,6 +27,7 @@ impl Workspace {
         let Some(draft) = self.draft.as_mut() else {
             return;
         };
+        let from = draft.staged.len();
         let result = match limits {
             Some(limits) => {
                 snap.and_then(|snap| snapshot::stage_into(&mut draft.staged, snap, &limits, cx))
@@ -34,6 +35,8 @@ impl Workspace {
             None => Err("Numoh is not connected to IronClaw yet.".into()),
         };
         draft.error = result.err().map(Into::into);
+        let new = draft.staged.split_off(from);
+        self.place_in_draft(new, window, cx);
         cx.notify();
     }
 }

@@ -49,6 +49,8 @@ pub enum GateState {
 pub enum Row {
     User {
         key: String,
+        /// The person's words, with `{{attachment:N}}` where they placed
+        /// `attachments[N]` (see [`readable`]).
         text: String,
         pending: bool,
         attachments: Vec<AttachmentChip>,
@@ -118,13 +120,15 @@ pub enum Row {
 }
 
 /// A file on a user message. `message_id` is set once the gateway stored the
-/// bytes, which is when the file can be opened.
+/// bytes, which is when the file can be opened; `local_path` is the backend's
+/// copy of a file named in the prompt, opened straight from disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachmentChip {
     pub message_id: Option<String>,
     pub id: String,
     pub filename: String,
     pub size: Option<u64>,
+    pub local_path: Option<String>,
 }
 
 impl Row {
@@ -246,6 +250,19 @@ struct PendingUser {
 
 /// Key prefix of the rows a fork shows from its source thread.
 pub const PREFIX_KEY: &str = "src:";
+
+/// A user row's text with each attachment anchor replaced by the file's
+/// name: for places that show plain text (the outline, ↑ to edit).
+pub fn readable(text: &str, chips: &[AttachmentChip]) -> String {
+    use crate::inbound_requests::{AnchoredPart, anchored_parts};
+    anchored_parts(text)
+        .into_iter()
+        .map(|part| match part {
+            AnchoredPart::Text(run) => run,
+            AnchoredPart::Attachment(ix) => chips.get(ix).map_or("", |c| c.filename.as_str()),
+        })
+        .collect()
+}
 
 /// A message's text as a person reads it: without the attachments-only
 /// marker, and without the context handoff the engine prepends to the first
@@ -395,6 +412,7 @@ impl Transcript {
                 id: i.to_string(),
                 filename: name.clone(),
                 size: None,
+                local_path: None,
             })
             .collect();
         self.pending_user.push(PendingUser {
@@ -827,8 +845,7 @@ impl Transcript {
             let key = format!("msg:{}", message.message_id);
             match message.kind {
                 MessageKind::User => {
-                    let (text, attached) = attached::split(&text);
-                    let attachments = message
+                    let uploads = message
                         .attachments
                         .iter()
                         .map(|a| AttachmentChip {
@@ -836,14 +853,10 @@ impl Transcript {
                             id: a.id.clone(),
                             filename: a.filename.clone().unwrap_or_else(|| "attachment".into()),
                             size: a.size_bytes,
+                            local_path: None,
                         })
-                        .chain(attached.into_iter().map(|filename| AttachmentChip {
-                            message_id: None,
-                            id: String::new(),
-                            filename,
-                            size: None,
-                        }))
                         .collect();
+                    let (text, attachments) = attached::split(&text, uploads);
                     rows.push(Row::User {
                         key,
                         text,

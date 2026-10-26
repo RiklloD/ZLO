@@ -123,6 +123,12 @@ impl ApprovalSettingsProvider for ProfileApprovalSettingsProvider {
         self.inner.global_auto_approve(scope).await
     }
 
+    /// "Full access" as the pill shows it: the profile's mode, or the global
+    /// switch for a profile that follows it.
+    async fn full_access(&self, scope: &ResourceScope) -> bool {
+        scope.thread_id.is_some() && self.global_auto_approve(scope).await
+    }
+
     async fn tool_always_allow(
         &self,
         scope: &ResourceScope,

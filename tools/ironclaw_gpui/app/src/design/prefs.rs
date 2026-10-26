@@ -28,7 +28,7 @@ pub enum Wallpaper {
 }
 
 /// Preference file layout version; see [`Prefs::load`].
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -64,6 +64,15 @@ pub struct Prefs {
     pub provider_order: Vec<String>,
     /// Sidebar width in px, dragged at its edge; 0 keeps the default.
     pub sidebar_width: f32,
+    /// The chat's right pane: shown, its width (0 keeps the default) and
+    /// the tab last picked.
+    pub side_open: bool,
+    pub side_width: f32,
+    pub side_tab: String,
+    /// The project folder each thread's coding tabs read (thread id → path),
+    /// and the last one picked, offered to threads without their own.
+    pub project_folders: std::collections::HashMap<String, PathBuf>,
+    pub last_project: Option<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -76,7 +85,7 @@ impl Default for Prefs {
             accent: String::new(),
             reduce_motion: "system".into(),
             ui_font_size: 0.,
-            conversation_width: 720.,
+            conversation_width: 800.,
             wallpaper: Wallpaper::Scene {
                 name: "auto".into(),
             },
@@ -87,6 +96,11 @@ impl Default for Prefs {
             recent_models: Vec::new(),
             provider_order: Vec::new(),
             sidebar_width: 0.,
+            side_open: false,
+            side_width: 0.,
+            side_tab: String::new(),
+            project_folders: Default::default(),
+            last_project: None,
         }
     }
 }
@@ -122,11 +136,15 @@ impl Prefs {
                 prefs.wallpaper = fresh.wallpaper;
             }
         }
-        if prefs.version < VERSION {
+        if prefs.version < 4 {
             // Version 4 brings the wallpaper back behind threads.
             prefs.wallpaper_in_threads = true;
-            prefs.version = VERSION;
         }
+        if prefs.version < 5 && prefs.conversation_width == 720. {
+            // Version 5 widens the default reading column.
+            prefs.conversation_width = Self::default().conversation_width;
+        }
+        prefs.version = VERSION;
         prefs
     }
 

@@ -86,6 +86,32 @@ async fn click(computer_use: &ComputerUse, key: &ComputerUseSession) -> Computer
         .await
 }
 
+/// Regression: a model re-read the same Outlook tree 8 times without acting.
+/// A repeat read now says nothing changed; an action makes the next read fresh.
+#[tokio::test]
+async fn an_unchanged_state_read_says_so_instead_of_repeating_the_tree() {
+    let fake = fake(|_| {});
+    let cu = &fake.computer_use;
+    let alice = key("alice");
+    let read = || {
+        cu.call(
+            &alice,
+            "get_app_state",
+            json!({"app": "Calculator"}),
+            64 * 1024,
+        )
+    };
+    let text = |outcome: ComputerUseOutcome| match outcome {
+        ComputerUseOutcome::Completed { text, .. } => text,
+        _ => panic!("call did not complete"),
+    };
+
+    assert!(text(read().await).contains("0 standard window"));
+    assert!(text(read().await).starts_with("(no accessibility tree changes"));
+    click(cu, &alice).await;
+    assert!(text(read().await).contains("0 standard window"));
+}
+
 #[tokio::test]
 async fn a_call_returns_the_tree_keeps_the_frame_and_reuses_the_process() {
     let fake = fake(|_| {});

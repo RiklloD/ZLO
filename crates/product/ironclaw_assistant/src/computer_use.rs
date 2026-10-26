@@ -209,21 +209,23 @@ impl SyntheticCapabilityHandler for ToolHandler {
             None => {
                 let scope = self.settings_scope(&invocation.run_context);
                 let settings = &self.stores.approval_settings;
-                match settings.tool_override(&scope, &capability_id).await {
-                    Some(ToolPermissionOverride::Disabled) => {
-                        return denied("computer use is disabled by tool approval settings");
-                    }
-                    Some(ToolPermissionOverride::AskEachTime) => {
-                        return self.request_approval(&invocation, &capability_id).await;
-                    }
-                    None => {}
+                // "Full access" is the thread's profile, so ask with the thread scope.
+                let thread_scope = invocation
+                    .run_context
+                    .acting_resource_scope(&self.fallback_user_id);
+                let tool_override = settings.tool_override(&scope, &capability_id).await;
+                if matches!(tool_override, Some(ToolPermissionOverride::Disabled)) {
+                    return denied("computer use is disabled by tool approval settings");
                 }
-                if !self
-                    .approved_turns
-                    .approved(&invocation.run_context.turn_id)
-                    && !settings
-                        .tool_always_allow(&scope, &capability_id, &grantee()?)
-                        .await
+                let full_access = settings.full_access(&thread_scope).await;
+                if !full_access
+                    && (matches!(tool_override, Some(ToolPermissionOverride::AskEachTime))
+                        || (!self
+                            .approved_turns
+                            .approved(&invocation.run_context.turn_id)
+                            && !settings
+                                .tool_always_allow(&scope, &capability_id, &grantee()?)
+                                .await))
                 {
                     return self.request_approval(&invocation, &capability_id).await;
                 }

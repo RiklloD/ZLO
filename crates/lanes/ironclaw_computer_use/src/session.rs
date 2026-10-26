@@ -196,7 +196,13 @@ struct Flags {
     /// The newest frames and the tool result each one belongs to, for the
     /// model (it keeps the last [`MODEL_FRAMES`] screenshots in context).
     recent: std::collections::VecDeque<(Arc<Frame>, Option<String>)>,
+    /// The last `get_app_state` text, to tell the model a re-read changed
+    /// nothing instead of handing it the same tree again.
+    last_state: Option<String>,
 }
+
+/// Said instead of a `get_app_state` tree identical to the previous one.
+const STATE_UNCHANGED: &str = "(no accessibility tree changes since your last get_app_state: that tree and its element indexes are still current. Do not read the state again; act on it with click, type_text, press_key or scroll, or answer from what you already have.)";
 
 /// Screenshots a model keeps in context, newest first (Hermes keeps 3).
 pub const MODEL_FRAMES: usize = 3;
@@ -667,7 +673,16 @@ impl ComputerUse {
         }
         let text = if text.is_empty() && !is_error {
             "OK".to_string()
+        } else if tool == "get_app_state" && !is_error {
+            match flags.last_state.replace(text.clone()) {
+                Some(previous) if previous == text => STATE_UNCHANGED.to_string(),
+                _ => text,
+            }
         } else {
+            // Any action may change the window: the next read is fresh.
+            if tool != "list_apps" {
+                flags.last_state = None;
+            }
             text
         };
         ComputerUseOutcome::Completed {

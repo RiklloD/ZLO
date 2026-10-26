@@ -35,7 +35,11 @@ SOFTWARE.
 
 Parts of the motion code (`design/pulse.rs`, `chat/pace.rs` and the other
 files that credit it) are adapted from MonoCode
-(https://github.com/hardbeat920/monocode), under the MIT license:
+(https://github.com/hardbeat920/monocode), under the MIT license. The right
+pane (`chat/side.rs` and `chat/side/`) follows the layout, git calls and
+graph lanes of MonoCode Native (branch `mc/migrate-monocode-to-gpui`,
+`right_panel.rs`, `changes.rs`, `diff_view.rs`, `history.rs`,
+`session_review.rs`, `monocode_core::git`):
 
 ```
 MIT License

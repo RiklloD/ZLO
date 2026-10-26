@@ -8,6 +8,7 @@
 use ironclaw_gpui_client::Backend;
 use ironclaw_gpui_client::profiles::{ApprovalMode, DEFAULT_PROFILE_ID, ProfileInfo};
 
+use crate::assets::ExtraIcon;
 use crate::design::{self, Palette, kit};
 use crate::jobs;
 use crate::ui::*;
@@ -179,31 +180,44 @@ impl ApprovalPill {
 
     fn render_popover(&self, current: Option<ApprovalMode>, cx: &Context<Self>) -> AnyElement {
         let p = *Palette::of(cx);
-        let rows = CHOICES.iter().map(|&mode| {
+        let row = |mode: Option<ApprovalMode>| {
             let on = current == mode;
             let detail = match mode {
-                Some(ApprovalMode::FullAccess) => "Tool calls run without asking",
+                Some(ApprovalMode::FullAccess) => "Every tool call runs without asking",
                 Some(ApprovalMode::AskFirst) => "Approve each call that needs it",
                 None => {
                     if self.global == Some(true) {
-                        "Currently full access"
+                        "Settings switch, now full access"
                     } else {
-                        "Currently ask first"
+                        "Settings switch, now ask first"
                     }
                 }
             };
+            let tint = tint(mode, self.global, &p);
+            let badge = div()
+                .flex_none()
+                .size(px(28.))
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(tint.opacity(0.14))
+                .child(Icon::new(icon(mode)).size(px(14.)).text_color(tint));
             kit::row(
                 SharedString::from(format!("approval-{}", key(mode))),
                 on,
                 cx,
             )
-            .gap_2()
-            .items_start()
+            .gap_2p5()
+            .py_1p5()
+            .items_center()
+            .child(badge)
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_sm().truncate().child(label(mode)))
+                    .gap_0p5()
+                    .child(div().text_sm().font_medium().truncate().child(label(mode)))
                     .child(
                         div()
                             .text_xs()
@@ -215,14 +229,49 @@ impl ApprovalPill {
             .when(on, |d| {
                 d.child(
                     Icon::new(IconName::Check)
-                        .size(px(13.))
-                        .text_color(p.text_muted),
+                        .size(px(14.))
+                        .text_color(p.accent),
                 )
             })
             .on_click(cx.listener(move |this, _, _, cx| this.pick(mode, cx)))
-        });
+        };
+        let header = div()
+            .px_2()
+            .pt_1()
+            .pb_1()
+            .text_xs()
+            .font_medium()
+            .text_color(p.text_faint)
+            .child("ACCESS");
+        let divider = div().mx_2().my_1().h(px(1.)).bg(p.border);
         let pop = kit::popover("approval-pop", cx);
-        pop(v_flex().w(px(260.)).p_1().children(rows))
+        pop(v_flex()
+            .w(px(290.))
+            .p_1()
+            .child(header)
+            .child(row(CHOICES[0]))
+            .child(row(CHOICES[1]))
+            .child(divider)
+            .child(row(CHOICES[2])))
+    }
+}
+
+/// The icon a mode shows on the pill and in the menu.
+fn icon(mode: Option<ApprovalMode>) -> ExtraIcon {
+    match mode {
+        Some(ApprovalMode::FullAccess) => ExtraIcon::Zap,
+        Some(ApprovalMode::AskFirst) => ExtraIcon::ShieldCheck,
+        None => ExtraIcon::Settings2,
+    }
+}
+
+/// Full access reads warm (nothing stops a call), ask first calm.
+fn tint(mode: Option<ApprovalMode>, global: Option<bool>, p: &Palette) -> gpui_kit::Hsla {
+    let full = ApprovalMode::resolve_auto_approve(mode, global.unwrap_or(false));
+    match mode {
+        None => p.text_muted,
+        _ if full => p.warning,
+        _ => p.success,
     }
 }
 
@@ -234,6 +283,12 @@ impl Render for ApprovalPill {
         };
         let current = profile.settings.approval_mode;
         let text = self.effective_label(current);
+        let full = ApprovalMode::resolve_auto_approve(current, self.global.unwrap_or(false));
+        let mark = if full {
+            Some(ApprovalMode::FullAccess)
+        } else {
+            Some(ApprovalMode::AskFirst)
+        };
         let pill = h_flex()
             .id("approval-pill")
             .role(Role::Button)
@@ -248,6 +303,11 @@ impl Render for ApprovalPill {
             .cursor_pointer()
             .when(self.open, |d| d.bg(p.active).text_color(p.text))
             .hover(|s| s.bg(p.hover).text_color(p.text))
+            .child(
+                Icon::new(icon(mark))
+                    .size(px(13.))
+                    .text_color(tint(mark, self.global, &p)),
+            )
             .child(text)
             .when(self.busy, |d| d.child(Spinner::new().xsmall()))
             .when(!self.busy, |d| {

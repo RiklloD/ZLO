@@ -25,8 +25,8 @@ use ironclaw_orchestrator::model::{
     Author, QueueItemId, TaskId, ThreadRecord, ThreadScope, TransferDelivery,
 };
 use ironclaw_product_contracts::inbound_requests::{
-    ProductCancelRunRequest, ProductCreateThreadRequest, ProductResolveGateRequest,
-    ProductSubmitTurnRequest,
+    AnchoredPart, ProductCancelRunRequest, ProductCreateThreadRequest, ProductResolveGateRequest,
+    ProductSubmitTurnRequest, anchored_parts,
 };
 use ironclaw_product_contracts::inbox::{
     INBOX_MUTATE_COMMAND_ID, INBOX_VIEW, InboxMutationRequest, THREAD_GOAL_SET_COMMAND_ID,
@@ -633,20 +633,28 @@ impl ProductSurface for OrchestratedProductSurface {
                             changed = true;
                         }
                     }
+                    // Files attached by path are copied here, never uploaded.
+                    let local = super::cli_attachments::take_local(&mut body).await?;
+                    let root = || {
+                        self.home()
+                            .map(|home| home.attachments())
+                            .map_err(ProductSurfaceError::internal_from)
+                    };
                     if let Some(thread) = self.external(&id, &scope).await {
                         // CLI engines take text: files land on disk and the
                         // prompt names their paths (T3 Code's model).
                         let files = crate::DecodeInboundAttachments::decode_attachments(&body)?;
                         let mut text = body.content.unwrap_or_default();
-                        if !files.is_empty() {
-                            let root = self
-                                .home()
-                                .map_err(ProductSurfaceError::internal_from)?
-                                .attachments();
-                            text =
-                                super::cli_attachments::prompt_with_files(&root, &id, &text, files)
-                                    .await
-                                    .map_err(ProductSurfaceError::internal_from)?;
+                        if !files.is_empty() || !local.is_empty() {
+                            text = super::cli_attachments::prompt_with_files(
+                                &root()?,
+                                &id,
+                                &text,
+                                files,
+                                local,
+                            )
+                            .await
+                            .map_err(ProductSurfaceError::internal_from)?;
                         }
                         let turn = self
                             .engine
@@ -659,6 +667,27 @@ impl ProductSurface for OrchestratedProductSurface {
                             output: serde_json::to_value(output)
                                 .map_err(ProductSurfaceError::internal_from)?,
                         });
+                    }
+                    let anchored = body.content.as_deref().is_some_and(|text| {
+                        anchored_parts(text)
+                            .iter()
+                            .any(|part| matches!(part, AnchoredPart::Attachment(_)))
+                    });
+                    if !local.is_empty() || anchored {
+                        let root = if local.is_empty() {
+                            None
+                        } else {
+                            Some(root()?)
+                        };
+                        super::cli_attachments::resolve_for_loop(
+                            root.as_deref(),
+                            &id,
+                            &mut body,
+                            local,
+                        )
+                        .await
+                        .map_err(ProductSurfaceError::internal_from)?;
+                        changed = true;
                     }
                     if changed && let Ok(input) = serde_json::to_value(&body) {
                         request.input = input;

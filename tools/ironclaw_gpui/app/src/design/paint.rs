@@ -185,16 +185,19 @@ pub fn effect(c: &mut Canvas, id: &str) {
     }
 }
 
-/// Dissolve the lower part into `bg`, from `from` to `to` (0..1 of height).
-pub fn fade(c: &mut Canvas, bg: Rgb, from: f32, to: f32) {
+/// Tint the lower part toward `bg`, from `from` to `to` (0..1 of height),
+/// reaching `max` at the bottom edge. A sub-step dither keeps the long
+/// dark ramp from banding once it is cut to 8 bits.
+pub fn fade(c: &mut Canvas, bg: Rgb, from: f32, to: f32, max: f32) {
     for y in 0..c.h {
-        let t = smoothstep(from, to, y as f32 / c.h as f32);
+        let t = max * smoothstep(from, to, y as f32 / c.h as f32);
         if t <= 0. {
             continue;
         }
         for x in 0..c.w {
             let i = (y * c.w + x) as usize;
-            c.px[i] = mix(c.px[i], bg, t);
+            let n = (hash(x as i32, y as i32, 7) - 0.5) / 255.;
+            c.px[i] = mix(c.px[i], bg, t).map(|ch| ch + n);
         }
     }
 }

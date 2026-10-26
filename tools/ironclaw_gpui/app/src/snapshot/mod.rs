@@ -21,12 +21,11 @@ mod hotkey;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use gpui_kit::{AnyWindowHandle, Stateful};
+use gpui_kit::AnyWindowHandle;
 use ironclaw_gpui_client::attachments::{self, StagedFile};
 use ironclaw_gpui_client::wire::AttachmentLimits;
 use serde::{Deserialize, Serialize};
 
-use crate::design::Palette;
 use crate::ui::*;
 use crate::workspace::Workspace;
 
@@ -342,16 +341,8 @@ pub(crate) fn stage_into(
     let text_mime = attachments::mime_for(&text_name, limits)
         .or_else(|| attachments::mime_for("a.md", limits))
         .ok_or("This gateway accepts no text attachments.")?;
-    let image = StagedFile {
-        filename: image_name.clone(),
-        mime_type: image_mime,
-        bytes: snap.jpeg.clone(),
-    };
-    let text = StagedFile {
-        filename: text_name,
-        mime_type: text_mime,
-        bytes: snap.text(&image_name).into_bytes(),
-    };
+    let image = StagedFile::from_bytes(image_name.clone(), image_mime, snap.jpeg.clone());
+    let text = StagedFile::from_bytes(text_name, text_mime, snap.text(&image_name).into_bytes());
     attachments::check(&image, staged, limits)?;
     staged.push(image);
     if let Err(e) = attachments::check(&text, staged, limits) {
@@ -379,61 +370,37 @@ pub(crate) fn is_companion(file: &StagedFile, staged: &[StagedFile]) -> bool {
     })
 }
 
-/// Remove the staged file at `ix`, and its text half when it is a SnapShot.
-pub(crate) fn unstage(staged: &mut Vec<StagedFile>, ix: usize) {
-    if ix >= staged.len() {
-        return;
-    }
-    let removed = staged.remove(ix);
-    if let Some(stem) = removed.filename.strip_suffix(IMAGE_SUFFIX) {
-        let text = format!("{stem}{TEXT_SUFFIX}");
-        staged.retain(|f| f.filename != text);
+/// Whether `text` is the text half of the SnapShot picture `image`.
+pub(crate) fn pairs(text: &StagedFile, image: &StagedFile) -> bool {
+    match (
+        text.filename.strip_suffix(TEXT_SUFFIX),
+        image.filename.strip_suffix(IMAGE_SUFFIX),
+    ) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
     }
 }
 
-/// A SnapShot's chip: app icon, app name and window title. `None` for
-/// any other file, which keeps the plain file chip.
-pub(crate) fn chip(
-    id: SharedString,
-    file: &StagedFile,
-    cx: &App,
-) -> Option<Stateful<gpui_kit::Div>> {
+/// A SnapShot picture's app name, for its card, and the spoken label
+/// that adds the window title.
+pub(crate) fn names(file: &StagedFile, cx: &App) -> Option<(String, String)> {
+    let info = cx.try_global::<Chips>()?.0.get(&file.filename)?;
+    let label = if info.title.is_empty() {
+        format!("SnapShot of {}", info.app)
+    } else {
+        format!("SnapShot of {} · {}", info.app, info.title)
+    };
+    Some((info.app.clone(), label))
+}
+
+/// A SnapShot picture's app icon, small enough for an inline card.
+pub(crate) fn icon(file: &StagedFile, cx: &App) -> Option<AnyElement> {
     if !file.filename.ends_with(IMAGE_SUFFIX) {
         return None;
     }
-    let info = cx.try_global::<Chips>()?.0.get(&file.filename)?.clone();
-    let p = Palette::of(cx);
-    let label = if info.title.is_empty() {
-        info.app.clone()
-    } else {
-        format!("{} · {}", info.app, info.title)
-    };
-    let icon = match info.icon {
-        Some(path) => img(path).size(px(14.)).flex_none().into_any_element(),
-        None => Icon::new(IconName::Frame)
-            .xsmall()
-            .flex_none()
-            .into_any_element(),
-    };
-    Some(
-        h_flex()
-            .id(id)
-            .gap_1p5()
-            .px_2()
-            .py_1()
-            .max_w(px(320.))
-            .rounded(cx.theme().radius)
-            .border_1()
-            .border_color(p.border_strong)
-            .bg(p.hover)
-            .text_xs()
-            .child(icon)
-            .child(div().min_w_0().truncate().child(label))
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("SnapShot"),
-            ),
-    )
+    let info = cx.try_global::<Chips>()?.0.get(&file.filename)?;
+    Some(match info.icon.clone() {
+        Some(path) => img(path).size(px(14.)).into_any_element(),
+        None => Icon::new(IconName::Frame).xsmall().into_any_element(),
+    })
 }

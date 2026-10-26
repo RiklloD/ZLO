@@ -147,7 +147,7 @@ fn paint_now(generation: u64, cx: &mut App) {
         };
         paint::effect(&mut canvas, &effect);
         let soft = paint::thread(&canvas, bg, dark, column);
-        paint::fade(&mut canvas, bg, 0.36, 0.8);
+        paint::fade(&mut canvas, bg, 0.6, 1., 0.7);
         (to_bgra(canvas.to_image()), to_bgra(soft.to_image()))
     });
     cx.spawn(async move |cx| {

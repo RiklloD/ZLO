@@ -1152,7 +1152,13 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // and frame view descriptors, their request DTOs, the control
         // request's viewer id and two port methods; the live view itself
         // lives in ironclaw_computer_use.
-        ("ironclaw_product_contracts", 17_677),
+        // 17_677 -> 17_878 (2026-10-26, attachments in place): the optional
+        // `path` on `ProductInboundAttachment` and the `{{attachment:N}}`
+        // anchor grammar of `content` (`attachment_anchor`, `content_parts`),
+        // which the desktop client writes and ironclaw_assistant reads. The
+        // placement itself lives in ironclaw_assistant. Count read from this
+        // test's failure message.
+        ("ironclaw_product_contracts", 17_878),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

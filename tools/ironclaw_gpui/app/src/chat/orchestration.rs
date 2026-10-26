@@ -27,9 +27,9 @@ const POLL: Duration = Duration::from_secs(4);
 
 #[derive(Default)]
 pub(super) struct Orchestration {
-    tasks: Vec<TaskView>,
+    pub(super) tasks: Vec<TaskView>,
     queue: QueueDoc,
-    lineage: Lineage,
+    pub(super) lineage: Lineage,
     lineage_loaded: bool,
     queue_open: bool,
     queue_input: Option<(Entity<InputState>, Subscription)>,
@@ -308,7 +308,7 @@ impl ChatView {
         );
     }
 
-    fn cancel_task(&mut self, task_id: String, cx: &mut Context<Self>) {
+    pub(super) fn cancel_task(&mut self, task_id: String, cx: &mut Context<Self>) {
         run(
             &self.backend,
             cx,
@@ -427,7 +427,7 @@ impl ChatView {
         self.queue_action(QueueAction::Add(text), cx);
     }
 
-    fn open_thread(&mut self, thread_id: String, cx: &mut Context<Self>) {
+    pub(super) fn open_thread(&mut self, thread_id: String, cx: &mut Context<Self>) {
         cx.emit(OpenThread(thread_id));
     }
 
