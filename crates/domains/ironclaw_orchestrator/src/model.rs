@@ -444,6 +444,9 @@ pub struct Settings {
     pub handoff_bytes: usize,
     /// What the model picker hides or pins; display only, routing ignores it.
     pub model_picker: ModelPickerPrefs,
+    /// Claude CLI threads idle for ~4.5 minutes send `/compact` while the
+    /// prompt cache is still warm. Off by default.
+    pub idle_compact_claude: bool,
 }
 
 /// One model of one provider, as the picker names it.
@@ -502,6 +505,7 @@ impl Default for Settings {
             max_running_per_parent: 8,
             handoff_bytes: 48_000,
             model_picker: ModelPickerPrefs::default(),
+            idle_compact_claude: false,
         }
     }
 }

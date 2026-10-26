@@ -371,6 +371,9 @@ pub(crate) struct RebornRuntimeStores {
     /// Approvals, live stream and MCP tokens of CLI threads; set with `orchestrator`.
     // arch-exempt: optional_arc, libSQL-only like the engine it serves, plan #v3-cli-bridge
     pub(crate) cli_bridge: Option<Arc<ironclaw_cli_providers::bridge::CliBridge>>,
+    /// Filled with `orchestrator` so the gate reads each thread's profile
+    /// approval mode.
+    pub(crate) profile_approval_engine: crate::profile_approval_mode::ProfileApprovalEngineSlot,
     pub(crate) trigger_manual_fire_runner:
         Arc<crate::automation::trigger_poller::LateBoundTriggerManualFireRunner>,
     pub(crate) trigger_create_hook: Arc<TriggerCreatorPairingHook>,

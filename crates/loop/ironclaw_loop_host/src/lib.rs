@@ -1513,6 +1513,7 @@ where
     instruction_materialization_store: Option<Arc<dyn InstructionMaterializationStore>>,
     identity_context_source: Option<Arc<dyn HostIdentityContextSource>>,
     attachment_read_port: Option<Arc<dyn LoopAttachmentReadPort>>,
+    tool_image_port: Option<Arc<dyn LoopToolImagePort>>,
     stream_sink: Option<Arc<dyn HostManagedModelStreamSink>>,
     prompt_diagnostic_sink: Option<Arc<dyn HostManagedPromptDiagnosticSink>>,
 }
@@ -1544,6 +1545,7 @@ where
             instruction_materialization_store: None,
             identity_context_source: None,
             attachment_read_port: None,
+            tool_image_port: None,
             stream_sink: None,
             prompt_diagnostic_sink: None,
         }
@@ -1572,6 +1574,7 @@ where
             instruction_materialization_store: None,
             identity_context_source: None,
             attachment_read_port: None,
+            tool_image_port: None,
             stream_sink: None,
             prompt_diagnostic_sink: None,
         }
@@ -1624,6 +1627,42 @@ where
     pub fn with_attachment_read_port(mut self, port: Arc<dyn LoopAttachmentReadPort>) -> Self {
         self.attachment_read_port = Some(port);
         self
+    }
+
+    pub fn with_tool_image_port(mut self, port: Arc<dyn LoopToolImagePort>) -> Self {
+        self.tool_image_port = Some(port);
+        self
+    }
+
+    /// Attach each tool result's own picture (a computer-use screenshot),
+    /// newest first. The port answers only while the picture is among the
+    /// few a model keeps in context, so older results stay text.
+    async fn attach_tool_images(&self, messages: &mut [HostManagedModelMessage]) {
+        let Some(port) = self.tool_image_port.as_ref() else {
+            return;
+        };
+        // The scope the tool acted in (with its thread), as the capability
+        // glue keys its sessions.
+        let owner = self.thread_scope.to_resource_scope().user_id;
+        let scope = self.run_context.acting_resource_scope(&owner);
+        for message in messages
+            .iter_mut()
+            .rev()
+            .filter(|m| m.role == HostManagedModelMessageRole::ToolResult)
+        {
+            let (Some(call), Some(HostManagedToolResultContent::Reference { envelope })) = (
+                message.tool_result_provider_call.as_ref(),
+                message.tool_result_content.as_ref(),
+            ) else {
+                continue;
+            };
+            if let Some(image) = port
+                .tool_image(&scope, &call.capability_id, &envelope.result_ref)
+                .await
+            {
+                message.image_parts.push(image);
+            }
+        }
     }
 
     pub fn with_stream_sink(mut self, sink: Arc<dyn HostManagedModelStreamSink>) -> Self {
@@ -1736,7 +1775,8 @@ where
         // port itself never holds a reservation — budget accounting lives
         // exclusively in the outer port (see #3841 follow-up "delete dead
         // with_budget_accountant").
-        let resolved_messages = self.resolve_model_messages(prompt_grant.messages).await?;
+        let mut resolved_messages = self.resolve_model_messages(prompt_grant.messages).await?;
+        self.attach_tool_images(&mut resolved_messages).await;
 
         let diagnostic_requested_model = self.prompt_diagnostic_sink.as_ref().map(|_| {
             requested_model_profile_id
@@ -2733,6 +2773,22 @@ pub trait LoopAttachmentReadPort: Send + Sync {
         scope: &ironclaw_host_api::resource::ResourceScope,
         storage_key: &str,
     ) -> Result<Vec<u8>, LoopAttachmentReadError>;
+}
+
+/// The picture a tool result came with (a computer-use screenshot). The
+/// model port attaches it to that result so a vision model sees the window
+/// it is driving; host composition implements it over the tool's own frame
+/// store, which keeps only the newest few. Returns `None` for capabilities
+/// that produce no pictures. The textual tool result stays the durable
+/// record.
+#[async_trait::async_trait]
+pub trait LoopToolImagePort: Send + Sync {
+    async fn tool_image(
+        &self,
+        scope: &ironclaw_host_api::resource::ResourceScope,
+        capability_id: &ironclaw_host_api::ids::CapabilityId,
+        result_ref: &str,
+    ) -> Option<HostManagedModelImagePart>;
 }
 
 /// Failure reading attachment bytes for the multimodal path. Non-fatal: the

@@ -25,8 +25,15 @@ pub(super) async fn read(path: &Path, limit: usize) -> Result<Vec<HistoryMessage
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok()) // silent-ok: a torn last line of a live journal is skipped
         .filter_map(|v| {
+            // A steer sent mid-turn: the person's row, inside the run.
+            if let Some(mut m) = steer(&v) {
+                m.run_id = run.clone();
+                return Some(m);
+            }
             let mut m = message(&v)?;
-            if m.role == HistoryRole::User {
+            m.hidden = compact_scaffolding(&v, &m);
+            // Hidden rows (a compaction's summary) stay in the current run.
+            if m.role == HistoryRole::User && !m.hidden {
                 run = v["uuid"].as_str().map(str::to_string);
             }
             m.run_id = run.clone();
@@ -37,7 +44,35 @@ pub(super) async fn read(path: &Path, limit: usize) -> Result<Vec<HistoryMessage
     Ok(out.split_off(skip))
 }
 
+/// A user message the CLI took while a turn ran is journaled as a
+/// `queued_command` attachment, not as a `user` row.
+fn steer(v: &Value) -> Option<HistoryMessage> {
+    if v.get("type")?.as_str()? != "attachment" {
+        return None;
+    }
+    let attachment = &v["attachment"];
+    if attachment["type"].as_str()? != "queued_command" {
+        return None;
+    }
+    let text = match &attachment["prompt"] {
+        Value::String(text) => text.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => return None,
+    };
+    (!text.trim().is_empty()).then(|| entry(HistoryRole::User, text, Vec::new()))
+}
+
 fn message(v: &Value) -> Option<HistoryMessage> {
+    // A compaction (idle or the CLI's own) leaves one marker row.
+    if v.get("type").and_then(Value::as_str) == Some("system")
+        && v.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+    {
+        return Some(entry(HistoryRole::System, "Compacted".into(), Vec::new()));
+    }
     if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
         return None;
     }
@@ -82,6 +117,22 @@ fn message(v: &Value) -> Option<HistoryMessage> {
     Some(entry(role, text, tool_calls))
 }
 
+/// User rows nobody typed: the `/compact` prompt, the CLI's echo of the
+/// command and its output, and the summary that replaces the history.
+fn compact_scaffolding(v: &Value, m: &HistoryMessage) -> bool {
+    if m.role != HistoryRole::User {
+        return false;
+    }
+    if v.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let text = m.text.trim_start();
+    text == super::compact::COMPACT_PROMPT
+        || text.contains("<command-name>/compact</command-name>")
+        || text.starts_with("<local-command-stdout>")
+        || text.starts_with("<local-command-stderr>")
+}
+
 fn entry(role: HistoryRole, text: String, tool_calls: Vec<String>) -> HistoryMessage {
     HistoryMessage {
         role,
@@ -104,13 +155,14 @@ mod tests {
             r#"{"type":"user","uuid":"run-1","message":{"role":"user","content":"hi"}}"#,
             r#"{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Let me look."},{"type":"tool_use","name":"Bash"}]}}"#,
             r#"{"type":"user","uuid":"x","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+            r#"{"type":"attachment","uuid":"q","attachment":{"type":"queued_command","prompt":"steer"}}"#,
             r#"{"type":"assistant","uuid":"a2","message":{"content":[{"type":"text","text":"Done."}]}}"#,
             r#"{"type":"user","uuid":"run-2","message":{"role":"user","content":"again"}}"#,
         ];
         tokio::fs::write(&path, lines.join("\n")).await.unwrap();
         let rows = read(&path, 10).await.unwrap();
         let runs: Vec<_> = rows.iter().map(|m| m.run_id.as_deref()).collect();
-        // The tool result does not start a run.
+        // Neither the tool result nor a mid-turn steer starts a run.
         assert_eq!(
             runs,
             [
@@ -118,8 +170,28 @@ mod tests {
                 Some("run-1"),
                 Some("run-1"),
                 Some("run-1"),
+                Some("run-1"),
                 Some("run-2")
             ]
         );
+        assert_eq!(rows[3].role, HistoryRole::User);
+        assert_eq!(rows[3].text, "steer");
+    }
+
+    #[tokio::test]
+    async fn a_compaction_summary_does_not_start_a_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let lines = [
+            r#"{"type":"user","uuid":"run-1","message":{"role":"user","content":"hi"}}"#,
+            r#"{"type":"system","subtype":"compact_boundary","uuid":"b"}"#,
+            r#"{"type":"user","uuid":"summary-1","isCompactSummary":true,"message":{"role":"user","content":"summary"}}"#,
+            r#"{"type":"attachment","uuid":"q","attachment":{"type":"queued_command","prompt":"steer"}}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Done."}]}}"#,
+        ];
+        tokio::fs::write(&path, lines.join("\n")).await.unwrap();
+        let rows = read(&path, 10).await.unwrap();
+        assert!(rows.iter().all(|m| m.run_id.as_deref() == Some("run-1")));
+        assert!(rows[2].hidden);
     }
 }

@@ -372,6 +372,10 @@ async fn build_local_storage_production_shaped(
     )
     .await?;
     if let Some((engine, bridge)) = orchestrator {
+        // Filled once per build; a second set cannot happen on this path.
+        let _ = runtime_stores
+            .profile_approval_engine
+            .set(Arc::clone(&engine));
         runtime_stores.orchestrator = Some(engine);
         runtime_stores.cli_bridge = Some(bridge);
     }

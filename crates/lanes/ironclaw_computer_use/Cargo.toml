@@ -12,17 +12,26 @@ layer = "runtimes"
 
 [dependencies]
 async-trait = "0.1"
+base64 = "0.22"
+# Live view: decode a window capture or the agent's screenshot, scale it and
+# re-encode it as a small JPEG (what Pillow did in the Hermes plugin).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # The session layer implements the MCP lane's `McpClient` seam; the lane's own
 # runtime refuses stdio by charter, so only the client contract is shared.
 ironclaw_mcp = { path = "../ironclaw_mcp" }
 # Declares the `ComputerUseSessions` port this crate implements for product.
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
 tracing = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# CGWindowListCopyWindowInfo: which window an app's state belongs to.
+core-foundation-sys = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

@@ -242,6 +242,48 @@ impl ChatView {
         .detach();
     }
 
+    /// Queue `text` as a follow-up for after the current turn (the
+    /// composer's ⌥Enter). `false` while another queue change is in flight.
+    /// When the server refuses it, the text goes back into an empty
+    /// composer so it is never lost.
+    pub(super) fn queue_follow_up(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.orch.busy {
+            return false;
+        }
+        self.orch.busy = true;
+        self.orch.note = None;
+        cx.notify();
+        let thread_id = self.thread_id.clone();
+        let action = QueueAction::Add(text.clone());
+        crate::jobs::run_in(
+            &self.backend,
+            window,
+            cx,
+            move |c| async move { c.mutate_queue(&thread_id, &action).await },
+            move |this, result, window, cx| {
+                this.orch.busy = false;
+                match result {
+                    Ok(queue) => this.orch.queue = queue,
+                    Err(e) => {
+                        if this.composer.read(cx).value().trim().is_empty() {
+                            this.composer
+                                .update(cx, |state, cx| state.set_value(text, window, cx));
+                        }
+                        this.set_error(e.to_string(), cx);
+                    }
+                }
+                this.ensure_poll(cx);
+                cx.notify();
+            },
+        );
+        true
+    }
+
     fn queue_action(&mut self, action: QueueAction, cx: &mut Context<Self>) {
         if self.orch.busy {
             return;

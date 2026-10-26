@@ -409,6 +409,7 @@ pub fn render(history: &UsageHistory, metric: Metric, loading: bool, cx: &App) -
         .child(overview)
         .child(totals)
         .child(breakdown)
+        .children(super::usage_compactions::render(history, cx))
         .child(sources_note(history, cx))
         .into_any_element()
 }

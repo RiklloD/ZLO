@@ -1,6 +1,6 @@
 //! Where to look when something breaks: the app writes its own log to
 //! `~/Library/Logs/Numoh/desktop.log` (stderr too, for `cargo run`), and
-//! the gateway's launchd job writes `serve.stderr.log` under its home. Both
+//! the backend Numoh starts writes `serve.stderr.log` under its home. Both
 //! open in Console from the connection screen.
 //!
 //! `IRONCLAW_DESKTOP_LOG` overrides the filter (`RUST_LOG` syntax).
@@ -18,9 +18,7 @@ const ROTATE_BYTES: u64 = 4 * 1024 * 1024;
 pub fn init() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("IRONCLAW_DESKTOP_LOG")
         .unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new(
-                "warn,ironclaw_desktop=info,ironclaw_gpui_client=info",
-            )
+            tracing_subscriber::EnvFilter::new("warn,numoh=info,ironclaw_gpui_client=info")
         });
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)

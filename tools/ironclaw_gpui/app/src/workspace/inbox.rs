@@ -52,6 +52,10 @@ pub(super) struct Inbox {
     polling: bool,
     /// Rows on screen at first load draw settled; later ones grow in.
     seeded: bool,
+    /// ⌘ alone is held: cards show their `⌘N` jump badge.
+    pub(super) cmd_held: bool,
+    /// Thread ids ⌘1..⌘9 open, in the order the cards show.
+    pub(super) jump: Vec<String>,
     _wake: Option<Task<()>>,
 }
 
@@ -75,13 +79,13 @@ impl Inbox {
         self.list.rows.iter().find(|r| r.thread_id == thread_id)
     }
 
-    /// The thread to open first: the top of the list, never a parked one.
+    /// The thread to open first: the top open row. Never a parked one; with
+    /// none open the caller shows the new-thread screen.
     pub(super) fn first_open(&self) -> Option<String> {
         self.list
             .rows
             .iter()
             .find(|r| !matches!(r.state, InboxState::Snoozed | InboxState::Settled))
-            .or(self.list.rows.first())
             .map(|r| r.thread_id.clone())
     }
 
@@ -150,6 +154,18 @@ impl Inbox {
             .collect();
         set.into_iter().collect()
     }
+}
+
+/// Choose only a confirmed open row; an empty result always means a fresh draft.
+fn next_after_settle(rows: &[InboxRow], settled: &str) -> Option<String> {
+    rows.iter()
+        .filter(|r| r.state == InboxState::Pinned)
+        .chain(
+            rows.iter()
+                .filter(|r| matches!(r.state, InboxState::Inbox | InboxState::Working)),
+        )
+        .find(|r| r.thread_id != settled)
+        .map(|r| r.thread_id.clone())
 }
 
 pub(crate) fn title_of(row: &InboxRow) -> &str {
@@ -259,32 +275,40 @@ impl Workspace {
         );
     }
 
-    /// Settle a row. Settling the open thread moves on to its neighbour in
-    /// the list, like t3code's forward navigation.
+    /// Navigate only after the gateway confirms the mark. Never use an old
+    /// sidebar snapshot to choose a thread that may already be settled.
     fn settle(&mut self, thread_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        let open =
-            self.page == Page::Chat && self.active.as_ref().is_some_and(|(id, _)| *id == thread_id);
-        if open {
-            let rows = &self.inbox.list.rows;
-            let order: Vec<&str> = rows
-                .iter()
-                .filter(|r| r.state == InboxState::Pinned)
-                .chain(
-                    rows.iter()
-                        .filter(|r| matches!(r.state, InboxState::Inbox | InboxState::Working)),
-                )
-                .map(|r| r.thread_id.as_str())
-                .collect();
-            let next = order.iter().position(|id| *id == thread_id).and_then(|ix| {
-                order
-                    .get(ix + 1)
-                    .or_else(|| ix.checked_sub(1).and_then(|i| order.get(i)))
-            });
-            if let Some(next) = next.map(|id| id.to_string()) {
-                self.open_thread(next, window, cx);
-            }
-        }
-        self.inbox_mark(thread_id, InboxAction::Settle, None, cx);
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        let id = thread_id.clone();
+        jobs::run_in(
+            &backend,
+            window,
+            cx,
+            move |c| async move { c.inbox_mutate(&id, InboxAction::Settle, None).await },
+            move |this, result, window, cx| {
+                let list = match result {
+                    Ok(list) => list,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "could not settle thread");
+                        return;
+                    }
+                };
+                let next = next_after_settle(&list.rows, &thread_id);
+                let open = this.page == Page::Chat
+                    && this.active.as_ref().is_some_and(|(id, _)| *id == thread_id);
+                this.apply_inbox(list, cx);
+                if next.is_none() {
+                    this.active = None;
+                    this._chat_events.clear();
+                    this.draft = None;
+                    this.start_in_profile(DEFAULT_PROFILE_ID.into(), window, cx);
+                } else if open && let Some(next) = next {
+                    this.open_thread(next, window, cx);
+                }
+            },
+        );
     }
 
     /// Opening a row with an unseen result clears its Done / Woke badge.
@@ -388,10 +412,27 @@ impl Workspace {
                 crate::design::motion::settle(&format!("card-grow-{}", row.thread_id));
             }
         }
+        // ⌘1..⌘9 follow the full cards top to bottom, Working last when
+        // its shelf is open, as t3code numbers its visible threads.
+        let working_open = self.inbox.show_working || unfold;
+        self.inbox.jump = pinned
+            .iter()
+            .chain(main.iter())
+            .chain(working.iter().filter(|_| working_open))
+            .take(9)
+            .map(|r| r.thread_id.clone())
+            .collect();
+        let badge = |id: &str, inbox: &Inbox| {
+            inbox
+                .cmd_held
+                .then(|| inbox.jump.iter().position(|j| j == id))
+                .flatten()
+        };
         let cards: Vec<&InboxRow> = pinned.iter().chain(main.iter()).copied().collect();
         for (ix, row) in cards.into_iter().enumerate() {
             let is_active = active.as_deref() == Some(row.thread_id.as_str());
-            let card = self.render_card(row, is_active, now, cx);
+            let jump = badge(&row.thread_id, &self.inbox);
+            let card = self.render_card(row, is_active, jump, now, cx);
             // A thread that appears later (a new one, a T3 child) grows
             // into place, Zeron's 180 ms collapse run in reverse.
             let card = crate::design::motion::grow(
@@ -435,12 +476,12 @@ impl Workspace {
         if !working.is_empty() {
             pushed = true;
             list.push(div().flex_1().min_h_2().into_any_element());
-            let open = self.inbox.show_working || unfold;
-            list.push(self.render_fold("working", "Working", working.len(), open, cx));
-            if open {
+            list.push(self.render_fold("working", "Working", working.len(), working_open, cx));
+            if working_open {
                 for row in &working {
                     let is_active = active.as_deref() == Some(row.thread_id.as_str());
-                    let card = self.render_card(row, is_active, now, cx);
+                    let jump = badge(&row.thread_id, &self.inbox);
+                    let card = self.render_card(row, is_active, jump, now, cx);
                     list.push(
                         crate::design::motion::grow(
                             &format!("card-grow-{}", row.thread_id),
@@ -554,6 +595,7 @@ impl Workspace {
                     .icon(ExtraIcon::ListFilter)
                     .ghost()
                     .large()
+                    .icon_size(19.)
                     .selected(self.inbox.filters_open || filtered)
                     .tooltip("Filter by profile, model or state")
                     .accessibility_label("Filters")
@@ -567,8 +609,8 @@ impl Workspace {
                     .icon(ExtraIcon::SquarePen)
                     .ghost()
                     .large()
-                    // The pen fills its box; at 20 px it outweighs the filter.
-                    .icon_size(17.)
+                    // The pen fills its box; at the filter's size it outweighs it.
+                    .icon_size(16.)
                     .selected(self.inbox.new_menu_open)
                     .tooltip("New thread")
                     .accessibility_label("New thread")
@@ -808,6 +850,7 @@ impl Workspace {
         &self,
         row: &InboxRow,
         active: bool,
+        jump: Option<usize>,
         now: i64,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -964,7 +1007,10 @@ impl Workspace {
                                     .items_center()
                                     .when(menu_open, |d| d.invisible())
                                     .group_hover(group.clone(), |s| s.invisible())
-                                    .child(status_label(row, active, now, cx)),
+                                    .child(match jump {
+                                        Some(ix) => kit::shortcut_badge(ix, cx).into_any_element(),
+                                        None => status_label(row, active, now, cx),
+                                    }),
                             ),
                         ),
                 )
@@ -1330,6 +1376,22 @@ mod tests {
             parent_thread_id: None,
             automation: false,
         }
+    }
+
+    #[test]
+    fn settling_the_last_open_row_never_selects_a_parked_thread() {
+        let rows = vec![
+            row("recent", InboxState::Settled, None),
+            row("last", InboxState::Settled, None),
+            row("later", InboxState::Snoozed, None),
+        ];
+        assert_eq!(next_after_settle(&rows, "last"), None);
+        let rows = vec![
+            row("old", InboxState::Settled, None),
+            row("next", InboxState::Inbox, None),
+            row("last", InboxState::Settled, None),
+        ];
+        assert_eq!(next_after_settle(&rows, "last"), Some("next".into()));
     }
 
     #[test]

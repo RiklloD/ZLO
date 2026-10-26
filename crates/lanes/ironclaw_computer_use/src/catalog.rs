@@ -13,20 +13,32 @@ const TOOLS_JSON: &str = include_str!("../catalog/tools.json");
 
 #[derive(Deserialize)]
 struct Catalog {
+    instructions: String,
     tools: Vec<ComputerUseToolSpec>,
+}
+
+fn catalog() -> Option<&'static Catalog> {
+    static CATALOG: OnceLock<Option<Catalog>> = OnceLock::new();
+    CATALOG
+        .get_or_init(|| match serde_json::from_str::<Catalog>(TOOLS_JSON) {
+            Ok(catalog) => Some(catalog),
+            Err(error) => {
+                tracing::error!(%error, "computer-use tool catalog is unreadable");
+                None
+            }
+        })
+        .as_ref()
 }
 
 /// Every tool, in catalog order. Empty only if the embedded file is broken,
 /// which the crate tests rule out.
 pub fn computer_use_tools() -> &'static [ComputerUseToolSpec] {
-    static TOOLS: OnceLock<Vec<ComputerUseToolSpec>> = OnceLock::new();
-    TOOLS.get_or_init(|| match serde_json::from_str::<Catalog>(TOOLS_JSON) {
-        Ok(catalog) => catalog.tools,
-        Err(error) => {
-            tracing::error!(%error, "computer-use tool catalog is unreadable");
-            Vec::new()
-        }
-    })
+    catalog().map_or(&[], |catalog| catalog.tools.as_slice())
+}
+
+/// The server's own `initialize` instructions, verbatim.
+pub(crate) fn server_instructions() -> &'static str {
+    catalog().map_or("", |catalog| catalog.instructions.as_str())
 }
 
 pub fn computer_use_tool(name: &str) -> Option<&'static ComputerUseToolSpec> {

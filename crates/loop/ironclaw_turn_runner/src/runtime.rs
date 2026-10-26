@@ -17,11 +17,12 @@ use ironclaw_loop_host::{
     HostInputQueue, HostInputQueueReconcile, HostManagedModelGateway,
     HostManagedPromptDiagnosticSink, HostSkillContextSource, HostUserProfileSource,
     LoopAttachmentReadPort, LoopCapabilityPortDecorator, LoopCapabilityPortFactory,
-    LoopCapabilityResultWriter, ModelRouteResolver, ProductLiveCancellationReadiness,
-    RunCancellationFactory, SpawnSubagentFlavorDescriptor, SpawnSubagentInputCodec,
-    SubagentDefinitionResolver, SubagentPromptComposer, SubagentPromptMaterialSource,
-    SubagentSpawnCapabilityPort, SubagentSpawnDeps, SubagentSpawnLimits,
-    ToolDisclosureCapabilityDecorator, ToolDisclosureMode, verify_product_live_cancellation_probe,
+    LoopCapabilityResultWriter, LoopToolImagePort, ModelRouteResolver,
+    ProductLiveCancellationReadiness, RunCancellationFactory, SpawnSubagentFlavorDescriptor,
+    SpawnSubagentInputCodec, SubagentDefinitionResolver, SubagentPromptComposer,
+    SubagentPromptMaterialSource, SubagentSpawnCapabilityPort, SubagentSpawnDeps,
+    SubagentSpawnLimits, ToolDisclosureCapabilityDecorator, ToolDisclosureMode,
+    verify_product_live_cancellation_probe,
 };
 use ironclaw_memory::MemoryService;
 use ironclaw_outbound::ReplyAttachmentIntentPort;
@@ -397,6 +398,9 @@ where
     /// textual `<attachments>` pointer (the same fallback a text-only model
     /// gets) rather than failing the turn.
     pub attachment_read_port: Option<Arc<dyn LoopAttachmentReadPort>>,
+    /// Newest tool picture (computer-use screenshot) for vision models.
+    /// `None` when no tool produces pictures.
+    pub tool_image_port: Option<Arc<dyn LoopToolImagePort>>,
     /// Process-local operator diagnostics captured at the resolved prompt boundary.
     pub prompt_diagnostic_sink: Option<Arc<dyn HostManagedPromptDiagnosticSink>>,
     /// Shared run-scoped intent store used by the explicit attachment
@@ -927,6 +931,9 @@ where
     host_factory = host_factory.with_cancellation_factory(cancellation_factory);
     if let Some(port) = parts.attachment_read_port {
         host_factory = host_factory.with_attachment_read_port(port);
+    }
+    if let Some(port) = parts.tool_image_port {
+        host_factory = host_factory.with_tool_image_port(port);
     }
     if let Some(sink) = parts.prompt_diagnostic_sink {
         host_factory = host_factory.with_prompt_diagnostic_sink(sink);

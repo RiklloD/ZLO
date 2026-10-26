@@ -83,6 +83,8 @@ pub struct ProfilesView {
     selected: Option<String>,
     editor: Editor,
     picks: Picks,
+    /// The picks the form opened with, to tell edited fields apart.
+    origin: Picks,
     catalog: Catalog,
     picker_prefs: PickerPrefs,
     /// The open picker menu.
@@ -117,6 +119,7 @@ impl ProfilesView {
             selected: None,
             editor,
             picks: Picks::default(),
+            origin: Picks::default(),
             catalog: Catalog::default(),
             picker_prefs: PickerPrefs::default(),
             menu: None,
@@ -265,6 +268,7 @@ impl ProfilesView {
         self.menu = None;
         let profile = self.selected_profile().cloned();
         self.picks = Picks::of(profile.as_ref());
+        self.origin = self.picks.clone();
         self.editor.fill(profile.as_ref(), window, cx);
         cx.notify();
     }
@@ -289,13 +293,23 @@ impl ProfilesView {
         }
         self.saving = true;
         cx.notify();
+        let (picks, origin) = (self.picks.clone(), self.origin.clone());
         jobs::run_in(
             &self.backend,
             window,
             cx,
             move |c| async move {
                 match existing {
-                    Some(id) => c.update_profile(&id, &settings).await,
+                    Some(id) => {
+                        // Untouched security fields follow the server's
+                        // current value, not the one the form opened with.
+                        let mut settings = settings;
+                        let list = c.profiles().await?;
+                        if let Some(current) = list.profiles.iter().find(|p| p.profile_id == id) {
+                            picks.keep_untouched(&origin, &mut settings, &current.settings);
+                        }
+                        c.update_profile(&id, &settings).await
+                    }
                     None => c.create_profile(&id, settings).await,
                 }
             },
@@ -311,6 +325,7 @@ impl ProfilesView {
                         this.error = None;
                         this.select(Some(id), window, cx);
                         this.notice = Some("Saved.".into());
+                        crate::chat::approval_mode::changed(cx);
                     }
                     Err(e) => this.error = Some(e.to_string().into()),
                 }
@@ -547,6 +562,16 @@ impl ProfilesView {
                     Menu::Model,
                     self.model_summary(),
                     || self.model_popover(cx),
+                    cx,
+                ),
+                cx,
+            ))
+            .child(labeled(
+                "Approvals",
+                self.trigger(
+                    Menu::Approval,
+                    self.approval_summary(),
+                    || self.approval_popover(cx),
                     cx,
                 ),
                 cx,

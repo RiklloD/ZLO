@@ -321,6 +321,7 @@ fn leaf(row: &Row) -> Option<Leaf> {
             title,
             detail,
             status,
+            reason,
             ..
         } => {
             let kind = tool_kind(title);
@@ -354,11 +355,14 @@ fn leaf(row: &Row) -> Option<Leaf> {
                 },
                 label: verb,
                 detail: shown,
-                body: detail
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|d| d.len() > 90 || d.contains('\n'))
-                    .map(str::to_string),
+                body: super::approval_reason::leaf_body(
+                    reason.as_deref(),
+                    detail
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|d| d.len() > 90 || d.contains('\n'))
+                        .map(str::to_string),
+                ),
                 failed: *status == ToolStatus::Failed,
                 running: *status == ToolStatus::Running,
             }
@@ -383,6 +387,7 @@ fn leaf(row: &Row) -> Option<Leaf> {
             headline,
             body,
             state: GateState::Closed(decision),
+            reason,
             ..
         } => {
             let (icon, verdict, declined) = match decision {
@@ -400,7 +405,10 @@ fn leaf(row: &Row) -> Option<Leaf> {
                 icon,
                 label: verdict.into(),
                 detail: one_line(&text),
-                body: (text.len() > 90).then_some(text),
+                body: super::approval_reason::leaf_body(
+                    reason.as_deref(),
+                    (text.len() > 90).then_some(text),
+                ),
                 failed: declined,
                 running: false,
             }
@@ -794,6 +802,7 @@ mod tests {
             title: title.into(),
             detail: None,
             status: ToolStatus::Completed,
+            reason: None,
         }
     }
 
@@ -836,6 +845,7 @@ mod tests {
             body: None,
             allow_always: true,
             state,
+            reason: None,
         };
         let rows = vec![
             tool("a", "ironclaw.shell"),

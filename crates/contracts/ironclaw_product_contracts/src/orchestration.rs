@@ -85,6 +85,10 @@ pub struct OrchestratorRouteRequest {
     /// models, favorites) instead of switching the thread's route.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picker: Option<serde_json::Value>,
+    /// Turns idle compaction of Claude CLI threads on or off (engine-wide,
+    /// like `picker`) instead of switching the thread's route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_compact: Option<bool>,
 }
 
 /// Merge fork `thread_id` back into its source (or `target_thread_id`).

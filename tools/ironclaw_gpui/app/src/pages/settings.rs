@@ -4,6 +4,8 @@
 //! the Providers page.
 
 mod appearance;
+mod compaction;
+mod snapshots;
 mod traces;
 
 use ironclaw_gpui_client::Backend;
@@ -42,6 +44,7 @@ pub struct SettingsView {
     auto_approve: Option<bool>,
     tools: Vec<(String, ToolPermission)>,
     traces: Entity<traces::TracePanel>,
+    compaction: Entity<compaction::CompactionPanel>,
     error: Option<SharedString>,
     notice: Option<SharedString>,
     /// The Appearance select whose menu is open.
@@ -58,6 +61,7 @@ impl SettingsView {
             auto_approve: None,
             tools: Vec::new(),
             traces: cx.new(|cx| traces::TracePanel::new(backend.clone(), cx)),
+            compaction: cx.new(|cx| compaction::CompactionPanel::new(backend.clone(), cx)),
             error: None,
             notice: None,
             appearance_menu: None,
@@ -75,6 +79,7 @@ impl SettingsView {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.traces.update(cx, |t, cx| t.refresh(cx));
+        self.compaction.update(cx, |p, cx| p.refresh(cx));
         jobs::run(
             &self.backend,
             cx,
@@ -120,6 +125,7 @@ impl SettingsView {
                 Ok(resp) => {
                     this.auto_approve = resp.entry.value.as_bool();
                     this.error = None;
+                    crate::chat::approval_mode::changed(cx);
                     // Tools without their own setting follow the switch.
                     this.refresh(cx);
                 }
@@ -297,7 +303,10 @@ impl Render for SettingsView {
         let body = match self.section {
             Section::General => body
                 .child(group_header("Desktop app", None, cx))
-                .child(self.render_desktop(cx)),
+                .child(self.render_desktop(cx))
+                .child(snapshots::render(cx))
+                .child(group_header("Claude CLI", None, cx))
+                .child(self.compaction.clone()),
             Section::Appearance => body.child(appearance::render(self.appearance_menu, cx)),
             Section::Permissions => body.child(self.render_tools(cx)),
             Section::Traces => body

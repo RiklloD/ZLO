@@ -5,7 +5,9 @@
 use std::collections::BTreeSet;
 
 use ironclaw_gpui_client::orchestration::RouteProvider;
-use ironclaw_gpui_client::profiles::{ProfileInfo, ProfileSettings, ProfileSupermemory};
+use ironclaw_gpui_client::profiles::{
+    ApprovalMode, ProfileInfo, ProfileSettings, ProfileSupermemory,
+};
 
 use super::ProfilesView;
 use crate::chat::model_picker::{pretty_model, provider_mark};
@@ -37,6 +39,8 @@ pub(super) struct Picks {
     pub hidden_skills: BTreeSet<String>,
     /// Empty: every MCP server.
     pub mcp: BTreeSet<String>,
+    /// `None`: follow the global auto-approve setting.
+    pub approval: Option<ApprovalMode>,
 }
 
 impl Picks {
@@ -53,6 +57,7 @@ impl Picks {
             tools: set(s.allowed_capabilities.as_ref()),
             hidden_skills: s.hidden_skills.iter().cloned().collect(),
             mcp: set(s.enabled_mcp_servers.as_ref()),
+            approval: s.approval_mode,
         }
     }
 
@@ -77,6 +82,29 @@ impl Picks {
         settings.default_provider = self.provider.clone();
         settings.default_model = self.model.clone();
         settings.working_folder = self.folder.clone();
+        settings.approval_mode = self.approval;
+    }
+
+    /// The approval mode and allowlists the person did not change since
+    /// `origin` (the picks the form opened with) take `current`, the
+    /// profile as the server has it now. So a stale form never puts back
+    /// "Full access" set elsewhere, and an untouched "allow nothing" list
+    /// never turns into "allow everything".
+    pub fn keep_untouched(
+        &self,
+        origin: &Picks,
+        settings: &mut ProfileSettings,
+        current: &ProfileSettings,
+    ) {
+        if self.approval == origin.approval {
+            settings.approval_mode = current.approval_mode;
+        }
+        if self.tools == origin.tools {
+            settings.allowed_capabilities = current.allowed_capabilities.clone();
+        }
+        if self.mcp == origin.mcp {
+            settings.enabled_mcp_servers = current.enabled_mcp_servers.clone();
+        }
     }
 }
 
@@ -87,6 +115,7 @@ pub(super) enum Menu {
     Tools,
     Skills,
     Mcp,
+    Approval,
 }
 
 /// One row of a multi-choice list.
@@ -387,6 +416,30 @@ impl ProfilesView {
                 )),
             )
             .children(rows))
+    }
+
+    pub(super) fn approval_summary(&self) -> String {
+        crate::chat::approval_mode::label(self.picks.approval).into()
+    }
+
+    /// Full access, ask first, or follow the global setting.
+    pub(super) fn approval_popover(&self, cx: &Context<Self>) -> AnyElement {
+        let rows = crate::chat::approval_mode::CHOICES.iter().map(|&mode| {
+            let on = self.picks.approval == mode;
+            pick_row(
+                format!("approval-{}", crate::chat::approval_mode::key(mode)),
+                crate::chat::approval_mode::label(mode).into(),
+                on,
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.picks.approval = mode;
+                this.menu = None;
+                cx.notify();
+            }))
+        });
+        let pop = kit::popover("profile-approval-pop", cx);
+        pop(v_flex().w_full().p_1().children(rows))
     }
 
     /// A searchable checklist. `empty_label` is the row meaning "nothing

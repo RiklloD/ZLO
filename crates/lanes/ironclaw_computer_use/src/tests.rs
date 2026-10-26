@@ -50,6 +50,8 @@ fn fake(tune: impl FnOnce(&mut ComputerUseConfig)) -> Fake {
     config.args = vec![script.display().to_string(), log.display().to_string()];
     config.stop_hold = Duration::from_millis(300);
     config.call_timeout = Duration::from_secs(5);
+    config.cursor_dir = dir.path().join("cursor");
+    config.trace_path = Some(dir.path().join("trace.jsonl"));
     tune(&mut config);
     Fake {
         _dir: dir,
@@ -111,18 +113,34 @@ async fn a_call_returns_the_tree_keeps_the_frame_and_reuses_the_process() {
     assert_eq!((frame.seq, frame.data.as_str()), (1, "iVBORw0KGgo="));
     assert!(cu.latest_frame(&alice, Some(1)).is_none(), "nothing newer");
 
+    // The model gets each result's own screenshot, the newest MODEL_FRAMES.
+    cu.bind_result_frame(&alice, 1, "result:1");
+    assert_eq!(cu.result_frame(&alice, "result:1").map(|f| f.seq), Some(1));
+    for n in 2..=crate::session::MODEL_FRAMES as u64 + 1 {
+        let ComputerUseOutcome::Completed { frame_seq, .. } = click(cu, &alice).await else {
+            panic!("click did not complete");
+        };
+        let seq = frame_seq.expect("a frame per click");
+        cu.bind_result_frame(&alice, seq, &format!("result:{n}"));
+    }
+    assert!(
+        cu.result_frame(&alice, "result:1").is_none(),
+        "oldest dropped"
+    );
+    assert!(cu.result_frame(&alice, "result:2").is_some());
+
     // A server-side error leaves the process (and its element indices) alive.
     let rejected = cu
         .call(&alice, "set_value", json!({"app": "Calculator"}), 1024)
         .await;
     assert_eq!(
         rejected.to_json(),
-        json!({"ok": false, "result": "no such element"})
+        json!({"ok": false, "code": "action_failed", "error": "no such element"})
     );
     assert!(matches!(
         click(cu, &alice).await,
         ComputerUseOutcome::Completed {
-            frame_seq: Some(2),
+            frame_seq: Some(5),
             ..
         }
     ));
@@ -174,7 +192,17 @@ async fn stop_aborts_the_call_in_flight_kills_the_process_and_holds() {
         .await
         .expect("Stop ends the call promptly")
         .unwrap();
-    assert_eq!(outcome, ComputerUseOutcome::Refused(RefusalCode::Cancelled));
+    assert_eq!(
+        outcome,
+        ComputerUseOutcome::Refused(RefusalCode::CancelledInFlight)
+    );
+    assert_eq!(outcome.to_json()["code"], "cancelled");
+    assert!(
+        outcome.to_json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("Whether it took effect is unknown")
+    );
     assert!(!cu.status(&alice).process_running, "process killed");
     assert_eq!(
         click(&cu, &alice).await,
@@ -286,11 +314,20 @@ async fn the_mcp_client_seam_needs_a_thread_and_a_known_capability() {
         .await
         .unwrap();
     assert_eq!(output.output["ok"], true);
-    assert_eq!(output.output["screenshot_frame"], 1);
+    assert!(
+        output.output["result"]
+            .as_str()
+            .unwrap()
+            .contains("0 standard window")
+    );
+    assert!(
+        output.output.get("screenshot_frame").is_none(),
+        "screenshots stay host-side"
+    );
 }
 
 #[test]
-fn config_is_off_by_default_and_fails_closed_when_half_set() {
+fn config_follows_the_bundled_engine_and_fails_closed_when_half_set() {
     let env = |pairs: &'static [(&'static str, &'static str)]| {
         move |name: &str| {
             pairs
@@ -299,27 +336,45 @@ fn config_is_off_by_default_and_fails_closed_when_half_set() {
                 .map(|(_, value)| value.to_string())
         }
     };
-    assert!(ComputerUseConfig::from_lookup(env(&[])).unwrap().is_none());
+    let bundled = || Some(std::path::PathBuf::from("/bin/sh"));
     assert!(
-        ComputerUseConfig::from_lookup(env(&[("COMPUTER_USE_ENABLED", "false")]))
+        ComputerUseConfig::from_lookup(env(&[]), None)
             .unwrap()
             .is_none()
     );
-    assert!(ComputerUseConfig::from_lookup(env(&[("COMPUTER_USE_ENABLED", "true")])).is_err());
+    let auto = ComputerUseConfig::from_lookup(env(&[]), bundled())
+        .unwrap()
+        .unwrap();
+    assert_eq!(auto.binary, std::path::PathBuf::from("/bin/sh"));
     assert!(
-        ComputerUseConfig::from_lookup(env(&[
-            ("COMPUTER_USE_ENABLED", "true"),
-            ("COMPUTER_USE_BINARY", "relative/OpenComputerUse"),
-        ]))
+        ComputerUseConfig::from_lookup(env(&[("COMPUTER_USE_ENABLED", "false")]), bundled())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        ComputerUseConfig::from_lookup(env(&[("COMPUTER_USE_ENABLED", "true")]), None).is_err()
+    );
+    assert!(
+        ComputerUseConfig::from_lookup(
+            env(&[
+                ("COMPUTER_USE_ENABLED", "true"),
+                ("COMPUTER_USE_BINARY", "relative/OpenComputerUse"),
+            ]),
+            None,
+        )
         .is_err()
     );
-    assert!(ComputerUseConfig::from_lookup(env(&[("COMPUTER_USE_ENABLED", "maybe")])).is_err());
-    let on = ComputerUseConfig::from_lookup(env(&[
-        ("COMPUTER_USE_ENABLED", "true"),
-        ("COMPUTER_USE_BINARY", "/bin/sh"),
-        ("COMPUTER_USE_AGENT_SOCKET_NAMESPACE", "hermes"),
-        ("COMPUTER_USE_CALL_TIMEOUT_SECS", "30"),
-    ]))
+    assert!(
+        ComputerUseConfig::from_lookup(env(&[("COMPUTER_USE_ENABLED", "maybe")]), None).is_err()
+    );
+    let on = ComputerUseConfig::from_lookup(
+        env(&[
+            ("COMPUTER_USE_ENABLED", "true"),
+            ("COMPUTER_USE_BINARY", "/bin/sh"),
+            ("COMPUTER_USE_CALL_TIMEOUT_SECS", "30"),
+        ]),
+        None,
+    )
     .unwrap()
     .unwrap();
     assert_eq!(on.args, ["mcp"]);
@@ -327,8 +382,8 @@ fn config_is_off_by_default_and_fails_closed_when_half_set() {
     assert_eq!(
         on.env,
         [(
-            "OPEN_COMPUTER_USE_AGENT_SOCKET_NAMESPACE".to_string(),
-            "hermes".to_string()
+            "OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY".to_string(),
+            "1".to_string()
         )]
     );
 }
@@ -370,20 +425,59 @@ async fn the_product_port_drives_controls_and_the_session_view() {
     scope.thread_id = Some(alice.thread_id.clone());
 
     let taken = port
-        .control(&alice, ComputerUseControlAction::TakeOver)
+        .control(&alice, ComputerUseControlAction::TakeOver, Some("viewer-1"))
         .await;
     assert_eq!(taken["session"]["state"], "taken_over");
     let refused = port
         .call_tool(scope.clone(), "click", json!({"app": "Calculator"}))
         .await;
     assert_eq!(refused["code"], "human_has_control");
-    port.control(&alice, ComputerUseControlAction::HandBack)
+    port.control(&alice, ComputerUseControlAction::HandBack, None)
+        .await;
+
+    // Take over holds the desktop: another thread of the same user waits too.
+    port.control(&alice, ComputerUseControlAction::TakeOver, Some("viewer-1"))
+        .await;
+    let mut other = scope.clone();
+    other.thread_id = Some(ThreadId::new("thread-other").unwrap());
+    let refused = port
+        .call_tool(other, "click", json!({"app": "Calculator"}))
+        .await;
+    assert_eq!(refused["code"], "human_has_control");
+    port.control(&alice, ComputerUseControlAction::HandBack, None)
         .await;
 
     let done = port
         .call_tool(scope, "click", json!({"app": "Calculator"}))
         .await;
     assert_eq!(done["ok"], true);
+
+    // The live view: the session, its label and the outcome, for this user only.
+    let state = port.viewer_state(&alice.tenant_id, &alice.user_id, Some("viewer-1"));
+    let session = state["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["thread_id"] == "thread-cu")
+        .expect("the session is listed");
+    assert_eq!(session["label"], "Clicking in Calculator");
+    assert_eq!(session["status"], "ok");
+    assert_eq!(session["inflight"], 0);
+    assert_eq!(session["human_has_control"], false);
+    let bob = key("bob");
+    assert!(
+        port.viewer_state(&bob.tenant_id, &bob.user_id, None)["sessions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Trace: tool, ok and code, never arguments.
+    let trace = std::fs::read_to_string(fake._dir.path().join("trace.jsonl")).unwrap();
+    assert!(trace.contains("\"code\":\"human_has_control\""));
+    assert!(trace.lines().last().unwrap().contains("\"ok\":true"));
+    assert!(!trace.contains("Calculator"), "no arguments in the trace");
+
     let view = port.session_view(&alice, None);
     assert_eq!(view["session"]["state"], "idle");
     assert_eq!(view["frame"]["seq"], 1);
@@ -395,4 +489,137 @@ async fn the_product_port_drives_controls_and_the_session_view() {
     let stopped = port.session_view(&alice, Some(1));
     assert_eq!(stopped["session"]["state"], "stopped");
     assert_eq!(stopped["session"]["processRunning"], false);
+}
+
+#[test]
+fn the_prompt_section_is_the_servers_instructions_made_true_for_ironclaw() {
+    let plain = crate::prompt::instructions(false);
+    assert!(plain.starts_with("Computer Use tools let you interact with macOS apps"));
+    assert!(plain.contains("IronClaw ends the computer use session after each assistant turn"));
+    assert!(!plain.contains("Codex will automatically stop"));
+    // The server's "use tool_search" hint is gone; ours says not to.
+    assert!(!plain.contains("use tool_search"));
+    assert!(plain.contains("do not call `tool_search`"));
+    assert!(plain.contains("approves computer use once per task"));
+    assert!(plain.contains("`computer_use_get_app_state`"));
+    assert!(!plain.contains("tree diff"));
+    let fork = crate::prompt::instructions(true);
+    assert!(fork.contains("Find a control with `query`"));
+    assert!(fork.contains("type_text method=\"paste\""));
+}
+
+#[test]
+fn a_tree_diff_keeps_unchanged_labels_and_a_full_tree_replaces_them() {
+    let mut target = crate::target::TargetState::default();
+    let full = "App=com.apple.mail (pid 7)\nWindow: \"Inbox\", App: Mail.\n\t1 button Send ID: send\n\t2 text field To Help: who ID: to, Secondary Actions: Raise\n\t3 button Description: Reply, ID: r";
+    assert!(target.absorb(full, None));
+    assert_eq!(
+        (
+            target.bundle.as_str(),
+            target.app.as_str(),
+            target.title.as_str()
+        ),
+        ("com.apple.mail", "Mail", "Inbox")
+    );
+    assert_eq!(target.pid, Some(7));
+    assert_eq!(target.elements["1"], "button Send");
+    assert_eq!(target.elements["2"], "text field To");
+    assert_eq!(target.elements["3"], "button Reply");
+    assert!(target.same_app(Some(&json!("mail"))));
+    assert!(target.same_app(Some(&json!("com.apple.mail"))));
+    let diff = "App=com.apple.mail (pid 7)\n(tree diff: 1 changed)\n+ 2 text field Cc";
+    assert!(target.absorb(diff, None));
+    assert_eq!(target.elements["1"], "button Send", "unchanged line kept");
+    assert_eq!(target.elements["2"], "text field Cc");
+    assert!(!target.absorb("no header here", None));
+    let png = [
+        &b"\x89PNG\r\n\x1a\n"[..],
+        &[0, 0, 0, 13],
+        b"IHDR",
+        &640u32.to_be_bytes(),
+        &400u32.to_be_bytes(),
+    ]
+    .concat();
+    assert_eq!(crate::target::png_size(&png), Some((640, 400)));
+}
+
+#[test]
+fn viewer_labels_read_like_the_hermes_viewer() {
+    use crate::live::describe;
+    assert_eq!(
+        describe(
+            "click",
+            &json!({"app": "Mail", "element_index": "4"}),
+            Some("button Send")
+        ),
+        "Clicking \u{201c}button Send\u{201d}"
+    );
+    assert_eq!(
+        describe(
+            "click",
+            &json!({"app": "Mail", "click_count": 2, "x": 1, "y": 2}),
+            None
+        ),
+        "Double-clicking in Mail"
+    );
+    assert_eq!(
+        describe(
+            "click",
+            &json!({"app": "Mail", "mouse_button": "right", "element_index": 9}),
+            None
+        ),
+        "Right-clicking #9"
+    );
+    assert_eq!(
+        describe("type_text", &json!({"text": "a".repeat(45)}), None),
+        format!("Typing \u{201c}{}\u{2026}\u{201d}", "a".repeat(40))
+    );
+    assert_eq!(
+        describe("press_key", &json!({"key": "super+c"}), None),
+        "Pressing super+c"
+    );
+    assert_eq!(
+        describe("get_app_state", &json!({}), None),
+        "Looking at the app"
+    );
+    assert_eq!(
+        describe("scroll", &json!({"element_index": "3"}), None),
+        "Scrolling down #3"
+    );
+    assert_eq!(describe("select_text", &json!({}), None), "Select text");
+}
+
+#[test]
+fn weak_model_arguments_are_repaired_against_the_tool_schema() {
+    let schema = &crate::computer_use_tool("get_app_state")
+        .unwrap()
+        .input_schema;
+    // What GLM sent on 26.10.2026: the server rejected text_limit "500".
+    let mut args = json!({
+        "app": "Calculator",
+        "include_ax": "true",
+        "max_tree_depth": "64",
+        "text_limit": "500",
+        "window_placement": "keep",
+        "window_title": "null",
+        "window_id": 0,
+    });
+    crate::args::coerce(schema, &mut args);
+    assert_eq!(
+        args,
+        json!({
+            "app": "Calculator",
+            "include_ax": true,
+            "max_tree_depth": 64,
+            "text_limit": 500,
+            "window_placement": "keep",
+        })
+    );
+    // Values the schema accepts pass unchanged, enum strings included.
+    let mut ok = json!({"app": "Mail", "text_limit": "max", "window_title": "Inbox"});
+    crate::args::coerce(schema, &mut ok);
+    assert_eq!(
+        ok,
+        json!({"app": "Mail", "text_limit": "max", "window_title": "Inbox"})
+    );
 }

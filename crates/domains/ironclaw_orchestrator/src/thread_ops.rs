@@ -142,7 +142,7 @@ impl Engine {
         if outcome == SteerOutcome::Rejected {
             return Err(OrchestratorError::request(
                 "steer_rejected",
-                "The active turn rejected the steer.",
+                "The active turn can't take it mid-turn; it stays queued and runs when the turn ends.",
             ));
         }
         self.store
@@ -153,19 +153,19 @@ impl Engine {
         Ok(json_ok(view))
     }
 
-    /// Runtimes without in-turn steering get interrupt-and-restart.
-    async fn steer(
+    /// A steer never kills the turn: on a runtime without in-turn steering
+    /// it is `Rejected`, and callers leave the text in the queue. Only an
+    /// explicit `Restart` stops and restarts the turn.
+    pub(crate) async fn steer(
         &self,
         thread: &ThreadRecord,
         text: &str,
         how: SteerHow,
     ) -> Result<SteerOutcome> {
         let runtime = self.runtime(&thread.runtime_id)?;
-        let how = if runtime.capabilities().steer_in_turn {
-            how
-        } else {
-            SteerHow::Restart
-        };
+        if how == SteerHow::Steer && !runtime.capabilities().steer_in_turn {
+            return Ok(SteerOutcome::Rejected);
+        }
         Ok(runtime.steer(thread, text, how).await?)
     }
 

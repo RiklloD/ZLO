@@ -398,6 +398,7 @@ mod auth_interaction;
 mod auth_interaction_tests;
 pub(crate) mod capability_host;
 mod cli_skills;
+mod computer_use_images;
 #[cfg(test)]
 #[path = "runtime/tests/default_system_prompt.rs"]
 mod default_system_prompt_tests;
@@ -3352,7 +3353,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         .map_err(|error| RebornRuntimeError::MalformedConfig {
             reason: format!("suggestion generation observer wiring failed: {error}"),
         })?;
-    // Computer use is off unless COMPUTER_USE_ENABLED; a thread's Stop ends its session.
+    // Computer use is on when the engine is bundled or configured; a thread's Stop ends its session.
     let computer_use = ironclaw_computer_use::ComputerUse::from_env().map_err(|error| {
         RebornRuntimeError::MalformedConfig {
             reason: error.to_string(),
@@ -4196,6 +4197,10 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
                 filesystem,
             )) as Arc<dyn ironclaw_loop_host::LoopAttachmentReadPort>
         }),
+        tool_image_port: computer_use.clone().map(|computer_use| {
+            Arc::new(computer_use_images::ComputerUseToolImages(computer_use))
+                as Arc<dyn ironclaw_loop_host::LoopToolImagePort>
+        }),
         prompt_diagnostic_sink: Some(prompt_diagnostic_sink),
         reply_attachment_intent_port: Some(Arc::clone(&services.reply_attachment_intents)),
         // §5.2.9 render-from-record: a `GateRecordStore` over the SAME
@@ -4281,6 +4286,11 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
                             // bound memory extension declares as its guidance,
                             // or nothing.
                             memory_guidance,
+                            // The computer-use server's own instructions,
+                            // only while its tools are wired.
+                            computer_use_guidance: computer_use
+                                .as_ref()
+                                .map(|computer_use| computer_use.instructions()),
                         },
                     )
                     .map_err(|error| RebornRuntimeError::InvalidArgument {

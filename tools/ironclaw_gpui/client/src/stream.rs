@@ -4,8 +4,7 @@
 //! - resume with `Last-Event-ID` (keep-alives carry no id, so the last real
 //!   frame stays the resume point);
 //! - jittered 1/2/4/8/16/30 s backoff, honoring `Retry-After`;
-//! - backoff resets only after an application frame arrived and the stream
-//!   then stayed open 15 s;
+//! - backoff resets after the stream stayed open 15 s, including idle streams;
 //! - one stable `connection_id` per subscription with an increasing
 //!   `connection_generation`, so a reconnect supersedes its own old slot
 //!   instead of consuming another of the 3 per-user stream slots;
@@ -244,18 +243,21 @@ async fn connect_once(
         }
     }
 
-    let mut events = resp.bytes_stream().eventsource();
-    let mut first_frame_at: Option<Instant> = None;
-    let mut announced_live = false;
+    // HTTP 200 is enough to clear an old reconnect banner. An idle thread
+    // need not emit a new application event before it is connected.
+    if tx
+        .send(StreamMessage::Status(StreamStatus::Live))
+        .await
+        .is_err()
+    {
+        return Ended::Stop(None);
+    }
+    let connected_at = Instant::now();
+    let events = with_activity_timeout(resp.bytes_stream(), ACTIVITY_TIMEOUT).eventsource();
+    futures::pin_mut!(events);
 
     loop {
-        let next = match tokio::time::timeout(ACTIVITY_TIMEOUT, events.next()).await {
-            Ok(next) => next,
-            Err(_) => {
-                tracing::debug!("event stream went silent, reconnecting");
-                break;
-            }
-        };
+        let next = events.next().await;
         let event = match next {
             Some(Ok(event)) => event,
             Some(Err(e)) => {
@@ -264,17 +266,6 @@ async fn connect_once(
             }
             None => break,
         };
-
-        if !announced_live {
-            announced_live = true;
-            if tx
-                .send(StreamMessage::Status(StreamStatus::Live))
-                .await
-                .is_err()
-            {
-                return Ended::Stop(None);
-            }
-        }
 
         if event.event == "stream_error" {
             let frame: StreamErrorFrame =
@@ -298,9 +289,6 @@ async fn connect_once(
                 if !event.id.is_empty() {
                     *last_event_id = Some(event.id.clone());
                 }
-                if event.event != "keep_alive" && first_frame_at.is_none() {
-                    first_frame_at = Some(Instant::now());
-                }
                 StreamMessage::Frame(Box::new(frame))
             }
             Err(e) => StreamMessage::Undecodable {
@@ -314,10 +302,35 @@ async fn connect_once(
     }
 
     Ended::Retry {
-        stable: first_frame_at.is_some_and(|t| t.elapsed() >= STABLE_AFTER),
+        stable: connected_at.elapsed() >= STABLE_AFTER,
         retry_after: None,
         listener_down: false,
     }
+}
+
+/// Watch raw transport activity, before the SSE parser discards comment heartbeats.
+fn with_activity_timeout<S, T, E>(
+    stream: S,
+    silence: Duration,
+) -> impl futures::Stream<Item = Result<T, std::io::Error>>
+where
+    S: futures::Stream<Item = Result<T, E>>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    futures::stream::unfold(Some(Box::pin(stream)), move |stream| async move {
+        let mut stream = stream?;
+        match tokio::time::timeout(silence, stream.next()).await {
+            Ok(Some(item)) => Some((item.map_err(std::io::Error::other), Some(stream))),
+            Ok(None) => None,
+            Err(_) => Some((
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "event stream went silent",
+                )),
+                None,
+            )),
+        }
+    })
 }
 
 /// +/-20% jitter so many clients don't reconnect in lockstep.
@@ -328,7 +341,43 @@ fn jitter(base: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::listener_addr;
+    use super::{listener_addr, with_activity_timeout};
+    use eventsource_stream::Eventsource;
+    use futures::StreamExt;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn comment_heartbeats_keep_an_idle_stream_alive() {
+        let comments = futures::stream::unfold((), |()| async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            Some((Ok::<_, std::io::Error>(": heartbeat\n\n"), ()))
+        });
+        let events = with_activity_timeout(comments, Duration::from_millis(30)).eventsource();
+        futures::pin_mut!(events);
+        // Comments produce no application event, but they prove transport liveness.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), events.next())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_silent_transport_still_times_out() {
+        let bytes = futures::stream::pending::<Result<&str, std::io::Error>>();
+        let watched = with_activity_timeout(bytes, Duration::from_millis(5));
+        futures::pin_mut!(watched);
+        assert_eq!(
+            watched
+                .next()
+                .await
+                .expect("watchdog result")
+                .expect_err("silent stream")
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert!(watched.next().await.is_none());
+    }
 
     #[test]
     fn listener_addr_fills_default_ports() {

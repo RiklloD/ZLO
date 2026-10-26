@@ -75,6 +75,11 @@ pub(crate) struct SystemPromptProtocols {
     /// deployment does not have. Same reasoning as `disclosure`: guidance that
     /// names concrete tools must not outlive those tools.
     pub(crate) memory_guidance: Option<String>,
+    /// The computer-use section (the server's instructions for these tools),
+    /// or `None` when computer use is off. Content for the same reason as
+    /// `memory_guidance`: the lane that runs the server owns what it says,
+    /// and it must not outlive the tools it names.
+    pub(crate) computer_use_guidance: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +120,10 @@ impl DefaultSystemPromptIdentitySource {
         }
         if self.protocols.disclosure {
             append_section(&mut content, TOOL_DISCLOSURE_PROTOCOL_PROMPT);
+        }
+        // After discovery: computer use is the exception to "search first".
+        if let Some(guidance) = self.protocols.computer_use_guidance.as_deref() {
+            append_section(&mut content, guidance);
         }
         if self.protocols.benchmarking_mode {
             append_section(&mut content, BENCHMARKING_MODE_PROTOCOL_PROMPT);

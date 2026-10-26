@@ -10,6 +10,7 @@
 mod antigravity;
 mod claude;
 mod codex;
+mod compactions;
 mod history;
 mod http;
 mod monitor;

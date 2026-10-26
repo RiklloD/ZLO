@@ -4401,13 +4401,25 @@ where
                     // snapshot; its absence is a core invariant violation.
                     return Err(ProductSurfaceError::internal_invariant());
                 };
+                // Deferred means steered: the message is queued as steering
+                // input for the active run and drains at its next step, so
+                // the notice must not ask for a resend.
+                let notice = match busy.status {
+                    TurnStatus::BlockedApproval => {
+                        "Sent to the running turn; it continues once the open approval is answered."
+                    }
+                    TurnStatus::BlockedAuth => {
+                        "Sent to the running turn; it continues once authentication completes."
+                    }
+                    _ => "Sent to the running turn; the agent reads it at its next step.",
+                };
                 Ok(RebornSubmitTurnResponse::DeferredBusy {
                     thread_id: thread_id.clone(),
                     accepted_message_ref,
                     active_run_id,
                     status: busy.status,
                     event_cursor: busy.event_cursor,
-                    notice: rejected_busy_notice(busy.status),
+                    notice: notice.to_string(),
                 })
             }
             ProductInboundAck::Rejected(rejection) => Err(session_rejection_error(&rejection)),

@@ -251,6 +251,13 @@ impl HistoryScanner {
             .collect();
         buckets
             .sort_by(|a, b| (&a.day, &a.provider, &a.model).cmp(&(&b.day, &b.provider, &b.model)));
+        // The driver logs compactions next to the price cache.
+        let compactions = match self.price_file.as_deref().and_then(Path::parent) {
+            Some(dir) => {
+                crate::compactions::read(&dir.join(crate::compactions::LOG_FILE), since_ms).await
+            }
+            None => Vec::new(),
+        };
 
         UsageHistory {
             since_day: since.format("%Y-%m-%d").to_string(),
@@ -259,6 +266,7 @@ impl HistoryScanner {
             scan_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             buckets,
             sources,
+            compactions,
             pricing: match prices.as_ref() {
                 Some(p) => UsagePricing {
                     status: p.status,

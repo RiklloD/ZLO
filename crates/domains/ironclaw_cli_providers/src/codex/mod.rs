@@ -420,7 +420,7 @@ impl Turn {
         let text = crate::with_context(&self.text, self.context.as_deref());
         let mut params = json!({
             "threadId": codex_thread,
-            "input": [{"type": "text", "text": text, "text_elements": []}],
+            "input": codex_input(&text).await,
         });
         if let Some(model) = &self.model {
             params["model"] = json!(model);
@@ -603,13 +603,17 @@ impl Turn {
             session_id: self.session.clone(),
             tool: tool.to_string(),
             subject,
+            // Codex approval requests carry an optional model-written `reason`.
+            reason: crate::approval_reason::explicit(params, &["reason"]),
         };
         let client = client.clone();
         let bridge = self.bridge.clone();
         let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
+        let claim = permissions::claim(bridge.as_deref(), &thread, &run);
         // The decision waits for a person; the turn's events keep flowing.
         tokio::spawn(async move {
-            let decision = permissions::decide(bridge.as_deref(), &thread, &run, &request).await;
+            let decision =
+                permissions::decide(bridge.as_deref(), &thread, &run, &request, claim).await;
             let answer = match (decision, v2) {
                 (PermissionDecision::AllowOnce, true) => json!({"decision": "accept"}),
                 (PermissionDecision::Deny, true) => json!({"decision": "decline"}),
@@ -634,6 +638,16 @@ fn open_failed(error: &RpcError) -> TurnOutcome {
 }
 
 /// The canonical path (macOS `/tmp` is `/private/tmp`).
+/// A turn's `input`: the text, then each attached picture as a data URL
+/// (T3 Code's Codex shape). The text keeps the file paths either way.
+async fn codex_input(text: &str) -> Value {
+    let mut input = vec![json!({"type": "text", "text": text, "text_elements": []})];
+    for image in crate::attachments::inline_images(text).await {
+        input.push(json!({"type": "image", "url": image.data_url()}));
+    }
+    Value::Array(input)
+}
+
 fn canonical(dir: &Path) -> String {
     std::fs::canonicalize(dir)
         .unwrap_or_else(|_| dir.to_path_buf()) // silent-ok: Codex rejects a bad cwd itself
@@ -719,7 +733,7 @@ impl TurnRuntime for CodexRuntime {
             let params = json!({
                 "threadId": live.codex_thread,
                 "expectedTurnId": live.turn_id,
-                "input": [{"type": "text", "text": text, "text_elements": []}],
+                "input": codex_input(text).await,
             });
             match live
                 .client
@@ -740,9 +754,16 @@ impl TurnRuntime for CodexRuntime {
                     }
                     return Ok(SteerOutcome::Steered);
                 }
-                // The turn ended or moved on; fall back to a fresh turn.
-                Err(error) => tracing::debug!(error = %error.label(), "codex: steer refused"),
+                // The turn ended or moved on: the engine queues the text.
+                Err(error) => {
+                    tracing::debug!(error = %error.label(), "codex: steer refused");
+                    return Ok(SteerOutcome::Rejected);
+                }
             }
+        }
+        // A steer with no live turn queues; only an explicit Restart restarts.
+        if how == SteerHow::Steer {
+            return Ok(SteerOutcome::Rejected);
         }
         self.stop(&thread.thread_id).await;
         self.spawn_turn(thread, text, None, None).await?;

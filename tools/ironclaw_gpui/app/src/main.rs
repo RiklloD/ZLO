@@ -13,7 +13,9 @@ mod jobs;
 mod login_item;
 mod logs;
 mod pages;
+mod permissions;
 mod service;
+mod snapshot;
 mod titles;
 mod ui;
 mod workspace;
@@ -30,10 +32,7 @@ gpui_kit::actions!(
 
 fn main() {
     logs::init();
-    tracing::info!(
-        version = env!("CARGO_PKG_VERSION"),
-        "Numoh started"
-    );
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "Numoh started");
 
     let app = gpui_kit::application().with_assets(assets::AppAssets);
     app.on_reopen(|cx| {

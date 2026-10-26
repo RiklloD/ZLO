@@ -102,6 +102,16 @@ effects = [
 mounts = "workspace"
 network = "default"
 
+# One-shot lease terms for an approved computer-use action (`computer_use.*`).
+# Those tools are approval-gated synthetic capabilities, not builtin grants:
+# the lease only proves the user approved this exact invocation, and the
+# computer-use handler claims and consumes it before acting. Without these
+# terms approving a computer-use gate failed with 503.
+[approval_defaults.computer_use]
+effects = ["dispatch_capability", "external_write"]
+mounts = "ambient"
+network = "default"
+
 [[grants]]
 capability = "builtin.echo"
 effects = ["dispatch_capability", "read_filesystem", "write_filesystem"]

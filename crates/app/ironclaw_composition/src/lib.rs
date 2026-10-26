@@ -51,6 +51,7 @@ mod outbound_store_assembly;
 mod product_capability;
 mod product_surface;
 mod production_runtime_policy;
+mod profile_approval_mode;
 mod readiness;
 mod root;
 mod runtime;

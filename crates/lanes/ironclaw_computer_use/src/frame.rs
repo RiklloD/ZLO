@@ -22,35 +22,6 @@ pub struct Frame {
     pub window: Option<String>,
 }
 
-/// Target app and window from a result's header lines
-/// (`App=<bundle> (pid N)`, `Window: "<title>", App: <name>.`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Target {
-    pub app: Option<String>,
-    pub window: Option<String>,
-}
-
-pub(crate) fn parse_target(text: &str) -> Target {
-    let mut target = Target::default();
-    for line in text.lines() {
-        if target.app.is_none()
-            && let Some(rest) = line.strip_prefix("App=")
-        {
-            let bundle = rest.split(" (pid").next().unwrap_or(rest).trim();
-            if !bundle.is_empty() {
-                target.app = Some(bundle.to_string());
-            }
-        } else if target.window.is_none()
-            && let Some(rest) = line.strip_prefix("Window: \"")
-            && let Some(end) = rest.rfind("\", App:")
-        {
-            // `end` comes from `rfind`, so it sits on a char boundary.
-            target.window = Some(rest[..end].to_string());
-        }
-    }
-    target
-}
-
 /// Text parts joined, plus the first image part (`(mime, base64)`).
 pub(crate) fn split_content(result: &Value) -> (String, Option<(String, String)>) {
     let mut texts = Vec::new();

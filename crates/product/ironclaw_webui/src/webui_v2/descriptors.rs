@@ -218,6 +218,12 @@ pub const WEBUI_V2_PATTERN_USAGE_HISTORY: &str = "/api/webchat/v2/usage/history"
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_SESSION: &str = "webui.v2.computer_use.session";
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL: &str = "webui.v2.computer_use.control";
 pub const WEBUI_V2_PATTERN_COMPUTER_USE: &str = "/api/webchat/v2/threads/{thread_id}/computer-use";
+// The live view: every session of the caller, and one window's picture.
+pub const WEBUI_V2_ROUTE_COMPUTER_USE_STATE: &str = "webui.v2.computer_use.state";
+pub const WEBUI_V2_PATTERN_COMPUTER_USE_STATE: &str = "/api/webchat/v2/computer-use";
+pub const WEBUI_V2_ROUTE_COMPUTER_USE_FRAME: &str = "webui.v2.computer_use.frame";
+pub const WEBUI_V2_PATTERN_COMPUTER_USE_FRAME: &str =
+    "/api/webchat/v2/threads/{thread_id}/computer-use/frame";
 // Inbox and goal routes (v2 stage 5).
 pub const WEBUI_V2_ROUTE_INBOX_LIST: &str = "webui.v2.inbox.list";
 pub const WEBUI_V2_ROUTE_INBOX_MUTATE: &str = "webui.v2.inbox.mutate";
@@ -468,6 +474,14 @@ pub fn webui_v2_routes_with_artifact_flags(
         usage_history_descriptor(),
         computer_use_session_descriptor(),
         computer_use_control_descriptor(),
+        computer_use_live_descriptor(
+            WEBUI_V2_ROUTE_COMPUTER_USE_STATE,
+            WEBUI_V2_PATTERN_COMPUTER_USE_STATE,
+        ),
+        computer_use_live_descriptor(
+            WEBUI_V2_ROUTE_COMPUTER_USE_FRAME,
+            WEBUI_V2_PATTERN_COMPUTER_USE_FRAME,
+        ),
         // Same read/mutation policy shape as the profile routes.
         profile_route_descriptor(
             WEBUI_V2_ROUTE_INBOX_LIST,
@@ -2608,7 +2622,7 @@ fn stream_rate_limit() -> RateLimitPolicy {
 fn rate_limit_per_caller(max: u32, window_secs: u32) -> RateLimitPolicy {
     RateLimitPolicy::Limited {
         scope: RateLimitScope::PerCaller,
-        max_requests: NonZeroU32::new(max).expect("max_requests must be non-zero"), // safety: all call sites pass crate-local positive constants (12, 60, 120)
+        max_requests: NonZeroU32::new(max).expect("max_requests must be non-zero"), // safety: all call sites pass crate-local positive constants (12, 60, 120, 900)
         window_seconds: NonZeroU32::new(window_secs).expect("window_seconds must be non-zero"), // safety: all call sites pass crate-local positive constants (60)
     }
 }
@@ -2620,6 +2634,25 @@ fn computer_use_session_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_PATTERN_COMPUTER_USE,
         read_policy(
             read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+/// The viewer polls these while an agent drives apps: the state about once a
+/// second and one window's picture at up to 10 frames a second.
+fn computer_use_live_descriptor(
+    route: &'static str,
+    pattern: &'static str,
+) -> IngressRouteDescriptor {
+    descriptor(
+        route,
+        NetworkMethod::Get,
+        pattern,
+        read_policy(
+            rate_limit_per_caller(900, 60),
             AuditTraceClass::UserAction,
             AllowedEffectPath::ProductSurface,
             StreamingMode::None,

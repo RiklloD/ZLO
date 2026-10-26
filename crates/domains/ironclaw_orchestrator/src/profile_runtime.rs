@@ -24,9 +24,16 @@ pub enum UserTurn {
     Started {
         run_id: Option<String>,
     },
-    /// The thread was busy; the message waits in its queue.
+    /// The thread was busy and the runtime folded the message into the
+    /// running turn.
+    Steered {
+        active_run_id: Option<String>,
+    },
+    /// The thread was busy; the message waits in its queue. `steerable` is
+    /// false when the runtime cannot take input mid-turn at all.
     Queued {
         active_run_id: Option<String>,
+        steerable: bool,
     },
 }
 
@@ -166,7 +173,8 @@ impl Engine {
     }
 
     /// A message the user typed into an external-runtime thread: start a
-    /// turn, or queue it behind the running one.
+    /// turn, steer it into the running one, or queue it behind that turn
+    /// when the runtime cannot steer. A steer never restarts the turn.
     pub async fn user_turn(&self, thread: &ThreadRecord, text: &str) -> Result<UserTurn> {
         self.on_user_prompt(&thread.thread_id).await?;
         if self
@@ -185,14 +193,40 @@ impl Engine {
                 .and_then(|t| t.active_run_id);
             return Ok(UserTurn::Started { run_id });
         }
+        let current = self.store.thread(&thread.thread_id).await?;
+        let mut steerable = false;
+        if let Some(current) = current.as_ref().filter(|t| t.is_running()) {
+            steerable = self
+                .runtime(&current.runtime_id)?
+                .capabilities()
+                .steer_in_turn;
+            match self.steer(current, text, SteerHow::Steer).await {
+                Ok(SteerOutcome::Steered) => {
+                    return Ok(UserTurn::Steered {
+                        active_run_id: current.active_run_id.clone(),
+                    });
+                }
+                // A runtime that restarted anyway already sent the text:
+                // queuing it too would deliver it twice.
+                Ok(SteerOutcome::Restarted) => {
+                    let run_id = self
+                        .store
+                        .thread(&thread.thread_id)
+                        .await?
+                        .and_then(|t| t.active_run_id);
+                    return Ok(UserTurn::Started { run_id });
+                }
+                Ok(SteerOutcome::Rejected) => {}
+                // The queue below still keeps the message.
+                Err(error) => tracing::debug!(%error, "user steer failed; queued instead"),
+            }
+        }
         self.queue_add(&thread.thread_id, text, Author::User)
             .await?;
-        let active_run_id = self
-            .store
-            .thread(&thread.thread_id)
-            .await?
-            .and_then(|t| t.active_run_id);
-        Ok(UserTurn::Queued { active_run_id })
+        Ok(UserTurn::Queued {
+            active_run_id: current.and_then(|t| t.active_run_id),
+            steerable,
+        })
     }
 
     /// Stop on an external-runtime thread: the usual Stop (hold, cancel the
@@ -200,13 +234,22 @@ impl Engine {
     /// cancel cannot reach.
     pub async fn user_stop_external(&self, thread: &ThreadRecord) -> Result<()> {
         self.on_user_stop(&thread.thread_id).await?;
-        if let Some(current) = self.store.thread(&thread.thread_id).await?
-            && current.is_running()
-        {
+        // Idle threads too: a runtime may run background work for them (the
+        // Claude driver's idle compaction). Cancel is a no-op otherwise.
+        if let Some(current) = self.store.thread(&thread.thread_id).await? {
             self.runtime(&current.runtime_id)?
                 .cancel(&current, "user stop")
                 .await?;
         }
+        Ok(())
+    }
+
+    /// Before an external-runtime thread is deleted: end anything its
+    /// runtime still runs for it, idle or not.
+    pub async fn forget_external(&self, thread: &ThreadRecord) -> Result<()> {
+        self.runtime(&thread.runtime_id)?
+            .cancel(thread, "thread deleted")
+            .await?;
         Ok(())
     }
 
@@ -243,10 +286,21 @@ impl Engine {
                 })
             })
             .collect();
+        let settings = self.store.settings().await?;
         Ok(json!({
             "providers": providers,
-            "picker": self.store.settings().await?.model_picker,
+            "picker": settings.model_picker,
+            "idleCompact": settings.idle_compact_claude,
         }))
+    }
+
+    /// Turn idle compaction of Claude CLI threads on or off (engine-wide).
+    pub async fn set_idle_compact(&self, enabled: bool) -> Result<Value> {
+        let settings = self
+            .store
+            .set_settings(&json!({ "idle_compact_claude": enabled }))
+            .await?;
+        Ok(json!({ "ok": true, "idleCompact": settings.idle_compact_claude }))
     }
 
     /// Replace the model picker's preferences (the whole document).

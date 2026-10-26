@@ -25,6 +25,9 @@ use crate::wire::{
     TimelineMessage, TimelinePage,
 };
 
+mod attached;
+mod reason;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
     Running,
@@ -72,6 +75,8 @@ pub enum Row {
         title: String,
         detail: Option<String>,
         status: ToolStatus,
+        /// Why it ran: what the model said before the call (see `reason`).
+        reason: Option<String>,
     },
     Skills {
         key: String,
@@ -90,6 +95,8 @@ pub enum Row {
         body: Option<String>,
         allow_always: bool,
         state: GateState,
+        /// Why the agent asked (see `reason`).
+        reason: Option<String>,
     },
     RunNotice {
         key: String,
@@ -158,6 +165,7 @@ enum Live {
         headline: String,
         body: Option<String>,
         allow_always: bool,
+        reason: Option<String>,
     },
 }
 
@@ -502,6 +510,7 @@ impl Transcript {
                         headline: prompt.headline.clone(),
                         body: Some(prompt.body.clone()).filter(|b| !b.trim().is_empty()),
                         allow_always: prompt.allow_always,
+                        reason: None,
                     },
                 );
                 out.changed = true;
@@ -595,6 +604,7 @@ impl Transcript {
                 headline,
                 body,
                 allow_always,
+                reason,
                 ..
             } => {
                 self.upsert(
@@ -606,6 +616,7 @@ impl Transcript {
                         headline: headline.clone(),
                         body: body.clone(),
                         allow_always: *allow_always,
+                        reason: reason.as_deref().and_then(reason::bounded),
                     },
                 );
             }
@@ -816,6 +827,7 @@ impl Transcript {
             let key = format!("msg:{}", message.message_id);
             match message.kind {
                 MessageKind::User => {
+                    let (text, attached) = attached::split(&text);
                     let attachments = message
                         .attachments
                         .iter()
@@ -825,6 +837,12 @@ impl Transcript {
                             filename: a.filename.clone().unwrap_or_else(|| "attachment".into()),
                             size: a.size_bytes,
                         })
+                        .chain(attached.into_iter().map(|filename| AttachmentChip {
+                            message_id: None,
+                            id: String::new(),
+                            filename,
+                            size: None,
+                        }))
                         .collect();
                     rows.push(Row::User {
                         key,
@@ -917,8 +935,14 @@ impl Transcript {
             })
             .map(str::trim);
         let mut bubble_row = None;
+        // What the model said last before each call: the reason it shows.
+        let mut said: Option<&str> = None;
         for key in keys {
             let entry = &self.live[*key];
+            if let Live::Text { body, .. } | Live::Thinking(body) = &entry.item {
+                said = Some(body.as_str());
+            }
+            let said_reason = || said.and_then(reason::from_said);
             let row = match &entry.item {
                 Live::Text { body, .. } if Some(*key) == bubble => {
                     let streaming = entry
@@ -937,7 +961,11 @@ impl Transcript {
                 Live::Text {
                     body,
                     narration: false,
-                } if Some(body.trim()) == reply => continue,
+                } if Some(body.trim()) == reply
+                    || self.is_durable_reply(entry.run.as_deref(), body) =>
+                {
+                    continue;
+                }
                 Live::Text { body, .. } => Row::Narration {
                     key: key.to_string(),
                     text: body.clone(),
@@ -955,6 +983,7 @@ impl Transcript {
                     title: title.clone(),
                     detail: detail.clone(),
                     status: *status,
+                    reason: said_reason(),
                 },
                 Live::Skills(names) => Row::Skills {
                     key: key.to_string(),
@@ -970,6 +999,7 @@ impl Transcript {
                     headline,
                     body,
                     allow_always,
+                    reason,
                 } => Row::Gate {
                     key: key.to_string(),
                     run_id: entry.run.clone().unwrap_or_default(),
@@ -979,11 +1009,35 @@ impl Transcript {
                     body: body.clone(),
                     allow_always: *allow_always,
                     state: self.gate_state(gate_ref, entry),
+                    // The CLI bridge already tied each call to what was said
+                    // before it; its `None` means "nothing new", not "guess".
+                    reason: if gate_ref.starts_with("gate:cli-") {
+                        reason.clone()
+                    } else {
+                        reason.clone().or_else(said_reason)
+                    },
                 },
             };
             rows.push(row);
         }
         rows.extend(bubble_row);
+    }
+
+    /// A live copy of a durable reply of `run`. A steered run replies more
+    /// than once, so the live text may match any one reply, or all of them
+    /// joined (a CLI's live text is cumulative over the run).
+    fn is_durable_reply(&self, run: Option<&str>, body: &str) -> bool {
+        let Some(run) = run else {
+            return false;
+        };
+        let replies: Vec<&str> = self
+            .durable
+            .iter()
+            .filter(|m| m.kind == MessageKind::Assistant && m.turn_run_id.as_deref() == Some(run))
+            .filter_map(|m| m.content.as_deref().map(str::trim))
+            .collect();
+        let body = body.trim();
+        replies.len() > 1 && (replies.contains(&body) || replies.join("\n\n") == body)
     }
 
     fn gate_state(&self, gate_ref: &str, entry: &LiveEntry) -> GateState {

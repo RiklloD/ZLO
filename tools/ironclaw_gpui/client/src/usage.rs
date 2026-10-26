@@ -8,8 +8,8 @@ use crate::api::{Client, V2, seg};
 use crate::error::ClientError;
 
 pub use ironclaw_product_contracts::usage::{
-    ProviderUsage, UsageBucket, UsageHistory, UsageHistorySource, UsagePricingStatus, UsageReport,
-    UsageSourceStatus, UsageStatus, UsageWindow,
+    ProviderUsage, UsageBucket, UsageCompaction, UsageHistory, UsageHistorySource,
+    UsagePricingStatus, UsageReport, UsageSourceStatus, UsageStatus, UsageWindow,
 };
 
 /// One thread's latest context use, generation speed and cache hit rate.
@@ -65,6 +65,37 @@ impl Client {
             Err(e) if e.is_not_found() => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// Whether idle Claude CLI threads compact themselves (engine setting,
+    /// read from `GET /providers`).
+    pub async fn idle_compact(&self) -> Result<bool, ClientError> {
+        let view: serde_json::Value = self.get(&format!("{V2}/providers")).await?;
+        Ok(view["idleCompact"].as_bool().unwrap_or(false))
+    }
+
+    /// Switch idle compaction; answers the stored value. The engine setting
+    /// is written through the route of one of the user's threads, like the
+    /// model-picker preferences, so it needs a thread the orchestrator knows.
+    pub async fn set_idle_compact(&self, enabled: bool) -> Result<bool, ClientError> {
+        let page = self.list_threads(20, None).await?;
+        let body = serde_json::json!({ "idle_compact": enabled });
+        for thread in &page.threads {
+            let path = format!("{V2}/threads/{}/route", seg(&thread.thread_id));
+            // Only a thread the orchestrator does not know (404) moves on to
+            // the next one; auth and server errors reach the switch.
+            let answer = match self.post::<_, serde_json::Value>(&path, &body).await {
+                Ok(answer) => answer,
+                Err(e) if e.is_not_found() => continue,
+                Err(e) => return Err(e),
+            };
+            if let Some(stored) = answer["idleCompact"].as_bool() {
+                return Ok(stored);
+            }
+        }
+        Err(ClientError::Config(
+            "Start a chat first: the setting is saved through one of your threads.".into(),
+        ))
     }
 }
 

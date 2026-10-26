@@ -22,9 +22,16 @@ const VISION_PATTERNS: &[&str] = &[
     "gpt-4o",
     "gpt-4-turbo",
     "gpt-4-vision",
+    "gpt-4.1",
+    "gpt-5",
+    "gpt-6",
     "gemini-pro-vision",
     "gemini-1.5",
     "gemini-2",
+    "gemini-3",
+    "glm-4v",
+    "glm-4.5v",
+    "glm-5v",
     "llava",
     "cogvlm",
     "internvl",
@@ -109,6 +116,20 @@ mod tests {
         assert!(is_vision_model("gemini-1.5-pro"));
         assert!(is_vision_model("llava-v1.6"));
         assert!(is_vision_model("pixtral-12b"));
+    }
+
+    #[test]
+    fn detects_current_gpt_gemini_and_glm_vision_ids() {
+        for model in [
+            "gpt-5.6-sol",
+            "gpt-6.1-sol",
+            "gpt-4.1-mini",
+            "gemini-3.8-flash-high",
+            "glm-4.5v",
+        ] {
+            assert!(is_vision_model(model), "{model} sees images");
+        }
+        assert!(!is_vision_model("glm-5.3-flash"));
     }
 
     #[test]

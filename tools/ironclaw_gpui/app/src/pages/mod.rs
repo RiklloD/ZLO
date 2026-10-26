@@ -12,6 +12,7 @@ pub mod providers;
 pub mod settings;
 pub mod skills;
 pub mod usage;
+pub mod usage_compactions;
 pub mod usage_history;
 
 use crate::ui::*;

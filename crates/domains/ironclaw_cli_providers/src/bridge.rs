@@ -59,6 +59,8 @@ pub struct GateView {
     pub tool_name: String,
     pub headline: String,
     pub body: Option<String>,
+    /// Why the agent wants the call (see [`crate::approval_reason`]).
+    pub reason: Option<String>,
 }
 
 /// A change to a thread's live CLI turn.
@@ -119,6 +121,14 @@ pub struct LiveSnapshot {
     pub gates: Vec<GateView>,
 }
 
+/// A tool call matched to its turn by [`CliBridge::claim_call`].
+#[derive(Debug, Clone, Default)]
+pub struct CallClaim {
+    live: bool,
+    /// What the model said between the previous call and this one.
+    said: Option<String>,
+}
+
 /// What a session token stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionGrant {
@@ -142,6 +152,9 @@ struct LiveTurn {
     text: LiveBuffer,
     thinking: LiveBuffer,
     gates: Vec<PendingGate>,
+    /// Text and thinking lengths at the previous tool call: what the model
+    /// said after them is the reason for the next one.
+    said_mark: (usize, usize),
 }
 
 impl LiveTurn {
@@ -151,7 +164,20 @@ impl LiveTurn {
             text: LiveBuffer::default(),
             thinking: LiveBuffer::default(),
             gates: Vec::new(),
+            said_mark: (0, 0),
         }
+    }
+
+    /// The reason in what the model said since the previous call (text
+    /// before thinking), then move the mark past it.
+    fn take_said_reason(&mut self) -> Option<String> {
+        let (text_at, thinking_at) = self.said_mark;
+        let since =
+            |body: &str, at: usize| body.get(at..).and_then(crate::approval_reason::from_said);
+        let reason =
+            since(&self.text.body, text_at).or_else(|| since(&self.thinking.body, thinking_at));
+        self.said_mark = (self.text.body.len(), self.thinking.body.len());
+        reason
     }
 
     /// Everything not broadcast yet, thinking before text.
@@ -239,6 +265,24 @@ impl CliBridge {
     /// Record every approval in `store` from now on (first call wins).
     pub fn record_to(&self, store: Store) {
         let _ = self.ledger.set(store); // silent-ok: the host wires one store per process
+    }
+
+    /// Whether `thread`'s profile is on "Full access", so its CLI tool calls
+    /// run without a gate. An unset mode keeps asking: CLI calls never
+    /// followed the global auto-approve switch. Read per call, so a switch
+    /// reaches running turns on their next tool call.
+    async fn profile_full_access(&self, thread: &ThreadId) -> bool {
+        let Some(ledger) = self.ledger.get() else {
+            return false;
+        };
+        match ledger.thread_profile(thread).await {
+            Ok(Some(profile)) => profile.settings.auto_approve(false),
+            Ok(None) => false,
+            Err(error) => {
+                tracing::debug!(%error, "cli bridge: profile approval mode unreadable; asking");
+                false
+            }
+        }
     }
 
     pub fn mcp_url(&self) -> Option<&str> {
@@ -405,12 +449,78 @@ impl CliBridge {
         tool_name: &str,
         input: &Value,
     ) -> ToolDecision {
+        self.request_approval_with_reason(thread, run_id, tool_name, input, None)
+            .await
+    }
+
+    /// [`Self::request_approval`] with the engine's own justification, if it
+    /// gave one; without it the gate carries what the model said before.
+    pub async fn request_approval_with_reason(
+        &self,
+        thread: &ThreadId,
+        run_id: &str,
+        tool_name: &str,
+        input: &Value,
+        reason: Option<String>,
+    ) -> ToolDecision {
+        let claim = self.claim_call(thread, run_id);
+        self.decide_call(thread, run_id, tool_name, input, reason, claim)
+            .await
+    }
+
+    /// Match a tool call to its turn where the driver reads the request,
+    /// before anything awaits: later text or a parallel call cannot change
+    /// which words explain it, and a call from an ended run is caught.
+    pub fn claim_call(&self, thread: &ThreadId, run_id: &str) -> CallClaim {
+        let Ok(mut live) = self.live.lock() else {
+            return CallClaim::default(); // silent-ok: a poisoned map only follows a panic elsewhere; the call is denied
+        };
+        match live.get_mut(thread).filter(|t| t.run_id == run_id) {
+            Some(turn) => CallClaim {
+                live: true,
+                said: turn.take_said_reason(),
+            },
+            None => CallClaim::default(),
+        }
+    }
+
+    fn is_live(&self, thread: &ThreadId, run_id: &str) -> bool {
+        self.live
+            .lock()
+            .ok()
+            .is_some_and(|live| live.get(thread).is_some_and(|t| t.run_id == run_id))
+    }
+
+    /// Decide a call claimed with [`Self::claim_call`]: deny it when its turn
+    /// is gone, allow it on a "Full access" profile, otherwise hold it as a
+    /// gate until its owner answers.
+    pub async fn decide_call(
+        &self,
+        thread: &ThreadId,
+        run_id: &str,
+        tool_name: &str,
+        input: &Value,
+        reason: Option<String>,
+        claim: CallClaim,
+    ) -> ToolDecision {
+        if !claim.live {
+            return ToolDecision::Deny("No live turn to approve this call.".into());
+        }
+        if self.profile_full_access(thread).await {
+            // The profile lookup awaited: the turn may have ended meanwhile.
+            return if self.is_live(thread, run_id) {
+                ToolDecision::Allow
+            } else {
+                ToolDecision::Deny("The turn ended.".into())
+            };
+        }
         let gate = GateView {
             gate_ref: format!("gate:cli-{}", uuid::Uuid::new_v4().simple()),
             run_id: run_id.to_string(),
             tool_name: tool_name.to_string(),
             headline: format!("Allow {tool_name}?"),
             body: gate_body(tool_name, input),
+            reason: reason.or(claim.said),
         };
         if let Some(ledger) = self.ledger.get() {
             let record = CliApprovalRecord {
@@ -479,6 +589,32 @@ impl CliBridge {
         decision
     }
 
+    /// Decline every pending gate on `thread` with `reason`: a steer that
+    /// arrives while a call waits answers it with the person's words, so the
+    /// turn moves on to the new instruction. Returns how many were declined.
+    /// Only `run_id`'s gates: a late steer never answers the next turn's.
+    pub fn decline_pending(&self, thread: &ThreadId, run_id: &str, reason: &str) -> usize {
+        let reason: String = reason.chars().take(GATE_BODY_MAX_CHARS).collect();
+        let pending = self
+            .live
+            .lock()
+            .ok()
+            .and_then(|mut live| {
+                live.get_mut(thread)
+                    .filter(|t| t.run_id == run_id)
+                    .map(|t| std::mem::take(&mut t.gates))
+            })
+            .unwrap_or_default(); // silent-ok: a poisoned map only follows a panic elsewhere
+        let declined = pending.len();
+        for gate in pending {
+            let _ = gate.answer.send((
+                ToolDecision::Deny(reason.clone()),
+                CliApprovalDecision::Declined,
+            )); // silent-ok: the waiter already gave up
+        }
+        declined
+    }
+
     /// Answer a pending gate on `thread`. `false` when there is none.
     pub fn resolve_gate(&self, thread: &ThreadId, gate_ref: &str, approved: bool) -> bool {
         let pending = self.live.lock().ok().and_then(|mut live| {
@@ -538,6 +674,8 @@ fn gate_body(tool_name: &str, input: &Value) -> Option<String> {
         }
         None => serde_json::to_string_pretty(input).ok()?,
     };
+    // Commands and inputs can carry tokens; the card shows them redacted.
+    let text = ironclaw_safety::sanitize_display_text(&text);
     Some(truncate_chars(&text, GATE_BODY_MAX_CHARS))
 }
 

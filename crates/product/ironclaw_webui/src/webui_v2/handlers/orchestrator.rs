@@ -96,6 +96,8 @@ pub struct OrchestratorRouteBody {
     pub effort: Option<String>,
     #[serde(default)]
     pub picker: Option<Value>,
+    #[serde(default)]
+    pub idle_compact: Option<bool>,
 }
 
 /// `POST /api/webchat/v2/threads/{thread_id}/route`
@@ -111,6 +113,7 @@ pub async fn orchestrator_thread_route_set(
         model: body.model,
         effort: body.effort,
         picker: body.picker,
+        idle_compact: body.idle_compact,
     };
     Ok(Json(
         invoke_product_command(

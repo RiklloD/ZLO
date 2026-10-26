@@ -616,6 +616,34 @@ pub fn chip(
         .child(label)
 }
 
+/// t3code's `⌘N` keycap, shown on rows while ⌘ is held.
+pub fn shortcut_badge(index: usize, cx: &App) -> Div {
+    let p = *Palette::of(cx);
+    div()
+        .flex_none()
+        .px(px(5.))
+        .py(px(1.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(p.border_strong)
+        .bg(p.hover)
+        .text_xs()
+        .text_color(p.text_muted)
+        .child(format!("⌘{}", index + 1))
+}
+
+/// The digit of a bare `⌘1`..`⌘9` keystroke as a 0-based index.
+pub fn cmd_digit(k: &gpui_kit::Keystroke) -> Option<usize> {
+    let m = &k.modifiers;
+    if !m.platform || m.control || m.alt || m.shift {
+        return None;
+    }
+    match k.key.parse::<usize>() {
+        Ok(n @ 1..=9) => Some(n - 1),
+        _ => None,
+    }
+}
+
 /// A floating popover card that arrives on the style's spring.
 pub fn popover(id: impl Into<ElementId>, cx: &App) -> impl FnOnce(Div) -> gpui_kit::AnyElement {
     let s = *Style::of(cx);

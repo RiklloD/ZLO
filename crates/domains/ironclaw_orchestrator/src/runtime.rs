@@ -390,4 +390,11 @@ pub trait TurnEventSink: Send + Sync {
     /// Latest context/speed/cache figures of a thread; reported after every
     /// model call or turn, whichever the runtime can measure.
     async fn turn_telemetry(&self, _thread_id: &ThreadId, _telemetry: TurnTelemetry, _at: Millis) {}
+
+    /// Whether idle threads should compact their context while the prompt
+    /// cache is warm (`Settings::idle_compact_claude`). Off unless the sink
+    /// reads a setting.
+    async fn idle_compact_enabled(&self) -> bool {
+        false
+    }
 }

@@ -8,7 +8,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 let size = 1024.0
-let variant = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "neonsat"
+let variant = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "pc_eye"
 let cs = CGColorSpace(name: CGColorSpace.displayP3)!
 let ctx = CGContext(data: nil, width: Int(size), height: Int(size), bitsPerComponent: 8,
                     bytesPerRow: 0, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
@@ -56,7 +56,7 @@ func glowFill(_ path: CGPath) {
 
 func pol(_ r: CGFloat, _ a: CGFloat) -> CGPoint { CGPoint(x: c.x + r * cos(a), y: c.y + r * sin(a)) }
 
-let bold = ["frost", "blob", "tube", "rise", "signal", "aurora", "synth", "portal", "saturn", "lunar"] + ["neonring", "neonsat", "sunsat", "planet", "gridsat", "ns_cyan", "ns_atom", "ns_wire", "ss_dusk", "ss_ice", "ss_moon", "min_flat", "min_mono", "min_glyph", "min_solid", "min_duo", "mf_thick", "mf_solid", "mf_pink", "mf_black", "mf_tilt", "mf_dusk", "mf_color", "mf_steel", "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt"]
+let bold = ["frost", "blob", "tube", "rise", "signal", "aurora", "synth", "portal", "saturn", "lunar"] + ["neonring", "neonsat", "nm_clean", "nm_bare", "nm_cyclops", "nm_orb", "nm_black", "nm_thin", "nc_happy", "nc_look", "nc_blink", "nc_scan", "nc_tilt", "nc_peek", "nc_heart", "nc_sleep", "nc_zoom", "mc_noring", "mc_dome", "mc_flat", "mc_line", "mc_black", "mc_pill", "mh_flat", "mh_black", "mh_mono", "mh_level", "mh_line", "mh_soft", "sunsat", "planet", "gridsat", "ns_cyan", "ns_atom", "ns_wire", "ss_dusk", "ss_ice", "ss_moon", "min_flat", "min_mono", "min_glyph", "min_solid", "min_duo", "mf_thick", "mf_solid", "mf_pink", "mf_black", "mf_tilt", "mf_dusk", "mf_color", "mf_steel", "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt", "pc_eye", "pc_round", "pc_look", "pc_wide", "pc_happy", "pc_scan"]
 
 if variant == "eye" {
     // Crimson iris with three curved black blades spinning out of the pupil (sharingan-inspired).
@@ -202,7 +202,7 @@ if variant == "eye" {
         paint(circ(512, 1050, 548), 0xffffff, glow: ice, blur: 140)
         paint(circ(512, 1064, 540), ink)
         eyes([(410, 690), (614, 690)], 76, 160)
-    case "aurora", "synth", "portal", "saturn", "lunar", "neonring", "neonsat", "sunsat", "planet", "gridsat", "ns_cyan", "ns_atom", "ns_wire", "ss_dusk", "ss_ice", "ss_moon", "min_flat", "min_mono", "min_glyph", "min_solid", "min_duo", "mf_thick", "mf_solid", "mf_pink", "mf_black", "mf_tilt", "mf_dusk", "mf_color", "mf_steel", "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt":
+    case "aurora", "synth", "portal", "saturn", "lunar", "neonring", "neonsat", "nm_clean", "nm_bare", "nm_cyclops", "nm_orb", "nm_black", "nm_thin", "nc_happy", "nc_look", "nc_blink", "nc_scan", "nc_tilt", "nc_peek", "nc_heart", "nc_sleep", "nc_zoom", "mc_noring", "mc_dome", "mc_flat", "mc_line", "mc_black", "mc_pill", "mh_flat", "mh_black", "mh_mono", "mh_level", "mh_line", "mh_soft", "sunsat", "planet", "gridsat", "ns_cyan", "ns_atom", "ns_wire", "ss_dusk", "ss_ice", "ss_moon", "min_flat", "min_mono", "min_glyph", "min_solid", "min_duo", "mf_thick", "mf_solid", "mf_pink", "mf_black", "mf_tilt", "mf_dusk", "mf_color", "mf_steel", "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt", "pc_eye", "pc_round", "pc_look", "pc_wide", "pc_happy", "pc_scan":
         // Rise family: the giant rising bot head in different worlds.
         func head(_ x: CGFloat, _ y: CGFloat, _ r: CGFloat, _ glow: UInt32, rim: UInt32 = 0xffffff) {
             paint(circ(x, y - r * 0.026, r + 8), rim, glow: glow, blur: 140)
@@ -287,6 +287,247 @@ if variant == "eye" {
                 ctx.restoreGState()
             }
             grid(650)
+        // Neonsat pared back: no stars, one ring line (or none), soft glows kept.
+        case "nm_clean", "nm_bare", "nm_cyclops", "nm_orb", "nm_black", "nm_thin", "nc_happy", "nc_look", "nc_blink", "nc_scan", "nc_tilt", "nc_peek", "nc_heart", "nc_sleep", "nc_zoom", "mc_noring", "mc_dome", "mc_flat", "mc_line", "mc_black", "mc_pill", "mh_flat", "mh_black", "mh_mono", "mh_level", "mh_line", "mh_soft":
+            func ring1(_ cx: CGFloat, _ cy: CGFloat, _ rx: CGFloat, _ ry: CGFloat, _ a: CGFloat, _ lw: CGFloat,
+                       body: () -> Void) {
+                let o = CGMutablePath()
+                o.addEllipse(in: CGRect(x: -rx, y: -ry, width: 2 * rx, height: 2 * ry), transform: tilt(cx, cy, a))
+                let r = o.copy(strokingWithWidth: lw, lineCap: .round, lineJoin: .round, miterLimit: 10)
+                paint(r, 0xff8ad8, 0.5, glow: pink, blur: 30)
+                body()
+                ctx.saveGState()
+                var t = tilt(cx, cy, a)
+                ctx.addPath(CGPath(rect: CGRect(x: -700, y: 0, width: 1400, height: 600), transform: &t)); ctx.clip()
+                paint(r, 0xff8ad8, glow: pink, blur: 30)
+                ctx.restoreGState()
+            }
+            switch variant {
+            case "nm_clean":
+                // Neonsat minus stars and the inner ring.
+                synthSky()
+                ring1(512, 520, 470, 88, -0.12, 24) {
+                    antenna(512, 540, 1, pink, tip: 0xffd0f0)
+                    head(512, 1064, 540, pink, rim: 0xffd0f0)
+                }
+                lit([(410, 720), (614, 720)], 76, 150, 0xbff6ff, cyan)
+            case "nm_bare":
+                // No ring at all: just the glowing rim, antenna and eyes.
+                synthSky()
+                antenna(512, 540, 1, pink, tip: 0xffd0f0)
+                head(512, 1064, 540, pink, rim: 0xffd0f0)
+                lit([(410, 700), (614, 700)], 80, 160, 0xbff6ff, cyan)
+            case "nm_cyclops":
+                // Neon cyclops: one big cyan eye.
+                synthSky()
+                ring1(512, 520, 470, 88, -0.12, 24) {
+                    antenna(512, 540, 1, pink, tip: 0xffd0f0)
+                    head(512, 1064, 540, pink, rim: 0xffd0f0)
+                }
+                lit([(512, 730)], 150, 210, 0xbff6ff, cyan)
+            case "nm_orb":
+                // The whole head as a neon planet floating in the synth sky.
+                ctx.drawLinearGradient(gradient([(0x0b0220, 1, 0), (0x2a0a4a, 1, 0.55), (0x4a0e5a, 1, 1)]),
+                                       start: P(512, 100), end: P(512, 924), options: [])
+                ring1(512, 560, 400, 80, -0.2, 22) {
+                    paint(stroke(P(512, 340), P(580, 230), ctrl: P(505, 280), 22), ink, glow: pink, blur: 30)
+                    paint(circ(584, 224, 34), 0xffd0f0, glow: pink, blur: 50)
+                    head(512, 560, 230, pink, rim: 0xffd0f0)
+                }
+                lit([(452, 540), (572, 540)], 60, 120, 0xbff6ff, cyan)
+            case "nm_black":
+                // Same as clean on a plain black tile.
+                paint(CGPath(rect: CGRect(x: 0, y: 0, width: size, height: size), transform: nil), 0x000000)
+                ring1(512, 520, 470, 88, -0.12, 24) {
+                    antenna(512, 540, 1, pink, tip: 0xffd0f0)
+                    head(512, 1064, 540, pink, rim: 0xffd0f0)
+                }
+                lit([(410, 720), (614, 720)], 76, 150, 0xbff6ff, cyan)
+            // Neon cyclops poses: same sky, rim and ring, the single eye changes.
+            case "nc_happy", "nc_look", "nc_blink", "nc_scan", "nc_tilt", "nc_heart", "nc_sleep":
+                func eyeLine(_ a: CGPoint, _ b: CGPoint, _ k: CGPoint, _ w: CGFloat) {
+                    paint(stroke(a, b, ctrl: k, w), 0xbff6ff, glow: cyan, blur: 60)
+                }
+                synthSky()
+                if variant == "nc_tilt" {
+                    ctx.saveGState()
+                    ctx.translateBy(x: 512, y: 1064); ctx.rotate(by: -0.2); ctx.translateBy(x: -512, y: -1064)
+                }
+                ring1(512, 520, 470, 88, -0.12, 24) {
+                    if variant == "nc_sleep" {
+                        // Antenna droops to the side while it naps.
+                        paint(stroke(P(512, 540), P(372, 420), ctrl: P(470, 380), 30), ink, glow: pink, blur: 30)
+                        paint(circ(366, 426, 40), 0xffd0f0, 0.6, glow: pink, blur: 40)
+                    } else {
+                        antenna(512, 540, 1, pink, tip: 0xffd0f0)
+                    }
+                    head(512, 1064, 540, pink, rim: 0xffd0f0)
+                }
+                switch variant {
+                case "nc_happy": eyeLine(P(420, 780), P(604, 780), P(512, 640), 46)
+                case "nc_look":
+                    lit([(586, 680)], 140, 190, 0xbff6ff, cyan)
+                    paint(circ(612, 640, 22), 0xffffff)
+                case "nc_blink": lit([(512, 740)], 200, 36, 0xbff6ff, cyan)
+                case "nc_scan":
+                    // Wide dim slot with a bright sweep, like a scanner mid-pass.
+                    paint(pill(512, 730, 400, 96), cyan, 0.18)
+                    paint(pill(400, 730, 110, 60), cyan, 0.25)
+                    lit([(600, 730)], 120, 96, 0xbff6ff, cyan)
+                case "nc_heart":
+                    let h = CGMutablePath(), k: CGFloat = 105
+                    h.addPath(circ(512 - k * 0.5, 700, k * 0.56)); h.addPath(circ(512 + k * 0.5, 700, k * 0.56))
+                    h.move(to: P(512 - k * 1.03, 720)); h.addLine(to: P(512 + k * 1.03, 720)); h.addLine(to: P(512, 720 + k * 1.05))
+                    h.closeSubpath()
+                    paint(h, 0xffd0f0, glow: pink, blur: 60)
+                case "nc_sleep": eyeLine(P(430, 740), P(594, 740), P(512, 820), 40)
+                default: lit([(512, 730)], 150, 210, 0xbff6ff, cyan)
+                }
+                if variant == "nc_tilt" { ctx.restoreGState() }
+            case "nc_peek":
+                // Sinking below the horizon: only the dome and the eye peek out.
+                synthSky()
+                antenna(512, 640, 0.9, pink, tip: 0xffd0f0)
+                head(512, 1180, 540, pink, rim: 0xffd0f0)
+                lit([(512, 810)], 150, 150, 0xbff6ff, cyan)
+            // Neon cyclops stripped down: fewer parts, less glow, flatter sky.
+            case "mc_noring", "mc_dome", "mc_flat", "mc_line", "mc_black", "mc_pill":
+                func flatSky(_ hex: UInt32) {
+                    paint(CGPath(rect: CGRect(x: 0, y: 0, width: size, height: size), transform: nil), hex)
+                }
+                func flatBot() {
+                    paint(stroke(P(512, 540), P(612, 300), ctrl: P(505, 390), 26), pink)
+                    paint(circ(614, 292, 40), 0xffd0f0)
+                    paint(circ(512, 1064, 552), pink)
+                    paint(circ(512, 1064, 540), ink)
+                }
+                switch variant {
+                case "mc_noring":
+                    // Cyclops without the ring.
+                    synthSky()
+                    antenna(512, 540, 1, pink, tip: 0xffd0f0)
+                    head(512, 1064, 540, pink, rim: 0xffd0f0)
+                    lit([(512, 730)], 150, 210, 0xbff6ff, cyan)
+                case "mc_dome":
+                    // No ring, no antenna: just the dome and the eye.
+                    synthSky()
+                    head(512, 1000, 540, pink, rim: 0xffd0f0)
+                    lit([(512, 690)], 160, 220, 0xbff6ff, cyan)
+                case "mc_flat":
+                    // One flat purple, solid pink rim, glow only on the eye.
+                    flatSky(0x1e0838)
+                    flatBot()
+                    lit([(512, 730)], 150, 210, 0xbff6ff, cyan)
+                case "mc_line":
+                    // Flat, with the ring kept as one thin line.
+                    flatSky(0x1e0838)
+                    let o = CGMutablePath()
+                    o.addEllipse(in: CGRect(x: -470, y: -88, width: 940, height: 176), transform: tilt(512, 520, -0.12))
+                    let r = o.copy(strokingWithWidth: 12, lineCap: .round, lineJoin: .round, miterLimit: 10)
+                    paint(r, pink, 0.45)
+                    flatBot()
+                    ctx.saveGState()
+                    var t = tilt(512, 520, -0.12)
+                    ctx.addPath(CGPath(rect: CGRect(x: -700, y: 0, width: 1400, height: 600), transform: &t)); ctx.clip()
+                    paint(r, pink)
+                    ctx.restoreGState()
+                    lit([(512, 730)], 150, 210, 0xbff6ff, cyan)
+                case "mc_black":
+                    // Black tile, pink rim, cyan eye. Nothing else.
+                    flatSky(0x000000)
+                    head(512, 1000, 540, pink, rim: 0xffd0f0)
+                    lit([(512, 690)], 160, 220, 0xbff6ff, cyan)
+                default:
+                    // mc_pill: no ring, wide visor eye, short antenna stub.
+                    synthSky()
+                    paint(stroke(P(512, 462), P(512, 530), 24), ink, glow: pink, blur: 20)
+                    paint(circ(512, 430, 36), 0xffd0f0, glow: pink, blur: 50)
+                    head(512, 1064, 540, pink, rim: 0xffd0f0)
+                    lit([(512, 730)], 240, 120, 0xbff6ff, cyan)
+                }
+            // Cyclops with its halo, pared down in shape: flat fills, no glow except the eye.
+            case "mh_flat", "mh_black", "mh_mono", "mh_level", "mh_line", "mh_soft":
+                func halo(_ cy: CGFloat, _ rx: CGFloat, _ ry: CGFloat, _ a: CGFloat, _ lw: CGFloat,
+                          _ hex: UInt32, back: CGFloat = 0.4, gap: UInt32 = 0x050506, body: () -> Void) {
+                    let o = CGMutablePath()
+                    o.addEllipse(in: CGRect(x: -rx, y: -ry, width: 2 * rx, height: 2 * ry), transform: tilt(512, cy, a))
+                    let r = o.copy(strokingWithWidth: lw, lineCap: .round, lineJoin: .round, miterLimit: 10)
+                    paint(r, hex, back)
+                    body()
+                    ctx.saveGState()
+                    var t = tilt(512, cy, a)
+                    ctx.addPath(CGPath(rect: CGRect(x: -700, y: 0, width: 1400, height: 600), transform: &t)); ctx.clip()
+                    // Dark gap so the front of the halo cuts cleanly over the rim.
+                    ctx.saveGState(); ctx.addPath(circ(512, 1064, 566)); ctx.clip()
+                    paint(o.copy(strokingWithWidth: lw + 36, lineCap: .round, lineJoin: .round, miterLimit: 10), gap)
+                    ctx.restoreGState()
+                    paint(r, hex)
+                    ctx.restoreGState()
+                }
+                func bot(_ rim: UInt32, _ tip: UInt32, _ y: CGFloat = 1064, rimW: CGFloat = 22, straight: Bool = false) {
+                    if straight {
+                        paint(stroke(P(512, y - 524), P(512, y - 760), 26), rim)
+                        paint(circ(512, y - 780, 40), tip)
+                    } else {
+                        paint(stroke(P(512, y - 524), P(612, y - 764), ctrl: P(505, y - 674), 26), rim)
+                        paint(circ(614, y - 772, 40), tip)
+                    }
+                    paint(circ(512, y, 540 + rimW), rim)
+                    paint(circ(512, y, 540), ink)
+                }
+                switch variant {
+                case "mh_flat":
+                    // Flat purple tile, flat pink halo and rim, the eye is the only glow.
+                    paint(CGPath(rect: CGRect(x: 0, y: 0, width: size, height: size), transform: nil), 0x1e0838)
+                    halo(520, 470, 88, -0.12, 26, pink) { bot(pink, 0xffd0f0) }
+                    lit([(512, 730)], 150, 210, 0xbff6ff, cyan)
+                case "mh_black":
+                    // Same on black.
+                    paint(CGPath(rect: CGRect(x: 0, y: 0, width: size, height: size), transform: nil), 0x000000)
+                    halo(520, 470, 88, -0.12, 26, pink) { bot(pink, 0xffd0f0) }
+                    lit([(512, 730)], 150, 210, 0xbff6ff, cyan)
+                case "mh_mono":
+                    // One colour: pink halo, pink rim, pink eye on deep purple.
+                    paint(CGPath(rect: CGRect(x: 0, y: 0, width: size, height: size), transform: nil), 0x16052a)
+                    halo(520, 470, 88, -0.12, 26, pink, back: 0.35) { bot(pink, pink) }
+                    paint(pill(512, 730, 150, 210), pink)
+                case "mh_level":
+                    // Geometric: level halo, straight antenna, round eye.
+                    paint(CGPath(rect: CGRect(x: 0, y: 0, width: size, height: size), transform: nil), 0x1e0838)
+                    halo(560, 460, 80, 0, 26, pink) { bot(pink, 0xffd0f0, straight: true) }
+                    paint(circ(512, 740, 92), 0xbff6ff, glow: cyan, blur: 50)
+                case "mh_line":
+                    // Thin even strokes everywhere: halo, rim and antenna share one line weight.
+                    paint(CGPath(rect: CGRect(x: 0, y: 0, width: size, height: size), transform: nil), 0x1e0838)
+                    halo(520, 470, 88, -0.12, 14, pink, gap: 0x1e0838) {
+                        paint(stroke(P(512, 540), P(612, 300), ctrl: P(505, 390), 14), pink)
+                        paint(circ(614, 292, 30), pink)
+                        paint(circ(512, 1064, 548), pink)
+                        paint(circ(512, 1064, 534), 0x1e0838)
+                    }
+                    paint(pill(512, 730, 130, 190), 0xbff6ff, glow: cyan, blur: 40)
+                default:
+                    // mh_soft: keeps the synth sky gradient, everything else flat.
+                    synthSky()
+                    halo(520, 470, 88, -0.12, 26, 0xff8ad8) { bot(0xff8ad8, 0xffd0f0) }
+                    lit([(512, 730)], 150, 210, 0xbff6ff, cyan)
+                }
+            case "nc_zoom":
+                // Close-up: the head fills the tile, eye front and centre.
+                synthSky()
+                ring1(512, 330, 560, 100, -0.12, 28) {
+                    head(512, 1000, 800, pink, rim: 0xffd0f0)
+                }
+                lit([(512, 600)], 230, 320, 0xbff6ff, cyan)
+                paint(circ(560, 520, 30), 0xffffff)
+            default:
+                // "nm_thin": hairline ring, no antenna, the calmest one.
+                synthSky()
+                ring1(512, 540, 470, 84, -0.12, 12) {
+                    head(512, 1064, 540, pink, rim: 0xffd0f0)
+                }
+                lit([(420, 730), (604, 730)], 70, 140, 0xbff6ff, cyan)
+            }
         case "neonsat":
             // Saturn layout repainted in synthwave: pink rim, neon ring, cyan eyes.
             synthSky(); stars(sky, 0xff6ad5)
@@ -324,7 +565,7 @@ if variant == "eye" {
             }
             grid(660)
         // Minimal neonsat: flat fills, one ring line, no stars, little or no glow.
-        case "min_flat", "min_mono", "min_glyph", "min_solid", "min_duo", "mf_thick", "mf_solid", "mf_pink", "mf_black", "mf_tilt", "mf_dusk", "mf_color", "mf_steel", "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt":
+        case "min_flat", "min_mono", "min_glyph", "min_solid", "min_duo", "mf_thick", "mf_solid", "mf_pink", "mf_black", "mf_tilt", "mf_dusk", "mf_color", "mf_steel", "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt", "pc_eye", "pc_round", "pc_look", "pc_wide", "pc_happy", "pc_scan":
             func flatRing(_ cx: CGFloat, _ cy: CGFloat, _ rx: CGFloat, _ ry: CGFloat, _ a: CGFloat,
                           _ w: CGFloat, _ hex: UInt32, gap: UInt32 = 0x000000, gapClip: CGPath? = nil, body: () -> Void) {
                 let o = CGMutablePath()
@@ -363,12 +604,12 @@ if variant == "eye" {
                 paint(e, eye)
             }
             switch variant {
-            case "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt":
+            case "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt", "pc_eye", "pc_round", "pc_look", "pc_wide", "pc_happy", "pc_scan":
                 // Steel bot without the ring: brushed metal on black, each variant adds one idea.
                 // Optional 3rd arg picks the finish: steel | chrome | gunmetal | graphite | solid | inverse.
                 let finish = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : "steel"
                 let light = finish == "inverse", solid = finish == "solid"
-                let tile: UInt32 = finish == "graphite" ? 0x1b1c20 : 0x000000
+                let tile: UInt32 = finish == "graphite" ? 0x1b1c20 : finish == "edge" ? 0x17181b : 0x000000
                 let stops: [(UInt32, CGFloat, CGFloat)] = finish == "chrome"
                     ? [(0xffffff, 1, 0), (0xc8ccd4, 1, 0.3), (0x4a4e56, 1, 0.48), (0xe6e8ec, 1, 0.6), (0x7d828b, 1, 1)]
                     : finish == "gunmetal" ? [(0xa9aeb7, 1, 0), (0x5d6169, 1, 0.5), (0x2e3036, 1, 1)]
@@ -710,8 +951,21 @@ if variant == "eye" {
                     ctx.translateBy(x: 512, y: 1000); ctx.rotate(by: -0.2); ctx.translateBy(x: -512, y: -1000)
                     mfill(stroke(P(512, 560), P(560, 340), ctrl: P(500, 430), w).union(circ(562, 334, w * 1.6)))
                     headO(512, 1170, 620)
-                    let e = CGMutablePath(); e.addPath(pill(450, 720, 88, 150)); e.addPath(pill(634, 720, 88, 150))
-                    whites(e)
+                    // Peek cyclops: one eye in place of the pair.
+                    switch variant {
+                    case "pc_eye": whites(pill(542, 720, 130, 210))
+                    case "pc_round": whites(circ(542, 730, 92))
+                    case "pc_look":
+                        whites(pill(542, 710, 130, 210))
+                        paint(circ(566, 660, 24), solid || light ? 0xffffff : 0x000000)
+                    case "pc_wide": whites(pill(542, 740, 250, 110))
+                    case "pc_happy":
+                        whites(stroke(P(452, 770), P(632, 770), ctrl: P(542, 610), 48))
+                    case "pc_scan":
+                        paint(pill(542, 740, 380, 96), solid || light ? 0x000000 : 0xdfe6ff, 0.18)
+                        whites(pill(610, 740, 110, 96))
+                    default: whites({ let e = CGMutablePath(); e.addPath(pill(450, 720, 88, 150)); e.addPath(pill(634, 720, 88, 150)); return e }())
+                    }
                     ctx.restoreGState()
                 }
             case "mf_steel":
@@ -936,7 +1190,7 @@ if variant == "eye" {
             lit([(410, 690), (614, 690)], 76, 150, 0x1a0630, pink)
         default: break
         }
-        if !["neonring", "neonsat", "sunsat", "planet", "gridsat", "ns_cyan", "ns_atom", "ns_wire", "ss_dusk", "ss_ice", "ss_moon", "min_flat", "min_mono", "min_glyph", "min_solid", "min_duo", "mf_thick", "mf_solid", "mf_pink", "mf_black", "mf_tilt", "mf_dusk", "mf_color", "mf_steel", "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt"].contains(variant) {
+        if !["neonring", "neonsat", "nm_clean", "nm_bare", "nm_cyclops", "nm_orb", "nm_black", "nm_thin", "nc_happy", "nc_look", "nc_blink", "nc_scan", "nc_tilt", "nc_peek", "nc_heart", "nc_sleep", "nc_zoom", "mc_noring", "mc_dome", "mc_flat", "mc_line", "mc_black", "mc_pill", "mh_flat", "mh_black", "mh_mono", "mh_level", "mh_line", "mh_soft", "sunsat", "planet", "gridsat", "ns_cyan", "ns_atom", "ns_wire", "ss_dusk", "ss_ice", "ss_moon", "min_flat", "min_mono", "min_glyph", "min_solid", "min_duo", "mf_thick", "mf_solid", "mf_pink", "mf_black", "mf_tilt", "mf_dusk", "mf_color", "mf_steel", "st_visor", "st_spark", "st_chat", "st_wink", "st_twin", "st_peek", "st_orb", "st_smile", "st_tall", "st_giant", "st_shades", "st_chomp", "st_bounce", "st_hang", "st_hello", "st_love", "st_sleep", "st_think", "st_ghost", "st_ufo", "st_cyclops", "st_duo", "cy_happy", "cy_slit", "cy_iris", "cy_look", "cy_orb", "cy_spark", "cy_tilt", "pc_eye", "pc_round", "pc_look", "pc_wide", "pc_happy", "pc_scan"].contains(variant) {
         switch variant {
         case "aurora":
             // Northern lights curtains over the rising head, green into violet.
@@ -1333,9 +1587,13 @@ ctx.restoreGState()
 // Glass rim: thin top highlight.
 ctx.saveGState()
 ctx.addPath(squircle); ctx.clip()
-ctx.addPath(CGPath(roundedRect: body.insetBy(dx: 1.5, dy: 1.5), cornerWidth: 184, cornerHeight: 184, transform: nil))
+// "edge" finish: a brighter, wider rim so a dark tile keeps its outline on a dark Dock.
+let edge = CommandLine.arguments.count > 3 && CommandLine.arguments[3] == "edge"
+ctx.addPath(CGPath(roundedRect: body.insetBy(dx: edge ? 3 : 1.5, dy: edge ? 3 : 1.5), cornerWidth: 184, cornerHeight: 184, transform: nil))
+if edge { ctx.setLineWidth(6) }
 ctx.replacePathWithStrokedPath(); ctx.clip()
-ctx.drawLinearGradient(gradient([(0xffffff, 0.28, 0), (0xffffff, 0.03, 0.5), (0xffffff, 0.08, 1)]),
+ctx.drawLinearGradient(gradient(edge ? [(0xffffff, 0.55, 0), (0xffffff, 0.2, 0.5), (0xffffff, 0.3, 1)]
+                                     : [(0xffffff, 0.28, 0), (0xffffff, 0.03, 0.5), (0xffffff, 0.08, 1)]),
                        start: CGPoint(x: 0, y: 100), end: CGPoint(x: 0, y: 924), options: [])
 ctx.restoreGState()
 

@@ -58,15 +58,29 @@ impl ComputerUseSessions for FakeSessions {
         json!({"enabled": true, "user": session.user_id.as_str()})
     }
 
+    fn viewer_state(&self, _tenant_id: &TenantId, user_id: &UserId, viewer: Option<&str>) -> Value {
+        json!({"user": user_id.as_str(), "viewer": viewer})
+    }
+
+    async fn window_frame(
+        &self,
+        session: &ComputerUseSession,
+        request: &ComputerUseFrameRequest,
+    ) -> Value {
+        json!({"thread": session.thread_id.as_str(), "window": request.window_id})
+    }
+
     async fn control(
         &self,
         session: &ComputerUseSession,
         action: ComputerUseControlAction,
+        viewer: Option<&str>,
     ) -> Value {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("control:{action:?}:{}", session.thread_id.as_str()));
+        self.calls.lock().unwrap().push(format!(
+            "control:{action:?}:{}:{}",
+            session.thread_id.as_str(),
+            viewer.unwrap_or("-")
+        ));
         json!({"ok": true})
     }
 
@@ -174,6 +188,7 @@ fn handler(
         tool: sessions.tools[0].clone(),
         sessions: Arc::clone(sessions) as Arc<dyn ComputerUseSessions>,
         stores: Arc::clone(&stores),
+        approved_turns: Arc::new(ApprovedTurns::default()),
         fallback_user_id: UserId::new("user-cu").unwrap(),
     };
     (handler, stores)
@@ -310,6 +325,49 @@ async fn always_allow_runs_the_tool_without_an_approval_unless_ask_each_time() {
     assert!(sessions.calls().is_empty());
 }
 
+#[tokio::test]
+async fn one_approval_covers_the_rest_of_its_task_only() {
+    let sessions = FakeSessions::new();
+    let (handler, _) = handler(&sessions, None, false);
+    let approved = invocation(None).await;
+    handler
+        .approved_turns
+        .approve(&approved.run_context.turn_id);
+    let mut same_task = invocation(None).await;
+    same_task.run_context.turn_id = approved.run_context.turn_id;
+    // The test result writer refuses writes; what matters is that the call ran.
+    let _ = handler.invoke(same_task).await;
+    assert_eq!(
+        sessions.calls().len(),
+        1,
+        "the approved task acts without asking"
+    );
+
+    let next_task = handler.invoke(invocation(None).await).await.unwrap();
+    assert!(
+        matches!(next_task, Resolution::Blocked(_)),
+        "a new task asks again"
+    );
+    assert_eq!(sessions.calls().len(), 1);
+
+    let sessions = FakeSessions::new();
+    let (asking, _) = handler_with(&sessions, Some(ToolPermissionOverride::AskEachTime));
+    let task = invocation(None).await;
+    asking.approved_turns.approve(&task.run_context.turn_id);
+    let outcome = asking.invoke(task).await.unwrap();
+    assert!(
+        matches!(outcome, Resolution::Blocked(_)),
+        "a tool set to ask each time still asks"
+    );
+}
+
+fn handler_with(
+    sessions: &Arc<FakeSessions>,
+    tool_override: Option<ToolPermissionOverride>,
+) -> (ToolHandler, Arc<ComputerUseApprovalStores>) {
+    handler(sessions, tool_override, false)
+}
+
 fn commit(status: ProcessLifecycleStatus) -> ProcessJournalCommit {
     let scope = ResourceScope {
         tenant_id: TenantId::new("tenant-cu").unwrap(),
@@ -364,4 +422,152 @@ async fn a_stopped_turn_ends_the_session_and_a_finished_one_only_notifies() {
         .await
         .unwrap();
     assert_eq!(sessions.calls(), ["stopped:thread-cu", "ended:thread-cu"]);
+}
+
+/// Everything not computer use falls through to here.
+struct NotFoundSurface;
+
+#[async_trait]
+impl ProductSurface for NotFoundSurface {
+    async fn invoke(
+        &self,
+        _caller: ProductSurfaceCaller,
+        _request: ProductSurfaceInvokeRequest,
+    ) -> Result<ProductSurfaceInvokeResponse, ProductSurfaceError> {
+        Err(ProductSurfaceError::not_found())
+    }
+
+    async fn query(
+        &self,
+        _caller: ProductSurfaceCaller,
+        _request: ProductSurfaceQueryRequest,
+    ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
+        Err(ProductSurfaceError::not_found())
+    }
+
+    async fn stream_events(
+        &self,
+        _caller: ProductSurfaceCaller,
+        _request: ProductSurfaceStreamRequest,
+    ) -> Result<ProductSurfaceStreamResponse, ProductSurfaceError> {
+        Err(ProductSurfaceError::not_found())
+    }
+}
+
+#[tokio::test]
+async fn the_surface_serves_the_live_view_frames_and_controls_for_the_caller() {
+    let sessions = FakeSessions::new();
+    let surface = wrap_surface(Arc::new(NotFoundSurface), Some(Arc::clone(&sessions)));
+    let caller = ProductSurfaceCaller::new(
+        TenantId::new("t1").unwrap(),
+        UserId::new("alice").unwrap(),
+        None,
+        None,
+    );
+    let query = |view: &str, input: Value| ProductSurfaceQueryRequest {
+        view_id: view.to_string(),
+        input,
+        cursor: None,
+        limit: None,
+    };
+
+    let state = surface
+        .query(
+            caller.clone(),
+            query("computer_use.state", json!({"viewer": "v1abc"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state.items[0], json!({"user": "alice", "viewer": "v1abc"}));
+    let bad_viewer = surface
+        .query(
+            caller.clone(),
+            query("computer_use.state", json!({"viewer": "../x"})),
+        )
+        .await;
+    assert!(bad_viewer.is_err(), "viewer ids are bounded labels");
+
+    let frame = surface
+        .query(
+            caller.clone(),
+            query(
+                "computer_use.frame",
+                json!({"thread_id": "thread-1", "window_id": 77, "width": 480}),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(frame.items[0], json!({"thread": "thread-1", "window": 77}));
+
+    surface
+        .invoke(
+            caller.clone(),
+            ProductSurfaceInvokeRequest {
+                operation_id: CapabilityId::new(COMPUTER_USE_CONTROL_COMMAND_ID).unwrap(),
+                input: json!({"thread_id": "thread-1", "action": "take_over", "viewer": "v1abc"}),
+                activity_id: ironclaw_host_api::ids::ActivityId::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(sessions.calls(), vec!["control:TakeOver:thread-1:v1abc"]);
+
+    let passthrough = surface.query(caller, query("threads", json!({}))).await;
+    assert!(passthrough.is_err(), "other views reach the inner surface");
+
+    let off = wrap_surface::<FakeSessions>(Arc::new(NotFoundSurface), None);
+    let state = off
+        .query(
+            ProductSurfaceCaller::new(
+                TenantId::new("t1").unwrap(),
+                UserId::new("alice").unwrap(),
+                None,
+                None,
+            ),
+            query("computer_use.state", json!({})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state.items[0]["enabled"], false);
+}
+
+#[test]
+fn a_window_tree_reaches_the_model_in_full_not_behind_result_read() {
+    use ironclaw_loop_contracts::{ObservationTrust, ToolObservationStatus};
+
+    // A real Outlook state read is 4-20 KB: past the generic 3 KB first look.
+    let tree = "\t12 row Inbox message from a sender\n".repeat(150);
+    let output = serde_json::json!({"ok": true, "result": tree});
+    let serialized = serde_json::to_vec(&output).expect("serialize");
+    let result_ref = ironclaw_turns::LoopResultRef::new("result:cu_run.1").expect("result ref");
+    let first_look = ModelVisibleToolObservation {
+        schema_version: 1,
+        status: ToolObservationStatus::Success,
+        summary: "Tool completed; preview is a bounded JSON view.".to_string(),
+        detail: ToolObservationDetail::ResultReference {
+            result_ref: result_ref.as_str().to_string(),
+            byte_len: serialized.len() as u64,
+            preview: Some("{\"content\":{\"ok\":true}}".to_string()),
+            structured_json_view: true,
+            total_bytes: Some(serialized.len() as u64),
+            next_offset: None,
+            item_count: None,
+        },
+        artifacts: Vec::new(),
+        recovery: None,
+        trust: ObservationTrust::UntrustedToolOutput,
+    };
+
+    let observation = inline_observation(first_look, &result_ref, &serialized);
+
+    assert_eq!(
+        observation.summary,
+        "Tool completed; preview contains the full result."
+    );
+    let ToolObservationDetail::ResultReference { preview, .. } = observation.detail else {
+        panic!("expected a result reference");
+    };
+    let preview = preview.expect("preview");
+    assert!(preview.contains("Inbox message from a sender"));
+    assert!(preview.len() > 4 * 1024);
 }

@@ -37,12 +37,36 @@ pub(super) fn initialize_request() -> String {
 /// The user message; its `uuid` (the run id) lands in the session journal,
 /// which is how history rows find their run.
 pub(super) fn prompt_message(run_id: &str, text: &str) -> String {
+    user_line(run_id, json!(text))
+}
+
+/// [`prompt_message`] plus the attached pictures as image blocks ahead of
+/// the text (T3 Code's order), so the model sees them without a tool call.
+pub(super) async fn prompt_with_images(run_id: &str, text: &str) -> String {
+    let images = crate::attachments::inline_images(text).await;
+    if images.is_empty() {
+        return prompt_message(run_id, text);
+    }
+    let mut content: Vec<serde_json::Value> = images
+        .iter()
+        .map(|image| {
+            json!({
+                "type": "image",
+                "source": {"type": "base64", "media_type": image.mime, "data": image.base64},
+            })
+        })
+        .collect();
+    content.push(json!({"type": "text", "text": text}));
+    user_line(run_id, json!(content))
+}
+
+fn user_line(run_id: &str, content: serde_json::Value) -> String {
     json!({
         "type": "user",
         "uuid": run_id,
         "session_id": "",
         "parent_tool_use_id": null,
-        "message": {"role": "user", "content": text},
+        "message": {"role": "user", "content": content},
     })
     .to_string()
 }
@@ -114,6 +138,8 @@ pub(super) struct BridgedTurn {
     pub run_id: String,
     /// Sent once the CLI acknowledged the hook registration.
     pub prompt: Option<String>,
+    /// Set once that prompt is written: a steer before it would land first.
+    ready: Arc<std::sync::atomic::AtomicBool>,
     /// The next text delta opens a new text block.
     new_block: bool,
     new_thinking_block: bool,
@@ -126,6 +152,7 @@ impl BridgedTurn {
         thread: ThreadId,
         run_id: String,
         prompt: String,
+        ready: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         Self {
             bridge,
@@ -133,6 +160,7 @@ impl BridgedTurn {
             thread,
             run_id,
             prompt: Some(prompt),
+            ready,
             new_block: false,
             new_thinking_block: false,
         }
@@ -166,10 +194,11 @@ impl BridgedTurn {
             close(&self.stdin).await;
             return Step::InitRefused;
         }
-        if let Some(prompt) = self.prompt.take()
-            && let Err(error) = write_line(&self.stdin, &prompt).await
-        {
-            tracing::debug!(%error, "claude cli: prompt write failed");
+        if let Some(prompt) = self.prompt.take() {
+            match write_line(&self.stdin, &prompt).await {
+                Ok(()) => self.ready.store(true, std::sync::atomic::Ordering::SeqCst),
+                Err(error) => tracing::debug!(%error, "claude cli: prompt write failed"),
+            }
         }
         Step::Continue
     }
@@ -184,14 +213,19 @@ impl BridgedTurn {
                 let input = &request["input"];
                 let tool = input["tool_name"].as_str().unwrap_or("tool").to_string();
                 let tool_input = input["tool_input"].clone();
+                // The hook payload has no reason field, but Bash and Task
+                // inputs carry the model's own one-line `description`.
+                let reason = crate::approval_reason::explicit(&tool_input, &["description"]);
                 let known = request["callback_id"].as_str() == Some(HOOK_CALLBACK_ID);
                 let (bridge, stdin) = (Arc::clone(&self.bridge), Arc::clone(&self.stdin));
                 let (thread, run) = (self.thread.clone(), self.run_id.clone());
+                // Claimed here, in stream order, before the answer is spawned.
+                let claim = known.then(|| bridge.claim_call(&thread, &run));
                 // Answered off the read loop: the CLI keeps streaming meanwhile.
                 tokio::spawn(async move {
-                    let decision = if known {
+                    let decision = if let Some(claim) = claim {
                         bridge
-                            .request_approval(&thread, &run, &tool, &tool_input)
+                            .decide_call(&thread, &run, &tool, &tool_input, reason, claim)
                             .await
                     } else {
                         ToolDecision::Deny("Unknown hook.".into())

@@ -180,6 +180,7 @@ impl Workspace {
         };
         this.battery.start(|w: &mut Self| &mut w.battery, cx);
         this.start_quick_composer(cx);
+        crate::snapshot::start(cx.entity().downgrade(), window.window_handle(), cx);
         design::apply_window(window, *Style::of(cx));
         // Clicking a system notification brings the window up on its thread.
         let weak = cx.entity().downgrade();
@@ -235,7 +236,12 @@ impl Workspace {
                         this.start_status(backend.clone(), window, cx);
                         match this.inbox.first_open() {
                             Some(first) => this.open_thread(first, window, cx),
-                            None => this.open_draft(window, cx),
+                            // Nothing open: a fresh draft in the default profile.
+                            None => this.start_in_profile(
+                                ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID.into(),
+                                window,
+                                cx,
+                            ),
                         }
                     }
                     Err(e) => this.connect_failed(&e, window, cx),
@@ -1265,6 +1271,30 @@ impl Render for Workspace {
             .capture_key_down(
                 cx.listener(|this, _, _, cx| this.battery.input(|w: &mut Self| &mut w.battery, cx)),
             )
+            // ⌘1..⌘9 open the Nth sidebar thread; an open model picker
+            // takes the key first in its capture phase.
+            .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                let Some(ix) = kit::cmd_digit(&e.keystroke) else {
+                    return;
+                };
+                if this.in_settings() {
+                    return;
+                }
+                if let Some(id) = this.inbox.jump.get(ix).cloned() {
+                    cx.stop_propagation();
+                    this.open_thread(id, window, cx);
+                }
+            }))
+            .on_modifiers_changed(cx.listener(
+                |this, e: &gpui_kit::ModifiersChangedEvent, _, cx| {
+                    let m = &e.modifiers;
+                    let held = m.platform && !(m.control || m.alt || m.shift);
+                    if this.inbox.cmd_held != held {
+                        this.inbox.cmd_held = held;
+                        cx.notify();
+                    }
+                },
+            ))
             .on_action(cx.listener(|this, _: &crate::OpenCommandMenu, window, cx| {
                 if matches!(this.conn, Conn::Ready) {
                     this.toggle_command_menu(window, cx);

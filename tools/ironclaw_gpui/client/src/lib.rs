@@ -9,6 +9,7 @@ mod api;
 pub mod attachments;
 mod backend;
 pub mod commands;
+pub mod computer_use;
 mod connection;
 mod error;
 mod inbox_calls;

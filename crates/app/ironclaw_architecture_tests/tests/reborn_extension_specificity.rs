@@ -1553,10 +1553,7 @@ const ALLOWLIST: &[(&str, &str)] = &[
     // Antigravity plan quota (desktop Usage page): its quota endpoints live on
     // Google's API hosts. Google here is the coding-plan vendor, like the
     // `ironclaw_llm` Gemini carve-out, not the google extensions vendor.
-    (
-        "crates/ironclaw_usage/src/antigravity.rs",
-        "google",
-    ),
+    ("crates/ironclaw_usage/src/antigravity.rs", "google"),
 ];
 
 /// WS0 baseline for the extension-specificity allowlist (target-architecture

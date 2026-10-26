@@ -7,6 +7,8 @@
 //! of them asks to make waits for an IronClaw approval in
 //! [`bridge::CliBridge`]; without a bridge, it is denied.
 
+pub mod approval_reason;
+mod attachments;
 pub mod bridge;
 pub mod claude;
 

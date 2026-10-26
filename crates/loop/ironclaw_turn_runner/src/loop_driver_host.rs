@@ -31,10 +31,10 @@ use ironclaw_loop_host::{
     EmptyUserProfileSource, GuardedSystemInferencePort, HostIdentityContextSource, HostInputQueue,
     HostManagedModelGateway, HostQueueLoopInputPort, HostSkillContextSource, HostUserProfileSource,
     LoopAttachmentReadPort, LoopCapabilityInputResolver, LoopCapabilityPortFactory,
-    ModelGatewayBackedSystemInferencePort, RunCancellationFactory, RunCancellationObservationKind,
-    RunStateLoopCancellationPort, StructuredOutputLoopPromptPort, SubagentLoopPromptPort,
-    SubagentPromptComposer, ThreadBackedLoopContextPort, ThreadBackedLoopTranscriptPort,
-    ThreadContextWindowCache, active_task_compaction_prompt_id,
+    LoopToolImagePort, ModelGatewayBackedSystemInferencePort, RunCancellationFactory,
+    RunCancellationObservationKind, RunStateLoopCancellationPort, StructuredOutputLoopPromptPort,
+    SubagentLoopPromptPort, SubagentPromptComposer, ThreadBackedLoopContextPort,
+    ThreadBackedLoopTranscriptPort, ThreadContextWindowCache, active_task_compaction_prompt_id,
     host_managed_loop_compaction_port_with_prompt_id,
 };
 use ironclaw_outbound::ReplyAttachmentIntentPort;
@@ -1049,6 +1049,7 @@ where
     config: TextOnlyLoopHostConfig,
     skill_context_source: Option<Arc<dyn HostSkillContextSource>>,
     attachment_read_port: Option<Arc<dyn LoopAttachmentReadPort>>,
+    tool_image_port: Option<Arc<dyn LoopToolImagePort>>,
     prompt_diagnostic_sink: Option<Arc<dyn HostManagedPromptDiagnosticSink>>,
     reply_attachment_intent_port: Option<Arc<dyn ReplyAttachmentIntentPort>>,
     /// Optional hook dispatcher factory. When set, the factory invokes the
@@ -1169,6 +1170,7 @@ where
             config,
             skill_context_source: None,
             attachment_read_port: None,
+            tool_image_port: None,
             prompt_diagnostic_sink: None,
             reply_attachment_intent_port: None,
             hook_dispatcher_factory: None,
@@ -1263,6 +1265,11 @@ where
 
     pub fn with_attachment_read_port(mut self, port: Arc<dyn LoopAttachmentReadPort>) -> Self {
         self.attachment_read_port = Some(port);
+        self
+    }
+
+    pub fn with_tool_image_port(mut self, port: Arc<dyn LoopToolImagePort>) -> Self {
+        self.tool_image_port = Some(port);
         self
     }
 
@@ -1977,6 +1984,7 @@ where
                         prompt_authority,
                         context_window_cache: Some(context_window_cache),
                         attachment_read_port: self.attachment_read_port.clone(),
+                        tool_image_port: self.tool_image_port.clone(),
                         prompt_diagnostic_sink: self.prompt_diagnostic_sink.clone(),
                     },
                 ))
@@ -2000,6 +2008,7 @@ where
                         prompt_authority,
                         context_window_cache: Some(context_window_cache),
                         attachment_read_port: self.attachment_read_port.clone(),
+                        tool_image_port: self.tool_image_port.clone(),
                         prompt_diagnostic_sink: self.prompt_diagnostic_sink.clone(),
                     },
                 ))

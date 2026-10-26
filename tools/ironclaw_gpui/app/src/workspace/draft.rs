@@ -3,11 +3,17 @@
 //! the composer card. Nothing exists on the gateway until the first message
 //! is sent, so abandoned drafts leave no empty threads behind.
 
+mod snapshot;
+
+use std::path::PathBuf;
+
+use ironclaw_gpui_client::attachments::{self, StagedFile};
 use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
 
 use super::{Page, Workspace};
-use crate::chat::composer_card;
+use crate::assets::ExtraIcon;
 use crate::chat::model_picker::{ModelPicker, PickerEvent};
+use crate::chat::{composer_card, file_chip, round_button};
 use crate::design::styles::Style;
 use crate::design::{Palette, motion};
 use crate::jobs;
@@ -19,6 +25,8 @@ pub(super) struct Draft {
     input: Entity<TextareaState>,
     picker: Entity<ModelPicker>,
     pub(super) menu_open: bool,
+    /// Files for the first message, handed to the thread on send.
+    staged: Vec<StagedFile>,
     sending: bool,
     error: Option<SharedString>,
     _subs: Vec<Subscription>,
@@ -67,6 +75,7 @@ impl Workspace {
                 input,
                 picker,
                 menu_open: false,
+                staged: Vec::new(),
                 sending: false,
                 error: None,
                 _subs: subs,
@@ -116,7 +125,7 @@ impl Workspace {
             return;
         };
         let text = draft.input.read(cx).value().trim().to_string();
-        if text.is_empty() || draft.sending {
+        if (text.is_empty() && draft.staged.is_empty()) || draft.sending {
             return;
         }
         draft.sending = true;
@@ -150,11 +159,11 @@ impl Workspace {
             },
             move |this, result, window, cx| match result {
                 Ok(id) => {
-                    this.draft = None;
+                    let files = this.draft.take().map(|d| d.staged).unwrap_or_default();
                     this.refresh_inbox(cx);
                     this.open_thread(id, window, cx);
                     if let Some((_, chat)) = this.active.clone() {
-                        chat.update(cx, |chat, cx| chat.send_text(text, window, cx));
+                        chat.update(cx, |chat, cx| chat.send_text(text, files, window, cx));
                     }
                 }
                 Err(e) => {
@@ -164,6 +173,105 @@ impl Workspace {
                     }
                     cx.notify();
                 }
+            },
+        );
+    }
+
+    fn pick_draft_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await {
+                let _ = this.update(cx, |this, cx| this.attach_to_draft(paths, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn attach_thread_to_draft(
+        &mut self,
+        dragged: &crate::chat::DraggedThread,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(backend), Some(session), Some(draft)) = (
+            self.backend.clone(),
+            self.session.as_ref(),
+            self.draft.as_ref(),
+        ) else {
+            return;
+        };
+        let input = draft.input.clone();
+        input.update(cx, |s, cx| s.focus(window, cx));
+        let limits = session.attachments.clone();
+        let dragged = dragged.clone();
+        jobs::run(
+            &backend,
+            cx,
+            move |c| async move {
+                c.thread_attachment(&dragged.id, &dragged.title, &limits)
+                    .await
+            },
+            move |this, result, cx| {
+                let (Some(draft), Some(session)) = (this.draft.as_mut(), this.session.as_ref())
+                else {
+                    return;
+                };
+                // A reset or send must not attach this result to a different draft.
+                if draft.input != input {
+                    return;
+                }
+                let result = result.map_err(|e| e.to_string()).and_then(|file| {
+                    attachments::check(&file, &draft.staged, &session.attachments).map(|()| file)
+                });
+                match result {
+                    Ok(file) => {
+                        draft.staged.push(file);
+                        draft.error = None;
+                    }
+                    Err(error) => draft.error = Some(error.into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Read files off the main thread, then stage the ones within limits.
+    fn attach_to_draft(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let (Some(backend), Some(session)) = (self.backend.clone(), self.session.as_ref()) else {
+            return;
+        };
+        let limits = session.attachments.clone();
+        let check = limits.clone();
+        jobs::run(
+            &backend,
+            cx,
+            move |_| async move {
+                let mut out = Vec::new();
+                for path in paths {
+                    out.push(attachments::stage(&path, &limits).await);
+                }
+                Ok(out)
+            },
+            move |this, result, cx| {
+                let (Ok(results), Some(draft)) = (result, this.draft.as_mut()) else {
+                    return;
+                };
+                let mut problems = Vec::new();
+                for result in results {
+                    match result.and_then(|file| {
+                        attachments::check(&file, &draft.staged, &check).map(|()| file)
+                    }) {
+                        Ok(file) => draft.staged.push(file),
+                        Err(problem) => problems.push(problem),
+                    }
+                }
+                draft.error = (!problems.is_empty()).then(|| problems.join(" ").into());
+                cx.notify();
             },
         );
     }
@@ -187,9 +295,53 @@ impl Workspace {
             return div().into_any_element();
         };
         let name = self.draft_profile_name();
-        let send = crate::chat::round_button("draft-send", IconName::ArrowUp, true, "Send", cx)
+        let ready = !draft.staged.is_empty() || !draft.input.read(cx).value().trim().is_empty();
+        let send = round_button("draft-send", IconName::ArrowUp, ready, "Send", cx)
             .when(draft.sending, |d| d.opacity(0.35))
             .on_click(cx.listener(|this, _, window, cx| this.send_draft(window, cx)));
+        let attach = round_button(
+            "draft-attach",
+            ExtraIcon::Paperclip,
+            false,
+            "Attach files",
+            cx,
+        )
+        .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Attach files").build(w, cx))
+        .on_click(cx.listener(|this, _, window, cx| this.pick_draft_files(window, cx)));
+        let chips = h_flex()
+            .w_full()
+            .max_w(px(720.))
+            .flex_wrap()
+            .gap_1()
+            .children(
+                draft
+                    .staged
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| !crate::snapshot::is_companion(f, &draft.staged))
+                    .map(|(ix, file)| {
+                        let id = SharedString::from(format!("draft-staged-{ix}"));
+                        crate::snapshot::chip(id.clone(), file, cx)
+                            .unwrap_or_else(|| {
+                                file_chip(id, &file.filename, Some(file.bytes.len() as u64), cx)
+                            })
+                            .child(
+                                Button::new(SharedString::from(format!("draft-unstage-{ix}")))
+                                    .icon(IconName::Close)
+                                    .xsmall()
+                                    .ghost()
+                                    .tooltip("Remove")
+                                    .accessibility_label("Remove")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(d) = this.draft.as_mut() {
+                                            crate::snapshot::unstage(&mut d.staged, ix);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                    }),
+            );
+        let has_files = !draft.staged.is_empty();
         let profile_switch = div()
             .relative()
             .child(
@@ -253,13 +405,23 @@ impl Workspace {
                     None,
                     gpui_kit::div().child(Textarea::new(&draft.input).appearance(false)),
                     draft.picker.clone(),
-                    send,
+                    h_flex().gap(px(6.)).child(attach).child(send),
                     cx,
                 )
                 .max_w(px(720.))
+                .id("draft-thread-drop")
+                .drag_over::<crate::chat::DraggedThread>(|s, _, _, cx| {
+                    s.border_color(cx.theme().accent)
+                })
+                .on_drop(
+                    cx.listener(|this, dragged: &crate::chat::DraggedThread, window, cx| {
+                        this.attach_thread_to_draft(dragged, window, cx);
+                    }),
+                )
                 .relative()
                 .child(crate::design::dock::hero_probe()),
             )
+            .when(has_files, |d| d.child(chips))
             .when_some(draft.error.clone(), |d, error| {
                 d.child(
                     div()
@@ -276,8 +438,13 @@ impl Workspace {
         let bare =
             crate::design::prefs::Prefs::of(cx).wallpaper == crate::design::prefs::Wallpaper::None;
         div()
+            .id("draft")
             .size_full()
             .relative()
+            .drag_over::<ExternalPaths>(|this, _, _, cx| this.bg(cx.theme().accent.opacity(0.15)))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.attach_to_draft(paths.paths().to_vec(), cx)
+            }))
             .when(bare, |d| {
                 d.child(div().absolute().top_0().left_0().right_0().h(px(320.)).bg(
                     gpui_kit::linear_gradient(

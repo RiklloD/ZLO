@@ -8510,8 +8510,25 @@ async fn thread_one_authors_a_scripted_skill_and_thread_two_executes_it() {
 /// mocked model reads the advertised workdir and runs the command through the real `builtin.shell`.
 /// Closes the half the sibling fixture cannot see: the path the model is TOLD. When that string was
 /// wrong, every command failed with `Failed to spawn command` and nothing noticed.
-#[tokio::test]
-async fn the_model_runs_a_skills_script_from_the_workdir_the_body_advertises() {
+// Debug builds nest this full shell turn deeper than libtest's 2 MB thread
+// stack; `serve` gives its workers 8 MB, so the test does the same.
+#[test]
+fn the_model_runs_a_skills_script_from_the_workdir_the_body_advertises() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime")
+                .block_on(skills_script_from_advertised_workdir())
+        })
+        .expect("test thread spawns")
+        .join()
+        .expect("test thread does not panic");
+}
+
+async fn skills_script_from_advertised_workdir() {
     let root = tempfile::tempdir().expect("tempdir");
     let storage_root = root.path().join("standalone");
 

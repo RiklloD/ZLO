@@ -2259,7 +2259,7 @@ mod tests {
             "a model without the knob gets no field: {body}"
         );
 
-        let body = routed_effort_body(openai_chat, "::glm-5.3::off").await;
+        let body = routed_effort_body(openai_chat, "::glm-5.1::off").await;
         assert_eq!(body["thinking"], serde_json::json!({ "type": "disabled" }));
 
         let anthropic = |base_url: &str| -> Arc<dyn LlmProvider> {

@@ -49,6 +49,10 @@ use ratchet_support::{
 ///   single implementer inside that crate. It never crosses the loop/kernel
 ///   membrane, so it is not part of the contract the agent loop compiles
 ///   against.
+/// * `LoopToolImagePort` is the same kind of `ironclaw_loop_host` seam: the
+///   host model port asks it for a tool result's picture (a computer-use
+///   screenshot) and composition implements it. It stays on the host side of
+///   the membrane; the agent loop never sees it.
 const LOOP_PORT_OWNERS: &[(&str, &str)] = &[
     ("LoopCancellationPort", "ironclaw_loop_contracts"),
     ("LoopCapabilityPort", "ironclaw_loop_contracts"),
@@ -62,6 +66,7 @@ const LOOP_PORT_OWNERS: &[(&str, &str)] = &[
     ("LoopRunInfoPort", "ironclaw_loop_contracts"),
     ("LoopTranscriptPort", "ironclaw_loop_contracts"),
     ("LoopAttachmentReadPort", "ironclaw_loop_host"),
+    ("LoopToolImagePort", "ironclaw_loop_host"),
     ("LoopExitEvidencePort", "ironclaw_turns"),
 ];
 

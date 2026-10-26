@@ -11,7 +11,7 @@ use ironclaw_gpui_client::commands::{match_command, menu_matches, takes_argument
 use ironclaw_gpui_client::contract::ProductGateKind;
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::transcript::{
-    self, AttachmentChip, GateState, PREFIX_KEY, Row, RunEnd, ToolStatus, Transcript,
+    AttachmentChip, GateState, PREFIX_KEY, Row, RunEnd, ToolStatus, Transcript,
 };
 use ironclaw_gpui_client::wire::{AttachmentLimits, CommandEffect};
 use ironclaw_gpui_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
@@ -25,12 +25,17 @@ use crate::design::{Palette, kit, motion};
 use crate::jobs::flatten;
 use crate::ui::*;
 
+pub(crate) mod approval_mode;
+mod approval_reason;
+mod computer;
 mod flow;
 mod goals;
 pub mod model_picker;
 mod orchestration;
 mod outline;
 mod pace;
+mod snapshot;
+mod steer;
 
 use flow::Item;
 use model_picker::{ModelPicker, PickerEvent};
@@ -96,6 +101,8 @@ pub struct ChatView {
     menu_index: usize,
     /// The composer's model pill: any provider, switched per thread.
     picker: Entity<ModelPicker>,
+    /// The profile's approval-mode pill beside the model pill.
+    approval: Entity<approval_mode::ApprovalPill>,
     /// Task ideas for an empty conversation, loaded once it is known empty.
     /// The conversation's files panel, when open.
     files: Option<FilesPanel>,
@@ -103,6 +110,9 @@ pub struct ChatView {
     menu_dismissed: Option<SharedString>,
     /// Delegated tasks, queue and lineage of this thread.
     orch: orchestration::Orchestration,
+    /// The computer-use screen share of this thread.
+    computer: Entity<computer::ComputerShare>,
+    _computer_stop: Subscription,
     _stream: Option<EventStream>,
     _pump: Task<()>,
 }
@@ -195,6 +205,18 @@ impl ChatView {
             PickerEvent::Failed(message) => this.set_error(message.clone(), cx),
         });
 
+        let computer = {
+            let (backend, id) = (backend.clone(), thread_id.clone());
+            cx.new(|cx| computer::ComputerShare::new(backend, id, cx))
+        };
+        let approval = {
+            let (backend, id) = (backend.clone(), thread_id.clone());
+            cx.new(|cx| approval_mode::ApprovalPill::new(backend, id, cx))
+        };
+        // The share's Stop also stops this conversation's turn.
+        let computer_stop = cx.subscribe(&computer, |this, _, _: &computer::StopRun, cx| {
+            this.stop(cx)
+        });
         let (stream, pump) = Self::open_stream(&backend, &thread_id, cx);
         composer.update(cx, |state, cx| state.focus(window, cx));
 
@@ -226,9 +248,12 @@ impl ChatView {
             commands: Rc::new(Vec::new()),
             menu_index: 0,
             picker,
+            approval,
             files: None,
             menu_dismissed: None,
             orch: Default::default(),
+            computer,
+            _computer_stop: computer_stop,
             _stream: Some(stream),
             _pump: pump,
         };
@@ -280,32 +305,13 @@ impl ChatView {
         }
         let DraggedThread { id, title } = dragged.clone();
         let limits = self.limits.clone();
-        let job = self.backend.spawn(move |c| async move {
-            let mut messages = c.fork_prefix(&id).await.unwrap_or_default(); // silent-ok: a thread with no fork source has none
-            let mut page = c.timeline(&id, 500).await?.messages;
-            page.sort_by_key(|m| m.sequence);
-            messages.append(&mut page);
-            Ok::<_, ClientError>(transcript::thread_markdown(&title, &messages))
-        });
-        let title = dragged.title.clone();
+        let job = self
+            .backend
+            .spawn(move |c| async move { c.thread_attachment(&id, &title, &limits).await });
         let task = cx.spawn(async move |this, cx| {
             let result = flatten(job.await);
             let _ = this.update(cx, |this, cx| {
-                let staged = result.map_err(|e| e.to_string()).and_then(|text| {
-                    let slug: String = title
-                        .chars()
-                        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-                        .take(48)
-                        .collect();
-                    let filename = format!("thread-{}.md", slug.trim_matches('-'));
-                    let mime_type = attachments::mime_for(&filename, &limits)
-                        .or_else(|| attachments::mime_for("a.txt", &limits))
-                        .ok_or("This gateway accepts no text attachments.")?;
-                    let file = StagedFile {
-                        filename,
-                        mime_type,
-                        bytes: text.into_bytes(),
-                    };
+                let staged = result.map_err(|e| e.to_string()).and_then(|file| {
                     attachments::check(&file, &this.staged, &this.limits).map(|()| file)
                 });
                 match staged {
@@ -617,6 +623,10 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.steer_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         // ⌘↵ approves the newest open approval, ⇧⌘↵ always allows it.
         let keys = &event.keystroke;
         if keys.modifiers.platform
@@ -945,6 +955,9 @@ impl ChatView {
             self.run_command(text, window, cx);
             return;
         }
+        if self.running_run().is_some() {
+            return self.steer(window, cx);
+        }
         let Some(channel) = self.channel.clone() else {
             self.set_error("This gateway has no chat channel configured.", cx);
             return;
@@ -1001,8 +1014,16 @@ impl ChatView {
         self.keep(task);
     }
 
-    /// The new-thread screen's first message, sent once the thread exists.
-    pub fn send_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// The new-thread screen's first message and its files, sent once the
+    /// thread exists.
+    pub fn send_text(
+        &mut self,
+        text: String,
+        files: Vec<StagedFile>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.staged = files;
         self.arrive = true;
         crate::design::dock::take_off(cx.reduce_motion());
         self.composer
@@ -1085,7 +1106,9 @@ impl ChatView {
     }
 
     fn set_error(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.error = Some(message.into());
+        let message = message.into();
+        tracing::warn!(thread_id = %self.thread_id, error = %message, "chat action failed");
+        self.error = Some(message);
         cx.notify();
     }
 
@@ -1353,6 +1376,7 @@ impl Render for ChatView {
                 div().flex_1().min_h_0().pt(px(30.)).child(body)
             })
             .child(self.outline.clone())
+            .child(self.computer.clone())
             // The thread actions float over the transcript on no plate of
             // their own, so the wallpaper runs unbroken under them.
             .child(
@@ -1366,6 +1390,22 @@ impl Render for ChatView {
                     .child(
                         h_flex()
                             .gap_1()
+                            .when(self.computer.read(cx).has_session(), |row| {
+                                let shown = !self.computer.read(cx).hidden();
+                                row.child(
+                                    Button::new("computer-toggle")
+                                        .icon(ExtraIcon::Monitor)
+                                        .ghost()
+                                        .small()
+                                        .when(shown, |b| b.selected(true))
+                                        .tooltip("Computer use screen share")
+                                        .accessibility_label("Computer use screen share")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.computer
+                                                .update(cx, |share, cx| share.toggle_hidden(cx))
+                                        })),
+                                )
+                            })
                             .child(
                                 Button::new("fork")
                                     .icon(ExtraIcon::GitFork)
@@ -1407,28 +1447,40 @@ impl Render for ChatView {
                             .max_w(px(content_width(cx)))
                             .flex_wrap()
                             .gap_1()
-                            .children(self.staged.iter().enumerate().map(|(ix, file)| {
-                                file_chip(
-                                    SharedString::from(format!("staged-{ix}")),
-                                    &file.filename,
-                                    Some(file.bytes.len() as u64),
-                                    cx,
-                                )
-                                .child(
-                                    Button::new(SharedString::from(format!("unstage-{ix}")))
-                                        .icon(IconName::Close)
-                                        .xsmall()
-                                        .ghost()
-                                        .tooltip("Remove")
-                                        .accessibility_label("Remove")
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if ix < this.staged.len() {
-                                                this.staged.remove(ix);
-                                            }
-                                            cx.notify();
-                                        })),
-                                )
-                            })),
+                            .children(
+                                self.staged
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, f)| {
+                                        !crate::snapshot::is_companion(f, &self.staged)
+                                    })
+                                    .map(|(ix, file)| {
+                                        let id = SharedString::from(format!("staged-{ix}"));
+                                        crate::snapshot::chip(id.clone(), file, cx)
+                                            .unwrap_or_else(|| {
+                                                file_chip(
+                                                    id,
+                                                    &file.filename,
+                                                    Some(file.bytes.len() as u64),
+                                                    cx,
+                                                )
+                                            })
+                                            .child(
+                                                Button::new(SharedString::from(format!(
+                                                    "unstage-{ix}"
+                                                )))
+                                                .icon(IconName::Close)
+                                                .xsmall()
+                                                .ghost()
+                                                .tooltip("Remove")
+                                                .accessibility_label("Remove")
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    crate::snapshot::unstage(&mut this.staged, ix);
+                                                    cx.notify();
+                                                })),
+                                            )
+                                    }),
+                            ),
                     ),
                 )
             })
@@ -1546,6 +1598,7 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
             body,
             allow_always,
             state,
+            reason,
         } => render_gate(
             key,
             run_id,
@@ -1555,6 +1608,7 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
             body,
             *allow_always,
             *state,
+            reason.as_deref(),
             weak,
             cx,
         ),
@@ -1660,21 +1714,9 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
 impl ChatView {
     /// The composer card: text on top; model pill, attach and send below.
     fn render_composer(&self, running: bool, focused: bool, cx: &mut Context<Self>) -> AnyElement {
-        let send = if running {
-            round_button("stop", IconName::Square, true, "Stop", cx)
-                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Stop").build(w, cx))
-                .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
-        } else {
-            // Nothing to send: a neutral disc, not a faded primary (T3 Code).
-            let ready =
-                !self.staged.is_empty() || !self.composer.read(cx).value().trim().is_empty();
-            round_button("send", IconName::ArrowUp, ready, "Send", cx)
-                .tooltip(|w, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new("Send (Enter)").build(w, cx)
-                })
-                .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
-        };
-        let attach = round_button("attach", IconName::Plus, false, "Attach files", cx)
+        // Send, plus Stop beside it while a turn runs (chat/steer.rs).
+        let send = self.render_send(running, cx);
+        let attach = round_button("attach", ExtraIcon::Paperclip, false, "Attach files", cx)
             .tooltip(|w, cx| {
                 gpui_kit::component::tooltip::Tooltip::new("Attach files").build(w, cx)
             })
@@ -1683,12 +1725,12 @@ impl ChatView {
             "composer",
             focused,
             true,
-            Some(attach.into_any_element()),
+            Some(self.approval.clone().into_any_element()),
             div()
                 .capture_key_down(cx.listener(Self::on_composer_key))
                 .child(Textarea::new(&self.composer).appearance(false)),
             self.picker.clone(),
-            send,
+            h_flex().gap(px(6.)).child(attach).child(send),
             cx,
         );
         // From the new-thread screen it glides down from the hero's spot.
@@ -1782,7 +1824,7 @@ pub(crate) fn composer_card(
 /// text color and an up arrow in the background color.
 pub(crate) fn round_button(
     id: &'static str,
-    icon: IconName,
+    icon: impl Into<Icon>,
     filled: bool,
     label: &'static str,
     cx: &App,
@@ -1795,6 +1837,35 @@ pub(crate) fn round_button(
     } else {
         gpui_kit::hsla(0., 0., 1., 0.10)
     };
+    // Send and stop: a flat accent tile with soft corners. Idle, it sinks
+    // into a neutral wash so an empty composer has no bright spot.
+    if id.ends_with("send") || id == "stop" {
+        let (fill, ink) = if filled {
+            (
+                crate::design::lift(p.accent, 0.05 * t),
+                crate::design::on_accent(p),
+            )
+        } else {
+            (wash, p.text_faint)
+        };
+        return div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label)
+            .size(px(30.))
+            .flex_none()
+            .rounded(px(9.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .on_hover(motion::hover_listener(
+                hover_key,
+                motion::MotionSpec::new(150, motion::EASE),
+            ))
+            .bg(fill)
+            .child(Icon::new(icon).size(px(15.)).text_color(ink));
+    }
     div()
         .id(id)
         .role(Role::Button)
@@ -2008,7 +2079,7 @@ fn mark_copied(key: &str, cx: &mut App) {
 }
 
 /// A file name with its size, used for staged and sent attachments.
-fn file_chip(
+pub(crate) fn file_chip(
     id: SharedString,
     name: &str,
     size: Option<u64>,
@@ -2088,6 +2159,7 @@ fn render_gate(
     body: &Option<String>,
     allow_always: bool,
     state: GateState,
+    reason: Option<&str>,
     weak: &WeakEntity<ChatView>,
     cx: &App,
 ) -> AnyElement {
@@ -2229,6 +2301,7 @@ fn render_gate(
                     .child(body),
             )
         })
+        .children(approval_reason::gate_line(reason, &p))
         .children(actions.map(|a| div().pl(px(28.)).child(a)));
     motion::pop_in(card, SharedString::from(format!("{key}-gate")), s.pop, 8.).into_any_element()
 }

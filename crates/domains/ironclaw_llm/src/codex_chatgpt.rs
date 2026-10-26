@@ -519,7 +519,7 @@ impl CodexChatGptProvider {
                 items.push(json!({
                     "type": "function_call_output",
                     "call_id": msg.tool_call_id.as_deref().unwrap_or(""),
-                    "output": msg.content,
+                    "output": function_call_output(msg),
                 }));
             }
             Role::System => {
@@ -1320,6 +1320,29 @@ struct PendingToolCall {
     call_id: String,
     name: String,
     arguments: String,
+}
+
+/// A Responses API `function_call_output.output`: the text, or, when the tool
+/// result carries pictures (computer-use screenshots), the text followed by
+/// one `input_image` each.
+pub(crate) fn function_call_output(msg: &ChatMessage) -> Value {
+    let images: Vec<Value> = msg
+        .content_parts
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::ImageUrl { image_url } => Some(json!({
+                "type": "input_image",
+                "image_url": image_url.url,
+            })),
+            ContentPart::Text { .. } => None,
+        })
+        .collect();
+    if images.is_empty() {
+        return Value::String(msg.content.clone());
+    }
+    let mut output = vec![json!({"type": "input_text", "text": msg.content})];
+    output.extend(images);
+    Value::Array(output)
 }
 
 #[async_trait]

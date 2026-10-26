@@ -255,7 +255,7 @@ mod hotkey {
         fn InstallEventHandler(
             target: *mut c_void,
             handler: Handler,
-            count: u32,
+            count: usize,
             types: *const EventType,
             data: *mut c_void,
             reference: *mut *mut c_void,
@@ -270,7 +270,20 @@ mod hotkey {
             reference: *mut *mut c_void,
         ) -> i32;
         fn UnregisterEventHotKey(reference: *mut c_void) -> i32;
+        fn GetEventParameter(
+            event: *mut c_void,
+            name: u32,
+            desired: u32,
+            actual: *mut u32,
+            size: usize,
+            actual_size: *mut usize,
+            data: *mut c_void,
+        ) -> i32;
     }
+
+    const SIGNATURE: u32 = u32::from_be_bytes(*b"IrCl");
+    /// eventNotHandledErr: another app hotkey (a SnapShot combo) gets it.
+    const NOT_HANDLED: i32 = -9874;
 
     pub(crate) struct Registration {
         hotkey: *mut c_void,
@@ -279,11 +292,26 @@ mod hotkey {
         _sender: Box<UnboundedSender<()>>,
     }
 
-    unsafe extern "C" fn pressed(
-        _next: *mut c_void,
-        _event: *mut c_void,
-        data: *mut c_void,
-    ) -> i32 {
+    unsafe extern "C" fn pressed(_next: *mut c_void, event: *mut c_void, data: *mut c_void) -> i32 {
+        let mut id = HotKeyId {
+            signature: 0,
+            id: 0,
+        };
+        // SAFETY: reads the event's hotkey id into a slot of its exact size.
+        let error = unsafe {
+            GetEventParameter(
+                event,
+                u32::from_be_bytes(*b"----"),
+                u32::from_be_bytes(*b"hkid"),
+                std::ptr::null_mut(),
+                std::mem::size_of::<HotKeyId>(),
+                std::ptr::null_mut(),
+                (&raw mut id).cast(),
+            )
+        };
+        if error != 0 || id.signature != SIGNATURE || id.id != 1 {
+            return NOT_HANDLED;
+        }
         // SAFETY: `data` is the boxed sender, alive until the handler is
         // removed in `Drop`, on the same main thread.
         let sender = unsafe { &*data.cast::<UnboundedSender<()>>() };
@@ -319,7 +347,7 @@ mod hotkey {
                     return Err(format!("InstallEventHandler failed ({error})"));
                 }
                 let id = HotKeyId {
-                    signature: u32::from_be_bytes(*b"IrCl"),
+                    signature: SIGNATURE,
                     id: 1,
                 };
                 let error = RegisterEventHotKey(code, modifiers, id, target, 0, &mut hotkey);

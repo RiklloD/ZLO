@@ -24,7 +24,9 @@ icon_assets!(
         Zap,
         SlidersHorizontal,
         Sparkles,
-        LayoutGrid
+        LayoutGrid,
+        Monitor,
+        Paperclip
     ]
 );
 

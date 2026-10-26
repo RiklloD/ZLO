@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     HostIdentityContextSource, HostManagedModelGateway, HostManagedModelStreamSink,
     HostManagedPromptDiagnosticSink, HostSkillContextSource, LoopAttachmentReadPort,
-    ThreadBackedLoopModelPort, ThreadContextWindowCache,
+    LoopToolImagePort, ThreadBackedLoopModelPort, ThreadContextWindowCache,
 };
 use async_trait::async_trait;
 use ironclaw_loop_contracts::{
@@ -40,6 +40,7 @@ where
     pub prompt_authority: LoopPromptBundleAuthority,
     pub context_window_cache: Option<Arc<ThreadContextWindowCache>>,
     pub attachment_read_port: Option<Arc<dyn LoopAttachmentReadPort>>,
+    pub tool_image_port: Option<Arc<dyn LoopToolImagePort>>,
     pub prompt_diagnostic_sink: Option<Arc<dyn HostManagedPromptDiagnosticSink>>,
 }
 
@@ -67,6 +68,7 @@ where
     prompt_authority: LoopPromptBundleAuthority,
     context_window_cache: Option<Arc<ThreadContextWindowCache>>,
     attachment_read_port: Option<Arc<dyn LoopAttachmentReadPort>>,
+    tool_image_port: Option<Arc<dyn LoopToolImagePort>>,
     prompt_diagnostic_sink: Option<Arc<dyn HostManagedPromptDiagnosticSink>>,
 }
 
@@ -88,6 +90,7 @@ where
             prompt_authority,
             context_window_cache,
             attachment_read_port,
+            tool_image_port,
             prompt_diagnostic_sink,
         } = parts;
         Self {
@@ -102,6 +105,7 @@ where
             prompt_authority,
             context_window_cache,
             attachment_read_port,
+            tool_image_port,
             prompt_diagnostic_sink,
         }
     }
@@ -164,6 +168,9 @@ where
         }
         if let Some(port) = self.attachment_read_port.as_ref() {
             model_port = model_port.with_attachment_read_port(Arc::clone(port));
+        }
+        if let Some(port) = self.tool_image_port.as_ref() {
+            model_port = model_port.with_tool_image_port(Arc::clone(port));
         }
         if let Some(sink) = self.prompt_diagnostic_sink.as_ref() {
             model_port = model_port.with_prompt_diagnostic_sink(Arc::clone(sink));

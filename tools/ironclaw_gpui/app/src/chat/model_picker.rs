@@ -39,6 +39,14 @@ const POPOVER_HEIGHT: f32 = 420.;
 /// Recent picks shown first in "All", after MonoCode's `pickers.rs`.
 const RECENTS: usize = 6;
 
+/// A list group: title, its provider (`None`: no hide button), and the
+/// `(provider, model)` rows under it.
+type Group<'a> = (
+    String,
+    Option<&'a RouteProvider>,
+    Vec<(&'a RouteProvider, String)>,
+);
+
 /// A rail icon being dragged to reorder the providers.
 #[derive(Clone)]
 struct DraggedProvider {
@@ -471,9 +479,8 @@ impl ModelPicker {
         (name, Some(provider.to_string()))
     }
 
-    fn render_popover(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_popover(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
-        let query = self.search.read(cx).value().trim().to_lowercase();
         let fresh = self.route.as_ref().is_none_or(|r| r.fresh) || self.thread_id.is_none();
         let current_runtime = self.route.as_ref().map(|r| r.runtime.clone());
 
@@ -573,74 +580,26 @@ impl ModelPicker {
             );
         }
 
-        // `(provider, model)` pairs to list, grouped under a header each.
-        let matches = |provider: &RouteProvider, model: &str| {
-            query.is_empty()
-                || model.to_lowercase().contains(&query)
-                || pretty_model(model).to_lowercase().contains(&query)
-                || provider.name.to_lowercase().contains(&query)
-        };
-        // `None` provider: the favorites group, which has no hide button.
-        type Group<'a> = (
-            String,
-            Option<&'a RouteProvider>,
-            Vec<(&'a RouteProvider, String)>,
-        );
-        let mut groups: Vec<Group> = Vec::new();
-        if self.rail == Rail::Favorites {
-            let picks = self
-                .prefs
-                .favorites
-                .iter()
-                .filter_map(|f| {
-                    let provider = self.providers().iter().find(|p| p.provider == f.provider)?;
-                    let shown = self.show_hidden || !self.prefs.provider_hidden(&f.provider);
-                    (shown && matches(provider, &f.model)).then(|| (provider, f.model.clone()))
-                })
-                .collect();
-            groups.push(("Favorites".into(), None, picks));
-        } else {
-            if self.rail == Rail::All && query.is_empty() {
-                let picks: Vec<_> = crate::design::prefs::Prefs::of(cx)
-                    .recent_models
-                    .iter()
-                    .filter_map(|(provider, model)| {
-                        let p = self.providers().iter().find(|p| p.provider == *provider)?;
-                        (!self.prefs.provider_hidden(provider)
-                            && !self.prefs.model_hidden(provider, model))
-                        .then(|| (p, model.clone()))
-                    })
-                    .collect();
-                groups.push(("Recent".into(), None, picks));
-            }
-            for provider in ordered.iter().copied() {
-                if let Rail::Provider(only) = &self.rail
-                    && *only != provider.provider
-                {
-                    continue;
-                }
-                if self.prefs.provider_hidden(&provider.provider) && !self.show_hidden {
-                    continue;
-                }
-                let picks = provider
-                    .models
-                    .iter()
-                    .filter(|m| matches(provider, m))
-                    .filter(|m| self.show_hidden || !self.prefs.model_hidden(&provider.provider, m))
-                    .map(|m| (provider, m.clone()))
-                    .collect();
-                groups.push((provider.name.clone(), Some(provider), picks));
-            }
-        }
-
+        // Holding ⌘ numbers the first nine rows; ⌘N picks row N.
+        let cmd = window.modifiers().platform;
         let mut rows: Vec<AnyElement> = Vec::new();
-        for (title, provider, picks) in groups {
+        let mut shown = 0;
+        for (title, provider, picks) in self.groups(cx) {
             if picks.is_empty() {
                 continue;
             }
             rows.push(self.group_header(title, provider, cx));
             for (provider, model) in picks {
-                rows.push(self.model_row(provider, model, fresh, current_runtime.as_deref(), cx));
+                let badge = (cmd && shown < 9).then_some(shown);
+                shown += 1;
+                rows.push(self.model_row(
+                    provider,
+                    model,
+                    fresh,
+                    current_runtime.as_deref(),
+                    badge,
+                    cx,
+                ));
             }
         }
         if rows.is_empty() {
@@ -675,13 +634,25 @@ impl ModelPicker {
             .overflow_hidden()
             .occlude()
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)))
-            // Ctrl+Tab / Ctrl+Shift+Tab walk the rail, before the search
-            // field sees the key.
+            .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
+            // Ctrl+Tab / Ctrl+Shift+Tab walk the rail and ⌘1..⌘9 pick a
+            // row, before the search field (or the thread jump) sees the key.
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
                 let k = &e.keystroke;
                 if k.key == "tab" && k.modifiers.control {
                     this.cycle_rail(!k.modifiers.shift, cx);
                     cx.stop_propagation();
+                } else if let Some(ix) = design::kit::cmd_digit(k) {
+                    cx.stop_propagation();
+                    let pick = this
+                        .groups(cx)
+                        .into_iter()
+                        .flat_map(|(_, _, picks)| picks)
+                        .nth(ix)
+                        .map(|(p, m)| (p.provider.clone(), m));
+                    if let Some((provider, model)) = pick {
+                        this.pick(provider, model, cx);
+                    }
                 }
             }))
             .child(
@@ -740,6 +711,68 @@ impl ModelPicker {
                         )
                     }),
             )
+    }
+
+    /// The `(provider, model)` pairs the list shows, in order, grouped under
+    /// a header each. A `None` provider is a group with no hide button
+    /// (favorites, recents).
+    fn groups(&self, cx: &App) -> Vec<Group<'_>> {
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        let ordered = self.ordered_providers(cx);
+        let matches = |provider: &RouteProvider, model: &str| {
+            query.is_empty()
+                || model.to_lowercase().contains(&query)
+                || pretty_model(model).to_lowercase().contains(&query)
+                || provider.name.to_lowercase().contains(&query)
+        };
+        let mut groups: Vec<Group> = Vec::new();
+        if self.rail == Rail::Favorites {
+            let picks = self
+                .prefs
+                .favorites
+                .iter()
+                .filter_map(|f| {
+                    let provider = self.providers().iter().find(|p| p.provider == f.provider)?;
+                    let shown = self.show_hidden || !self.prefs.provider_hidden(&f.provider);
+                    (shown && matches(provider, &f.model)).then(|| (provider, f.model.clone()))
+                })
+                .collect();
+            groups.push(("Favorites".into(), None, picks));
+        } else {
+            if self.rail == Rail::All && query.is_empty() {
+                let picks: Vec<_> = crate::design::prefs::Prefs::of(cx)
+                    .recent_models
+                    .iter()
+                    .filter_map(|(provider, model)| {
+                        let p = self.providers().iter().find(|p| p.provider == *provider)?;
+                        (!self.prefs.provider_hidden(provider)
+                            && !self.prefs.model_hidden(provider, model))
+                        .then(|| (p, model.clone()))
+                    })
+                    .collect();
+                groups.push(("Recent".into(), None, picks));
+            }
+            for provider in ordered.iter().copied() {
+                if let Rail::Provider(only) = &self.rail
+                    && *only != provider.provider
+                {
+                    continue;
+                }
+                if self.prefs.provider_hidden(&provider.provider) && !self.show_hidden {
+                    continue;
+                }
+                let picks = provider
+                    .models
+                    .iter()
+                    .filter(|m| matches(provider, m))
+                    .filter(|m| self.show_hidden || !self.prefs.model_hidden(&provider.provider, m))
+                    .map(|m| (provider, m.clone()))
+                    .collect();
+                groups.push((provider.name.clone(), Some(provider), picks));
+            }
+        }
+
+        groups
     }
 
     /// A provider group's title; hovering shows a button that hides (or,
@@ -812,6 +845,7 @@ impl ModelPicker {
         model: String,
         fresh: bool,
         current_runtime: Option<&str>,
+        badge: Option<usize>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = *Palette::of(cx);
@@ -866,6 +900,7 @@ impl ModelPicker {
                             }),
                     ),
             )
+            .when_some(badge, |d, ix| d.child(design::kit::shortcut_badge(ix, cx)))
             .child(
                 h_flex()
                     .gap_0p5()
@@ -1029,7 +1064,7 @@ impl ModelPicker {
 }
 
 impl Render for ModelPicker {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
         if self.route.as_ref().is_none_or(|r| r.providers.is_empty()) && self.current.is_none() {
             return div().into_any_element();
@@ -1074,7 +1109,7 @@ impl Render for ModelPicker {
                     .absolute()
                     .bottom(px(34.))
                     .left_0()
-                    .child(self.render_popover(cx)),
+                    .child(self.render_popover(window, cx)),
             ))
         });
         h_flex()

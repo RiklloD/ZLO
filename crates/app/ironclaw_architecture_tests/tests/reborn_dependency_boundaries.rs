@@ -1056,7 +1056,10 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // production prompt validation checks structural limits and control
         // characters only; decoded Basic-auth samples remain test-only. Count
         // read from this test's own failure message after merging #7416 and #6985.
-        ("ironclaw_loop_contracts", 13_608),
+        // 13_608 -> 13_760 (2026-10-26, 5088a847b live thinking stream): the
+        // reasoning-delta event variant and its DTO fields; the streaming
+        // itself lives in the loop host. Count read from this test's failure.
+        ("ironclaw_loop_contracts", 13_760),
         // Raised 15_685 -> 15_758 by #7220 (operator inspector API): the growth
         // is bounded, output-only read-view descriptors. Capture, retention,
         // authorization, and transport behavior remain in their owning
@@ -1145,7 +1148,11 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `inbox` module, inbox row/state and goal wire DTOs and descriptor
         // ids only; records live in ironclaw_orchestrator, the joins in
         // ironclaw_assistant. Count read from this test's failure message.
-        ("ironclaw_product_contracts", 17_493),
+        // 17_493 -> 17_677 (2026-10-26, computer-use live view): the state
+        // and frame view descriptors, their request DTOs, the control
+        // request's viewer id and two port methods; the live view itself
+        // lives in ironclaw_computer_use.
+        ("ironclaw_product_contracts", 17_677),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

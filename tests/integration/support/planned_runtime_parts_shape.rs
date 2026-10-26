@@ -80,6 +80,9 @@ where
         cancellation_factory,
         skill_context_source,
         attachment_read_port,
+        // Present only when a computer-use engine is bundled or configured on
+        // the machine, so it is outside the production/harness shape.
+        tool_image_port: _,
         prompt_diagnostic_sink,
         reply_attachment_intent_port,
         gate_record_store,

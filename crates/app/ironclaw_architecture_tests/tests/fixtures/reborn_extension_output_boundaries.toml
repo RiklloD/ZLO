@@ -387,3 +387,14 @@ owner = "builtin.http request producer"
 evidence_path = "crates/kernel/ironclaw_host_runtime/src/first_party_tools/http.rs"
 evidence_test = "non_empty_body_base64_is_decoded"
 rationale = "builtin.http decodes caller-supplied request bytes before mediated egress; response output remains separately classified."
+
+[[boundary]]
+path = "crates/app/ironclaw_composition/src/runtime/computer_use_images.rs"
+indicator = "provider_base64_decode"
+classification = "host_mediated_decode"
+exposure = "model image part only; never tool-result text"
+owner = "computer-use tool image port (composition)"
+evidence_path = "crates/app/ironclaw_composition/src/runtime/computer_use_images.rs"
+evidence_test = "a_frame_becomes_an_image_part_and_bad_base64_is_skipped"
+rationale = "The host decodes the engine's base64 screenshot into raw bytes for the vision model's image part; the durable tool result stays the engine's text."
+

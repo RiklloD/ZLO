@@ -10,7 +10,8 @@
 //!
 //! Tools fail closed: the host runs without `--trust-workspace` (no
 //! workspace rules can allow anything), with `--disable-request-user-input`,
-//! in `denyUnmatched` approval mode, and every approval Muse asks for goes
+//! in `promptUnmatched` approval mode (`denyUnmatched` without a bridge),
+//! and every approval Muse asks for goes
 //! through [`crate::permissions::decide`]: an IronClaw approval in the
 //! thread when the host has a bridge. Without one, shell and writes are off
 //! too (`--disable-shell --disable-write`) and approvals are denied.
@@ -46,8 +47,12 @@ pub const EXPECTED_HOST_VERSION: &str = "1.4.12";
 
 const DEFAULT_MODEL: &str = "default";
 const PROVIDER: &str = "meta";
-/// The default-deny approval mode Muse documents for automation.
-const APPROVAL_MODE: &str = "denyUnmatched";
+/// Without a bridge: Muse's default-deny mode for automation.
+const DENY_UNMATCHED: &str = "denyUnmatched";
+/// With a bridge: unmatched calls become approval requests, which the bridge
+/// answers ("Full access") or holds as a gate ("Ask first"). In
+/// `denyUnmatched` Muse denies them itself and the bridge never sees them.
+const PROMPT_UNMATCHED: &str = "promptUnmatched";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a host may drain after stdin closes before its group is killed.
 const DRAIN: Duration = Duration::from_secs(10);
@@ -558,6 +563,11 @@ impl Turn {
         let started = tokio::fs::try_exists(self.config.transcript(&self.session_id))
             .await
             .unwrap_or(false); // silent-ok: an unreadable marker reads as a new session, which Muse then refuses loudly
+        let approval_mode = if self.bridge.is_some() {
+            PROMPT_UNMATCHED
+        } else {
+            DENY_UNMATCHED
+        };
         let result = if started {
             let resumed = client
                 .request(
@@ -569,7 +579,7 @@ impl Turn {
             client
                 .request(
                     "session/setApprovalMode",
-                    json!({"sessionId": self.session_id, "commandId": command_id(), "mode": APPROVAL_MODE}),
+                    json!({"sessionId": self.session_id, "commandId": command_id(), "mode": approval_mode}),
                     COMMAND_TIMEOUT,
                 )
                 .await?;
@@ -580,7 +590,7 @@ impl Turn {
                 "commandId": command_id(),
                 "workspaceRoot": workspace_root(&self.config.work_dir),
                 "providerId": PROVIDER,
-                "approvalMode": APPROVAL_MODE,
+                "approvalMode": approval_mode,
             });
             if let Some(model) = model {
                 params["modelId"] = json!(model);
@@ -654,6 +664,9 @@ impl Turn {
                 .iter()
                 .find_map(|k| subject.get(*k).and_then(Value::as_str))
                 .map(str::to_string),
+            // Used when Muse sends one; its approval schema does not promise it.
+            reason: crate::approval_reason::explicit(approval, &["reason", "justification"])
+                .or_else(|| crate::approval_reason::explicit(subject, &["reason", "description"])),
         };
         let client = client.clone();
         let approval = approval.clone();
@@ -661,9 +674,11 @@ impl Turn {
         let session_id = self.session_id.clone();
         let bridge = self.bridge.clone();
         let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
+        let claim = permissions::claim(bridge.as_deref(), &thread, &run);
         // The decision waits for a person; the turn's events keep flowing.
         tokio::spawn(async move {
-            let decision = permissions::decide(bridge.as_deref(), &thread, &run, &request).await;
+            let decision =
+                permissions::decide(bridge.as_deref(), &thread, &run, &request, claim).await;
             let Some(choice) = choice_for(&approval, decision) else {
                 return;
             };
@@ -830,9 +845,16 @@ impl TurnRuntime for MuseRuntime {
                     .await;
                     return Ok(SteerOutcome::Steered);
                 }
-                // The turn ended or moved on; fall back to a fresh turn.
-                Err(error) => tracing::debug!(error = %error.label(), "muse: steer refused"),
+                // The turn ended or moved on: the engine queues the text.
+                Err(error) => {
+                    tracing::debug!(error = %error.label(), "muse: steer refused");
+                    return Ok(SteerOutcome::Rejected);
+                }
             }
+        }
+        // A steer with no live turn queues; only an explicit Restart restarts.
+        if how == SteerHow::Steer {
+            return Ok(SteerOutcome::Rejected);
         }
         self.stop(&thread.thread_id).await;
         self.spawn_turn(thread, text, None, None).await?;

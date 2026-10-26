@@ -421,10 +421,18 @@ fn builtin_discovery_namespace(local_id: &str) -> DiscoveryNamespace {
     }
 }
 
+/// Capability-id prefixes whose every tool is core. Computer use is offered
+/// up front the way Codex lists it: its server instructions tell the model to
+/// call `get_app_state` before any action, which a deferred surface breaks.
+const CORE_CAPABILITY_PREFIXES: &[&str] = &["computer_use."];
+
 fn is_core_tool_definition(definition: &ProviderToolDefinition) -> bool {
     CORE_TOOL_NAMES
         .iter()
         .any(|core_name| definition_matches_core_name(definition, core_name))
+        || CORE_CAPABILITY_PREFIXES
+            .iter()
+            .any(|prefix| definition.capability_id.as_str().starts_with(prefix))
 }
 
 /// Encode a capability id the way the provider/gateway encodes tool names for
@@ -1446,6 +1454,7 @@ mod tests {
                 medium_schema(0),
             ),
             fixture_tool("alpha_tool", "Alpha tool", small_no_arg_schema()),
+            fixture_tool_with_capability_id("computer_use.click", "computer_use_click"),
         ];
         let profile_pins =
             vec![CapabilityId::new("fixture.zeta_tool").expect("valid pinned capability id")];
@@ -1457,7 +1466,16 @@ mod tests {
             .iter()
             .map(|entry| entry.definition.name.as_str())
             .collect();
-        assert_eq!(names, vec!["alpha_tool", "read_file", "zeta_tool"]);
+        assert_eq!(
+            names,
+            vec!["alpha_tool", "computer_use_click", "read_file", "zeta_tool"]
+        );
+        assert_eq!(
+            catalog
+                .entry_by_name("computer_use_click")
+                .map(|entry| entry.tier),
+            Some(ToolTier::Core)
+        );
         assert_eq!(
             catalog.entry_by_name("read_file").map(|entry| entry.tier),
             Some(ToolTier::Core)

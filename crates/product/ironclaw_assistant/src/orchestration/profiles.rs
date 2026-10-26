@@ -70,6 +70,11 @@ impl ProfileHome {
         }
     }
 
+    /// Where files sent to CLI-engine threads land (see `cli_attachments`).
+    pub(crate) fn attachments(&self) -> PathBuf {
+        self.user_home.join(".ironclaw/attachments")
+    }
+
     /// Where each profile's skills are mirrored for CLI agents.
     pub(crate) fn cli_skills(&self) -> PathBuf {
         self.user_home.join(".ironclaw/cli-skills")

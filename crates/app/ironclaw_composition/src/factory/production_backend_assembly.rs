@@ -478,6 +478,14 @@ pub(super) async fn build_backend_production(
             as Arc<dyn ironclaw_approvals::AutoApproveSettingStorePort>,
         persistent_approval_policies_for_settings,
     ));
+    let profile_approval_engine =
+        crate::profile_approval_mode::ProfileApprovalEngineSlot::default();
+    let approval_settings_provider = Arc::new(
+        crate::profile_approval_mode::ProfileApprovalSettingsProvider::new(
+            approval_settings_provider,
+            Arc::clone(&profile_approval_engine),
+        ),
+    );
     let runtime_policy_for_return = Some(runtime_policy.clone());
     let authorizer = capability_authorizer(
         Some(&runtime_policy),
@@ -1463,6 +1471,7 @@ pub(super) async fn build_backend_production(
         trigger_repository: Arc::clone(&trigger_repository),
         orchestrator: None,
         cli_bridge: None,
+        profile_approval_engine,
         trigger_manual_fire_runner,
         trigger_create_hook,
         resource_governor: production_resource_governor,

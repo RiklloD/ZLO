@@ -460,6 +460,9 @@ async fn muse_with_a_bridge_asks_the_owner_and_runs_the_approved_call() {
     assert!(argv.contains("--disable-request-user-input"), "{argv}");
     assert!(log.contains(r#""choiceId":"ok""#), "{log}");
     assert!(!log.contains(r#""choiceId":"stop""#), "{log}");
+    // Unmatched calls must reach the bridge, not be denied inside Muse.
+    assert!(log.contains(r#""approvalMode":"promptUnmatched""#), "{log}");
+    assert!(!log.contains("denyUnmatched"), "{log}");
     assert_eq!(
         recorder.finished.lock().unwrap()[0].status,
         TurnEndStatus::Completed

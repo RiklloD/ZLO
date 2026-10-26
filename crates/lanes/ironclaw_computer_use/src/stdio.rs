@@ -25,8 +25,12 @@ pub(crate) struct StdioServer {
 }
 
 impl StdioServer {
-    /// Spawn the server and run the MCP handshake.
-    pub(crate) async fn start(config: &ComputerUseConfig) -> Result<Self, ComputerUseError> {
+    /// Spawn the server and run the MCP handshake. `session_env` is this
+    /// session's own `OPEN_COMPUTER_USE_*` switches (cursor file, results).
+    pub(crate) async fn start(
+        config: &ComputerUseConfig,
+        session_env: &[(String, String)],
+    ) -> Result<Self, ComputerUseError> {
         let mut command = Command::new(&config.binary);
         command.args(&config.args).env_clear();
         for name in INHERITED_ENV {
@@ -35,7 +39,13 @@ impl StdioServer {
             }
         }
         command
-            .envs(config.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .envs(
+                config
+                    .env
+                    .iter()
+                    .chain(session_env)
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

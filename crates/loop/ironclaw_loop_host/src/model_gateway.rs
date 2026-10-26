@@ -1178,7 +1178,12 @@ where
         }
     });
     let replay_identity = ProviderReplayIdentity::new(provider_id, &route.model)?;
-    let mut completion = CompletionRequest::new(convert_messages(messages, &replay_identity)?);
+    let native_tool_images = accepts_tool_result_images(&provider.provider_id());
+    let mut completion = CompletionRequest::new(convert_messages(
+        messages,
+        &replay_identity,
+        native_tool_images,
+    )?);
     completion.model = Some(route.model);
     completion.set_fallback_index(route.fallback_index);
     Ok((
@@ -2634,9 +2639,12 @@ fn collapse_repeated_failure_observations(messages: &mut [HostManagedModelMessag
     }
 }
 
+/// `native_tool_images`: the provider takes images inside a tool result;
+/// otherwise a tool result's picture follows the tool results as a user image.
 fn convert_messages(
     mut messages: Vec<HostManagedModelMessage>,
     replay_identity: &ProviderReplayIdentity,
+    native_tool_images: bool,
 ) -> Result<Vec<ChatMessage>, HostManagedModelError> {
     // Off by default (see REBORN_COLLAPSE_REPEATED_FAILURES_ENV): only collapse
     // interior duplicate error observations when an operator opts in, so the
@@ -2644,7 +2652,26 @@ fn convert_messages(
     if collapse_repeated_failures_enabled() {
         collapse_repeated_failure_observations(&mut messages);
     }
-    let mut converted = Vec::with_capacity(messages.len());
+    // Tool result pictures (computer-use screenshots), by provider call id.
+    let tool_images: HashMap<String, Vec<ContentPart>> =
+        if is_vision_model(&replay_identity.provider_model_id) {
+            messages
+                .iter()
+                .filter(|m| {
+                    m.role == HostManagedModelMessageRole::ToolResult && !m.image_parts.is_empty()
+                })
+                .filter_map(|m| {
+                    let call = m.tool_result_provider_call.as_ref()?;
+                    Some((
+                        call.provider_call_id.clone(),
+                        image_url_parts(&m.image_parts),
+                    ))
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+    let mut converted = Vec::with_capacity(messages.len() + 1);
     let mut index = 0;
     while index < messages.len() {
         let message = &messages[index];
@@ -2666,16 +2693,7 @@ fn convert_messages(
                     // prepend the text). Encoding to a base64 `data:` URL is a
                     // provider-format concern, so it happens here at the gateway
                     // — the model port carries only the raw bytes.
-                    let parts = message
-                        .image_parts
-                        .iter()
-                        .map(|image| ContentPart::ImageUrl {
-                            image_url: ImageUrl {
-                                url: image_data_url(&image.mime_type, &image.bytes),
-                                detail: None,
-                            },
-                        })
-                        .collect();
+                    let parts = image_url_parts(&message.image_parts);
                     converted.push(ChatMessage::user_with_parts(message.content.clone(), parts));
                 }
             }
@@ -2753,7 +2771,72 @@ fn convert_messages(
         }
         index += 1;
     }
+    if !tool_images.is_empty() {
+        converted = place_tool_images(converted, tool_images, native_tool_images);
+    }
     Ok(coalesce_system_messages_at_start(converted))
+}
+
+const TOOL_SCREENSHOT_CAPTION: &str =
+    "[Tool result screenshots]: the window after each of the tool calls above, in order.";
+
+/// Providers that take images inside a tool result (the OpenAI Responses
+/// `function_call_output` array). Hermes sends computer-use screenshots there.
+fn accepts_tool_result_images(provider_id: &str) -> bool {
+    matches!(provider_id, "openai_codex" | "codex_chatgpt")
+}
+
+fn image_url_parts(images: &[crate::HostManagedModelImagePart]) -> Vec<ContentPart> {
+    images
+        .iter()
+        .map(|image| ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: image_data_url(&image.mime_type, &image.bytes),
+                detail: None,
+            },
+        })
+        .collect()
+}
+
+/// Put each tool result's pictures on its own tool message, or, for a
+/// provider without images in tool results, in one user message right after
+/// each run of tool results.
+fn place_tool_images(
+    converted: Vec<ChatMessage>,
+    mut images: HashMap<String, Vec<ContentPart>>,
+    native: bool,
+) -> Vec<ChatMessage> {
+    let mut placed = Vec::with_capacity(converted.len() + 1);
+    let mut pending: Vec<ContentPart> = Vec::new();
+    for mut message in converted {
+        let parts = (message.role == Role::Tool)
+            .then(|| {
+                message
+                    .tool_call_id
+                    .as_ref()
+                    .and_then(|id| images.remove(id))
+            })
+            .flatten();
+        if message.role != Role::Tool && !pending.is_empty() {
+            placed.push(ChatMessage::user_with_parts(
+                TOOL_SCREENSHOT_CAPTION.to_string(),
+                std::mem::take(&mut pending),
+            ));
+        }
+        match parts {
+            Some(parts) if native => message.content_parts = parts,
+            Some(parts) => pending.extend(parts),
+            None => {}
+        }
+        placed.push(message);
+    }
+    if !pending.is_empty() {
+        placed.push(ChatMessage::user_with_parts(
+            TOOL_SCREENSHOT_CAPTION.to_string(),
+            pending,
+        ));
+    }
+    placed
 }
 
 /// Coalesce only the leading run of system messages into the provider-cached
@@ -3986,7 +4069,7 @@ mod tests {
         );
         let identity = ProviderReplayIdentity::new("openai", "gpt-4o").expect("identity");
 
-        let converted = convert_messages(vec![message], &identity).expect("convert");
+        let converted = convert_messages(vec![message], &identity, false).expect("convert");
 
         assert_eq!(converted.len(), 1);
         let chat = &converted[0];
@@ -4004,11 +4087,60 @@ mod tests {
     }
 
     #[test]
+    fn each_tool_result_keeps_its_own_screenshot() {
+        let image = |byte: u8| {
+            image_url_parts(&[crate::HostManagedModelImagePart {
+                mime_type: "image/jpeg".to_string(),
+                bytes: vec![byte],
+            }])
+        };
+        let messages = || {
+            vec![
+                ChatMessage::assistant("calling"),
+                ChatMessage::tool_result("call_a", "computer_use_get_app_state", "tree"),
+                ChatMessage::tool_result("call_b", "computer_use_click", "clicked"),
+                ChatMessage::system("reminder"),
+            ]
+        };
+        let images = || {
+            HashMap::from([
+                ("call_a".to_string(), image(1)),
+                ("call_b".to_string(), image(2)),
+            ])
+        };
+        let urls = |parts: &[ContentPart]| {
+            parts
+                .iter()
+                .map(|part| match part {
+                    ContentPart::ImageUrl { image_url } => image_url.url.clone(),
+                    ContentPart::Text { text } => text.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let (one, two) = ("data:image/jpeg;base64,AQ==", "data:image/jpeg;base64,Ag==");
+
+        // Native: each picture rides on its own tool message.
+        let placed = place_tool_images(messages(), images(), true);
+        assert_eq!(placed.len(), 4);
+        assert_eq!(urls(&placed[1].content_parts), [one]);
+        assert_eq!(urls(&placed[2].content_parts), [two]);
+
+        // Otherwise: one user message after the run of tool results, in order.
+        let placed = place_tool_images(messages(), images(), false);
+        assert_eq!(placed.len(), 5);
+        assert!(placed[1].content_parts.is_empty() && placed[2].content_parts.is_empty());
+        assert_eq!(placed[3].role, Role::User);
+        assert_eq!(placed[3].content, TOOL_SCREENSHOT_CAPTION);
+        assert_eq!(urls(&placed[3].content_parts), [one, two]);
+        assert_eq!(placed[4].role, Role::System);
+    }
+
+    #[test]
     fn convert_messages_text_only_user_carries_no_content_parts() {
         let message = user_message_with_images("hello", Vec::new());
         let identity = ProviderReplayIdentity::new("openai", "gpt-4o").expect("identity");
 
-        let converted = convert_messages(vec![message], &identity).expect("convert");
+        let converted = convert_messages(vec![message], &identity, false).expect("convert");
 
         assert_eq!(converted[0].content, "hello");
         assert!(converted[0].content_parts.is_empty());
@@ -4029,7 +4161,7 @@ mod tests {
         let identity =
             ProviderReplayIdentity::new("mistral", "mistral-7b-instruct").expect("identity");
 
-        let converted = convert_messages(vec![message], &identity).expect("convert");
+        let converted = convert_messages(vec![message], &identity, false).expect("convert");
 
         assert_eq!(converted[0].content, "what is in this image?");
         assert!(

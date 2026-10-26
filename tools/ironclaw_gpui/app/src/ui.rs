@@ -24,6 +24,8 @@ pub use gpui_kit::{
     Styled, Subscription, SystemNotification, SystemNotificationResponse, Task, WeakEntity, Window,
     div, px,
 };
+/// Drawing primitives for the computer-use viewer (frames, cursor, ripples).
+pub use gpui_kit::{Bounds, PathBuilder, Pixels, RenderImage, canvas, img, point, rgb, rgba};
 
 use gpui_kit::component::text::TextView;
 

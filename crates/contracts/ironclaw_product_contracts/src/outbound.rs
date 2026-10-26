@@ -1032,6 +1032,11 @@ pub enum ProductProjectionItem {
         body: Option<String>,
         #[serde(default)]
         allow_always: bool,
+        /// Why the agent wants this action, in its own words: the engine's
+        /// explicit justification when it gives one, else the model text
+        /// right before the call. Bounded display text; absent on old payloads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
         /// Auth challenge context. For a `manual_token` gate whose paste is a
         /// pairing code, its `connection` field carries the channel-connection
         /// render copy + resolve route — the single canonical place the
@@ -1112,6 +1117,7 @@ impl ProductProjectionItem {
                 gate_ref,
                 headline,
                 body,
+                reason,
                 auth_context,
                 ..
             } => {
@@ -1127,6 +1133,13 @@ impl ProductProjectionItem {
                 )?;
                 if let Some(body) = body {
                     validate_bounded_text("projection_gate_body", body, PROJECTION_TEXT_MAX_BYTES)?;
+                }
+                if let Some(reason) = reason {
+                    validate_bounded_text(
+                        "projection_gate_reason",
+                        reason,
+                        PROJECTION_TEXT_MAX_BYTES,
+                    )?;
                 }
                 if let Some(context) = auth_context {
                     context.validate()?;
@@ -1225,6 +1238,8 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 #[serde(default)]
                 allow_always: bool,
                 #[serde(default)]
+                reason: Option<String>,
+                #[serde(default)]
                 auth_context: Option<Box<AuthPromptContextView>>,
             },
             SkillActivation {
@@ -1289,6 +1304,7 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 headline,
                 body,
                 allow_always,
+                reason,
                 auth_context,
             } => ProductProjectionItem::Gate {
                 run_id,
@@ -1298,6 +1314,7 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 headline,
                 body,
                 allow_always,
+                reason,
                 auth_context,
             },
             Wire::SkillActivation {
@@ -1462,6 +1479,7 @@ mod tests {
                 headline: "Connect Slack".to_string(),
                 body: Some("Message the app to get a pairing code.".to_string()),
                 allow_always: false,
+                reason: None,
                 auth_context: Some(Box::new(
                     AuthPromptContextView::new(
                         AuthPromptChallengeKind::Pairing,
@@ -1720,6 +1738,7 @@ mod tests {
                 headline: "Approval required".to_string(),
                 body: Some("capability requires approval".to_string()),
                 allow_always: true,
+                reason: Some("Checking the build before I edit it.".to_string()),
                 auth_context: None,
             }],
         )
@@ -1739,6 +1758,22 @@ mod tests {
             "capability requires approval"
         );
         assert_eq!(value["items"][0]["gate"]["allow_always"], true);
+        assert_eq!(
+            value["items"][0]["gate"]["reason"],
+            "Checking the build before I edit it."
+        );
+        // A gateway older than `reason` omits it; the item still decodes.
+        let mut old = value.clone();
+        old["items"][0]["gate"]
+            .as_object_mut()
+            .expect("gate object")
+            .remove("reason");
+        let decoded_old: ProductProjectionState =
+            serde_json::from_value(old).expect("deserialize gate without reason");
+        assert!(matches!(
+            &decoded_old.items[0],
+            ProductProjectionItem::Gate { reason: None, .. }
+        ));
         let decoded: ProductProjectionState =
             serde_json::from_value(value).expect("deserialize gate projection");
         assert_eq!(decoded, state);
@@ -1757,6 +1792,7 @@ mod tests {
                 headline: "Authentication required".to_string(),
                 body: Some("Authenticate to continue this run.".to_string()),
                 allow_always: false,
+                reason: None,
                 auth_context: Some(Box::new(
                     AuthPromptContextView::new(
                         AuthPromptChallengeKind::OAuthUrl,

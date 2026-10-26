@@ -1,8 +1,9 @@
 //! Computer use for IronClaw: the Open Computer Use binary
 //! (`OpenComputerUse mcp`) run as a stdio MCP server, one process per
 //! thread, plus the layer the Hermes `computer-use-plus` plugin put on top of
-//! it, ported to Rust: sessions, Stop, take over / hand back, and the latest
-//! screenshot frame for a route to read. No UI lives here.
+//! it, ported to Rust: sessions, Stop, take over / hand back, the system-prompt
+//! section, and the live view (activity, cursor, window pictures) for a route
+//! to read. No UI lives here.
 //!
 //! This crate runs already-approved calls. Approval is the caller's job:
 //! `ironclaw_assistant::computer_use` offers each tool as a capability that
@@ -16,17 +17,33 @@
 //! | `config` | Env flags, binary path, timeouts, bounds, the scrubbed server environment |
 //! | `stdio` | One server process: spawn, MCP handshake, bounded JSON-RPC lines, kill on drop |
 //! | `session` | Sessions keyed by `ComputerUseSession` (tenant, user, thread), Stop, take over, idle reap, outcomes |
-//! | `frame` | Result parsing: text, the target app/window, the screenshot frame |
+//! | `frame` | Result parsing: text and the screenshot frame |
+//! | `target` | What a session learnt about its window: app, pid, window id, element labels, screenshot size |
+//! | `windows` | CoreGraphics window list: an app's CGWindowID and bounds |
+//! | `live` | The live view: activity, windows used, pointer, typing, the desktop take-over lease |
+//! | `capture` | Window pictures for the viewer: `screencapture -l`, the agent's screenshot as fallback, shared producers |
+//! | `cursor` | The viewer's cursor: coordinate targets and the native cursor's observation file |
+//! | `prompt` | The system-prompt section: server instructions, tool names, fork guidance |
+//! | `trace` | One JSON line per call (tool, ok, code, seconds) |
+//! | `args` | Arguments repaired against the tool's schema (numeric and boolean strings, "null" optionals) |
 //! | `catalog` | The server's tool definitions, embedded verbatim |
 //! | `client` | The `ironclaw_mcp::McpClient` and `ComputerUseSessions` port implementations |
 
+mod args;
+mod capture;
 mod catalog;
 mod client;
 mod config;
+mod cursor;
 mod error;
 mod frame;
+mod live;
+mod prompt;
 mod session;
 mod stdio;
+mod target;
+mod trace;
+mod windows;
 
 #[cfg(test)]
 mod tests;

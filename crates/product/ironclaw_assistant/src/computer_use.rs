@@ -44,7 +44,7 @@ use ironclaw_host_api::{
 use ironclaw_loop_contracts::{
     AgentLoopHostError, AgentLoopHostErrorKind, CapabilityApprovalResume,
     CapabilityDeniedReasonKind, CapabilityProgress, CapabilityResumeToken, LoopRunContext,
-    resolution,
+    ModelVisibleToolObservation, ToolObservationDetail, resolution,
 };
 use ironclaw_loop_host::{
     CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
@@ -54,9 +54,11 @@ use ironclaw_processes::{
     ProcessJournalCommit, ProcessJournalCommitObserver, ProcessKind, ProcessLifecycleStatus,
 };
 use ironclaw_product_contracts::computer_use::{
-    COMPUTER_USE_CAPABILITY_PREFIX, COMPUTER_USE_CONTROL_COMMAND_ID, COMPUTER_USE_SESSION_VIEW,
-    COMPUTER_USE_TOOL_NAME_PREFIX, ComputerUseControlRequest, ComputerUseSession,
-    ComputerUseSessionRequest, ComputerUseSessions, ComputerUseToolSpec,
+    COMPUTER_USE_CAPABILITY_PREFIX, COMPUTER_USE_CONTROL_COMMAND_ID, COMPUTER_USE_FRAME_VIEW,
+    COMPUTER_USE_RESULT_FRAME, COMPUTER_USE_SESSION_VIEW, COMPUTER_USE_STATE_VIEW,
+    COMPUTER_USE_TOOL_NAME_PREFIX, ComputerUseControlRequest, ComputerUseFrameRequest,
+    ComputerUseSession, ComputerUseSessionRequest, ComputerUseSessions, ComputerUseStateRequest,
+    ComputerUseToolSpec,
 };
 use ironclaw_product_contracts::surface::{
     ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceInvokeRequest,
@@ -85,6 +87,7 @@ pub fn computer_use_capabilities<S: ComputerUseSessions + 'static>(
     fallback_user_id: UserId,
 ) -> Result<Vec<SyntheticCapability>, AgentLoopHostError> {
     let stores = Arc::new(stores);
+    let approved_turns = Arc::new(ApprovedTurns::default());
     let sessions: Arc<dyn ComputerUseSessions> = sessions;
     sessions
         .tools()
@@ -102,6 +105,7 @@ pub fn computer_use_capabilities<S: ComputerUseSessions + 'static>(
                     tool: tool.clone(),
                     sessions: Arc::clone(&sessions),
                     stores: Arc::clone(&stores),
+                    approved_turns: Arc::clone(&approved_turns),
                     fallback_user_id: fallback_user_id.clone(),
                 }),
             ))
@@ -113,7 +117,38 @@ struct ToolHandler {
     tool: ComputerUseToolSpec,
     sessions: Arc<dyn ComputerUseSessions>,
     stores: Arc<ComputerUseApprovalStores>,
+    approved_turns: Arc<ApprovedTurns>,
     fallback_user_id: UserId,
+}
+
+/// Turns whose first computer-use call the user approved: the rest of that
+/// task runs without asking again (one approval per task, not per click).
+/// In memory and bounded; a restart asks again.
+#[derive(Default)]
+struct ApprovedTurns(std::sync::Mutex<std::collections::VecDeque<ironclaw_turns::TurnId>>);
+
+const APPROVED_TURNS_KEPT: usize = 64;
+
+impl ApprovedTurns {
+    fn approve(&self, turn: &ironclaw_turns::TurnId) {
+        let mut turns = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !turns.contains(turn) {
+            if turns.len() == APPROVED_TURNS_KEPT {
+                turns.pop_front();
+            }
+            turns.push_back(*turn);
+        }
+    }
+
+    fn approved(&self, turn: &ironclaw_turns::TurnId) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(turn)
+    }
 }
 
 struct ApprovedLease {
@@ -165,7 +200,10 @@ impl SyntheticCapabilityHandler for ToolHandler {
                 .verify_resume(&invocation, &resume, &capability_id)
                 .await?
             {
-                Ok(lease) => Some(lease),
+                Ok(lease) => {
+                    self.approved_turns.approve(&invocation.run_context.turn_id);
+                    Some(lease)
+                }
                 Err(denied) => return Ok(denied),
             },
             None => {
@@ -180,9 +218,12 @@ impl SyntheticCapabilityHandler for ToolHandler {
                     }
                     None => {}
                 }
-                if !settings
-                    .tool_always_allow(&scope, &capability_id, &grantee()?)
-                    .await
+                if !self
+                    .approved_turns
+                    .approved(&invocation.run_context.turn_id)
+                    && !settings
+                        .tool_always_allow(&scope, &capability_id, &grantee()?)
+                        .await
                 {
                     return self.request_approval(&invocation, &capability_id).await;
                 }
@@ -203,11 +244,22 @@ impl SyntheticCapabilityHandler for ToolHandler {
         let scope = invocation
             .run_context
             .acting_resource_scope(&self.fallback_user_id);
-        let output = self
+        let session = ComputerUseSession::from_scope(&scope);
+        let mut output = self
             .sessions
             .call_tool(scope, &self.tool.name, invocation.input.clone())
             .await;
-        complete(&invocation, output, &self.tool.name).await
+        // The screenshot number is host bookkeeping, not model input.
+        let frame = output
+            .as_object_mut()
+            .and_then(|fields| fields.remove(COMPUTER_USE_RESULT_FRAME))
+            .and_then(|seq| seq.as_u64());
+        complete(&invocation, output, &self.tool.name, |result_ref| {
+            if let (Some(seq), Some(session)) = (frame, &session) {
+                self.sessions.bind_result_frame(session, seq, result_ref);
+            }
+        })
+        .await
     }
 }
 
@@ -280,7 +332,8 @@ impl ToolHandler {
                     }),
                     invocation_fingerprint: Some(fingerprint),
                     reason: format!(
-                        "Computer use: {} (the agent acts on this Mac's apps)",
+                        "Computer use for this task, starting with {}. Approving lets the \
+                         agent use this Mac's apps until it answers.",
                         self.tool.name
                     ),
                     reusable_scope: None,
@@ -417,6 +470,7 @@ async fn complete(
     invocation: &SyntheticCapabilityInvocation,
     output: Value,
     name: &str,
+    bind_frame: impl FnOnce(&str),
 ) -> Result<Resolution, AgentLoopHostError> {
     let summary = match output.get("ok") {
         Some(Value::Bool(false)) => format!(
@@ -434,6 +488,7 @@ async fn complete(
         .as_ref()
         .map(|resume| &resume.input_ref)
         .unwrap_or(&invocation.request.input_ref);
+    let serialized = serde_json::to_vec(&output).unwrap_or_default();
     let write = invocation
         .result_writer
         .write_capability_result(CapabilityResultWrite {
@@ -446,6 +501,10 @@ async fn complete(
             durable_persistence: DurablePersistence::Persist,
         })
         .await?;
+    bind_frame(write.result_ref.as_str());
+    let observation = write
+        .model_observation
+        .map(|observation| inline_observation(observation, &write.result_ref, &serialized));
     Ok(resolution::completed(
         write.result_ref,
         summary,
@@ -453,8 +512,64 @@ async fn complete(
         false,
         write.byte_len,
         write.output_digest,
-        write.model_observation,
+        observation,
     ))
+}
+
+/// The model acts on the window text it reads, so a state read or action
+/// result is shown in full (up to [`INLINE_RESULT_MAX_BYTES`]) instead of the
+/// generic 3 KB first look that hides the tree behind a `result_read` call.
+/// Same redacted JSON page as the generic preview, larger budget; the stored
+/// result stays complete either way.
+const INLINE_RESULT_MAX_BYTES: usize = 20 * 1024;
+
+fn inline_observation(
+    mut observation: ModelVisibleToolObservation,
+    result_ref: &ironclaw_turns::LoopResultRef,
+    serialized: &[u8],
+) -> ModelVisibleToolObservation {
+    let ToolObservationDetail::ResultReference {
+        preview,
+        structured_json_view,
+        next_offset,
+        item_count,
+        ..
+    } = &mut observation.detail
+    else {
+        return observation;
+    };
+    let page = match ironclaw_threads::render_json_tool_result_page(
+        result_ref.as_str(),
+        serialized,
+        "",
+        0,
+        INLINE_RESULT_MAX_BYTES,
+        None,
+    ) {
+        Ok(page) => page,
+        Err(error) => {
+            tracing::debug!(%error, "computer-use result page unavailable; keeping first look");
+            return observation;
+        }
+    };
+    let complete = page.omitted.is_empty() && page.next.is_none();
+    let Ok(text) = ironclaw_threads::model_result_preview_from_json_page(&page) else {
+        return observation;
+    };
+    let text = text.into_inner();
+    if text.len() > ironclaw_host_api::model_result_preview::MODEL_RESULT_PREVIEW_MAX_BYTES {
+        return observation;
+    }
+    *preview = Some(text);
+    *structured_json_view = true;
+    *next_offset = None;
+    *item_count = None;
+    observation.summary = if complete {
+        "Tool completed; preview contains the full result.".to_string()
+    } else {
+        "Tool completed; preview is a bounded JSON view. Select omitted nodes or use the preview's next request to continue.".to_string()
+    };
+    observation
 }
 
 /// The same synthetic grantee the other approval-gated builtin tools use.
@@ -606,6 +721,23 @@ fn session_key(
     })
 }
 
+/// A viewer id is the viewer's own random label: short and printable.
+fn bounded_viewer_id(viewer: &str) -> Result<&str, ProductSurfaceError> {
+    let ok = !viewer.is_empty()
+        && viewer.len() <= 64
+        && viewer
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if ok {
+        Ok(viewer)
+    } else {
+        Err(ProductSurfaceError::validation(
+            "viewer",
+            ProductSurfaceValidationCode::InvalidValue,
+        ))
+    }
+}
+
 fn decode<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, ProductSurfaceError> {
     serde_json::from_value(input).map_err(|error| {
         tracing::debug!(%error, "computer-use request rejected");
@@ -628,7 +760,12 @@ impl ProductSurface for ComputerUseProductSurface {
             None => json!({"ok": false, "enabled": false}),
             Some(sessions) => {
                 let session = session_key(&caller, &control.thread_id)?;
-                sessions.control(&session, control.action).await
+                let viewer = control
+                    .viewer
+                    .as_deref()
+                    .map(bounded_viewer_id)
+                    .transpose()?;
+                sessions.control(&session, control.action, viewer).await
             }
         };
         Ok(ProductSurfaceInvokeResponse { output })
@@ -639,16 +776,37 @@ impl ProductSurface for ComputerUseProductSurface {
         caller: ProductSurfaceCaller,
         request: ProductSurfaceQueryRequest,
     ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
-        if request.view_id != COMPUTER_USE_SESSION_VIEW.id {
+        let item = if request.view_id == COMPUTER_USE_SESSION_VIEW.id {
+            let selector: ComputerUseSessionRequest = decode(request.input)?;
+            match &self.sessions {
+                None => json!({"enabled": false}),
+                Some(sessions) => sessions.session_view(
+                    &session_key(&caller, &selector.thread_id)?,
+                    selector.after_frame,
+                ),
+            }
+        } else if request.view_id == COMPUTER_USE_STATE_VIEW.id {
+            let selector: ComputerUseStateRequest = decode(request.input)?;
+            let viewer = selector
+                .viewer
+                .as_deref()
+                .map(bounded_viewer_id)
+                .transpose()?;
+            match &self.sessions {
+                None => json!({"enabled": false, "sessions": []}),
+                Some(sessions) => sessions.viewer_state(&caller.tenant_id, &caller.user_id, viewer),
+            }
+        } else if request.view_id == COMPUTER_USE_FRAME_VIEW.id {
+            let selector: ComputerUseFrameRequest = decode(request.input)?;
+            match &self.sessions {
+                None => json!({"ok": false, "enabled": false}),
+                Some(sessions) => {
+                    let session = session_key(&caller, &selector.thread_id)?;
+                    sessions.window_frame(&session, &selector).await
+                }
+            }
+        } else {
             return self.inner.query(caller, request).await;
-        }
-        let selector: ComputerUseSessionRequest = decode(request.input)?;
-        let item = match &self.sessions {
-            None => json!({"enabled": false}),
-            Some(sessions) => sessions.session_view(
-                &session_key(&caller, &selector.thread_id)?,
-                selector.after_frame,
-            ),
         };
         Ok(ProductSurfaceQueryPage {
             items: vec![item],

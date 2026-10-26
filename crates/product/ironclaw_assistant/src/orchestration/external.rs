@@ -70,13 +70,29 @@ pub(super) fn submit_response(
                 event_cursor: EventCursor(0),
             }
         }
-        UserTurn::Queued { active_run_id } => RebornSubmitTurnResponse::DeferredBusy {
+        UserTurn::Steered { active_run_id } => RebornSubmitTurnResponse::DeferredBusy {
             thread_id: thread.clone(),
             accepted_message_ref: accepted,
             active_run_id: run_id(active_run_id.as_deref()),
             status: TurnStatus::Running,
             event_cursor: EventCursor(0),
-            notice: "Queued: it runs when the current turn ends.".to_string(),
+            notice: "Sent to the running turn; the agent reads it at its next step.".to_string(),
+        },
+        UserTurn::Queued {
+            active_run_id,
+            steerable,
+        } => RebornSubmitTurnResponse::DeferredBusy {
+            thread_id: thread.clone(),
+            accepted_message_ref: accepted,
+            active_run_id: run_id(active_run_id.as_deref()),
+            status: TurnStatus::Running,
+            event_cursor: EventCursor(0),
+            notice: if steerable {
+                "Queued: it runs when the current turn ends."
+            } else {
+                "Queued: this engine can't steer mid-turn; it runs when the current turn ends."
+            }
+            .to_string(),
         },
     })
 }
@@ -296,6 +312,7 @@ fn gate_item(gate: &GateView) -> Option<ProductProjectionItem> {
         headline: gate.headline.clone(),
         body: gate.body.clone(),
         allow_always: false,
+        reason: gate.reason.clone(),
         auth_context: None,
     })
 }

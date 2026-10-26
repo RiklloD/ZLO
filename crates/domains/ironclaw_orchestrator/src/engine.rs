@@ -796,6 +796,16 @@ impl TurnEventSink for Engine {
         log_step("turn telemetry", result);
     }
 
+    async fn idle_compact_enabled(&self) -> bool {
+        match self.store.settings().await {
+            Ok(settings) => settings.idle_compact_claude,
+            Err(error) => {
+                tracing::debug!(%error, "idle compaction: settings unreadable; skipped");
+                false
+            }
+        }
+    }
+
     async fn turn_started(&self, thread_id: &ThreadId, run_id: Option<String>, at: Millis) {
         if self.shutting_down.load(Ordering::SeqCst) {
             return;

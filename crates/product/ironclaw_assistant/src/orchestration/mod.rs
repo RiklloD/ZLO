@@ -3,6 +3,7 @@
 //! decorator that routes threads through the engine, the journal observer
 //! that reports turn lifecycle, the per-model-call telemetry tap, and the `t3_*` model tools.
 
+mod cli_attachments;
 mod external;
 #[cfg(test)]
 mod external_tests;

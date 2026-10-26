@@ -47,7 +47,7 @@ use super::inbox;
 use super::profiles::{self, ProfileHome};
 use crate::reborn_services::{
     CANCEL_RUN_COMMAND_ID, CREATE_THREAD_COMMAND_ID, RESOLVE_GATE_COMMAND_ID,
-    SUBMIT_TURN_COMMAND_ID, TIMELINE_VIEW,
+    SUBMIT_TURN_COMMAND_ID, THREAD_DELETE_CAPABILITY_ID, TIMELINE_VIEW,
 };
 
 pub struct OrchestratedProductSurface {
@@ -414,6 +414,9 @@ impl OrchestratedProductSurface {
                         if let Some(picker) = req.picker.clone() {
                             return engine.set_model_picker(picker).await;
                         }
+                        if let Some(enabled) = req.idle_compact {
+                            return engine.set_idle_compact(enabled).await;
+                        }
                         let target = ironclaw_orchestrator::delegation::Target {
                             provider: req.provider.clone(),
                             model: req.model.clone(),
@@ -631,7 +634,20 @@ impl ProductSurface for OrchestratedProductSurface {
                         }
                     }
                     if let Some(thread) = self.external(&id, &scope).await {
-                        let text = body.content.unwrap_or_default();
+                        // CLI engines take text: files land on disk and the
+                        // prompt names their paths (T3 Code's model).
+                        let files = crate::DecodeInboundAttachments::decode_attachments(&body)?;
+                        let mut text = body.content.unwrap_or_default();
+                        if !files.is_empty() {
+                            let root = self
+                                .home()
+                                .map_err(ProductSurfaceError::internal_from)?
+                                .attachments();
+                            text =
+                                super::cli_attachments::prompt_with_files(&root, &id, &text, files)
+                                    .await
+                                    .map_err(ProductSurfaceError::internal_from)?;
+                        }
                         let turn = self
                             .engine
                             .user_turn(&thread, &text)
@@ -647,6 +663,21 @@ impl ProductSurface for OrchestratedProductSurface {
                     if changed && let Ok(input) = serde_json::to_value(&body) {
                         request.input = input;
                     }
+                }
+                self.inner.invoke(caller, request).await
+            }
+            THREAD_DELETE_CAPABILITY_ID => {
+                // A CLI thread may have background work (idle compaction)
+                // even when no turn runs; end it before the thread goes.
+                if let Some(id) = request
+                    .input
+                    .get("thread_id")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| ThreadId::new(raw).ok())
+                    && self.engine.owned_thread(&id, &scope).await.is_ok()
+                    && let Some(thread) = self.external(&id, &scope).await
+                {
+                    soft("delete cleanup", self.engine.forget_external(&thread).await);
                 }
                 self.inner.invoke(caller, request).await
             }

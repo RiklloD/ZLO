@@ -273,6 +273,34 @@ async fn notification_channels_set_allows_persistent_approval() {
         .expect("notification channels set should allow persistent approval");
 }
 
+/// Regression: "Always allow" on a computer-use gate answered 400 because
+/// `computer_use.*` is neither a registry capability nor an extension
+/// surface, so persistent approval fell through to "unsupported".
+#[tokio::test]
+async fn computer_use_allows_persistent_approval() {
+    let terms_provider = PolicyApprovalLeaseTermsProvider::new(
+        Arc::new(builtin_capability_policy().expect("policy parses")),
+        Arc::new(ExtensionRegistry::new()),
+        WorkspaceMountPolicy::Shared(MountView::default()),
+        MountView::default(),
+        MountView::default(),
+        ExtensionCapabilitySurfaceSource::default(),
+    );
+    let gate = approval_gate_record(
+        ApprovalRequestId::new(),
+        Principal::Extension(ExtensionId::new("builtin").expect("caller id")),
+        Action::Dispatch {
+            capability: CapabilityId::new("computer_use.click").expect("capability id"),
+            estimated_resources: ResourceEstimate::default(),
+        },
+    );
+
+    terms_provider
+        .persistent_approval_allowed(&gate)
+        .await
+        .expect("computer use should allow persistent approval");
+}
+
 #[tokio::test]
 async fn active_extension_capability_rejects_persistent_approval_when_manifest_denies() {
     let capability = CapabilityId::new("gmail.send_message").expect("capability id");

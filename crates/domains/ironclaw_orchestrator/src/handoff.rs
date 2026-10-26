@@ -45,7 +45,12 @@ pub fn runs(messages: &[HistoryMessage]) -> Vec<RunSummary> {
                 .find(|m| m.role == HistoryRole::Assistant && !m.text.trim().is_empty())
                 .map(|m| m.text.clone())
                 .unwrap_or_default();
-            let tail = chunk.iter().rev().find(|m| m.role != HistoryRole::System);
+            // Hidden scaffolding (a compaction's prompt and summary) never
+            // ends a run, as it never starts one.
+            let tail = chunk
+                .iter()
+                .rev()
+                .find(|m| !m.hidden && m.role != HistoryRole::System);
             let ended = tail.is_some_and(|m| {
                 m.role == HistoryRole::Assistant
                     && m.tool_calls.is_empty()

@@ -1505,6 +1505,7 @@ impl RebornIntegrationGroupBuilder {
             attachment_read_port: capability_recorder
                 .attachment_test_support()
                 .map(|support| support.read_port),
+            tool_image_port: None,
             prompt_diagnostic_sink: Some(Arc::clone(&diagnostic_store)
                 as Arc<dyn ironclaw_loop_host::HostManagedPromptDiagnosticSink>),
             reply_attachment_intent_port: Some(reply_attachment_intent_port),

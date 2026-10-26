@@ -267,6 +267,54 @@ async fn benchmarking_mode_active_appends_no_human_protocol_to_system_prompt() {
     assert!(on_content.contains("no one to answer a clarifying question"));
 }
 
+/// Computer use on: the lane's own section (the server's instructions) is
+/// appended verbatim; off: nothing names the computer-use tools.
+#[tokio::test]
+async fn computer_use_guidance_is_appended_only_while_computer_use_is_wired() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let storage_root = root.path().canonicalize().expect("canonical root");
+    let prompt_path = storage_root.join("system/prompts/default-system.md");
+    seed_default_system_prompt(&storage_root, &prompt_path).expect("prompt seeds");
+    let section = "Computer Use tools let you interact with macOS apps.";
+    let source = |guidance: Option<&str>| {
+        DefaultSystemPromptIdentitySource::try_new(
+            storage_root.clone(),
+            prompt_path.clone(),
+            SystemPromptProtocols {
+                computer_use_guidance: guidance.map(str::to_string),
+                ..SystemPromptProtocols::default()
+            },
+        )
+        .expect("source loads")
+    };
+    let context = test_run_context().await;
+    let content = |source: DefaultSystemPromptIdentitySource| {
+        let context = &context;
+        async move {
+            let candidates = source
+                .load_identity_candidates(context, PromptMode::TextOnly)
+                .await
+                .expect("candidates load");
+            source
+                .resolve_identity_message_content(
+                    context,
+                    candidates[0]
+                        .message_ref
+                        .as_ref()
+                        .expect("trusted identity has ref"),
+                )
+                .await
+                .expect("resolve content")
+                .expect("content exists")
+                .content
+        }
+    };
+    let on = content(source(Some(section))).await;
+    let off = content(source(None)).await;
+    assert!(on.contains(section));
+    assert!(!off.contains("Computer Use tools"));
+}
+
 /// A `Disabled` memory binding registers no memory package, so the model's
 /// surface carries no `ironclaw.memory.*` tools (pinned end-to-end by
 /// `group_memory/scenario_disabled_binding_offers_no_memory_tools.rs`).

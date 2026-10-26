@@ -27,6 +27,37 @@ impl StagedFile {
     }
 }
 
+impl crate::Client {
+    /// Export a dropped thread as a text attachment for either composer.
+    pub async fn thread_attachment(
+        &self,
+        id: &str,
+        title: &str,
+        limits: &AttachmentLimits,
+    ) -> Result<StagedFile, crate::ClientError> {
+        let mut messages = self.fork_prefix(id).await?;
+        let mut page = self.timeline(id, 500).await?.messages;
+        page.sort_by_key(|m| m.sequence);
+        messages.append(&mut page);
+        let slug: String = title
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .take(48)
+            .collect();
+        let filename = format!("thread-{}.md", slug.trim_matches('-'));
+        let mime_type = mime_for(&filename, limits)
+            .or_else(|| mime_for("a.txt", limits))
+            .ok_or_else(|| {
+                crate::ClientError::Decode("This gateway accepts no text attachments.".into())
+            })?;
+        Ok(StagedFile {
+            filename,
+            mime_type,
+            bytes: crate::transcript::thread_markdown(title, &messages).into_bytes(),
+        })
+    }
+}
+
 /// The MIME type the accept list pairs with this file's extension.
 pub fn mime_for(filename: &str, limits: &AttachmentLimits) -> Option<String> {
     let ext = Path::new(filename).extension()?.to_str()?.to_lowercase();

@@ -686,6 +686,15 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
         owner: "domains/",
         decided_in: "ADR 0006 (orchestrator v2 stage 4, CLI runtimes)",
     },
+    // CLI approval cards redact tool input and the model's reason with the
+    // shared display sanitizer, as threads/triggers/llm already do.
+    SameLayerEdge {
+        crate_name: "ironclaw_cli_providers",
+        dependency_name: "ironclaw_safety",
+        layer: "substrates",
+        owner: "domains/",
+        decided_in: "Numoh approval-reason review (26.10.2026)",
+    },
     // Usage windows are fetched through the policy egress, never a raw client.
     SameLayerEdge {
         crate_name: "ironclaw_usage",
@@ -807,7 +816,9 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
 // 72 -> 73 (#7688): the dedicated notification-record domain is introduced
 // directly at the substrates layer and stores its grammar through the shared
 // filesystem substrate rather than coupling notification state to outbound.
-const SAME_LAYER_EDGE_BASELINE: usize = 80;
+// 80 -> 81: CLI drivers redact approval-card text through `ironclaw_safety`
+// instead of a second copy of the display sanitizer.
+const SAME_LAYER_EDGE_BASELINE: usize = 81;
 
 /// Sanity floors for the metadata walk. A gate that scans nothing must never
 /// read as success; these are deliberately far below the live values (✎ **65**

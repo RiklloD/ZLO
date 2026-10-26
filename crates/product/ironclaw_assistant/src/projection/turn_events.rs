@@ -745,6 +745,9 @@ fn gate_projection_item(
             .unwrap_or_else(|| gate_projection_headline(blocked_gate.gate_kind).to_string()),
         body: Some(body),
         allow_always: prompt_context.allow_always.unwrap_or(false),
+        // The native loop's kernel gate carries no model-side justification;
+        // clients fall back to the run's preceding assistant text.
+        reason: None,
         auth_context: prompt_context.auth_context.map(Box::new),
     }))
 }

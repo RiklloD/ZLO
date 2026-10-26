@@ -7,12 +7,12 @@
 //!   that client seam.
 
 use async_trait::async_trait;
-use ironclaw_host_api::ids::{CapabilityId, ExtensionId, TenantId, ThreadId};
+use ironclaw_host_api::ids::{CapabilityId, ExtensionId, TenantId, ThreadId, UserId};
 use ironclaw_host_api::resource::ResourceScope;
 use ironclaw_mcp::{McpClient, McpClientError, McpClientOutput, McpClientRequest};
 use ironclaw_product_contracts::computer_use::{
-    COMPUTER_USE_CAPABILITY_PREFIX, ComputerUseControlAction, ComputerUseSession,
-    ComputerUseSessions, ComputerUseToolSpec,
+    COMPUTER_USE_CAPABILITY_PREFIX, ComputerUseControlAction, ComputerUseFrameRequest,
+    ComputerUseSession, ComputerUseSessions, ComputerUseToolSpec,
 };
 use serde_json::{Value, json};
 
@@ -21,7 +21,8 @@ use crate::session::ComputerUse;
 
 /// Transport name on the requests this crate builds.
 pub const COMPUTER_USE_TRANSPORT: &str = "stdio";
-/// Model-visible tool output cap (the tree text; screenshots stay host-side).
+/// Model-visible tool output cap (the tree text). Screenshots stay host-side
+/// as session frames; the model port hands each result's own to vision models.
 const MAX_OUTPUT_BYTES: u64 = 256 * 1024;
 
 #[async_trait]
@@ -37,7 +38,9 @@ impl McpClient for ComputerUse {
             return Err(McpClientError::client("computer_use_requires_thread"));
         };
         let limit = usize::try_from(request.max_output_bytes).unwrap_or(usize::MAX);
-        let outcome = self.call(&session, &tool.name, request.input, limit).await;
+        let outcome = self
+            .call_with_images(&session, &tool.name, request.input, limit, true)
+            .await;
         Ok(McpClientOutput::json(outcome.to_json()))
     }
 }
@@ -82,6 +85,10 @@ impl ComputerUseSessions for ComputerUse {
         }
     }
 
+    fn bind_result_frame(&self, session: &ComputerUseSession, seq: u64, result_ref: &str) {
+        ComputerUse::bind_result_frame(self, session, seq, result_ref);
+    }
+
     fn session_view(&self, session: &ComputerUseSession, after_frame: Option<u64>) -> Value {
         json!({
             "enabled": true,
@@ -90,20 +97,40 @@ impl ComputerUseSessions for ComputerUse {
         })
     }
 
+    fn viewer_state(&self, tenant_id: &TenantId, user_id: &UserId, viewer: Option<&str>) -> Value {
+        ComputerUse::viewer_state(self, &(tenant_id.clone(), user_id.clone()), viewer)
+    }
+
+    async fn window_frame(
+        &self,
+        session: &ComputerUseSession,
+        request: &ComputerUseFrameRequest,
+    ) -> Value {
+        ComputerUse::window_frame(
+            self,
+            session,
+            request.window_id,
+            request.width.unwrap_or(640),
+            request.fps.unwrap_or(8.0),
+            request.after_seq,
+        )
+        .await
+    }
+
     async fn control(
         &self,
         session: &ComputerUseSession,
         action: ComputerUseControlAction,
+        viewer: Option<&str>,
     ) -> Value {
         let status = match action {
-            ComputerUseControlAction::Stop => Some(self.stop(session).await),
-            ComputerUseControlAction::TakeOver => self.take_over(session),
-            ComputerUseControlAction::HandBack => Some(self.hand_back(session)),
+            ComputerUseControlAction::Stop => self.stop(session).await,
+            ComputerUseControlAction::TakeOver => {
+                self.take_over_as(session, viewer.unwrap_or("route"))
+            }
+            ComputerUseControlAction::HandBack => self.hand_back(session),
         };
-        match status {
-            Some(status) => json!({"ok": true, "enabled": true, "session": status}),
-            None => json!({"ok": false, "enabled": true, "code": "busy"}),
-        }
+        json!({"ok": true, "enabled": true, "session": status})
     }
 
     async fn thread_stopped(&self, tenant_id: &TenantId, thread_id: &ThreadId) {

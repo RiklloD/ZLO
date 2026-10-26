@@ -652,23 +652,22 @@ fn convert_message(msg: &ChatMessage, index: usize) -> Vec<serde_json::Value> {
             vec![]
         }
         Role::User | Role::HostReminder => {
-            let image_count = msg
-                .content_parts
-                .iter()
-                .filter(|p| matches!(p, ContentPart::ImageUrl { .. }))
-                .count();
-            if image_count > 0 {
-                tracing::warn!(
-                    "OpenAI Codex: {} image attachment(s) dropped — Responses API image support not yet implemented",
-                    image_count
-                );
-            }
+            // Text first, then each image as a Responses API `input_image`
+            // (the gateway puts only image parts in `content_parts`).
+            let mut content = vec![serde_json::json!({
+                "type": "input_text",
+                "text": msg.content,
+            })];
+            content.extend(msg.content_parts.iter().filter_map(|part| match part {
+                ContentPart::ImageUrl { image_url } => Some(serde_json::json!({
+                    "type": "input_image",
+                    "image_url": image_url.url,
+                })),
+                ContentPart::Text { .. } => None,
+            }));
             vec![serde_json::json!({
                 "role": "user",
-                "content": [{
-                    "type": "input_text",
-                    "text": msg.content,
-                }],
+                "content": content,
             })]
         }
         Role::Assistant => {
@@ -711,7 +710,7 @@ fn convert_message(msg: &ChatMessage, index: usize) -> Vec<serde_json::Value> {
             vec![serde_json::json!({
                 "type": "function_call_output",
                 "call_id": call_id,
-                "output": msg.content,
+                "output": crate::codex_chatgpt::function_call_output(msg),
             })]
         }
     }
@@ -1283,6 +1282,47 @@ mod tests {
         assert_eq!(items[0]["role"], "user");
         assert_eq!(items[0]["content"][0]["type"], "input_text");
         assert_eq!(items[0]["content"][0]["text"], "Hello world");
+    }
+
+    #[test]
+    fn test_convert_user_message_carries_images_as_input_image() {
+        let msg = ChatMessage::user_with_parts(
+            "What is on screen?",
+            vec![ContentPart::ImageUrl {
+                image_url: crate::provider::ImageUrl {
+                    url: "data:image/png;base64,AQID".to_string(),
+                    detail: None,
+                },
+            }],
+        );
+        let items = convert_message(&msg, 0);
+        assert_eq!(items[0]["content"][0]["text"], "What is on screen?");
+        assert_eq!(items[0]["content"][1]["type"], "input_image");
+        assert_eq!(
+            items[0]["content"][1]["image_url"],
+            "data:image/png;base64,AQID"
+        );
+    }
+
+    #[test]
+    fn a_tool_result_screenshot_rides_inside_its_function_call_output() {
+        let mut msg = ChatMessage::tool_result("call_1", "computer_use_get_app_state", "tree");
+        msg.content_parts = vec![ContentPart::ImageUrl {
+            image_url: crate::provider::ImageUrl {
+                url: "data:image/jpeg;base64,AQID".to_string(),
+                detail: None,
+            },
+        }];
+        let items = convert_message(&msg, 0);
+        let output = &items[0]["output"];
+        assert_eq!(output[0]["type"], "input_text");
+        assert_eq!(output[0]["text"], "tree");
+        assert_eq!(output[1]["type"], "input_image");
+        assert_eq!(output[1]["image_url"], "data:image/jpeg;base64,AQID");
+
+        // Without a picture the output stays a plain string.
+        let items = convert_message(&ChatMessage::tool_result("call_2", "t", "ok"), 0);
+        assert_eq!(items[0]["output"], "ok");
     }
 
     #[test]

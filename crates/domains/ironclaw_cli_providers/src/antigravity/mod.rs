@@ -38,7 +38,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
-use crate::bridge::CliBridge;
+use crate::bridge::{CallClaim, CliBridge};
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
@@ -604,6 +604,16 @@ impl Turn {
                     let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
                     let (runtime, session) =
                         (self.config.runtime_id.clone(), session_id.to_string());
+                    // Claimed here, before any await, so the reason is what the
+                    // model said up to this call and nothing later.
+                    let question = params["toolCall"]["toolCallId"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("interaction_"));
+                    let claim = if question {
+                        CallClaim::default()
+                    } else {
+                        permissions::claim(bridge.as_deref(), &thread, &run)
+                    };
                     tokio::spawn(async move {
                         let answer = permission_answer(
                             bridge.as_deref(),
@@ -612,6 +622,7 @@ impl Turn {
                             &runtime,
                             &session,
                             &params,
+                            claim,
                         )
                         .await;
                         if let Err(error) = client.respond(&id, answer) {
@@ -641,6 +652,7 @@ async fn permission_answer(
     runtime: &str,
     session_id: &str,
     params: &Value,
+    claim: CallClaim,
 ) -> Value {
     let call = &params["toolCall"];
     let call_id = call
@@ -664,8 +676,11 @@ async fn permission_answer(
             .get("title")
             .and_then(Value::as_str)
             .map(str::to_string),
+        // ACP tool calls carry no justification; the bridge falls back to
+        // what the model said before the call.
+        reason: None,
     };
-    let kind = match permissions::decide(bridge, thread, run_id, &request).await {
+    let kind = match permissions::decide(bridge, thread, run_id, &request, claim).await {
         PermissionDecision::AllowOnce => "allow_once",
         PermissionDecision::Deny => "reject_once",
     };
@@ -742,7 +757,7 @@ impl TurnRuntime for AntigravityRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             native_fork: false,
-            // ACP has no in-turn input; a new message restarts the turn.
+            // ACP has no in-turn input; a new message waits in the queue.
             steer_in_turn: false,
             reports_usage: true,
             reports_restart_cuts: false,
@@ -788,8 +803,13 @@ impl TurnRuntime for AntigravityRuntime {
         &self,
         thread: &ThreadRecord,
         text: &str,
-        _how: SteerHow,
+        how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
+        // ACP has no in-turn input. A steer is refused (the engine queues
+        // it); only an explicit Restart stops the turn.
+        if how == SteerHow::Steer {
+            return Ok(SteerOutcome::Rejected);
+        }
         self.stop(&thread.thread_id).await;
         self.spawn_turn(thread, text, None).await?;
         Ok(SteerOutcome::Restarted)
@@ -925,13 +945,30 @@ mod tests {
         let thread = ThreadId::new("t1").unwrap();
         // No bridge: nobody to ask, so rejected.
         assert_eq!(
-            permission_answer(None, &thread, "r1", "antigravity", "s", &request).await,
+            permission_answer(
+                None,
+                &thread,
+                "r1",
+                "antigravity",
+                "s",
+                &request,
+                CallClaim::default()
+            )
+            .await,
             json!({"outcome": {"outcome": "selected", "optionId": "no"}})
         );
         let question = json!({"toolCall": {"toolCallId": "interaction_1"}, "options": []});
         assert_eq!(
-            permission_answer(None, &thread, "r1", "antigravity", "s", &question).await["outcome"]
-                ["outcome"],
+            permission_answer(
+                None,
+                &thread,
+                "r1",
+                "antigravity",
+                "s",
+                &question,
+                CallClaim::default()
+            )
+            .await["outcome"]["outcome"],
             "cancelled"
         );
 
@@ -942,7 +979,16 @@ mod tests {
         let waiter = {
             let (bridge, thread) = (Arc::clone(&bridge), thread.clone());
             tokio::spawn(async move {
-                permission_answer(Some(&bridge), &thread, "r1", "antigravity", "s", &request).await
+                permission_answer(
+                    Some(&bridge),
+                    &thread,
+                    "r1",
+                    "antigravity",
+                    "s",
+                    &request,
+                    bridge.claim_call(&thread, "r1"),
+                )
+                .await
             })
         };
         let gate = loop {

@@ -63,6 +63,40 @@ pub struct ProfileSettings {
     pub working_folder: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supermemory: Option<ProfileSupermemory>,
+    /// Whether gated tool calls on this profile's threads run without asking.
+    /// `None` follows the global auto-approve setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<ApprovalMode>,
+}
+
+/// Per-profile approval mode. Hard safety floors (actions the policy always
+/// gates or denies) apply in both modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// Approval-eligible tool calls run without an approval card.
+    FullAccess,
+    /// Tool calls that need approval open an approval card.
+    AskFirst,
+}
+
+impl ApprovalMode {
+    /// Whether eligible tool calls are auto-approved: the profile's mode when
+    /// set, otherwise the global setting.
+    pub fn resolve_auto_approve(mode: Option<Self>, global_auto_approve: bool) -> bool {
+        match mode {
+            Some(Self::FullAccess) => true,
+            Some(Self::AskFirst) => false,
+            None => global_auto_approve,
+        }
+    }
+}
+
+impl ProfileSettings {
+    /// [`ApprovalMode::resolve_auto_approve`] for this profile.
+    pub fn auto_approve(&self, global_auto_approve: bool) -> bool {
+        ApprovalMode::resolve_auto_approve(self.approval_mode, global_auto_approve)
+    }
 }
 
 /// One profile as the picker and the Profiles page see it.

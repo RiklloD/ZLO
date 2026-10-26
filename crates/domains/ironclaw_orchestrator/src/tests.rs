@@ -756,9 +756,10 @@ async fn profiles_run_on_their_providers_runtime() {
         h.rt.starts_on(&t).is_empty(),
         "IronClaw's loop never sees it"
     );
-    // Busy: the next message waits in the queue.
+    // Busy: the next message steers the running turn instead of restarting it.
     let busy = h.engine.user_turn(&bound, "again").await.unwrap();
-    assert!(matches!(busy, UserTurn::Queued { .. }));
+    assert!(matches!(busy, UserTurn::Steered { .. }));
+    assert_eq!(cli.starts_on(&t), vec!["hello".to_string()]);
 }
 
 /// Fires as soon as it is created, then hourly; refuses prompts containing "evil".

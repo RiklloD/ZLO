@@ -107,6 +107,42 @@ pub struct UsageHistory {
     #[serde(default)]
     pub sources: Vec<UsageHistorySource>,
     pub pricing: UsagePricing,
+    /// Idle compactions of Claude CLI threads in the period, newest first.
+    #[serde(default)]
+    pub compactions: Vec<UsageCompaction>,
+}
+
+/// One idle `/compact` run, as the Claude CLI driver logged it
+/// (`~/.ironclaw/usage/compactions.jsonl`). Token counts are what the CLI
+/// reported; `cost_usd` is its own estimate (an API-price figure on a
+/// subscription login).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageCompaction {
+    pub at: i64,
+    /// Runtime id of the account (`claude-cli`, `claude-cli-2`).
+    pub provider: String,
+    pub thread_id: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Context before and after, when the CLI reported them.
+    #[serde(default)]
+    pub tokens_before: Option<u64>,
+    #[serde(default)]
+    pub tokens_after: Option<u64>,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    pub ok: bool,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Cached and cache-creation input are disjoint from uncached input (the

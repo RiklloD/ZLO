@@ -24,7 +24,9 @@ pub use orchestrator::{
     orchestrator_thread_runs, orchestrator_thread_tasks, orchestrator_thread_telemetry,
 };
 mod profiles;
-pub use computer_use::{computer_use_control, computer_use_session};
+pub use computer_use::{
+    computer_use_control, computer_use_frame, computer_use_session, computer_use_state,
+};
 pub use profiles::{
     profile_create, profile_delete, profile_get, profile_thread_create, profile_update,
     profiles_import_hermes, profiles_list,

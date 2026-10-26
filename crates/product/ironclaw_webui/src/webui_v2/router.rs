@@ -15,7 +15,6 @@ use ironclaw_product_contracts::surface::{
 };
 use serde::Serialize;
 
-use crate::webui_v2::descriptors::WEBUI_V2_PATTERN_COMPUTER_USE;
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_ARTIFACT,
     WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_RUN_ARTIFACT,
@@ -75,6 +74,10 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_TRACE_HOLD_AUTHORIZE, WEBUI_V2_PATTERN_USAGE_HISTORY,
     WEBUI_V2_PATTERN_USAGE_REPORT, WEBUI_V2_PATTERN_USER_MODEL_CATALOG,
     WEBUI_V2_PATTERN_USER_MODEL_POLICY, WEBUI_V2_PATTERN_USER_MODEL_PREFERENCE,
+};
+use crate::webui_v2::descriptors::{
+    WEBUI_V2_PATTERN_COMPUTER_USE, WEBUI_V2_PATTERN_COMPUTER_USE_FRAME,
+    WEBUI_V2_PATTERN_COMPUTER_USE_STATE,
 };
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_INBOX, WEBUI_V2_PATTERN_INBOX_THREAD, WEBUI_V2_PATTERN_THREAD_GOAL,
@@ -442,6 +445,14 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         .route(
             WEBUI_V2_PATTERN_COMPUTER_USE,
             get(handlers::computer_use_session).post(handlers::computer_use_control),
+        )
+        .route(
+            WEBUI_V2_PATTERN_COMPUTER_USE_STATE,
+            get(handlers::computer_use_state),
+        )
+        .route(
+            WEBUI_V2_PATTERN_COMPUTER_USE_FRAME,
+            get(handlers::computer_use_frame),
         )
         .route(
             WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS,

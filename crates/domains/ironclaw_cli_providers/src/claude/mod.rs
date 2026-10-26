@@ -15,6 +15,7 @@
 //! Without a bridge, tools stay off (`--tools ""`). Either way: no allow
 //! rules, prompts answered "no", never `--dangerously-skip-permissions`.
 
+mod compact;
 mod control;
 mod stream;
 mod transcript;
@@ -85,6 +86,12 @@ struct ActiveTurn {
     cancelled: Arc<std::sync::atomic::AtomicBool>,
     /// Flips to `true` once the turn has been reported finished.
     done: watch::Receiver<bool>,
+    /// The turn's stdin. A bridged turn keeps it open until the result,
+    /// which is how a steer reaches the running turn.
+    stdin: SharedStdin,
+    /// True once the original prompt is written; steers wait for it.
+    ready: Arc<std::sync::atomic::AtomicBool>,
+    run_id: String,
 }
 
 pub struct ClaudeCliRuntime {
@@ -96,6 +103,8 @@ pub struct ClaudeCliRuntime {
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     /// Each thread's last profile context, reused when Stop restarts a turn.
     profiles: Mutex<HashMap<ThreadId, TurnProfile>>,
+    /// Idle `/compact` timers, one per thread (see `compact.rs`).
+    compactor: Arc<compact::IdleCompactor>,
 }
 
 /// What one turn's process is started with, besides the session.
@@ -127,6 +136,7 @@ impl ClaudeCliRuntime {
             bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
             profiles: Mutex::new(HashMap::new()),
+            compactor: Arc::default(),
         })
     }
 
@@ -198,6 +208,10 @@ impl ClaudeCliRuntime {
             "--permission-prompts",
             "none",
         ]);
+        // Attached files are read from their landing folder (see `attachments`).
+        if let Some(root) = crate::attachments::root() {
+            cmd.arg("--add-dir").arg(root);
+        }
         if let Some(model) = model {
             cmd.args(["--model", model]);
         }
@@ -286,6 +300,8 @@ impl ClaudeCliRuntime {
             .native_session_id
             .clone()
             .ok_or_else(|| RuntimeError::Rejected("thread has no claude session".into()))?;
+        // A new turn ends the idle period: no compaction may touch the session.
+        self.compactor.preempt(&thread.thread_id).await;
         let plan = TurnPlan {
             dir: self.session_dir(&session_id, profile),
             goal,
@@ -335,7 +351,8 @@ impl ClaudeCliRuntime {
             return Err(RuntimeError::Unavailable("claude stdio unavailable".into()));
         };
         let stdin: SharedStdin = Arc::new(tokio::sync::Mutex::new(Some(stdin)));
-        let prompt = control::prompt_message(&run_id, text);
+        let prompt = control::prompt_with_images(&run_id, text).await;
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
         // Bridged: register the hook first; the prompt follows its ack and
         // stdin stays open for hook answers. Otherwise: prompt, then EOF.
         let mut bridged = self.bridge.as_ref().map(|bridge| {
@@ -345,6 +362,7 @@ impl ClaudeCliRuntime {
                 thread.thread_id.clone(),
                 run_id.clone(),
                 prompt.clone(),
+                Arc::clone(&ready),
             )
         });
         let first = if bridged.is_some() {
@@ -373,6 +391,9 @@ impl ClaudeCliRuntime {
                     pgid,
                     cancelled: Arc::clone(&cancelled),
                     done: done_rx,
+                    stdin: Arc::clone(&stdin),
+                    ready,
+                    run_id: run_id.clone(),
                 },
             );
         }
@@ -384,6 +405,13 @@ impl ClaudeCliRuntime {
             }
         });
 
+        let idle = compact::IdleArm::new(
+            self,
+            &thread.thread_id,
+            &session_id,
+            thread.model.as_deref(),
+            &plan,
+        );
         let sink = self.sink.clone();
         let bridge = self.bridge.clone();
         let active = Arc::clone(&self.active);
@@ -438,6 +466,13 @@ impl ClaudeCliRuntime {
             if let Some(reason) = refused {
                 outcome = TurnOutcome::ended(TurnEndStatus::Failed, Some(reason.to_string()));
             }
+            // Armed while the turn is still live: a Stop or delete either
+            // waits on this turn (then preempts the timer) or comes after it
+            // and finds the timer; it can never slip in between.
+            idle.arm(
+                &outcome,
+                fold.telemetry(&provider).and_then(|t| t.context_used),
+            );
             if let Ok(mut map) = active.lock() {
                 map.remove(&thread_id);
             }
@@ -458,6 +493,38 @@ impl ClaudeCliRuntime {
             let _ = done_tx.send(true); // silent-ok: nobody waiting on this turn
         });
         Ok(run_id)
+    }
+
+    /// Fold `text` into the running turn: write it to the turn's open stdin
+    /// as a user message, then decline any approval still waiting, with the
+    /// person's words as the reason, so the turn moves on to them. `Rejected`
+    /// when no turn runs or its stdin is already closed (the result is in);
+    /// the engine then queues the text instead.
+    async fn steer_in_turn(&self, thread: &ThreadId, text: &str) -> SteerOutcome {
+        let entry = self.active.lock().ok().and_then(|a| {
+            a.get(thread)
+                .filter(|t| t.ready.load(std::sync::atomic::Ordering::SeqCst))
+                .map(|t| (Arc::clone(&t.stdin), t.run_id.clone()))
+        }); // silent-ok: a poisoned map only follows a panic elsewhere
+        // No turn, or its prompt is not written yet: the text queues.
+        let Some((stdin, run_id)) = entry else {
+            return SteerOutcome::Rejected;
+        };
+        // A fresh uuid: the steer belongs to the running run, it does not
+        // start one in the journal.
+        let message = control::prompt_with_images(&uuid::Uuid::new_v4().to_string(), text).await;
+        if let Err(error) = control::write_line(&stdin, &message).await {
+            tracing::debug!(%error, "claude cli: steer not delivered");
+            return SteerOutcome::Rejected;
+        }
+        if let Some(bridge) = &self.bridge {
+            bridge.decline_pending(
+                thread,
+                &run_id,
+                &format!("The user declined this call and said instead: {text}"),
+            );
+        }
+        SteerOutcome::Steered
     }
 
     /// Kill the turn's process group and wait until it is reported finished.
@@ -495,8 +562,11 @@ impl TurnRuntime for ClaudeCliRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             native_fork: false,
-            // A new message restarts the turn; the session keeps the context.
-            steer_in_turn: false,
+            // A bridged turn reads stdin until its result, and the CLI takes
+            // a user message sent mid-turn at its next step (checked against
+            // 2.1.310: one turn, one result, the steer journaled as a
+            // `queued_command`). Without the bridge stdin closes at once.
+            steer_in_turn: self.bridge.is_some(),
             reports_usage: true,
             // The CLI child dies with the backend; live-work rows cover it.
             reports_restart_cuts: false,
@@ -547,8 +617,12 @@ impl TurnRuntime for ClaudeCliRuntime {
         &self,
         thread: &ThreadRecord,
         text: &str,
-        _how: SteerHow,
+        how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
+        // A steer never kills the turn; only an explicit Restart does.
+        if how == SteerHow::Steer {
+            return Ok(self.steer_in_turn(&thread.thread_id, text).await);
+        }
         self.stop(&thread.thread_id).await;
         let profile = self
             .profiles
@@ -560,8 +634,12 @@ impl TurnRuntime for ClaudeCliRuntime {
         Ok(SteerOutcome::Restarted)
     }
 
+    /// Also reached for idle threads (Stop, deletion): a pending or running
+    /// idle compaction ends here too. The turn is stopped first, so a timer
+    /// it armed while finishing is the one the preempt then cancels.
     async fn cancel(&self, thread: &ThreadRecord, _reason: &str) -> Result<(), RuntimeError> {
         self.stop(&thread.thread_id).await;
+        self.compactor.preempt(&thread.thread_id).await;
         Ok(())
     }
 

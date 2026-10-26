@@ -121,7 +121,10 @@ pub use descriptors::{
     WEBUI_V2_ROUTE_USAGE_REPORT, is_webui_v2_operator_webui_config_route_id, webui_v2_routes,
     webui_v2_routes_with_artifact_flags, webui_v2_routes_with_regression_artifact_export,
 };
-pub use descriptors::{WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL, WEBUI_V2_ROUTE_COMPUTER_USE_SESSION};
+pub use descriptors::{
+    WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL, WEBUI_V2_ROUTE_COMPUTER_USE_FRAME,
+    WEBUI_V2_ROUTE_COMPUTER_USE_SESSION, WEBUI_V2_ROUTE_COMPUTER_USE_STATE,
+};
 pub use descriptors::{
     WEBUI_V2_ROUTE_INBOX_LIST, WEBUI_V2_ROUTE_INBOX_MUTATE, WEBUI_V2_ROUTE_THREAD_GOAL_GET,
     WEBUI_V2_ROUTE_THREAD_GOAL_SET,

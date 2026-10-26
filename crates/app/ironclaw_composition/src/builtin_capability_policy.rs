@@ -12,6 +12,7 @@ use ironclaw_host_api::{
     runtime_policy::ProcessBackendKind,
     scope::Principal,
 };
+use ironclaw_product_contracts::computer_use::COMPUTER_USE_CAPABILITY_PREFIX;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -191,6 +192,20 @@ impl BuiltinCapabilityPolicy {
         system_extensions_mounts: &MountView,
     ) -> Result<LeaseApproval, BuiltinCapabilityPolicyError> {
         let constraints = match action {
+            BuiltinApprovalPolicyAction::Dispatch { capability }
+                if capability
+                    .as_str()
+                    .starts_with(COMPUTER_USE_CAPABILITY_PREFIX) =>
+            {
+                constraint_terms(
+                    &self.approval_defaults.computer_use,
+                    workspace_mounts,
+                    skill_mounts,
+                    memory_mounts,
+                    system_extensions_mounts,
+                    None,
+                )
+            }
             BuiltinApprovalPolicyAction::Dispatch { capability } => self.grant_constraints_for(
                 capability,
                 workspace_mounts,
@@ -279,6 +294,8 @@ pub(crate) struct BuiltinApprovalGatePolicy {
 #[serde(deny_unknown_fields)]
 pub(crate) struct BuiltinApprovalDefaultsPolicy {
     pub(crate) spawn_capability: BuiltinConstraintPolicy,
+    /// Lease terms for an approved `computer_use.*` action.
+    pub(crate) computer_use: BuiltinConstraintPolicy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -438,6 +455,10 @@ fn validate_policy(policy: &BuiltinCapabilityPolicy) -> Result<(), BuiltinCapabi
     validate_effects(
         "approval_defaults.spawn_capability effects",
         &policy.approval_defaults.spawn_capability.effects,
+    )?;
+    validate_effects(
+        "approval_defaults.computer_use effects",
+        &policy.approval_defaults.computer_use.effects,
     )?;
     if policy.grants.is_empty() {
         return Err(BuiltinCapabilityPolicyError::EmptyGrants);
@@ -957,6 +978,46 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// Regression: approving a computer-use gate answered 503 because no
+    /// lease terms existed for `computer_use.*`. Each approval now mints a
+    /// one-shot lease; an unknown capability still has no grant.
+    #[test]
+    fn computer_use_dispatch_approval_mints_one_shot_lease_terms() {
+        let policy = builtin_capability_policy().expect("policy parses");
+        let lease = |id: &str| {
+            let capability = CapabilityId::new(id).expect("capability id");
+            policy.lease_approval_for(
+                BuiltinApprovalPolicyAction::Dispatch {
+                    capability: &capability,
+                },
+                &MountView::default(),
+                &MountView::default(),
+                &MountView::default(),
+                &MountView::default(),
+            )
+        };
+        for id in ["computer_use.get_app_state", "computer_use.click"] {
+            let approval = lease(id).expect("computer-use lease terms");
+            assert_eq!(approval.constraints.max_invocations, Some(1));
+            assert!(
+                approval
+                    .constraints
+                    .allowed_effects
+                    .contains(&EffectKind::DispatchCapability)
+            );
+            assert!(
+                !approval
+                    .constraints
+                    .allowed_effects
+                    .contains(&EffectKind::SpawnProcess)
+            );
+        }
+        assert!(matches!(
+            lease("vendor.unknown_tool"),
+            Err(BuiltinCapabilityPolicyError::MissingGrant { .. })
+        ));
     }
 
     #[test]

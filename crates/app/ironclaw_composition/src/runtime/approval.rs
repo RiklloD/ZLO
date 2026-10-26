@@ -15,6 +15,7 @@ use crate::builtin_capability_policy::{
 };
 use crate::runtime_mounts::WorkspaceMountPolicy;
 use ironclaw_assistant::OUTBOUND_NOTIFICATION_CHANNELS_SET_CAPABILITY_ID;
+use ironclaw_product_contracts::computer_use::COMPUTER_USE_CAPABILITY_PREFIX;
 
 use ironclaw_extension_host::capability_surface::ExtensionCapabilitySurfaceSource;
 
@@ -86,9 +87,19 @@ impl PolicyApprovalLeaseTermsProvider {
         gate: &ApprovalGateRecord,
         action: BuiltinApprovalPolicyAction<'_>,
     ) -> Result<LeaseApproval, ProductSurfaceFailure> {
-        self.extension_lease_terms_for_active_capability(gate, action)
-            .await?
-            .ok_or_else(lease_terms_unavailable)
+        let terms = self
+            .extension_lease_terms_for_active_capability(gate, action)
+            .await?;
+        if terms.is_none() {
+            // Neither a builtin grant nor an active extension's: approving
+            // this gate cannot mint a lease. Say which capability, or the
+            // route's 503 is undiagnosable.
+            tracing::warn!(
+                capability = %action.capability(),
+                "approval lease terms unavailable: no builtin grant or extension grant"
+            );
+        }
+        terms.ok_or_else(lease_terms_unavailable)
     }
 
     async fn extension_lease_terms_for_active_capability(
@@ -214,6 +225,15 @@ impl ApprovalLeaseTermsProvider for PolicyApprovalLeaseTermsProvider {
             return Err(ProductSurfaceFailure::ApprovalInteractionRejected {
                 kind: ApprovalInteractionRejectionKind::AlwaysAllowUnsupported,
             });
+        }
+        // Computer use offers "always allow" per tool: the stored policy is
+        // what the computer-use handler reads through `tool_always_allow`.
+        if action
+            .capability_id()
+            .as_str()
+            .starts_with(COMPUTER_USE_CAPABILITY_PREFIX)
+        {
+            return Ok(());
         }
         if action.capability_id().as_str() == OUTBOUND_NOTIFICATION_CHANNELS_SET_CAPABILITY_ID {
             let workspace_mounts = self.workspace_mounts_for(gate)?;

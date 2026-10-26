@@ -146,6 +146,12 @@ pub(super) fn capability_wiring(
             auto_approve_settings,
             services.persistent_approval_policies.clone(),
         ));
+    let approval_settings: Arc<dyn ApprovalSettingsProvider> = Arc::new(
+        crate::profile_approval_mode::ProfileApprovalSettingsProvider::new(
+            approval_settings,
+            Arc::clone(&services.profile_approval_engine),
+        ),
+    );
     let outbound_preference_write_requires_approval = effects_require_approval(
         services.runtime_policy.as_ref(),
         policy.as_ref(),
