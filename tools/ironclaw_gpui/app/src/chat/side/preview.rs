@@ -1,5 +1,6 @@
 //! One file shown inside the pane: code in color (syntect through the
-//! Markdown view's fenced blocks), Markdown rendered, images drawn, anything
+//! Markdown view's fenced blocks), Markdown rendered, images drawn, PDF,
+//! Office, slides, HTML and media in a native view (`native_view`), anything
 //! else offered to its default app. Shared by Outputs and Files.
 
 use std::path::{Path, PathBuf};
@@ -22,6 +23,8 @@ pub(super) enum Preview {
         cut: bool,
     },
     Image,
+    /// Drawn by QuickLook or WebKit.
+    Native,
     Binary(u64),
     TooLarge(u64),
     Failed(String),
@@ -49,6 +52,9 @@ pub(super) fn read(path: &Path) -> Preview {
     let ext = ext(path);
     if is_image(&ext) {
         return Preview::Image;
+    }
+    if crate::native_view::shows_natively(path) {
+        return Preview::Native;
     }
     let size = match std::fs::metadata(path) {
         Ok(m) => m.len(),
@@ -181,6 +187,11 @@ pub(super) fn render(opened: &Opened, key: &str, cx: &App) -> AnyElement {
             "Binary file, {}. Open it in its app.",
             crate::jobs::size(*size)
         )),
+        Preview::Native => crate::native_view::surface(
+            crate::native_view::Slot::Preview,
+            crate::native_view::Source::File(opened.path.clone()),
+        )
+        .into_any_element(),
         Preview::Image => img(opened.path.clone())
             .w_full()
             .object_fit(gpui_kit::ObjectFit::Contain)
@@ -209,6 +220,23 @@ pub(super) fn render(opened: &Opened, key: &str, cx: &App) -> AnyElement {
                 .into_any_element()
         }
     }
+}
+
+/// The body below the toolbar: a native view fills it edge to edge,
+/// everything else scrolls with padding.
+pub(super) fn body(opened: &Opened, id: &'static str, cx: &App) -> AnyElement {
+    let key = opened.path.display().to_string();
+    if matches!(opened.preview, Preview::Native) {
+        return div()
+            .flex_1()
+            .min_h_0()
+            .child(render(opened, &key, cx))
+            .into_any_element();
+    }
+    super::scroll(id)
+        .p_3()
+        .child(render(opened, &key, cx))
+        .into_any_element()
 }
 
 /// Back, the file name, then Open and Reveal for the local copy.

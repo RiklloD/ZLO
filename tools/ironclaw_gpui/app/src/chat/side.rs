@@ -3,7 +3,8 @@
 //! overview. One resizable column beside the conversation; tabs are icons in
 //! its header and the last one picked comes back on the next thread.
 //!
-//! Assistant tabs read the gateway (Activity, Outputs, Agents, Routines).
+//! Assistant tabs read the gateway (Activity, Outputs, Agents, Routines);
+//! Browser shows a web page natively (`native_view`).
 //! Coding tabs (Files, Changes, History, Console) read a project folder on
 //! this Mac with the system `git`, picked once per thread.
 
@@ -17,6 +18,7 @@ use crate::ui::*;
 
 mod activity;
 mod agents;
+mod browser;
 mod changes;
 mod console;
 pub(super) mod git;
@@ -36,6 +38,7 @@ const WIDE_SHARE: f32 = 0.62;
 pub(super) enum Tab {
     Activity,
     Outputs,
+    Browser,
     Agents,
     Routines,
     Files,
@@ -45,9 +48,10 @@ pub(super) enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 8] = [
+    const ALL: [Tab; 9] = [
         Tab::Activity,
         Tab::Outputs,
+        Tab::Browser,
         Tab::Agents,
         Tab::Routines,
         Tab::Files,
@@ -60,6 +64,7 @@ impl Tab {
         match self {
             Tab::Activity => "activity",
             Tab::Outputs => "outputs",
+            Tab::Browser => "browser",
             Tab::Agents => "agents",
             Tab::Routines => "routines",
             Tab::Files => "files",
@@ -73,6 +78,7 @@ impl Tab {
         match self {
             Tab::Activity => "Activity",
             Tab::Outputs => "Outputs",
+            Tab::Browser => "Browser",
             Tab::Agents => "Agents",
             Tab::Routines => "Routines",
             Tab::Files => "Files",
@@ -86,6 +92,7 @@ impl Tab {
         match self {
             Tab::Activity => Icon::new(ExtraIcon::Activity),
             Tab::Outputs => Icon::new(IconName::FolderOpen),
+            Tab::Browser => Icon::new(IconName::Globe),
             Tab::Agents => Icon::new(IconName::Bot),
             Tab::Routines => Icon::new(IconName::Calendar),
             Tab::Files => Icon::new(ExtraIcon::FolderGit),
@@ -122,6 +129,7 @@ pub(super) struct Side {
     wide: bool,
     activity: activity::State,
     outputs: outputs::State,
+    browser: browser::State,
     routines: routines::State,
     project: project::State,
     changes: changes::State,
@@ -149,6 +157,20 @@ impl ChatView {
         cx.notify();
     }
 
+    /// A link clicked in the conversation: a file the agent wrote opens in
+    /// Outputs, a web page in the Browser tab. `external` (⌘-click) sends a
+    /// web page to the default browser instead.
+    pub(super) fn open_link(&mut self, href: &str, external: bool, cx: &mut Context<Self>) {
+        match link_target(href) {
+            Link::File(path) => {
+                self.show_side(Tab::Outputs, cx);
+                self.outputs_open(path, cx);
+            }
+            Link::Web(url) if !external => self.browser_go(url, cx),
+            Link::Web(url) | Link::Other(url) => cx.open_url(&url),
+        }
+    }
+
     /// Open the pane on `tab`.
     pub(super) fn show_side(&mut self, tab: Tab, cx: &mut Context<Self>) {
         Prefs::update(cx, |p| {
@@ -162,7 +184,7 @@ impl ChatView {
     /// First visit loads a tab; later visits refresh the ones that go stale.
     fn side_load(&mut self, tab: Tab, cx: &mut Context<Self>) {
         match tab {
-            Tab::Activity | Tab::Agents => {}
+            Tab::Activity | Tab::Agents | Tab::Browser => {}
             Tab::Outputs => {
                 if self.files.is_none() {
                     self.browse(None, cx);
@@ -308,6 +330,7 @@ impl ChatView {
             match tab {
                 Tab::Activity => self.render_activity(cx),
                 Tab::Outputs => self.render_outputs(cx),
+                Tab::Browser => self.render_browser(window, cx),
                 Tab::Agents => self.render_agents(cx),
                 Tab::Routines => self.render_routines(cx),
                 Tab::Files => self.render_project(cx),
@@ -512,6 +535,88 @@ impl ChatView {
                 )
             })
             .into_any_element()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Link {
+    /// A path in the conversation's workspace, as `/workspace/...`.
+    File(String),
+    Web(String),
+    Other(String),
+}
+
+/// Agents link their files as `/workspace/report.pdf` or `report.pdf`.
+fn link_target(href: &str) -> Link {
+    let href = href.trim();
+    let lower = href.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return Link::Web(href.to_string());
+    }
+    if href.contains(':') || href.starts_with('#') || href.is_empty() {
+        return Link::Other(href.to_string());
+    }
+    let path = percent_decode(href.split(['#', '?']).next().unwrap_or(href));
+    let rel = path.trim_start_matches("./");
+    if rel.starts_with("/workspace/") {
+        return Link::File(rel.to_string());
+    }
+    if rel.starts_with('/') {
+        return Link::Other(format!("file://{href}"));
+    }
+    Link::File(format!("/workspace/{rel}"))
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Link, link_target};
+
+    #[test]
+    fn chat_links_find_their_tab() {
+        let file = |p: &str| Link::File(p.into());
+        assert_eq!(
+            link_target("/workspace/ten_words.pdf"),
+            file("/workspace/ten_words.pdf")
+        );
+        assert_eq!(
+            link_target("./out/My%20deck.pptx"),
+            file("/workspace/out/My deck.pptx")
+        );
+        assert_eq!(
+            link_target("https://docs.rs"),
+            Link::Web("https://docs.rs".into())
+        );
+        assert_eq!(
+            link_target("mailto:a@b.c"),
+            Link::Other("mailto:a@b.c".into())
+        );
+        assert_eq!(
+            link_target("/tmp/a.txt"),
+            Link::Other("file:///tmp/a.txt".into())
+        );
     }
 }
 

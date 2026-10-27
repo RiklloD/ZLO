@@ -20,7 +20,7 @@ pub(super) struct State {
 impl ChatView {
     /// Download one of the conversation's files to the temp folder and
     /// preview it in the pane.
-    fn outputs_open(&mut self, path: String, cx: &mut Context<Self>) {
+    pub(super) fn outputs_open(&mut self, path: String, cx: &mut Context<Self>) {
         let name = std::path::Path::new(&path)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -48,8 +48,17 @@ impl ChatView {
             let result = flatten(job.await);
             let read = match result {
                 Ok(local) => {
-                    cx.background_spawn(async move { preview::read(&local) })
-                        .await
+                    let read = cx
+                        .background_spawn({
+                            let local = local.clone();
+                            async move { preview::read(&local) }
+                        })
+                        .await;
+                    // A copy already on screen was just rewritten.
+                    if matches!(read, preview::Preview::Native) {
+                        crate::native_view::refresh(&crate::native_view::Source::File(local));
+                    }
+                    read
                 }
                 Err(e) => preview::Preview::Failed(e.to_string()),
             };
@@ -66,7 +75,6 @@ impl ChatView {
     pub(super) fn render_outputs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(opened) = self.side.outputs.opened.as_ref() {
             let weak = cx.weak_entity();
-            let key = opened.path.display().to_string();
             return v_flex()
                 .flex_1()
                 .min_h_0()
@@ -81,11 +89,7 @@ impl ChatView {
                     },
                     cx,
                 ))
-                .child(
-                    scroll("outputs-preview")
-                        .p_3()
-                        .child(preview::render(opened, &key, cx)),
-                )
+                .child(preview::body(opened, "outputs-preview", cx))
                 .into_any_element();
         }
         let p = *Palette::of(cx);

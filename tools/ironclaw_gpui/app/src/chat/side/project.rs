@@ -173,7 +173,6 @@ impl ChatView {
         let p = *Palette::of(cx);
         if let Some(opened) = self.side.project.opened.as_ref() {
             let weak = cx.weak_entity();
-            let key = opened.path.display().to_string();
             let attach = opened.path.clone();
             return v_flex()
                 .flex_1()
@@ -201,11 +200,7 @@ impl ChatView {
                             })),
                     ),
                 )
-                .child(
-                    scroll("project-preview")
-                        .p_3()
-                        .child(preview::render(opened, &key, cx)),
-                )
+                .child(preview::body(opened, "project-preview", cx))
                 .into_any_element();
         }
         let Some(root) = self.side.folder.clone() else {

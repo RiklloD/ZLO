@@ -25,3 +25,7 @@ serde.workspace = true
 # Wallpaper decode and blur. gpui already links image 0.25, so this adds no new crate.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 dirs = "6"
+# Native PDF/Office/web previews (`native_view.rs`): plain runtime calls;
+# both crates are already in the tree through gpui.
+objc2 = "0.6"
+raw-window-handle = "0.6"

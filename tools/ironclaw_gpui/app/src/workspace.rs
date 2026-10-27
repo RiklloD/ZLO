@@ -1254,9 +1254,13 @@ impl Render for Workspace {
         };
         let show_status = !Prefs::of(cx).status_bar_hidden;
         let command = self.render_command_menu(cx);
+        // A native preview not painted this frame hides after it; the
+        // command menu would draw under it, so it hides for that too.
+        crate::native_view::frame_begin(window, command.is_some());
         v_flex()
             .size_full()
             .relative()
+            .capture_any_mouse_down(|_, window, _| crate::native_view::reclaim_focus(window))
             .bg(p.surface.opacity(s.shell_alpha))
             .text_color(p.text)
             .font_family(design::FONT_SANS)

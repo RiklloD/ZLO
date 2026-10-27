@@ -3300,6 +3300,8 @@ dependencies = [
  "gpui-kit",
  "image",
  "ironclaw_gpui_client",
+ "objc2 0.6.5",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tokio",

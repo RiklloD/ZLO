@@ -1116,10 +1116,13 @@ impl Render for ChatView {
                 ) if !text.is_empty() => {
                     with_actions(key, text, true, None, &weak, render_row(row, &weak, cx))
                 }
-                Item::Row(Row::Narration { text, .. }) => markdown(
-                    SharedString::from(format!("{}-n", item.key())),
-                    text.clone(),
-                    false,
+                Item::Row(Row::Narration { text, .. }) => linked(
+                    markdown(
+                        SharedString::from(format!("{}-n", item.key())),
+                        text.clone(),
+                        false,
+                    ),
+                    &weak,
                 )
                 .into_any_element(),
                 Item::Row(row) => render_row(row, &weak, cx),
@@ -1394,6 +1397,19 @@ impl Render for ChatView {
     }
 }
 
+/// Links in a reply open inside the app (`ChatView::open_link`).
+fn linked(
+    view: gpui_kit::component::text::TextView,
+    weak: &WeakEntity<ChatView>,
+) -> gpui_kit::component::text::TextView {
+    let weak = weak.clone();
+    view.on_link_click(move |href, event, _, cx| {
+        let href = href.to_string();
+        let external = event.modifiers().platform;
+        let _ = weak.update(cx, |this, cx| this.open_link(&href, external, cx));
+    })
+}
+
 fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
     match row {
         Row::User {
@@ -1445,7 +1461,11 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
             key,
             text,
             streaming,
-        } => markdown(SharedString::from(key.clone()), text.clone(), *streaming).into_any_element(),
+        } => linked(
+            markdown(SharedString::from(key.clone()), text.clone(), *streaming),
+            weak,
+        )
+        .into_any_element(),
         Row::System { text, .. } if text.starts_with("Switched to ") => switch_marker(text, cx),
         Row::System { text, .. } => div()
             .text_xs()

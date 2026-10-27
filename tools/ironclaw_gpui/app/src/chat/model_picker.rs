@@ -636,12 +636,14 @@ impl ModelPicker {
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)))
             // ⌘ held here numbers models, not sidebar threads. Releases pass
             // through so a badge shown before the picker opened still clears.
-            .on_modifiers_changed(cx.listener(|_, e: &gpui_kit::ModifiersChangedEvent, _, cx| {
-                if e.modifiers.platform {
-                    cx.stop_propagation();
-                }
-                cx.notify();
-            }))
+            .on_modifiers_changed(
+                cx.listener(|_, e: &gpui_kit::ModifiersChangedEvent, _, cx| {
+                    if e.modifiers.platform {
+                        cx.stop_propagation();
+                    }
+                    cx.notify();
+                }),
+            )
             // Ctrl+Tab / Ctrl+Shift+Tab walk the rail and ⌘1..⌘9 pick a
             // row, before the search field (or the thread jump) sees the key.
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {

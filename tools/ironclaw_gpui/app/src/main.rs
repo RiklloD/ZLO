@@ -12,17 +12,18 @@ mod design;
 mod jobs;
 mod login_item;
 mod logs;
+mod native_view;
 mod pages;
 mod permissions;
 mod service;
 mod snapshot;
 mod titles;
 mod ui;
+mod window_state;
 mod workspace;
 
 use gpui_kit::{
-    App, AppContext, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds,
-    WindowOptions, point, px, size,
+    App, AppContext, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowOptions, point, px,
 };
 
 gpui_kit::actions!(
@@ -44,7 +45,8 @@ fn main() {
         gpui_kit::init(cx);
         design::install(cx);
         service::start();
-        cx.on_app_quit(|_| {
+        cx.on_app_quit(|cx| {
+            window_state::save(cx);
             service::stop();
             async {}
         })
@@ -84,9 +86,8 @@ fn main() {
 }
 
 fn open_main_window(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(1120.), px(780.)), cx);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(window_state::initial(cx)),
         // Content runs under a transparent titlebar; the sidebar
         // keeps its top strip free so macOS still drags the window.
         titlebar: Some(TitlebarOptions {
@@ -105,7 +106,12 @@ fn open_main_window(cx: &mut App) {
                 }
             })
             .detach();
-        cx.new(|cx| workspace::Workspace::new(window, cx))
+        let view = cx.new(|cx| workspace::Workspace::new(window, cx));
+        view.update(cx, |_, cx| {
+            cx.observe_window_bounds(window, |_, window, cx| window_state::record(window, cx))
+                .detach()
+        });
+        view
     }) {
         eprintln!("numoh: cannot open a window: {e}");
         cx.quit();
