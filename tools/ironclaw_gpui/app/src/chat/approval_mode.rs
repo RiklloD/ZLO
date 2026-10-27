@@ -179,80 +179,75 @@ impl ApprovalPill {
     }
 
     fn render_popover(&self, current: Option<ApprovalMode>, cx: &Context<Self>) -> AnyElement {
+        // Same shape as the Thinking menu beside it: a faint header, one
+        // line per choice, a check on the picked one, a hint at the bottom.
         let p = *Palette::of(cx);
         let row = |mode: Option<ApprovalMode>| {
             let on = current == mode;
-            let detail = match mode {
-                Some(ApprovalMode::FullAccess) => "Every tool call runs without asking",
-                Some(ApprovalMode::AskFirst) => "Approve each call that needs it",
-                None => {
-                    if self.global == Some(true) {
-                        "Settings switch, now full access"
-                    } else {
-                        "Settings switch, now ask first"
-                    }
-                }
-            };
-            let tint = tint(mode, self.global, &p);
-            let badge = div()
-                .flex_none()
-                .size(px(28.))
-                .rounded(px(8.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(tint.opacity(0.14))
-                .child(Icon::new(icon(mode)).size(px(14.)).text_color(tint));
+            // The global row says what the switch resolves to right now.
+            let trailing = mode.is_none().then(|| self.effective_label(None));
             kit::row(
                 SharedString::from(format!("approval-{}", key(mode))),
                 on,
                 cx,
             )
-            .gap_2p5()
-            .py_1p5()
-            .items_center()
-            .child(badge)
+            .role(Role::Button)
+            .aria_label(label(mode))
+            .gap_2()
+            .text_sm()
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_0p5()
-                    .child(div().text_sm().font_medium().truncate().child(label(mode)))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(p.text_faint)
-                            .truncate()
-                            .child(detail),
-                    ),
+                Icon::new(icon(mode))
+                    .size(px(13.))
+                    .text_color(tint(mode, self.global, &p)),
             )
-            .when(on, |d| {
-                d.child(
-                    Icon::new(IconName::Check)
-                        .size(px(14.))
-                        .text_color(p.accent),
-                )
-            })
+            .child(div().flex_1().min_w_0().truncate().child(label(mode)))
+            .children(trailing.map(|t| {
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(p.text_faint)
+                    .child(t)
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(14.))
+                    .when(on, |d| d.child(Icon::new(IconName::Check).size(px(13.)))),
+            )
             .on_click(cx.listener(move |this, _, _, cx| this.pick(mode, cx)))
         };
-        let header = div()
-            .px_2()
-            .pt_1()
-            .pb_1()
-            .text_xs()
-            .font_medium()
-            .text_color(p.text_faint)
-            .child("Access");
-        let divider = div().mx_2().my_1().h(px(1.)).bg(p.border);
+        let hint = match current {
+            Some(ApprovalMode::FullAccess) => "Tool calls run without asking.",
+            Some(ApprovalMode::AskFirst) => "Calls that need approval wait for you.",
+            None => "Follows Settings > Permissions.",
+        };
         let pop = kit::popover("approval-pop", cx);
         pop(v_flex()
-            .w(px(290.))
+            .w(px(240.))
             .p_1()
-            .child(header)
-            .child(row(CHOICES[0]))
-            .child(row(CHOICES[1]))
-            .child(divider)
-            .child(row(CHOICES[2])))
+            .child(
+                div()
+                    .px_2()
+                    .pt_1()
+                    .pb_1()
+                    .text_xs()
+                    .font_medium()
+                    .text_color(p.text_faint)
+                    .child("Access"),
+            )
+            .children(CHOICES.into_iter().map(row))
+            .child(
+                div()
+                    .mt_1()
+                    .px_2()
+                    .pt_1p5()
+                    .pb_1()
+                    .border_t_1()
+                    .border_color(p.border)
+                    .text_xs()
+                    .text_color(p.text_faint)
+                    .child(hint),
+            ))
     }
 }
 

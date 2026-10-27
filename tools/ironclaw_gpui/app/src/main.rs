@@ -28,7 +28,13 @@ use gpui_kit::{
 
 gpui_kit::actions!(
     ironclaw,
-    [Quit, ToggleStatusBar, ToggleScheme, OpenCommandMenu]
+    [
+        Quit,
+        ToggleStatusBar,
+        ToggleScheme,
+        OpenCommandMenu,
+        OpenModelPicker
+    ]
 );
 
 fn main() {
@@ -63,6 +69,7 @@ fn main() {
             KeyBinding::new("cmd-shift-s", ToggleStatusBar, None),
             KeyBinding::new("cmd-shift-y", ToggleScheme, None),
             KeyBinding::new("cmd-k", OpenCommandMenu, None),
+            KeyBinding::new("cmd-shift-m", OpenModelPicker, None),
         ]);
         cx.set_menus(vec![
             Menu {
@@ -74,6 +81,7 @@ fn main() {
                 name: "View".into(),
                 items: vec![
                     MenuItem::action("Command Menu…", OpenCommandMenu),
+                    MenuItem::action("Model Picker…", OpenModelPicker),
                     MenuItem::action("Toggle Status Bar", ToggleStatusBar),
                     MenuItem::action("Toggle Light and Dark", ToggleScheme),
                 ],

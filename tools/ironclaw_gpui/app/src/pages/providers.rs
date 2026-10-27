@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use ironclaw_gpui_client::Backend;
 use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView, UserModelCatalog};
-use ironclaw_gpui_client::orchestration::RouteProvider;
+use ironclaw_gpui_client::orchestration::{PickerPrefs, RouteProvider};
 
 use super::{PageEvent, error_line, header, page_body, refresh_button};
 use crate::design::brands::provider_logo;
@@ -54,6 +54,9 @@ pub struct ProvidersView {
     /// The orchestrator's catalog (CLI runtimes and their sign-in state),
     /// read through any thread; `None` until read or without threads.
     runtimes: Option<Vec<RouteProvider>>,
+    /// The picker preferences read with the runtimes; removing a CLI agent
+    /// hides it there.
+    picker: Option<PickerPrefs>,
     catalog_thread: Option<String>,
     pin_input: Option<Entity<InputState>>,
     key_editor: Option<(String, Entity<InputState>)>,
@@ -87,6 +90,7 @@ impl ProvidersView {
             models: HashMap::new(),
             catalog: None,
             runtimes: None,
+            picker: None,
             catalog_thread,
             pin_input: None,
             key_editor: None,
@@ -140,7 +144,9 @@ impl ProvidersView {
                 move |c| async move { c.thread_route(&thread).await },
                 |this, result, cx| {
                     // silent-ok: without the route the CLI tab says it cannot tell.
-                    this.runtimes = result.ok().map(|r| r.providers);
+                    let route = result.ok();
+                    this.picker = route.as_ref().map(|r| r.picker.clone());
+                    this.runtimes = route.map(|r| r.providers);
                     cx.notify();
                 },
             );
@@ -293,10 +299,36 @@ impl ProvidersView {
                 Ok((id, llm)) => {
                     this.llm = Some(llm);
                     this.error = None;
-                    this.notice = Some(format!("Deleted provider {id} and its stored key.").into());
+                    this.notice =
+                        Some(format!("Removed {} and its stored key.", display_name(&id)).into());
                     cx.notify();
                 }
                 Err(e) => this.fail(e, cx),
+            },
+        );
+    }
+
+    /// Remove a CLI agent from Numoh, or bring it back. The binary stays
+    /// installed; the agent is hidden from the model picker and this list.
+    fn toggle_cli_hidden(&mut self, provider: String, cx: &mut Context<Self>) {
+        let (Some(thread), Some(prefs)) = (self.catalog_thread.clone(), self.picker.as_mut())
+        else {
+            self.fail("Start one thread first, then remove CLI agents here.", cx);
+            return;
+        };
+        prefs.toggle_provider(&provider);
+        let prefs = prefs.clone();
+        cx.notify();
+        jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move { c.set_model_picker(&thread, &prefs).await },
+            |this, result, cx| match result {
+                Ok(()) => this.refresh(cx),
+                Err(e) => {
+                    this.fail(e, cx);
+                    this.refresh(cx);
+                }
             },
         );
     }
@@ -460,20 +492,6 @@ impl ProvidersView {
                         ),
                 )
             })
-            .when(!p.builtin && !p.active, |d| {
-                let id = p.id.clone();
-                d.child(
-                    Button::new(("delete-provider", ix))
-                        .icon(IconName::Delete)
-                        .ghost()
-                        .small()
-                        .tooltip("Delete provider")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.confirm_delete = Some(id.clone());
-                            cx.notify();
-                        })),
-                )
-            })
             .when(p.accepts_api_key, |d| {
                 let id = p.id.clone();
                 d.child(
@@ -487,6 +505,27 @@ impl ProvidersView {
                         .small()
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_key_editor(id.clone(), window, cx)
+                        })),
+                )
+            })
+            // Remove sits last. A built-in stays in the catalog: removing it
+            // drops its stored key and settings, and it returns to the list below.
+            .when(p.active || p.api_key_set || !p.builtin, |d| {
+                let id = p.id.clone();
+                d.child(
+                    Button::new(("delete-provider", ix))
+                        .icon(IconName::Close)
+                        .ghost()
+                        .xsmall()
+                        .disabled(p.active)
+                        .tooltip(if p.active {
+                            "Switch to another provider before removing this one"
+                        } else {
+                            "Remove provider"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.confirm_delete = Some(id.clone());
+                            cx.notify();
                         })),
                 )
             });
@@ -566,11 +605,14 @@ impl ProvidersView {
                         .child(
                             div()
                                 .flex_1()
-                                .child(format!("Delete {} and its stored API key?", p.id)),
+                                .child(format!(
+                                    "Remove {} and its stored API key?",
+                                    display_name(&p.id)
+                                )),
                         )
                         .child(
                             Button::new(("confirm-delete", ix))
-                                .label("Delete")
+                                .label("Remove")
                                 .danger()
                                 .small()
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -932,9 +974,26 @@ impl ProvidersView {
                    name: String,
                    blurb: String,
                    status: Tag,
-                   command: Option<(&'static str, &'static str)>| {
+                   command: Option<(&'static str, &'static str)>,
+                   remove: Option<(String, bool)>| {
             let ids: Vec<&str> = logo_ids.iter().map(String::as_str).collect();
-            card(cx).child(
+            let hidden = remove.as_ref().is_some_and(|(_, h)| *h);
+            let remove = remove.map(|(provider, hidden)| {
+                let button = Button::new(SharedString::from(format!("cli-remove-{id}")));
+                let button = if hidden {
+                    button.label("Add back").outline().xsmall()
+                } else {
+                    button
+                        .icon(IconName::Close)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Remove from Numoh (the CLI stays installed)")
+                };
+                button.on_click(
+                    cx.listener(move |this, _, _, cx| this.toggle_cli_hidden(provider.clone(), cx)),
+                )
+            });
+            card(cx).when(hidden, |d| d.opacity(0.6)).child(
                 h_flex()
                     .gap_3()
                     .items_center()
@@ -981,7 +1040,8 @@ impl ProvidersView {
                                 )
                             }),
                     )
-                    .child(status),
+                    .child(status)
+                    .children(remove),
             )
         };
         for known in KNOWN_CLIS {
@@ -1010,13 +1070,20 @@ impl ProvidersView {
                         known.blurb.to_string(),
                         status,
                         known.install.map(|c| ("Install", c)),
+                        None,
                     )
                     .into_any_element(),
                 );
                 continue;
             }
             for r in found {
-                let status = if r.authenticated {
+                let hidden = self
+                    .picker
+                    .as_ref()
+                    .is_some_and(|p| p.provider_hidden(&r.provider));
+                let status = if hidden {
+                    Tag::secondary().small().child("Removed")
+                } else if r.authenticated {
                     Tag::success()
                         .small()
                         .child(format!("Ready · {} models", r.models.len()))
@@ -1035,6 +1102,7 @@ impl ProvidersView {
                         known.blurb.to_string(),
                         status,
                         command,
+                        self.picker.is_some().then(|| (r.provider.clone(), hidden)),
                     )
                     .into_any_element(),
                 );

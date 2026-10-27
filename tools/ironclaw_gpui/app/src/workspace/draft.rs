@@ -32,6 +32,12 @@ pub(super) struct Draft {
     _subs: Vec<Subscription>,
 }
 
+impl Draft {
+    pub(super) fn picker(&self) -> Entity<ModelPicker> {
+        self.picker.clone()
+    }
+}
+
 impl Workspace {
     /// Show the new-thread screen; an unsent draft keeps its text.
     pub(super) fn open_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {

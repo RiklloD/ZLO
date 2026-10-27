@@ -339,7 +339,7 @@ impl ModelPicker {
         );
     }
 
-    fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.effort_open = false;
         self.open = !self.open;
         if self.open {

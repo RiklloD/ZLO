@@ -1337,6 +1337,17 @@ impl Render for Workspace {
                     this.toggle_command_menu(window, cx);
                 }
             }))
+            // ⇧⌘M opens the composer's model picker, open thread or draft.
+            .on_action(cx.listener(|this, _: &crate::OpenModelPicker, window, cx| {
+                let picker = match this.page {
+                    Page::Chat => this.active.as_ref().map(|(_, c)| c.read(cx).picker()),
+                    Page::Draft => this.draft.as_ref().map(|d| d.picker()),
+                    _ => None,
+                };
+                if let Some(picker) = picker {
+                    picker.update(cx, |p, cx| p.toggle(window, cx));
+                }
+            }))
             .child(div().flex_1().min_h_0().child(body))
             .when(show_status, |d| d.child(self.render_status_bar(cx)))
             .children(command)

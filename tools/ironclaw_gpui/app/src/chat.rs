@@ -124,6 +124,13 @@ pub struct ChatView {
     _pump: Task<()>,
 }
 
+impl ChatView {
+    /// The composer's model pill, for the ⇧⌘M shortcut.
+    pub fn picker(&self) -> Entity<ModelPicker> {
+        self.picker.clone()
+    }
+}
+
 /// Zeron's turn: room kept under the newest user message so it sits high
 /// while its answer streams. The room outlives the run, so the view stays
 /// put when it ends; the next send replaces it.
@@ -1440,7 +1447,8 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
                 })
                 .collect();
             let body = if placed.is_empty() {
-                text.clone().into_any_element()
+                selectable(SharedString::from(format!("{key}-text")), text.clone())
+                    .into_any_element()
             } else {
                 placed_body(key, &parts, attachments, weak, cx)
             };
@@ -1480,19 +1488,24 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
         )
         .into_any_element(),
         Row::System { text, .. } if text.starts_with("Switched to ") => switch_marker(text, cx),
-        Row::System { text, .. } => div()
+        Row::System { key, text } => div()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
-            .child(text.clone())
+            .child(selectable(SharedString::from(key.clone()), text.clone()))
             .into_any_element(),
-        Row::Thinking { text, .. } => {
-            activity_line(IconName::Bot, "Thinking", Some(text.clone().into()), cx)
-                .into_any_element()
-        }
-        Row::Narration { text, .. } => {
-            activity_line(IconName::Ellipsis, text.clone(), None, cx).into_any_element()
+        Row::Thinking { key, text, .. } => activity_line(
+            key,
+            IconName::Bot,
+            "Thinking",
+            Some(text.clone().into()),
+            cx,
+        )
+        .into_any_element(),
+        Row::Narration { key, text, .. } => {
+            activity_line(key, IconName::Ellipsis, text.clone(), None, cx).into_any_element()
         }
         Row::Tool {
+            key,
             title,
             detail,
             status,
@@ -1503,18 +1516,19 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
                 ToolStatus::Completed => IconName::CircleCheck,
                 ToolStatus::Failed => IconName::CircleX,
             };
-            activity_line(icon, title.clone(), detail.clone().map(Into::into), cx)
+            activity_line(key, icon, title.clone(), detail.clone().map(Into::into), cx)
                 .into_any_element()
         }
-        Row::Skills { names, .. } => activity_line(
+        Row::Skills { key, names, .. } => activity_line(
+            key,
             IconName::BookOpen,
             format!("Using skills: {}", names.join(", ")),
             None,
             cx,
         )
         .into_any_element(),
-        Row::WorkSummary { text, .. } => {
-            activity_line(IconName::FileText, text.clone(), None, cx).into_any_element()
+        Row::WorkSummary { key, text, .. } => {
+            activity_line(key, IconName::FileText, text.clone(), None, cx).into_any_element()
         }
         Row::Gate {
             key,
@@ -1560,7 +1574,10 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
                         })
                         .flex_none(),
                     )
-                    .child(div().flex_1().min_w_0().child(text.clone())),
+                    .child(div().flex_1().min_w_0().child(selectable(
+                        SharedString::from(format!("{key}-text")),
+                        text.clone(),
+                    ))),
             )
             .when(*retryable || *failed, |this| {
                 let retry = (weak.clone(), run_id.clone());
@@ -1598,6 +1615,7 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
             })
             .into_any_element(),
         Row::Command {
+            key,
             input,
             title,
             fields,
@@ -1612,12 +1630,15 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(Icon::new(IconName::SquareTerminal).xsmall())
-                    .child(input.clone()),
+                    .child(selectable(
+                        SharedString::from(format!("{key}-input")),
+                        input.clone(),
+                    )),
             )
             .when(!title.is_empty(), |this| {
                 this.child(div().font_medium().child(title.clone()))
             })
-            .children(fields.iter().map(|f| {
+            .children(fields.iter().enumerate().map(|(ix, f)| {
                 h_flex()
                     .gap_3()
                     .child(
@@ -1627,12 +1648,18 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
                             .text_color(cx.theme().muted_foreground)
                             .child(f.label.clone()),
                     )
-                    .child(div().flex_1().min_w_0().child(f.value.clone()))
+                    .child(div().flex_1().min_w_0().child(selectable(
+                        SharedString::from(format!("{key}-field-{ix}")),
+                        f.value.clone(),
+                    )))
             }))
-            .children(lines.iter().map(|line| {
+            .children(lines.iter().enumerate().map(|(ix, line)| {
                 div()
                     .when(*failed, |this| this.text_color(cx.theme().danger))
-                    .child(line.clone())
+                    .child(selectable(
+                        SharedString::from(format!("{key}-line-{ix}")),
+                        line.clone(),
+                    ))
             }))
             .into_any_element(),
     }
@@ -1885,6 +1912,41 @@ fn with_actions(
     let copy = text.to_string();
     let copy_key = key.to_string();
     let weak = weak.clone();
+    let menu = {
+        let (text, key, weak) = (copy.clone(), copy_key.clone(), weak.clone());
+        // Right-click: the selection first when there is one, then the
+        // hover bar's actions.
+        move |menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
+            let selected = gpui_kit::base::TextSelection::selected_text(window, cx);
+            let (text, key, weak) = (text.clone(), key.clone(), weak.clone());
+            menu.when(!selected.is_empty(), |m| {
+                m.item(
+                    PopupMenuItem::new("Copy selection")
+                        .icon(Icon::new(IconName::Copy))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(selected.clone()))
+                        }),
+                )
+            })
+            .item(
+                PopupMenuItem::new("Copy message")
+                    .icon(Icon::new(IconName::Copy))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                        mark_copied(&key, cx);
+                    }),
+            )
+            .when_some(fork_run, |m, run| {
+                m.item(
+                    PopupMenuItem::new("Fork from here")
+                        .icon(Icon::new(ExtraIcon::GitFork))
+                        .on_click(move |_, _, cx| {
+                            let _ = weak.update(cx, |this, cx| this.fork(Some(run), cx));
+                        }),
+                )
+            })
+        }
+    };
     v_flex()
         .id(group.clone())
         .gap_1()
@@ -1926,6 +1988,7 @@ fn with_actions(
                     )
                 }),
         )
+        .context_menu(menu)
         .into_any_element()
 }
 

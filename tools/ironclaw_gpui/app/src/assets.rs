@@ -22,6 +22,7 @@ icon_assets!(
         SquarePen,
         Puzzle,
         Zap,
+        ShieldCheck,
         SlidersHorizontal,
         Sparkles,
         LayoutGrid,

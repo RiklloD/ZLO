@@ -449,9 +449,9 @@ impl ChatView {
                 .w(px(width))
                 .h_full()
                 .flex_none()
-                // An opaque plane like the left sidebar: the thread wallpaper
-                // stops at the pane's edge, so its text always reads.
-                .bg(p.surface)
+                // A tinted sheet: the wallpaper runs on underneath, a step
+                // darker than the transcript so the pane reads as its own layer.
+                .bg(p.surface.opacity(0.45))
                 .border_l_1()
                 .border_color(p.border)
                 .child(header)

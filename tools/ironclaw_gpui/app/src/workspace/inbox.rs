@@ -26,6 +26,9 @@ use crate::design::{self, Palette, Style, kit};
 use crate::jobs;
 use crate::ui::*;
 
+/// One context-menu entry's effect on a row, given its thread id.
+type RowAction = Box<dyn Fn(&mut Workspace, String, &mut Window, &mut Context<Workspace>)>;
+
 /// Poll period while a row is working.
 const POLL: Duration = Duration::from_secs(5);
 /// Settled rows shown before "Show more".
@@ -47,6 +50,9 @@ pub(super) struct Inbox {
     show_settled: bool,
     settled_limit: usize,
     snooze_menu: Option<String>,
+    /// Rows marked unread from the context menu. Local to this app run:
+    /// the backend has no read flag; opening the thread clears it.
+    unread: BTreeSet<String>,
     loading: bool,
     stale: bool,
     polling: bool,
@@ -313,6 +319,7 @@ impl Workspace {
 
     /// Opening a row with an unseen result clears its Done / Woke badge.
     pub(super) fn visit(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        self.inbox.unread.remove(thread_id);
         let unseen = self
             .inbox
             .row(thread_id)
@@ -368,6 +375,155 @@ impl Workspace {
         self.show(Page::Profiles, window, cx);
         if let Some(view) = self.pages.profiles.clone() {
             view.update(cx, |v, cx| v.new_profile(window, cx));
+        }
+    }
+
+    /// Deleting from the menu asks first: a right-click misfires more than
+    /// the settled row's trash button.
+    fn confirm_delete(&mut self, thread_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self
+            .inbox
+            .row(&thread_id)
+            .map_or("this conversation", title_of)
+            .to_string();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Delete \"{title}\"?"),
+            Some("The conversation leaves the inbox and can't be opened again."),
+            &["Delete", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if matches!(answer.await, Ok(0)) {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.delete_thread(thread_id, window, cx)
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// The right-click menu of an inbox row. Every mark goes through the
+    /// same calls as the hover buttons; "unread" is the local set.
+    fn row_menu(
+        &self,
+        row: &InboxRow,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let weak = cx.entity().downgrade();
+        let id = row.thread_id.clone();
+        let title = title_of(row).to_string();
+        let state = row.state;
+        let blocker = settle_blocker(row);
+        let unread = self.inbox.unread.contains(&id);
+        move |menu, window, cx| {
+            let act = |label: &str, icon: Icon, f: RowAction| {
+                let (weak, id) = (weak.clone(), id.clone());
+                PopupMenuItem::new(label.to_string())
+                    .icon(icon)
+                    .on_click(move |_, window, cx| {
+                        let _ = weak.update(cx, |this, cx| f(this, id.clone(), window, cx));
+                    })
+            };
+            let mark = |label: &str, icon: Icon, action: InboxAction| {
+                act(
+                    label,
+                    icon,
+                    Box::new(move |this, id, _, cx| this.inbox_mark(id, action, None, cx)),
+                )
+            };
+            let copy = |label: &str, text: String| {
+                PopupMenuItem::new(label.to_string())
+                    .icon(Icon::new(IconName::Copy))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
+                    })
+            };
+            let mut menu = menu.item(act(
+                "Open",
+                Icon::new(IconName::ExternalLink),
+                Box::new(|this, id, window, cx| this.open_thread(id, window, cx)),
+            ));
+            menu = match state {
+                InboxState::Snoozed => menu.item(mark(
+                    "Wake now",
+                    Icon::new(ExtraIcon::Bell),
+                    InboxAction::Wake,
+                )),
+                InboxState::Settled => menu.item(mark(
+                    "Un-settle",
+                    Icon::new(IconName::Undo2),
+                    InboxAction::Unsettle,
+                )),
+                _ => {
+                    let pin = if state == InboxState::Pinned {
+                        mark("Unpin", Icon::new(ExtraIcon::PinOff), InboxAction::Unpin)
+                    } else {
+                        mark("Pin", Icon::new(ExtraIcon::Pin), InboxAction::Pin)
+                    };
+                    let (sweak, sid) = (weak.clone(), id.clone());
+                    menu.item(pin)
+                        .submenu_with_icon(
+                            Some(Icon::new(ExtraIcon::AlarmClock)),
+                            "Snooze",
+                            window,
+                            cx,
+                            move |sub, _, _| {
+                                snooze_presets()
+                                    .into_iter()
+                                    .fold(sub, |sub, (label, until)| {
+                                        let (weak, id) = (sweak.clone(), sid.clone());
+                                        sub.item(PopupMenuItem::new(label).on_click(
+                                            move |_, _, cx| {
+                                                let _ = weak.update(cx, |this, cx| {
+                                                    this.inbox_mark(
+                                                        id.clone(),
+                                                        InboxAction::Snooze,
+                                                        Some(until),
+                                                        cx,
+                                                    )
+                                                });
+                                            },
+                                        ))
+                                    })
+                            },
+                        )
+                        .item(
+                            act(
+                                "Settle",
+                                Icon::new(IconName::Check),
+                                Box::new(|this, id, window, cx| this.settle(id, window, cx)),
+                            )
+                            .disabled(blocker.is_some()),
+                        )
+                }
+            };
+            menu.item(act(
+                if unread {
+                    "Mark as read"
+                } else {
+                    "Mark as unread"
+                },
+                Icon::new(IconName::Eye),
+                Box::new(move |this, id, _, cx| {
+                    if !this.inbox.unread.remove(&id) {
+                        this.inbox.unread.insert(id);
+                    }
+                    cx.notify();
+                }),
+            ))
+            .separator()
+            .item(copy("Copy title", title.clone()))
+            .item(copy("Copy thread ID", id.clone()))
+            .separator()
+            .item(
+                act(
+                    "Delete",
+                    Icon::new(IconName::Delete),
+                    Box::new(|this, id, window, cx| this.confirm_delete(id, window, cx)),
+                )
+                .disabled(state == InboxState::Working),
+            )
         }
     }
 
@@ -841,7 +997,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Card row: the title with the status or age, then profile · branch;
+    /// Card row: profile · branch with the status or age, then the title;
     /// hover actions pin, snooze, settle. No model readout: the profile names it.
     fn render_card(
         &self,
@@ -859,7 +1015,8 @@ impl Workspace {
         let group: SharedString = format!("card-{id}").into();
         let pinned = row.state == InboxState::Pinned;
         let menu_open = self.inbox.snooze_menu.as_deref() == Some(id.as_str());
-        let recede = !active && row.status.is_none();
+        let unread = self.inbox.unread.contains(&id);
+        let recede = !active && row.status.is_none() && !unread;
         let style = *Style::of(cx);
         let hover_key: SharedString = format!("card:{id}").into();
         let h = crate::design::motion::hover_t(&hover_key);
@@ -939,6 +1096,7 @@ impl Workspace {
                 .child(
                     Button::new(SharedString::from(format!("settle-{id}")))
                         .icon(IconName::Check)
+                        .label("Settle")
                         .ghost()
                         .xsmall()
                         .icon_size(14.)
@@ -987,48 +1145,47 @@ impl Workspace {
                     },
                     |dragged, _, _, cx| cx.new(|_| dragged.clone()),
                 )
-                // Title first (T3's hierarchy) with the status or age at its
-                // end; profile and branch recede into the line below, where
-                // the hover actions appear so the title keeps its width.
-                .child(
-                    h_flex()
-                        .gap(px(8.))
-                        .items_center()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(design::SIDEBAR_TITLE_SIZE))
-                                .text_color(ink)
-                                .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
-                                .child(title_of(row).to_string()),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(px(design::SIDEBAR_META_SIZE))
-                                .text_color(quiet)
-                                .child(match jump {
-                                    Some(ix) => kit::shortcut_badge(ix, cx).into_any_element(),
-                                    None => status_label(row, active, now, cx),
-                                }),
-                        ),
-                )
+                // Profile first, with the status or age (or, on hover, the
+                // actions) at its end; the title gets the full width below.
                 .child(
                     h_flex()
                         .gap(px(7.))
-                        .h(px(20.))
                         .items_center()
                         .text_size(px(design::SIDEBAR_META_SIZE))
                         .text_color(quiet)
                         .child(profile_mark(&row.profile_id, &name, h.max(sel), cx))
                         .child(div().flex_1().min_w_0().truncate().child(name))
                         .when_some(branch, |d, b| d.child(branch_label(b, cx)))
-                        .child(div().flex_none().child(actions)),
+                        .child(
+                            div().relative().flex_none().child(actions).child(
+                                h_flex()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right_0()
+                                    .items_center()
+                                    .when(menu_open, |d| d.invisible())
+                                    .group_hover(group.clone(), |s| s.invisible())
+                                    .child(match jump {
+                                        Some(ix) => kit::shortcut_badge(ix, cx).into_any_element(),
+                                        None => status_label(row, active, now, cx),
+                                    }),
+                            ),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(design::SIDEBAR_TITLE_SIZE))
+                        .text_color(ink)
+                        .when(unread, |d| d.font_semibold())
+                        .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
+                        .child(title_of(row).to_string()),
                 );
         v_flex()
-            .child(card)
+            .child(card.context_menu(self.row_menu(row, cx)))
             .when(menu_open, |d| d.child(self.render_snooze_menu(&id, cx)))
             .into_any_element()
     }
@@ -1075,6 +1232,8 @@ impl Workspace {
         let group: SharedString = format!("slim-{id}").into();
         let snoozed = row.state == InboxState::Snoozed;
         let (undo_id, delete_id, open_id) = (id.clone(), id.clone(), id.clone());
+        let unread = self.inbox.unread.contains(&id);
+        let menu = self.row_menu(row, cx);
         let label = match (snoozed, row.snooze_until) {
             (true, Some(at)) => wake_label(at),
             _ => short_age(row.settled_at.unwrap_or(row.last_activity_at), now),
@@ -1099,7 +1258,8 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_color(p.text_muted)
+                    .text_color(if unread { p.text } else { p.text_muted })
+                    .when(unread, |d| d.font_semibold())
                     .child(title_of(row).to_string()),
             )
             .child(
@@ -1159,6 +1319,7 @@ impl Workspace {
                     })
                     .child(label),
             )
+            .context_menu(menu)
             .into_any_element()
     }
 }

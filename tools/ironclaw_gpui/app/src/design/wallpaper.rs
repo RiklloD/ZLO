@@ -4,7 +4,7 @@
 //! land as one static texture, sized to the panel in points so the effect's
 //! dots stay crisp. Nothing runs while the app is idle; a resize rebuilds
 //! once the window settles. Threads get a second copy of the same
-//! picture (`paint::thread`) with a soft veil down the reading column.
+//! picture (`paint::thread`) under an even veil so text reads anywhere.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -112,7 +112,6 @@ fn paint_now(generation: u64, cx: &mut App) {
     let prefs = Prefs::of(cx);
     let choice = prefs.wallpaper.clone();
     let effect = prefs.wallpaper_effect.clone();
-    let column = prefs.conversation_width.clamp(480., 1200.);
     let palette = *Palette::of(cx);
     if choice == Wallpaper::None {
         return;
@@ -146,7 +145,7 @@ fn paint_now(generation: u64, cx: &mut App) {
             }
         };
         paint::effect(&mut canvas, &effect);
-        let soft = paint::thread(&canvas, bg, dark, column);
+        let soft = paint::thread(&canvas, bg, dark);
         paint::fade(&mut canvas, bg, 0.6, 1., 0.7);
         (to_bgra(canvas.to_image()), to_bgra(soft.to_image()))
     });

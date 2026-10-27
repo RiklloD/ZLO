@@ -153,22 +153,22 @@ pub fn tone(c: &mut Canvas, bg: Rgb, dark: bool) {
     }
 }
 
-/// The thread backdrop: the same sharp picture as the new-chat screen,
-/// with a soft veil down the reading column (`column` points wide) so text
-/// reads over it. The sides and the top keep the full artwork; the veil
-/// feathers out over 160 points and deepens a little toward the composer.
-pub fn thread(c: &Canvas, bg: Rgb, dark: bool, column: f32) -> Canvas {
+/// The thread backdrop: the same picture as the new-chat screen under one
+/// even veil, so it runs edge to edge (behind the right pane too) and text
+/// reads anywhere on it. The veil is heavier on the tones that fight the
+/// text (highlights in dark themes, shadows in light ones), so clouds stop
+/// washing out words while the picture keeps its color, and it deepens a
+/// little toward the composer.
+pub fn thread(c: &Canvas, bg: Rgb, dark: bool) -> Canvas {
     let mut out = c.clone();
     let (w, h) = (c.w, c.h);
-    let half = column / 2. + 32.;
-    let veil = if dark { 0.58 } else { 0.68 };
-    for x in 0..w {
-        let d = (x as f32 - w as f32 / 2.).abs();
-        let side = veil * (1. - smoothstep(half, half + 160., d));
-        for y in 0..h {
-            let v = y as f32 / h as f32;
-            let k = (side + 0.2 * smoothstep(0.7, 1., v)).min(0.9);
+    for y in 0..h {
+        let low = 0.12 * smoothstep(0.7, 1., y as f32 / h as f32);
+        for x in 0..w {
             let i = (y * w + x) as usize;
+            let l = luma(out.px[i]).clamp(0., 1.);
+            let glare = if dark { l } else { 1. - l };
+            let k = (0.5 + 0.38 * glare + low).min(0.92);
             out.px[i] = mix(out.px[i], bg, k);
         }
     }

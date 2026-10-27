@@ -10,6 +10,7 @@ pub use gpui_kit::component::input::{
     InlineToken, InlineTokenContext, Input, InputContent, InputEvent, InputState, Position,
     Textarea, TextareaState,
 };
+pub use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 pub use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 pub use gpui_kit::component::spinner::Spinner;
 pub use gpui_kit::component::switch::Switch;
@@ -21,7 +22,7 @@ pub use gpui_kit::prelude::FluentBuilder;
 pub use gpui_kit::{
     AnyElement, App, AppContext, ClipboardEntry, ClipboardItem, Context, ElementId, Entity,
     EventEmitter, ExternalPaths, Global, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, ParentElement, PathPromptOptions, Render, Role, SharedString,
+    MouseButton, ParentElement, PathPromptOptions, PromptLevel, Render, Role, SharedString,
     StatefulInteractiveElement, Styled, Subscription, SystemNotification,
     SystemNotificationResponse, Task, WeakEntity, Window, div, px,
 };
@@ -42,9 +43,20 @@ pub fn markdown(
         .stream_fade(streaming)
 }
 
+/// Plain text the pointer can select and ⌘C can copy. `id` must stay
+/// stable across renders or the selection drops.
+pub fn selectable(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+) -> gpui_kit::base::SelectableText {
+    gpui_kit::base::SelectableText::new(id, text)
+}
+
 /// One line of run activity (thinking, tool call, skill activation): the
-/// icon sits in a small tile, the detail folds to three lines.
+/// icon sits in a small tile, the detail folds to three lines. `key` is
+/// the row's, so both lines stay selectable while it streams.
 pub fn activity_line(
+    key: &str,
     icon: IconName,
     title: impl Into<SharedString>,
     detail: Option<SharedString>,
@@ -76,11 +88,17 @@ pub fn activity_line(
                 .min_w_0()
                 .pt(px(3.))
                 .gap_0p5()
-                .child(div().font_medium().text_color(p.text).child(title.into()))
+                .child(div().font_medium().text_color(p.text).child(selectable(
+                    SharedString::from(format!("{key}-title")),
+                    title,
+                )))
                 .when_some(detail, |this, detail| {
                     // line_clamp counts per paragraph; fold to one so the clamp holds.
                     let folded = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-                    this.child(div().line_clamp(3).child(folded))
+                    this.child(div().line_clamp(3).child(selectable(
+                        SharedString::from(format!("{key}-detail")),
+                        folded,
+                    )))
                 }),
         )
 }
