@@ -6,6 +6,7 @@
 mod appearance;
 mod compaction;
 mod snapshots;
+mod tools;
 mod traces;
 
 use ironclaw_gpui_client::Backend;
@@ -43,6 +44,12 @@ pub struct SettingsView {
     section: Section,
     auto_approve: Option<bool>,
     tools: Vec<(String, ToolPermission)>,
+    tool_search: Entity<InputState>,
+    /// Permissions shows only tools with their own setting.
+    tools_changed_only: bool,
+    /// Tool groups unfolded by hand.
+    tool_groups_open: std::collections::HashSet<String>,
+    _tool_search: Subscription,
     traces: Entity<traces::TracePanel>,
     compaction: Entity<compaction::CompactionPanel>,
     error: Option<SharedString>,
@@ -54,12 +61,18 @@ pub struct SettingsView {
 impl EventEmitter<PageEvent> for SettingsView {}
 
 impl SettingsView {
-    pub fn new(backend: Backend, cx: &mut Context<Self>) -> Self {
+    pub fn new(backend: Backend, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let tool_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search tools"));
+        let _tool_search = cx.subscribe(&tool_search, |_, _, _: &InputEvent, cx| cx.notify());
         let mut this = Self {
             backend: backend.clone(),
             section: Section::General,
             auto_approve: None,
             tools: Vec::new(),
+            tool_search,
+            tools_changed_only: false,
+            tool_groups_open: Default::default(),
+            _tool_search,
             traces: cx.new(|cx| traces::TracePanel::new(backend.clone(), cx)),
             compaction: cx.new(|cx| compaction::CompactionPanel::new(backend.clone(), cx)),
             error: None,
@@ -196,85 +209,6 @@ impl SettingsView {
             ],
             cx,
         )
-    }
-
-    fn render_tools(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let auto = self.auto_approve.unwrap_or(false);
-        let switch = Switch::new("auto-approve")
-            .checked(auto)
-            .disabled(self.auto_approve.is_none())
-            .accessibility_label("Approve tools automatically")
-            .on_click(
-                cx.listener(|this, checked: &bool, _, cx| this.set_auto_approve(*checked, cx)),
-            );
-        let toggle = rows_card(
-            [setting_row(
-                "Approve tools automatically",
-                Some(
-                    if auto {
-                        "On: shell commands, file writes and network calls run without asking you. Tools set to Ask below still ask."
-                    } else {
-                        "Off: IronClaw asks before shell commands, file writes and network calls, unless a tool is set to Allow."
-                    }
-                    .into(),
-                ),
-                switch,
-                cx,
-            )],
-            cx,
-        );
-
-        let rows = self.tools.iter().map(|(id, tool)| {
-            let selected = STATES
-                .iter()
-                .position(|(state, _)| *state == tool.state)
-                .unwrap_or(0);
-            let labels: Vec<&'static str> = STATES.iter().map(|(_, label)| *label).collect();
-            let pick_id = id.clone();
-            let weak = cx.weak_entity();
-            let segments = crate::design::kit::segmented(
-                &format!("tool-state:{id}"),
-                &labels,
-                selected,
-                tool.locked,
-                move |six, _, cx| {
-                    let (id, state) = (pick_id.clone(), STATES[six].0);
-                    let _ = weak.update(cx, |this, cx| this.set_tool(id, state, cx));
-                },
-                cx,
-            );
-            let control = h_flex()
-                .gap_2()
-                .items_center()
-                .when(tool.locked, |d| {
-                    d.child(Tag::secondary().small().child("Locked"))
-                })
-                .when(!tool.locked && !tool.has_override(), |d| {
-                    d.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child("follows switch"),
-                    )
-                })
-                .child(segments);
-            setting_row(
-                tool.name.clone(),
-                (!tool.description.is_empty()).then(|| tool.description.clone().into()),
-                control,
-                cx,
-            )
-        });
-
-        v_flex().child(toggle).when(!self.tools.is_empty(), |d| {
-            d.child(group_header(
-                "Per tool",
-                Some("Default follows the switch above. Allow and Ask override it for one tool."),
-                cx,
-            ))
-            .child(rows_card(rows.collect::<Vec<_>>(), cx))
-        })
     }
 }
 

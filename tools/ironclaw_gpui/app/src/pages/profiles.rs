@@ -13,7 +13,10 @@ mod pickers;
 
 use pickers::{Catalog, Menu, Picks};
 
-use super::{PageEvent, empty_state, error_line, header, page_body, refresh_button};
+use super::{
+    PageEvent, block_fill, empty_state, error_line, group_header, header, page_body,
+    refresh_button, rows_card, setting_row,
+};
 use crate::design::{self, Palette};
 use crate::jobs;
 use crate::ui::*;
@@ -99,6 +102,8 @@ pub struct ProfilesView {
     error: Option<SharedString>,
     notice: Option<SharedString>,
     confirm_delete: bool,
+    /// The detail view is showing (`selected` is `None` while creating).
+    open: bool,
 }
 
 impl EventEmitter<PageEvent> for ProfilesView {}
@@ -132,6 +137,7 @@ impl ProfilesView {
             error: None,
             notice: None,
             confirm_delete: false,
+            open: false,
         };
         this.refresh(cx);
         this
@@ -263,6 +269,7 @@ impl ProfilesView {
 
     fn select(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = id;
+        self.open = true;
         self.confirm_delete = false;
         self.notice = None;
         self.menu = None;
@@ -345,11 +352,11 @@ impl ProfilesView {
             window,
             cx,
             move |c| async move { c.delete_profile(&job_id).await },
-            move |this, result, window, cx| {
+            move |this, result, _window, cx| {
                 match result {
                     Ok(()) => {
                         this.items.retain(|p| p.profile_id != id);
-                        this.select(None, window, cx);
+                        this.back(cx);
                     }
                     Err(e) => this.error = Some(e.to_string().into()),
                 }
@@ -398,11 +405,20 @@ impl ProfilesView {
         );
     }
 
+    /// Leave the detail view for the list.
+    fn back(&mut self, cx: &mut Context<Self>) {
+        self.open = false;
+        self.selected = None;
+        self.confirm_delete = false;
+        self.menu = None;
+        self.notice = None;
+        cx.notify();
+    }
+
+    /// One list row: initials, name, what it runs and when it last ran.
     fn render_row(&self, ix: usize, p: &ProfileInfo, cx: &Context<Self>) -> AnyElement {
-        let theme = cx.theme();
+        let palette = *Palette::of(cx);
         let id = p.profile_id.clone();
-        let selected = self.selected.as_deref() == Some(id.as_str());
-        let last_used = self.last_used.as_deref() == Some(id.as_str());
         let mut meta = vec![format!(
             "{} thread{}",
             p.thread_count,
@@ -433,42 +449,41 @@ impl ProfilesView {
         {
             meta.push(format!("used {}", jobs::when(at)));
         }
-        let palette = Palette::of(cx);
+        let group = SharedString::from(format!("profile-row-{ix}"));
         h_flex()
             .id(("profile-row", ix))
+            .group(group.clone())
             .role(Role::Button)
+            .aria_label(p.settings.display_name.clone())
             .w_full()
-            .gap_2()
-            .px_2()
-            .py_2()
-            .rounded(px(design::CONTROL_RADIUS))
-            .text_sm()
+            .min_h(px(56.))
+            .px(px(16.))
+            .py(px(10.))
+            .gap_3()
+            .items_center()
             .cursor_pointer()
-            .when(selected, |d| d.bg(palette.active))
-            .when(!selected, |d| {
-                crate::design::kit::smooth_bg(d, format!("profile-row-{ix}"), cx)
-            })
+            .hover(|s| s.bg(design::kit::hover_wash(&palette)))
             .on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, window, cx| this.select(Some(id.clone()), window, cx)
             }))
-            .child(Icon::new(IconName::User).small())
+            .child(avatar(&id, &p.settings.display_name))
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
+                    .gap(px(1.))
                     .child(
                         h_flex()
                             .gap_2()
+                            .items_center()
                             .child(
                                 div()
                                     .truncate()
-                                    .font_semibold()
+                                    .text_sm()
+                                    .font_medium()
                                     .child(p.settings.display_name.clone()),
                             )
-                            .when(last_used, |d| {
-                                d.child(Tag::primary().small().child("Last used"))
-                            })
                             .when(p.is_default, |d| {
                                 d.child(Tag::secondary().small().child("Default"))
                             }),
@@ -477,54 +492,65 @@ impl ProfilesView {
                         div()
                             .text_xs()
                             .truncate()
-                            .text_color(theme.muted_foreground)
+                            .text_color(palette.text_muted)
                             .child(meta.join(" · ")),
                     ),
             )
+            // Shown on hover: start a thread without opening the profile.
             .child(
-                Button::new(("profile-thread", ix))
-                    .icon(IconName::Plus)
-                    .ghost()
-                    .small()
-                    .tooltip("New thread on this profile")
-                    .accessibility_label("New thread on this profile")
-                    .on_click(cx.listener(move |this, _, _, cx| this.new_thread(id.clone(), cx))),
+                div().invisible().group_hover(group, |s| s.visible()).child(
+                    Button::new(("profile-thread", ix))
+                        .icon(IconName::Plus)
+                        .label("New thread")
+                        .ghost()
+                        .xsmall()
+                        .accessibility_label("New thread on this profile")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.new_thread(id.clone(), cx)
+                        })),
+                ),
+            )
+            .child(
+                Icon::new(IconName::ChevronRight)
+                    .size(px(14.))
+                    .text_color(palette.text_faint),
             )
             .into_any_element()
     }
 
+    /// The list: profiles that ran, then the ones that never did.
+    fn render_list(&self, cx: &Context<Self>) -> gpui_kit::Div {
+        let (used, unused): (Vec<_>, Vec<_>) = self
+            .items
+            .iter()
+            .enumerate()
+            .partition(|(_, p)| p.last_used_at.is_some());
+        let mut list = v_flex();
+        for (title, group) in [("Recently used", used), ("Not used yet", unused)] {
+            if group.is_empty() {
+                continue;
+            }
+            let rows: Vec<AnyElement> = group
+                .into_iter()
+                .map(|(ix, p)| self.render_row(ix, p, cx))
+                .collect();
+            list = list
+                .child(group_header(title, None, cx))
+                .child(rows_card(rows, cx));
+        }
+        list
+    }
+
     /// The chosen folder (or the default) with Choose and Default buttons.
     fn folder_row(&self, cx: &Context<Self>) -> AnyElement {
-        let p = *Palette::of(cx);
-        let shown = match (&self.picks.folder, self.selected_profile()) {
-            (Some(folder), _) => folder.clone(),
-            (None, Some(profile)) => format!("Default: {}", profile.effective_folder),
+        let shown: SharedString = match (&self.picks.folder, self.selected_profile()) {
+            (Some(folder), _) => folder.clone().into(),
+            (None, Some(profile)) => format!("Default: {}", profile.effective_folder).into(),
             (None, None) => "Default: ~/.ironclaw/profiles/<id>".into(),
         };
-        h_flex()
-            .gap_2()
-            .items_center()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .text_color(if self.picks.folder.is_some() {
-                        p.text
-                    } else {
-                        p.text_muted
-                    })
-                    .child(shown),
-            )
-            .child(
-                Button::new("profile-folder-pick")
-                    .icon(IconName::FolderOpen)
-                    .label("Choose…")
-                    .ghost()
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| this.pick_folder(window, cx))),
-            )
+        let control = h_flex()
+            .gap_1()
             .when(self.picks.folder.is_some(), |d| {
                 d.child(
                     Button::new("profile-folder-reset")
@@ -537,148 +563,302 @@ impl ProfilesView {
                         })),
                 )
             })
-            .into_any_element()
+            .child(
+                Button::new("profile-folder-pick")
+                    .icon(IconName::FolderOpen)
+                    .label("Choose…")
+                    .outline()
+                    .small()
+                    .on_click(cx.listener(|this, _, window, cx| this.pick_folder(window, cx))),
+            );
+        setting_row("Working folder", Some(shown), control, cx)
     }
 
-    fn render_editor(&self, cx: &Context<Self>) -> impl IntoElement {
-        let field = |label: &'static str, state: &Entity<TextareaState>| {
-            labeled(label, Textarea::new(state).into_any_element(), cx)
-        };
+    /// A picker control sized for the right side of a setting row.
+    fn picker(
+        &self,
+        menu: Menu,
+        summary: String,
+        popover: impl FnOnce() -> AnyElement,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .w(px(CONTROL_WIDTH))
+            .child(self.trigger(menu, summary, popover, cx))
+    }
+
+    fn render_editor(&self, cx: &Context<Self>) -> gpui_kit::Div {
         let e = &self.editor;
         let profile = self.selected_profile();
         let creating = self.selected.is_none();
-        let title = match profile {
-            Some(p) => format!("Edit {}", p.settings.display_name),
-            None => "New profile".to_string(),
-        };
-        let can_delete = profile.is_some_and(|p| !p.is_default);
-        card(cx)
-            .child(div().text_sm().font_semibold().child(title))
-            .when(creating, |d| d.child(field("Id", &e.id)))
-            .child(field("Display name", &e.name))
-            .child(labeled(
-                "Default provider and model",
-                self.trigger(
+        let text =
+            |state: &Entity<TextareaState>| div().w(px(CONTROL_WIDTH)).child(Textarea::new(state));
+
+        let mut general = Vec::new();
+        if creating {
+            general.push(setting_row(
+                "Id",
+                Some("Lowercase, used as the folder name. It cannot change later.".into()),
+                text(&e.id),
+                cx,
+            ));
+        }
+        general.push(setting_row("Display name", None, text(&e.name), cx));
+
+        let model = [
+            setting_row(
+                "Default model",
+                Some("New threads on this profile start here.".into()),
+                self.picker(
                     Menu::Model,
                     self.model_summary(),
                     || self.model_popover(cx),
                     cx,
                 ),
                 cx,
-            ))
-            .child(labeled(
+            ),
+            setting_row(
                 "Approvals",
-                self.trigger(
+                Some("Whether tool calls run on their own or wait for you.".into()),
+                self.picker(
                     Menu::Approval,
                     self.approval_summary(),
                     || self.approval_popover(cx),
                     cx,
                 ),
                 cx,
-            ))
-            .child(labeled("Working folder", self.folder_row(cx), cx))
-            .child(labeled(
+            ),
+        ];
+        let workspace = [
+            self.folder_row(cx),
+            setting_row(
                 "Supermemory container",
-                self.trigger(
+                Some("Long-term memory this profile reads and writes.".into()),
+                self.picker(
                     Menu::Memory,
                     self.picks.memory.clone().unwrap_or_else(|| "None".into()),
                     || self.memory_popover(cx),
                     cx,
                 ),
                 cx,
-            ))
-            .child(labeled(
-                "Tool allowlist",
-                self.trigger(
+            ),
+        ];
+        let capabilities = [
+            setting_row(
+                "Tools",
+                Some("Limit the tools this profile can call.".into()),
+                self.picker(
                     Menu::Tools,
                     count_summary(self.picks.tools.len(), "All tools", "tool", "allowed"),
                     || self.checklist_popover(Menu::Tools, "All tools (no allowlist)", cx),
                     cx,
                 ),
                 cx,
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(div().flex_1().child(labeled(
-                        "Hidden skills",
-                        self.trigger(
-                            Menu::Skills,
-                            count_summary(
-                                self.picks.hidden_skills.len(),
-                                "None hidden",
-                                "skill",
-                                "hidden",
-                            ),
-                            || self.checklist_popover(Menu::Skills, "No hidden skills", cx),
-                            cx,
-                        ),
-                        cx,
-                    )))
-                    .child(div().flex_1().child(labeled(
-                        "Enabled MCP servers",
-                        self.trigger(
-                            Menu::Mcp,
-                            count_summary(
-                                self.picks.mcp.len(),
-                                "All MCP servers",
-                                "server",
-                                "enabled",
-                            ),
-                            || self.checklist_popover(Menu::Mcp, "All MCP servers", cx),
-                            cx,
-                        ),
-                        cx,
-                    ))),
-            )
-            .child(field("SOUL.md", &e.soul))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .when(can_delete, |d| {
-                        d.child(if self.confirm_delete {
-                            Button::new("profile-delete-confirm")
-                                .label("Archive?")
-                                .danger()
-                                .small()
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.delete(window, cx)),
-                                )
-                        } else {
-                            Button::new("profile-delete")
-                                .label("Archive")
-                                .ghost()
-                                .small()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.confirm_delete = true;
-                                    cx.notify();
-                                }))
-                        })
-                    })
-                    .child(
-                        Button::new("profile-save")
-                            .label(if creating { "Create" } else { "Save" })
-                            .primary()
-                            .small()
-                            .loading(self.saving)
-                            .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
+            ),
+            setting_row(
+                "Skills",
+                Some("Skills hidden from this profile.".into()),
+                self.picker(
+                    Menu::Skills,
+                    count_summary(
+                        self.picks.hidden_skills.len(),
+                        "None hidden",
+                        "skill",
+                        "hidden",
                     ),
+                    || self.checklist_popover(Menu::Skills, "No hidden skills", cx),
+                    cx,
+                ),
+                cx,
+            ),
+            setting_row(
+                "MCP servers",
+                Some("Servers this profile can reach.".into()),
+                self.picker(
+                    Menu::Mcp,
+                    count_summary(self.picks.mcp.len(), "All MCP servers", "server", "enabled"),
+                    || self.checklist_popover(Menu::Mcp, "All MCP servers", cx),
+                    cx,
+                ),
+                cx,
+            ),
+        ];
+        let soul = div()
+            .p(px(12.))
+            .rounded(px(12.))
+            .bg(block_fill(cx))
+            .child(Textarea::new(&e.soul));
+
+        let can_delete = profile.is_some_and(|p| !p.is_default);
+        let footer = h_flex()
+            .pt(px(24.))
+            .gap_2()
+            .items_center()
+            .when(can_delete, |d| {
+                d.child(if self.confirm_delete {
+                    Button::new("profile-delete-confirm")
+                        .label("Archive this profile?")
+                        .danger()
+                        .small()
+                        .on_click(cx.listener(|this, _, window, cx| this.delete(window, cx)))
+                } else {
+                    Button::new("profile-delete")
+                        .label("Archive")
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm_delete = true;
+                            cx.notify();
+                        }))
+                })
+            })
+            .child(div().flex_1())
+            .when_some(self.notice.clone(), |d, n| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(Palette::of(cx).text_muted)
+                        .child(n),
+                )
+            })
+            .child(
+                Button::new("profile-cancel")
+                    .label(if creating { "Cancel" } else { "Done" })
+                    .ghost()
+                    .small()
+                    .on_click(cx.listener(|this, _, _, cx| this.back(cx))),
             )
+            .child(
+                Button::new("profile-save")
+                    .label(if creating { "Create profile" } else { "Save" })
+                    .primary()
+                    .small()
+                    .loading(self.saving)
+                    .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
+            );
+
+        v_flex()
+            .child(group_header("General", None, cx).pt(px(16.)))
+            .child(rows_card(general, cx))
+            .child(group_header("Model and access", None, cx))
+            .child(rows_card(model, cx))
+            .child(group_header("Workspace", None, cx))
+            .child(rows_card(workspace, cx))
+            .child(group_header(
+                "Capabilities",
+                Some("Skills, keys and MCP servers are shared; a profile only narrows them."),
+                cx,
+            ))
+            .child(rows_card(capabilities, cx))
+            .child(group_header(
+                "SOUL.md",
+                Some("Who this profile is and how it works."),
+                cx,
+            ))
+            .child(soul)
+            .child(footer)
+    }
+
+    /// The detail view's top: back link, name, and a New thread button.
+    fn render_detail_header(&self, cx: &Context<Self>) -> gpui_kit::Div {
+        let palette = *Palette::of(cx);
+        let profile = self.selected_profile();
+        let title: SharedString = profile
+            .map(|p| p.settings.display_name.clone().into())
+            .unwrap_or_else(|| "New profile".into());
+        let back = h_flex()
+            .id("profiles-back")
+            .role(Role::Button)
+            .aria_label("Back to profiles")
+            .gap_1()
+            .px(px(8.))
+            .pb(px(10.))
+            .items_center()
+            .text_xs()
+            .text_color(palette.text_muted)
+            .cursor_pointer()
+            .hover(|s| s.text_color(palette.text))
+            .child(Icon::new(IconName::ChevronLeft).size(px(12.)))
+            .child("Profiles")
+            .on_click(cx.listener(|this, _, _, cx| this.back(cx)));
+        let actions = h_flex().gap_1().when_some(profile, |d, p| {
+            let id = p.profile_id.clone();
+            d.child(
+                Button::new("profile-detail-thread")
+                    .icon(IconName::Plus)
+                    .label("New thread")
+                    .outline()
+                    .small()
+                    .on_click(cx.listener(move |this, _, _, cx| this.new_thread(id.clone(), cx))),
+            )
+        });
+        v_flex().child(back).child(
+            h_flex()
+                .px(px(8.))
+                .gap_3()
+                .items_center()
+                .when_some(profile, |d, p| {
+                    d.child(avatar(&p.profile_id, &p.settings.display_name))
+                })
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_size(gpui_kit::rems(20. / 16.))
+                                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                .truncate()
+                                .child(title),
+                        )
+                        .when_some(profile, |d, p| {
+                            d.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.text_muted)
+                                    .child(format!(
+                                        "{} · {} thread{}",
+                                        p.profile_id,
+                                        p.thread_count,
+                                        if p.thread_count == 1 { "" } else { "s" }
+                                    )),
+                            )
+                        }),
+                )
+                .child(actions),
+        )
     }
 }
 
-/// A field: its label over its control.
-fn labeled(label: &'static str, control: AnyElement, cx: &App) -> gpui_kit::Div {
-    v_flex()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .text_color(Palette::of(cx).text_muted)
-                .child(label),
-        )
-        .child(control)
+/// Width of the controls on the right of each setting row.
+const CONTROL_WIDTH: f32 = 280.;
+
+/// A profile's initials on a tint picked from its id, so each profile keeps
+/// its color across launches.
+fn avatar(id: &str, name: &str) -> impl IntoElement {
+    let hue = id
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+        % 360;
+    let tint = gpui_kit::hsla(hue as f32 / 360., 0.5, 0.6, 1.);
+    let initials: String = name
+        .split_whitespace()
+        .filter_map(|w| w.chars().next())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect();
+    div()
+        .flex_none()
+        .size(px(30.))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(tint.opacity(0.16))
+        .text_color(tint)
+        .text_xs()
+        .font_semibold()
+        .child(initials)
 }
 
 /// "All tools" for an empty set, else "3 tools allowed".
@@ -714,51 +894,55 @@ fn import_summary(report: &HermesImportResponse) -> String {
 
 impl Render for ProfilesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let actions = h_flex()
-            .gap_1()
-            .child(
-                Button::new("profile-new")
-                    .label("New profile")
-                    .ghost()
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| this.select(None, window, cx))),
-            )
-            .child(
-                Button::new("profiles-import")
-                    .label("Import from Hermes")
-                    .ghost()
-                    .small()
-                    .loading(self.importing)
-                    .on_click(cx.listener(|this, _, _, cx| this.import(cx))),
-            )
-            .child(
-                refresh_button("refresh-profiles")
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-            );
-        let rows: Vec<AnyElement> = self
-            .items
-            .iter()
-            .enumerate()
-            .map(|(ix, p)| self.render_row(ix, p, cx))
-            .collect();
-        let body = v_flex()
-            .child(header("Profiles", actions))
-            .when_some(self.error.as_ref(), |this, e| this.child(error_line(e, cx)))
-            .when_some(self.notice.clone(), |this, n| {
-                this.child(
-                    div()
-                        .pb_3()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .whitespace_normal()
-                        .child(n),
+        let error = self.error.clone();
+        let body = if self.open {
+            v_flex()
+                .child(self.render_detail_header(cx))
+                .when_some(error, |d, e| {
+                    d.child(div().pt_3().child(error_line(&e, cx)))
+                })
+                .child(self.render_editor(cx))
+        } else {
+            let actions = h_flex()
+                .gap_1()
+                .child(
+                    Button::new("profiles-import")
+                        .label("Import from Hermes")
+                        .ghost()
+                        .small()
+                        .loading(self.importing)
+                        .on_click(cx.listener(|this, _, _, cx| this.import(cx))),
                 )
-            })
-            .when(self.loaded && rows.is_empty(), |this| {
-                this.child(empty_state("No profiles yet.", cx))
-            })
-            .child(v_flex().gap_px().pb_4().children(rows))
-            .child(self.render_editor(cx));
+                .child(
+                    refresh_button("refresh-profiles")
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                )
+                .child(
+                    Button::new("profile-new")
+                        .icon(IconName::Plus)
+                        .label("New profile")
+                        .primary()
+                        .small()
+                        .on_click(cx.listener(|this, _, window, cx| this.select(None, window, cx))),
+                );
+            v_flex()
+                .child(header("Profiles", actions))
+                .when_some(error, |d, e| d.child(error_line(&e, cx)))
+                .when_some(self.notice.clone(), |d, n| {
+                    d.child(
+                        div()
+                            .px(px(8.))
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .whitespace_normal()
+                            .child(n),
+                    )
+                })
+                .when(self.loaded && self.items.is_empty(), |d| {
+                    d.child(empty_state("No profiles yet.", cx))
+                })
+                .child(self.render_list(cx))
+        };
         page_body("profiles-page", body)
     }
 }

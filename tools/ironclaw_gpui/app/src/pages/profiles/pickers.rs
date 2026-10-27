@@ -227,7 +227,7 @@ impl ProfilesView {
                         div()
                             .absolute()
                             .top(px(36.))
-                            .left_0()
+                            .right_0()
                             .w(px(if menu == Menu::Model { 460. } else { 380. }))
                             .occlude()
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {

@@ -126,6 +126,11 @@ pub struct Workspace {
     alerts: Alerts,
     battery: BatterySaver,
     _activation: Subscription,
+    /// The window's fallback focus. When the focused element leaves the tree
+    /// (the model picker's search box after a pick), focus returns here so
+    /// window shortcuts like ⇧⌘M keep reaching the workspace.
+    focus: gpui_kit::FocusHandle,
+    _focus_lost: Subscription,
     /// Status bar data: the shared usage report and the open thread's
     /// telemetry (`None` until known, or when the gateway lacks the route).
     usage: Option<Entity<UsageModel>>,
@@ -175,6 +180,10 @@ impl Workspace {
                 if window.is_window_active() {
                     this.refresh_inbox(cx);
                 }
+            }),
+            focus: cx.focus_handle(),
+            _focus_lost: cx.on_focus_lost(window, |this, window, cx| {
+                window.focus(&this.focus, cx);
             }),
             usage: None,
             telemetry: None,
@@ -518,7 +527,7 @@ impl Workspace {
             Page::Extensions => open!(extensions, |cx| ExtensionsView::new(backend, cx)),
             Page::Skills => open!(skills, |cx| SkillsView::new(backend, window, cx)),
             Page::Settings | Page::Appearance | Page::Permissions | Page::Traces => {
-                open!(settings, |cx| SettingsView::new(backend, cx));
+                open!(settings, |cx| SettingsView::new(backend, window, cx));
                 let section = match page {
                     Page::Appearance => Section::Appearance,
                     Page::Permissions => Section::Permissions,
@@ -1293,6 +1302,7 @@ impl Render for Workspace {
         v_flex()
             .size_full()
             .relative()
+            .track_focus(&self.focus)
             .capture_any_mouse_down(|_, window, _| crate::native_view::reclaim_focus(window))
             .bg(p.surface.opacity(s.shell_alpha))
             .text_color(p.text)
