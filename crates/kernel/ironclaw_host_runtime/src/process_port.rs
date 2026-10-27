@@ -537,11 +537,15 @@ async fn execute_local_command(
         .current_dir(workdir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
     let mut child = command.spawn().map_err(|e| {
         RuntimeProcessError::ExecutionFailed(format!("Failed to spawn command: {e}"))
     })?;
+    // A cancelled run drops this future mid-await; the guard then kills the
+    // whole process group so Stop ends the command instead of orphaning it.
+    let mut group_guard = ChildGroupKillGuard::new(child.id());
 
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
@@ -570,6 +574,9 @@ async fn execute_local_command(
         Ok::<_, RuntimeProcessError>((stdout?, stderr?, status.code().unwrap_or(-1)))
     })
     .await;
+    // The child exited or `terminate_child_tree` handles it below; a late
+    // group kill could hit a reused pgid.
+    group_guard.disarm();
 
     match result {
         Ok(Ok((stdout, stderr, code))) => {
@@ -579,6 +586,35 @@ async fn execute_local_command(
         Err(_) => {
             terminate_child_tree(&mut child).await;
             Err(RuntimeProcessError::Timeout(timeout))
+        }
+    }
+}
+
+/// Kills the spawned command's process group when dropped while armed.
+struct ChildGroupKillGuard {
+    pid: Option<u32>,
+}
+
+impl ChildGroupKillGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    fn disarm(&mut self) {
+        self.pid = None;
+    }
+}
+
+impl Drop for ChildGroupKillGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.pid.take() {
+            // SAFETY: Child was spawned into its own process group with
+            // pgid == pid and has not been reaped (the guard is disarmed once
+            // it is). Best-effort; the group may already be gone.
+            unsafe {
+                let _ = kill(-(pid as i32), SIGKILL);
+            }
         }
     }
 }
@@ -1112,6 +1148,36 @@ mod tests {
             .unwrap();
 
         assert!(output.output.contains("... [truncated 1 bytes] ..."));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_running_command_kills_its_process_group() {
+        // Stop drops the invocation future mid-await. The command and the
+        // background child it forked must both die, not finish on their own.
+        let workdir = tempfile::tempdir().expect("tempdir");
+        let marker = workdir.path().join("survived");
+        let (scope, dir, env) = (
+            ResourceScope::system(),
+            workdir.path().to_path_buf(),
+            HashMap::new(),
+        );
+        let run = execute_local_command(
+            &scope,
+            "(sleep 1; touch survived) & sleep 30",
+            &dir,
+            Duration::from_secs(60),
+            &env,
+            HostProcessEnvMode::Scrubbed,
+        );
+        let dropped = tokio::time::timeout(Duration::from_millis(300), run).await;
+        assert!(dropped.is_err(), "the command must still be running when dropped");
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !marker.exists(),
+            "the forked child outlived the dropped command"
+        );
     }
 
     #[cfg(unix)]

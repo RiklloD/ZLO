@@ -132,7 +132,28 @@ impl ExecutorStage<ModelInput> for ModelStage {
             {
                 return Ok(ModelStep::RetryIteration(Box::new(state)));
             }
-            let model_result = ctx.host.stream_model(request.clone()).await;
+            // Race the provider call against Stop. Dropping the losing stream
+            // closes the provider connection (no more billed tokens) and the
+            // host-managed model port's release guard returns the in-flight
+            // budget reservation. The cancel check then writes the normal
+            // cancelled exit instead of waiting for the full response.
+            let model_result = {
+                let model_call = ctx.host.stream_model(request.clone());
+                tokio::pin!(model_call);
+                let cancellation = ctx.host.cancellation_requested();
+                tokio::pin!(cancellation);
+                tokio::select! {
+                    biased;
+                    result = &mut model_call => Some(result),
+                    _signal = &mut cancellation => None,
+                }
+            };
+            let Some(model_result) = model_result else {
+                return match CheckpointStage.cancel_if_requested(ctx, state).await? {
+                    CancelCheck::Exit(exit) => Ok(ModelStep::Exit(exit)),
+                    CancelCheck::Continue(_) => Err(AgentLoopExecutorError::Cancelled),
+                };
+            };
             match model_result {
                 Ok(response) => {
                     state.model_state.fallback_index = request.fallback_index;

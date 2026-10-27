@@ -957,11 +957,23 @@ impl ChatView {
         let Some(run) = self.running_run() else {
             return;
         };
+        // Flip to "Stopping" on the click itself; the backend confirms later.
+        self.transcript.mark_stop_requested(&run);
+        self.refresh_rows(cx);
         let thread_id = self.thread_id.clone();
         let job = self
             .backend
             .spawn(move |c| async move { c.cancel_run(&thread_id, &run).await });
-        self.run_and_report(job, cx);
+        let task = cx.spawn(async move |this, cx| {
+            if let Err(e) = flatten(job.await) {
+                let _ = this.update(cx, |this, cx| {
+                    this.transcript.clear_stop_requested();
+                    this.refresh_rows(cx);
+                    this.set_error(e.to_string(), cx);
+                });
+            }
+        });
+        self.keep(task);
     }
 
     fn retry(&mut self, run: String, cx: &mut Context<Self>) {

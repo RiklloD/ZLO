@@ -229,6 +229,8 @@ pub struct Transcript {
     /// Command results, each placed after the last durable message it saw.
     notes: Vec<(u64, Row)>,
     latest_run: Option<String>,
+    /// Stop clicked in this view; shows "Stopping" before the server confirms.
+    stop_requested: Option<String>,
     tick: u64,
     /// A fork's source conversation, shown read-only above its own messages.
     prefix: Vec<TimelineMessage>,
@@ -484,11 +486,25 @@ impl Transcript {
         }
     }
 
-    /// Stop was accepted but the run has not wound down yet.
+    pub fn mark_stop_requested(&mut self, run: &str) {
+        self.stop_requested = Some(run.to_string());
+    }
+
+    /// The cancel POST failed: fall back to the server's view of the run.
+    pub fn clear_stop_requested(&mut self) {
+        self.stop_requested = None;
+    }
+
+    /// Stop was clicked or accepted, but the run has not wound down yet.
     pub fn is_stopping(&self) -> bool {
-        self.active_run()
-            .and_then(|run| self.runs.get(run))
-            .is_some_and(|s| s.status == "cancel_requested")
+        let Some(run) = self.active_run() else {
+            return false;
+        };
+        self.stop_requested.as_deref() == Some(run)
+            || self
+                .runs
+                .get(run)
+                .is_some_and(|s| s.status == "cancel_requested")
     }
 
     pub fn apply(&mut self, event: &StreamEvent) -> Applied {
@@ -1256,6 +1272,22 @@ mod tests {
         assert!(t.is_stopping());
         t.apply(&status("cancelled"));
         assert_eq!(t.active_run(), None);
+        assert!(!t.is_stopping());
+    }
+
+    /// The click alone shows "Stopping"; a failed POST reverts it.
+    #[test]
+    fn stop_click_shows_stopping_before_the_server_confirms() {
+        let mut t = Transcript::default();
+        t.set_timeline(timeline(None));
+        t.apply(&status("running"));
+        assert!(!t.is_stopping());
+        t.mark_stop_requested(RUN);
+        assert!(t.is_stopping());
+        t.clear_stop_requested();
+        assert!(!t.is_stopping());
+        t.mark_stop_requested(RUN);
+        t.apply(&status("cancelled"));
         assert!(!t.is_stopping());
     }
 

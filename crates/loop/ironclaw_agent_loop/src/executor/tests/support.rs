@@ -72,6 +72,7 @@ pub(super) struct MockHost {
         >,
     >,
     single_invoke_delays: Arc<[std::time::Duration]>,
+    model_delay: Option<std::time::Duration>,
     next_single_invoke_delay: Arc<AtomicUsize>,
     active_single_invocations: Arc<AtomicUsize>,
     max_concurrent_single_invocations: Arc<AtomicUsize>,
@@ -126,6 +127,7 @@ impl MockHost {
             batch_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             single_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             single_invoke_delays: Arc::from([]),
+            model_delay: None,
             next_single_invoke_delay: Arc::new(AtomicUsize::new(0)),
             active_single_invocations: Arc::new(AtomicUsize::new(0)),
             max_concurrent_single_invocations: Arc::new(AtomicUsize::new(0)),
@@ -264,6 +266,11 @@ impl MockHost {
 
     pub(super) fn with_single_invoke_delays(mut self, delays: Vec<std::time::Duration>) -> Self {
         self.single_invoke_delays = delays.into();
+        self
+    }
+
+    pub(super) fn with_model_delay(mut self, delay: std::time::Duration) -> Self {
+        self.model_delay = Some(delay);
         self
     }
 
@@ -856,6 +863,9 @@ impl ironclaw_loop_contracts::LoopModelPort for MockHost {
         request: LoopModelRequest,
     ) -> Result<LoopModelResponse, AgentLoopHostError> {
         self.model_requests.lock().expect("lock").push(request);
+        if let Some(delay) = self.model_delay {
+            tokio::time::sleep(delay).await;
+        }
         if let Some(error) = self.model_errors.lock().expect("lock").pop_front() {
             return Err(error);
         }

@@ -500,6 +500,44 @@ async fn model_cancelled_returns_cancelled_without_retry() {
     assert_eq!(host.model_requests()[0].iteration, 3);
 }
 
+#[tokio::test(start_paused = true)]
+async fn stop_during_model_stream_exits_without_waiting_for_the_response() {
+    // Stop must cut an in-flight provider call, not wait for it: a scripted
+    // 60s model response would otherwise hold the run open (and billing).
+    let host =
+        MockHost::new(vec![reply_response()]).with_model_delay(std::time::Duration::from_secs(60));
+    let state = LoopExecutionState::initial_for_run(host.run_context());
+    let run_host = host.clone();
+    let started = tokio::time::Instant::now();
+    let executor = tokio::spawn(async move {
+        CanonicalAgentLoopExecutor
+            .execute_family(&crate::families::default(), &run_host, state)
+            .await
+    });
+    while host.model_requests().is_empty() {
+        tokio::task::yield_now().await;
+    }
+    host.request_cancellation(LoopCancelReasonKind::UserRequested);
+
+    let exit = executor
+        .await
+        .expect("executor task must not panic")
+        .expect("execute");
+
+    assert!(
+        matches!(exit, LoopExit::Cancelled(_)),
+        "expected Cancelled exit, got {exit:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "Stop must not wait out the model call"
+    );
+    assert!(
+        host.finalized_assistant_messages().is_empty(),
+        "a cut model call must not fabricate a finalized reply"
+    );
+}
+
 #[tokio::test]
 async fn transcript_finalize_cancelled_propagates_cancelled_without_retry() {
     let host = MockHost::new(vec![reply_response()])

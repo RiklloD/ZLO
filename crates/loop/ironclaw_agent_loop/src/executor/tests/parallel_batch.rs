@@ -925,12 +925,10 @@ async fn parallel_batch_preserves_success_when_sibling_returns_recoverable_port_
 }
 
 #[tokio::test(start_paused = true)]
-async fn parallel_batch_cancelled_sibling_ends_run_with_checked_state() {
-    // Gap-2 regression (review follow-up): a cancellation passthrough exit
-    // (`OutcomeStep::Exit { state: None }`) must end the run immediately with
-    // the cancelled sibling's own coherent checkpoint — not let the deferred
-    // gate produce a later cancellation checkpoint from the older shared
-    // state that omits the sibling's pre-cancel mutations.
+async fn stop_mid_parallel_batch_drops_inflight_calls_with_checked_state() {
+    // Stop while both invocations are parked must end the run at once with
+    // a coherent Final checkpoint, without waiting for either call and
+    // without letting the deferred gate stage a BeforeBlock.
     let gate_ref = LoopGateRef::new("gate:parallel-cancelled-sibling").expect("valid");
     let error_ref = LoopResultRef::new(format!(
         "result:provider-error-{}-{}",
@@ -1034,25 +1032,18 @@ async fn parallel_batch_cancelled_sibling_ends_run_with_checked_state() {
         "the deferred gate must not stage a BeforeBlock after a cancellation exit"
     );
 
-    // The exit's Final checkpoint is the cancelled sibling's own: it carries
-    // the pre-cancel mutations (error ref + failure kind) that the older
-    // shared state — which the deferred gate would have checkpointed — omits.
+    // Stop drops the in-flight batch instead of draining it: neither scripted
+    // outcome is observed, and the provider-replayed call gets a synthetic
+    // "stopped" result so the transcript keeps its tool call paired.
     let final_state = final_staged_state(&host);
     assert_eq!(
         final_state.result_refs,
         vec![error_ref],
-        "the cancelled sibling's checked state must retain its appended error ref"
+        "the stopped provider call must get exactly one paired result"
     );
-    assert_eq!(
-        final_state
-            .recent_failure_kinds
-            .iter()
-            .copied()
-            .collect::<Vec<_>>(),
-        vec![capability_error_to_failure_kind(
-            FailureKind::OperationFailed
-        )],
-        "the cancelled sibling's checked state must retain its failure bookkeeping"
+    assert!(
+        final_state.recent_failure_kinds.is_empty(),
+        "a dropped batch must not record the outcomes it never observed"
     );
 }
 

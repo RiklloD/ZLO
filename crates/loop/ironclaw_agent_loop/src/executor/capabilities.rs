@@ -387,7 +387,23 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
                 capability_invocation_from_candidate(call, resume)
             })
             .collect();
-        let batch_result = self.invoke_batch(ctx, policy, invocations).await;
+        // Race the batch against Stop. Dropping it drops every in-flight
+        // invocation (dispatch reservations release, host processes are
+        // killed by their group guard), so Stop ends a long tool at once.
+        let batch_result = {
+            let batch = self.invoke_batch(ctx, policy, invocations);
+            tokio::pin!(batch);
+            let cancellation = ctx.host.cancellation_requested();
+            tokio::pin!(cancellation);
+            tokio::select! {
+                biased;
+                result = &mut batch => Some(result),
+                _signal = &mut cancellation => None,
+            }
+        };
+        let Some(batch_result) = batch_result else {
+            return self.stopped_mid_batch(ctx, state, &visible_calls).await;
+        };
         if let Ok(batch) = &batch_result
             && (batch.outcomes.is_empty()
                 || batch.outcomes.len() > visible_calls.len()
