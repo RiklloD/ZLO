@@ -1,7 +1,7 @@
 //! Wallpaper painting on the CPU, free of GPUI so it runs on a background
 //! thread (and in a plain test): a painted sky scene or a picture, redrawn
-//! through one of Zeron's background effects, then faded out by alpha
-//! toward the bottom so the new-chat screen dissolves into the app.
+//! through one of Zeron's background effects. The app lays it over the
+//! window at the opacity the person picked.
 //!
 //! The work happens once per wallpaper, window size or theme change. The
 //! result is a single static texture; nothing runs while the app is idle.
@@ -47,16 +47,12 @@ impl Canvas {
         c
     }
 
-    /// Straight-alpha RGBA, alpha from `alpha(v, color)` with `v` the
-    /// row's height fraction. A sub-step of noise keeps long alpha ramps
-    /// from banding at 8 bits.
-    pub fn to_image_alpha(&self, alpha: impl Fn(f32, Rgb) -> f32) -> RgbaImage {
+    /// Opaque RGBA; the app sets the opacity when it draws the picture.
+    pub fn to_image(&self) -> RgbaImage {
         let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
         RgbaImage::from_fn(self.w, self.h, |x, y| {
             let c = self.px[(y * self.w + x) as usize];
-            let v = y as f32 / self.h.max(1) as f32;
-            let n = (hash(x as i32, y as i32, 7) - 0.5) / 255.;
-            Rgba([byte(c[0]), byte(c[1]), byte(c[2]), byte(alpha(v, c) + n)])
+            Rgba([byte(c[0]), byte(c[1]), byte(c[2]), 255])
         })
     }
 
@@ -149,20 +145,6 @@ pub fn scene(id: &str, w: u32, h: u32) -> Canvas {
         }
     }
     out
-}
-
-/// How strongly the picture shows at height `v` (0 top, 1 bottom): full
-/// through the upper part, then dissolving into the surface behind it, as
-/// Zeron's hero fades into its canvas. Some of it stays at the bottom so
-/// the picture still fills the window.
-fn hero_alpha(v: f32) -> f32 {
-    1. - 0.82 * smoothstep(0.32, 0.96, v)
-}
-
-/// The new-chat picture: its own colors, faded by alpha (not by mixing in
-/// the theme color), so the real surface shows through below.
-pub fn hero(c: &Canvas) -> RgbaImage {
-    c.to_image_alpha(|v, _| hero_alpha(v))
 }
 
 /// Redraw the picture through an effect id from [`EFFECTS`]. The effects

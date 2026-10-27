@@ -317,7 +317,7 @@ impl ChatView {
     /// The pane's laid-out width and its 0..1 reveal. The pane slides
     /// open and shut and eases between its normal and widened sizes; a
     /// drag or a window resize applies at once.
-    fn side_geometry(&self, window: &Window, cx: &App) -> (f32, f32) {
+    pub(crate) fn side_geometry(&self, window: &Window, cx: &App) -> (f32, f32) {
         let t = panels::reveal("side-reveal", side_open(cx), cx);
         if let Some(w) = self.side.drag {
             return (w, t);
@@ -587,8 +587,8 @@ impl ChatView {
             .left_0()
             .w(px(width))
             .h_full()
-            // A tinted sheet: the wallpaper runs on underneath, a step
-            // darker than the transcript so the pane reads as its own layer.
+            // A tinted sheet, a step darker than the transcript so the
+            // pane reads as its own layer.
             .bg(p.surface.opacity(0.45))
             .border_l_1()
             .border_color(p.border)

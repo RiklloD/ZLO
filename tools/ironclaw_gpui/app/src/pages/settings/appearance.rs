@@ -453,13 +453,72 @@ pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> imp
         },
         cx,
     );
-    let in_threads = Switch::new("wallpaper-in-threads")
-        .checked(prefs.wallpaper_in_threads)
-        .accessibility_label("Wallpaper behind threads")
-        .on_click(|on: &bool, _, cx| {
-            let on = *on;
-            crate::design::prefs::Prefs::update(cx, |p| p.wallpaper_in_threads = on);
-        });
+    // shalldie's vscode-background settings: where, how strong, how it
+    // fits, how often a folder moves on.
+    let area_select = select(
+        "wallpaper-area",
+        prefs.wallpaper_area.clone(),
+        vec![
+            ("window".into(), "Whole window".into()),
+            ("conversation".into(), "Conversation".into()),
+            ("sidebar".into(), "Sidebar".into()),
+            ("pane".into(), "Right pane".into()),
+        ],
+        menu == Some("wallpaper-area"),
+        |v, cx| {
+            let v = v.to_string();
+            crate::design::prefs::Prefs::update(cx, |p| p.wallpaper_area = v);
+        },
+        cx,
+    );
+    let opacity_select = select(
+        "wallpaper-opacity",
+        format!("{}", (prefs.wallpaper_opacity * 100.).round() as u32),
+        [5, 10, 15, 20, 25, 30, 40, 50, 60]
+            .into_iter()
+            .map(|n| (n.to_string(), format!("{n} %")))
+            .collect(),
+        menu == Some("wallpaper-opacity"),
+        |v, cx| {
+            let n = v.parse::<f32>().unwrap_or(20.) / 100.;
+            crate::design::prefs::Prefs::update(cx, |p| p.wallpaper_opacity = n);
+        },
+        cx,
+    );
+    let fit_select = select(
+        "wallpaper-fit",
+        prefs.wallpaper_fit.clone(),
+        vec![
+            ("cover".into(), "Fill".into()),
+            ("contain".into(), "Fit".into()),
+        ],
+        menu == Some("wallpaper-fit"),
+        |v, cx| {
+            let v = v.to_string();
+            crate::design::prefs::Prefs::update(cx, |p| p.wallpaper_fit = v);
+            design::wallpaper::reload(cx);
+        },
+        cx,
+    );
+    let interval_select = select(
+        "wallpaper-interval",
+        prefs.wallpaper_interval.to_string(),
+        vec![
+            ("0".into(), "New chat".into()),
+            ("1".into(), "1 min".into()),
+            ("5".into(), "5 min".into()),
+            ("15".into(), "15 min".into()),
+            ("60".into(), "1 hour".into()),
+        ],
+        menu == Some("wallpaper-interval"),
+        |v, cx| {
+            let n = v.parse().unwrap_or(0);
+            crate::design::prefs::Prefs::update(cx, |p| p.wallpaper_interval = n);
+            design::wallpaper::reload(cx);
+        },
+        cx,
+    );
+    let folder = matches!(prefs.wallpaper, Wallpaper::Folder { .. });
     let translucent = Switch::new("translucent-window")
         .checked(prefs.translucent)
         .accessibility_label("Translucent window")
@@ -467,7 +526,7 @@ pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> imp
     let material_rows = rows_card(
         [
             setting_row(
-                "New chat wallpaper",
+                "Wallpaper",
                 Some(wallpaper_detail.into()),
                 wallpaper_select,
                 cx,
@@ -479,18 +538,39 @@ pub fn render(menu: Option<&'static str>, cx: &mut Context<SettingsView>) -> imp
                 cx,
             ),
             setting_row(
-                "Behind threads",
-                Some("A faint copy of the wallpaper behind open conversations.".into()),
-                in_threads,
+                "Show on",
+                Some("The part of the window the wallpaper lies over.".into()),
+                area_select,
                 cx,
             ),
             setting_row(
-                "Translucent window",
-                Some("The desktop shows through the sidebar, blurred by macOS.".into()),
-                translucent,
+                "Opacity",
+                Some("Lower keeps text sharper.".into()),
+                opacity_select,
                 cx,
             ),
-        ],
+            setting_row(
+                "Size",
+                Some("Fill crops the picture to the area, Fit shows all of it.".into()),
+                fit_select,
+                cx,
+            ),
+        ]
+        .into_iter()
+        .chain(folder.then(|| {
+            setting_row(
+                "Next picture",
+                Some("When the folder moves on to another picture.".into()),
+                interval_select,
+                cx,
+            )
+        }))
+        .chain([setting_row(
+            "Translucent window",
+            Some("The desktop shows through the sidebar, blurred by macOS.".into()),
+            translucent,
+            cx,
+        )]),
         cx,
     );
 

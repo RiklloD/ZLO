@@ -28,7 +28,6 @@ use crate::pages::settings::{Section, SettingsView};
 use crate::pages::skills::SkillsView;
 use crate::pages::usage::{UsageModel, UsageView};
 use crate::ui::*;
-use gpui_kit::StyledImage as _;
 
 mod command;
 mod draft;
@@ -1285,7 +1284,11 @@ impl Render for Workspace {
                     (None, Some((_, chat))) => chat.clone().into_any_element(),
                     (None, None) => self.render_empty(cx).into_any_element(),
                 };
-                let backdrop = self.render_backdrop(window, cx);
+                let over_main = [
+                    self.render_wallpaper("conversation", window, cx),
+                    self.render_wallpaper("pane", window, cx),
+                ];
+                let over_sidebar = self.render_wallpaper("sidebar", window, cx);
                 // Zeron's shell: full-height columns to the window's edges.
                 // The sidebar keeps its full width inside a clip that grows
                 // or shrinks around it, so its rows never rewrap mid-slide.
@@ -1305,6 +1308,7 @@ impl Render for Workspace {
                                 .opacity(motion::lerp(0.35, 1., sidebar_t))
                                 .child(self.render_sidebar(cx)),
                         )
+                        .children(over_sidebar)
                 });
                 let shell = h_flex()
                     .size_full()
@@ -1330,14 +1334,14 @@ impl Render for Workspace {
                             .overflow_hidden()
                             .flex()
                             .flex_col()
-                            .children(backdrop)
                             .child(breadcrumb)
                             .child(motion::fade_in(
                                 div().flex_1().min_h_0().w_full().child(main),
                                 ElementId::Name(key),
                                 s.enter,
                                 s.enter_rise,
-                            )),
+                            ))
+                            .children(over_main.into_iter().flatten()),
                     );
                 // The loading screen hands over with a quick fade; the
                 // window's sidebar button sits above both columns, so it
@@ -1365,6 +1369,7 @@ impl Render for Workspace {
         };
         let show_status = !Prefs::of(cx).status_bar_hidden;
         let command = self.render_command_menu(cx);
+        let over_window = self.render_wallpaper("window", window, cx);
         // A native preview not painted this frame hides after it; the
         // command menu would draw under it, so it hides for that too.
         crate::native_view::frame_begin(window, command.is_some());
@@ -1455,6 +1460,7 @@ impl Render for Workspace {
                 }))
                 .child(div().flex_1().min_h_0().child(body))
                 .when(show_status, |d| d.child(self.render_status_bar(cx)))
+                .children(over_window)
                 .children(command)
                 .child(motion::frame_tail()),
         )
@@ -1534,65 +1540,58 @@ impl Workspace {
         }
     }
 
-    /// The wallpaper behind the content column: the clear picture on the
-    /// new-chat screen, the empty one and behind threads,
-    /// none on settings pages. It is painted at the window's size and pinned
-    /// to the window's right edge, so a sidebar sliding over its left end
-    /// never rescales or recrops it. Moving between the two copies, or to a
-    /// new picture, crossfades.
-    fn render_backdrop(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The wallpaper over one area of the window, when the person picked
+    /// that area (`wallpaper_area`): the whole window, the conversation,
+    /// the sidebar or the right pane. Each layer is painted at its area's
+    /// settled size, so a sidebar or pane slide costs one repaint after it
+    /// ends, and sits above the area's content, as in VS Code.
+    fn render_wallpaper(
+        &self,
+        area: &str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let prefs = Prefs::of(cx);
-        if prefs.wallpaper == design::prefs::Wallpaper::None {
+        if prefs.wallpaper_area != area {
             return None;
         }
-        // Appearance previews over the chat, so it shows that chat's backdrop.
-        let page = if self.page == Page::Appearance {
-            Page::Chat
-        } else {
-            self.page
-        };
-        // Threads show the same picture as the new-chat screen, undimmed.
-        match (page, &self.active) {
-            (Page::Draft, _) | (Page::Chat, None) => {}
-            (Page::Chat, Some(_)) if prefs.wallpaper_in_threads => {}
-            _ => return None,
-        }
         let viewport = window.viewport_size();
+        let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
         let status = if prefs.status_bar_hidden {
             0.
         } else {
             design::STATUS_BAR_HEIGHT
         };
-        let (w, h) = (
-            f32::from(viewport.width),
-            f32::from(viewport.height) - status,
-        );
-        wallpaper::ensure(w, h, cx);
-        let reduced = cx.reduce_motion();
-        let layers = wallpaper::layers(0., reduced, cx);
-        if layers.is_empty() {
-            return None;
-        }
-        Some(
-            div()
-                .absolute()
+        let sidebar = if prefs.sidebar_hidden {
+            0.
+        } else {
+            self.sidebar_width(cx)
+        };
+        // The right pane belongs to an open thread (Appearance floats over it).
+        let (pane, pane_t) = match (self.page, &self.active) {
+            (Page::Chat | Page::Appearance, Some((_, chat))) => {
+                chat.read(cx).side_geometry(window, cx)
+            }
+            _ => (0., 0.),
+        };
+        let pane_settled = if prefs.side_open { pane } else { 0. };
+        let layer = match area {
+            "window" => wallpaper::overlay(vw, vh, cx)?.top_0().left_0(),
+            "conversation" => wallpaper::overlay(vw - sidebar - pane_settled, vh - status, cx)?
                 .top_0()
-                .right_0()
-                .w(px(w))
-                .h(px(h))
-                .children(layers.into_iter().map(|(image, opacity)| {
-                    gpui_kit::img(image)
-                        .absolute()
-                        .inset_0()
-                        .size_full()
-                        .opacity(opacity)
-                        .object_fit(gpui_kit::ObjectFit::Cover)
-                }))
-                .into_any_element(),
-        )
+                .left_0(),
+            "sidebar" => wallpaper::overlay(sidebar, vh - status, cx)?
+                .top_0()
+                .right_0(),
+            "pane" if pane > 0. => wallpaper::overlay(pane, vh - status, cx)?
+                .top_0()
+                .right(px(pane * pane_t - pane)),
+            _ => return None,
+        };
+        Some(layer.into_any_element())
     }
 
-    /// No thread open: the mark, a line and one button over the wallpaper.
+    /// No thread open: the mark, a line and one button.
     /// Static, so it costs nothing per frame once settled.
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);

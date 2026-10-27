@@ -53,8 +53,16 @@ pub struct Prefs {
     /// How the wallpaper is redrawn: "none", "dither", "halftone" or
     /// "scanlines" (Zeron's background effects).
     pub wallpaper_effect: String,
-    /// A faint copy of the wallpaper behind open threads too.
-    pub wallpaper_in_threads: bool,
+    /// Where the wallpaper lies over the app, as in shalldie's
+    /// vscode-background: "window", "conversation", "sidebar" or "pane".
+    pub wallpaper_area: String,
+    /// How strongly the wallpaper shows over the app, 0..1.
+    pub wallpaper_opacity: f32,
+    /// "cover" crops the picture to fill its area, "contain" shows all of it.
+    pub wallpaper_fit: String,
+    /// A folder moves on to its next picture every this many minutes;
+    /// 0 waits for a new chat.
+    pub wallpaper_interval: u32,
     /// macOS blurs the desktop through the sidebar and panels.
     pub translucent: bool,
     pub status_bar_hidden: bool,
@@ -92,7 +100,10 @@ impl Default for Prefs {
                 name: "auto".into(),
             },
             wallpaper_effect: "dither".into(),
-            wallpaper_in_threads: true,
+            wallpaper_area: "window".into(),
+            wallpaper_opacity: 0.2,
+            wallpaper_fit: "cover".into(),
+            wallpaper_interval: 0,
             translucent: false,
             status_bar_hidden: false,
             recent_models: Vec::new(),
@@ -138,10 +149,6 @@ impl Prefs {
             if !matches!(prefs.wallpaper, Wallpaper::Image { .. }) {
                 prefs.wallpaper = fresh.wallpaper;
             }
-        }
-        if prefs.version < 4 {
-            // Version 4 brings the wallpaper back behind threads.
-            prefs.wallpaper_in_threads = true;
         }
         if prefs.version < 5 && prefs.conversation_width == 720. {
             // Version 5 widens the default reading column.
