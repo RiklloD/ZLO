@@ -1318,6 +1318,15 @@ impl Render for Workspace {
                             .h_full()
                             .relative()
                             .bg(p.bg.opacity(s.panel_alpha))
+                            // The sidebar/panel hairline; accent while resizing.
+                            .when(sidebar_t > 0., |d| {
+                                d.border_l(px(1.5))
+                                    .border_color(if self.sidebar_drag.is_some() {
+                                        p.accent.opacity(0.6)
+                                    } else {
+                                        p.border_strong
+                                    })
+                            })
                             .overflow_hidden()
                             .flex()
                             .flex_col()
@@ -1480,8 +1489,6 @@ impl Workspace {
     /// A thin strip on the sidebar's right edge: drag it to resize the
     /// sidebar, double-click it to restore the default width.
     fn render_sidebar_edge(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = *Palette::of(cx);
-        let dragging = self.sidebar_drag.is_some();
         div()
             .id("sidebar-edge")
             .flex_none()
@@ -1490,13 +1497,6 @@ impl Workspace {
             .mr(px(-3.))
             .h_full()
             .cursor_col_resize()
-            .flex()
-            .justify_center()
-            .child(div().w(px(1.)).h_full().bg(if dragging {
-                p.accent.opacity(0.6)
-            } else {
-                p.border.opacity(0.5)
-            }))
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
