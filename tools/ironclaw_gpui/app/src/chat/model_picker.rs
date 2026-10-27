@@ -481,9 +481,6 @@ impl ModelPicker {
 
     fn render_popover(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *Palette::of(cx);
-        let fresh = self.route.as_ref().is_none_or(|r| r.fresh) || self.thread_id.is_none();
-        let current_runtime = self.route.as_ref().map(|r| r.runtime.clone());
-
         let rail_item = |id: ElementId, mark: AnyElement, on: bool, tip: String| {
             div()
                 .id(id)
@@ -592,14 +589,7 @@ impl ModelPicker {
             for (provider, model) in picks {
                 let badge = (cmd && shown < 9).then_some(shown);
                 shown += 1;
-                rows.push(self.model_row(
-                    provider,
-                    model,
-                    fresh,
-                    current_runtime.as_deref(),
-                    badge,
-                    cx,
-                ));
+                rows.push(self.model_row(provider, model, badge, cx));
             }
         }
         if rows.is_empty() {
@@ -852,8 +842,6 @@ impl ModelPicker {
         &self,
         provider: &RouteProvider,
         model: String,
-        fresh: bool,
-        current_runtime: Option<&str>,
         badge: Option<usize>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -862,8 +850,6 @@ impl ModelPicker {
             && self.current_model() == Some(model.as_str());
         let favorite = self.prefs.favorite(&provider.provider, &model);
         let hidden = self.prefs.model_hidden(&provider.provider, &model);
-        // Another runtime with history: the pick continues in a fork.
-        let forks = !fresh && current_runtime != Some(provider.runtime.as_str());
         let title = pretty_model(&model);
         let id = format!("{}-{model}", provider.provider);
         let group = SharedString::from(format!("pick-row-{id}"));
@@ -873,9 +859,7 @@ impl ModelPicker {
         // Inside a provider's own tab its name is already the header; only
         // a warning earns the second line.
         let in_tab = matches!(self.rail, Rail::Provider(_));
-        let subtitle = if forks {
-            Some(format!("{} · continues in a new thread", provider.name))
-        } else if !provider.authenticated {
+        let subtitle = if !provider.authenticated {
             Some(format!("{} · not signed in", provider.name))
         } else if in_tab {
             None
