@@ -749,6 +749,21 @@ async fn profiles_run_on_their_providers_runtime() {
     assert!(h.engine.bind_profile_runtime(&t, &profile).await.unwrap());
     let bound = h.engine.external_thread(&t).await.unwrap().unwrap();
     assert_eq!(bound.native_session_id.as_deref(), Some("session-2"));
+
+    // A profile whose provider lives on the thread's runtime still pins its
+    // model (the Default profile on a provider of IronClaw's own loop).
+    let same = tid("same");
+    h.engine.ensure_thread(&same, &scope(), None).await.unwrap();
+    store.set_thread_profile(&same, &coder).await.unwrap();
+    assert!(h.engine.bind_profile_runtime(&same, &profile).await.unwrap());
+    let mut on_m1 = profile.clone();
+    on_m1.settings.default_model = Some("m1".into());
+    assert!(h.engine.bind_profile_runtime(&same, &on_m1).await.unwrap());
+    let pinned = store.thread(&same).await.unwrap().unwrap();
+    assert_eq!(pinned.runtime_id.as_str(), "cli");
+    assert_eq!(pinned.provider.as_deref(), Some("cli"));
+    assert_eq!(pinned.model.as_deref(), Some("m1"));
+
     let turn = h.engine.user_turn(&bound, "hello").await.unwrap();
     assert!(matches!(turn, UserTurn::Started { .. }));
     assert_eq!(cli.starts_on(&t), vec!["hello".to_string()]);

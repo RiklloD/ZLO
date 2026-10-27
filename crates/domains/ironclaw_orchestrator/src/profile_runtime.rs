@@ -120,8 +120,9 @@ impl Engine {
         }
     }
 
-    /// Move a new, idle thread onto its profile's runtime. A thread that has
-    /// already run a turn keeps the runtime it has. Returns whether it moved.
+    /// Put a new, idle thread on its profile's provider and model, moving it
+    /// to that runtime when it lives elsewhere. A thread that has already
+    /// run a turn keeps its route. Returns whether the route changed.
     pub async fn bind_profile_runtime(
         &self,
         thread_id: &ThreadId,
@@ -135,11 +136,16 @@ impl Engine {
         else {
             return Ok(false);
         };
-        if runtime_id == thread.runtime_id
-            || thread.turn_started_at.is_some()
-            || thread.is_running()
-        {
+        if thread.turn_started_at.is_some() || thread.is_running() {
             return Ok(false);
+        }
+        // IronClaw's loop serves several providers: without the pin the
+        // thread would run on the loop's own default model.
+        if runtime_id == thread.runtime_id {
+            self.store
+                .set_thread_route(thread_id, provider.as_deref(), model.as_deref(), None)
+                .await?;
+            return Ok(true);
         }
         let runtime = self.runtime(&runtime_id)?;
         let created = runtime
