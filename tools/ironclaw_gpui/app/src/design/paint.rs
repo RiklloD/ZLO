@@ -1,7 +1,7 @@
 //! Wallpaper painting on the CPU, free of GPUI so it runs on a background
 //! thread (and in a plain test): a painted sky scene or a picture, redrawn
-//! through one of Zeron's background effects, then faded into the panel
-//! color at the bottom so the new-chat screen dissolves into the app.
+//! through one of Zeron's background effects, then faded out by alpha
+//! toward the bottom so the new-chat screen dissolves into the app.
 //!
 //! The work happens once per wallpaper, window size or theme change. The
 //! result is a single static texture; nothing runs while the app is idle.
@@ -14,10 +14,11 @@ pub type Rgb = [f32; 3];
 pub const SCENES: [(&str, &str); 3] = [("sky", "Sky"), ("dusk", "Dusk"), ("night", "Night")];
 
 /// Background effects: (id, name).
-pub const EFFECTS: [(&str, &str); 4] = [
+pub const EFFECTS: [(&str, &str); 5] = [
     ("none", "None"),
     ("dither", "Dither"),
     ("halftone", "Halftone"),
+    ("ascii", "ASCII"),
     ("scanlines", "Scanlines"),
 ];
 
@@ -46,11 +47,16 @@ impl Canvas {
         c
     }
 
-    pub fn to_image(&self) -> RgbaImage {
+    /// Straight-alpha RGBA, alpha from `alpha(v, color)` with `v` the
+    /// row's height fraction. A sub-step of noise keeps long alpha ramps
+    /// from banding at 8 bits.
+    pub fn to_image_alpha(&self, alpha: impl Fn(f32, Rgb) -> f32) -> RgbaImage {
         let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
         RgbaImage::from_fn(self.w, self.h, |x, y| {
             let c = self.px[(y * self.w + x) as usize];
-            Rgba([byte(c[0]), byte(c[1]), byte(c[2]), 255])
+            let v = y as f32 / self.h.max(1) as f32;
+            let n = (hash(x as i32, y as i32, 7) - 0.5) / 255.;
+            Rgba([byte(c[0]), byte(c[1]), byte(c[2]), byte(alpha(v, c) + n)])
         })
     }
 
@@ -145,65 +151,35 @@ pub fn scene(id: &str, w: u32, h: u32) -> Canvas {
     out
 }
 
-/// Pull a picture toward the theme so the composer and text stay legible.
-pub fn tone(c: &mut Canvas, bg: Rgb, dark: bool) {
-    let k = if dark { 0.3 } else { 0.08 };
-    for p in &mut c.px {
-        *p = mix(*p, bg, k);
-    }
+/// How strongly the picture shows at height `v` (0 top, 1 bottom): full
+/// through the upper part, then dissolving into the surface behind it, as
+/// Zeron's hero fades into its canvas. Some of it stays at the bottom so
+/// the picture still fills the window.
+fn hero_alpha(v: f32) -> f32 {
+    1. - 0.82 * smoothstep(0.32, 0.96, v)
 }
 
-/// The thread backdrop: the same picture as the new-chat screen under one
-/// even veil, so it runs edge to edge (behind the right pane too) and text
-/// reads anywhere on it. The veil is heavier on the tones that fight the
-/// text (highlights in dark themes, shadows in light ones), so clouds stop
-/// washing out words while the picture keeps its color, and it deepens a
-/// little toward the composer.
-pub fn thread(c: &Canvas, bg: Rgb, dark: bool) -> Canvas {
-    let mut out = c.clone();
-    let (w, h) = (c.w, c.h);
-    for y in 0..h {
-        let low = 0.12 * smoothstep(0.7, 1., y as f32 / h as f32);
-        for x in 0..w {
-            let i = (y * w + x) as usize;
-            let l = luma(out.px[i]).clamp(0., 1.);
-            let glare = if dark { l } else { 1. - l };
-            let k = (0.5 + 0.38 * glare + low).min(0.92);
-            out.px[i] = mix(out.px[i], bg, k);
-        }
-    }
-    out
+/// The new-chat picture: its own colors, faded by alpha (not by mixing in
+/// the theme color), so the real surface shows through below.
+pub fn hero(c: &Canvas) -> RgbaImage {
+    c.to_image_alpha(|v, _| hero_alpha(v))
 }
 
-/// Redraw the picture through an effect id from [`EFFECTS`].
-pub fn effect(c: &mut Canvas, id: &str) {
+/// Redraw the picture through an effect id from [`EFFECTS`]. The effects
+/// are Zeron's (`new_thread_background_effects.rs`, MIT), on our canvas.
+pub fn effect(c: &mut Canvas, id: &str, light: bool) {
     match id {
         "dither" => dither(c),
-        "halftone" => halftone(c),
-        "scanlines" => scanlines(c),
+        "halftone" => halftone(c, light),
+        "scanlines" => scanlines(c, light),
+        "ascii" => ascii(c, light),
         _ => {}
     }
 }
 
-/// Tint the lower part toward `bg`, from `from` to `to` (0..1 of height),
-/// reaching `max` at the bottom edge. A sub-step dither keeps the long
-/// dark ramp from banding once it is cut to 8 bits.
-pub fn fade(c: &mut Canvas, bg: Rgb, from: f32, to: f32, max: f32) {
-    for y in 0..c.h {
-        let t = max * smoothstep(from, to, y as f32 / c.h as f32);
-        if t <= 0. {
-            continue;
-        }
-        for x in 0..c.w {
-            let i = (y * c.w + x) as usize;
-            let n = (hash(x as i32, y as i32, 7) - 0.5) / 255.;
-            c.px[i] = mix(c.px[i], bg, t).map(|ch| ch + n);
-        }
-    }
-}
-
-/// Ordered (Bayer 4×4) dither onto six levels a channel: the artwork comes
-/// back as a fine dot pattern, Zeron's "dithered color palette".
+/// Zeron's dither: one dot per 2×2 cell, lit at full saturation where the
+/// color clears its Bayer threshold, nearly black where it does not. The
+/// picture comes back as a field of glowing dots.
 fn dither(c: &mut Canvas) {
     const BAYER: [[f32; 4]; 4] = [
         [0., 8., 2., 10.],
@@ -211,65 +187,97 @@ fn dither(c: &mut Canvas) {
         [3., 11., 1., 9.],
         [15., 7., 13., 5.],
     ];
-    const LEVELS: f32 = 5.;
-    for y in 0..c.h {
-        for x in 0..c.w {
-            let t = (BAYER[(y % 4) as usize][(x % 4) as usize] + 0.5) / 16.;
-            let p = &mut c.px[(y * c.w + x) as usize];
-            for ch in p.iter_mut() {
-                *ch = ((ch.clamp(0., 1.) * LEVELS + t).floor() / LEVELS).min(1.);
+    for y in (0..c.h).step_by(2) {
+        for x in (0..c.w).step_by(2) {
+            let src = c.at((x + 1).min(c.w - 1), (y + 1).min(c.h - 1));
+            let threshold = BAYER[(y / 2 % 4) as usize][(x / 2 % 4) as usize];
+            let peak = src[0].max(src[1]).max(src[2]).clamp(0., 1.);
+            let bright = peak > (threshold + 0.5) / 16.;
+            let gain = if bright {
+                1. / peak.max(1. / 255.)
+            } else {
+                0.08
+            };
+            let dot = src.map(|ch| (ch * gain).clamp(0., 1.));
+            for dy in 0..2.min(c.h - y) {
+                for dx in 0..2.min(c.w - x) {
+                    c.px[((y + dy) * c.w + x + dx) as usize] = dot;
+                }
             }
         }
     }
 }
 
-/// Print-style halftone on a 45° grid: each cell becomes one dot of its
-/// own color, larger where the picture is darker, on a paler paper.
-fn halftone(c: &mut Canvas) {
-    const CELL: f32 = 7.;
-    let src = Canvas {
-        w: c.w,
-        h: c.h,
-        px: c.px.clone(),
-    };
-    let (s, co) = (
-        std::f32::consts::FRAC_1_SQRT_2,
-        std::f32::consts::FRAC_1_SQRT_2,
-    );
-    for y in 0..c.h {
-        for x in 0..c.w {
-            let (fx, fy) = (x as f32, y as f32);
-            // Rotate into the grid, find the cell center, rotate back.
-            let (gx, gy) = ((fx * co + fy * s) / CELL, (-fx * s + fy * co) / CELL);
-            let (cx, cy) = (gx.floor() + 0.5, gy.floor() + 0.5);
-            let (ox, oy) = ((cx * co - cy * s) * CELL, (cx * s + cy * co) * CELL);
-            let center = src.at(
-                (ox.round().clamp(0., (c.w - 1) as f32)) as u32,
-                (oy.round().clamp(0., (c.h - 1) as f32)) as u32,
-            );
-            let dist = ((gx - cx).powi(2) + (gy - cy).powi(2)).sqrt();
-            let radius = 0.28 + 0.42 * (1. - luma(center)).clamp(0., 1.).sqrt();
-            let ink = smoothstep(radius + 0.06, radius - 0.06, dist);
-            let paper = mix(center, [1.; 3], 0.22 * luma(center));
-            let dot = mix(center, [0.; 3], 0.12);
-            c.px[(y * c.w + x) as usize] = mix(paper, dot, ink);
+/// Zeron's halftone: a dot per 4×4 cell, larger where the picture is
+/// brighter (darker in light themes), laid 40 % over the picture itself.
+fn halftone(c: &mut Canvas, light: bool) {
+    let src = c.clone();
+    let paper = if light { 1. } else { 0. };
+    let at = |x: u32, y: u32| src.at(x.min(src.w - 1), y.min(src.h - 1));
+    for y in (0..c.h).step_by(4) {
+        for x in (0..c.w).step_by(4) {
+            let l = luma(at(x, y)).clamp(0., 1.);
+            let l = if light { 1. - l } else { l };
+            let radius = 2. * (0.3 + 0.7 * l.sqrt());
+            let dot = at(x + 2, y + 2);
+            for dy in 0..4.min(c.h - y) {
+                for dx in 0..4.min(c.w - x) {
+                    let d = ((dx as f32 - 1.5).powi(2) + (dy as f32 - 1.5).powi(2)).sqrt();
+                    let cover = (radius + 0.5 - d).clamp(0., 1.);
+                    let s = src.at(x + dx, y + dy);
+                    let i = ((y + dy) * c.w + x + dx) as usize;
+                    c.px[i] = [0, 1, 2]
+                        .map(|k| s[k] * 0.6 + (dot[k] * cover + paper * (1. - cover)) * 0.4);
+                }
+            }
         }
     }
 }
 
-/// CRT scanlines: every third row darkened, the one above it brightened.
-fn scanlines(c: &mut Canvas) {
-    for y in 0..c.h {
-        let k = match y % 3 {
-            2 => 0.72,
-            1 => 1.06,
-            _ => 1.,
-        };
+/// Zeron's scanlines: every third row at half strength.
+fn scanlines(c: &mut Canvas, light: bool) {
+    for y in (0..c.h).step_by(3) {
         for x in 0..c.w {
             let p = &mut c.px[(y * c.w + x) as usize];
             for ch in p.iter_mut() {
-                *ch *= k;
+                *ch = if light {
+                    *ch + (1. - *ch) * 0.48
+                } else {
+                    *ch * 0.52
+                };
             }
+        }
+    }
+}
+
+/// Zeron's ASCII: 5×7 bitmap glyphs on a 6×8 grid, denser where the
+/// picture is brighter, laid 40 % over the picture so its color stays.
+fn ascii(c: &mut Canvas, light: bool) {
+    const GLYPHS: [[u8; 7]; 10] = [
+        [0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 4, 0],
+        [0, 4, 0, 0, 4, 0, 0],
+        [0, 0, 0, 14, 0, 0, 0],
+        [0, 0, 14, 0, 14, 0, 0],
+        [0, 4, 4, 31, 4, 4, 0],
+        [0, 21, 14, 31, 14, 21, 0],
+        [10, 10, 31, 10, 31, 10, 10],
+        [17, 2, 4, 4, 8, 16, 17],
+        [14, 17, 23, 21, 23, 16, 14],
+    ];
+    let src = c.clone();
+    let paper = if light { 1. } else { 0. };
+    for y in 0..c.h {
+        for x in 0..c.w {
+            let (sx, sy) = ((x / 6 * 6 + 3).min(c.w - 1), (y / 8 * 8 + 4).min(c.h - 1));
+            let cell = src.at(sx, sy);
+            let l = luma(cell).clamp(0., 1.);
+            let density = if light { 1. - l } else { l };
+            let glyph = GLYPHS[((density.sqrt() * 9.) as usize).min(9)];
+            let ink = x % 6 < 5 && y % 8 < 7 && glyph[(y % 8) as usize] & (1 << (4 - x % 6)) != 0;
+            let base = src.at(x, y);
+            c.px[(y * c.w + x) as usize] =
+                [0, 1, 2].map(|k| base[k] * 0.6 + if ink { cell[k] } else { paper } * 0.4);
         }
     }
 }

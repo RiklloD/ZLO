@@ -11,11 +11,14 @@
 pub mod battery;
 pub mod brands;
 pub mod dock;
+pub mod flip;
 pub mod kit;
 pub mod motion;
 pub mod paint;
+pub mod panels;
 pub mod prefs;
 pub mod pulse;
+pub mod smooth_scroll;
 pub mod styles;
 pub mod themes;
 pub mod wallpaper;

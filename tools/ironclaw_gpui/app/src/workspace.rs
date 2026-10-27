@@ -13,7 +13,7 @@ use crate::alerts::Alerts;
 use crate::chat::{ChatView, OpenRunLogs, OpenThread, RunEnded, ThreadUpdated};
 use crate::design::battery::BatterySaver;
 use crate::design::prefs::Prefs;
-use crate::design::{self, Palette, Style, kit, motion, wallpaper};
+use crate::design::{self, Palette, Style, kit, motion, panels, wallpaper};
 use crate::jobs;
 use crate::pages::PageEvent;
 use crate::pages::automations::AutomationsView;
@@ -685,7 +685,7 @@ impl Workspace {
             .id("settings-nav")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .px_2()
             .pb_2()
             .child(nav)
@@ -701,13 +701,14 @@ impl Workspace {
         let p = *Palette::of(cx);
         let settings = self.in_settings();
         let unread = self.unread;
-        // Titlebar strip: traffic lights on the left, then the name; macOS
-        // drags the window from the empty space.
+        // Titlebar strip: the traffic lights and the window's sidebar button
+        // float over its left end, the name follows them; macOS drags the
+        // window from the empty space.
         let titlebar = h_flex()
             .h(px(design::TITLEBAR_HEIGHT))
             .flex_none()
             .items_center()
-            .pl(px(design::TRAFFIC_LIGHTS_WIDTH))
+            .pl(px(panels::CLUSTER_END + 10.))
             .pr_2()
             .child(
                 div()
@@ -814,8 +815,16 @@ impl Workspace {
             .child(footer)
     }
 
-    /// The panel's top strip: where you are, t3code's "project / thread".
-    fn render_breadcrumb(&self, cx: &App) -> gpui_kit::Div {
+    /// The panel's top strip: where you are, t3code's "project / thread",
+    /// and the open thread's actions at its right end. `sidebar` is the
+    /// drawn sidebar width: the crumbs keep clear of the window's titlebar
+    /// buttons while the sidebar is folded or sliding.
+    fn render_breadcrumb(
+        &self,
+        sidebar: f32,
+        actions: Option<AnyElement>,
+        cx: &Context<Self>,
+    ) -> gpui_kit::Div {
         let p = Palette::of(cx);
         let (parent, leaf): (String, String) = match self.page {
             Page::Chat => {
@@ -853,23 +862,33 @@ impl Workspace {
         };
         // Zeron's titlebar identity: the thread title in the 13 px UI face,
         // its home quieter beside it; no rule, the content fades under it.
+        let left = (panels::CLUSTER_END + 10. - sidebar).max(16.);
+        let right = if actions.is_some() { 0. } else { 16. };
         h_flex()
             .h(px(design::TITLEBAR_HEIGHT))
             .flex_none()
-            .px_4()
-            .gap(px(6.))
+            .pl(px(left))
+            .pr(px(right))
             .items_center()
-            .text_size(gpui_kit::rems(13. / 16.))
-            .child(div().flex_none().text_color(p.text_muted).child(parent))
-            .child(div().flex_none().text_color(p.text_faint).child("/"))
             .child(
-                div()
+                h_flex()
+                    .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .font_weight(gpui_kit::FontWeight::MEDIUM)
-                    .text_color(p.text)
-                    .child(leaf),
+                    .gap(px(6.))
+                    .items_center()
+                    .text_size(gpui_kit::rems(13. / 16.))
+                    .child(div().flex_none().text_color(p.text_muted).child(parent))
+                    .child(div().flex_none().text_color(p.text_faint).child("/"))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(p.text)
+                            .child(leaf),
+                    ),
             )
+            .children(actions)
     }
 
     /// Status bar polling: one timer, skipped while the battery saver holds
@@ -1224,7 +1243,22 @@ impl Render for Workspace {
                     (Page::Chat, Some((id, _))) => format!("main-chat-{id}").into(),
                     (page, _) => format!("main-{}", page as u8).into(),
                 };
-                let breadcrumb = self.render_breadcrumb(cx).into_any_element();
+                let sidebar_full = self.sidebar_width(cx);
+                let sidebar_t = panels::reveal(
+                    "sidebar-reveal",
+                    !Prefs::of(cx).sidebar_hidden || self.sidebar_drag.is_some(),
+                    cx,
+                );
+                let sidebar_drawn = sidebar_full * sidebar_t;
+                let actions = match (self.page, &self.active) {
+                    (Page::Chat, Some((_, chat))) => {
+                        Some(chat.update(cx, |chat, cx| chat.render_titlebar_actions(window, cx)))
+                    }
+                    _ => None,
+                };
+                let breadcrumb = self
+                    .render_breadcrumb(sidebar_drawn, actions, cx)
+                    .into_any_element();
                 let main: AnyElement = match (page, &self.active) {
                     // Appearance floats over the chat at 85 % so a pick
                     // previews live on the real thread or new-chat screen.
@@ -1252,46 +1286,72 @@ impl Render for Workspace {
                     (None, None) => self.render_empty(cx).into_any_element(),
                 };
                 let backdrop = self.render_backdrop(window, cx);
-                // The loading screen hands over with a quick fade.
+                // Zeron's shell: full-height columns to the window's edges.
+                // The sidebar keeps its full width inside a clip that grows
+                // or shrinks around it, so its rows never rewrap mid-slide.
+                let sidebar = (sidebar_t > 0.).then(|| {
+                    div()
+                        .relative()
+                        .flex_none()
+                        .h_full()
+                        .w(px(sidebar_drawn))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .right_0()
+                                .h_full()
+                                .opacity(motion::lerp(0.35, 1., sidebar_t))
+                                .child(self.render_sidebar(cx)),
+                        )
+                });
                 let shell = h_flex()
                     .size_full()
                     .min_h_0()
-                    .child(self.render_sidebar(cx))
-                    .child(self.render_sidebar_edge(cx))
+                    .children(sidebar)
+                    .when(sidebar_t >= 1., |d| d.child(self.render_sidebar_edge(cx)))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .py(px(s.panel_inset))
-                            .pr(px(s.panel_inset))
-                            .child(
-                                div()
-                                    .size_full()
-                                    .relative()
-                                    .rounded(px(s.panel_radius))
-                                    .shadow(kit::panel_shadows(&s, &p))
-                                    .bg(p.bg.opacity(s.panel_alpha))
-                                    .overflow_hidden()
-                                    .flex()
-                                    .flex_col()
-                                    .children(backdrop)
-                                    .child(breadcrumb)
-                                    .child(motion::fade_in(
-                                        div().flex_1().min_h_0().w_full().child(main),
-                                        ElementId::Name(key),
-                                        s.enter,
-                                        s.enter_rise,
-                                    )),
-                            ),
+                            .relative()
+                            .bg(p.bg.opacity(s.panel_alpha))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .children(backdrop)
+                            .child(breadcrumb)
+                            .child(motion::fade_in(
+                                div().flex_1().min_h_0().w_full().child(main),
+                                ElementId::Name(key),
+                                s.enter,
+                                s.enter_rise,
+                            )),
                     );
-                motion::fade_in(
-                    shell,
-                    "workspace-ready",
-                    motion::MotionSpec::new(160, motion::EASE_OUT_QUINT),
-                    0.,
-                )
-                .into_any_element()
+                // The loading screen hands over with a quick fade; the
+                // window's sidebar button sits above both columns, so it
+                // never moves when the sidebar folds.
+                div()
+                    .size_full()
+                    .relative()
+                    .child(motion::fade_in(
+                        shell,
+                        "workspace-ready",
+                        motion::MotionSpec::new(160, motion::EASE_OUT_QUINT),
+                        0.,
+                    ))
+                    .child(
+                        h_flex()
+                            .absolute()
+                            .top_0()
+                            .left(px(design::TRAFFIC_LIGHTS_WIDTH))
+                            .h(px(design::TITLEBAR_HEIGHT))
+                            .items_center()
+                            .child(self.sidebar_toggle(cx)),
+                    )
+                    .into_any_element()
             }
         };
         let show_status = !Prefs::of(cx).status_bar_hidden;
@@ -1299,73 +1359,114 @@ impl Render for Workspace {
         // A native preview not painted this frame hides after it; the
         // command menu would draw under it, so it hides for that too.
         crate::native_view::frame_begin(window, command.is_some());
-        v_flex()
-            .size_full()
-            .relative()
-            .track_focus(&self.focus)
-            .capture_any_mouse_down(|_, window, _| crate::native_view::reclaim_focus(window))
-            .bg(p.surface.opacity(s.shell_alpha))
-            .text_color(p.text)
-            .font_family(design::FONT_SANS)
-            .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, _, cx| {
-                this.battery.input(|w: &mut Self| &mut w.battery, cx);
-                this.drag_sidebar(e, cx);
-            }))
-            .on_mouse_up(
-                gpui_kit::MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.end_sidebar_drag(cx)),
-            )
-            .capture_key_down(
-                cx.listener(|this, _, _, cx| this.battery.input(|w: &mut Self| &mut w.battery, cx)),
-            )
-            // ⌘1..⌘9 open the Nth sidebar thread; an open model picker
-            // takes the key first in its capture phase.
-            .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
-                let Some(ix) = kit::cmd_digit(&e.keystroke) else {
-                    return;
-                };
-                if this.in_settings() {
-                    return;
-                }
-                if let Some(id) = this.inbox.jump.get(ix).cloned() {
-                    cx.stop_propagation();
-                    this.open_thread(id, window, cx);
-                }
-            }))
-            .on_modifiers_changed(cx.listener(
-                |this, e: &gpui_kit::ModifiersChangedEvent, _, cx| {
-                    let m = &e.modifiers;
-                    let held = m.platform && !(m.control || m.alt || m.shift);
-                    if this.inbox.cmd_held != held {
-                        this.inbox.cmd_held = held;
-                        cx.notify();
+        // Mouse-wheel notches glide anywhere in the window (Zeron's wheel).
+        design::smooth_scroll::smooth_scroll(
+            v_flex()
+                .size_full()
+                .relative()
+                .track_focus(&self.focus)
+                .capture_any_mouse_down(|_, window, _| crate::native_view::reclaim_focus(window))
+                .bg(p.surface.opacity(s.shell_alpha))
+                .text_color(p.text)
+                .font_family(design::FONT_SANS)
+                .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, _, cx| {
+                    this.battery.input(|w: &mut Self| &mut w.battery, cx);
+                    this.drag_sidebar(e, cx);
+                }))
+                .on_mouse_up(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.end_sidebar_drag(cx)),
+                )
+                .capture_key_down(cx.listener(|this, _, _, cx| {
+                    this.battery.input(|w: &mut Self| &mut w.battery, cx)
+                }))
+                // ⌘1..⌘9 open the Nth sidebar thread; an open model picker
+                // takes the key first in its capture phase.
+                .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                    let Some(ix) = kit::cmd_digit(&e.keystroke) else {
+                        return;
+                    };
+                    if this.in_settings() {
+                        return;
                     }
-                },
-            ))
-            .on_action(cx.listener(|this, _: &crate::OpenCommandMenu, window, cx| {
-                if matches!(this.conn, Conn::Ready) {
-                    this.toggle_command_menu(window, cx);
-                }
-            }))
-            // ⇧⌘M opens the composer's model picker, open thread or draft.
-            .on_action(cx.listener(|this, _: &crate::OpenModelPicker, window, cx| {
-                let picker = match this.page {
-                    Page::Chat => this.active.as_ref().map(|(_, c)| c.read(cx).picker()),
-                    Page::Draft => this.draft.as_ref().map(|d| d.picker()),
-                    _ => None,
-                };
-                if let Some(picker) = picker {
-                    picker.update(cx, |p, cx| p.toggle(window, cx));
-                }
-            }))
-            .child(div().flex_1().min_h_0().child(body))
-            .when(show_status, |d| d.child(self.render_status_bar(cx)))
-            .children(command)
-            .child(motion::frame_tail())
+                    if let Some(id) = this.inbox.jump.get(ix).cloned() {
+                        cx.stop_propagation();
+                        this.open_thread(id, window, cx);
+                    }
+                }))
+                .on_modifiers_changed(cx.listener(
+                    |this, e: &gpui_kit::ModifiersChangedEvent, _, cx| {
+                        let m = &e.modifiers;
+                        let held = m.platform && !(m.control || m.alt || m.shift);
+                        if this.inbox.cmd_held != held {
+                            this.inbox.cmd_held = held;
+                            cx.notify();
+                        }
+                    },
+                ))
+                .on_action(cx.listener(|this, _: &crate::OpenCommandMenu, window, cx| {
+                    if matches!(this.conn, Conn::Ready) {
+                        this.toggle_command_menu(window, cx);
+                    }
+                }))
+                // ⇧⌘M opens the composer's model picker, open thread or draft.
+                .on_action(cx.listener(|this, _: &crate::OpenModelPicker, window, cx| {
+                    let picker = match this.page {
+                        Page::Chat => this.active.as_ref().map(|(_, c)| c.read(cx).picker()),
+                        Page::Draft => this.draft.as_ref().map(|d| d.picker()),
+                        _ => None,
+                    };
+                    if let Some(picker) = picker {
+                        picker.update(cx, |p, cx| p.toggle(window, cx));
+                    }
+                }))
+                // ⇧⌘O: fresh draft in the Default profile; ⌘B / ⌥⌘B fold
+                // the left sidebar / right pane.
+                .on_action(cx.listener(|this, _: &crate::NewThread, window, cx| {
+                    if matches!(this.conn, Conn::Ready) {
+                        this.start_in_profile(
+                            ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID.into(),
+                            window,
+                            cx,
+                        );
+                    }
+                }))
+                .on_action(cx.listener(|_, _: &crate::ToggleSidebar, window, cx| {
+                    Prefs::update(cx, |p| p.sidebar_hidden = !p.sidebar_hidden);
+                    window.refresh();
+                }))
+                .on_action(cx.listener(|this, _: &crate::ToggleRightPane, window, cx| {
+                    match (&this.page, &this.active) {
+                        (Page::Chat, Some((_, chat))) => {
+                            chat.update(cx, |c, cx| c.toggle_side(cx));
+                        }
+                        _ => Prefs::update(cx, |p| p.side_open = !p.side_open),
+                    }
+                    window.refresh();
+                }))
+                .child(div().flex_1().min_h_0().child(body))
+                .when(show_status, |d| d.child(self.render_status_bar(cx)))
+                .children(command)
+                .child(motion::frame_tail()),
+        )
     }
 }
 
 impl Workspace {
+    /// Zeron's sidebar button: folds the left sidebar away or brings it
+    /// back, its glyph morphing with the slide; the choice survives a
+    /// relaunch.
+    fn sidebar_toggle(&self, cx: &Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let open = !Prefs::of(cx).sidebar_hidden;
+        let label = if open { "Hide sidebar" } else { "Show sidebar" };
+        panels::toggle("sidebar-toggle", open, false, label, cx).on_click(cx.listener(
+            |_, _, window, cx| {
+                Prefs::update(cx, |p| p.sidebar_hidden = !p.sidebar_hidden);
+                window.refresh();
+            },
+        ))
+    }
+
     fn sidebar_width(&self, cx: &App) -> f32 {
         let saved = Prefs::of(cx).sidebar_width;
         let width = self.sidebar_drag.unwrap_or(if saved > 0. {
@@ -1391,12 +1492,11 @@ impl Workspace {
             .cursor_col_resize()
             .flex()
             .justify_center()
-            .child(
-                div()
-                    .w(px(1.))
-                    .h_full()
-                    .when(dragging, |d| d.bg(p.accent.opacity(0.6))),
-            )
+            .child(div().w(px(1.)).h_full().bg(if dragging {
+                p.accent.opacity(0.6)
+            } else {
+                p.border.opacity(0.5)
+            }))
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
@@ -1434,10 +1534,12 @@ impl Workspace {
         }
     }
 
-    /// The wallpaper behind the content panel: the sharp picture on the
-    /// new-chat screen (and the empty one), its veiled copy behind
-    /// threads, none on settings pages. Reports the panel size so the picture is
-    /// painted at it.
+    /// The wallpaper behind the content column: the clear picture on the
+    /// new-chat screen, the empty one and behind threads,
+    /// none on settings pages. It is painted at the window's size and pinned
+    /// to the window's right edge, so a sidebar sliding over its left end
+    /// never rescales or recrops it. Moving between the two copies, or to a
+    /// new picture, crossfades.
     fn render_backdrop(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prefs = Prefs::of(cx);
         if prefs.wallpaper == design::prefs::Wallpaper::None {
@@ -1449,31 +1551,43 @@ impl Workspace {
         } else {
             self.page
         };
-        let veiled = match (page, &self.active) {
-            (Page::Draft, _) | (Page::Chat, None) => false,
-            (Page::Chat, Some(_)) if prefs.wallpaper_in_threads => true,
+        // Threads show the same picture as the new-chat screen, undimmed.
+        match (page, &self.active) {
+            (Page::Draft, _) | (Page::Chat, None) => {}
+            (Page::Chat, Some(_)) if prefs.wallpaper_in_threads => {}
             _ => return None,
-        };
-        let s = *Style::of(cx);
+        }
         let viewport = window.viewport_size();
         let status = if prefs.status_bar_hidden {
             0.
         } else {
             design::STATUS_BAR_HEIGHT
         };
-        wallpaper::ensure(
-            f32::from(viewport.width) - self.sidebar_width(cx) - s.panel_inset,
-            f32::from(viewport.height) - status - 2. * s.panel_inset,
-            cx,
+        let (w, h) = (
+            f32::from(viewport.width),
+            f32::from(viewport.height) - status,
         );
-        let image = wallpaper::current(veiled, cx)?;
+        wallpaper::ensure(w, h, cx);
+        let reduced = cx.reduce_motion();
+        let layers = wallpaper::layers(0., reduced, cx);
+        if layers.is_empty() {
+            return None;
+        }
         Some(
-            gpui_kit::img(image)
+            div()
                 .absolute()
                 .top_0()
-                .left_0()
-                .size_full()
-                .object_fit(gpui_kit::ObjectFit::Cover)
+                .right_0()
+                .w(px(w))
+                .h(px(h))
+                .children(layers.into_iter().map(|(image, opacity)| {
+                    gpui_kit::img(image)
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .opacity(opacity)
+                        .object_fit(gpui_kit::ObjectFit::Cover)
+                }))
                 .into_any_element(),
         )
     }

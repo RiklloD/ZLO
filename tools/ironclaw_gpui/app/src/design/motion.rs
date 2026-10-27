@@ -103,6 +103,12 @@ pub const FADE_QUICK: MotionSpec = MotionSpec::new(150, EASE);
 pub const TOOL_FOLD: MotionSpec = MotionSpec::new(140, EASE_OUT);
 /// A new activity row growing into the tree.
 pub const TOOL_ROW_REVEAL: MotionSpec = MotionSpec::new(360, EASE_OUT_EXPO);
+/// The tree's connector draws briskly, then eases into the branch tip.
+pub const TOOL_CONNECTOR_REVEAL: MotionSpec = MotionSpec::new(480, EASE_OUT_QUINT);
+/// Rows arriving together cascade: a new group waits 90 ms for its header,
+/// then each row starts 65 ms after the one above.
+pub const TOOL_FIRST_ROW_DELAY_MS: u64 = 90;
+pub const TOOL_ROW_STAGGER_MS: u64 = 65;
 /// The working glyph's wave period.
 pub const GRADIENT_SPIN_MS: u64 = 750;
 /// A word rolling into the place of another.
@@ -519,6 +525,21 @@ pub fn reveal(key: &str, spec: MotionSpec, delay_ms: u64, reduced: bool) -> f32 
         STORE.with(|s| s.borrow_mut().pending_frame = true);
     }
     t
+}
+
+/// Register `key` as born `delay_ms` from now, unless it already exists.
+/// True when `key` is new this frame. Rows that arrive together use this to
+/// cascade: each one starts a stagger after the last.
+pub fn arrive(key: &str, delay_ms: u64) -> bool {
+    BORN.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.contains_key(key) {
+            return false;
+        }
+        let at = Instant::now() + Duration::from_millis(delay_ms);
+        b.insert(key.to_string().into(), at);
+        true
+    })
 }
 
 /// Restart the reveal for `key` from now.

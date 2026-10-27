@@ -12,6 +12,8 @@ pub use gpui_kit::component::input::{
 };
 pub use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 pub use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
+// Scroll areas bounce at their ends on macOS (gpui-kit's `ScrollBounce`).
+pub use gpui_kit::component::scroll::ScrollableElement;
 pub use gpui_kit::component::spinner::Spinner;
 pub use gpui_kit::component::switch::Switch;
 pub use gpui_kit::component::tag::Tag;

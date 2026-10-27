@@ -438,7 +438,7 @@ fn rail_color(p: &Palette) -> gpui_kit::Hsla {
 
 /// The gutter for one tree row: the trunk coming down from above, a rounded
 /// elbow out to the icon, and the trunk carrying on when a row follows. The
-/// elbow draws after the trunk reaches it, as in Zeron's reveal.
+/// elbow draws after the trunk reaches it, on Zeron's connector clock.
 fn rail(leaf: &Leaf, last: bool, reveal: f32, p: &Palette) -> impl IntoElement {
     let color = rail_color(p);
     let mid = TREE_ROW_HEIGHT / 2.;
@@ -505,6 +505,14 @@ pub(super) fn render_activity(
     let p = *Palette::of(cx);
     let reduced = cx.reduce_motion();
     let fold = motion::state_t(&format!("{key}:chevron"), open, motion::TOOL_FOLD, reduced);
+    let group_key = format!("{key}:group");
+    let group_new = if live {
+        motion::arrive(&group_key, 0)
+    } else {
+        motion::settle(&group_key);
+        false
+    };
+    let head_t = motion::reveal(&group_key, motion::TOOL_ROW_REVEAL, 0, reduced);
     let label = summary(rows);
     let toggle_key = key.to_string();
     let toggle_weak = weak.clone();
@@ -518,6 +526,9 @@ pub(super) fn render_activity(
         .role(Role::Button)
         .aria_label(label.clone())
         .h(px(HEADER_HEIGHT))
+        .when(head_t < 1., |d| {
+            d.relative().top(px(4. * (1. - head_t))).opacity(head_t)
+        })
         .gap(px(6.))
         .pr_1()
         .items_center()
@@ -565,6 +576,14 @@ pub(super) fn render_activity(
         .collect();
     let count = parts.len();
     let mut leaves = Vec::with_capacity(count);
+    // Rows first drawn in the same frame cascade (Zeron's reveal); a group
+    // that is itself new waits for its header first.
+    let mut arrivals = 0;
+    let first_delay = if group_new {
+        motion::TOOL_FIRST_ROW_DELAY_MS
+    } else {
+        0
+    };
     for (ix, (row, mut leaf)) in parts.into_iter().enumerate() {
         let row_key = row.key();
         let open_key = format!("leaf:{row_key}");
@@ -579,11 +598,17 @@ pub(super) fn render_activity(
             && (thinking_now || toggles.get(&open_key).copied().unwrap_or(false));
         if !live {
             motion::settle(row_key);
+        } else if motion::arrive(
+            row_key,
+            first_delay + arrivals * motion::TOOL_ROW_STAGGER_MS,
+        ) {
+            arrivals += 1;
         }
         let reveal = motion::reveal(row_key, motion::TOOL_ROW_REVEAL, 0, reduced);
+        let connector = motion::reveal(row_key, motion::TOOL_CONNECTOR_REVEAL, 0, reduced);
         let last = ix + 1 == count;
         leaves.push(tree_row(
-            row_key, leaf, last, reveal, expanded, open_key, weak, &p, reduced,
+            row_key, leaf, last, reveal, connector, expanded, open_key, weak, &p, reduced,
         ));
     }
 
@@ -607,6 +632,7 @@ fn tree_row(
     leaf: Leaf,
     last: bool,
     reveal: f32,
+    connector: f32,
     expanded: bool,
     open_key: String,
     weak: &WeakEntity<ChatView>,
@@ -623,7 +649,7 @@ fn tree_row(
         .h(px(TREE_ROW_HEIGHT))
         .flex_none()
         .group(SharedString::from(format!("{key}-leafg")))
-        .child(rail(&leaf, last && !expanded, reveal, p))
+        .child(rail(&leaf, last && !expanded, connector, p))
         .child(
             h_flex()
                 .ml(px(TEXT_GAP))

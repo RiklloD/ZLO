@@ -599,13 +599,18 @@ impl Workspace {
             );
             // Cards cascade in when they first mount (app start, a filter
             // change); a mounted card never replays.
+            // A resort (new activity lifts a thread) glides the cards to
+            // their new places instead of swapping them in one frame.
             list.push(
-                crate::design::motion::fade_in_after(
-                    div().w_full().child(card),
-                    SharedString::from(format!("card-in-{}", row.thread_id)),
-                    enter,
-                    4.,
-                    (ix.min(12) * 28) as u64,
+                slide(
+                    &row.thread_id,
+                    crate::design::motion::fade_in_after(
+                        div().w_full().child(card),
+                        SharedString::from(format!("card-in-{}", row.thread_id)),
+                        enter,
+                        4.,
+                        (ix.min(12) * 28) as u64,
+                    ),
                 )
                 .into_any_element(),
             );
@@ -639,11 +644,14 @@ impl Workspace {
                     let jump = badge(&row.thread_id, &self.inbox);
                     let card = self.render_card(row, is_active, jump, now, cx);
                     list.push(
-                        crate::design::motion::grow(
-                            &format!("card-grow-{}", row.thread_id),
-                            crate::design::motion::COLLAPSE,
-                            reduced,
-                            card,
+                        slide(
+                            &row.thread_id,
+                            crate::design::motion::grow(
+                                &format!("card-grow-{}", row.thread_id),
+                                crate::design::motion::COLLAPSE,
+                                reduced,
+                                card,
+                            ),
                         )
                         .into_any_element(),
                     );
@@ -677,7 +685,10 @@ impl Workspace {
             if open {
                 for row in items.iter().take(limit) {
                     let is_active = active.as_deref() == Some(row.thread_id.as_str());
-                    list.push(self.render_slim(row, is_active, now, cx));
+                    list.push(
+                        slide(&row.thread_id, self.render_slim(row, is_active, now, cx))
+                            .into_any_element(),
+                    );
                 }
                 if items.len() > limit {
                     list.push(
@@ -718,10 +729,11 @@ impl Workspace {
                     .id("inbox-list")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .px_2()
                     .pb_2()
                     .gap_1()
+                    .child(crate::design::flip::anchor(SIDEBAR_GROUP))
                     .children(list),
             )
     }
@@ -1534,6 +1546,21 @@ fn snooze_presets() -> Vec<(String, i64)> {
     out.into_iter()
         .map(|(label, t)| (label, t.timestamp_millis()))
         .collect()
+}
+
+/// The FLIP group the sidebar's thread rows move in.
+const SIDEBAR_GROUP: &str = "sidebar-threads";
+
+/// A sidebar thread row that glides when the list resorts, or when it moves
+/// between shelves (a thread starting work drops into Working).
+fn slide(thread_id: &str, row: impl IntoElement) -> crate::design::flip::Flip {
+    use crate::design::flip;
+    flip::flip(
+        SIDEBAR_GROUP,
+        format!("thread:{thread_id}"),
+        flip::ROW_SECS,
+        row,
+    )
 }
 
 #[cfg(test)]

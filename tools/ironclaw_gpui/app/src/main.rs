@@ -33,7 +33,10 @@ gpui_kit::actions!(
         ToggleStatusBar,
         ToggleScheme,
         OpenCommandMenu,
-        OpenModelPicker
+        OpenModelPicker,
+        NewThread,
+        ToggleSidebar,
+        ToggleRightPane
     ]
 );
 
@@ -70,6 +73,9 @@ fn main() {
             KeyBinding::new("cmd-shift-y", ToggleScheme, None),
             KeyBinding::new("cmd-k", OpenCommandMenu, None),
             KeyBinding::new("cmd-shift-m", OpenModelPicker, None),
+            KeyBinding::new("cmd-shift-o", NewThread, None),
+            KeyBinding::new("cmd-b", ToggleSidebar, None),
+            KeyBinding::new("alt-cmd-b", ToggleRightPane, None),
         ]);
         cx.set_menus(vec![
             Menu {
@@ -80,6 +86,9 @@ fn main() {
             Menu {
                 name: "View".into(),
                 items: vec![
+                    MenuItem::action("New Thread", NewThread),
+                    MenuItem::action("Toggle Sidebar", ToggleSidebar),
+                    MenuItem::action("Toggle Right Pane", ToggleRightPane),
                     MenuItem::action("Command Menu…", OpenCommandMenu),
                     MenuItem::action("Model Picker…", OpenModelPicker),
                     MenuItem::action("Toggle Status Bar", ToggleStatusBar),

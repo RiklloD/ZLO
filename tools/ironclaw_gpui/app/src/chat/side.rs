@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use super::ChatView;
 use crate::assets::ExtraIcon;
 use crate::design::prefs::Prefs;
-use crate::design::{Palette, Style};
+use crate::design::{Palette, Style, flip, motion, panels};
 use crate::ui::*;
 
 mod activity;
@@ -28,6 +28,8 @@ mod preview;
 mod project;
 mod routines;
 
+/// The FLIP group of the tab icons' selection pill.
+const TABS_GROUP: &str = "side-tabs";
 const WIDTH_MIN: f32 = 260.;
 const WIDTH_MAX: f32 = 900.;
 const WIDTH_DEFAULT: f32 = 360.;
@@ -148,7 +150,7 @@ impl ChatView {
         }
     }
 
-    pub(super) fn toggle_side(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_side(&mut self, cx: &mut Context<Self>) {
         let open = !side_open(cx);
         Prefs::update(cx, |p| p.side_open = open);
         if open {
@@ -300,8 +302,7 @@ impl ChatView {
             self.side_drag_end(cx);
             return;
         }
-        let inset = Style::of(cx).panel_inset;
-        let right = f32::from(window.viewport_size().width) - inset;
+        let right = f32::from(window.viewport_size().width);
         let w = (right - f32::from(e.position.x)).clamp(WIDTH_MIN, WIDTH_MAX);
         self.side.drag = Some(w);
         cx.notify();
@@ -313,18 +314,226 @@ impl ChatView {
         }
     }
 
+    /// The pane's laid-out width and its 0..1 reveal. The pane slides
+    /// open and shut and eases between its normal and widened sizes; a
+    /// drag or a window resize applies at once.
+    fn side_geometry(&self, window: &Window, cx: &App) -> (f32, f32) {
+        let t = panels::reveal("side-reveal", side_open(cx), cx);
+        if let Some(w) = self.side.drag {
+            return (w, t);
+        }
+        let viewport = f32::from(window.viewport_size().width);
+        let wide = (viewport * WIDE_SHARE).clamp(WIDTH_MIN, WIDTH_MAX.max(viewport * WIDE_SHARE));
+        let saved = Prefs::of(cx).side_width;
+        let normal = if saved > 0. { saved } else { WIDTH_DEFAULT }.clamp(
+            WIDTH_MIN,
+            WIDTH_MAX.min((viewport - 360. - 240.).max(WIDTH_MIN)),
+        );
+        let k = motion::state_t(
+            "side-wide",
+            self.side.wide,
+            panels::REVEAL,
+            cx.reduce_motion(),
+        );
+        (motion::lerp(normal, wide, k), t)
+    }
+
+    /// The thread's end of the window titlebar, Zeron's arrangement: the
+    /// thread actions, then the pane's own top. The pane toggle stays at
+    /// the window's right edge; when the pane opens its tabs and widen
+    /// button slide in to the toggle's left, on the pane's tint, so the
+    /// pane reads as one full-height column.
+    pub(crate) fn render_titlebar_actions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = *Palette::of(cx);
+        let open = side_open(cx);
+        let (full, t) = self.side_geometry(window, cx);
+        let slot = panels::TOGGLE_SIZE + 16.;
+        let drawn = (full * t).max(slot);
+        let tab = side_tab(cx);
+        let thread = h_flex()
+            .gap_1()
+            .pr_2()
+            .items_center()
+            .when(self.computer.read(cx).has_session(), |row| {
+                let shown = !self.computer.read(cx).hidden();
+                row.child(
+                    Button::new("computer-toggle")
+                        .icon(ExtraIcon::Monitor)
+                        .ghost()
+                        .small()
+                        .when(shown, |b| b.selected(true))
+                        .tooltip("Computer use screen share")
+                        .accessibility_label("Computer use screen share")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.computer
+                                .update(cx, |share, cx| share.toggle_hidden(cx))
+                        })),
+                )
+            })
+            .child(
+                Button::new("fork")
+                    .icon(ExtraIcon::GitFork)
+                    .ghost()
+                    .small()
+                    .tooltip("Fork this conversation")
+                    .accessibility_label("Fork this conversation")
+                    .on_click(cx.listener(|this, _, _, cx| this.fork(None, cx))),
+            );
+        let tabs = (t > 0.).then(|| {
+            h_flex()
+                .absolute()
+                .top_0()
+                .left_0()
+                .h_full()
+                .w(px((full - slot).max(0.)))
+                .pl_2()
+                .gap_1()
+                .items_center()
+                .opacity(t)
+                .child(
+                    div()
+                        .id("side-tabs")
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_x_scroll()
+                        .child(self.render_side_tabs(tab, cx)),
+                )
+                .child(
+                    Button::new("side-wide")
+                        .icon(if self.side.wide {
+                            IconName::Minimize
+                        } else {
+                            IconName::Maximize
+                        })
+                        .ghost()
+                        .xsmall()
+                        .tooltip(if self.side.wide {
+                            "Narrow pane"
+                        } else {
+                            "Widen pane"
+                        })
+                        .accessibility_label("Widen pane")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.side.wide = !this.side.wide;
+                            window.refresh();
+                            cx.notify();
+                        })),
+                )
+        });
+        let toggle = panels::toggle(
+            "side-toggle",
+            open,
+            true,
+            if open {
+                "Hide pane"
+            } else {
+                "Activity, files and changes"
+            },
+            cx,
+        )
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.toggle_side(cx);
+            window.refresh();
+        }));
+        h_flex()
+            .h_full()
+            .items_center()
+            .child(thread)
+            .child(
+                div()
+                    .relative()
+                    .h_full()
+                    .flex_none()
+                    .w(px(drawn))
+                    .overflow_hidden()
+                    .when(full * t > slot, |d| {
+                        d.bg(p.surface.opacity(0.45))
+                            .border_l_1()
+                            .border_color(p.border)
+                    })
+                    .children(tabs)
+                    .child(
+                        h_flex()
+                            .absolute()
+                            .top_0()
+                            .right(px(8.))
+                            .h_full()
+                            .items_center()
+                            .child(toggle),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The pane's tab icons, each with its attention dot.
+    fn render_side_tabs(&self, tab: Tab, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = *Palette::of(cx);
+        let radius = Style::of(cx).control_radius;
+        // One selection pill glides between the tab icons (Zeron's tab
+        // slide); the buttons carry only the selected ink.
+        let pill = move || {
+            flip::flip(
+                TABS_GROUP,
+                "pill",
+                flip::PILL_SECS,
+                div().absolute().inset_0().rounded(px(radius)).bg(p.active),
+            )
+        };
+        h_flex()
+            .relative()
+            .gap_0p5()
+            .child(flip::anchor(TABS_GROUP))
+            .children(Tab::ALL.into_iter().map(|t| {
+                let badge = self.side_badge(t);
+                div()
+                    .relative()
+                    .flex_none()
+                    .when(t == tab, |d| d.child(pill()))
+                    .child(
+                        Button::new(SharedString::from(format!("side-tab-{}", t.id())))
+                            .icon(t.icon())
+                            .ghost()
+                            .small()
+                            .pill_selected(t == tab)
+                            .tooltip(t.label())
+                            .accessibility_label(t.label())
+                            .on_click(cx.listener(move |this, _, _, cx| this.show_side(t, cx))),
+                    )
+                    .when(badge, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(3.))
+                                .right(px(3.))
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(p.accent),
+                        )
+                    })
+            }))
+    }
+
     pub(super) fn render_side(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !side_open(cx) {
+        let (width, t) = self.side_geometry(window, cx);
+        if t <= 0. {
             return None;
         }
         let p = *Palette::of(cx);
         let tab = side_tab(cx);
-        let width = self.side_width(window, cx);
-        let body = if tab.coding() && self.side.folder.is_none() {
+        // Native previews float above GPUI and would not clip with the
+        // sliding column, so they wait until it settles.
+        let native = matches!(tab, Tab::Browser | Tab::Outputs);
+        let body = if t < 1. && native {
+            div().into_any_element()
+        } else if tab.coding() && self.side.folder.is_none() {
             self.render_no_folder(tab, cx)
         } else {
             match tab {
@@ -340,80 +549,9 @@ impl ChatView {
             }
         };
         let dragging = self.side.drag.is_some();
-        // The tab row gives way first: in a narrow pane it scrolls sideways
-        // and Widen and Hide stay reachable (T3's narrow-window fix).
-        let tabs = h_flex().gap_0p5().children(Tab::ALL.into_iter().map(|t| {
-            let badge = self.side_badge(t);
-            div()
-                .relative()
-                .flex_none()
-                .child(
-                    Button::new(SharedString::from(format!("side-tab-{}", t.id())))
-                        .icon(t.icon())
-                        .ghost()
-                        .small()
-                        .selected(t == tab)
-                        .tooltip(t.label())
-                        .accessibility_label(t.label())
-                        .on_click(cx.listener(move |this, _, _, cx| this.show_side(t, cx))),
-                )
-                .when(badge, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .top(px(3.))
-                            .right(px(3.))
-                            .size(px(6.))
-                            .rounded_full()
-                            .bg(p.accent),
-                    )
-                })
-        }));
-        let header = h_flex()
-            .h(px(44.))
-            .flex_none()
-            .px_2()
-            .gap_1()
-            .items_center()
-            .child(
-                div()
-                    .id("side-tabs")
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_x_scroll()
-                    .child(tabs),
-            )
-            .child(
-                Button::new("side-wide")
-                    .icon(if self.side.wide {
-                        IconName::Minimize
-                    } else {
-                        IconName::Maximize
-                    })
-                    .ghost()
-                    .xsmall()
-                    .tooltip(if self.side.wide {
-                        "Narrow pane"
-                    } else {
-                        "Widen pane"
-                    })
-                    .accessibility_label("Widen pane")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.side.wide = !this.side.wide;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("side-close")
-                    .icon(IconName::PanelRightClose)
-                    .ghost()
-                    .xsmall()
-                    .tooltip("Hide pane")
-                    .accessibility_label("Hide pane")
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_side(cx))),
-            );
         let title = h_flex()
             .px_3()
+            .pt_2()
             .pb_1()
             .gap_2()
             .items_center()
@@ -443,54 +581,62 @@ impl ChatView {
                     )
                 })
             });
+        let pane = v_flex()
+            .absolute()
+            .top_0()
+            .left_0()
+            .w(px(width))
+            .h_full()
+            // A tinted sheet: the wallpaper runs on underneath, a step
+            // darker than the transcript so the pane reads as its own layer.
+            .bg(p.surface.opacity(0.45))
+            .border_l_1()
+            .border_color(p.border)
+            .child(title)
+            .child(div().flex_1().min_h_0().flex().flex_col().child(body))
+            // The resize strip lies along the left border.
+            .child(
+                div()
+                    .id("side-edge")
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .w(px(6.))
+                    .cursor_col_resize()
+                    .flex()
+                    .child(
+                        div()
+                            .w(px(1.))
+                            .h_full()
+                            .when(dragging, |d| d.bg(p.accent.opacity(0.6))),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.side.wide = false;
+                            this.side.drag = Some(this.side_width(window, cx));
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .on_click(cx.listener(|this, e: &gpui_kit::ClickEvent, _, cx| {
+                        if e.click_count() == 2 {
+                            this.side.drag = None;
+                            Prefs::update(cx, |p| p.side_width = 0.);
+                        }
+                    })),
+            );
+        // The pane keeps its full width inside a clip that opens and shuts
+        // around it, so it slides in from the window's edge without rewrapping.
         Some(
-            v_flex()
+            div()
                 .relative()
-                .w(px(width))
-                .h_full()
                 .flex_none()
-                // A tinted sheet: the wallpaper runs on underneath, a step
-                // darker than the transcript so the pane reads as its own layer.
-                .bg(p.surface.opacity(0.45))
-                .border_l_1()
-                .border_color(p.border)
-                .child(header)
-                .child(title)
-                .child(div().flex_1().min_h_0().flex().flex_col().child(body))
-                // The resize strip straddles the left border.
-                .child(
-                    div()
-                        .id("side-edge")
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px(-3.))
-                        .w(px(6.))
-                        .cursor_col_resize()
-                        .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .w(px(1.))
-                                .h_full()
-                                .when(dragging, |d| d.bg(p.accent.opacity(0.6))),
-                        )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.side.wide = false;
-                                this.side.drag = Some(this.side_width(window, cx));
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        )
-                        .on_click(cx.listener(|this, e: &gpui_kit::ClickEvent, _, cx| {
-                            if e.click_count() == 2 {
-                                this.side.drag = None;
-                                Prefs::update(cx, |p| p.side_width = 0.);
-                            }
-                        })),
-                )
+                .h_full()
+                .w(px(width * t))
+                .overflow_hidden()
+                .child(pane)
                 .into_any_element(),
         )
     }
@@ -698,11 +844,17 @@ fn heading(text: impl Into<SharedString>, cx: &App) -> gpui_kit::Div {
 }
 
 /// A scrolling column for a tab's content.
-fn scroll(id: impl Into<ElementId>) -> gpui_kit::Stateful<gpui_kit::Div> {
+fn scroll(
+    id: impl Into<ElementId>,
+) -> gpui_kit::component::scroll::Scrollable<gpui_kit::Stateful<gpui_kit::Div>> {
+    // Each tab keeps its own scroll position: the scrollable's id
+    // defaults to this call site, which every tab shares.
+    let id: ElementId = id.into();
     v_flex()
-        .id(id)
+        .id(id.clone())
         .flex_1()
         .min_h_0()
-        .overflow_y_scroll()
+        .overflow_y_scrollbar()
+        .id((id, "scroll"))
         .pb_3()
 }

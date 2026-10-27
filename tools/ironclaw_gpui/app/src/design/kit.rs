@@ -138,33 +138,6 @@ pub fn floating(s: &Style, p: &Palette) -> Plate {
     }
 }
 
-/// Elevation for the content panel: it floats a step above the sidebar on
-/// a soft shadow, no outline.
-pub fn panel_shadows(s: &Style, p: &Palette) -> Vec<BoxShadow> {
-    let e = s.elevation;
-    let mut v = vec![
-        shadow(
-            black((if p.light { 0.06 } else { 0.35 }) * e),
-            6.,
-            24.,
-            -8.,
-            false,
-        ),
-        shadow(
-            black((if p.light { 0.04 } else { 0.2 }) * e),
-            1.,
-            2.,
-            0.,
-            false,
-        ),
-    ];
-    if !p.light {
-        // A lit top edge instead of a hairline all round.
-        v.push(shadow(white(0.045), 1., 0., 0., true));
-    }
-    v
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Primary,
@@ -199,6 +172,9 @@ pub struct Button {
     variant: Variant,
     size: Size,
     selected: bool,
+    /// The selection wash is drawn by a gliding pill behind the button;
+    /// `selected` only sets the ink.
+    pill: bool,
     disabled: bool,
     loading: bool,
     full: bool,
@@ -222,6 +198,7 @@ impl Button {
             variant: Variant::Secondary,
             size: Size::Medium,
             selected: false,
+            pill: false,
             disabled: false,
             loading: false,
             full: false,
@@ -271,6 +248,11 @@ impl Button {
     pub fn large(mut self) -> Self {
         self.size = Size::Large;
         self
+    }
+    /// Selected ink over a pill the caller draws (`flip`), no own wash.
+    pub fn pill_selected(mut self, on: bool) -> Self {
+        self.pill = true;
+        self.selected(on)
     }
     pub fn selected(mut self, on: bool) -> Self {
         self.selected = on;
@@ -371,7 +353,10 @@ impl RenderOnce for Button {
                 .border_1()
                 .border_color(mix(mix(p.border_strong, p.text_faint, h), p.accent, sel))
                 .bg(mix(mix(p.hover.opacity(0.), p.hover, h), p.active, sel)),
-            Variant::Ghost => el.bg(mix(mix(p.hover.opacity(0.), p.hover, h), p.active, sel)),
+            Variant::Ghost => {
+                let wash = if self.pill { 0. } else { sel };
+                el.bg(mix(mix(p.hover.opacity(0.), p.hover, h), p.active, wash))
+            }
             Variant::Danger => el
                 .border_1()
                 .border_color(p.danger.opacity(0.3 + 0.3 * h))

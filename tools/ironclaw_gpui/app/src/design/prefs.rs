@@ -64,6 +64,8 @@ pub struct Prefs {
     pub provider_order: Vec<String>,
     /// Sidebar width in px, dragged at its edge; 0 keeps the default.
     pub sidebar_width: f32,
+    /// The left sidebar is folded away; the panel's top strip reopens it.
+    pub sidebar_hidden: bool,
     /// The chat's right pane: shown, its width (0 keeps the default) and
     /// the tab last picked.
     pub side_open: bool,
@@ -96,6 +98,7 @@ impl Default for Prefs {
             recent_models: Vec::new(),
             provider_order: Vec::new(),
             sidebar_width: 0.,
+            sidebar_hidden: false,
             side_open: false,
             side_width: 0.,
             side_tab: String::new(),

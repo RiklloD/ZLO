@@ -38,9 +38,15 @@ impl Draft {
     }
 }
 
+/// The new-thread composer's width at rest.
+const HERO_WIDTH: f32 = 720.;
+
 impl Workspace {
     /// Show the new-thread screen; an unsent draft keeps its text.
     pub(super) fn open_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page == Page::Chat {
+            crate::design::dock::land(cx.reduce_motion());
+        }
         self.page = Page::Draft;
         if self.draft.is_none()
             && let Some(backend) = self.backend.clone()
@@ -428,6 +434,9 @@ impl Workspace {
                         .child(self.render_picker(cx)),
                 ))
             });
+        // Coming back from a thread, the card rises from the dock and its
+        // width eases out to the hero's.
+        let hero_w = crate::design::dock::width(crate::design::dock::Dest::Hero, HERO_WIDTH);
         let body = v_flex()
             .size_full()
             .items_center()
@@ -446,7 +455,7 @@ impl Workspace {
                     )
                     .child(profile_switch),
             )
-            .child(
+            .child(crate::design::dock::hero(
                 composer_card(
                     "draft-composer",
                     draft.input.focus_handle(cx).is_focused(window),
@@ -473,7 +482,8 @@ impl Workspace {
                     h_flex().gap(px(6.)).child(attach).child(send),
                     cx,
                 )
-                .max_w(px(720.))
+                .max_w(px(hero_w.unwrap_or(HERO_WIDTH)))
+                .when_some(hero_w, |d, w| d.w(px(w)))
                 .id("draft-thread-drop")
                 .drag_over::<crate::chat::DraggedThread>(|s, _, _, cx| {
                     s.border_color(cx.theme().accent)
@@ -483,9 +493,8 @@ impl Workspace {
                         this.attach_thread_to_draft(dragged, window, cx);
                     }),
                 )
-                .relative()
-                .child(crate::design::dock::hero_probe()),
-            )
+                .relative(),
+            ))
             .when_some(draft.error.clone(), |d, error| {
                 d.child(
                     div()

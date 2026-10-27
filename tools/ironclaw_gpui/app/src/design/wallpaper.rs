@@ -1,21 +1,27 @@
 //! The new-chat wallpaper, as in Zeron: a painted scene or the person's own
-//! picture, redrawn through a background effect and faded into the panel
-//! at the bottom. The pixels come from `paint` on a background thread and
-//! land as one static texture, sized to the panel in points so the effect's
-//! dots stay crisp. Nothing runs while the app is idle; a resize rebuilds
-//! once the window settles. Threads get a second copy of the same
-//! picture (`paint::thread`) under an even veil so text reads anywhere.
+//! picture, redrawn through a background effect in its own colors and
+//! faded out by alpha toward the bottom. The pixels come from `paint` on a
+//! background thread and land as one static texture, sized to the window
+//! in points so the effect's dots stay crisp and a sidebar sliding over it
+//! never changes its crop. Nothing runs while the app is idle; a resize
+//! rebuilds once the window settles. Threads get a quieter copy of the same
+//! picture (`paint::thread`) so text reads anywhere. A new picture
+//! crossfades in over the old one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui_kit::{App, AppContext as _, Global, Hsla, RenderImage};
+use gpui_kit::{App, AppContext as _, Global, RenderImage};
 use image::{Frame, RgbaImage, imageops};
 
 use super::Palette;
+use super::motion::{self, CubicBezier, MotionSpec};
 use super::paint::{self, Canvas};
 use super::prefs::{Prefs, Wallpaper};
+
+/// Zeron's wallpaper replacement: an immediate attack, a short soft landing.
+const CROSSFADE: MotionSpec = MotionSpec::new(180, CubicBezier::new(1. / 3., 1., 2. / 3., 1.));
 
 /// Smallest and largest texture side, in points.
 const MIN_SIDE: u32 = 320;
@@ -26,8 +32,12 @@ const SETTLE: Duration = Duration::from_millis(280);
 #[derive(Default)]
 pub struct WallpaperImage {
     image: Option<Arc<RenderImage>>,
-    /// The veiled copy shown behind threads.
+    /// The quieter copy shown behind threads.
     soft: Option<Arc<RenderImage>>,
+    /// The pair being replaced, drawn under the new one while it fades in.
+    previous: Option<[Arc<RenderImage>; 2]>,
+    /// Bumped by every replacement; keys the crossfade.
+    serial: u64,
     /// The panel size the next picture is painted at.
     wanted: (u32, u32),
     /// Bumped by every request; a finished paint from an older one is
@@ -39,15 +49,46 @@ pub struct WallpaperImage {
 
 impl Global for WallpaperImage {}
 
-/// The picture: sharp for the new-chat screen, veiled behind a thread.
-pub fn current(veiled: bool, cx: &App) -> Option<Arc<RenderImage>> {
-    cx.try_global::<WallpaperImage>().and_then(|w| {
-        if veiled {
-            w.soft.clone()
-        } else {
-            w.image.clone()
+/// What to draw this frame, bottom first, with each layer's opacity.
+/// `soft` runs 0 (new-chat picture) to 1 (thread copy). A replaced pair
+/// stays underneath until the new one has faded in, then is released.
+pub fn layers(soft: f32, reduced: bool, cx: &mut App) -> Vec<(Arc<RenderImage>, f32)> {
+    let Some(state) = cx.try_global::<WallpaperImage>() else {
+        return Vec::new();
+    };
+    let pair = |image: &Arc<RenderImage>, thread: &Arc<RenderImage>, k: f32| {
+        let mut out = Vec::with_capacity(2);
+        if soft < 1. {
+            out.push((image.clone(), (1. - soft) * k));
         }
-    })
+        if soft > 0. {
+            out.push((thread.clone(), soft * k));
+        }
+        out
+    };
+    let (Some(image), Some(thread)) = (&state.image, &state.soft) else {
+        return Vec::new();
+    };
+    let t = motion::reveal(
+        &format!("wallpaper:{}", state.serial),
+        CROSSFADE,
+        0,
+        reduced,
+    );
+    let mut out = Vec::with_capacity(4);
+    if t < 1.
+        && let Some([old, old_thread]) = &state.previous
+    {
+        out.extend(pair(old, old_thread, 1.));
+    }
+    out.extend(pair(image, thread, t));
+    if t >= 1. {
+        let done = cx.default_global::<WallpaperImage>().previous.take();
+        for old in done.into_iter().flatten() {
+            cx.drop_image(old, None);
+        }
+    }
+    out
 }
 
 /// Report the panel size (points) from render. Repaints when it changed;
@@ -117,7 +158,6 @@ fn paint_now(generation: u64, cx: &mut App) {
         return;
     }
     let task = cx.background_spawn(async move {
-        let bg = rgb(palette.bg);
         let dark = !palette.light;
         let auto_scene = if dark { "dusk" } else { "sky" };
         let picture = match &choice {
@@ -126,10 +166,7 @@ fn paint_now(generation: u64, cx: &mut App) {
             _ => None,
         };
         let mut canvas = match picture.map(|p| load(&p, w, h).map_err(|e| (p, e))) {
-            Some(Ok(mut c)) => {
-                paint::tone(&mut c, bg, dark);
-                c
-            }
+            Some(Ok(c)) => c,
             other => {
                 if let Some(Err((path, e))) = other {
                     tracing::warn!(
@@ -144,15 +181,13 @@ fn paint_now(generation: u64, cx: &mut App) {
                 paint::scene(name, w, h)
             }
         };
-        paint::effect(&mut canvas, &effect);
-        let soft = paint::thread(&canvas, bg, dark);
-        paint::fade(&mut canvas, bg, 0.6, 1., 0.7);
-        (to_bgra(canvas.to_image()), to_bgra(soft.to_image()))
+        paint::effect(&mut canvas, &effect, !dark);
+        to_bgra(paint::hero(&canvas))
     });
     cx.spawn(async move |cx| {
-        let (sharp, soft) = task.await;
-        let texture = |px| Arc::new(RenderImage::new(vec![Frame::new(px)]));
-        let (image, soft) = (texture(sharp), texture(soft));
+        // Threads share the new-chat texture: one upload, same brightness.
+        let image = Arc::new(RenderImage::new(vec![Frame::new(task.await)]));
+        let soft = image.clone();
         cx.update(|cx| {
             if cx.default_global::<WallpaperImage>().generation == generation {
                 replace(Some(image), Some(soft), cx);
@@ -194,16 +229,32 @@ fn pick_from(dir: &Path, shuffle: u64) -> Option<PathBuf> {
     Some(files.swap_remove(ix))
 }
 
-/// Swap the pictures and give the old GPU sprites back: GPUI keeps a
-/// drawn `RenderImage` in its atlas until told otherwise.
+/// Swap the pictures. The outgoing pair stays as `previous` for the
+/// crossfade; anything older goes back to GPUI, which keeps a drawn
+/// `RenderImage` in its atlas until told otherwise.
 fn replace(image: Option<Arc<RenderImage>>, soft: Option<Arc<RenderImage>>, cx: &mut App) {
     let state = cx.default_global::<WallpaperImage>();
-    let old = [
+    let outgoing = match (
         std::mem::replace(&mut state.image, image),
         std::mem::replace(&mut state.soft, soft),
-    ];
-    for old in old.into_iter().flatten() {
-        cx.drop_image(old, None);
+    ) {
+        (Some(a), Some(b)) if state.image.is_some() => Some([a, b]),
+        (a, b) => {
+            let mut stale: Vec<_> = a.into_iter().chain(b).collect();
+            stale.extend(state.previous.take().into_iter().flatten());
+            for old in stale {
+                cx.drop_image(old, None);
+            }
+            None
+        }
+    };
+    if let Some(pair) = outgoing {
+        let state = cx.default_global::<WallpaperImage>();
+        let stale = state.previous.replace(pair);
+        state.serial += 1;
+        for old in stale.into_iter().flatten() {
+            cx.drop_image(old, None);
+        }
     }
 }
 
@@ -213,9 +264,4 @@ fn to_bgra(mut img: RgbaImage) -> RgbaImage {
         px.0.swap(0, 2);
     }
     img
-}
-
-fn rgb(c: Hsla) -> paint::Rgb {
-    let c = c.to_rgb();
-    [c.r, c.g, c.b]
 }

@@ -17,7 +17,6 @@ pub struct Style {
     pub shell_alpha: f32,
     /// Opacity of the content panel fill.
     pub panel_alpha: f32,
-    pub panel_inset: f32,
     pub panel_radius: f32,
     pub control_radius: f32,
     /// Sidebar and list rows. Sized to T3 Code's proportions (UX_REFERENCE.md).
@@ -50,7 +49,6 @@ impl Style {
             vibrancy: translucent,
             shell_alpha: if translucent { 0.55 } else { 1. },
             panel_alpha: if translucent { 0.78 } else { 1. },
-            panel_inset: 8.,
             panel_radius: super::PANEL_RADIUS,
             control_radius: super::CONTROL_RADIUS,
             row_height: 34.,

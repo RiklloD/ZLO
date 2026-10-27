@@ -9,7 +9,15 @@ and motion in `app/src/chat/flow.rs` (tool fold, task tree, working line,
 rotating verbs, gradient glyph), the composer pill, the Appearance page and
 settings block metrics, the session row, and the light theme and accent
 presets in `design/themes.rs` are adapted from Zeron,
-https://github.com/zeronsh/zeron (read at commit 4231cb7).
+https://github.com/zeronsh/zeron (read at commit 4231cb7). The sidebar
+glyph, panel reveal timings and titlebar arrangement in `design/panels.rs`,
+and the dither, halftone, ASCII and scanline effects and wallpaper crossfade
+in `design/paint.rs` and `design/wallpaper.rs`, follow its `icons.rs`,
+`motion.rs`, `shell/panel_layout.rs` and `new_thread_background_effects.rs`
+(read at commit 3d2f1e6). From the same commit, `design/smooth_scroll.rs` is
+adapted from its `smooth_scroll.rs`, the two-way composer hand-off in
+`design/dock.rs` follows `composer_dock.rs`, and the tool-row cascade timings
+in `chat/flow.rs` follow `transcript.rs`.
 
 MIT License. Copyright (c) 2026 Wing.
 

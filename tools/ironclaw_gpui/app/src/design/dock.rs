@@ -1,17 +1,20 @@
-//! The new-thread hand-off, after Zeron's `composer_dock.rs` (MIT, see
-//! `THIRD_PARTY_NOTICES.md`). The new-thread screen records where its
-//! composer sits; when the first message opens the thread, the chat's
-//! composer starts at that spot and glides down to its dock on a critically
-//! damped spring. Only the prepaint origin moves, so hitboxes, caret and
-//! selection travel with the pixels and nothing relayouts per frame.
+//! The composer hand-off, after Zeron's `composer_dock.rs` (MIT, see
+//! `THIRD_PARTY_NOTICES.md`). Both composers record where they sit. When the
+//! first message opens the thread, the chat's composer starts at the hero's
+//! spot and glides down to its dock; going back to a new thread, the hero
+//! rises from the dock. Position rides a critically damped spring on the
+//! prepaint origin, so hitboxes, caret and selection travel with the pixels.
+//! Width eases between the two cards' widths on the same clock.
 
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
 use gpui_kit::{
     AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Window, canvas, div, point, prelude::*, px,
+    LayoutId, Pixels, Window, point, px,
 };
+
+use super::motion;
 
 /// Zeron's route clock: the composer reaches its dock in 420 ms.
 pub const DOCK_SECS: f32 = 0.420;
@@ -53,52 +56,110 @@ impl Glide {
     }
 }
 
+/// Which composer a flight lands on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dest {
+    /// The chat's docked composer.
+    Dock,
+    /// The new-thread screen's composer.
+    Hero,
+}
+
+/// Where a composer was last painted: window origin and width.
+#[derive(Clone, Copy)]
+struct Spot {
+    x: f32,
+    y: f32,
+    w: f32,
+}
+
 struct Flight {
+    dest: Dest,
     x: Glide,
     y: Glide,
-    started: Instant,
+    from_w: f32,
+    /// Set by the first destination frame: the route may take a moment to
+    /// open, and that wait is not part of the motion.
+    started: Option<Instant>,
     last: Option<Instant>,
 }
 
+impl Flight {
+    fn progress(&self) -> f32 {
+        self.started
+            .map_or(0., |s| (s.elapsed().as_secs_f32() / DOCK_SECS).min(1.))
+    }
+}
+
 thread_local! {
-    /// Where the new-thread composer was last painted (window coordinates).
-    static HERO: Cell<Option<(f32, f32)>> = const { Cell::new(None) };
+    static HERO: Cell<Option<Spot>> = const { Cell::new(None) };
+    static DOCK: Cell<Option<Spot>> = const { Cell::new(None) };
     static FLIGHT: RefCell<Option<Flight>> = const { RefCell::new(None) };
 }
 
-/// Put inside the new-thread composer: records its origin every paint.
-pub fn hero_probe() -> impl IntoElement {
-    div().absolute().top_0().left_0().size_full().child(
-        canvas(
-            |bounds: Bounds<Pixels>, _, _| {
-                HERO.set(Some((f32::from(bounds.left()), f32::from(bounds.top()))));
-            },
-            |_, _, _, _| {},
-        )
-        .size_full(),
-    )
+fn slot(dest: Dest) -> &'static std::thread::LocalKey<Cell<Option<Spot>>> {
+    match dest {
+        Dest::Dock => &DOCK,
+        Dest::Hero => &HERO,
+    }
+}
+
+fn launch(from: Dest, to: Dest, reduced: bool) {
+    let flight = slot(from)
+        .with(Cell::get)
+        .filter(|_| !reduced)
+        .map(|s| Flight {
+            dest: to,
+            x: Glide::new(s.x),
+            y: Glide::new(s.y),
+            from_w: s.w,
+            started: None,
+            last: None,
+        });
+    FLIGHT.set(flight);
 }
 
 /// The first message left the new-thread screen: the next docked composer
 /// starts from the hero's spot.
 pub fn take_off(reduced: bool) {
-    let flight = HERO.take().filter(|_| !reduced).map(|(x, y)| Flight {
-        x: Glide::new(x),
-        y: Glide::new(y),
-        started: Instant::now(),
-        last: None,
-    });
-    FLIGHT.set(flight);
+    launch(Dest::Hero, Dest::Dock, reduced);
+}
+
+/// Back to a new thread from a chat: the hero rises from the dock.
+pub fn land(reduced: bool) {
+    launch(Dest::Dock, Dest::Hero, reduced);
+}
+
+/// The width `dest`'s card should draw at this frame while a flight lands
+/// on it, easing from the departing card's width to its own resting width
+/// (`fallback` before it ever rested).
+pub fn width(dest: Dest, fallback: f32) -> Option<f32> {
+    let natural = slot(dest).with(Cell::get).map_or(fallback, |s| s.w);
+    FLIGHT.with_borrow(|f| {
+        let f = f.as_ref().filter(|f| f.dest == dest)?;
+        let t = motion::EASE_OUT_QUINT.eval(f.progress());
+        (t < 1. && (f.from_w - natural).abs() > 0.5).then(|| motion::lerp(f.from_w, natural, t))
+    })
 }
 
 /// Wrap the chat composer. Settled, it costs one borrow per frame.
 pub fn docked(child: impl IntoElement) -> Docked {
     Docked {
+        dest: Dest::Dock,
+        child: child.into_any_element(),
+    }
+}
+
+/// Wrap the new-thread composer.
+pub fn hero(child: impl IntoElement) -> Docked {
+    Docked {
+        dest: Dest::Hero,
         child: child.into_any_element(),
     }
 }
 
 pub struct Docked {
+    dest: Dest,
     child: AnyElement,
 }
 
@@ -143,25 +204,20 @@ impl Element for Docked {
         let (x, y) = (f32::from(bounds.left()), f32::from(bounds.top()));
         let now = Instant::now();
         let offset = FLIGHT.with_borrow_mut(|slot| {
-            let flight = slot.as_mut()?;
-            // The first docked frame is the start of the motion, not
-            // elapsed time: the thread may have taken a moment to open.
+            let flight = slot.as_mut().filter(|f| f.dest == self.dest)?;
             let dt = flight
                 .last
                 .map_or(0., |last| now.saturating_duration_since(last).as_secs_f32());
-            if flight.last.is_none() {
-                flight.started = now;
-            }
+            flight.started.get_or_insert(now);
             flight.last = Some(now);
             flight.x.advance(x, dt, DOCK_SECS);
             flight.y.advance(y, dt, DOCK_SECS);
-            let moving = flight.x.active() || flight.y.active() || route_progress_of(flight) < 1.;
-            let offset = (flight.x.value - x, flight.y.value - y);
+            let moving = flight.x.active() || flight.y.active() || flight.progress() < 1.;
             if !moving {
                 *slot = None;
                 return None;
             }
-            Some(offset)
+            Some((flight.x.value - x, flight.y.value - y))
         });
         match offset {
             Some((dx, dy)) => {
@@ -171,6 +227,12 @@ impl Element for Docked {
                 });
             }
             None => {
+                // Only a resting card is a launch point.
+                slot(self.dest).set(Some(Spot {
+                    x,
+                    y,
+                    w: f32::from(bounds.size.width),
+                }));
                 self.child.prepaint(window, cx);
             }
         }
@@ -188,10 +250,6 @@ impl Element for Docked {
     ) {
         self.child.paint(window, cx);
     }
-}
-
-fn route_progress_of(f: &Flight) -> f32 {
-    (f.started.elapsed().as_secs_f32() / DOCK_SECS).min(1.)
 }
 
 #[cfg(test)]

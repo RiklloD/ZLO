@@ -1250,7 +1250,6 @@ impl Render for ChatView {
             _ => None,
         };
 
-        let side_open = side::side_open(cx);
         let main = v_flex()
             .id("chat")
             .relative()
@@ -1312,60 +1311,6 @@ impl Render for ChatView {
             })
             .child(self.outline.clone())
             .child(self.computer.clone())
-            // The thread actions float over the transcript on no plate of
-            // their own, so the wallpaper runs unbroken under them.
-            .child(
-                h_flex()
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .h(px(44.))
-                    .pr_3()
-                    .items_center()
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .when(self.computer.read(cx).has_session(), |row| {
-                                let shown = !self.computer.read(cx).hidden();
-                                row.child(
-                                    Button::new("computer-toggle")
-                                        .icon(ExtraIcon::Monitor)
-                                        .ghost()
-                                        .small()
-                                        .when(shown, |b| b.selected(true))
-                                        .tooltip("Computer use screen share")
-                                        .accessibility_label("Computer use screen share")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.computer
-                                                .update(cx, |share, cx| share.toggle_hidden(cx))
-                                        })),
-                                )
-                            })
-                            .child(
-                                Button::new("fork")
-                                    .icon(ExtraIcon::GitFork)
-                                    .ghost()
-                                    .small()
-                                    .tooltip("Fork this conversation")
-                                    .accessibility_label("Fork this conversation")
-                                    .on_click(cx.listener(|this, _, _, cx| this.fork(None, cx))),
-                            )
-                            .child(
-                                Button::new("side-toggle")
-                                    .icon(if side_open {
-                                        IconName::PanelRightClose
-                                    } else {
-                                        IconName::PanelRightOpen
-                                    })
-                                    .ghost()
-                                    .small()
-                                    .when(side_open, |b| b.selected(true))
-                                    .tooltip("Activity, files and changes")
-                                    .accessibility_label("Toggle the right pane")
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_side(cx))),
-                            ),
-                    ),
-            )
             .when_some(self.error.clone(), |this, error| {
                 this.child(
                     h_flex().justify_center().px_4().child(
@@ -1701,8 +1646,14 @@ impl ChatView {
             h_flex().gap(px(6.)).child(attach).child(send),
             cx,
         );
-        // From the new-thread screen it glides down from the hero's spot.
-        crate::design::dock::docked(card).into_any_element()
+        // From the new-thread screen it glides down from the hero's spot,
+        // its width easing from the hero card's.
+        use crate::design::dock;
+        let card = match dock::width(dock::Dest::Dock, content_width(cx)) {
+            Some(w) => card.w(px(w)).max_w(px(w)),
+            None => card,
+        };
+        dock::docked(card).into_any_element()
     }
 }
 

@@ -144,15 +144,20 @@ pub fn setting_row(
 
 /// Centered, width-capped page body that scrolls.
 pub fn page_body(id: &'static str, content: impl IntoElement) -> impl IntoElement {
-    div().id(id).size_full().overflow_y_scroll().child(
-        h_flex()
-            .w_full()
-            .justify_center()
-            .px(px(40.))
-            .pt(px(28.))
-            .pb(px(48.))
-            .child(v_flex().w_full().max_w(px(PAGE_MAX_WIDTH)).child(content)),
-    )
+    div()
+        .id(id)
+        .size_full()
+        .overflow_y_scrollbar()
+        .id((ElementId::from(id), "scroll"))
+        .child(
+            h_flex()
+                .w_full()
+                .justify_center()
+                .px(px(40.))
+                .pt(px(28.))
+                .pb(px(48.))
+                .child(v_flex().w_full().max_w(px(PAGE_MAX_WIDTH)).child(content)),
+        )
 }
 
 pub fn empty_state(text: impl Into<SharedString>, cx: &App) -> impl IntoElement {

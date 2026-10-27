@@ -225,7 +225,7 @@ impl FilesView {
             .h_full()
             .border_r_1()
             .border_color(theme.border)
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .p_2()
             .gap_0p5()
             .when(
@@ -297,7 +297,7 @@ impl FilesView {
             .flex_1()
             .min_w_0()
             .h_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .p_4()
             .gap_3()
             .child(
