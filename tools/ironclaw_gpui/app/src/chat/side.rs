@@ -340,10 +340,13 @@ impl ChatView {
             }
         };
         let dragging = self.side.drag.is_some();
+        // The tab row gives way first: in a narrow pane it scrolls sideways
+        // and Widen and Hide stay reachable (T3's narrow-window fix).
         let tabs = h_flex().gap_0p5().children(Tab::ALL.into_iter().map(|t| {
             let badge = self.side_badge(t);
             div()
                 .relative()
+                .flex_none()
                 .child(
                     Button::new(SharedString::from(format!("side-tab-{}", t.id())))
                         .icon(t.icon())
@@ -372,8 +375,14 @@ impl ChatView {
             .px_2()
             .gap_1()
             .items_center()
-            .child(tabs)
-            .child(div().flex_1())
+            .child(
+                div()
+                    .id("side-tabs")
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .child(tabs),
+            )
             .child(
                 Button::new("side-wide")
                     .icon(if self.side.wide {

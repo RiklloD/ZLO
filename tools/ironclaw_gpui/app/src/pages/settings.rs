@@ -305,7 +305,7 @@ impl Render for SettingsView {
                 .child(group_header("Desktop app", None, cx))
                 .child(self.render_desktop(cx))
                 .child(snapshots::render(cx))
-                .child(group_header("Claude CLI", None, cx))
+                .child(group_header("Conversations", None, cx))
                 .child(self.compaction.clone()),
             Section::Appearance => body.child(appearance::render(self.appearance_menu, cx)),
             Section::Permissions => body.child(self.render_tools(cx)),

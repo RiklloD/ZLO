@@ -16,7 +16,7 @@ use crate::ui::*;
 pub(super) struct Goal {
     goal: Option<GoalRecord>,
     loaded: bool,
-    editor: Option<(Entity<InputState>, Subscription)>,
+    pub(super) editor: Option<(Entity<InputState>, Subscription)>,
 }
 
 /// What a `/goal` line asks for.

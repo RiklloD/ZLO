@@ -1,5 +1,5 @@
 //! The new-thread screen (t3code's, with a profile where t3code has a
-//! project): "What should we work on?", the profile underlined below it, and
+//! project): "What should we work on?", the profile picker below it, and
 //! the composer card. Nothing exists on the gateway until the first message
 //! is sent, so abandoned drafts leave no empty threads behind.
 
@@ -371,16 +371,33 @@ impl Workspace {
         let profile_switch = div()
             .relative()
             .child(
-                div()
+                // No resting underline (T3's pass): a chevron says it opens,
+                // the underline shows on hover and while the menu is open.
+                h_flex()
                     .id("draft-profile")
                     .role(Role::Button)
                     .aria_label(format!("Profile: {name}"))
-                    .text_color(p.text_muted)
+                    .gap_1()
+                    .items_center()
+                    .text_color(if draft.menu_open {
+                        p.text
+                    } else {
+                        p.text_muted
+                    })
                     .border_b_1()
-                    .border_color(p.text_faint)
+                    .border_color(if draft.menu_open {
+                        p.text_muted
+                    } else {
+                        p.text_muted.opacity(0.)
+                    })
                     .cursor_pointer()
                     .hover(|s| s.text_color(p.text).border_color(p.text_muted))
                     .child(name)
+                    .child(
+                        Icon::new(IconName::ChevronDown)
+                            .xsmall()
+                            .text_color(p.text_faint),
+                    )
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(d) = this.draft.as_mut() {
                             d.menu_open = !d.menu_open;

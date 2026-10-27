@@ -526,6 +526,7 @@ impl Workspace {
                 if items.len() > limit {
                     list.push(
                         Button::new("settled-more")
+                            .icon(IconName::ChevronDown)
                             .label("Show more")
                             .ghost()
                             .xsmall()
@@ -801,14 +802,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = *Palette::of(cx);
-        let (color, hover) = match key {
-            "snoozed" | "working" => (p.accent, p.accent),
-            _ => (p.text_faint, p.text_muted),
-        };
+        // Neutral headings: color belongs to the rows' real states.
+        let (color, hover) = (p.text_muted, p.text);
         h_flex()
             .id(SharedString::from(format!("fold-{key}")))
             .role(Role::Button)
-            .aria_label(format!("{label} ({count})"))
+            .aria_label(format!("{label} {count}"))
             .flex_none()
             .h_9()
             .px_2()
@@ -819,19 +818,17 @@ impl Workspace {
             .text_color(color)
             .cursor_pointer()
             .hover(|s| s.text_color(hover))
-            .child(if open {
-                label.to_string()
-            } else {
-                format!("{label} ({count})")
-            })
-            .child(div().flex_1().min_w_2().h_px().bg(p.border))
+            .child(label)
+            .child(div().text_color(p.text_faint).child(count.to_string()))
+            .child(div().flex_1())
             .child(
                 Icon::new(if open {
                     IconName::ChevronDown
                 } else {
-                    IconName::ChevronUp
+                    IconName::ChevronRight
                 })
-                .xsmall(),
+                .xsmall()
+                .text_color(p.text_faint),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 match key {
@@ -844,7 +841,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Card row: profile · branch with the status or age, then the title;
+    /// Card row: the title with the status or age, then profile · branch;
     /// hover actions pin, snooze, settle. No model readout: the profile names it.
     fn render_card(
         &self,
@@ -879,7 +876,13 @@ impl Workspace {
             kit::selected_wash(&style, &p),
             sel,
         );
-        let ink = crate::design::motion::mix(p.text.opacity(0.8), p.text, h.max(sel));
+        // Read titles sit at 75 % and brighten on hover; active and
+        // unread ones are full ink.
+        let ink = if recede {
+            crate::design::motion::mix(p.text.opacity(0.75), p.text, h)
+        } else {
+            p.text
+        };
 
         // Like t3code: on hover the actions take the status slot's place.
         let blocker = settle_blocker(row);
@@ -888,7 +891,7 @@ impl Workspace {
             // Hover flips visibility only: GPUI reads hover per phase, and a
             // display toggle would skip prepaint yet paint ("must call
             // prepaint before paint").
-            // In flow, so the profile name truncates before them.
+            // In flow on the meta line, so the profile name truncates first.
             h_flex()
                 .gap_px()
                 .items_center()
@@ -936,11 +939,9 @@ impl Workspace {
                 .child(
                     Button::new(SharedString::from(format!("settle-{id}")))
                         .icon(IconName::Check)
-                        .label("Settle")
                         .ghost()
                         .xsmall()
                         .icon_size(14.)
-                        .text_size(13.)
                         .disabled(blocker.is_some())
                         .tooltip(match blocker {
                             Some(why) => format!("Can't settle: it {why}, snooze it instead"),
@@ -954,7 +955,7 @@ impl Workspace {
         };
 
         let open_id = id.clone();
-        let quiet = p.text_muted.opacity(0.7);
+        let quiet = p.text_muted;
         let card =
             v_flex()
                 .id(SharedString::from(format!("row-{id}")))
@@ -986,43 +987,45 @@ impl Workspace {
                     },
                     |dragged, _, _, cx| cx.new(|_| dragged.clone()),
                 )
-                // Profile first, with the status or age (or, on hover, the
-                // actions) at its end; the title gets the full width below.
+                // Title first (T3's hierarchy) with the status or age at its
+                // end; profile and branch recede into the line below, where
+                // the hover actions appear so the title keeps its width.
+                .child(
+                    h_flex()
+                        .gap(px(8.))
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(design::SIDEBAR_TITLE_SIZE))
+                                .text_color(ink)
+                                .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
+                                .child(title_of(row).to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(design::SIDEBAR_META_SIZE))
+                                .text_color(quiet)
+                                .child(match jump {
+                                    Some(ix) => kit::shortcut_badge(ix, cx).into_any_element(),
+                                    None => status_label(row, active, now, cx),
+                                }),
+                        ),
+                )
                 .child(
                     h_flex()
                         .gap(px(7.))
+                        .h(px(20.))
                         .items_center()
                         .text_size(px(design::SIDEBAR_META_SIZE))
                         .text_color(quiet)
                         .child(profile_mark(&row.profile_id, &name, h.max(sel), cx))
                         .child(div().flex_1().min_w_0().truncate().child(name))
                         .when_some(branch, |d, b| d.child(branch_label(b, cx)))
-                        .child(
-                            div().relative().flex_none().child(actions).child(
-                                h_flex()
-                                    .absolute()
-                                    .top_0()
-                                    .bottom_0()
-                                    .right_0()
-                                    .items_center()
-                                    .when(menu_open, |d| d.invisible())
-                                    .group_hover(group.clone(), |s| s.invisible())
-                                    .child(match jump {
-                                        Some(ix) => kit::shortcut_badge(ix, cx).into_any_element(),
-                                        None => status_label(row, active, now, cx),
-                                    }),
-                            ),
-                        ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(design::SIDEBAR_TITLE_SIZE))
-                        .text_color(if recede { p.text_muted } else { ink })
-                        .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
-                        .child(title_of(row).to_string()),
+                        .child(div().flex_none().child(actions)),
                 );
         v_flex()
             .child(card)
@@ -1144,11 +1147,16 @@ impl Workspace {
                     }),
             )
             .child(
-                div()
+                h_flex()
                     .flex_none()
+                    .gap_1()
+                    .items_center()
                     .text_xs()
-                    .text_color(p.text_faint)
+                    .text_color(if snoozed { p.accent } else { p.text_faint })
                     .group_hover(group, |s| s.invisible())
+                    .when(snoozed, |d| {
+                        d.child(Icon::new(ExtraIcon::AlarmClock).xsmall())
+                    })
                     .child(label),
             )
             .into_any_element()
@@ -1167,15 +1175,20 @@ fn chip(
 }
 
 /// The profile badge: a colored tile with the first letter.
-/// `lit` 0 draws the mark gray, 1 in its profile color (T3 Code: gray
-/// until the row is hovered or open).
+/// `lit` 0 draws the mark at rest, 1 at full strength on hover or open.
 fn profile_mark(profile_id: &str, name: &str, lit: f32, cx: &App) -> impl IntoElement {
     let p = Palette::of(cx);
     let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];
     let hash = profile_id
         .bytes()
         .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    let color = crate::design::motion::mix(p.text_muted, colors[hash as usize % colors.len()], lit);
+    // Identity keeps its color at rest (T3 reversed its grayscale pass);
+    // hover and selection only bring it to full strength.
+    let color = crate::design::motion::mix(
+        p.text_muted,
+        colors[hash as usize % colors.len()],
+        0.7 + 0.3 * lit,
+    );
     let letter = name
         .chars()
         .find(|c| c.is_alphanumeric())
@@ -1202,9 +1215,18 @@ fn branch_label(branch: String, cx: &App) -> impl IntoElement {
         .items_center()
         .max_w(px(90.))
         .text_xs()
-        .text_color(p.text_faint)
+        .text_color(p.text_muted)
         .child(Icon::new(ExtraIcon::GitBranch).xsmall())
-        .child(div().truncate().child(branch))
+        .child(div().truncate().child(branch_tail(&branch)))
+}
+
+/// A long branch keeps its last path segment, the part that names it:
+/// `feature/team/sidebar-pass` reads `…/sidebar-pass`.
+fn branch_tail(branch: &str) -> String {
+    match branch.rsplit_once('/') {
+        Some((_, tail)) if branch.chars().count() > 14 && !tail.is_empty() => format!("…/{tail}"),
+        _ => branch.to_string(),
+    }
 }
 
 /// The open thread shows no Done or Woke: the person is looking at it.

@@ -95,6 +95,9 @@ struct Pages {
     usage: Option<Entity<UsageView>>,
 }
 
+/// A settings sidebar row: page, icon, label.
+type NavItem = (Page, IconName, &'static str);
+
 enum Conn {
     Connecting,
     /// `retry_in` is set when the app retries on its own.
@@ -548,9 +551,10 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Settings pages in sidebar order, in Zeron's groups: the app, what
-    /// the agent can use, what it works on, and what it reports.
-    fn settings_groups(&self) -> Vec<Vec<(Page, IconName, &'static str)>> {
+    /// Settings pages in sidebar order, under named groups (T3's settings
+    /// regroup): the app, what the agent can use, what it works on, and
+    /// what it reports.
+    fn settings_groups(&self) -> Vec<(&'static str, Vec<NavItem>)> {
         let mut work = vec![
             (Page::Automations, IconName::Calendar, "Automations"),
             (Page::Files, IconName::Folder, "Files"),
@@ -559,29 +563,41 @@ impl Workspace {
             work.push((Page::Projects, IconName::LayoutDashboard, "Projects"));
         }
         vec![
-            vec![
-                (Page::Settings, IconName::Settings, "General"),
-                (Page::Appearance, IconName::Palette, "Appearance"),
-                (Page::Notifications, IconName::Bell, "Notifications"),
-            ],
-            vec![
-                (Page::Providers, IconName::Bot, "Providers"),
-                (Page::Profiles, IconName::User, "Profiles"),
-                (Page::Skills, IconName::BookOpen, "Skills"),
-                (Page::Extensions, IconName::Frame, "Extensions"),
-                (Page::Permissions, IconName::CircleCheck, "Permissions"),
-            ],
-            work,
-            vec![
-                (Page::Usage, IconName::ChartPie, "Usage"),
-                (Page::Traces, IconName::Network, "Trace Commons"),
-                (Page::Operator, IconName::SquareTerminal, "Operator"),
-            ],
+            (
+                "App",
+                vec![
+                    (Page::Settings, IconName::Settings, "General"),
+                    (Page::Appearance, IconName::Palette, "Appearance"),
+                    (Page::Notifications, IconName::Bell, "Notifications"),
+                ],
+            ),
+            (
+                "Agent",
+                vec![
+                    (Page::Providers, IconName::Bot, "Providers"),
+                    (Page::Profiles, IconName::User, "Profiles"),
+                    (Page::Skills, IconName::BookOpen, "Skills"),
+                    (Page::Extensions, IconName::Frame, "Extensions"),
+                    (Page::Permissions, IconName::CircleCheck, "Permissions"),
+                ],
+            ),
+            ("Work", work),
+            (
+                "Reports",
+                vec![
+                    (Page::Usage, IconName::ChartPie, "Usage"),
+                    (Page::Traces, IconName::Network, "Trace Commons"),
+                    (Page::Operator, IconName::SquareTerminal, "Operator"),
+                ],
+            ),
         ]
     }
 
     fn settings_pages(&self) -> Vec<(Page, IconName, &'static str)> {
-        self.settings_groups().into_iter().flatten().collect()
+        self.settings_groups()
+            .into_iter()
+            .flat_map(|(_, pages)| pages)
+            .collect()
     }
 
     fn in_settings(&self) -> bool {
@@ -597,19 +613,24 @@ impl Workspace {
     }
 
     fn render_settings_nav(&self, cx: &Context<Self>) -> impl IntoElement {
-        const GROUP_GAP: f32 = 14.;
+        const GROUP_GAP: f32 = 10.;
+        const HEADING: f32 = 26.;
         let unread = self.unread;
         let s = *Style::of(cx);
         let p = *Palette::of(cx);
-        // Rows have a fixed height and groups a fixed gap, so the selection
-        // pill can glide to any row, across gaps, instead of jumping.
+        // Rows, headings and gaps have fixed heights, so the selection pill
+        // can glide to any row, across groups, instead of jumping.
         let groups = self.settings_groups();
         let mut selected = None;
         let mut slot = 0;
-        for (gx, group) in groups.iter().enumerate() {
+        for (gx, (_, group)) in groups.iter().enumerate() {
             for (page, _, _) in group {
                 if *page == self.page {
-                    selected = Some(slot as f32 * s.row_height + gx as f32 * GROUP_GAP);
+                    selected = Some(
+                        slot as f32 * s.row_height
+                            + gx as f32 * GROUP_GAP
+                            + (gx + 1) as f32 * HEADING,
+                    );
                 }
                 slot += 1;
             }
@@ -618,8 +639,20 @@ impl Workspace {
             .relative()
             .child(kit::slide_pill("nav-pill", selected, cx));
         let mut slot = 0;
-        for (gx, group) in groups.into_iter().enumerate() {
-            let mut rows = v_flex();
+        for (gx, (heading, group)) in groups.into_iter().enumerate() {
+            let mut rows = v_flex().child(
+                div()
+                    .h(px(HEADING))
+                    .flex_none()
+                    .flex()
+                    .items_end()
+                    .pb(px(6.))
+                    .px(px(10.))
+                    .text_xs()
+                    .font_medium()
+                    .text_color(p.text_faint)
+                    .child(heading),
+            );
             for (page, icon, label) in group {
                 let on = self.page == page;
                 rows = rows.child(

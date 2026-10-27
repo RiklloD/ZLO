@@ -243,11 +243,6 @@ impl Button {
         self.icon_px = Some(size);
         self
     }
-    /// Label size over the size preset's.
-    pub fn text_size(mut self, size: f32) -> Self {
-        self.text_px = Some(size);
-        self
-    }
     pub fn primary(mut self) -> Self {
         self.variant = Variant::Primary;
         self

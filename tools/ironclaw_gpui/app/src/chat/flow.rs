@@ -51,6 +51,8 @@ pub(super) enum Item {
     Pending {
         stopping: bool,
     },
+    /// Live subagents, the goal and queued turns, after the newest content.
+    Tail,
     Reserve,
 }
 
@@ -60,6 +62,7 @@ impl Item {
             Item::Row(row) => row.key(),
             Item::Activity { key, .. } => key,
             Item::Pending { .. } => "\u{0}pending",
+            Item::Tail => "\u{0}tail",
             Item::Reserve => "\u{0}reserve",
         }
     }
@@ -83,7 +86,13 @@ fn is_activity(row: &Row) -> bool {
 
 /// Fold `rows` into list items. `live` marks a run in flight; the trailing
 /// activity group is then the one being written and opens by itself.
-pub(super) fn fold(rows: &[Row], live: bool, stopping: bool, reserve: bool) -> Vec<Item> {
+pub(super) fn fold(
+    rows: &[Row],
+    live: bool,
+    stopping: bool,
+    tail: bool,
+    reserve: bool,
+) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::with_capacity(rows.len() + 2);
     for row in rows {
         if is_activity(row) {
@@ -106,6 +115,9 @@ pub(super) fn fold(rows: &[Row], live: bool, stopping: bool, reserve: bool) -> V
     if live || stopping {
         items.push(Item::Pending { stopping });
     }
+    if tail {
+        items.push(Item::Tail);
+    }
     if reserve {
         items.push(Item::Reserve);
     }
@@ -120,6 +132,7 @@ pub(super) fn top_gap(prev: Option<&Item>, item: &Item) -> f32 {
         (_, Item::Reserve) => 0.,
         (_, Item::Row(Row::User { .. })) => SPACE_LG + SPACE_SM,
         (_, Item::Pending { .. }) => SPACE_SM,
+        (_, Item::Tail) => SPACE_LG,
         (Some(Item::Activity { .. }), _) | (_, Item::Activity { .. }) => SPACE_MD,
         _ => SPACE_SM,
     }
@@ -714,11 +727,9 @@ fn tree_row(
 /// column, a faint wash rather than a colored bubble.
 pub(super) fn user_pill(key: &str, body: impl IntoElement, pending: bool, cx: &App) -> AnyElement {
     let p = *Palette::of(cx);
-    let wash = if p.light {
-        gpui_kit::hsla(0., 0., 0., 0.05)
-    } else {
-        gpui_kit::hsla(0., 0., 1., 0.08)
-    };
+    // An opaque step off the canvas, so the bubble reads the same over
+    // a wallpaper, a solid canvas and either scheme.
+    let wash = motion::mix(p.bg, p.text, if p.light { 0.06 } else { 0.11 });
     if !pending {
         motion::settle(key);
     }
@@ -854,8 +865,14 @@ mod tests {
             }))),
             tool("b", "ironclaw.shell"),
         ];
-        assert_eq!(fold(&rows, false, false, false).len(), 1);
+        assert_eq!(fold(&rows, false, false, false, false).len(), 1);
         let rows = vec![tool("a", "ironclaw.shell"), gate(GateState::Open)];
-        assert_eq!(fold(&rows, true, false, false).len(), 3);
+        assert_eq!(fold(&rows, true, false, false, false).len(), 3);
+        // The tail follows the working line and stays above the reserve.
+        let items = fold(&rows, true, false, true, true);
+        assert!(matches!(
+            items[items.len() - 3..],
+            [Item::Pending { .. }, Item::Tail, Item::Reserve]
+        ));
     }
 }

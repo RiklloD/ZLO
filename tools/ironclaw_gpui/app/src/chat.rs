@@ -96,6 +96,8 @@ pub struct ChatView {
     /// Jumps to latest so far; each one keys a fresh settle slide.
     jumps: u32,
     scroller: Entity<MessageScrollerState>,
+    /// Whether the transcript ends with the tail row (work, goal, queue).
+    has_tail: bool,
     composer: Entity<TextareaState>,
     status: StreamStatus,
     error: Option<SharedString>,
@@ -248,6 +250,7 @@ impl ChatView {
             outline,
             jumps: 0,
             scroller,
+            has_tail: false,
             composer,
             status: StreamStatus::Connecting,
             error: None,
@@ -747,7 +750,7 @@ impl ChatView {
         let rows = self.rows.clone();
         let (rows, pacing) = self.pacer.apply(&rows, Instant::now(), cx.reduce_motion());
         self.pacing = pacing;
-        let new_items = flow::fold(&rows, live, stopping, self.reserve.is_some());
+        let new_items = flow::fold(&rows, live, stopping, self.has_tail, self.reserve.is_some());
         let old = self.items.clone();
         if *old == new_items && !self.pin_next {
             return;
@@ -1046,6 +1049,7 @@ impl Render for ChatView {
         let menu_index = self.menu_index.min(menu.len().saturating_sub(1));
         let running = self.running_run().is_some();
         let stopping = self.transcript.is_stopping();
+        self.has_tail = self.render_tail(cx).is_some();
         self.sync_items(running, stopping, cx);
         if self.pacing {
             crate::design::pulse::request(crate::design::pulse::Rate::Smooth, window, cx);
@@ -1131,6 +1135,11 @@ impl Render for ChatView {
                     flow::render_activity(key, rows, *live, open, &toggles, &weak, cx)
                 }
                 Item::Pending { stopping } => flow::render_pending(*stopping, since, seed, cx),
+                // Built by the view itself: its rows carry the view's listeners.
+                Item::Tail => weak
+                    .upgrade()
+                    .and_then(|view| view.update(cx, |this, cx| this.render_tail(cx)))
+                    .unwrap_or_else(|| div().into_any_element()),
                 Item::Reserve => div().h(px(reserve_h)).into_any_element(),
             };
             let (lift, fade) = match (rise, turn_start) {
@@ -1195,15 +1204,19 @@ impl Render for ChatView {
         .jump_button(self.reserve.is_none())
         .with_jump_button_renderer({
             let weak = jump_weak;
+            // Name what waits below the fold, not just that there is more.
+            let summary = self.tail_summary();
             move |button| {
-                button.on_click(move |_, _, cx| {
-                    let _ = weak.update(cx, |this, cx| {
-                        this.jumps += 1;
-                        this.scroller
-                            .update(cx, |state, cx| state.scroll_to_end(cx));
-                        cx.notify();
-                    });
-                })
+                button
+                    .when_some(summary, |b, text| b.label(text).small())
+                    .on_click(move |_, _, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.jumps += 1;
+                            this.scroller
+                                .update(cx, |state, cx| state.scroll_to_end(cx));
+                            cx.notify();
+                        });
+                    })
             }
         })
         // The list hides its pixel offset, so it cannot glide: it lands on
@@ -1688,8 +1701,8 @@ pub(crate) fn composer_card(
         motion::TOOL_FOLD,
         cx.reduce_motion(),
     );
-    // A frosted card floating on a soft shadow, as in Zeron: it reads over
-    // the wallpaper and lifts off the transcript.
+    // One plate, one short shadow (T3's design pass): it sits on the
+    // transcript instead of floating over it.
     let ink = |a: f32| {
         if palette.light {
             gpui_kit::hsla(0., 0., 0., a)
@@ -1711,14 +1724,14 @@ pub(crate) fn composer_card(
         inset: false,
     };
     let shadows = if palette.light {
-        vec![drop(0.08, 10., 30., -6.), drop(0.04, 1., 3., 0.)]
+        vec![drop(0.06, 4., 14., -4.)]
     } else {
-        vec![drop(0.45, 12., 32., -8.), drop(0.25, 1., 3., 0.)]
+        vec![drop(0.3, 4., 16., -4.)]
     };
     let shell = div()
         .w_full()
         .max_w(px(content_width(cx)))
-        .rounded(px(if compact { 20. } else { 24. }))
+        .rounded(px(16.))
         .bg(fill)
         .border_1()
         .border_color(rim)
@@ -1782,7 +1795,7 @@ pub(crate) fn round_button(
             .aria_label(label)
             .size(px(30.))
             .flex_none()
-            .rounded(px(9.))
+            .rounded(px(8.))
             .flex()
             .items_center()
             .justify_center()
@@ -2024,7 +2037,7 @@ pub(crate) fn attachment_card(
         .p_1p5()
         .pr_2()
         .max_w(px(300.))
-        .rounded(px(10.))
+        .rounded(px(8.))
         .border_1()
         .border_color(p.border_strong)
         .bg(p.hover)
@@ -2035,7 +2048,7 @@ pub(crate) fn attachment_card(
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(7.))
+                .rounded(px(6.))
                 .border_1()
                 .border_color(p.border_strong)
                 .child(icon),

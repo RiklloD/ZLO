@@ -206,7 +206,7 @@ pub(crate) fn inline_card(
         .pl(px(2.))
         .pr(px(7.))
         .items_center()
-        .rounded(px(7.))
+        .rounded(px(6.))
         .border_1()
         .border_color(if selected {
             cx.theme().ring

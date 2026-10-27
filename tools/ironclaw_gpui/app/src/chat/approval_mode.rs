@@ -242,7 +242,7 @@ impl ApprovalPill {
             .text_xs()
             .font_medium()
             .text_color(p.text_faint)
-            .child("ACCESS");
+            .child("Access");
         let divider = div().mx_2().my_1().h(px(1.)).bg(p.border);
         let pop = kit::popover("approval-pop", cx);
         pop(v_flex()

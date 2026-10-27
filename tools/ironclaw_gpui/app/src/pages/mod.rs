@@ -132,7 +132,8 @@ pub fn setting_row(
                         div()
                             .text_size(gpui_kit::rems(12. / 16.))
                             .text_color(p.text_muted)
-                            .line_clamp(2)
+                            .line_height(gpui_kit::rems(18. / 16.))
+                            .whitespace_normal()
                             .child(text),
                     )
                 }),

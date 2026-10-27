@@ -802,7 +802,7 @@ impl ModelPicker {
             .text_xs()
             .font_medium()
             .text_color(p.text_faint)
-            .child(div().flex_1().truncate().child(title.to_uppercase()));
+            .child(div().flex_1().truncate().child(title));
         let Some(provider) = provider else {
             return header.into_any_element();
         };
@@ -870,6 +870,18 @@ impl ModelPicker {
         let (pv, md) = (provider.provider.clone(), model.clone());
         let (fav_p, fav_m) = (pv.clone(), md.clone());
         let (hide_p, hide_m) = (pv.clone(), md.clone());
+        // Inside a provider's own tab its name is already the header; only
+        // a warning earns the second line.
+        let in_tab = matches!(self.rail, Rail::Provider(_));
+        let subtitle = if forks {
+            Some(format!("{} · continues in a new thread", provider.name))
+        } else if !provider.authenticated {
+            Some(format!("{} · not signed in", provider.name))
+        } else if in_tab {
+            None
+        } else {
+            Some(provider.name.clone())
+        };
         h_flex()
             .id(SharedString::from(format!("pick-{id}")))
             .group(group.clone())
@@ -880,9 +892,10 @@ impl ModelPicker {
             .py_1p5()
             .rounded(px(design::CONTROL_RADIUS))
             .cursor_pointer()
-            .when(on, |d| d.bg(p.active))
+            // The row under the pointer reads stronger than the current one.
+            .when(on, |d| d.bg(p.hover))
             .when(hidden, |d| d.opacity(0.45))
-            .hover(|s| s.bg(p.hover))
+            .hover(|s| s.bg(p.active))
             .child(provider_mark(
                 provider.brand.as_deref(),
                 &provider.runtime,
@@ -895,19 +908,15 @@ impl ModelPicker {
                     .flex_1()
                     .min_w_0()
                     .child(div().text_sm().truncate().child(title))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(p.text_faint)
-                            .truncate()
-                            .child(if forks {
-                                format!("{} · continues in a new thread", provider.name)
-                            } else if !provider.authenticated {
-                                format!("{} · not signed in", provider.name)
-                            } else {
-                                provider.name.clone()
-                            }),
-                    ),
+                    .when_some(subtitle, |d, line| {
+                        d.child(
+                            div()
+                                .text_xs()
+                                .text_color(p.text_faint)
+                                .truncate()
+                                .child(line),
+                        )
+                    }),
             )
             .when_some(badge, |d, ix| d.child(design::kit::shortcut_badge(ix, cx)))
             .child(
@@ -954,7 +963,13 @@ impl ModelPicker {
                             ),
                     ),
             )
-            .when(on, |d| d.child(Icon::new(IconName::Check).small()))
+            // A fixed check column, so picking never shifts the labels.
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(16.))
+                    .when(on, |d| d.child(Icon::new(IconName::Check).small())),
+            )
             .on_click(cx.listener(move |this, _, _, cx| this.pick(pv.clone(), md.clone(), cx)))
             .into_any_element()
     }
@@ -979,10 +994,15 @@ impl ModelPicker {
                 .rounded(px(design::CONTROL_RADIUS))
                 .cursor_pointer()
                 .text_sm()
-                .when(on, |d| d.bg(p.active))
-                .hover(|s| s.bg(p.hover))
+                .when(on, |d| d.bg(p.hover))
+                .hover(|s| s.bg(p.active))
                 .child(div().flex_1().child(title))
-                .when(on, |d| d.child(Icon::new(IconName::Check).small()))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(16.))
+                        .when(on, |d| d.child(Icon::new(IconName::Check).small())),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| this.pick_effort(value.clone(), cx)))
                 .into_any_element()
         };
@@ -994,7 +1014,7 @@ impl ModelPicker {
                 .text_xs()
                 .font_medium()
                 .text_color(p.text_faint)
-                .child("THINKING")
+                .child("Thinking")
                 .into_any_element(),
             row("effort-default".into(), "Default".into(), None, self),
         ];

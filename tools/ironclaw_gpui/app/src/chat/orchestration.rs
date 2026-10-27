@@ -431,13 +431,21 @@ impl ChatView {
         cx.emit(OpenThread(thread_id));
     }
 
-    /// Strip, subagent frame and queue panel, stacked above the composer.
+    /// What stays on the composer: notices that change what a send does
+    /// (the strip), the queue's controls, and the goal editor while open.
+    /// Work, goals and queued turns live at the transcript's end
+    /// ([`Self::render_tail`]), as in T3 Code's timeline pass.
     pub(super) fn render_orchestration(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let goal = self.render_goal(cx);
+        let goal = self
+            .orch
+            .goal
+            .editor
+            .is_some()
+            .then(|| self.render_goal(cx))
+            .flatten();
         let strip = self.render_strip(cx);
-        let frame = self.render_frame(cx);
         let queue = self.orch.queue_open.then(|| self.render_queue(cx));
-        if goal.is_none() && strip.is_none() && frame.is_none() && queue.is_none() {
+        if goal.is_none() && strip.is_none() && queue.is_none() {
             return None;
         }
         Some(
@@ -452,11 +460,138 @@ impl ChatView {
                         .gap_2()
                         .children(goal)
                         .children(queue)
-                        .children(frame)
                         .children(strip),
                 )
                 .into_any_element(),
         )
+    }
+
+    /// The transcript's last row, in T3's order: live subagents (work that
+    /// may need you), the goal, then queued turns that are not sent yet.
+    pub(super) fn render_tail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let frame = self.render_frame(cx);
+        let goal = self
+            .orch
+            .goal
+            .editor
+            .is_none()
+            .then(|| self.render_goal(cx))
+            .flatten();
+        let queued = self.render_queued(cx);
+        if frame.is_none() && goal.is_none() && queued.is_none() {
+            return None;
+        }
+        Some(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .children(frame)
+                .children(goal)
+                .children(queued)
+                .into_any_element(),
+        )
+    }
+
+    /// A short line for the jump-to-end button: "2 queued", "1 working".
+    pub(super) fn tail_summary(&self) -> Option<String> {
+        let o = &self.orch;
+        let queued = o.queue.items.len();
+        let working = o.tasks.iter().filter(|t| t.status.is_live()).count();
+        let mut parts = Vec::new();
+        if working > 0 {
+            parts.push(format!("{working} working"));
+        }
+        if queued > 0 {
+            parts.push(format!("{queued} queued"));
+        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
+    /// Queued follow-ups as unsent messages: dashed, unfilled bubbles on
+    /// the sender's side, with Send next and Remove on hover.
+    fn render_queued(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let o = &self.orch;
+        if o.queue.items.is_empty() {
+            return None;
+        }
+        let p = *crate::design::Palette::of(cx);
+        let busy = o.busy;
+        let first = o.queue.items.first().map(|i| i.id.clone());
+        let rows = o.queue.items.iter().enumerate().map(|(ix, item)| {
+            let id = item.id.clone();
+            let promote = (ix > 0).then(|| (item.id.clone(), first.clone()));
+            let group = SharedString::from(format!("queued-{}", item.id));
+            v_flex()
+                .id(SharedString::from(format!("queued-row-{}", item.id)))
+                .group(group.clone())
+                .w_full()
+                .items_end()
+                .gap_1()
+                .role(Role::Status)
+                .aria_label(format!("Not sent yet: {}", item.text))
+                .child(
+                    div()
+                        .min_w_0()
+                        .max_w(gpui_kit::relative(0.8))
+                        .px(px(16.))
+                        .py(px(10.))
+                        .rounded(px(16.))
+                        .border_1()
+                        .border_dashed()
+                        .border_color(p.border_strong)
+                        .text_color(p.text_muted)
+                        .whitespace_normal()
+                        .line_clamp(4)
+                        .child(item.text.clone()),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .text_xs()
+                        .text_color(p.text_faint)
+                        .child(
+                            h_flex()
+                                .gap_px()
+                                .invisible()
+                                .group_hover(group.clone(), |s| s.visible())
+                                .when_some(promote, |row, (id, before)| {
+                                    row.child(
+                                        Button::new(SharedString::from(format!("promote-{id}")))
+                                            .label("Send next")
+                                            .xsmall()
+                                            .ghost()
+                                            .disabled(busy)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.queue_action(
+                                                    QueueAction::Reorder {
+                                                        item_id: id.clone(),
+                                                        before_id: before.clone(),
+                                                    },
+                                                    cx,
+                                                )
+                                            })),
+                                    )
+                                })
+                                .child(
+                                    Button::new(SharedString::from(format!("unqueue-{}", item.id)))
+                                        .label("Remove")
+                                        .xsmall()
+                                        .ghost()
+                                        .disabled(busy)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.queue_action(QueueAction::Remove(id.clone()), cx)
+                                        })),
+                                ),
+                        )
+                        .child(if o.queue.held {
+                            "Queued, on hold"
+                        } else {
+                            "Queued"
+                        }),
+                )
+        });
+        Some(v_flex().w_full().gap_3().children(rows).into_any_element())
     }
 
     fn render_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -703,82 +838,25 @@ impl ChatView {
                 .rounded(theme.radius_lg)
                 .border_1()
                 .border_color(theme.border)
-                .bg(theme.secondary)
                 .child(
                     div()
                         .px_2()
                         .pt_1()
                         .text_xs()
                         .text_color(theme.muted_foreground)
-                        .child("Subagents"),
+                        .child("Working in the background"),
                 )
                 .children(rows)
                 .into_any_element(),
         )
     }
 
+    /// The queue's controls: hold or release, clear, and add a follow-up.
+    /// The queued turns themselves show at the transcript's end.
     fn render_queue(&self, cx: &mut Context<Self>) -> AnyElement {
         let o = &self.orch;
         let theme = cx.theme();
         let busy = o.busy;
-        let first = o.queue.items.first().map(|i| i.id.clone());
-        let items = o.queue.items.iter().enumerate().map(|(ix, item)| {
-            let id = item.id.clone();
-            let promote = (ix > 0).then(|| (item.id.clone(), first.clone()));
-            h_flex()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .items_start()
-                .text_sm()
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(18.))
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(format!("{}.", ix + 1)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .line_clamp(2)
-                        .child(item.text.clone()),
-                )
-                .when_some(promote, |row, (id, before)| {
-                    row.child(
-                        Button::new(SharedString::from(format!("promote-{id}")))
-                            .icon(IconName::ChevronUp)
-                            .xsmall()
-                            .ghost()
-                            .disabled(busy)
-                            .tooltip("Run this one next")
-                            .accessibility_label("Move to the front")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.queue_action(
-                                    QueueAction::Reorder {
-                                        item_id: id.clone(),
-                                        before_id: before.clone(),
-                                    },
-                                    cx,
-                                )
-                            })),
-                    )
-                })
-                .child(
-                    Button::new(SharedString::from(format!("unqueue-{}", item.id)))
-                        .icon(IconName::Delete)
-                        .xsmall()
-                        .ghost()
-                        .disabled(busy)
-                        .tooltip("Remove from the queue")
-                        .accessibility_label("Remove from the queue")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.queue_action(QueueAction::Remove(id.clone()), cx)
-                        })),
-                )
-        });
         let held = o.queue.held;
         let empty = o.queue.items.is_empty();
         v_flex()
@@ -797,9 +875,9 @@ impl ChatView {
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .child(div().flex_1().child(if held {
-                        "Queued follow-ups (on hold)"
+                        "On hold: nothing queued is sent"
                     } else {
-                        "Queued follow-ups run in order once the current turn ends"
+                        "Follow-ups are sent in order once the current turn ends"
                     }))
                     .child(
                         Button::new("queue-hold")
@@ -843,7 +921,6 @@ impl ChatView {
                         .child("Nothing queued."),
                 )
             })
-            .children(items)
             .when_some(
                 o.queue_input.as_ref().map(|(i, _)| i.clone()),
                 |panel, input| {

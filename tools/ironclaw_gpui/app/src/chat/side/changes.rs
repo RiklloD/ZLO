@@ -513,7 +513,7 @@ impl ChatView {
                     .mt_1()
                     .p_2()
                     .gap_1p5()
-                    .rounded(px(10.))
+                    .rounded(px(8.))
                     .border_1()
                     .border_color(p.accent.opacity(0.4))
                     .bg(p.accent_wash)
