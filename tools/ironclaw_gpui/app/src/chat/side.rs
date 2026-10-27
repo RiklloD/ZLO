@@ -422,7 +422,7 @@ impl ChatView {
             .child(
                 div()
                     .font_weight(gpui_kit::FontWeight::MEDIUM)
-                    .text_color(p.text_muted)
+                    .text_color(p.text)
                     .child(tab.label()),
             )
             .when(tab.coding(), |d| {
@@ -449,6 +449,9 @@ impl ChatView {
                 .w(px(width))
                 .h_full()
                 .flex_none()
+                // An opaque plane like the left sidebar: the thread wallpaper
+                // stops at the pane's edge, so its text always reads.
+                .bg(p.surface)
                 .border_l_1()
                 .border_color(p.border)
                 .child(header)
