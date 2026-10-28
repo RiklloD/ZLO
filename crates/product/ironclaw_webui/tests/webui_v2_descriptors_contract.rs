@@ -93,9 +93,8 @@ use ironclaw_webui::webui_v2::{
     WEBUI_V2_ROUTE_COMPUTER_USE_SESSION, WEBUI_V2_ROUTE_COMPUTER_USE_STATE,
 };
 use ironclaw_webui::webui_v2::{
-    WEBUI_V2_ROUTE_INBOX_LIST, WEBUI_V2_ROUTE_INBOX_MUTATE, WEBUI_V2_ROUTE_INBOX_TITLE,
-    WEBUI_V2_ROUTE_TASK_MODELS_GET, WEBUI_V2_ROUTE_TASK_MODELS_SET, WEBUI_V2_ROUTE_THREAD_GOAL_GET,
-    WEBUI_V2_ROUTE_THREAD_GOAL_SET,
+    WEBUI_V2_ROUTE_INBOX_LIST, WEBUI_V2_ROUTE_INBOX_MUTATE, WEBUI_V2_ROUTE_TASK_MODELS_GET,
+    WEBUI_V2_ROUTE_TASK_MODELS_SET, WEBUI_V2_ROUTE_THREAD_GOAL_GET, WEBUI_V2_ROUTE_THREAD_GOAL_SET,
 };
 
 /// Expected policy surface for one route. Everything host composition
@@ -969,23 +968,6 @@ fn expected_table() -> Vec<Expected> {
             scope_source: IngressScopeSource::AuthenticatedCaller,
             body_limit: BodyLimitPolicy::NoBody,
             rate_limit_max: 120,
-            rate_limit_window_seconds: 60,
-            rate_limit_scope: RateLimitScope::PerCaller,
-            cors: CorsPolicy::SameOriginOnly,
-            websocket_origin: WebSocketOriginPolicy::NotApplicable,
-            streaming: StreamingMode::None,
-            audit: AuditTraceClass::UserAction,
-            effect_path: AllowedEffectPath::ProductSurface,
-        },
-        Expected {
-            route_id: WEBUI_V2_ROUTE_INBOX_TITLE,
-            method: NetworkMethod::Post,
-            pattern: "/api/webchat/v2/inbox/{thread_id}/title",
-            listener_class: ListenerClass::LocalGateway,
-            auth_schemes: &[IngressAuthScheme::BearerToken],
-            scope_source: IngressScopeSource::AuthenticatedCaller,
-            body_limit: body_limit_kib(64),
-            rate_limit_max: 60,
             rate_limit_window_seconds: 60,
             rate_limit_scope: RateLimitScope::PerCaller,
             cors: CorsPolicy::SameOriginOnly,

@@ -73,33 +73,10 @@ pub const TASK_COMPLETE_COMMAND: ProductSurfaceCommandDescriptor<
     TaskCompletionResult,
 > = ProductSurfaceCommandDescriptor::new(TASK_COMPLETE_COMMAND_ID);
 
-/// Input `{"thread_id"}`. Output [`ThreadTitleResponse`]. Titles a thread
-/// from its first exchange, then re-reads it every
-/// [`RETITLE_EVERY_REPLIES`] replies and renames it when the topic moved.
-/// A call before either is due returns the saved title.
-pub const THREAD_TITLE_COMMAND_ID: &str = "inbox.title";
-pub const THREAD_TITLE_COMMAND: ProductSurfaceCommandDescriptor<
-    ThreadTitleRequest,
-    ThreadTitleResponse,
-> = ProductSurfaceCommandDescriptor::new(THREAD_TITLE_COMMAND_ID);
-
-/// Replies between two title checks of the same thread.
+/// Replies between two title checks of the same thread. The backend titles
+/// a thread after its first reply, then re-reads it every this many replies
+/// and renames it when the topic moved.
 pub const RETITLE_EVERY_REPLIES: usize = 3;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThreadTitleRequest {
-    pub thread_id: String,
-}
-
-/// `title` is `None` when no model is set or the thread has no reply yet.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThreadTitleResponse {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    /// This call wrote a new title.
-    #[serde(default)]
-    pub changed: bool,
-}
 
 #[cfg(test)]
 mod tests {

@@ -8,7 +8,7 @@ use ironclaw_product_contracts::inbox::{
     ThreadGoalResponse,
 };
 use ironclaw_product_contracts::profiles::DEFAULT_PROFILE_ID;
-use ironclaw_product_contracts::task_models::{TaskModels, ThreadTitleResponse};
+use ironclaw_product_contracts::task_models::TaskModels;
 use serde_json::json;
 
 use crate::api::{Client, V2, seg};
@@ -71,19 +71,6 @@ impl Client {
         let body = json!({ "action": action, "until": until });
         let path = format!("{V2}/inbox/{}", seg(thread_id));
         document(self.post(&path, &body).await?)
-    }
-
-    /// Title the thread once on the "Thread titles" task model. `None`: no
-    /// model set, no reply yet, or a gateway without the route.
-    /// Ask the backend to title the thread if a title is due; `changed`
-    /// says this call wrote a new one.
-    pub async fn title_thread(&self, thread_id: &str) -> Result<ThreadTitleResponse, ClientError> {
-        let path = format!("{V2}/inbox/{}/title", seg(thread_id));
-        match self.post(&path, &json!({})).await {
-            Ok(value) => document(value),
-            Err(e) if e.is_not_found() => Ok(ThreadTitleResponse::default()),
-            Err(e) => Err(e),
-        }
     }
 
     pub async fn task_models(&self) -> Result<TaskModels, ClientError> {

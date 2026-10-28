@@ -229,13 +229,11 @@ pub const WEBUI_V2_ROUTE_INBOX_LIST: &str = "webui.v2.inbox.list";
 pub const WEBUI_V2_ROUTE_INBOX_MUTATE: &str = "webui.v2.inbox.mutate";
 pub const WEBUI_V2_ROUTE_THREAD_GOAL_GET: &str = "webui.v2.goals.get";
 pub const WEBUI_V2_ROUTE_THREAD_GOAL_SET: &str = "webui.v2.goals.set";
-pub const WEBUI_V2_ROUTE_INBOX_TITLE: &str = "webui.v2.inbox.title";
 pub const WEBUI_V2_ROUTE_TASK_MODELS_GET: &str = "webui.v2.task_models.get";
 pub const WEBUI_V2_ROUTE_TASK_MODELS_SET: &str = "webui.v2.task_models.set";
 pub const WEBUI_V2_PATTERN_INBOX: &str = "/api/webchat/v2/inbox";
 pub const WEBUI_V2_PATTERN_INBOX_THREAD: &str = "/api/webchat/v2/inbox/{thread_id}";
 pub const WEBUI_V2_PATTERN_THREAD_GOAL: &str = "/api/webchat/v2/threads/{thread_id}/goal";
-pub const WEBUI_V2_PATTERN_INBOX_TITLE: &str = "/api/webchat/v2/inbox/{thread_id}/title";
 pub const WEBUI_V2_PATTERN_TASK_MODELS: &str = "/api/webchat/v2/llm/task-models";
 pub const WEBUI_V2_PATTERN_CREATE_THREAD: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_THREADS: &str = "/api/webchat/v2/threads";
@@ -507,11 +505,6 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_ROUTE_THREAD_GOAL_SET,
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_THREAD_GOAL,
-        ),
-        profile_route_descriptor(
-            WEBUI_V2_ROUTE_INBOX_TITLE,
-            NetworkMethod::Post,
-            WEBUI_V2_PATTERN_INBOX_TITLE,
         ),
         profile_route_descriptor(
             WEBUI_V2_ROUTE_TASK_MODELS_GET,

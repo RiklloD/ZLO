@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS orch_inbox (
   settled_at INTEGER,
   visited_at INTEGER,
   title TEXT,
-  titled_through INTEGER,
+  title_replies INTEGER,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (tenant_id, user_id, thread_id)
 );
@@ -64,11 +64,14 @@ pub struct InboxRecord {
     pub title: Option<String>,
 }
 
-/// A generated title and the last reply (message sequence) it was made from.
+/// A generated title and the thread's completed-reply count when it was
+/// made. The count comes from `orch_turns`, which only grows, so it stays
+/// valid across capped CLI histories and provider switches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedTitle {
     pub title: String,
-    pub through_sequence: Option<i64>,
+    /// `None` for a title saved before the count existed.
+    pub replies: Option<i64>,
 }
 
 /// What the inbox needs to know about a thread's live state.
@@ -293,7 +296,7 @@ impl Store {
                 c.text()
             })
             .await?;
-        for (name, definition) in [("title", "TEXT"), ("titled_through", "INTEGER")] {
+        for (name, definition) in [("title", "TEXT"), ("title_replies", "INTEGER")] {
             if !present.iter().any(|p| p == name) {
                 self.exec(
                     &format!("ALTER TABLE orch_inbox ADD COLUMN {name} {definition}"),
@@ -313,7 +316,7 @@ impl Store {
     ) -> Result<Option<SavedTitle>> {
         let row = self
             .row(
-                "SELECT title, titled_through FROM orch_inbox \
+                "SELECT title, title_replies FROM orch_inbox \
                  WHERE tenant_id = ?1 AND user_id = ?2 AND thread_id = ?3",
                 vec![
                     s(owner.tenant_id.as_str()),
@@ -327,38 +330,59 @@ impl Store {
             )
             .await?;
         match row.flatten() {
-            Some((title, through)) => Ok(Some(SavedTitle {
+            Some((title, replies)) => Ok(Some(SavedTitle {
                 title,
-                through_sequence: through?,
+                replies: replies?,
             })),
             None => Ok(None),
         }
     }
 
-    /// Save a generated title (upsert; lifecycle marks are kept).
+    /// Save a generated title only if the saved count is still `read`, the
+    /// value seen before the model call (compare-and-swap in one upsert;
+    /// lifecycle marks are kept). `false`: another writer got there first.
     pub async fn inbox_set_title(
         &self,
         owner: &ProfileOwner,
         thread: &ThreadId,
-        saved: &SavedTitle,
+        next: &SavedTitle,
+        read: Option<i64>,
         now: Millis,
-    ) -> Result<()> {
-        self.exec(
-            "INSERT INTO orch_inbox (tenant_id, user_id, thread_id, updated_at, title, titled_through) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-             ON CONFLICT (tenant_id, user_id, thread_id) \
-             DO UPDATE SET title = ?5, titled_through = ?6, updated_at = ?4",
-            vec![
-                s(owner.tenant_id.as_str()),
-                s(owner.user_id.as_str()),
-                s(thread.as_str()),
-                Value::Integer(now),
-                s(&saved.title),
-                saved.through_sequence.map_or(Value::Null, Value::Integer),
-            ],
-        )
-        .await?;
-        Ok(())
+    ) -> Result<bool> {
+        let written = self
+            .exec(
+                "INSERT INTO orch_inbox (tenant_id, user_id, thread_id, updated_at, title, title_replies) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                 ON CONFLICT (tenant_id, user_id, thread_id) \
+                 DO UPDATE SET title = ?5, title_replies = ?6, updated_at = ?4 \
+                 WHERE orch_inbox.title_replies IS ?7",
+                vec![
+                    s(owner.tenant_id.as_str()),
+                    s(owner.user_id.as_str()),
+                    s(thread.as_str()),
+                    Value::Integer(now),
+                    s(&next.title),
+                    next.replies.map_or(Value::Null, Value::Integer),
+                    read.map_or(Value::Null, Value::Integer),
+                ],
+            )
+            .await?;
+        Ok(written > 0)
+    }
+
+    /// Completed turns of a thread: its reply ordinal for titles.
+    pub async fn completed_replies(&self, thread: &ThreadId) -> Result<i64> {
+        let count = self
+            .row(
+                "SELECT COUNT(*) FROM orch_turns WHERE thread_id = ?1 AND status = ?2",
+                vec![
+                    s(thread.as_str()),
+                    s(crate::runtime::TurnEndStatus::Completed.as_str()),
+                ],
+                |r| Cols::new(r).int(),
+            )
+            .await?;
+        Ok(count.unwrap_or(0)) // silent-ok: COUNT(*) always yields one row
     }
 
     /// Apply one lifecycle action (upsert, one statement).

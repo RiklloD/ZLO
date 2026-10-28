@@ -31,6 +31,8 @@ type RowAction = Box<dyn Fn(&mut Workspace, String, &mut Window, &mut Context<Wo
 
 /// Poll period while a row is working.
 const POLL: Duration = Duration::from_secs(5);
+/// How long the inbox keeps polling after a run ends.
+const TITLE_SETTLE_MS: i64 = 20_000;
 /// Settled rows shown before "Show more".
 const SETTLED_PAGE: usize = 30;
 
@@ -53,9 +55,9 @@ pub(super) struct Inbox {
     /// Rows marked unread from the context menu. Local to this app run:
     /// the backend has no read flag; opening the thread clears it.
     unread: BTreeSet<String>,
-    /// Threads already sent for a generated title this app run.
-    /// Threads with a title request in flight.
-    titling: BTreeSet<String>,
+    /// Keep polling until then (Unix ms) after a run ends: the backend
+    /// writes the thread's generated title a few seconds later.
+    settle_poll_until: i64,
     loading: bool,
     stale: bool,
     polling: bool,
@@ -112,12 +114,13 @@ impl Inbox {
     }
 
     fn needs_poll(&self) -> bool {
-        self.list.rows.iter().any(|r| {
-            matches!(
-                r.status,
-                Some(InboxStatus::Working | InboxStatus::Background | InboxStatus::NeedsInput)
-            )
-        })
+        Utc::now().timestamp_millis() < self.settle_poll_until
+            || self.list.rows.iter().any(|r| {
+                matches!(
+                    r.status,
+                    Some(InboxStatus::Working | InboxStatus::Background | InboxStatus::NeedsInput)
+                )
+            })
     }
 
     /// The next moment a row changes on its own (a snooze ends, a limit lifts).
@@ -229,21 +232,23 @@ impl Workspace {
         // A thread that enters or leaves the Working shelf grows into its
         // new place instead of jumping there.
         let was_working = |id: &str| self.inbox.row(id).map(|r| r.state == InboxState::Working);
-        let mut finished = Vec::new();
+        let was_running = |id: &str| {
+            self.inbox
+                .row(id)
+                .is_some_and(|r| r.status == Some(InboxStatus::Working))
+        };
+        let mut finished = false;
         for row in &list.rows {
             if was_working(&row.thread_id)
                 .is_some_and(|was| was != (row.state == InboxState::Working))
             {
                 crate::design::motion::restart(&format!("card-grow-{}", row.thread_id));
             }
-            // A run that finished while another thread was open still earns a title.
-            if was_working(&row.thread_id) == Some(true) && row.status == Some(InboxStatus::Done) {
-                finished.push(row.thread_id.clone());
-            }
+            finished |= was_running(&row.thread_id) && row.status != Some(InboxStatus::Working);
         }
         self.inbox.list = list;
-        for id in finished {
-            self.request_title(id, cx);
+        if finished {
+            self.poll_for_title();
         }
         self.ensure_inbox_poll(cx);
         self.schedule_wake(cx);
@@ -262,40 +267,29 @@ impl Workspace {
         self.inbox._tick = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                // Hidden, or the last cached run ended: stop. Activation
+                // refreshes the inbox, which starts the tick again.
+                let keep = this.update(cx, |this, cx| {
+                    if cx.active_window().is_none() || !this.inbox.any_working() {
+                        this.inbox._tick = None;
+                        return false;
+                    }
+                    cx.notify();
+                    true
+                });
+                if !matches!(keep, Ok(true)) {
                     break;
                 }
             }
         }));
     }
 
-    /// Re-read the inbox. Coalesces: a call during a read marks it stale.
-    /// After a run ends, ask the backend to title the thread. It decides
-    /// whether one is due (the first reply, then every third), so this only
-    /// keeps two requests for one thread from overlapping.
-    pub(super) fn request_title(&mut self, thread_id: String, cx: &mut Context<Self>) {
-        let Some(backend) = self.backend.clone() else {
-            return;
-        };
-        if !self.inbox.titling.insert(thread_id.clone()) {
-            return;
-        }
-        let id = thread_id.clone();
-        jobs::run(
-            &backend,
-            cx,
-            move |c| async move { c.title_thread(&id).await },
-            move |this, result, cx| {
-                this.inbox.titling.remove(&thread_id);
-                match result {
-                    Ok(t) if t.changed => this.refresh_inbox(cx),
-                    Ok(_) => {}
-                    Err(e) => tracing::debug!(error = %e, "thread title not generated"),
-                }
-            },
-        );
+    /// A run ended: poll a little longer to pick up its generated title.
+    pub(super) fn poll_for_title(&mut self) {
+        self.inbox.settle_poll_until = Utc::now().timestamp_millis() + TITLE_SETTLE_MS;
     }
 
+    /// Re-read the inbox. Coalesces: a call during a read marks it stale.
     pub(super) fn refresh_inbox(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.backend.clone() else {
             return;

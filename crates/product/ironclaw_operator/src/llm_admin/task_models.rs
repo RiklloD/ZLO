@@ -54,15 +54,28 @@ pub(crate) async fn save(path: &Path, models: &TaskModels) -> Result<(), LlmConf
         tracing::warn!(%error, "task models could not be serialized");
         LlmConfigServiceError::Internal
     })?;
-    let tmp = path.with_extension("json.tmp");
-    let write = async {
-        tokio::fs::write(&tmp, bytes).await?;
-        tokio::fs::rename(&tmp, path).await
-    };
-    write.await.map_err(|error| {
-        tracing::warn!(%error, "task_models.json could not be written");
-        LlmConfigServiceError::Unavailable
-    })
+    // A temp file of its own per save, then an atomic rename: two saves at
+    // once cannot write into the same temp file.
+    let path = path.to_path_buf();
+    let write = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        tmp.write_all(&bytes)?;
+        tmp.persist(&path).map_err(|error| error.error)?;
+        Ok(())
+    });
+    match write.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "task_models.json could not be written");
+            Err(LlmConfigServiceError::Unavailable)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "task_models.json write task failed");
+            Err(LlmConfigServiceError::Unavailable)
+        }
+    }
 }
 
 pub(crate) async fn complete(
@@ -147,5 +160,25 @@ mod tests {
         };
         assert!(save(&path, &blank).await.is_err());
         assert_eq!(load(&path).await.expect("unchanged"), models);
+
+        // Saves at once each use their own temp file: all succeed and the
+        // file holds one whole set.
+        let sets: Vec<TaskModels> = (0..8)
+            .map(|i| TaskModels {
+                thread_titles: Some(TaskModelChoice {
+                    provider_id: "glm".into(),
+                    model: format!("glm-{i}"),
+                }),
+            })
+            .collect();
+        let mut saves = tokio::task::JoinSet::new();
+        for m in sets.clone() {
+            let path = path.clone();
+            saves.spawn(async move { save(&path, &m).await });
+        }
+        while let Some(result) = saves.join_next().await {
+            result.expect("joined").expect("concurrent save");
+        }
+        assert!(sets.contains(&load(&path).await.expect("whole")));
     }
 }

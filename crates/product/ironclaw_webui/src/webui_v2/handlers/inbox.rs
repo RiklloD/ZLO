@@ -10,8 +10,7 @@ use axum::extract::{Extension, Path, State};
 use ironclaw_product_contracts::inbox::*;
 use ironclaw_product_contracts::surface::ProductSurfaceCaller;
 use ironclaw_product_contracts::task_models::{
-    TASK_MODELS_GET_COMMAND, TASK_MODELS_SET_COMMAND, THREAD_TITLE_COMMAND, TaskModels,
-    ThreadTitleRequest, ThreadTitleResponse,
+    TASK_MODELS_GET_COMMAND, TASK_MODELS_SET_COMMAND, TaskModels,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -92,19 +91,6 @@ pub async fn thread_goal_set(
     };
     Ok(Json(
         invoke_product_command(state.services(), caller, THREAD_GOAL_SET_COMMAND, request).await?,
-    ))
-}
-
-/// `POST /api/webchat/v2/inbox/{thread_id}/title` — titles the thread once
-/// on the "Thread titles" task model; `{"title": null}` when none is set.
-pub async fn inbox_title(
-    State(state): State<WebUiV2State>,
-    Extension(caller): Extension<ProductSurfaceCaller>,
-    Path(thread_id): Path<String>,
-) -> Result<Json<ThreadTitleResponse>, WebUiV2HttpError> {
-    let request = ThreadTitleRequest { thread_id };
-    Ok(Json(
-        invoke_product_command(state.services(), caller, THREAD_TITLE_COMMAND, request).await?,
     ))
 }
 

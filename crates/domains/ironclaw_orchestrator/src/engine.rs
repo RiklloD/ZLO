@@ -62,6 +62,14 @@ pub struct Engine {
     pub(crate) webhook_base: OnceLock<String>,
     /// SOUL.md, folder and skills of a thread's profile for CLI turns.
     profile_context: OnceLock<Arc<dyn ProfileContextSource>>,
+    /// Told after every completed turn (thread titles), plugged in by the host.
+    turn_listener: OnceLock<Arc<dyn TurnCompletedListener>>,
+}
+
+/// Work the host runs after a thread's turn completes. Called on the
+/// journal observer's path: an implementation spawns its work and returns.
+pub trait TurnCompletedListener: Send + Sync {
+    fn turn_completed(&self, thread: &ThreadRecord);
 }
 
 impl Engine {
@@ -96,6 +104,7 @@ impl Engine {
             schedule_planner: OnceLock::new(),
             webhook_base: OnceLock::new(),
             profile_context: OnceLock::new(),
+            turn_listener: OnceLock::new(),
         }))
     }
 
@@ -107,6 +116,11 @@ impl Engine {
     /// Give CLI turns their profile's soul, folder and skills (first call wins).
     pub fn set_profile_context(&self, source: Arc<dyn ProfileContextSource>) {
         let _ = self.profile_context.set(source); // silent-ok: already set by an earlier wiring
+    }
+
+    /// Hear about every completed turn (first call wins).
+    pub fn set_turn_listener(&self, listener: Arc<dyn TurnCompletedListener>) {
+        let _ = self.turn_listener.set(listener); // silent-ok: already set by an earlier wiring
     }
 
     /// The thread's profile as its CLI agent sees it. Additive context: a
@@ -850,9 +864,10 @@ impl TurnEventSink for Engine {
         if self.shutting_down.load(Ordering::SeqCst) {
             return;
         }
-        let result: Result<()> = async {
+        let completed = outcome.status == TurnEndStatus::Completed;
+        let result: Result<Option<ThreadRecord>> = async {
             let Some(thread) = self.store.thread(thread_id).await? else {
-                return Ok(());
+                return Ok(None);
             };
             // Log first: `set_turn_running` refuses runs already logged, so a
             // late admission bookkeeping write cannot resurrect this turn.
@@ -896,10 +911,18 @@ impl TurnEventSink for Engine {
                 restart_pending = true;
             }
             self.settle_child_task(&thread, &outcome, usage_armed, restart_pending)
-                .await
+                .await?;
+            Ok(Some(thread))
         }
         .await;
-        log_step("turn finished", result);
+        match result {
+            Ok(Some(thread)) if completed => {
+                if let Some(listener) = self.turn_listener.get() {
+                    listener.turn_completed(&thread);
+                }
+            }
+            other => log_step("turn finished", other.map(|_| ())),
+        }
     }
 }
 

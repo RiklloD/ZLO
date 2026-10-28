@@ -58,9 +58,11 @@ pub fn orchestrate(
     }
     engine.set_schedule_planner(Arc::new(schedules::RoutineSchedulePlanner::local()));
     engine.start(std::time::Duration::from_secs(2));
-    Arc::new(OrchestratedProductSurface::new(
+    let surface: Arc<dyn ProductSurface> = Arc::new(OrchestratedProductSurface::new(
         inner,
         Arc::clone(engine),
         cli_bridge,
-    ))
+    ));
+    inbox::title_on_completion(engine, &surface);
+    surface
 }

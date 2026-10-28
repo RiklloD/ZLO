@@ -329,7 +329,7 @@ impl Workspace {
             cx.subscribe_in(&view, window, |this, _, event: &RunEnded, window, cx| {
                 this.refresh_telemetry(cx);
                 if !event.failed {
-                    this.request_title(event.thread_id.clone(), cx);
+                    this.poll_for_title();
                 }
                 // Watched live: the result is seen, so no Done badge.
                 if window.is_window_active() && this.page == Page::Chat {

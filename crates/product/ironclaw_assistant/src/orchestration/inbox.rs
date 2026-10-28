@@ -8,15 +8,15 @@
 //! request. `inbox.mutate` writes one mark for a thread on that list and
 //! answers with the list re-read. Goals are one objective per engine thread.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, Weak};
 
 use chrono::{DateTime, Utc};
 use ironclaw_host_api::ids::{ActivityId, ThreadId};
-use ironclaw_orchestrator::engine::Engine;
+use ironclaw_orchestrator::engine::{Engine, TurnCompletedListener};
 use ironclaw_orchestrator::error::OrchestratorError;
 use ironclaw_orchestrator::inbox::{InboxFacts, InboxRecord, SavedTitle, classify};
-use ironclaw_orchestrator::model::{Millis, now_ms};
+use ironclaw_orchestrator::model::{Millis, ThreadRecord, now_ms};
 use ironclaw_orchestrator::profiles::ProfileOwner;
 use ironclaw_product_contracts::inbound_requests::{
     ProductListAutomationsRequest, ProductListThreadsRequest,
@@ -37,7 +37,7 @@ use super::profiles::{self, ProfileHome};
 use super::surface::scope_of;
 use ironclaw_product_contracts::task_models::{
     BackgroundTask, RETITLE_EVERY_REPLIES, TASK_COMPLETE_COMMAND, TaskCompletionRequest,
-    TaskCompletionResult, ThreadTitleRequest, ThreadTitleResponse,
+    TaskCompletionResult,
 };
 
 use crate::reborn_services::{
@@ -360,12 +360,13 @@ pub(super) async fn mutate(
 }
 
 const TITLE_SYSTEM_PROMPT: &str = include_str!("../../prompts/thread_title.md");
-/// Enough of each side to name the conversation.
-const TITLE_SOURCE_CHARS: usize = 1500;
 const TITLE_MAX_CHARS: usize = 80;
-/// Each recent message given to a re-title, and how many of them.
-const RETITLE_MESSAGE_CHARS: usize = 600;
-const RETITLE_MESSAGES: usize = 6;
+/// Each message given to the title model, and how many of them.
+const TITLE_MESSAGE_CHARS: usize = 600;
+const TITLE_MESSAGES: usize = 6;
+/// Timeline pages read back to find them past long tool runs.
+const TITLE_PAGE_SIZE: u32 = 200;
+const TITLE_MAX_PAGES: usize = 5;
 /// Room for reasoning models, which think before they write the title.
 const TITLE_MAX_TOKENS: u32 = 400;
 
@@ -382,8 +383,6 @@ enum TitleMessageKind {
 struct TitleMessage {
     kind: TitleMessageKind,
     #[serde(default)]
-    sequence: u64,
-    #[serde(default)]
     content: Option<String>,
 }
 
@@ -391,6 +390,8 @@ struct TitleMessage {
 struct TitleTimeline {
     #[serde(default)]
     messages: Vec<TitleMessage>,
+    #[serde(default)]
+    next_cursor: Option<String>,
 }
 
 fn clip_chars(text: &str, max: usize) -> &str {
@@ -399,49 +400,33 @@ fn clip_chars(text: &str, max: usize) -> &str {
         .map_or(text, |(at, _)| &text[..at])
 }
 
-fn message_text(m: &TitleMessage) -> Option<&str> {
+/// The text of a user message or reply; tool and system rows have none.
+fn exchange_text(m: &TitleMessage) -> Option<&str> {
+    if !matches!(m.kind, TitleMessageKind::User | TitleMessageKind::Assistant) {
+        return None;
+    }
     m.content
         .as_deref()
         .map(str::trim)
         .filter(|c| !c.is_empty())
 }
 
-fn is_exchange(m: &TitleMessage) -> bool {
-    matches!(m.kind, TitleMessageKind::User | TitleMessageKind::Assistant)
-        && message_text(m).is_some()
-}
-
-/// The first user message and the first reply after it, if both exist.
-fn first_exchange(messages: &[TitleMessage]) -> Option<String> {
-    let user_at = messages
-        .iter()
-        .position(|m| m.kind == TitleMessageKind::User && message_text(m).is_some())?;
-    let user = message_text(&messages[user_at])?;
-    let reply = messages[user_at + 1..]
-        .iter()
-        .find(|m| m.kind == TitleMessageKind::Assistant && message_text(m).is_some())
-        .and_then(message_text)?;
-    Some(format!(
-        "First message:\n{}\n\nStart of the reply:\n{}",
-        clip_chars(user, TITLE_SOURCE_CHARS),
-        clip_chars(reply, TITLE_SOURCE_CHARS)
-    ))
-}
-
-/// The current title and the latest messages, oldest first.
-fn recent_exchange(messages: &[TitleMessage], current: &str) -> String {
-    let recent: Vec<&TitleMessage> = messages.iter().filter(|m| is_exchange(m)).collect();
-    let mut prompt = format!("Current title:\n{current}\n\nLatest messages:");
-    for m in &recent[recent.len().saturating_sub(RETITLE_MESSAGES)..] {
+/// The current title, if any, and the latest messages, oldest first.
+fn title_prompt(recent: &[TitleMessage], current: Option<&str>) -> String {
+    let mut prompt = match current {
+        Some(title) => format!("Current title:\n{title}\n\nLatest messages:"),
+        None => "Messages:".to_string(),
+    };
+    for m in recent {
         let who = if m.kind == TitleMessageKind::User {
             "User"
         } else {
             "Assistant"
         };
-        let text = message_text(m).unwrap_or_default();
+        let text = exchange_text(m).unwrap_or_default();
         prompt.push_str(&format!(
             "\n\n{who}:\n{}",
-            clip_chars(text, RETITLE_MESSAGE_CHARS)
+            clip_chars(text, TITLE_MESSAGE_CHARS)
         ));
     }
     prompt
@@ -460,117 +445,202 @@ fn clean_title(raw: &str) -> Option<String> {
     (!line.is_empty()).then(|| clip_chars(line, TITLE_MAX_CHARS).trim().to_string())
 }
 
-/// Title a thread on the "Thread titles" task model: from its first
-/// exchange once it has a reply, then again every [`RETITLE_EVERY_REPLIES`]
-/// replies from its latest messages, so the title follows the topic. A call
-/// before either is due returns the saved title without a model call; no
-/// model set or no reply yet answers `title: None` and saves nothing.
-pub(super) async fn generate_title(
-    engine: &Engine,
+/// The last [`TITLE_MESSAGES`] user messages and replies, oldest first,
+/// paging back through the timeline past tool rows. The read is scoped to
+/// the thread's owner.
+async fn recent_exchange(
     surface: &dyn ProductSurface,
     caller: &ProductSurfaceCaller,
-    request: ThreadTitleRequest,
-) -> Result<Result<ThreadTitleResponse, OrchestratorError>, ProductSurfaceError> {
-    let thread = match ThreadId::new(request.thread_id.as_str()) {
-        Ok(id) => id,
-        Err(error) => return Ok(Err(error.into())),
-    };
-    let owner = ProfileOwner::from(&scope_of(caller));
-    let saved = match engine.store().inbox_title(&owner, &thread).await {
-        Ok(saved) => saved,
-        Err(error) => return Ok(Err(error)),
-    };
-    let unchanged = |saved: Option<SavedTitle>| {
-        Ok(Ok(ThreadTitleResponse {
-            title: saved.map(|s| s.title),
-            changed: false,
-        }))
-    };
-    // The timeline read is caller-scoped: a thread that is not the caller's
-    // fails here, before any model call or write. It is the newest page, so
-    // the replies since the last title are in it.
-    let page = surface
-        .query(
-            caller.clone(),
-            ProductSurfaceQueryRequest {
-                view_id: TIMELINE_VIEW.id.to_string(),
-                input: serde_json::json!({"thread_id": thread.as_str(), "limit": 50}),
-                cursor: None,
-                limit: None,
-            },
-        )
-        .await?;
-    let mut messages = page
-        .items
-        .into_iter()
-        .next()
-        .map(serde_json::from_value::<TitleTimeline>)
-        .transpose()
-        .map_err(ProductSurfaceError::internal_from)?
-        .unwrap_or_default()
-        .messages;
-    messages.sort_by_key(|m| m.sequence);
-    let replies: Vec<i64> = messages
-        .iter()
-        .filter(|m| m.kind == TitleMessageKind::Assistant && message_text(m).is_some())
-        .map(|m| i64::try_from(m.sequence).unwrap_or(i64::MAX))
-        .collect();
-    let Some(&last_reply) = replies.last() else {
-        return unchanged(saved);
-    };
-    let prompt = match &saved {
-        None => match first_exchange(&messages) {
-            Some(prompt) => prompt,
-            None => return unchanged(saved),
-        },
-        Some(s) => {
-            // A title saved before the marker existed counts every reply.
-            let through = s.through_sequence.unwrap_or(i64::MIN);
-            if replies.iter().filter(|seq| **seq > through).count() < RETITLE_EVERY_REPLIES {
-                return unchanged(saved);
-            }
-            recent_exchange(&messages, &s.title)
+    thread: &ThreadId,
+) -> Result<Vec<TitleMessage>, ProductSurfaceError> {
+    let mut recent: Vec<TitleMessage> = Vec::new();
+    let mut cursor = None;
+    for _ in 0..TITLE_MAX_PAGES {
+        let page = surface
+            .query(
+                caller.clone(),
+                ProductSurfaceQueryRequest {
+                    view_id: TIMELINE_VIEW.id.to_string(),
+                    input: serde_json::json!({
+                        "thread_id": thread.as_str(),
+                        "limit": TITLE_PAGE_SIZE,
+                    }),
+                    cursor: cursor.take(),
+                    limit: None,
+                },
+            )
+            .await?;
+        let next_page = page.next_cursor;
+        let timeline = page
+            .items
+            .into_iter()
+            .next()
+            .map(serde_json::from_value::<TitleTimeline>)
+            .transpose()
+            .map_err(ProductSurfaceError::internal_from)?
+            .unwrap_or_default(); // silent-ok: no page item is a thread with no messages yet
+        // Each page runs oldest first and is older than the one before.
+        let mut older: Vec<TitleMessage> = timeline
+            .messages
+            .into_iter()
+            .filter(|m| exchange_text(m).is_some())
+            .collect();
+        older.append(&mut recent);
+        recent = older;
+        cursor = timeline.next_cursor.or(next_page);
+        if recent.len() >= TITLE_MESSAGES || cursor.is_none() {
+            break;
         }
-    };
-    let completion = TaskCompletionRequest {
-        task: BackgroundTask::ThreadTitles,
-        system: TITLE_SYSTEM_PROMPT.to_string(),
-        prompt,
-        max_tokens: TITLE_MAX_TOKENS,
-    };
-    let response = surface
-        .invoke(
-            caller.clone(),
-            ProductSurfaceInvokeRequest {
-                operation_id: TASK_COMPLETE_COMMAND.capability_id()?,
-                input: serde_json::to_value(completion)
-                    .map_err(ProductSurfaceError::internal_from)?,
-                activity_id: ActivityId::new(),
-            },
-        )
-        .await?;
-    let result: TaskCompletionResult =
-        serde_json::from_value(response.output).map_err(ProductSurfaceError::internal_from)?;
-    // No answer: keep what is saved and try again after the next reply.
-    let Some(title) = result.text.as_deref().and_then(clean_title) else {
-        return unchanged(saved);
-    };
-    let changed = saved.as_ref().is_none_or(|s| s.title != title);
-    let next = SavedTitle {
-        title,
-        through_sequence: Some(last_reply),
-    };
-    if let Err(error) = engine
-        .store()
-        .inbox_set_title(&owner, &thread, &next, now_ms())
-        .await
-    {
-        return Ok(Err(error));
     }
-    Ok(Ok(ThreadTitleResponse {
-        title: Some(next.title),
-        changed,
-    }))
+    let keep = recent.len().saturating_sub(TITLE_MESSAGES);
+    recent.drain(..keep);
+    Ok(recent)
+}
+
+/// Titles threads on the "Thread titles" task model as their turns
+/// complete: after the first reply, then every [`RETITLE_EVERY_REPLIES`]
+/// replies, so the title follows the topic. Replies are counted from the
+/// orchestrator's turn log, so the count survives capped CLI histories and
+/// provider switches, and titles come with no window open.
+pub(super) struct ThreadTitler {
+    engine: Weak<Engine>,
+    /// The orchestrating surface: its timeline reads stitch CLI and
+    /// switched-provider threads.
+    surface: Weak<dyn ProductSurface>,
+    /// Threads with a title call running. A turn that completes meanwhile
+    /// is covered by the next one, which sees the higher count.
+    running: StdMutex<HashSet<ThreadId>>,
+}
+
+impl ThreadTitler {
+    fn new(engine: Weak<Engine>, surface: Weak<dyn ProductSurface>) -> Self {
+        Self {
+            engine,
+            surface,
+            running: StdMutex::new(HashSet::new()),
+        }
+    }
+
+    fn running(&self) -> std::sync::MutexGuard<'_, HashSet<ThreadId>> {
+        self.running.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Title the thread now if it is due. `Ok(None)`: nothing was due, no
+    /// model is set, or another writer saved first.
+    async fn title_if_due(
+        &self,
+        thread: &ThreadRecord,
+    ) -> Result<Option<String>, ProductSurfaceError> {
+        let (Some(engine), Some(surface)) = (self.engine.upgrade(), self.surface.upgrade()) else {
+            return Ok(None); // silent-ok: the backend is shutting down
+        };
+        let store = engine.store();
+        let id = &thread.thread_id;
+        // A delegated child keeps the title its parent gave it.
+        if store
+            .task_for_child(id)
+            .await
+            .map_err(ProductSurfaceError::internal_from)?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let owner = ProfileOwner::from(&thread.scope);
+        let saved = store
+            .inbox_title(&owner, id)
+            .await
+            .map_err(ProductSurfaceError::internal_from)?;
+        let replies = store
+            .completed_replies(id)
+            .await
+            .map_err(ProductSurfaceError::internal_from)?;
+        let due = match &saved {
+            None => replies >= 1,
+            // A title saved before the count existed is checked now.
+            Some(s) => s
+                .replies
+                .is_none_or(|at| replies - at >= RETITLE_EVERY_REPLIES as i64),
+        };
+        if !due {
+            return Ok(None);
+        }
+        let caller = ProductSurfaceCaller::new(
+            thread.scope.tenant_id.clone(),
+            thread.scope.user_id.clone(),
+            thread.scope.agent_id.clone(),
+            thread.scope.project_id.clone(),
+        );
+        let recent = recent_exchange(surface.as_ref(), &caller, id).await?;
+        if !recent.iter().any(|m| m.kind == TitleMessageKind::Assistant) {
+            return Ok(None);
+        }
+        let completion = TaskCompletionRequest {
+            task: BackgroundTask::ThreadTitles,
+            system: TITLE_SYSTEM_PROMPT.to_string(),
+            prompt: title_prompt(&recent, saved.as_ref().map(|s| s.title.as_str())),
+            max_tokens: TITLE_MAX_TOKENS,
+        };
+        let response = surface
+            .invoke(
+                caller,
+                ProductSurfaceInvokeRequest {
+                    operation_id: TASK_COMPLETE_COMMAND.capability_id()?,
+                    input: serde_json::to_value(completion)
+                        .map_err(ProductSurfaceError::internal_from)?,
+                    activity_id: ActivityId::new(),
+                },
+            )
+            .await?;
+        let result: TaskCompletionResult =
+            serde_json::from_value(response.output).map_err(ProductSurfaceError::internal_from)?;
+        // No answer: keep what is saved; the next reply tries again.
+        let Some(title) = result.text.as_deref().and_then(clean_title) else {
+            return Ok(None);
+        };
+        let next = SavedTitle {
+            title,
+            replies: Some(replies),
+        };
+        let read = saved.and_then(|s| s.replies);
+        let written = store
+            .inbox_set_title(&owner, id, &next, read, now_ms())
+            .await
+            .map_err(ProductSurfaceError::internal_from)?;
+        Ok(written.then_some(next.title))
+    }
+}
+
+/// Title `engine`'s threads as their turns complete, reading through the
+/// orchestrating `surface`. Weak handles: the engine keeps the listener for
+/// the life of the process.
+pub(super) fn title_on_completion(
+    engine: &Arc<Engine>,
+    surface: &Arc<dyn ProductSurface>,
+) -> Arc<ThreadTitler> {
+    let titler = Arc::new(ThreadTitler::new(
+        Arc::downgrade(engine),
+        Arc::downgrade(surface),
+    ));
+    engine.set_turn_listener(Arc::new(TitleOnCompletion(Arc::clone(&titler))));
+    titler
+}
+
+/// Spawns the title work so the journal observer is not held up.
+struct TitleOnCompletion(Arc<ThreadTitler>);
+
+impl TurnCompletedListener for TitleOnCompletion {
+    fn turn_completed(&self, thread: &ThreadRecord) {
+        if !self.0.running().insert(thread.thread_id.clone()) {
+            return;
+        }
+        let (titler, thread) = (Arc::clone(&self.0), thread.clone());
+        tokio::spawn(async move {
+            if let Err(error) = titler.title_if_due(&thread).await {
+                tracing::debug!(?error, "thread title skipped");
+            }
+            titler.running().remove(&thread.thread_id);
+        });
+    }
 }
 
 pub(super) async fn goal(
@@ -613,11 +683,11 @@ mod tests {
     use async_trait::async_trait;
     use ironclaw_host_api::ids::{ActivityId, CapabilityId, TenantId, UserId};
     use ironclaw_orchestrator::model::ThreadScope;
+    use ironclaw_orchestrator::runtime::{TurnEventSink, TurnOutcome};
     use ironclaw_product_contracts::surface::{
         ProductSurfaceInvokeRequest, ProductSurfaceInvokeResponse, ProductSurfaceQueryPage,
         ProductSurfaceStreamRequest, ProductSurfaceStreamResponse,
     };
-    use ironclaw_product_contracts::task_models::THREAD_TITLE_COMMAND_ID;
     use serde_json::json;
 
     use super::*;
@@ -628,7 +698,7 @@ mod tests {
     struct Inner;
 
     static TASK_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    /// Exchanges about deploys appended to the "chat" timeline.
+    /// Exchanges about deploys after the first one in the "chat" timeline.
     static LATER_EXCHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     #[async_trait]
@@ -645,6 +715,8 @@ mod tests {
             let asked: TaskCompletionRequest = serde_json::from_value(request.input).unwrap();
             assert_eq!(asked.task, BackgroundTask::ThreadTitles);
             let text = if asked.prompt.starts_with("Current title:") {
+                // Only the latest messages: the first exchange is out of range.
+                assert!(!asked.prompt.contains("Plan the inbox for stage 5"));
                 // A re-title reads the saved title and the latest messages.
                 assert!(asked.prompt.contains("Inbox plan for stage 5"));
                 assert!(asked.prompt.contains("Ship the deploy 3"));
@@ -670,18 +742,30 @@ mod tests {
                     && request.input["thread_id"] == "chat"
                     && caller.user_id.as_str() == "u1" =>
                 {
-                    let mut messages = vec![
-                        json!({"kind": "assistant", "sequence": 3, "content": "Here is a plan"}),
-                        json!({"kind": "user", "sequence": 2, "content": "Plan the inbox for stage 5"}),
-                        json!({"kind": "system", "sequence": 1, "content": "setup"}),
-                    ];
-                    for n in 1..=LATER_EXCHANGES.load(std::sync::atomic::Ordering::SeqCst) {
-                        messages.push(json!({"kind": "user", "sequence": 2 + 2 * n,
-                            "content": format!("Ship the deploy {n}")}));
-                        messages.push(json!({"kind": "assistant", "sequence": 3 + 2 * n,
-                            "content": "Deploying"}));
+                    // Newest page: a long tool run, then the later exchanges.
+                    // The first exchange is one page older.
+                    if request.cursor.as_deref() == Some("older") {
+                        json!({"messages": [
+                            json!({"kind": "system", "sequence": 1, "content": "setup"}),
+                            json!({"kind": "user", "sequence": 2, "content": "Plan the inbox for stage 5"}),
+                        ]})
+                    } else {
+                        let mut messages: Vec<Value> = (0..40)
+                            .map(|n| {
+                                json!({"kind": "tool_result", "sequence": 3 + n,
+                                "content": "{\"ok\":true}"})
+                            })
+                            .collect();
+                        messages.push(json!({"kind": "assistant", "sequence": 50,
+                            "content": "Here is a plan"}));
+                        for n in 1..=LATER_EXCHANGES.load(std::sync::atomic::Ordering::SeqCst) {
+                            messages.push(json!({"kind": "user", "sequence": 50 + 2 * n,
+                                "content": format!("Ship the deploy {n}")}));
+                            messages.push(json!({"kind": "assistant", "sequence": 51 + 2 * n,
+                                "content": "Deploying"}));
+                        }
+                        json!({"messages": messages, "next_cursor": "older"})
                     }
-                    json!({ "messages": messages })
                 }
                 v if v == THREADS_VIEW.id => json!({"threads": [{
                     "scope": scope, "thread_id": "chat", "created_by_actor_id": "u1",
@@ -849,7 +933,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_thread_is_titled_by_the_task_model_and_retitled_every_three_replies() {
+    async fn completed_turns_title_a_thread_and_retitle_it_every_three_replies() {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(
             libsql::Builder::new_local(dir.path().join("o.db"))
@@ -860,86 +944,115 @@ mod tests {
         let runtime =
             Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
         let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
-        let surface = OrchestratedProductSurface::new(Arc::new(Inner), Arc::clone(&engine), None);
+        let scope = ThreadScope {
+            tenant_id: TenantId::new("t1").unwrap(),
+            user_id: UserId::new("u1").unwrap(),
+            agent_id: None,
+            project_id: None,
+        };
+        let chat = ThreadId::new("chat").unwrap();
+        engine.ensure_thread(&chat, &scope, None).await.unwrap();
+        let orchestrated = Arc::new(OrchestratedProductSurface::new(
+            Arc::new(Inner),
+            Arc::clone(&engine),
+            None,
+        ));
+        let surface: Arc<dyn ProductSurface> = orchestrated.clone();
+        let titler = title_on_completion(&engine, &surface);
         let before = TASK_CALLS.load(std::sync::atomic::Ordering::SeqCst);
-
-        let out = invoke(
-            &surface,
-            THREAD_TITLE_COMMAND_ID,
-            json!({"thread_id": "chat"}),
-        )
-        .await
-        .unwrap();
-        let titled: ThreadTitleResponse = serde_json::from_value(out).unwrap();
-        assert_eq!(titled.title.as_deref(), Some("Inbox plan for stage 5"));
-        assert!(titled.changed);
-
-        // The inbox now shows it over the first-message title.
-        let list = list_of(&surface, "u1").await;
-        let chat = list.rows.iter().find(|r| r.thread_id == "chat").unwrap();
-        assert_eq!(chat.title.as_deref(), Some("Inbox plan for stage 5"));
-
-        // A second request answers the saved title without a model call.
-        let again = invoke(
-            &surface,
-            THREAD_TITLE_COMMAND_ID,
-            json!({"thread_id": "chat"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(again["title"], "Inbox plan for stage 5");
-        assert_eq!(again["changed"], false);
         let calls = || TASK_CALLS.load(std::sync::atomic::Ordering::SeqCst) - before;
-        assert_eq!(calls(), 1, "no model call until a re-title is due");
+        let title = || async {
+            let list = list_of(&orchestrated, "u1").await;
+            let row = list
+                .rows
+                .into_iter()
+                .find(|r| r.thread_id == "chat")
+                .unwrap();
+            (row.title, row.state)
+        };
+        // One completed turn, as the journal observer reports it; waits for
+        // the spawned title work.
+        let reply = |outcome: TurnOutcome| {
+            let (engine, titler, chat) = (Arc::clone(&engine), Arc::clone(&titler), chat.clone());
+            async move {
+                engine.turn_finished(&chat, None, outcome, now_ms()).await;
+                for _ in 0..200 {
+                    if titler.running().is_empty() {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                panic!("title work did not finish");
+            }
+        };
 
-        // Two more replies: still not due.
-        LATER_EXCHANGES.store(2, std::sync::atomic::Ordering::SeqCst);
-        let early = invoke(
-            &surface,
-            THREAD_TITLE_COMMAND_ID,
-            json!({"thread_id": "chat"}),
+        // Pinned first: a pinned thread never shows as Working in the
+        // sidebar, and is titled all the same.
+        invoke(
+            &orchestrated,
+            INBOX_MUTATE_COMMAND_ID,
+            json!({"thread_id": "chat", "action": "pin"}),
         )
         .await
         .unwrap();
-        assert_eq!(early["title"], "Inbox plan for stage 5");
+
+        // A failed turn is not a reply.
+        reply(TurnOutcome::ended(
+            ironclaw_orchestrator::runtime::TurnEndStatus::Failed,
+            None,
+        ))
+        .await;
+        assert_eq!(calls(), 0);
+
+        // The first reply: titled from the first exchange, which sits a
+        // page behind a long tool run. The pin is kept.
+        reply(TurnOutcome::completed(None)).await;
+        assert_eq!(calls(), 1);
+        assert_eq!(
+            title().await,
+            (
+                Some("Inbox plan for stage 5".to_string()),
+                InboxState::Pinned
+            )
+        );
+
+        // Two more replies: not due, no model call.
+        LATER_EXCHANGES.store(2, std::sync::atomic::Ordering::SeqCst);
+        reply(TurnOutcome::completed(None)).await;
+        reply(TurnOutcome::completed(None)).await;
         assert_eq!(calls(), 1);
 
         // The third reply since the title: the model re-reads the latest
         // messages and the inbox follows the new topic.
         LATER_EXCHANGES.store(3, std::sync::atomic::Ordering::SeqCst);
-        let moved = invoke(
-            &surface,
-            THREAD_TITLE_COMMAND_ID,
-            json!({"thread_id": "chat"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(moved["title"], "Deploy pipeline rollout");
-        assert_eq!(moved["changed"], true);
+        reply(TurnOutcome::completed(None)).await;
         assert_eq!(calls(), 2);
-        let list = list_of(&surface, "u1").await;
-        let chat = list.rows.iter().find(|r| r.thread_id == "chat").unwrap();
-        assert_eq!(chat.title.as_deref(), Some("Deploy pipeline rollout"));
+        assert_eq!(title().await.0.as_deref(), Some("Deploy pipeline rollout"));
+
+        // A slower request that read the title before that one cannot
+        // overwrite it or move its count back.
+        let owner = ProfileOwner::from(&scope);
+        let stale = SavedTitle {
+            title: "Inbox plan, stale".into(),
+            replies: Some(2),
+        };
+        let written = engine
+            .store()
+            .inbox_set_title(&owner, &chat, &stale, Some(1), now_ms())
+            .await
+            .unwrap();
+        assert!(!written);
+        let saved = engine
+            .store()
+            .inbox_title(&owner, &chat)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.title, "Deploy pipeline rollout");
+        assert_eq!(saved.replies, Some(4));
 
         // The count restarts from that reply.
-        let settled = invoke(
-            &surface,
-            THREAD_TITLE_COMMAND_ID,
-            json!({"thread_id": "chat"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(settled["changed"], false);
-        assert_eq!(calls(), 2);
-
-        // A thread the caller cannot read is refused before any model call.
-        let refused = invoke(
-            &surface,
-            THREAD_TITLE_COMMAND_ID,
-            json!({"thread_id": "auto"}),
-        )
-        .await;
-        assert!(refused.is_err());
+        reply(TurnOutcome::completed(None)).await;
         assert_eq!(calls(), 2);
     }
 
