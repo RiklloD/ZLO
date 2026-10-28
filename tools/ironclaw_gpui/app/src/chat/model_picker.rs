@@ -114,6 +114,9 @@ pub struct ModelPicker {
     /// The draft's profile default `(provider, model)`; it wins over the
     /// recent picks until the user picks by hand.
     profile_pick: Option<(String, String)>,
+    /// The profile last asked for; an older profile's answer landing after
+    /// it is dropped.
+    profile_req: Option<String>,
     /// The user picked on the new-thread screen.
     touched: bool,
     search: Entity<InputState>,
@@ -150,6 +153,7 @@ impl ModelPicker {
             effort_open: false,
             busy: false,
             profile_pick: None,
+            profile_req: None,
             touched: false,
             search,
             _search: sub,
@@ -200,11 +204,18 @@ impl ModelPicker {
     /// The new-thread screen's profile: show its default model unless the
     /// user already picked one.
     pub fn set_profile(&mut self, profile_id: String, cx: &mut Context<Self>) {
+        self.profile_req = Some(profile_id.clone());
+        let asked = profile_id.clone();
         jobs::run(
             &self.backend,
             cx,
             move |c| async move { c.profile(&profile_id).await },
-            |this, result, cx| {
+            move |this, result, cx| {
+                // Opening the draft asks for the last-used profile, then the
+                // picked one: only the latest request may set the pill.
+                if this.profile_req.as_deref() != Some(asked.as_str()) {
+                    return;
+                }
                 // silent-ok: an unreadable profile leaves the recent pick on the pill.
                 let Ok(info) = result else { return };
                 let s = info.settings;

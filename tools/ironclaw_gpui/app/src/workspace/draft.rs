@@ -96,6 +96,10 @@ impl Workspace {
                 error: None,
                 _subs: subs,
             });
+        } else if let Some(draft) = &self.draft {
+            // A kept draft re-reads its profile: its default may have changed.
+            let id = draft.profile.clone();
+            draft.picker.update(cx, |picker, cx| picker.set_profile(id, cx));
         }
         if let Some(draft) = &self.draft {
             draft.input.update(cx, |s, cx| s.focus(window, cx));
