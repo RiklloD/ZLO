@@ -10,6 +10,7 @@ pub mod provider_admin;
 pub mod provider_repo;
 pub mod provider_routes;
 pub mod resolved_llm;
+mod task_models;
 mod user_model_preference_store;
 
 pub use active_model::ProviderActiveModelReader;

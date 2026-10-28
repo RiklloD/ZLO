@@ -39,6 +39,7 @@ use ironclaw_product_contracts::surface::{
     ProductSurfaceInvokeResponse, ProductSurfaceQueryPage, ProductSurfaceQueryRequest,
     ProductSurfaceStreamRequest, ProductSurfaceStreamResponse, ProductSurfaceValidationCode,
 };
+use ironclaw_product_contracts::task_models::{THREAD_TITLE_COMMAND_ID, ThreadTitleRequest};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -523,6 +524,14 @@ impl OrchestratedProductSurface {
                 let home = self.home.as_ref();
                 answer(
                     inbox::mutate(engine, home, &self.inner, caller, req)
+                        .await?
+                        .and_then(to_json),
+                )?
+            }
+            THREAD_TITLE_COMMAND_ID => {
+                let req: ThreadTitleRequest = decode(input)?;
+                answer(
+                    inbox::generate_title(engine, self, caller, req)
                         .await?
                         .and_then(to_json),
                 )?

@@ -72,7 +72,8 @@ pub struct ChatView {
     items: Rc<Vec<Item>>,
     /// Activity groups the reader opened or closed by hand.
     toggles: HashMap<String, bool>,
-    /// When the live run began, for the pending row's seconds.
+    /// When the live run began, for the pending row's seconds. The start
+    /// itself lives in `run_clock`, so it outlives this view.
     run_started: Option<Instant>,
     /// Room kept under the last sent message so it can sit at the top.
     reserve: Option<Reserve>,
@@ -750,9 +751,16 @@ impl ChatView {
     /// moved, so only changed items are re-measured while text streams.
     fn sync_items(&mut self, live: bool, stopping: bool, cx: &mut Context<Self>) {
         if live || stopping {
-            self.run_started.get_or_insert_with(Instant::now);
-        } else {
-            self.run_started = None;
+            let run = self.running_run();
+            let sent = self.transcript.last_prompt_sent_ms();
+            self.run_started = Some(crate::run_clock::start(
+                &self.thread_id,
+                run.as_deref(),
+                sent,
+                cx,
+            ));
+        } else if self.run_started.take().is_some() {
+            crate::run_clock::end(&self.thread_id, cx);
         }
         let rows = self.rows.clone();
         let (rows, pacing) = self.pacer.apply(&rows, Instant::now(), cx.reduce_motion());
@@ -897,6 +905,11 @@ impl ChatView {
         });
         self.prompt_rise = (!cx.reduce_motion()).then(Instant::now);
         self.pin_next = true;
+        // A prompt sent here starts its run's clock now; a steer keeps it.
+        if self.running_run().is_none() {
+            crate::run_clock::end(&self.thread_id, cx);
+            crate::run_clock::start(&self.thread_id, None, None, cx);
+        }
         // The project's working tree as it stands now, for the turn's card.
         self.side_turn_started(cx);
 

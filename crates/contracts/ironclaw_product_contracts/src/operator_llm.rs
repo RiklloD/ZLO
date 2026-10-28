@@ -115,6 +115,33 @@ pub trait LlmConfigService: Send + Sync {
         request: LlmProbeRequest,
     ) -> Result<LlmModelsResult, LlmConfigServiceError>;
 
+    /// The model each background task runs on (operator-wide).
+    async fn task_models(
+        &self,
+        _caller: ProductSurfaceCaller,
+    ) -> Result<crate::task_models::TaskModels, LlmConfigServiceError> {
+        Ok(crate::task_models::TaskModels::default())
+    }
+
+    /// Replace every task's model.
+    async fn set_task_models(
+        &self,
+        _caller: ProductSurfaceCaller,
+        _models: crate::task_models::TaskModels,
+    ) -> Result<crate::task_models::TaskModels, LlmConfigServiceError> {
+        Err(LlmConfigServiceError::Unavailable)
+    }
+
+    /// One short completion on the task's model; `text: None` when the task
+    /// has no model set.
+    async fn complete_task(
+        &self,
+        _caller: ProductSurfaceCaller,
+        _request: crate::task_models::TaskCompletionRequest,
+    ) -> Result<crate::task_models::TaskCompletionResult, LlmConfigServiceError> {
+        Ok(crate::task_models::TaskCompletionResult::default())
+    }
+
     /// Return the user-safe model catalog for the caller's tenant.
     ///
     /// Implementations must not expose provider endpoints, credential metadata,

@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS orch_inbox (
   snoozed_at INTEGER,
   settled_at INTEGER,
   visited_at INTEGER,
+  title TEXT,
+  titled_through INTEGER,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (tenant_id, user_id, thread_id)
 );
@@ -58,6 +60,15 @@ pub struct InboxRecord {
     pub snoozed_at: Option<Millis>,
     pub settled_at: Option<Millis>,
     pub visited_at: Option<Millis>,
+    /// Written by the title task model; wins over the derived title.
+    pub title: Option<String>,
+}
+
+/// A generated title and the last reply (message sequence) it was made from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedTitle {
+    pub title: String,
+    pub through_sequence: Option<i64>,
 }
 
 /// What the inbox needs to know about a thread's live state.
@@ -73,6 +84,8 @@ pub struct InboxFacts {
     pub stopped: bool,
     pub last_activity_at: Millis,
     pub last_ended_at: Option<Millis>,
+    /// When the running turn started (the inbox's working timer).
+    pub working_since: Option<Millis>,
 }
 
 /// An engine-owned thread, joined for the inbox.
@@ -249,7 +262,7 @@ impl Store {
     ) -> Result<HashMap<String, InboxRecord>> {
         let rows = self
             .rows(
-                "SELECT thread_id, pinned_at, snooze_until, snoozed_at, settled_at, visited_at \
+                "SELECT thread_id, pinned_at, snooze_until, snoozed_at, settled_at, visited_at, title \
                  FROM orch_inbox WHERE tenant_id = ?1 AND user_id = ?2",
                 vec![s(owner.tenant_id.as_str()), s(owner.user_id.as_str())],
                 |row| {
@@ -262,12 +275,90 @@ impl Store {
                             snoozed_at: c.oint()?,
                             settled_at: c.oint()?,
                             visited_at: c.oint()?,
+                            title: c.otext()?,
                         },
                     ))
                 },
             )
             .await?;
         Ok(rows.into_iter().collect())
+    }
+
+    /// Bring an `orch_inbox` created before the title column up to date.
+    pub(crate) async fn upgrade_inbox_schema(&self) -> Result<()> {
+        let present = self
+            .rows("PRAGMA table_info(orch_inbox)", vec![], |r| {
+                let mut c = Cols::new(r);
+                c.int()?;
+                c.text()
+            })
+            .await?;
+        for (name, definition) in [("title", "TEXT"), ("titled_through", "INTEGER")] {
+            if !present.iter().any(|p| p == name) {
+                self.exec(
+                    &format!("ALTER TABLE orch_inbox ADD COLUMN {name} {definition}"),
+                    vec![],
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The caller's saved title for a thread, if one was generated.
+    pub async fn inbox_title(
+        &self,
+        owner: &ProfileOwner,
+        thread: &ThreadId,
+    ) -> Result<Option<SavedTitle>> {
+        let row = self
+            .row(
+                "SELECT title, titled_through FROM orch_inbox \
+                 WHERE tenant_id = ?1 AND user_id = ?2 AND thread_id = ?3",
+                vec![
+                    s(owner.tenant_id.as_str()),
+                    s(owner.user_id.as_str()),
+                    s(thread.as_str()),
+                ],
+                |r| {
+                    let mut c = Cols::new(r);
+                    Ok(c.otext()?.map(|title| (title, c.oint())))
+                },
+            )
+            .await?;
+        match row.flatten() {
+            Some((title, through)) => Ok(Some(SavedTitle {
+                title,
+                through_sequence: through?,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    /// Save a generated title (upsert; lifecycle marks are kept).
+    pub async fn inbox_set_title(
+        &self,
+        owner: &ProfileOwner,
+        thread: &ThreadId,
+        saved: &SavedTitle,
+        now: Millis,
+    ) -> Result<()> {
+        self.exec(
+            "INSERT INTO orch_inbox (tenant_id, user_id, thread_id, updated_at, title, titled_through) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT (tenant_id, user_id, thread_id) \
+             DO UPDATE SET title = ?5, titled_through = ?6, updated_at = ?4",
+            vec![
+                s(owner.tenant_id.as_str()),
+                s(owner.user_id.as_str()),
+                s(thread.as_str()),
+                Value::Integer(now),
+                s(&saved.title),
+                saved.through_sequence.map_or(Value::Null, Value::Integer),
+            ],
+        )
+        .await?;
+        Ok(())
     }
 
     /// Apply one lifecycle action (upsert, one statement).
@@ -316,7 +407,7 @@ impl Store {
             "SELECT t.thread_id, t.profile_id, t.title, t.runtime_id, \
                COALESCE(t.provider, json_extract(tel.doc, '$.provider')), \
                COALESCE(t.model, json_extract(tel.doc, '$.model')), \
-               t.turn_state, t.turn_ended_at, t.last_user_at, t.created_at, t.updated_at, \
+               t.turn_state, t.turn_started_at, t.turn_ended_at, t.last_user_at, t.created_at, t.updated_at, \
                (SELECT h.reason FROM orch_holds h WHERE h.thread_id = t.thread_id), \
                (SELECT MIN(r.reset_at) FROM orch_recoveries r WHERE r.thread_id = t.thread_id \
                   AND r.kind = 'usage_limit' AND r.status = 'armed'), \
@@ -344,6 +435,7 @@ impl Store {
                     model: c.otext()?,
                 };
                 let turn_state = TurnState::parse(&c.text()?)?;
+                let started = c.oint()?;
                 let ended = c.oint()?;
                 let last_user = c.oint()?;
                 let created = c.int()?;
@@ -375,6 +467,7 @@ impl Store {
                         stopped: matches!(hold, Some(HoldReason::Stopped | HoldReason::Cancelled)),
                         last_activity_at,
                         last_ended_at: ended,
+                        working_since: started.filter(|_| turn_state == TurnState::Running),
                     },
                 })
             })

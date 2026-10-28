@@ -33,7 +33,10 @@ pub use profiles::{
 };
 pub use usage::{usage_history, usage_report};
 mod inbox;
-pub use inbox::{inbox_list, inbox_mutate, thread_goal, thread_goal_set};
+pub use inbox::{
+    inbox_list, inbox_mutate, inbox_title, task_models_get, task_models_set, thread_goal,
+    thread_goal_set,
+};
 mod run_artifact;
 pub use run_artifact::{
     admin_get_thread_scrape_artifact, admin_get_thread_scrape_run_artifact,

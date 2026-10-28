@@ -8,6 +8,7 @@ use ironclaw_product_contracts::inbox::{
     ThreadGoalResponse,
 };
 use ironclaw_product_contracts::profiles::DEFAULT_PROFILE_ID;
+use ironclaw_product_contracts::task_models::{TaskModels, ThreadTitleResponse};
 use serde_json::json;
 
 use crate::api::{Client, V2, seg};
@@ -49,6 +50,7 @@ impl Client {
                 snooze_until: None,
                 settled_at: None,
                 limit_reset_at: None,
+                working_since: None,
                 parent_thread_id: None,
                 automation: false,
             })
@@ -69,6 +71,28 @@ impl Client {
         let body = json!({ "action": action, "until": until });
         let path = format!("{V2}/inbox/{}", seg(thread_id));
         document(self.post(&path, &body).await?)
+    }
+
+    /// Title the thread once on the "Thread titles" task model. `None`: no
+    /// model set, no reply yet, or a gateway without the route.
+    /// Ask the backend to title the thread if a title is due; `changed`
+    /// says this call wrote a new one.
+    pub async fn title_thread(&self, thread_id: &str) -> Result<ThreadTitleResponse, ClientError> {
+        let path = format!("{V2}/inbox/{}/title", seg(thread_id));
+        match self.post(&path, &json!({})).await {
+            Ok(value) => document(value),
+            Err(e) if e.is_not_found() => Ok(ThreadTitleResponse::default()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn task_models(&self) -> Result<TaskModels, ClientError> {
+        document(self.get(&format!("{V2}/llm/task-models")).await?)
+    }
+
+    pub async fn set_task_models(&self, models: &TaskModels) -> Result<TaskModels, ClientError> {
+        let body = serde_json::to_value(models).map_err(|e| ClientError::Decode(e.to_string()))?;
+        document(self.post(&format!("{V2}/llm/task-models"), &body).await?)
     }
 
     pub async fn thread_goal(&self, thread_id: &str) -> Result<ThreadGoalResponse, ClientError> {

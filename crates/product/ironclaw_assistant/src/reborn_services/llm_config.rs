@@ -21,6 +21,9 @@ use ironclaw_product_contracts::surface::{
 };
 
 use super::{ProductCapabilityInvoker, RebornServices};
+use ironclaw_product_contracts::task_models::{
+    TaskCompletionRequest, TaskCompletionResult, TaskModels,
+};
 
 use ironclaw_product_contracts::operator_llm::{
     LlmConfigSnapshot, SetActiveLlmRequest, SetUserModelPolicyRequest, UpsertLlmProviderRequest,
@@ -47,6 +50,50 @@ where
     I: ProductCapabilityInvoker + Clone + 'static,
     V: RebornViewProvider + Clone + 'static,
 {
+    pub(super) async fn task_models(
+        &self,
+        caller: ProductSurfaceCaller,
+    ) -> Result<TaskModels, ProductSurfaceError> {
+        let service = self
+            .llm_config
+            .as_ref()
+            .ok_or_else(llm_config_unavailable)?;
+        service
+            .task_models(caller)
+            .await
+            .map_err(ProductSurfaceError::from)
+    }
+
+    pub(super) async fn set_task_models(
+        &self,
+        caller: ProductSurfaceCaller,
+        models: TaskModels,
+    ) -> Result<TaskModels, ProductSurfaceError> {
+        let service = self
+            .llm_config
+            .as_ref()
+            .ok_or_else(llm_config_unavailable)?;
+        service
+            .set_task_models(caller, models)
+            .await
+            .map_err(ProductSurfaceError::from)
+    }
+
+    pub(super) async fn complete_task(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: TaskCompletionRequest,
+    ) -> Result<TaskCompletionResult, ProductSurfaceError> {
+        let service = self
+            .llm_config
+            .as_ref()
+            .ok_or_else(llm_config_unavailable)?;
+        service
+            .complete_task(caller, request)
+            .await
+            .map_err(ProductSurfaceError::from)
+    }
+
     pub(super) async fn invoke_llm_provider_upsert(
         &self,
         caller: ProductSurfaceCaller,

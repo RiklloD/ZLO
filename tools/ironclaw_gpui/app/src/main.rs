@@ -15,6 +15,7 @@ mod logs;
 mod native_view;
 mod pages;
 mod permissions;
+mod run_clock;
 mod service;
 mod snapshot;
 mod titles;

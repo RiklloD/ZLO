@@ -70,6 +70,7 @@ pub mod session_ingress;
 pub mod shared_admission;
 pub mod suggestions;
 pub mod surface;
+pub mod task_models;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod usage;

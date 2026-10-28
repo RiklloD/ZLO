@@ -4,6 +4,8 @@
 //! coding-agent runtimes that run a thread in their own harness.
 //!
 //! Connected providers sit on top; "Add a provider" is a searchable grid.
+//! "Background tasks" picks one model per background job (thread titles
+//! today); it applies to every profile.
 
 mod catalog;
 
@@ -12,6 +14,7 @@ use std::collections::HashMap;
 use ironclaw_gpui_client::Backend;
 use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView, UserModelCatalog};
 use ironclaw_gpui_client::orchestration::{PickerPrefs, RouteProvider};
+use ironclaw_gpui_client::task_models::{TaskModelChoice, TaskModels};
 
 use super::{PageEvent, error_line, header, page_body, refresh_button};
 use crate::design::brands::provider_logo;
@@ -68,6 +71,10 @@ pub struct ProvidersView {
     search: Entity<InputState>,
     /// The tile opened from "Add a provider".
     adding: Option<String>,
+    /// Background-task models; `None` until read (or an older gateway).
+    task_models: Option<TaskModels>,
+    /// The thread-titles model list is open.
+    titles_open: bool,
     error: Option<SharedString>,
     notice: Option<SharedString>,
     _search: Subscription,
@@ -100,6 +107,8 @@ impl ProvidersView {
             tab: Tab::Accounts,
             search,
             adding: None,
+            task_models: None,
+            titles_open: false,
             error: None,
             notice: None,
             _search,
@@ -137,6 +146,16 @@ impl ProvidersView {
                 cx.notify();
             },
         );
+        jobs::run(
+            &self.backend,
+            cx,
+            |c| async move { c.task_models().await },
+            |this, result, cx| {
+                // silent-ok: an older gateway has no task models; the section hides.
+                this.task_models = result.ok();
+                cx.notify();
+            },
+        );
         if let Some(thread) = self.catalog_thread.clone() {
             jobs::run(
                 &self.backend,
@@ -151,6 +170,155 @@ impl ProvidersView {
                 },
             );
         }
+    }
+
+    fn set_title_model(&mut self, choice: Option<TaskModelChoice>, cx: &mut Context<Self>) {
+        let models = TaskModels {
+            thread_titles: choice,
+        };
+        self.titles_open = false;
+        jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move { c.set_task_models(&models).await },
+            |this, result, cx| match result {
+                Ok(saved) => {
+                    this.task_models = Some(saved);
+                    cx.notify();
+                }
+                Err(e) => this.fail(e, cx),
+            },
+        );
+        cx.notify();
+    }
+
+    /// API providers a task can run on, with their models: the routable
+    /// providers of the orchestrator catalog, or the connected ones with
+    /// their default model when no thread exists to read the catalog.
+    fn task_choices(&self) -> Vec<(String, String, Vec<String>)> {
+        let active = self
+            .llm
+            .as_ref()
+            .and_then(|l| l.active.as_ref())
+            .map(|a| a.provider_id.clone());
+        let mut out: Vec<(String, String, Vec<String>)> = Vec::new();
+        for r in self.runtimes.iter().flatten() {
+            // The "ironclaw" row is IronClaw's loop on the active provider.
+            let id = if r.provider == "ironclaw" {
+                match &active {
+                    Some(a) => a.clone(),
+                    None => continue,
+                }
+            } else if r.runtime == "ironclaw" {
+                r.provider.clone()
+            } else {
+                continue;
+            };
+            if r.models.is_empty() || out.iter().any(|(p, ..)| *p == id) {
+                continue;
+            }
+            out.push((id.clone(), display_name(&id).to_string(), r.models.clone()));
+        }
+        if out.is_empty()
+            && let Some(llm) = &self.llm
+        {
+            for (_, p) in self.connected(llm) {
+                let model = p
+                    .active_model
+                    .clone()
+                    .unwrap_or_else(|| p.default_model.clone());
+                out.push((p.id.clone(), display_name(&p.id).to_string(), vec![model]));
+            }
+        }
+        out
+    }
+
+    fn render_task_models(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let current = self
+            .task_models
+            .as_ref()
+            .and_then(|m| m.thread_titles.clone());
+        let label = current.as_ref().map_or_else(
+            || "Off".to_string(),
+            |c| format!("{} · {}", display_name(&c.provider_id), c.model),
+        );
+        let picker = self.titles_open.then(|| {
+            let mut list = v_flex().gap_2().pt_2().child(
+                h_flex().child(
+                    Button::new("title-model-off")
+                        .label("Off")
+                        .small()
+                        .when(current.is_none(), |b| b.primary())
+                        .when(current.is_some(), |b| b.outline())
+                        .on_click(cx.listener(|this, _, _, cx| this.set_title_model(None, cx))),
+                ),
+            );
+            for (pix, (provider, name, models)) in self.task_choices().into_iter().enumerate() {
+                let buttons = models.into_iter().enumerate().map(|(mix, model)| {
+                    let selected = current
+                        .as_ref()
+                        .is_some_and(|c| c.provider_id == provider && c.model == model);
+                    let choice = TaskModelChoice {
+                        provider_id: provider.clone(),
+                        model: model.clone(),
+                    };
+                    Button::new(("title-model", pix * 1000 + mix))
+                        .label(model)
+                        .small()
+                        .when(selected, |b| b.primary())
+                        .when(!selected, |b| b.outline())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_title_model(Some(choice.clone()), cx)
+                        }))
+                });
+                list = list.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(name),
+                        )
+                        .child(h_flex().flex_wrap().gap_1().children(buttons)),
+                );
+            }
+            list
+        });
+        card(cx)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().font_semibold().child("Thread titles"))
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(
+                                "Names a thread after its first reply. \
+                                         One model for every profile.",
+                            )),
+                    )
+                    .child(
+                        Button::new("title-model")
+                            .label(label)
+                            .icon(if self.titles_open {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .outline()
+                            .small()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.titles_open = !this.titles_open;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when_some(picker, |d, p| d.child(p))
+            .into_any_element()
     }
 
     fn fail(&mut self, e: impl ToString, cx: &mut Context<Self>) {
@@ -1164,6 +1332,10 @@ impl Render for ProvidersView {
                     .into_any_element()
             } else {
                 v_flex().gap_3().children(connected).into_any_element()
+            })
+            .when(self.task_models.is_some(), |d| {
+                d.child(section_title("Background tasks"))
+                    .child(self.render_task_models(cx))
             })
             .child(section_title("Add a provider"))
             .child(self.render_tabs(cx))

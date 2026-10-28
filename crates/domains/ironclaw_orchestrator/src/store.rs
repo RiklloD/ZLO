@@ -468,6 +468,7 @@ impl Store {
                 .await?;
         }
         crate::schedules::upgrade_schema(self).await?;
+        self.upgrade_inbox_schema().await?;
         self.close_interrupted_cli_approvals(crate::model::now_ms())
             .await?;
         self.import_legacy_threads(legacy_runtime).await

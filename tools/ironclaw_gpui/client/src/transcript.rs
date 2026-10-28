@@ -476,6 +476,16 @@ impl Transcript {
         self.decisions.remove(gate_ref);
     }
 
+    /// Unix ms of the newest durable prompt the person sent.
+    pub fn last_prompt_sent_ms(&self) -> Option<i64> {
+        self.durable
+            .iter()
+            .rev()
+            .find(|m| m.kind == MessageKind::User)
+            .and_then(|m| m.created_at)
+            .map(|t| t.timestamp_millis())
+    }
+
     /// The run the Stop button targets: the latest one not yet terminal.
     pub fn active_run(&self) -> Option<&str> {
         let run = self.latest_run.as_deref()?;

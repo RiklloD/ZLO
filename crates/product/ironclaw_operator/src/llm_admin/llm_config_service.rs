@@ -40,10 +40,13 @@ use ironclaw_product_contracts::operator_llm::{
     UserModelPreferenceStoreError,
 };
 use ironclaw_product_contracts::surface::ProductSurfaceCaller;
+use ironclaw_product_contracts::task_models::{
+    TaskCompletionRequest, TaskCompletionResult, TaskModels,
+};
 use secrecy::{ExposeSecret as _, SecretString};
 
 use crate::llm_admin::llm_catalog::{apply_stored_api_key, resolve_against_registry};
-use crate::llm_admin::{LlmKeyStore, ProviderRepo, RebornProviderAdmin};
+use crate::llm_admin::{LlmKeyStore, ProviderRepo, RebornProviderAdmin, task_models};
 
 const NEARAI_LOGIN_STATE_TTL: Duration = Duration::from_secs(15 * 60);
 const CODEX_LOGIN_ATTEMPT_TTL: Duration = Duration::from_secs(15 * 60);
@@ -704,6 +707,38 @@ impl RebornLlmConfigService {
 
 #[async_trait]
 impl LlmConfigService for RebornLlmConfigService {
+    async fn task_models(
+        &self,
+        _caller: ProductSurfaceCaller,
+    ) -> Result<TaskModels, LlmConfigServiceError> {
+        task_models::load(&task_models::file_path(self.boot.home().path())).await
+    }
+
+    async fn set_task_models(
+        &self,
+        _caller: ProductSurfaceCaller,
+        models: TaskModels,
+    ) -> Result<TaskModels, LlmConfigServiceError> {
+        let path = task_models::file_path(self.boot.home().path());
+        task_models::save(&path, &models).await?;
+        task_models::load(&path).await
+    }
+
+    async fn complete_task(
+        &self,
+        _caller: ProductSurfaceCaller,
+        request: TaskCompletionRequest,
+    ) -> Result<TaskCompletionResult, LlmConfigServiceError> {
+        let home = self.boot.home();
+        task_models::complete(
+            home.path(),
+            &home.providers_file_path(),
+            &self.keys,
+            request,
+        )
+        .await
+    }
+
     async fn snapshot(
         &self,
         caller: ProductSurfaceCaller,

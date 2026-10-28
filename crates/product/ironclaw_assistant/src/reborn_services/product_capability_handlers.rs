@@ -1,5 +1,8 @@
 use super::*;
 use crate::LifecycleProductAction;
+use ironclaw_product_contracts::task_models::{
+    TASK_COMPLETE_COMMAND_ID, TASK_MODELS_GET_COMMAND_ID, TASK_MODELS_SET_COMMAND_ID,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProductCommandHandler {
@@ -26,6 +29,9 @@ pub(super) enum ProductCommandHandler {
     OperatorServiceLifecycle,
     LlmTestConnection,
     LlmListModels,
+    TaskModelsGet,
+    TaskModelsSet,
+    TaskComplete,
     LlmNearAiLogin,
     LlmNearAiWalletLogin,
     LlmCodexLogin,
@@ -73,6 +79,9 @@ impl ProductCommandHandler {
             OPERATOR_SERVICE_LIFECYCLE_COMMAND_ID => Some(Self::OperatorServiceLifecycle),
             LLM_TEST_CONNECTION_COMMAND_ID => Some(Self::LlmTestConnection),
             LLM_LIST_MODELS_COMMAND_ID => Some(Self::LlmListModels),
+            TASK_MODELS_GET_COMMAND_ID => Some(Self::TaskModelsGet),
+            TASK_MODELS_SET_COMMAND_ID => Some(Self::TaskModelsSet),
+            TASK_COMPLETE_COMMAND_ID => Some(Self::TaskComplete),
             LLM_NEARAI_LOGIN_COMMAND_ID => Some(Self::LlmNearAiLogin),
             LLM_NEARAI_WALLET_LOGIN_COMMAND_ID => Some(Self::LlmNearAiWalletLogin),
             LLM_CODEX_LOGIN_COMMAND_ID => Some(Self::LlmCodexLogin),
@@ -260,6 +269,20 @@ impl ProductCommandHandler {
             Self::LlmListModels => command_output(
                 services
                     .list_llm_models(caller, product_command_input(input)?)
+                    .await?,
+            ),
+            Self::TaskModelsGet => {
+                let _: EmptyProductCommandInput = product_command_input(input)?;
+                command_output(services.task_models(caller).await?)
+            }
+            Self::TaskModelsSet => command_output(
+                services
+                    .set_task_models(caller, product_command_input(input)?)
+                    .await?,
+            ),
+            Self::TaskComplete => command_output(
+                services
+                    .complete_task(caller, product_command_input(input)?)
                     .await?,
             ),
             Self::LlmNearAiLogin => command_output(
@@ -820,6 +843,18 @@ mod tests {
             (
                 LLM_LIST_MODELS_COMMAND_ID,
                 ProductCommandHandler::LlmListModels,
+            ),
+            (
+                TASK_MODELS_GET_COMMAND_ID,
+                ProductCommandHandler::TaskModelsGet,
+            ),
+            (
+                TASK_MODELS_SET_COMMAND_ID,
+                ProductCommandHandler::TaskModelsSet,
+            ),
+            (
+                TASK_COMPLETE_COMMAND_ID,
+                ProductCommandHandler::TaskComplete,
             ),
             (
                 LLM_NEARAI_LOGIN_COMMAND_ID,

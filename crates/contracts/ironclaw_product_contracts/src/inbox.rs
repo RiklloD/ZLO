@@ -78,6 +78,9 @@ pub struct InboxRow {
     pub settled_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit_reset_at: Option<i64>,
+    /// Unix ms the running turn started; set only while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_since: Option<i64>,
     /// The thread a delegated child was created from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_thread_id: Option<String>,

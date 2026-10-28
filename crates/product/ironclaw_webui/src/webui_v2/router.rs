@@ -80,7 +80,8 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_COMPUTER_USE_STATE,
 };
 use crate::webui_v2::descriptors::{
-    WEBUI_V2_PATTERN_INBOX, WEBUI_V2_PATTERN_INBOX_THREAD, WEBUI_V2_PATTERN_THREAD_GOAL,
+    WEBUI_V2_PATTERN_INBOX, WEBUI_V2_PATTERN_INBOX_THREAD, WEBUI_V2_PATTERN_INBOX_TITLE,
+    WEBUI_V2_PATTERN_TASK_MODELS, WEBUI_V2_PATTERN_THREAD_GOAL,
 };
 use crate::webui_v2::handlers;
 use crate::webui_v2::sse_capacity::SseCapacity;
@@ -438,6 +439,11 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         .route(WEBUI_V2_PATTERN_USAGE_HISTORY, get(handlers::usage_history))
         .route(WEBUI_V2_PATTERN_INBOX, get(handlers::inbox_list))
         .route(WEBUI_V2_PATTERN_INBOX_THREAD, post(handlers::inbox_mutate))
+        .route(WEBUI_V2_PATTERN_INBOX_TITLE, post(handlers::inbox_title))
+        .route(
+            WEBUI_V2_PATTERN_TASK_MODELS,
+            get(handlers::task_models_get).post(handlers::task_models_set),
+        )
         .route(
             WEBUI_V2_PATTERN_THREAD_GOAL,
             get(handlers::thread_goal).post(handlers::thread_goal_set),

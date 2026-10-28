@@ -8,8 +8,8 @@
 //! only renders and sends marks. Refresh is event-driven: on connect, when
 //! the window comes to the front, after a run or a mark. While a row is
 //! working, a slow poll follows it, only with the window in front. A snooze
-//! or usage limit that ends sets one timer for that moment; an idle inbox
-//! schedules nothing.
+//! or usage limit that ends sets one timer for that moment; a working row
+//! repaints its timer once a second; an idle inbox schedules nothing.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -53,6 +53,9 @@ pub(super) struct Inbox {
     /// Rows marked unread from the context menu. Local to this app run:
     /// the backend has no read flag; opening the thread clears it.
     unread: BTreeSet<String>,
+    /// Threads already sent for a generated title this app run.
+    /// Threads with a title request in flight.
+    titling: BTreeSet<String>,
     loading: bool,
     stale: bool,
     polling: bool,
@@ -63,6 +66,8 @@ pub(super) struct Inbox {
     /// Thread ids ⌘1..⌘9 open, in the order the cards show.
     pub(super) jump: Vec<String>,
     _wake: Option<Task<()>>,
+    /// Repaints the Working timers once a second while a row works.
+    _tick: Option<Task<()>>,
 }
 
 impl Inbox {
@@ -97,6 +102,13 @@ impl Inbox {
 
     fn profile(&self, id: &str) -> Option<&InboxProfile> {
         self.list.profiles.iter().find(|p| p.profile_id == id)
+    }
+
+    fn any_working(&self) -> bool {
+        self.list
+            .rows
+            .iter()
+            .any(|r| r.status == Some(InboxStatus::Working))
     }
 
     fn needs_poll(&self) -> bool {
@@ -213,23 +225,77 @@ impl Workspace {
     /// Take a fresh list: titles cache, poll, wake timer.
     pub(super) fn apply_inbox(&mut self, list: InboxListResponse, cx: &mut Context<Self>) {
         crate::titles::set_rows(&list.rows, cx);
+        crate::run_clock::set_rows(&list.rows, cx);
         // A thread that enters or leaves the Working shelf grows into its
         // new place instead of jumping there.
         let was_working = |id: &str| self.inbox.row(id).map(|r| r.state == InboxState::Working);
+        let mut finished = Vec::new();
         for row in &list.rows {
             if was_working(&row.thread_id)
                 .is_some_and(|was| was != (row.state == InboxState::Working))
             {
                 crate::design::motion::restart(&format!("card-grow-{}", row.thread_id));
             }
+            // A run that finished while another thread was open still earns a title.
+            if was_working(&row.thread_id) == Some(true) && row.status == Some(InboxStatus::Done) {
+                finished.push(row.thread_id.clone());
+            }
         }
         self.inbox.list = list;
+        for id in finished {
+            self.request_title(id, cx);
+        }
         self.ensure_inbox_poll(cx);
         self.schedule_wake(cx);
+        self.ensure_tick(cx);
         cx.notify();
     }
 
+    fn ensure_tick(&mut self, cx: &mut Context<Self>) {
+        if !self.inbox.any_working() {
+            self.inbox._tick = None;
+            return;
+        }
+        if self.inbox._tick.is_some() {
+            return;
+        }
+        self.inbox._tick = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
     /// Re-read the inbox. Coalesces: a call during a read marks it stale.
+    /// After a run ends, ask the backend to title the thread. It decides
+    /// whether one is due (the first reply, then every third), so this only
+    /// keeps two requests for one thread from overlapping.
+    pub(super) fn request_title(&mut self, thread_id: String, cx: &mut Context<Self>) {
+        let Some(backend) = self.backend.clone() else {
+            return;
+        };
+        if !self.inbox.titling.insert(thread_id.clone()) {
+            return;
+        }
+        let id = thread_id.clone();
+        jobs::run(
+            &backend,
+            cx,
+            move |c| async move { c.title_thread(&id).await },
+            move |this, result, cx| {
+                this.inbox.titling.remove(&thread_id);
+                match result {
+                    Ok(t) if t.changed => this.refresh_inbox(cx),
+                    Ok(_) => {}
+                    Err(e) => tracing::debug!(error = %e, "thread title not generated"),
+                }
+            },
+        );
+    }
+
     pub(super) fn refresh_inbox(&mut self, cx: &mut Context<Self>) {
         let Some(backend) = self.backend.clone() else {
             return;
@@ -707,19 +773,26 @@ impl Workspace {
             }
         }
 
+        // The profile picker floats over the list so no thread row moves.
         v_flex()
+            .relative()
             .flex_1()
             .min_h_0()
             .child(self.render_inbox_header(cx))
             .when(self.inbox.new_menu_open, |d| {
-                d.child(
+                d.child(gpui_kit::deferred(
                     div()
+                        .absolute()
+                        .top(px(design::SIDEBAR_SEARCH_HEIGHT))
+                        .left_0()
+                        .right_0()
+                        .occlude()
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                             this.inbox.new_menu_open = false;
                             cx.notify();
                         }))
                         .child(self.render_picker(cx)),
-                )
+                ))
             })
             .when(self.inbox.filters_open, |d| {
                 d.child(self.render_filters(cx))
@@ -1453,7 +1526,10 @@ fn status_body(row: &InboxRow, active: bool, now: i64, cx: &App) -> AnyElement {
                 SharedString::from(format!("working-{}", row.thread_id)),
                 p.accent,
             ))
-            .child("Working")
+            .child(match crate::run_clock::elapsed(&row.thread_id, cx) {
+                Some(secs) => format!("Working {}", crate::design::motion::format_elapsed(secs)),
+                None => "Working".into(),
+            })
             .into_any_element(),
         // t3code's "needs you": amber, with a dot, until it is answered.
         Some(InboxStatus::NeedsInput) => h_flex()
@@ -1583,6 +1659,7 @@ mod tests {
             snooze_until: None,
             settled_at: None,
             limit_reset_at: None,
+            working_since: None,
             parent_thread_id: None,
             automation: false,
         }
