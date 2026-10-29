@@ -202,9 +202,8 @@ impl OpenAiCodexProvider {
             .join("\n\n");
 
         // Convert non-system messages to Responses API format
-        let input: Vec<serde_json::Value> = messages
-            .iter()
-            .filter(|m| m.role != Role::System)
+        let input: Vec<serde_json::Value> = crate::responses_reasoning::input_messages(messages)
+            .into_iter()
             .enumerate()
             .flat_map(|(i, m)| convert_message(m, i))
             .collect();
@@ -399,7 +398,7 @@ impl OpenAiCodexProvider {
             output_tokens: parsed.output_tokens,
             finish_reason: parsed.finish_reason,
             reasoning: parsed.reasoning,
-            cache_read_input_tokens: 0,
+            cache_read_input_tokens: parsed.cached_input_tokens,
             cache_creation_input_tokens: 0,
         })
     }
@@ -455,7 +454,7 @@ impl OpenAiCodexProvider {
             input_tokens: parsed.input_tokens,
             output_tokens: parsed.output_tokens,
             finish_reason,
-            cache_read_input_tokens: 0,
+            cache_read_input_tokens: parsed.cached_input_tokens,
             cache_creation_input_tokens: 0,
             reasoning: parsed.reasoning,
             reasoning_details: None,
@@ -860,6 +859,7 @@ struct ParsedResponse {
     reasoning: Option<String>,
     tool_calls: Vec<ToolCall>,
     input_tokens: u32,
+    cached_input_tokens: u32,
     output_tokens: u32,
     finish_reason: FinishReason,
 }
@@ -964,6 +964,7 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut reasoning_items: Vec<serde_json::Value> = Vec::new();
     let mut input_tokens: u32 = 0;
+    let mut cached_input_tokens: u32 = 0;
     let mut output_tokens: u32 = 0;
     let mut finish_reason = FinishReason::Stop;
     let mut active_function_calls: std::collections::HashMap<String, FunctionCallState> =
@@ -1157,6 +1158,7 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
                             .get("input_tokens")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0) as u32;
+                        cached_input_tokens = crate::provider::responses_cached_tokens(usage);
                         output_tokens = usage
                             .get("output_tokens")
                             .and_then(|v| v.as_u64())
@@ -1299,6 +1301,7 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
         reasoning: crate::responses_reasoning::finish_summary(reasoning_summary),
         tool_calls,
         input_tokens,
+        cached_input_tokens,
         output_tokens,
         finish_reason,
     })
@@ -1603,7 +1606,7 @@ data: {"type":"response.output_text.delta","delta":"Hello "}
 
 data: {"type":"response.output_text.delta","delta":"world!"}
 
-data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":8},"output_tokens":5}}}
 
 "#;
         let result = parse_sse_response(sse_body);
@@ -1611,6 +1614,7 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
         let parsed = result.unwrap();
         assert_eq!(parsed.text_content, "Hello world!");
         assert_eq!(parsed.input_tokens, 10);
+        assert_eq!(parsed.cached_input_tokens, 8);
         assert_eq!(parsed.output_tokens, 5);
         assert_eq!(parsed.finish_reason, FinishReason::Stop);
         assert!(parsed.tool_calls.is_empty());
@@ -2481,6 +2485,87 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
                 .as_str()
                 .unwrap()
                 .contains("[Tool `search` returned:")
+        );
+    }
+
+    /// Regression: the host reminders that trail the transcript (memory
+    /// recall, runtime clock) were sent after the last `function_call_output`
+    /// as a user item, so every loop step read as a new user turn and the
+    /// model re-ran `get_app_state` instead of acting. They now ride right
+    /// after the user's message and the request ends on the tool output.
+    #[test]
+    fn trailing_host_reminders_ride_after_the_user_message_not_the_tool_output() {
+        let call = ToolCall {
+            id: "call_state".to_string(),
+            name: "computer_use_get_app_state".to_string(),
+            arguments: serde_json::json!({"app": "WhatsApp"}),
+            reasoning: None,
+            signature: None,
+            arguments_parse_error: None,
+        };
+        let messages = vec![
+            ChatMessage::system("instructions"),
+            ChatMessage::user("read the group chat"),
+            ChatMessage::assistant_with_tool_calls(None, vec![call]),
+            ChatMessage::tool_result("call_state", "computer_use_get_app_state", "tree"),
+            ChatMessage::host_reminder("Current date/time at loop start: 12:05"),
+        ];
+        let jwt = make_test_jwt("acct_test");
+        let provider = OpenAiCodexProvider::new(
+            "gpt-6.1-terra",
+            "https://chatgpt.com/backend-api/codex",
+            &jwt,
+            300,
+        )
+        .unwrap();
+
+        let body = provider.build_request_body(
+            &provider.model,
+            &messages,
+            None,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        );
+        let input = body["input"].as_array().unwrap();
+        let shape: Vec<&str> = input
+            .iter()
+            .map(|item| {
+                item["type"]
+                    .as_str()
+                    .or_else(|| item["role"].as_str())
+                    .unwrap_or("?")
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            ["user", "user", "function_call", "function_call_output"]
+        );
+        assert!(
+            input[1]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Current date/time at loop start")
+        );
+
+        // Before any tool call there is nothing to protect: order unchanged.
+        let first_step = provider.build_request_body(
+            &provider.model,
+            &[
+                ChatMessage::user("read the group chat"),
+                ChatMessage::host_reminder("clock"),
+            ],
+            None,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(first_step["input"].as_array().map(Vec::len), Some(2));
+        assert!(
+            first_step["input"][1]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("clock")
         );
     }
 }

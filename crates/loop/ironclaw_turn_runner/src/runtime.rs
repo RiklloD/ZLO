@@ -148,6 +148,9 @@ pub struct DefaultPlannedRuntimeConfig {
     /// Profile-owned visibility preferences, keyed by capability-surface
     /// profile id. Values are canonical capability ids and never grant access.
     pub tool_disclosure_profile_pins: HashMap<CapabilitySurfaceProfileId, Vec<CapabilityId>>,
+    /// `@extension` mentions recorded by product ingress, read by tool
+    /// disclosure when a turn builds its surface. Shared with composition.
+    pub tool_mentions: Arc<ironclaw_loop_host::TurnToolMentions>,
     pub planned_default_iteration_limit: Option<std::num::NonZeroU32>,
     /// Override for the default family's model availability-retry budget
     /// (`DefaultRecoveryStrategy::max_model_availability_attempts`). `None`
@@ -169,6 +172,7 @@ impl Default for DefaultPlannedRuntimeConfig {
             host: TextOnlyLoopHostConfig::default(),
             tool_disclosure: ToolDisclosureMode::from_env(),
             tool_disclosure_profile_pins: HashMap::new(),
+            tool_mentions: Arc::default(),
             planned_default_iteration_limit: None,
             planned_model_availability_retry_attempts: None,
         }
@@ -855,6 +859,7 @@ where
         Some(Arc::new(ToolDisclosureCapabilityDecorator::new(
             Arc::clone(&parts.capability_result_writer),
             parts.config.tool_disclosure,
+            Arc::clone(&parts.config.tool_mentions),
         )))
     } else {
         None
@@ -1703,6 +1708,7 @@ mod tests {
             tool_disclosure_decorator: Some(Arc::new(ToolDisclosureCapabilityDecorator::new(
                 Arc::new(UnusedResultWriter),
                 ToolDisclosureMode::Bridged,
+                Arc::default(),
             ))),
             global_denied: vec![denied_id.clone()],
             scheduled_trigger_denied: Vec::new(),

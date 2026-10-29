@@ -14,6 +14,8 @@ use crate::ui::*;
 
 /// Ack notices that mean "waits in the queue" rather than "steered".
 const QUEUED_NOTICE: &str = "Queued";
+/// Ack outcome of a message the running turn refused (`rejected_busy`).
+const REJECTED_OUTCOME: &str = "rejected_busy";
 
 impl ChatView {
     /// Enter while a turn runs: the message joins that turn, shown as the
@@ -46,6 +48,20 @@ impl ChatView {
         let task = cx.spawn_in(window, async move |this, cx| {
             let result = flatten(job.await);
             let _ = this.update_in(cx, |this, window, cx| match result {
+                // The turn refused it: never show it as sent. The words go
+                // back in the composer so Stop or ⌥Enter can act on them.
+                Ok(ack) if ack.outcome.as_deref() == Some(REJECTED_OUTCOME) => {
+                    this.transcript.drop_pending_user(pending);
+                    this.staged = files;
+                    this.composer
+                        .update(cx, |state, cx| state.set_value(draft, window, cx));
+                    this.set_error(
+                        "The running turn didn't take this message. Press Stop to end it, or ⌥Enter to queue the message for after it.",
+                        cx,
+                    );
+                    this.refresh_rows(cx);
+                    this.load_timeline(cx);
+                }
                 Ok(ack) => {
                     let queued = ack
                         .notice

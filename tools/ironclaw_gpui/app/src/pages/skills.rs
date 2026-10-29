@@ -39,8 +39,7 @@ impl EventEmitter<PageEvent> for SkillsView {}
 
 impl SkillsView {
     pub fn new(backend: Backend, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search the skill catalog"));
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search skills"));
         let query_events = cx.subscribe(&query, |this, _, event, cx| {
             if let InputEvent::PressEnter { .. } = event {
                 this.search(cx);
@@ -229,13 +228,10 @@ impl SkillsView {
             |this, result, cx| {
                 this.searching = false;
                 this.results = Some(match result {
-                    Ok(resp) => match resp.catalog_error {
-                        Some(e) if resp.catalog.is_empty() => Err(e.into()),
-                        // An empty registry URL means the gateway has no catalog to search.
-                        None if resp.registry_url.is_empty() => {
-                            Err("No skill catalog is configured on this gateway.".into())
-                        }
-                        _ => Ok(resp
+                    Ok(resp) => {
+                        // Catalog hits first, then installed skills that match; the
+                        // gateway searches installed skills even without a catalog.
+                        let mut hits: Vec<CatalogSkill> = resp
                             .catalog
                             .iter()
                             .filter_map(|v| {
@@ -248,8 +244,25 @@ impl SkillsView {
                                         .to_string(),
                                 })
                             })
-                            .collect()),
-                    },
+                            .collect();
+                        for s in resp.installed {
+                            if !hits.iter().any(|h| h.name == s.name) {
+                                hits.push(CatalogSkill {
+                                    name: s.name,
+                                    description: s.description,
+                                });
+                            }
+                        }
+                        match resp.catalog_error {
+                            Some(e) if hits.is_empty() => Err(e.into()),
+                            // An empty registry URL means there is no online catalog.
+                            None if hits.is_empty() && resp.registry_url.is_empty() => Err(
+                                "No installed skill matches. No online skill catalog is connected."
+                                    .into(),
+                            ),
+                            _ => Ok(hits),
+                        }
+                    }
                     Err(e) => Err(e.to_string().into()),
                 });
                 cx.notify();

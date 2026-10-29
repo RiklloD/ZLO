@@ -1343,6 +1343,15 @@ pub(crate) fn prompt_cache_key_from_metadata<'a>(
     metadata.get(PROMPT_CACHE_KEY_METADATA).cloned()
 }
 
+/// Cached prompt tokens from a Responses API `usage` object
+/// (`input_tokens_details.cached_tokens`), already counted in `input_tokens`.
+pub(crate) fn responses_cached_tokens(usage: &serde_json::Value) -> u32 {
+    usage
+        .pointer("/input_tokens_details/cached_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(0, |v| u32::try_from(v).unwrap_or(u32::MAX))
+}
+
 /// Strip unsupported parameters from a `CompletionRequest` in place.
 ///
 /// This is the single helper function used by all providers to remove

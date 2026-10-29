@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use ironclaw_gpui_client::attachments::{self, StagedFile, format_bytes};
-use ironclaw_gpui_client::commands::{match_command, menu_matches, takes_arguments};
+use ironclaw_gpui_client::commands::{MenuItem, match_command, takes_arguments};
 use ironclaw_gpui_client::contract::ProductGateKind;
 use ironclaw_gpui_client::inbound_requests::{AnchoredPart, anchored_parts};
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
@@ -33,6 +33,7 @@ mod file_links;
 mod flow;
 mod goals;
 pub(crate) mod inline_files;
+pub(crate) mod menu;
 pub mod model_picker;
 mod orchestration;
 mod outline;
@@ -108,9 +109,9 @@ pub struct ChatView {
     composer: Entity<TextareaState>,
     status: StreamStatus,
     error: Option<SharedString>,
-    /// Slash commands from the gateway, loaded once per view.
-    commands: Rc<Vec<RebornProductCommandInfo>>,
-    menu_index: usize,
+    /// Commands, skills and extensions for the `/` and `@` menu, loaded
+    /// once per view.
+    menu: menu::ComposerMenu,
     /// The composer's model pill: any provider, switched per thread.
     picker: Entity<ModelPicker>,
     /// The profile's approval-mode pill after the model and thinking pills.
@@ -118,8 +119,6 @@ pub struct ChatView {
     /// Task ideas for an empty conversation, loaded once it is known empty.
     /// The conversation's files panel, when open.
     files: Option<FilesPanel>,
-    /// The draft the `/` menu was closed for with Esc; typing reopens it.
-    menu_dismissed: Option<SharedString>,
     /// Delegated tasks, queue and lineage of this thread.
     orch: orchestration::Orchestration,
     /// The computer-use screen share of this thread.
@@ -135,6 +134,11 @@ impl ChatView {
     /// The composer's model pill, for the ⇧⌘M shortcut.
     pub fn picker(&self) -> Entity<ModelPicker> {
         self.picker.clone()
+    }
+
+    /// The prompt box, for the workspace's focus restore.
+    pub fn composer(&self) -> Entity<TextareaState> {
+        self.composer.clone()
     }
 }
 
@@ -198,7 +202,7 @@ impl ChatView {
                 |this, _, event, window, cx| match event {
                     InputEvent::PressEnter { shift: false, .. } => this.send(window, cx),
                     InputEvent::Change => {
-                        this.menu_index = 0;
+                        this.menu.reset();
                         inline_files::prune(&this.composer, &mut this.staged, cx);
                         cx.notify();
                     }
@@ -243,13 +247,30 @@ impl ChatView {
             this.stop(cx)
         });
         let (stream, pump) = Self::open_stream(&backend, &thread_id, cx);
+        // An unsent draft comes back; every later edit (typed, or a clear
+        // after send) is noted, so the box always matches the saved draft.
+        let saved = crate::drafts::restore(cx, &thread_id);
+        let mut staged = Vec::new();
+        if let Some(draft) = saved {
+            staged = draft.files;
+            composer.update(cx, |state, cx| state.set_value(draft.content, window, cx));
+        }
+        let keep_draft = cx.observe(&composer, |this: &mut Self, composer, cx| {
+            let content = composer.read(cx).content();
+            let draft = crate::drafts::Draft {
+                content,
+                files: this.staged.clone(),
+                profile: None,
+            };
+            crate::drafts::record(&this.thread_id, draft, cx);
+        });
         composer.update(cx, |state, cx| state.focus(window, cx));
 
         let mut this = Self {
             backend,
             channel,
             limits,
-            staged: Vec::new(),
+            staged,
             thread_id,
             transcript: Transcript::default(),
             rows: Rc::new(Vec::new()),
@@ -273,12 +294,10 @@ impl ChatView {
             composer,
             status: StreamStatus::Connecting,
             error: None,
-            commands: Rc::new(Vec::new()),
-            menu_index: 0,
+            menu: Default::default(),
             picker,
             approval,
             files: None,
-            menu_dismissed: None,
             orch: Default::default(),
             computer,
             _computer_stop: computer_stop,
@@ -286,7 +305,7 @@ impl ChatView {
             _stream: Some(stream),
             _pump: pump,
         };
-        cx.on_release(move |_, _| drop((subscription, picked)))
+        cx.on_release(move |_, _| drop((subscription, picked, keep_draft)))
             .detach();
         this.load_timeline(cx);
         this.load_commands(cx);
@@ -296,14 +315,12 @@ impl ChatView {
     }
 
     fn load_commands(&mut self, cx: &mut Context<Self>) {
-        let job = self
-            .backend
-            .spawn(|c| async move { c.list_commands().await });
+        let job = self.backend.spawn(|c| menu::load(c, true));
         let task = cx.spawn(async move |this, cx| {
             // Without the inventory every `/` line is sent as a normal message.
-            if let Ok(list) = flatten(job.await) {
+            if let Ok(sources) = flatten(job.await) {
                 let _ = this.update(cx, |this, cx| {
-                    this.commands = Rc::new(list.commands);
+                    this.menu.sources = Rc::new(sources);
                     cx.notify();
                 });
             }
@@ -528,19 +545,7 @@ impl ChatView {
         self.keep(task);
     }
 
-    /// Menu entries for the current draft, empty when the menu is closed.
-    fn menu(&self, cx: &App) -> Vec<RebornProductCommandInfo> {
-        let draft = self.composer.read(cx).value();
-        if self.menu_dismissed.as_ref() == Some(&draft) {
-            return Vec::new();
-        }
-        menu_matches(&draft, &self.commands)
-            .into_iter()
-            .cloned()
-            .collect()
-    }
-
-    /// Arrow keys, Tab, Enter and Esc drive the menu while it is open.
+    /// Steering keys and ⌘↵ approval; the menu keys go through `menu_key`.
     fn on_composer_key(
         &mut self,
         event: &KeyDownEvent,
@@ -560,42 +565,55 @@ impl ChatView {
             let always = keys.modifiers.shift && allow_always;
             self.resolve_gate(run, gate, GateDecision::Approve { always }, cx);
             cx.stop_propagation();
-            return;
         }
-        let items = self.menu(cx);
-        // ↑ in an empty composer brings back the last message to edit and
-        // resend (MonoCode's edit-last-turn recall, without the rewind).
-        if items.is_empty()
-            && keys.key == "up"
-            && !keys.modifiers.modified()
-            && self.composer.read(cx).value().is_empty()
-            && let Some(last) = self.rows.iter().rev().find_map(|r| match r {
-                Row::User {
-                    text, attachments, ..
-                } => Some(transcript::readable(text, attachments)),
-                _ => None,
-            })
-        {
-            self.composer
-                .update(cx, |state, cx| state.set_value(last, window, cx));
-            cx.stop_propagation();
-            return;
-        }
-        if items.is_empty() || event.keystroke.modifiers.modified() {
-            return;
-        }
-        match event.keystroke.key.as_str() {
-            "up" => self.menu_index = (self.menu_index + items.len() - 1) % items.len(),
-            "down" => self.menu_index = (self.menu_index + 1) % items.len(),
-            "tab" | "enter" => {
-                let pick = items[self.menu_index.min(items.len() - 1)].clone();
-                self.pick_command(&pick, window, cx);
+    }
+
+    /// Menu keys. The textarea binds ↑ ↓ Tab Esc ↵ as actions, and GPUI runs
+    /// bindings before key listeners, so these are caught as capture-phase
+    /// actions. Returns whether the key was used; otherwise the textarea gets it.
+    fn menu_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match self.menu.key(key, &self.composer, window, cx) {
+            menu::MenuKey::Handled => {}
+            menu::MenuKey::Command(command) => self.pick_command(&command, window, cx),
+            // ↑ in an empty composer brings back the last message to edit and
+            // resend (MonoCode's edit-last-turn recall, without the rewind).
+            menu::MenuKey::Unused => {
+                if key != "up" || !self.composer.read(cx).value().is_empty() {
+                    return false;
+                }
+                let Some(last) = self.rows.iter().rev().find_map(|r| match r {
+                    Row::User {
+                        text, attachments, ..
+                    } => Some(transcript::readable(text, attachments)),
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                self.composer
+                    .update(cx, |state, cx| state.set_value(last, window, cx));
+                return true;
             }
-            "escape" => self.menu_dismissed = Some(self.composer.read(cx).value()),
-            _ => return,
         }
-        cx.stop_propagation();
         cx.notify();
+        true
+    }
+
+    /// A capture-phase listener feeding `key` to the menu.
+    fn menu_action<A: Action>(
+        key: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&A, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, _: &A, window, cx| {
+            if this.menu_key(key, window, cx) {
+                cx.stop_propagation();
+            }
+        })
+    }
+
+    fn pick_item(&mut self, item: &MenuItem, window: &mut Window, cx: &mut Context<Self>) {
+        if let menu::MenuKey::Command(command) = menu::pick(item, &self.composer, window, cx) {
+            self.pick_command(&command, window, cx);
+        }
     }
 
     /// A command without arguments runs at once; others get `/name ` to finish.
@@ -902,7 +920,7 @@ impl ChatView {
         {
             return self.goal_command(command, window, cx);
         }
-        if files.is_empty() && match_command(&text, &self.commands).is_some() {
+        if files.is_empty() && match_command(&text, &self.menu.sources.commands).is_some() {
             self.run_command(text, window, cx);
             return;
         }
@@ -1103,8 +1121,8 @@ impl Render for ChatView {
         use gpui_kit::Focusable as _;
         let focused = self.composer.focus_handle(cx).is_focused(window);
         let weak = cx.weak_entity();
-        let menu = self.menu(cx);
-        let menu_index = self.menu_index.min(menu.len().saturating_sub(1));
+        let menu = self.menu.items(&self.composer, cx);
+        let menu_index = self.menu.selected(menu.len());
         let running = self.running_run().is_some();
         let stopping = self.transcript.is_stopping();
         self.has_tail = self.render_tail(cx).is_some();
@@ -1415,7 +1433,13 @@ impl Render for ChatView {
                         div()
                             .w_full()
                             .max_w(px(content_width(cx)))
-                            .child(render_menu(&menu, menu_index, cx)),
+                            .child(menu::render(
+                                &menu,
+                                menu_index,
+                                self.menu.scroll(),
+                                Self::pick_item,
+                                cx,
+                            )),
                     ),
                 )
             })
@@ -1706,6 +1730,15 @@ impl ChatView {
             Some(self.approval.clone().into_any_element()),
             div()
                 .capture_key_down(cx.listener(Self::on_composer_key))
+                .capture_action(Self::menu_action::<MoveUp>("up", cx))
+                .capture_action(Self::menu_action::<MoveDown>("down", cx))
+                .capture_action(Self::menu_action::<IndentInline>("tab", cx))
+                .capture_action(Self::menu_action::<InputEscape>("escape", cx))
+                .capture_action(cx.listener(|this, action: &InputEnter, window, cx| {
+                    if !action.shift && !action.secondary && this.menu_key("enter", window, cx) {
+                        cx.stop_propagation();
+                    }
+                }))
                 .child(
                     Textarea::new(&self.composer)
                         .appearance(false)
@@ -2257,47 +2290,6 @@ fn sent_subtitle(chip: &AttachmentChip) -> Option<String> {
             .extension()
             .map(|ext| ext.to_string_lossy().to_uppercase())
     })
-}
-
-/// The `/` menu above the composer: name, usage and description per command.
-fn render_menu(
-    items: &[RebornProductCommandInfo],
-    selected: usize,
-    cx: &mut Context<ChatView>,
-) -> impl IntoElement {
-    let pop = kit::popover("command-menu-pop", cx);
-    pop(v_flex().w_full().child(
-        div()
-            .w_full()
-            .max_h(px(280.))
-            .id("command-menu")
-            .overflow_y_scroll()
-            .p_1()
-            .children(items.iter().enumerate().map(|(ix, command)| {
-                let pick = command.clone();
-                kit::row(
-                    SharedString::from(format!("cmd-{}", command.name)),
-                    ix == selected,
-                    cx,
-                )
-                .role(Role::Button)
-                .aria_label(command.usage.clone())
-                .gap_3()
-                .child(div().font_medium().flex_none().child(command.usage.clone()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(command.description.clone()),
-                )
-                .on_click(
-                    cx.listener(move |this, _, window, cx| this.pick_command(&pick, window, cx)),
-                )
-            })),
-    ))
 }
 
 #[allow(clippy::too_many_arguments)]

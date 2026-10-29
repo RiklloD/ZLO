@@ -6,6 +6,10 @@
 // Our animated button replaces gpui-kit's under the same name and builder
 // methods, so every screen picks up the design kit's motion.
 pub use crate::design::kit::Button;
+/// Textarea key actions, caught in the capture phase by the composer menu.
+pub use gpui_kit::component::input::{
+    Enter as InputEnter, Escape as InputEscape, IndentInline, MoveDown, MoveUp,
+};
 pub use gpui_kit::component::input::{
     InlineToken, InlineTokenContext, Input, InputContent, InputEvent, InputState, Position,
     Textarea, TextareaState,
@@ -25,7 +29,7 @@ pub use gpui_kit::component::{
 };
 pub use gpui_kit::prelude::FluentBuilder;
 pub use gpui_kit::{
-    AnyElement, App, AppContext, ClipboardEntry, ClipboardItem, Context, ElementId, Entity,
+    Action, AnyElement, App, AppContext, ClipboardEntry, ClipboardItem, Context, ElementId, Entity,
     EventEmitter, ExternalPaths, Global, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, ParentElement, PathPromptOptions, PromptLevel, Render, Role, SharedString,
     StatefulInteractiveElement, Styled, Subscription, SystemNotification,

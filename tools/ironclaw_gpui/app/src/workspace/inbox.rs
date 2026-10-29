@@ -653,6 +653,18 @@ impl Workspace {
                 .then(|| inbox.jump.iter().position(|j| j == id))
                 .flatten()
         };
+        // A new-thread draft sits on top until it is sent, then a rule.
+        if let Some(card) = self.render_new_draft(cx) {
+            list.push(card);
+            list.push(
+                div()
+                    .mx(px(12.))
+                    .my(px(6.))
+                    .h_px()
+                    .bg(p.border)
+                    .into_any_element(),
+            );
+        }
         let cards: Vec<&InboxRow> = pinned.iter().chain(main.iter()).copied().collect();
         for (ix, row) in cards.into_iter().enumerate() {
             let is_active = active.as_deref() == Some(row.thread_id.as_str());
@@ -1085,6 +1097,95 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The unsent new-thread draft as a card: pen, the profile it was
+    /// started in, its first line. A click reopens the new-thread screen.
+    fn render_new_draft(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (line, saved_profile) = crate::drafts::preview(cx, crate::drafts::NEW_THREAD)?;
+        let p = *Palette::of(cx);
+        let style = *Style::of(cx);
+        let active = self.page == Page::Draft;
+        // The open screen's profile is live; a closed draft keeps its own.
+        let profile_id = self
+            .draft
+            .as_ref()
+            .map(|d| d.profile.clone())
+            .or(saved_profile)
+            .unwrap_or_else(|| DEFAULT_PROFILE_ID.into());
+        let profile = self.inbox.profile(&profile_id);
+        let name = profile.map_or_else(|| profile_id.clone(), |p| p.display_name.clone());
+        let branch = profile.and_then(|p| p.git_branch.clone());
+        let h = crate::design::motion::hover_t("card:new-draft");
+        let wash =
+            crate::design::motion::mix(kit::draft_wash(&p), kit::draft_wash(&p).opacity(0.14), h);
+        let wash = if active {
+            crate::design::motion::mix(wash, kit::selected_wash(&style, &p), 0.5)
+        } else {
+            wash
+        };
+        let card = v_flex()
+            .id("row-new-draft")
+            .group("new-draft")
+            .role(Role::Button)
+            .aria_label(format!("Draft: {line}"))
+            .w_full()
+            .min_h(px(design::SIDEBAR_CARD_MIN_HEIGHT))
+            .justify_center()
+            .px(px(12.))
+            .py(px(14.))
+            .gap(px(6.))
+            .rounded(px(8.))
+            .cursor_pointer()
+            .bg(wash)
+            .on_hover(crate::design::motion::hover_listener(
+                "card:new-draft".into(),
+                style.hover,
+            ))
+            .on_click(cx.listener(|this, _, window, cx| this.open_draft(window, cx)))
+            .child(
+                h_flex()
+                    .gap(px(7.))
+                    .items_center()
+                    .text_size(px(design::SIDEBAR_META_SIZE))
+                    .text_color(p.text_muted)
+                    .child(draft_mark(cx))
+                    .child(profile_mark(
+                        &profile_id,
+                        &name,
+                        h.max(active as u8 as f32),
+                        cx,
+                    ))
+                    .child(div().flex_1().min_w_0().truncate().child(name))
+                    .when_some(branch, |d, b| d.child(branch_label(b, cx)))
+                    .child(
+                        div()
+                            .invisible()
+                            .group_hover("new-draft", |s| s.visible())
+                            .child(
+                                Button::new("discard-new-draft")
+                                    .icon(IconName::Close)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Discard draft")
+                                    .accessibility_label("Discard draft")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.discard_new_draft(window, cx)
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(design::SIDEBAR_TITLE_SIZE))
+                    .text_color(p.text)
+                    .child(line),
+            );
+        Some(card.into_any_element())
+    }
+
     /// Card row: profile · branch with the status or age, then the title;
     /// hover actions pin, snooze, settle. No model readout: the profile names it.
     fn render_card(
@@ -1116,8 +1217,15 @@ impl Workspace {
         );
         // Zeron's session row: the wash alone marks the selection and the
         // selected row never drifts toward the hover wash.
+        // An unsent draft waits here: t3code's pen mark and warm tint.
+        let drafted = !active && crate::drafts::has(cx, &id);
+        let (rest, hover) = if drafted {
+            (kit::draft_wash(&p), kit::draft_wash(&p).opacity(0.14))
+        } else {
+            (kit::hover_wash(&p).opacity(0.), kit::hover_wash(&p))
+        };
         let wash = crate::design::motion::mix(
-            crate::design::motion::mix(kit::hover_wash(&p).opacity(0.), kit::hover_wash(&p), h),
+            crate::design::motion::mix(rest, hover, h),
             kit::selected_wash(&style, &p),
             sel,
         );
@@ -1241,6 +1349,7 @@ impl Workspace {
                         .items_center()
                         .text_size(px(design::SIDEBAR_META_SIZE))
                         .text_color(quiet)
+                        .when(drafted, |d| d.child(draft_mark(cx)))
                         .child(profile_mark(&row.profile_id, &name, h.max(sel), cx))
                         .child(div().flex_1().min_w_0().truncate().child(name))
                         .when_some(branch, |d, b| d.child(branch_label(b, cx)))
@@ -1425,6 +1534,14 @@ fn chip(
 
 /// The profile badge: a colored tile with the first letter.
 /// `lit` 0 draws the mark at rest, 1 at full strength on hover or open.
+/// The pen before a drafted row's profile, in the theme's accent.
+fn draft_mark(cx: &App) -> impl IntoElement {
+    Icon::new(ExtraIcon::SquarePen)
+        .size(px(14.))
+        .flex_none()
+        .text_color(Palette::of(cx).accent)
+}
+
 fn profile_mark(profile_id: &str, name: &str, lit: f32, cx: &App) -> impl IntoElement {
     let p = Palette::of(cx);
     let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];

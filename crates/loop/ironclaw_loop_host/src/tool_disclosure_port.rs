@@ -28,6 +28,7 @@ use crate::tool_disclosure::{
     definition_matches_provider_name, is_bridge_capability_id, is_bridge_name,
     select_active_set_for_mode,
 };
+use crate::tool_mentions::TurnToolMentions;
 use crate::tool_search::{
     AuthorizedToolSearchIndex, MAX_SEARCH_QUERY_BYTES, definitions_fingerprint,
 };
@@ -66,18 +67,21 @@ pub struct ToolDisclosureCapabilityDecorator {
     promoted_by_scope: Arc<Mutex<HashMap<PromotionScopeKey, PromotedSet>>>,
     caps: DisclosureCaps,
     mode: crate::ToolDisclosureMode,
+    mentions: Arc<TurnToolMentions>,
 }
 
 impl ToolDisclosureCapabilityDecorator {
     pub fn new(
         result_writer: Arc<dyn LoopCapabilityResultWriter>,
         mode: crate::ToolDisclosureMode,
+        mentions: Arc<TurnToolMentions>,
     ) -> Self {
         Self {
             result_writer,
             promoted_by_scope: Arc::new(Mutex::new(HashMap::new())),
             caps: DisclosureCaps::default(),
             mode,
+            mentions,
         }
     }
 
@@ -111,6 +115,7 @@ impl ToolDisclosureCapabilityDecorator {
             mode: self.mode,
             policy,
             profile_pins,
+            mentions: Arc::clone(&self.mentions),
             turn_state: Mutex::new(None),
             bridge_inputs: Mutex::new(BTreeMap::new()),
             tool_call_target_inputs: Mutex::new(BTreeMap::new()),
@@ -133,6 +138,8 @@ struct ToolDisclosureCapabilityPort {
     /// Reviewed visibility preferences from the run-profile owner. These are
     /// not grants; catalog construction sees only authorized definitions.
     profile_pins: Vec<CapabilityId>,
+    /// `@extension` mentions from the user's message; taken once per turn.
+    mentions: Arc<TurnToolMentions>,
     turn_state: Mutex<Option<ToolDisclosureTurnState>>,
     bridge_inputs: Mutex<BTreeMap<String, BridgeInvocation>>,
     tool_call_target_inputs: Mutex<BTreeMap<String, CapabilityId>>,
@@ -153,6 +160,9 @@ struct ToolDisclosureTurnState {
     active: ActiveSet,
     disclosed_names: BTreeSet<String>,
     search_ranks: BTreeMap<String, usize>,
+    /// Tools the user's `@extension` mentions pinned for this turn, kept so a
+    /// same-turn rebuild does not drop them.
+    mention_pins: Vec<CapabilityId>,
 }
 
 #[derive(Debug, Clone)]
@@ -846,12 +856,18 @@ impl ToolDisclosureCapabilityPort {
             .unwrap_or(true);
         if rebuild {
             let index_started_at = std::time::Instant::now();
-            let effective_pins = if self.mode.includes_profile_pins() {
-                self.profile_pins.as_slice()
-            } else {
-                &[]
+            let mention_pins = match guard.as_ref().filter(|_| same_turn) {
+                Some(state) => state.mention_pins.clone(),
+                None => self
+                    .mentions
+                    .take_pins(&self.run_context, &authorized_definitions),
             };
-            let catalog = CapabilityCatalog::new(&authorized_definitions, effective_pins);
+            // Mention pins apply in every mode: the user asked for them.
+            let mut effective_pins = mention_pins.clone();
+            if self.mode.includes_profile_pins() {
+                effective_pins.extend(self.profile_pins.iter().cloned());
+            }
+            let catalog = CapabilityCatalog::new(&authorized_definitions, &effective_pins);
             let search_index = AuthorizedToolSearchIndex::new(authorized_definitions.iter());
             debug!(
                 target: "ironclaw::reborn::tool_search",
@@ -880,6 +896,7 @@ impl ToolDisclosureCapabilityPort {
                 active,
                 disclosed_names,
                 search_ranks,
+                mention_pins,
             });
         }
         Ok(guard)
@@ -2821,6 +2838,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn at_mention_advertises_that_extensions_deferred_tools_for_the_turn() {
+        // `@github` in the user's message pins github's tools: they are
+        // advertised with full schemas on a surface that would defer them.
+        // Unmentioned tools stay deferred, and the pin does not outlive the turn.
+        let definitions = vec![
+            provider_definition("fixture.read_file", "read_file", "Read a file"),
+            provider_definition("fixture.extra_1", "extra_tool_1", "Extra operation"),
+            provider_definition("fixture.extra_2", "extra_tool_2", "Extra operation"),
+            provider_definition("fixture.extra_3", "extra_tool_3", "Extra operation"),
+            provider_definition("github.search_issues", "github_search_issues", "Search"),
+            provider_definition("github.create_issue", "github_create_issue", "Create"),
+            provider_definition("githubx.other", "githubx_other", "Lookalike prefix"),
+        ];
+        let inner = Arc::new(SpyPort {
+            definitions,
+            surface_version: CapabilitySurfaceVersion::new("surface:test")
+                .expect("valid surface version"),
+            registered_calls: Mutex::new(Vec::new()),
+            invocations: Mutex::new(Vec::new()),
+        });
+        let mut context = run_context(TurnId::new()).await;
+        let message_ref = ironclaw_turns::AcceptedMessageRef::new("msg:mention")
+            .expect("valid message ref");
+        context.accepted_message_ref = Some(message_ref.clone());
+        let mentions = Arc::new(TurnToolMentions::default());
+        mentions.record(&context.scope, &message_ref, "triage these with @GitHub please");
+
+        let advertised = |port: &ToolDisclosureCapabilityPort| -> Vec<String> {
+            port.tool_definitions()
+                .expect("tool definitions")
+                .iter()
+                .map(|definition| definition.capability_id.as_str().to_string())
+                .collect()
+        };
+        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
+        let mut port = disclosure_port(
+            Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
+            context,
+            Arc::clone(&promoted_by_scope),
+        );
+        port.mentions = Arc::clone(&mentions);
+        port.visible_capabilities(VisibleCapabilityRequest)
+            .await
+            .expect("visible surface");
+        let first = advertised(&port);
+        assert!(first.contains(&"github.search_issues".to_string()), "{first:?}");
+        assert!(first.contains(&"github.create_issue".to_string()), "{first:?}");
+        assert!(!first.contains(&"githubx.other".to_string()), "{first:?}");
+        assert!(!first.contains(&"fixture.extra_3".to_string()), "surface still defers");
+
+        let mut next_turn = disclosure_port(
+            inner as Arc<dyn LoopCapabilityPort>,
+            run_context(TurnId::new()).await,
+            promoted_by_scope,
+        );
+        next_turn.mentions = mentions;
+        next_turn
+            .visible_capabilities(VisibleCapabilityRequest)
+            .await
+            .expect("next visible surface");
+        assert!(
+            !advertised(&next_turn).contains(&"github.create_issue".to_string()),
+            "a mention pins one turn only"
+        );
+    }
+
+    #[tokio::test]
     async fn undisclosed_invalid_deferred_call_returns_schema_instead_of_dispatching() {
         // The failure tool disclosure introduced: the model calls a deferred tool
         // whose schema it has not loaded, with arguments that fail validation (a
@@ -4267,6 +4351,7 @@ mod tests {
             // profile narrowing (that's the integration tier).
             policy: Arc::new(CapabilitySurfacePolicy::allow_all()),
             profile_pins: Vec::new(),
+            mentions: Arc::default(),
             turn_state: Mutex::new(None),
             bridge_inputs: Mutex::new(BTreeMap::new()),
             tool_call_target_inputs: Mutex::new(BTreeMap::new()),

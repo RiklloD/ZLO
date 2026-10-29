@@ -22,6 +22,8 @@ chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
+# Drafts keep pasted pictures inline as base64.
+base64.workspace = true
 # Wallpaper decode and blur. gpui already links image 0.25, so this adds no new crate.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 dirs = "6"

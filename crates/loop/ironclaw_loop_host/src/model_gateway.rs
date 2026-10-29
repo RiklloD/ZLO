@@ -46,7 +46,7 @@ use ironclaw_loop_contracts::{
     LoopModelProgressSink, LoopModelRequest, LoopModelResponse, LoopPromptBundleRequest,
     LoopPromptPort, LoopRunContext, LoopSafeSummary, ModelProfileId, ModelVisibleToolObservation,
     PromptMode, ProviderToolCall, ProviderToolDefinition, RegisterProviderToolCallRequest,
-    ToolObservationDetail, sanitize_model_visible_text,
+    ToolObservationDetail, ToolObservationStatus, sanitize_model_visible_text,
 };
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_safety::{
@@ -2937,6 +2937,30 @@ impl ToolResultReplayMessage {
     }
 }
 
+/// A complete, successful computer-use result replays as the engine's own
+/// text, the way Hermes shows it. Inside the serialized observation the
+/// window tree reached the model JSON-escaped and models kept re-reading it.
+fn computer_use_plain_text(
+    message: &HostManagedModelMessage,
+    observation: &ModelVisibleToolObservation,
+) -> Option<String> {
+    let call = message.tool_result_provider_call.as_ref()?;
+    if !call.capability_id.as_str().starts_with("computer_use.")
+        || observation.status != ToolObservationStatus::Success
+    {
+        return None;
+    }
+    match &observation.detail {
+        ToolObservationDetail::ResultReference {
+            preview: Some(text),
+            structured_json_view: false,
+            next_offset: None,
+            ..
+        } if !text.is_empty() => Some(text.clone()),
+        _ => None,
+    }
+}
+
 fn tool_result_replay_message(
     message: &HostManagedModelMessage,
 ) -> Result<ToolResultReplayMessage, HostManagedModelError> {
@@ -2944,26 +2968,29 @@ fn tool_result_replay_message(
         match message.tool_result_content.as_ref() {
             Some(HostManagedToolResultContent::Reference { envelope }) => {
                 let safe_summary = envelope.safe_summary.as_str().to_string();
-                let model_content = envelope.model_visible_content_or_safe_summary();
-                let structured_json_view = envelope
-                    .model_observation
-                    .as_ref()
-                    .map(|value| {
-                        match serde_json::from_value::<ModelVisibleToolObservation>(value.clone()) {
-                            Ok(observation) => matches!(
-                                observation.detail,
-                                ToolObservationDetail::ResultReference {
-                                    structured_json_view: true,
-                                    ..
-                                }
-                            ),
-                            Err(error) => {
-                                debug!(error = %error, "stored tool-result observation failed typed replay decoding; using safe summary");
-                                false
-                            }
+                let mut model_content = envelope.model_visible_content_or_safe_summary();
+                let observation = envelope.model_observation.as_ref().and_then(|value| {
+                    serde_json::from_value::<ModelVisibleToolObservation>(value.clone())
+                        .map_err(|error| {
+                            debug!(error = %error, "stored tool-result observation failed typed replay decoding; using safe summary");
+                        })
+                        .ok()
+                });
+                let structured_json_view = observation.as_ref().is_some_and(|observation| {
+                    matches!(
+                        observation.detail,
+                        ToolObservationDetail::ResultReference {
+                            structured_json_view: true,
+                            ..
                         }
-                    })
-                    .unwrap_or(false);
+                    )
+                });
+                if let Some(text) = observation
+                    .as_ref()
+                    .and_then(|observation| computer_use_plain_text(message, observation))
+                {
+                    model_content = text;
+                }
                 (safe_summary, model_content, true, structured_json_view)
             }
             Some(HostManagedToolResultContent::Resolved { safe_summary }) => (
@@ -3875,6 +3902,67 @@ mod tests {
             observation
         );
         assert!(!replay.structured_json_view);
+    }
+
+    /// A computer-use window tree replays as the engine's plain text, the way
+    /// Hermes shows it; other tools keep the serialized observation.
+    #[test]
+    fn computer_use_success_replays_as_plain_text() {
+        let tree = "App=net.whatsapp.WhatsApp\n\t30 button Lelomaze +, 12 unread messages";
+        let observation = serde_json::json!({
+            "schema_version": 1,
+            "status": "success",
+            "summary": "Tool completed; preview contains the full result.",
+            "detail": {
+                "kind": "result_reference",
+                "result_ref": "result:cu-state",
+                "byte_len": tree.len(),
+                "preview": tree
+            },
+            "trust": "untrusted_tool_output"
+        });
+        let message_for = |capability: &str| {
+            let envelope = ironclaw_threads::ToolResultReferenceEnvelope::with_model_observation(
+                "result:cu-state",
+                ironclaw_threads::ToolResultSafeSummary::new("get_app_state done")
+                    .expect("safe summary"),
+                observation.clone(),
+            )
+            .expect("valid observation envelope");
+            let call: ironclaw_threads::ProviderToolCallReferenceEnvelope =
+                serde_json::from_value(serde_json::json!({
+                    "provider_id": "openai_codex",
+                    "provider_model_id": "gpt-6.1-terra",
+                    "provider_turn_id": "turn-1",
+                    "provider_call_id": "call-1",
+                    "provider_tool_name": capability.replace('.', "_"),
+                    "capability_id": capability,
+                    "arguments": {}
+                }))
+                .expect("provider call");
+            HostManagedModelMessage {
+                role: HostManagedModelMessageRole::ToolResult,
+                content: "get_app_state done".to_string(),
+                content_ref: ironclaw_turns::LoopMessageRef::new(
+                    "msg:11111111-1111-1111-1111-111111111111",
+                )
+                .expect("valid message ref"),
+                tool_result_provider_call: Some(call),
+                tool_result_content: Some(HostManagedToolResultContent::Reference { envelope }),
+                image_parts: Vec::new(),
+            }
+        };
+
+        let replay = tool_result_replay_message(&message_for("computer_use.get_app_state"))
+            .expect("replay message");
+        assert_eq!(replay.model_content, tree);
+
+        let other =
+            tool_result_replay_message(&message_for("builtin.shell")).expect("replay message");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&other.model_content).unwrap(),
+            observation
+        );
     }
 
     #[test]

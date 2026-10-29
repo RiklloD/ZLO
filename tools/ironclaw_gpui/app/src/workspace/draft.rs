@@ -6,16 +6,20 @@
 mod snapshot;
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use ironclaw_gpui_client::attachments::{self, StagedFile};
+use ironclaw_gpui_client::commands::MenuItem;
 use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
 
 use super::{Page, Workspace};
 use crate::assets::ExtraIcon;
+use crate::chat::menu::{self, ComposerMenu, MenuKey};
 use crate::chat::model_picker::{ModelPicker, PickerEvent};
 use crate::chat::{composer_card, inline_files, round_button};
 use crate::design::styles::Style;
 use crate::design::{Palette, motion};
+use crate::drafts;
 use crate::jobs;
 use crate::ui::*;
 use gpui_kit::Focusable as _;
@@ -27,6 +31,9 @@ pub(super) struct Draft {
     pub(super) menu_open: bool,
     /// Files for the first message, handed to the thread on send.
     staged: Vec<StagedFile>,
+    /// The `/` and `@` menu: skills and extensions only, since commands
+    /// need a thread.
+    menu: ComposerMenu,
     sending: bool,
     error: Option<SharedString>,
     _subs: Vec<Subscription>,
@@ -35,6 +42,10 @@ pub(super) struct Draft {
 impl Draft {
     pub(super) fn picker(&self) -> Entity<ModelPicker> {
         self.picker.clone()
+    }
+
+    pub(super) fn input(&self) -> Entity<TextareaState> {
+        self.input.clone()
     }
 }
 
@@ -52,9 +63,13 @@ impl Workspace {
             && let Some(backend) = self.backend.clone()
         {
             let list = &self.inbox.list;
-            let profile = list
-                .last_used_profile_id
-                .clone()
+            let saved = drafts::restore(cx, drafts::NEW_THREAD);
+            // A saved draft keeps its profile while that profile exists.
+            let profile = saved
+                .as_ref()
+                .and_then(|d| d.profile.clone())
+                .filter(|id| list.profiles.iter().any(|p| &p.profile_id == id))
+                .or_else(|| list.last_used_profile_id.clone())
                 .or_else(|| list.profiles.first().map(|p| p.profile_id.clone()))
                 .unwrap_or_else(|| DEFAULT_PROFILE_ID.into());
             // The model catalog is per user; any thread can read it.
@@ -65,17 +80,36 @@ impl Workspace {
                     .placeholder("Do anything…")
                     .submit_on_enter(true)
             });
+            let mut staged = Vec::new();
+            if let Some(draft) = saved {
+                staged = draft.files;
+                input.update(cx, |s, cx| s.set_value(draft.content, window, cx));
+            }
+            jobs::run_in(
+                &backend,
+                window,
+                cx,
+                |c| menu::load(c, false),
+                |this, result, _, cx| {
+                    if let (Ok(sources), Some(draft)) = (result, this.draft.as_mut()) {
+                        draft.menu.sources = Rc::new(sources);
+                        cx.notify();
+                    }
+                },
+            );
             let picker = cx.new(|cx| ModelPicker::new(backend, None, catalog, window, cx));
             let subs = vec![
                 cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
                     InputEvent::PressEnter { shift: false, .. } => this.send_draft(window, cx),
                     InputEvent::Change => {
                         if let Some(draft) = this.draft.as_mut() {
+                            draft.menu.reset();
                             inline_files::prune(&draft.input, &mut draft.staged, cx);
                         }
                     }
                     _ => {}
                 }),
+                cx.observe(&input, |this, _, cx| this.record_draft(cx)),
                 cx.subscribe(&picker, |this, _, event: &PickerEvent, cx| {
                     if let (PickerEvent::Failed(message), Some(draft)) = (event, &mut this.draft) {
                         draft.error = Some(message.clone().into());
@@ -91,7 +125,8 @@ impl Workspace {
                 input,
                 picker,
                 menu_open: false,
-                staged: Vec::new(),
+                staged,
+                menu: ComposerMenu::default(),
                 sending: false,
                 error: None,
                 _subs: subs,
@@ -99,7 +134,9 @@ impl Workspace {
         } else if let Some(draft) = &self.draft {
             // A kept draft re-reads its profile: its default may have changed.
             let id = draft.profile.clone();
-            draft.picker.update(cx, |picker, cx| picker.set_profile(id, cx));
+            draft
+                .picker
+                .update(cx, |picker, cx| picker.set_profile(id, cx));
         }
         if let Some(draft) = &self.draft {
             draft.input.update(cx, |s, cx| s.focus(window, cx));
@@ -135,6 +172,32 @@ impl Workspace {
             draft.profile = profile;
             draft.menu_open = false;
         }
+        self.record_draft(cx);
+        cx.notify();
+    }
+
+    /// Note the new-thread composer's text, files and profile.
+    /// Drop the unsent new-thread draft (text, files, profile). An open
+    /// new-thread screen starts over empty.
+    pub(super) fn discard_new_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        drafts::remove(drafts::NEW_THREAD, cx);
+        self.draft = None;
+        if self.page == Page::Draft {
+            self.open_draft(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn record_draft(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.draft.as_ref() else {
+            return;
+        };
+        let saved = drafts::Draft {
+            content: draft.input.read(cx).content(),
+            files: draft.staged.clone(),
+            profile: Some(draft.profile.clone()),
+        };
+        drafts::record(drafts::NEW_THREAD, saved, cx);
         cx.notify();
     }
 
@@ -181,6 +244,7 @@ impl Workspace {
             move |this, result, window, cx| match result {
                 Ok(id) => {
                     let files = this.draft.take().map(|d| d.staged).unwrap_or_default();
+                    drafts::remove(drafts::NEW_THREAD, cx);
                     this.refresh_inbox(cx);
                     this.open_thread(id, window, cx);
                     if let Some((_, chat)) = this.active.clone() {
@@ -352,6 +416,38 @@ impl Workspace {
         );
     }
 
+    /// Menu keys for the draft composer; see `ChatView::menu_key`.
+    fn draft_menu_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(draft) = self.draft.as_mut() else {
+            return false;
+        };
+        if matches!(
+            draft.menu.key(key, &draft.input, window, cx),
+            MenuKey::Unused
+        ) {
+            return false;
+        }
+        cx.notify();
+        true
+    }
+
+    fn draft_menu_action<A: Action>(
+        key: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&A, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, _: &A, window, cx| {
+            if this.draft_menu_key(key, window, cx) {
+                cx.stop_propagation();
+            }
+        })
+    }
+
+    fn pick_draft_item(&mut self, item: &MenuItem, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(draft) = self.draft.as_ref() {
+            menu::pick(item, &draft.input, window, cx);
+        }
+    }
+
     pub(super) fn draft_profile_name(&self) -> String {
         let id = self.draft.as_ref().map(|d| d.profile.as_str());
         id.and_then(|id| {
@@ -371,6 +467,8 @@ impl Workspace {
             return div().into_any_element();
         };
         let name = self.draft_profile_name();
+        let items = draft.menu.items(&draft.input, cx);
+        let selected = draft.menu.selected(items.len());
         let ready = !draft.staged.is_empty() || !draft.input.read(cx).value().trim().is_empty();
         let send = round_button("draft-send", IconName::ArrowUp, ready, "Send", cx)
             .when(draft.sending, |d| d.opacity(0.35))
@@ -465,23 +563,36 @@ impl Workspace {
                     draft.input.focus_handle(cx).is_focused(window),
                     false,
                     None,
-                    gpui_kit::div().child(
-                        Textarea::new(&draft.input)
-                            .appearance(false)
-                            .token(inline_files::token_renderer(&draft.staged, cx))
-                            .on_paste({
-                                let weak = cx.entity().downgrade();
-                                move |item, window, cx| {
-                                    let Some(files) = inline_files::pasted(item) else {
-                                        return false;
-                                    };
-                                    let _ = weak.update(cx, |this, cx| {
-                                        this.paste_into_draft(files, window, cx)
-                                    });
-                                    true
-                                }
-                            }),
-                    ),
+                    gpui_kit::div()
+                        .capture_action(Self::draft_menu_action::<MoveUp>("up", cx))
+                        .capture_action(Self::draft_menu_action::<MoveDown>("down", cx))
+                        .capture_action(Self::draft_menu_action::<IndentInline>("tab", cx))
+                        .capture_action(Self::draft_menu_action::<InputEscape>("escape", cx))
+                        .capture_action(cx.listener(|this, action: &InputEnter, window, cx| {
+                            if !action.shift
+                                && !action.secondary
+                                && this.draft_menu_key("enter", window, cx)
+                            {
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(
+                            Textarea::new(&draft.input)
+                                .appearance(false)
+                                .token(inline_files::token_renderer(&draft.staged, cx))
+                                .on_paste({
+                                    let weak = cx.entity().downgrade();
+                                    move |item, window, cx| {
+                                        let Some(files) = inline_files::pasted(item) else {
+                                            return false;
+                                        };
+                                        let _ = weak.update(cx, |this, cx| {
+                                            this.paste_into_draft(files, window, cx)
+                                        });
+                                        true
+                                    }
+                                }),
+                        ),
                     draft.picker.clone(),
                     h_flex().gap(px(6.)).child(attach).child(send),
                     cx,
@@ -497,7 +608,26 @@ impl Workspace {
                         this.attach_thread_to_draft(dragged, window, cx);
                     }),
                 )
-                .relative(),
+                .relative()
+                // The hero card sits mid-screen, so the menu opens below it.
+                .when(!items.is_empty(), |d| {
+                    d.child(gpui_kit::deferred(
+                        div()
+                            .absolute()
+                            .top_full()
+                            .left_0()
+                            .right_0()
+                            .mt_2()
+                            .occlude()
+                            .child(menu::render(
+                                &items,
+                                selected,
+                                draft.menu.scroll(),
+                                Self::pick_draft_item,
+                                cx,
+                            )),
+                    ))
+                }),
             ))
             .when_some(draft.error.clone(), |d, error| {
                 d.child(

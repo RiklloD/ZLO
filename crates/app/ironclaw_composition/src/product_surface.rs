@@ -149,8 +149,10 @@ pub(crate) fn build_product_surface_with_channel_connection(
     if let Some(skill_activation_source) = runtime.webui_skill_activation_source() {
         let activation_recorder = Arc::clone(&skill_activation_source);
         let activation_clearer = skill_activation_source;
+        let tool_mentions = runtime.webui_tool_mentions();
         api = api.with_skill_activation_hooks(
             move |scope, accepted_message_ref, message| {
+                tool_mentions.record(scope, accepted_message_ref, message);
                 activation_recorder
                     .record_user_message(scope.clone(), accepted_message_ref.clone(), message)
                     .map_err(|_| ProductSurfaceError {

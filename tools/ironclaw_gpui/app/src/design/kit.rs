@@ -425,6 +425,12 @@ pub fn selected_wash(_s: &Style, p: &Palette) -> Hsla {
     if p.light { black(0.055) } else { white(0.07) }
 }
 
+/// A row holding an unsent draft: a faint wash of the theme's accent
+/// (t3code's warm tint), under the hover and selection washes.
+pub fn draft_wash(p: &Palette) -> Hsla {
+    p.accent.opacity(if p.light { 0.07 } else { 0.09 })
+}
+
 /// Row hover: one step under the selection.
 pub fn hover_wash(p: &Palette) -> Hsla {
     if p.light { black(0.035) } else { white(0.04) }

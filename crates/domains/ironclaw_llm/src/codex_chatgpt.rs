@@ -385,9 +385,8 @@ impl CodexChatGptProvider {
             .join("\n\n");
 
         // Convert non-system messages to Responses API input items
-        let input: Vec<Value> = messages
-            .iter()
-            .filter(|m| m.role != Role::System)
+        let input: Vec<Value> = crate::responses_reasoning::input_messages(messages)
+            .into_iter()
             .flat_map(Self::message_to_input_items)
             .collect();
 
@@ -970,6 +969,7 @@ impl CodexChatGptProvider {
                         .get("input_tokens")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as u32;
+                    result.cached_input_tokens = crate::provider::responses_cached_tokens(usage);
                     result.output_tokens = usage
                         .get("output_tokens")
                         .and_then(|v| v.as_u64())
@@ -1228,7 +1228,7 @@ impl CodexChatGptProvider {
             output_tokens: result.output_tokens,
             finish_reason: crate::provider::resolve_finish_reason(result.finish_reason, false),
             reasoning: crate::responses_reasoning::finish_summary(result.reasoning),
-            cache_read_input_tokens: 0,
+            cache_read_input_tokens: result.cached_input_tokens,
             cache_creation_input_tokens: 0,
         })
     }
@@ -1291,7 +1291,7 @@ impl CodexChatGptProvider {
             input_tokens: result.input_tokens,
             output_tokens: result.output_tokens,
             finish_reason,
-            cache_read_input_tokens: 0,
+            cache_read_input_tokens: result.cached_input_tokens,
             cache_creation_input_tokens: 0,
             reasoning: crate::responses_reasoning::finish_summary(result.reasoning),
             reasoning_details: None,
@@ -1306,6 +1306,7 @@ struct ResponsesResult {
     /// Keyed by item_id (the SSE item identifier, e.g. "fc_...").
     pending_tool_calls: std::collections::HashMap<String, PendingToolCall>,
     input_tokens: u32,
+    cached_input_tokens: u32,
     output_tokens: u32,
     /// What the provider said about why it stopped. `None` means it reported a
     /// normal completion (or reported nothing), so the response shape decides.
@@ -1952,12 +1953,13 @@ data: {"response":{"usage":{"input_tokens":10,"output_tokens":5}}}
 
 data: {"type":"response.output_text.delta","delta":" world!"}
 
-data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":5}}}
+data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":8},"output_tokens":5}}}
 
 "#;
         let result = CodexChatGptProvider::parse_sse_response(sse).unwrap();
         assert_eq!(result.text, "Hello world!");
         assert_eq!(result.input_tokens, 10);
+        assert_eq!(result.cached_input_tokens, 8);
         assert_eq!(result.output_tokens, 5);
         assert!(result.pending_tool_calls.is_empty());
     }

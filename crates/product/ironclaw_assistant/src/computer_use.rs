@@ -521,9 +521,11 @@ async fn complete(
 /// The model acts on the window text it reads, so a state read or action
 /// result is shown in full (up to [`INLINE_RESULT_MAX_BYTES`]) instead of the
 /// generic 3 KB first look that hides the tree behind a `result_read` call.
-/// Same redacted JSON page as the generic preview, larger budget; the stored
-/// result stays complete either way.
-const INLINE_RESULT_MAX_BYTES: usize = 20 * 1024;
+/// A success is the engine's text as is, the way Hermes shows it; a failure
+/// keeps the redacted JSON page. The stored result stays complete either way.
+/// The whole observation must stay under the threads' 48 KB replay cap, and
+/// a tree's tabs and newlines grow when that observation is serialized.
+const INLINE_RESULT_MAX_BYTES: usize = 32 * 1024;
 
 fn inline_observation(
     mut observation: ModelVisibleToolObservation,
@@ -540,6 +542,24 @@ fn inline_observation(
     else {
         return observation;
     };
+    // Plain text keeps the tree's lines and indexes readable; inside a JSON
+    // page it reached the model escaped twice and models re-read it.
+    // A tree past the budget (Spotify's runs 60-90 KB) keeps its first lines
+    // instead of collapsing to `{"ok":true}`, which left the model blind.
+    if let Some(text) = success_text(serialized) {
+        let full = text.len() <= INLINE_RESULT_MAX_BYTES;
+        *preview = Some(if full { text } else { truncated_tree(&text) });
+        *structured_json_view = false;
+        *next_offset = None;
+        *item_count = None;
+        observation.summary = if full {
+            "Tool completed; preview contains the full result."
+        } else {
+            "Tool completed; preview holds the first part of a long result."
+        }
+        .to_string();
+        return observation;
+    }
     let page = match ironclaw_threads::render_json_tool_result_page(
         result_ref.as_str(),
         serialized,
@@ -572,6 +592,33 @@ fn inline_observation(
         "Tool completed; preview is a bounded JSON view. Select omitted nodes or use the preview's next request to continue.".to_string()
     };
     observation
+}
+
+/// The first whole lines of a long tree that fit the inline budget, and a
+/// note pointing the model at `query` for the rest.
+fn truncated_tree(text: &str) -> String {
+    let note = format!(
+        "\n(tree cut at {INLINE_RESULT_MAX_BYTES} of {} bytes: find other elements with query by text or role, or read again with a smaller max_tree_depth.)",
+        text.len()
+    );
+    let mut end = INLINE_RESULT_MAX_BYTES.saturating_sub(note.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let end = text[..end].rfind('\n').unwrap_or(end);
+    format!("{}{note}", &text[..end])
+}
+
+/// The engine's text of a successful call (`{"ok": true, "result": "..."}`).
+fn success_text(serialized: &[u8]) -> Option<String> {
+    let output: Value = serde_json::from_slice(serialized).ok()?;
+    if output.get("ok") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    match output.get("result")? {
+        Value::String(text) if !text.is_empty() => Some(text.clone()),
+        _ => None,
+    }
 }
 
 /// The same synthetic grantee the other approval-gated builtin tools use.

@@ -9,6 +9,7 @@ mod alerts;
 mod assets;
 mod chat;
 mod design;
+mod drafts;
 mod jobs;
 mod login_item;
 mod logs;
@@ -55,8 +56,10 @@ fn main() {
         gpui_kit::init(cx);
         design::install(cx);
         service::start();
+        drafts::load(cx);
         cx.on_app_quit(|cx| {
             window_state::save(cx);
+            drafts::save(cx, true);
             service::stop();
             async {}
         })

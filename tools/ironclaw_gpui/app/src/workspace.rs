@@ -128,7 +128,10 @@ pub struct Workspace {
     /// The window's fallback focus. When the focused element leaves the tree
     /// (the model picker's search box after a pick), focus returns here so
     /// window shortcuts like ⇧⌘M keep reaching the workspace.
+    /// On a chat or draft, the root never keeps focus: it hands it to the
+    /// composer (see `restore_composer`).
     focus: gpui_kit::FocusHandle,
+    _root_focused: Subscription,
     _focus_lost: Subscription,
     /// Status bar data: the shared usage report and the open thread's
     /// telemetry (`None` until known, or when the gateway lacks the route).
@@ -149,6 +152,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
         let mut this = Self {
             conn: Conn::Connecting,
             backend: None,
@@ -178,11 +182,17 @@ impl Workspace {
                 // Back in front: catch up on whatever finished meanwhile.
                 if window.is_window_active() {
                     this.refresh_inbox(cx);
+                    this.restore_composer(window, cx);
                 }
             }),
-            focus: cx.focus_handle(),
+            _root_focused: cx.on_focus(&focus, window, |this, window, cx| {
+                this.restore_composer(window, cx);
+            }),
+            focus,
             _focus_lost: cx.on_focus_lost(window, |this, window, cx| {
-                window.focus(&this.focus, cx);
+                if !this.restore_composer(window, cx) {
+                    window.focus(&this.focus, cx);
+                }
             }),
             usage: None,
             telemetry: None,
@@ -615,6 +625,26 @@ impl Workspace {
         !matches!(self.page, Page::Chat | Page::Draft)
     }
 
+    /// Keep the composer ready to type: on a chat or the draft, focus it
+    /// when nothing else holds focus (empty, or only the root). Another
+    /// input (URL bar, search box, command menu) keeps its focus. Returns
+    /// whether the composer was focused.
+    fn restore_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.command.is_some() || window.focused(cx).is_some_and(|f| f != self.focus) {
+            return false;
+        }
+        let composer = match self.page {
+            Page::Chat => self.active.as_ref().map(|(_, c)| c.read(cx).composer()),
+            Page::Draft => self.draft.as_ref().map(|d| d.input()),
+            _ => None,
+        };
+        let Some(composer) = composer else {
+            return false;
+        };
+        composer.update(cx, |state, cx| state.focus(window, cx));
+        true
+    }
+
     /// Leave settings for the open thread, or the new-thread screen.
     fn back_to_threads(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active.as_ref().map(|(id, _)| id.clone()) {
@@ -956,14 +986,16 @@ impl Workspace {
         let p = *Palette::of(cx);
         let t = self.telemetry.as_ref();
         let dash = || "—".to_string();
-        let context = match t.and_then(|t| t.context_used.zip(t.context_max)) {
-            Some((used, max)) => {
+        // IronClaw's own loop reports no window size; show the fill alone then.
+        let context = match t.map(|t| (t.context_used, t.context_max)) {
+            Some((Some(used), Some(max))) => {
                 let pct = t
                     .and_then(|t| t.context_pct)
                     .unwrap_or(used as f64 * 100. / max.max(1) as f64);
                 format!("{} / {} · {pct:.0}%", tokens(used), tokens(max))
             }
-            None => dash(),
+            Some((Some(used), None)) => tokens(used),
+            _ => dash(),
         };
         let tps = t
             .and_then(|t| t.tps)

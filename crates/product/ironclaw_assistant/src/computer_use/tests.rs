@@ -609,10 +609,92 @@ fn a_window_tree_reaches_the_model_in_full_not_behind_result_read() {
         observation.summary,
         "Tool completed; preview contains the full result."
     );
+    let ToolObservationDetail::ResultReference {
+        preview,
+        structured_json_view,
+        ..
+    } = observation.detail
+    else {
+        panic!("expected a result reference");
+    };
+    let preview = preview.expect("preview");
+    // The engine's own text, as Hermes shows it: real newlines, no JSON page
+    // around it (escaped twice, the tree read as noise and models re-read it).
+    assert_eq!(preview, tree);
+    assert!(!structured_json_view);
+
+    // A failure keeps its JSON (code and message stay separate fields).
+    let failed = serde_json::to_vec(&serde_json::json!({
+        "ok": false, "code": "app_not_found", "message": "no such app"
+    }))
+    .expect("serialize");
+    let observation = inline_observation(
+        ModelVisibleToolObservation {
+            summary: "Tool completed; preview is a bounded JSON view.".to_string(),
+            ..observation_for(&result_ref, failed.len())
+        },
+        &result_ref,
+        &failed,
+    );
+    let ToolObservationDetail::ResultReference {
+        structured_json_view,
+        ..
+    } = observation.detail
+    else {
+        panic!("expected a result reference");
+    };
+    assert!(structured_json_view);
+
+    // A Spotify-sized tree (80 KB) keeps its first whole lines, not a bare
+    // `{"ok":true}`, and the observation still fits a stored tool result.
+    let long_tree = "\t\t\t42 row Chicago, Michael Jackson, Xscape\n".repeat(2000);
+    let long = serde_json::to_vec(&serde_json::json!({"ok": true, "result": long_tree}))
+        .expect("serialize");
+    let observation =
+        inline_observation(observation_for(&result_ref, long.len()), &result_ref, &long);
+    assert_eq!(
+        observation.summary,
+        "Tool completed; preview holds the first part of a long result."
+    );
+    let stored = serde_json::to_value(&observation).expect("observation json");
     let ToolObservationDetail::ResultReference { preview, .. } = observation.detail else {
         panic!("expected a result reference");
     };
     let preview = preview.expect("preview");
-    assert!(preview.contains("Inbox message from a sender"));
-    assert!(preview.len() > 4 * 1024);
+    assert!(preview.starts_with("\t\t\t42 row Chicago"));
+    assert!(preview.contains("\n(tree cut at"));
+    assert!(preview.len() <= 32 * 1024);
+    let line = "\t\t\t42 row Chicago, Michael Jackson, Xscape\n";
+    let kept = preview.split("\n(tree cut").next().expect("kept lines");
+    assert_eq!(kept.len() % line.len(), line.len() - 1, "cut on a line end");
+    ironclaw_threads::ToolResultReferenceEnvelope::with_model_observation(
+        result_ref.as_str(),
+        ironclaw_threads::ToolResultSafeSummary::new("get_app_state done").expect("summary"),
+        stored,
+    )
+    .expect("a cut tree fits the stored observation cap");
+}
+
+fn observation_for(
+    result_ref: &ironclaw_turns::LoopResultRef,
+    byte_len: usize,
+) -> ModelVisibleToolObservation {
+    use ironclaw_loop_contracts::{ObservationTrust, ToolObservationStatus};
+    ModelVisibleToolObservation {
+        schema_version: 1,
+        status: ToolObservationStatus::Success,
+        summary: String::new(),
+        detail: ToolObservationDetail::ResultReference {
+            result_ref: result_ref.as_str().to_string(),
+            byte_len: byte_len as u64,
+            preview: Some("{\"content\":{\"ok\":false}}".to_string()),
+            structured_json_view: true,
+            total_bytes: Some(byte_len as u64),
+            next_offset: None,
+            item_count: None,
+        },
+        artifacts: Vec::new(),
+        recovery: None,
+        trust: ObservationTrust::UntrustedToolOutput,
+    }
 }

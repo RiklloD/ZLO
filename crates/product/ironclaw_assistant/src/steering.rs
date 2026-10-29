@@ -190,13 +190,25 @@ where
         .await
     {
         Ok(run) => run,
-        Err(TurnError::ScopeNotFound) => return Ok(None),
+        Err(TurnError::ScopeNotFound) => {
+            tracing::debug!(
+                active_run_id = %request.active_run_id,
+                "steering refused: active run not found in the sender's scope"
+            );
+            return Ok(None);
+        }
         Err(error) => return Err(SteeringAdmissionError::RunState(error)),
     };
     if run.status.is_terminal()
         || matches!(run.status, TurnStatus::CancelRequested)
         || !run.allow_steering
     {
+        tracing::debug!(
+            active_run_id = %request.active_run_id,
+            status = ?run.status,
+            allow_steering = run.allow_steering,
+            "steering refused: active run cannot take input"
+        );
         return Ok(None);
     }
     Ok(Some(run))
@@ -320,10 +332,17 @@ async fn try_enqueue(
     {
         Ok(_) => Ok(()),
         Err(
-            HostInputQueueError::Disabled
+            error @ (HostInputQueueError::Disabled
             | HostInputQueueError::RunClosed
-            | HostInputQueueError::CapacityExhausted,
-        ) => Err(EnqueueFailure::Unserviceable),
+            | HostInputQueueError::CapacityExhausted),
+        ) => {
+            tracing::debug!(
+                active_run_id = %request.active_run_id,
+                %error,
+                "steering refused: the run's input queue did not take the message"
+            );
+            Err(EnqueueFailure::Unserviceable)
+        }
         Err(error) => Err(EnqueueFailure::Fatal(SteeringAdmissionError::Enqueue(
             error,
         ))),

@@ -139,8 +139,11 @@ live with the folder deleted first. Upstream-worthy as a PR to nearai/ironclaw.
 - The gateway serves content and the auto-activate toggle only for editable
   (user/installed) skills. Built-in skills return 404 / 400, so the app hides
   View and the switch for them, like the web UI does.
-- No skill catalog is configured (`registry_url` is empty), so catalog search
-  always returns nothing. The app says so.
+- No skill catalog is wired: `LocalSkillsProductService::search_skills`
+  (ironclaw_composition `product_surface.rs`) returns an empty `catalog` and
+  `registry_url`. The only catalog code, IronHub, points at
+  hub.ironclaw.com, which returns 404 "Application not found" (29.10.2026,
+  upstream too). Search therefore lists matching installed skills only.
 - Install from catalog and remove are untested live because there is no
   catalog and no user skill yet.
 

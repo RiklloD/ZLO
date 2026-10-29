@@ -762,6 +762,8 @@ pub struct RebornRuntime {
     pub(crate) skill_context_source: Option<Arc<dyn HostSkillContextSource>>,
     pub(crate) skill_activation_source: Option<Arc<ComposedSelectableSkillContextSource>>,
     skill_execution_adapter: Option<Arc<ComposedSkillExecutionAdapter>>,
+    /// `@extension` mentions shared with the runner's tool disclosure.
+    tool_mentions: Arc<ironclaw_loop_host::TurnToolMentions>,
     /// Operator boot config, carried so the product surface can compose the
     /// LLM-config settings service over `providers.json` / `config.toml`.
     boot: Option<ironclaw_config::RebornBootConfig>,
@@ -1991,6 +1993,10 @@ impl RebornRuntime {
         self.skill_activation_source.clone()
     }
 
+    pub(crate) fn webui_tool_mentions(&self) -> Arc<ironclaw_loop_host::TurnToolMentions> {
+        Arc::clone(&self.tool_mentions)
+    }
+
     /// Read-write project-scoped workspace filesystem for landing inbound
     /// attachment bytes at paths the agent's file tools can later read back.
     /// `None` when no local runtime is composed.
@@ -2354,6 +2360,8 @@ impl RebornRuntime {
 
         let accepted_message_ref = AcceptedMessageRef::new(format!("msg:{}", accepted.message_id))
             .map_err(|reason| RebornRuntimeError::InvalidArgument { reason })?;
+        self.tool_mentions
+            .record(&scope, &accepted_message_ref, text);
         let idempotency_key = IdempotencyKey::new(format!(
             "{}-{}",
             self.source_binding_ref.as_str(),
@@ -3980,6 +3988,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     // disclosure-protocol injection agree on a single value.
     let resolved_tool_disclosure = tool_disclosure.unwrap_or_else(ToolDisclosureMode::from_env);
     let default_runtime_config = DefaultPlannedRuntimeConfig::try_from_env()?;
+    let tool_mentions = Arc::clone(&default_runtime_config.tool_mentions);
     // Resolve the bound memory provider once (issue #3537): the
     // profile source, prompt-context lane, and after-turn writer all fan out from
     // this single resolution, so they agree on the bound provider (native, or
@@ -4244,6 +4253,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
             host: Default::default(),
             tool_disclosure: resolved_tool_disclosure,
             tool_disclosure_profile_pins: default_runtime_config.tool_disclosure_profile_pins,
+            tool_mentions: Arc::clone(&tool_mentions),
             planned_default_iteration_limit: optional_nonzero_u32_env(
                 "IRONCLAW_REBORN_PLANNED_DEFAULT_ITERATION_LIMIT",
             )?,
@@ -5038,6 +5048,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         skill_context_source: runtime_skill_context_source,
         skill_activation_source,
         skill_execution_adapter,
+        tool_mentions,
         boot,
         llm_reload,
     };

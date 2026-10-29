@@ -320,6 +320,7 @@ impl Render for ApprovalPill {
                         .bottom(px(34.))
                         .left_0()
                         .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                             this.open = false;
                             cx.notify();

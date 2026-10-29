@@ -634,6 +634,9 @@ impl ModelPicker {
             .shadow_lg()
             .overflow_hidden()
             .occlude()
+            // A click inside keeps focus where it is (the search box, or
+            // the composer), instead of the window root taking it.
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)))
             // ⌘ held here numbers models, not sidebar threads. Releases pass
             // through so a badge shown before the picker opened still clears.
@@ -1031,6 +1034,9 @@ impl ModelPicker {
             .bg(p.surface_overlay)
             .shadow_lg()
             .occlude()
+            // A click inside keeps focus where it is (the search box, or
+            // the composer), instead of the window root taking it.
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)))
             .children(rows)
     }

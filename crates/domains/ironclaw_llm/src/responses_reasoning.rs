@@ -1,5 +1,7 @@
 use serde_json::{Value, json};
 
+use crate::provider::{ChatMessage, Role};
+
 const MAX_REASONING_SUMMARY_BYTES: usize = 64 * 1024;
 
 /// The `reasoning` block; the effort is the request's pick
@@ -63,6 +65,28 @@ fn push_summary_text(reasoning: &mut String, text: &str) {
 
 pub(crate) fn finish_summary(reasoning: String) -> Option<String> {
     (!reasoning.trim().is_empty()).then_some(reasoning)
+}
+
+/// The non-system messages in Responses API `input` order. Host reminders
+/// trailing the transcript (memory recall, the runtime clock) move up to just
+/// after the latest user message: they go on the wire as user items, and a
+/// user item after the tool results opens a new turn, so the model drops the
+/// turn's reasoning and starts over (computer use re-read the app state on
+/// every step instead of acting on it).
+pub(crate) fn input_messages(messages: &[ChatMessage]) -> Vec<&ChatMessage> {
+    let mut ordered: Vec<&ChatMessage> =
+        messages.iter().filter(|m| m.role != Role::System).collect();
+    let tail = ordered
+        .iter()
+        .rposition(|m| m.role != Role::HostReminder)
+        .map_or(0, |index| index + 1);
+    if let Some(user) = ordered[..tail].iter().rposition(|m| m.role == Role::User)
+        && user + 1 < tail
+    {
+        let reminders: Vec<&ChatMessage> = ordered.drain(tail..).collect();
+        ordered.splice(user + 1..user + 1, reminders);
+    }
+    ordered
 }
 
 #[cfg(test)]
