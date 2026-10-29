@@ -505,10 +505,15 @@ pub fn glide(key: &str, to: f32, spec: MotionSpec, reduced: bool) -> f32 {
 pub fn born(key: &str) -> Instant {
     BORN.with(|b| {
         let mut b = b.borrow_mut();
+        let now = Instant::now();
+        // Forget only rows nobody drew lately. Clearing everything made
+        // every visible row animate in again in a long session.
         if b.len() > 4_096 {
-            b.clear();
+            b.retain(|_, (_, seen)| now.duration_since(*seen) < Duration::from_secs(120));
         }
-        *b.entry(key.to_string().into()).or_insert_with(Instant::now)
+        let entry = b.entry(key.to_string().into()).or_insert((now, now));
+        entry.1 = now;
+        entry.0
     })
 }
 
@@ -537,7 +542,7 @@ pub fn arrive(key: &str, delay_ms: u64) -> bool {
             return false;
         }
         let at = Instant::now() + Duration::from_millis(delay_ms);
-        b.insert(key.to_string().into(), at);
+        b.insert(key.to_string().into(), (at, Instant::now()));
         true
     })
 }
@@ -545,8 +550,8 @@ pub fn arrive(key: &str, delay_ms: u64) -> bool {
 /// Restart the reveal for `key` from now.
 pub fn restart(key: &str) {
     BORN.with(|b| {
-        b.borrow_mut()
-            .insert(key.to_string().into(), Instant::now());
+        let now = Instant::now();
+        b.borrow_mut().insert(key.to_string().into(), (now, now));
     });
 }
 
@@ -556,7 +561,9 @@ pub fn settle(key: &str) {
         .checked_sub(Duration::from_secs(60))
         .unwrap_or_else(Instant::now);
     BORN.with(|b| {
-        b.borrow_mut().entry(key.to_string().into()).or_insert(past);
+        b.borrow_mut()
+            .entry(key.to_string().into())
+            .or_insert((past, Instant::now()));
     });
 }
 
@@ -625,7 +632,8 @@ fn clip(key: &str, t: f32, content: impl gpui_kit::IntoElement) -> gpui_kit::Any
 type RollState = (SharedString, Option<(SharedString, Instant)>);
 
 thread_local! {
-    static BORN: RefCell<HashMap<SharedString, Instant>> = RefCell::new(HashMap::new());
+    /// When each key was born, and when it was last drawn.
+    static BORN: RefCell<HashMap<SharedString, (Instant, Instant)>> = RefCell::new(HashMap::new());
     static ROLLS: RefCell<HashMap<SharedString, RollState>> = RefCell::new(HashMap::new());
     static HEIGHTS: RefCell<HashMap<SharedString, f32>> = RefCell::new(HashMap::new());
 }

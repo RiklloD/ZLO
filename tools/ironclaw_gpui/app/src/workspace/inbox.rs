@@ -116,10 +116,15 @@ impl Inbox {
     fn needs_poll(&self) -> bool {
         Utc::now().timestamp_millis() < self.settle_poll_until
             || self.list.rows.iter().any(|r| {
-                matches!(
-                    r.status,
-                    Some(InboxStatus::Working | InboxStatus::Background | InboxStatus::NeedsInput)
-                )
+                r.title_pending
+                    || matches!(
+                        r.status,
+                        Some(
+                            InboxStatus::Working
+                                | InboxStatus::Background
+                                | InboxStatus::NeedsInput
+                        )
+                    )
             })
     }
 
@@ -232,10 +237,14 @@ impl Workspace {
         // A thread that enters or leaves the Working shelf grows into its
         // new place instead of jumping there.
         let was_working = |id: &str| self.inbox.row(id).map(|r| r.state == InboxState::Working);
+        // Any live status counts: a run can go Needs input → Done between polls.
         let was_running = |id: &str| {
-            self.inbox
-                .row(id)
-                .is_some_and(|r| r.status == Some(InboxStatus::Working))
+            self.inbox.row(id).is_some_and(|r| {
+                matches!(
+                    r.status,
+                    Some(InboxStatus::Working | InboxStatus::Background | InboxStatus::NeedsInput)
+                )
+            })
         };
         let mut finished = false;
         for row in &list.rows {
@@ -1656,6 +1665,7 @@ mod tests {
             working_since: None,
             parent_thread_id: None,
             automation: false,
+            title_pending: false,
         }
     }
 

@@ -29,6 +29,7 @@ use crate::ui::*;
 pub(crate) mod approval_mode;
 mod approval_reason;
 mod computer;
+mod file_links;
 mod flow;
 mod goals;
 pub(crate) mod inline_files;
@@ -39,6 +40,7 @@ mod pace;
 mod side;
 mod snapshot;
 mod steer;
+mod visual;
 
 use flow::Item;
 use model_picker::{ModelPicker, PickerEvent};
@@ -68,6 +70,10 @@ pub struct ChatView {
     thread_id: String,
     transcript: Transcript,
     rows: Rc<Vec<Row>>,
+    /// Bumped with `rows`; with the other fold inputs it tells `sync_items`
+    /// when there is nothing to redo.
+    rows_gen: u64,
+    folded: Option<(u64, bool, bool, bool, bool)>,
     /// What the list shows: `rows` folded, plus the pending and reserve rows.
     items: Rc<Vec<Item>>,
     /// Activity groups the reader opened or closed by hand.
@@ -140,6 +146,9 @@ struct Reserve {
     held: bool,
     /// Height drawn last frame, to re-measure the row only while it glides.
     drawn: f32,
+    /// Set by the first wheel packet over the transcript: from then on the
+    /// reader owns the scroll and the prompt is no longer pinned back.
+    scrolled: bool,
 }
 
 /// Emitted on every timeline load so the sidebar picks up server-set titles.
@@ -244,6 +253,8 @@ impl ChatView {
             thread_id,
             transcript: Transcript::default(),
             rows: Rc::new(Vec::new()),
+            rows_gen: 0,
+            folded: None,
             items: Rc::new(Vec::new()),
             toggles: HashMap::new(),
             run_started: None,
@@ -740,6 +751,7 @@ impl ChatView {
 
     fn refresh_rows(&mut self, cx: &mut Context<Self>) {
         self.rows = Rc::new(self.transcript.rows());
+        self.rows_gen += 1;
         cx.notify();
     }
 
@@ -763,6 +775,18 @@ impl ChatView {
             crate::run_clock::end(&self.thread_id, cx);
         }
         let rows = self.rows.clone();
+        // Nothing moved since the last fold: skip copying the thread.
+        let inputs = (
+            self.rows_gen,
+            live,
+            stopping,
+            self.has_tail,
+            self.reserve.is_some(),
+        );
+        if !self.pacing && !self.pin_next && self.folded == Some(inputs) {
+            return;
+        }
+        self.folded = Some(inputs);
         let (rows, pacing) = self.pacer.apply(&rows, Instant::now(), cx.reduce_motion());
         self.pacing = pacing;
         let new_items = flow::fold(&rows, live, stopping, self.has_tail, self.reserve.is_some());
@@ -802,7 +826,7 @@ impl ChatView {
     /// scroll it out of sight. It stays after the run ends (the view keeps
     /// its place, as in Zeron); it glides to nothing only when a send failed.
     fn reserve_height(&mut self, window: &Window, cx: &mut Context<Self>) -> f32 {
-        let Some(held) = self.reserve.as_ref().map(|r| r.held) else {
+        let Some((held, scrolled)) = self.reserve.as_ref().map(|r| (r.held, r.scrolled)) else {
             return 0.;
         };
         let target = if held {
@@ -842,6 +866,7 @@ impl ChatView {
         // following on. Following would stick to the reserve's bottom instead
         // of the prompt, so while there is room the prompt is pinned back.
         if held
+            && !scrolled
             && h > 0.5
             && self.scroller.read(cx).is_following_tail()
             && let Some(ix) = self
@@ -902,6 +927,7 @@ impl ChatView {
         self.reserve = Some(Reserve {
             held: true,
             drawn: 0.,
+            scrolled: false,
         });
         self.prompt_rise = (!cx.reduce_motion()).then(Instant::now);
         self.pin_next = true;
@@ -1152,11 +1178,15 @@ impl Render for ChatView {
                 ) if !text.is_empty() => {
                     with_actions(key, text, true, None, &weak, render_row(row, &weak, cx))
                 }
+                // The bubble's own id: text that turns into narration keeps
+                // its element, so it neither re-parses nor fades in again.
                 Item::Row(Row::Narration { text, .. }) => linked(
-                    markdown(
-                        SharedString::from(format!("{}-n", item.key())),
-                        text.clone(),
+                    kept_markdown(
+                        item.key().to_string(),
+                        file_links::link_paths(&text.clone().into()),
                         false,
+                        weak.entity_id(),
+                        cx,
                     ),
                     &weak,
                 )
@@ -1303,21 +1333,49 @@ impl Render for ChatView {
             // Room for the floating header; rows fade under its lower half.
             .child({
                 let list_height = self.list_height.clone();
-                let body = div().relative().size_full().child(list.size_full()).child(
-                    gpui_kit::canvas(
-                        move |bounds, window, _| {
-                            let h = f32::from(bounds.size.height);
-                            if (list_height.replace(h) - h).abs() > 0.5 {
-                                window.request_animation_frame();
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
-                );
+                // Painted before the list so its capture listener runs ahead
+                // of ScrollBounce, which stops the wheel event.
+                let weak = cx.entity().downgrade();
+                let wheel = gpui_kit::canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        window.on_mouse_event(
+                            move |e: &gpui_kit::ScrollWheelEvent, phase, _, cx| {
+                                if phase == gpui_kit::DispatchPhase::Capture
+                                    && bounds.contains(&e.position)
+                                {
+                                    let _ = weak.update(cx, |this, _| {
+                                        if let Some(r) = this.reserve.as_mut() {
+                                            r.scrolled = true;
+                                        }
+                                    });
+                                }
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .size_full();
+                let body = div()
+                    .relative()
+                    .size_full()
+                    .child(wheel)
+                    .child(list.size_full())
+                    .child(
+                        gpui_kit::canvas(
+                            move |bounds, window, _| {
+                                let h = f32::from(bounds.size.height);
+                                if (list_height.replace(h) - h).abs() > 0.5 {
+                                    window.request_animation_frame();
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    );
                 // The transcript fades in while the composer docks, on the
                 // 0.20 → 0.65 slice of Zeron's 420 ms route clock.
                 let body = if self.arrive {
@@ -1400,7 +1458,7 @@ fn linked(
     })
 }
 
-fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
+fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &mut App) -> AnyElement {
     match row {
         Row::User {
             key,
@@ -1452,11 +1510,7 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &App) -> AnyElement {
             key,
             text,
             streaming,
-        } => linked(
-            markdown(SharedString::from(key.clone()), text.clone(), *streaming),
-            weak,
-        )
-        .into_any_element(),
+        } => visual::reply(key, text, *streaming, weak, cx),
         Row::System { text, .. } if text.starts_with("Switched to ") => switch_marker(text, cx),
         Row::System { key, text } => div()
             .text_xs()

@@ -70,6 +70,8 @@ pub struct Engine {
 /// journal observer's path: an implementation spawns its work and returns.
 pub trait TurnCompletedListener: Send + Sync {
     fn turn_completed(&self, thread: &ThreadRecord);
+    /// Work for `thread` is still running (a client keeps watching it).
+    fn busy(&self, thread: &ThreadId) -> bool;
 }
 
 impl Engine {
@@ -121,6 +123,11 @@ impl Engine {
     /// Hear about every completed turn (first call wins).
     pub fn set_turn_listener(&self, listener: Arc<dyn TurnCompletedListener>) {
         let _ = self.turn_listener.set(listener); // silent-ok: already set by an earlier wiring
+    }
+
+    /// The turn listener is still working on `thread`.
+    pub fn after_turn_busy(&self, thread: &ThreadId) -> bool {
+        self.turn_listener.get().is_some_and(|l| l.busy(thread))
     }
 
     /// The thread's profile as its CLI agent sees it. Additive context: a

@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
 use ironclaw_host_api::ids::ThreadId;
+use ironclaw_host_api::reply_visuals::REPLY_VISUALS_PROMPT;
 use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::runtime::{TurnEventSink, TurnProfile};
 
@@ -33,13 +34,18 @@ pub(crate) fn goal_note(goal: &str) -> String {
 }
 
 /// What a CLI agent with a system prompt flag gets there: the profile's
-/// SOUL.md, then the thread goal.
+/// SOUL.md, the visuals format, then the thread goal.
 pub(crate) fn system_note(profile: Option<&TurnProfile>, goal: Option<&str>) -> Option<String> {
     let soul = profile
         .map(|p| p.soul.trim())
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    join_notes([soul, goal.map(goal_note)])
+    join_notes([soul, visuals(), goal.map(goal_note)])
+}
+
+/// How to put a chart, table or stat tiles in a reply (Numoh draws them).
+fn visuals() -> Option<String> {
+    Some(REPLY_VISUALS_PROMPT.trim().to_string())
 }
 
 /// The profile context for agents without a system prompt or a skill
@@ -59,7 +65,7 @@ pub(crate) fn session_preamble(profile: &TurnProfile) -> Option<String> {
                 s.index.trim()
             )
         });
-    join_notes([soul, skills])
+    join_notes([soul, visuals(), skills])
 }
 
 fn join_notes(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {

@@ -13,6 +13,9 @@ pub use gpui_kit::component::input::{
 pub use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 pub use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 // Scroll areas bounce at their ends on macOS (gpui-kit's `ScrollBounce`).
+pub use gpui_kit::Hsla;
+/// Native charts for reply visuals (`chat::visual`).
+pub use gpui_kit::component::chart::{AreaChart, BarChart, LineChart, PieChart};
 pub use gpui_kit::component::scroll::ScrollableElement;
 pub use gpui_kit::component::spinner::Spinner;
 pub use gpui_kit::component::switch::Switch;
@@ -31,7 +34,7 @@ pub use gpui_kit::{
 /// Drawing primitives for the computer-use viewer (frames, cursor, ripples).
 pub use gpui_kit::{Bounds, PathBuilder, Pixels, RenderImage, canvas, img, point, rgb, rgba};
 
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::text::{TextView, TextViewState};
 
 /// Assistant Markdown. `id` must stay stable while text streams in, so the
 /// view appends deltas instead of re-parsing (and fades in new words).
@@ -41,6 +44,51 @@ pub fn markdown(
     streaming: bool,
 ) -> TextView {
     TextView::markdown(id, text)
+        .selectable(true)
+        .stream_fade(streaming)
+}
+
+thread_local! {
+    /// Parsed transcript Markdown by row id, see [`kept_markdown`].
+    static KEPT: std::cell::RefCell<std::collections::HashMap<SharedString, Entity<TextViewState>>> =
+        Default::default();
+}
+const KEPT_LIMIT: usize = 1024;
+
+/// [`markdown`] whose parsed document outlives the element. The transcript
+/// list drops a row's element state once the row leaves its overdraw, and a
+/// long reply then came back unparsed (a background parse) and measured
+/// short, so scrolling jumped. `owner` re-renders when a parse finishes.
+pub fn kept_markdown(
+    id: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    streaming: bool,
+    owner: gpui_kit::EntityId,
+    cx: &mut App,
+) -> TextView {
+    let id = id.into();
+    let text = text.into();
+    let kept = KEPT.with(|k| k.borrow().get(&id).cloned());
+    let state = match kept {
+        Some(state) => {
+            // Same text returns early; a longer one appends.
+            state.update(cx, |s, cx| s.set_text(&text, cx));
+            state
+        }
+        None => {
+            let state = cx.new(|cx| TextViewState::markdown(&text, cx));
+            cx.observe(&state, move |_, cx| cx.notify(owner)).detach();
+            KEPT.with(|k| {
+                let mut k = k.borrow_mut();
+                if k.len() >= KEPT_LIMIT {
+                    k.clear();
+                }
+                k.insert(id, state.clone());
+            });
+            state
+        }
+    };
+    TextView::new(&state)
         .selectable(true)
         .stream_fade(streaming)
 }

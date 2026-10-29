@@ -87,6 +87,9 @@ pub struct InboxRow {
     /// Started by an automation (not the person).
     #[serde(default)]
     pub automation: bool,
+    /// A generated title is being written; poll until it lands.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub title_pending: bool,
 }
 
 /// A profile as the inbox shows it: badge, branch, picker order.

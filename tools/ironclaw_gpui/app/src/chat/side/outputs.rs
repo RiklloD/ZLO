@@ -72,6 +72,27 @@ impl ChatView {
         .detach();
     }
 
+    /// Preview a file on this Mac in the pane, as Files does.
+    pub(super) fn outputs_open_local(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".into());
+        self.side.outputs.opened = Some(Opened::loading(name, path.clone()));
+        cx.notify();
+        let task = cx.background_spawn(async move { preview::read(&path) });
+        cx.spawn(async move |this, cx| {
+            let read = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(opened) = this.side.outputs.opened.as_mut() {
+                    opened.preview = read;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn render_outputs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(opened) = self.side.outputs.opened.as_ref() {
             let weak = cx.weak_entity();

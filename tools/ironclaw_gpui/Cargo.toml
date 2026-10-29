@@ -6,6 +6,7 @@
 [workspace]
 resolver = "3"
 members = ["client", "app"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -38,6 +39,12 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Vendored copies of two pinned GPUI crates, patched for scroll startup
+# (see vendor/PATCHES.md). Re-vendor on every gpui-kit bump.
+[patch.crates-io]
+gpui-pre = { path = "vendor/gpui-pre" }
+gpui-base = { path = "vendor/gpui-base" }
 
 [profile.release]
 lto = "thin"

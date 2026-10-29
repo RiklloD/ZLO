@@ -5,9 +5,11 @@
 //!   gate until the thread's owner answers it (`resolve_gate`), the turn ends,
 //!   or [`CliBridge::approval_timeout`] passes. Anything but an explicit
 //!   approval is a denial.
-//! - **Live turn state.** Streamed reply text and open gates per thread, with
-//!   a broadcast of every change, so the product surface can stream a CLI
-//!   turn the way it streams IronClaw's own.
+//! - **Live turn state.** Streamed reply text, thinking, tool calls and open
+//!   gates per thread, with a broadcast of every change, so the product
+//!   surface can stream a CLI turn the way it streams IronClaw's own. Text
+//!   and thinking restart in a new segment at each tool call, so the thread
+//!   shows them in the order they happened, between the calls.
 //! - **Session tokens.** One bearer token per CLI process, bound to its
 //!   thread and run, for the loopback MCP route that serves the orchestrator
 //!   tools ([`handle_mcp`]). Revoked when the turn ends; expired ones fail.
@@ -42,6 +44,8 @@ pub const MCP_SERVER_NAME: &str = "ironclaw";
 const TEXT_EMIT_EVERY: Duration = Duration::from_millis(50);
 /// Bound on the tool-input preview shown with an approval.
 const GATE_BODY_MAX_CHARS: usize = 2_000;
+/// Bound on a tool row's subject (the wire allows 2 KiB).
+const TOOL_SUBJECT_MAX_CHARS: usize = 400;
 const EVENT_BUFFER: usize = 256;
 
 /// The answer a CLI gets for one tool call.
@@ -63,6 +67,26 @@ pub struct GateView {
     pub reason: Option<String>,
 }
 
+/// Where one tool call the CLI ran stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolState {
+    Running,
+    Completed,
+    Failed,
+}
+
+/// One tool call the CLI ran, as its row shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolView {
+    /// A uuid minted by the bridge, stable for the call.
+    pub invocation: String,
+    pub run_id: String,
+    pub tool_name: String,
+    /// The command, path or host the call is about.
+    pub subject: Option<String>,
+    pub state: ToolState,
+}
+
 /// A change to a thread's live CLI turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiveEvent {
@@ -70,17 +94,24 @@ pub enum LiveEvent {
         thread: ThreadId,
         run_id: String,
     },
-    /// The reply text so far (cumulative, not a delta).
+    /// The reply text of `segment` so far (cumulative, not a delta).
     Text {
         thread: ThreadId,
         run_id: String,
+        segment: u32,
         body: String,
     },
-    /// The model's thinking so far (cumulative, not a delta).
+    /// The model's thinking in `segment` so far (cumulative, not a delta).
     Thinking {
         thread: ThreadId,
         run_id: String,
+        segment: u32,
         body: String,
+    },
+    /// A tool call started or finished.
+    Tool {
+        thread: ThreadId,
+        tool: ToolView,
     },
     GateOpened {
         thread: ThreadId,
@@ -105,6 +136,7 @@ impl LiveEvent {
             Self::Started { thread, .. }
             | Self::Text { thread, .. }
             | Self::Thinking { thread, .. }
+            | Self::Tool { thread, .. }
             | Self::GateOpened { thread, .. }
             | Self::GateClosed { thread, .. }
             | Self::Ended { thread, .. } => thread,
@@ -116,9 +148,18 @@ impl LiveEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveSnapshot {
     pub run_id: String,
-    pub text: String,
-    pub thinking: String,
+    /// Every segment so far, oldest first.
+    pub segments: Vec<SegmentView>,
+    pub tools: Vec<ToolView>,
     pub gates: Vec<GateView>,
+}
+
+/// What the model wrote between two tool calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentView {
+    pub segment: u32,
+    pub thinking: String,
+    pub text: String,
 }
 
 /// A tool call matched to its turn by [`CliBridge::claim_call`].
@@ -127,6 +168,16 @@ pub struct CallClaim {
     live: bool,
     /// What the model said between the previous call and this one.
     said: Option<String>,
+    /// The CLI's own id for the call, when its protocol has one: its
+    /// result finishes the call's row.
+    call_id: Option<String>,
+}
+
+impl CallClaim {
+    pub fn with_call_id(mut self, call_id: Option<String>) -> Self {
+        self.call_id = call_id;
+        self
+    }
 }
 
 /// What a session token stands for.
@@ -149,40 +200,72 @@ struct PendingGate {
 
 struct LiveTurn {
     run_id: String,
+    /// The segment being written: text and thinking since the last call.
+    segment: u32,
     text: LiveBuffer,
     thinking: LiveBuffer,
+    /// Earlier segments, for a stream that connects mid-turn.
+    past: Vec<SegmentView>,
+    /// Calls by the CLI's own id, when it has one.
+    tools: Vec<(Option<String>, ToolView)>,
     gates: Vec<PendingGate>,
-    /// Text and thinking lengths at the previous tool call: what the model
-    /// said after them is the reason for the next one.
-    said_mark: (usize, usize),
 }
+
+/// Unsent bodies of one segment, thinking before text.
+type Unsent = (u32, Option<String>, Option<String>);
 
 impl LiveTurn {
     fn new(run_id: &str) -> Self {
         Self {
             run_id: run_id.to_string(),
+            segment: 0,
             text: LiveBuffer::default(),
             thinking: LiveBuffer::default(),
+            past: Vec::new(),
+            tools: Vec::new(),
             gates: Vec::new(),
-            said_mark: (0, 0),
         }
     }
 
-    /// The reason in what the model said since the previous call (text
-    /// before thinking), then move the mark past it.
-    fn take_said_reason(&mut self) -> Option<String> {
-        let (text_at, thinking_at) = self.said_mark;
-        let since =
-            |body: &str, at: usize| body.get(at..).and_then(crate::approval_reason::from_said);
-        let reason =
-            since(&self.text.body, text_at).or_else(|| since(&self.thinking.body, thinking_at));
-        self.said_mark = (self.text.body.len(), self.thinking.body.len());
-        reason
+    /// The reason for a call: what the model told the person since the
+    /// previous one. Thinking already shows as its own row, so it is never
+    /// borrowed (the thread drew the same paragraph twice).
+    fn said_reason(&self) -> Option<String> {
+        crate::approval_reason::from_said(&self.text.body)
     }
 
     /// Everything not broadcast yet, thinking before text.
-    fn flush(&mut self) -> (Option<String>, Option<String>) {
-        (self.thinking.flush(), self.text.flush())
+    fn flush(&mut self) -> Unsent {
+        (self.segment, self.thinking.flush(), self.text.flush())
+    }
+
+    /// A tool call: what was written so far closes as a segment, and what
+    /// follows starts the next one below the call.
+    fn cut_segment(&mut self) -> Unsent {
+        let unsent = self.flush();
+        if !self.text.body.is_empty() || !self.thinking.body.is_empty() {
+            self.past.push(SegmentView {
+                segment: self.segment,
+                thinking: std::mem::take(&mut self.thinking.body),
+                text: std::mem::take(&mut self.text.body),
+            });
+            self.thinking = LiveBuffer::default();
+            self.text = LiveBuffer::default();
+            self.segment += 1;
+        }
+        unsent
+    }
+
+    /// The model went on writing, so the calls it waited on are done.
+    fn settle_tools(&mut self, state: ToolState) -> Vec<ToolView> {
+        self.tools
+            .iter_mut()
+            .filter(|(_, t)| t.state == ToolState::Running)
+            .map(|(_, t)| {
+                t.state = state;
+                t.clone()
+            })
+            .collect()
     }
 }
 
@@ -340,10 +423,16 @@ impl CliBridge {
     pub fn snapshot(&self, thread: &ThreadId) -> Option<LiveSnapshot> {
         let live = self.live.lock().ok()?;
         let turn = live.get(thread)?;
+        let mut segments = turn.past.clone();
+        segments.push(SegmentView {
+            segment: turn.segment,
+            thinking: turn.thinking.body.clone(),
+            text: turn.text.body.clone(),
+        });
         Some(LiveSnapshot {
             run_id: turn.run_id.clone(),
-            text: turn.text.body.clone(),
-            thinking: turn.thinking.body.clone(),
+            segments,
+            tools: turn.tools.iter().map(|(_, t)| t.clone()).collect(),
             gates: turn.gates.iter().map(|g| g.view.clone()).collect(),
         })
     }
@@ -365,7 +454,7 @@ impl CliBridge {
     /// Append streamed reply text. `new_block` separates text blocks with a
     /// blank line, the same join the durable timeline uses.
     pub fn text_delta(&self, thread: &ThreadId, run_id: &str, delta: &str, new_block: bool) {
-        let bodies = {
+        let (done, bodies) = {
             let Ok(mut live) = self.live.lock() else {
                 return;
             };
@@ -373,35 +462,41 @@ impl CliBridge {
                 return;
             };
             // The answer started: unsent thinking shows first.
-            (turn.thinking.flush(), turn.text.push(delta, new_block))
+            let done = turn.settle_tools(ToolState::Completed);
+            let thinking = turn.thinking.flush();
+            (
+                done,
+                (turn.segment, thinking, turn.text.push(delta, new_block)),
+            )
         };
+        self.emit_tools(thread, done);
         self.emit_text(thread, run_id, bodies);
     }
 
     /// Append streamed thinking, like [`Self::text_delta`].
     pub fn thinking_delta(&self, thread: &ThreadId, run_id: &str, delta: &str, new_block: bool) {
-        let body = {
+        let (done, body) = {
             let Ok(mut live) = self.live.lock() else {
                 return;
             };
             let Some(turn) = live.get_mut(thread).filter(|t| t.run_id == run_id) else {
                 return;
             };
-            turn.thinking.push(delta, new_block)
+            (
+                turn.settle_tools(ToolState::Completed),
+                (turn.segment, turn.thinking.push(delta, new_block), None),
+            )
         };
-        self.emit_text(thread, run_id, (body, None));
+        self.emit_tools(thread, done);
+        self.emit_text(thread, run_id, body);
     }
 
-    fn emit_text(
-        &self,
-        thread: &ThreadId,
-        run_id: &str,
-        (thinking, text): (Option<String>, Option<String>),
-    ) {
+    fn emit_text(&self, thread: &ThreadId, run_id: &str, (segment, thinking, text): Unsent) {
         if let Some(body) = thinking {
             self.emit(LiveEvent::Thinking {
                 thread: thread.clone(),
                 run_id: run_id.to_string(),
+                segment,
                 body,
             });
         }
@@ -409,9 +504,66 @@ impl CliBridge {
             self.emit(LiveEvent::Text {
                 thread: thread.clone(),
                 run_id: run_id.to_string(),
+                segment,
                 body,
             });
         }
+    }
+
+    fn emit_tools(&self, thread: &ThreadId, tools: Vec<ToolView>) {
+        for tool in tools {
+            self.emit(LiveEvent::Tool {
+                thread: thread.clone(),
+                tool,
+            });
+        }
+    }
+
+    /// An allowed call starts running: its row shows under the segment
+    /// that led to it.
+    fn tool_started(
+        &self,
+        thread: &ThreadId,
+        run_id: &str,
+        tool_name: &str,
+        input: &Value,
+        call_id: Option<String>,
+    ) {
+        let tool = ToolView {
+            invocation: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.to_string(),
+            tool_name: tool_name.to_string(),
+            subject: gate_body(tool_name, input)
+                .map(|s| truncate_chars(&s, TOOL_SUBJECT_MAX_CHARS)),
+            state: ToolState::Running,
+        };
+        let registered = self.live.lock().ok().is_some_and(|mut live| {
+            live.get_mut(thread)
+                .filter(|t| t.run_id == run_id)
+                .map(|t| t.tools.push((call_id, tool.clone())))
+                .is_some()
+        });
+        if registered {
+            self.emit_tools(thread, vec![tool]);
+        }
+    }
+
+    /// The CLI reported the result of call `call_id`.
+    pub fn tool_finished(&self, thread: &ThreadId, run_id: &str, call_id: &str, failed: bool) {
+        let done = self.live.lock().ok().and_then(|mut live| {
+            let turn = live.get_mut(thread).filter(|t| t.run_id == run_id)?;
+            let (_, tool) = turn
+                .tools
+                .iter_mut()
+                .find(|(id, _)| id.as_deref() == Some(call_id))?;
+            tool.state = if failed {
+                ToolState::Failed
+            } else {
+                ToolState::Completed
+            };
+            Some(tool.clone())
+        });
+        self.emit_tools(thread, done.into_iter().collect());
     }
 
     /// The turn is over: deny whatever still waits and forget its state.
@@ -423,8 +575,13 @@ impl CliBridge {
                 None
             }
         });
+        let done = turn
+            .as_mut()
+            .map(|t| t.settle_tools(ToolState::Completed))
+            .unwrap_or_default();
         let unsent = turn.as_mut().map(LiveTurn::flush).unwrap_or_default();
         self.emit_text(thread, run_id, unsent);
+        self.emit_tools(thread, done);
         for gate in turn.map(|t| t.gates).unwrap_or_default() {
             let _ = gate.answer.send((
                 ToolDecision::Deny("The turn ended.".into()),
@@ -472,16 +629,28 @@ impl CliBridge {
     /// before anything awaits: later text or a parallel call cannot change
     /// which words explain it, and a call from an ended run is caught.
     pub fn claim_call(&self, thread: &ThreadId, run_id: &str) -> CallClaim {
-        let Ok(mut live) = self.live.lock() else {
-            return CallClaim::default(); // silent-ok: a poisoned map only follows a panic elsewhere; the call is denied
+        let (claim, unsent) = {
+            let Ok(mut live) = self.live.lock() else {
+                return CallClaim::default(); // silent-ok: a poisoned map only follows a panic elsewhere; the call is denied
+            };
+            match live.get_mut(thread).filter(|t| t.run_id == run_id) {
+                Some(turn) => {
+                    let said = turn.said_reason();
+                    let claim = CallClaim {
+                        live: true,
+                        said,
+                        call_id: None,
+                    };
+                    (claim, Some(turn.cut_segment()))
+                }
+                None => return CallClaim::default(),
+            }
         };
-        match live.get_mut(thread).filter(|t| t.run_id == run_id) {
-            Some(turn) => CallClaim {
-                live: true,
-                said: turn.take_said_reason(),
-            },
-            None => CallClaim::default(),
+        // What came before the call shows first, closed as its segment.
+        if let Some(unsent) = unsent {
+            self.emit_text(thread, run_id, unsent);
         }
+        claim
     }
 
     fn is_live(&self, thread: &ThreadId, run_id: &str) -> bool {
@@ -506,9 +675,11 @@ impl CliBridge {
         if !claim.live {
             return ToolDecision::Deny("No live turn to approve this call.".into());
         }
+        let call_id = claim.call_id.clone();
         if self.profile_full_access(thread).await {
             // The profile lookup awaited: the turn may have ended meanwhile.
             return if self.is_live(thread, run_id) {
+                self.tool_started(thread, run_id, tool_name, input, call_id);
                 ToolDecision::Allow
             } else {
                 ToolDecision::Deny("The turn ended.".into())
@@ -586,6 +757,9 @@ impl CliBridge {
             run_id: run_id.to_string(),
             gate_ref: gate.gate_ref,
         });
+        if decision == ToolDecision::Allow {
+            self.tool_started(thread, run_id, tool_name, input, call_id);
+        }
         decision
     }
 
@@ -824,6 +998,72 @@ mod tests {
         let short = bridge.mint_token(grant, Duration::from_millis(1));
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(bridge.resolve_token(&short), None);
+    }
+
+    /// Text before a call and text after it are separate segments, the
+    /// reason never borrows thinking, and an allowed call shows as a tool
+    /// row that finishes when its result comes back.
+    #[tokio::test]
+    async fn a_call_cuts_the_segment_and_runs_as_a_tool_row() {
+        let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+        let thread = tid();
+        bridge.turn_started(&thread, "r1");
+        bridge.thinking_delta(&thread, "r1", "Plan the listing first.", true);
+        bridge.text_delta(&thread, "r1", "Let me look.", true);
+        let claim = bridge
+            .claim_call(&thread, "r1")
+            .with_call_id(Some("toolu_1".into()));
+        let waiter = {
+            let bridge = Arc::clone(&bridge);
+            let thread = thread.clone();
+            tokio::spawn(async move {
+                bridge
+                    .decide_call(
+                        &thread,
+                        "r1",
+                        "Bash",
+                        &json!({"command": "ls"}),
+                        None,
+                        claim,
+                    )
+                    .await
+            })
+        };
+        let gate = loop {
+            if let Some(g) = bridge
+                .snapshot(&thread)
+                .and_then(|s| s.gates.first().cloned())
+            {
+                break g;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(gate.reason.as_deref(), Some("Let me look."));
+        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, true));
+        assert_eq!(waiter.await.unwrap(), ToolDecision::Allow);
+
+        let snap = bridge.snapshot(&thread).unwrap();
+        assert_eq!(snap.tools.len(), 1);
+        assert_eq!(snap.tools[0].state, ToolState::Running);
+        assert_eq!(snap.tools[0].subject.as_deref(), Some("ls"));
+        bridge.tool_finished(&thread, "r1", "toolu_1", false);
+        bridge.text_delta(&thread, "r1", "Found it.", true);
+        let snap = bridge.snapshot(&thread).unwrap();
+        assert_eq!(snap.tools[0].state, ToolState::Completed);
+        let texts: Vec<(u32, &str)> = snap
+            .segments
+            .iter()
+            .map(|s| (s.segment, s.text.as_str()))
+            .collect();
+        assert_eq!(texts, vec![(0, "Let me look."), (1, "Found it.")]);
+
+        assert_eq!(
+            bridge.claim_call(&thread, "r1").said.as_deref(),
+            Some("Found it.")
+        );
+        // Only thinking since: the call borrows nothing.
+        bridge.thinking_delta(&thread, "r1", "More thoughts.", true);
+        assert!(bridge.claim_call(&thread, "r1").said.is_none());
     }
 
     #[tokio::test]

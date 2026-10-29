@@ -8,7 +8,7 @@
 //! request. `inbox.mutate` writes one mark for a thread on that list and
 //! answers with the list re-read. Goals are one objective per engine thread.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, Weak};
 
 use chrono::{DateTime, Utc};
@@ -288,6 +288,8 @@ pub(super) async fn list(
                 working_since: d.facts.working_since.filter(|_| d.facts.running),
                 parent_thread_id: d.parent_thread_id,
                 automation: d.automation,
+                title_pending: ThreadId::new(thread_id.as_str())
+                    .is_ok_and(|id| engine.after_turn_busy(&id)),
                 thread_id,
             }
         })
@@ -507,22 +509,72 @@ pub(super) struct ThreadTitler {
     /// The orchestrating surface: its timeline reads stitch CLI and
     /// switched-provider threads.
     surface: Weak<dyn ProductSurface>,
-    /// Threads with a title call running. A turn that completes meanwhile
-    /// is covered by the next one, which sees the higher count.
-    running: StdMutex<HashSet<ThreadId>>,
+    /// Threads with a title call running, and whether another turn
+    /// completed meanwhile (the call then runs again once it ends).
+    running: StdMutex<HashMap<ThreadId, bool>>,
 }
+
+/// Replies this recent are checked at startup: the journal replays turns
+/// that ended during a crash before the titler is wired.
+const STARTUP_SCAN_MS: Millis = 24 * 60 * 60 * 1000;
 
 impl ThreadTitler {
     fn new(engine: Weak<Engine>, surface: Weak<dyn ProductSurface>) -> Self {
         Self {
             engine,
             surface,
-            running: StdMutex::new(HashSet::new()),
+            running: StdMutex::new(HashMap::new()),
         }
     }
 
-    fn running(&self) -> std::sync::MutexGuard<'_, HashSet<ThreadId>> {
+    fn running(&self) -> std::sync::MutexGuard<'_, HashMap<ThreadId, bool>> {
         self.running.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Run the title check for `thread`, or mark it for one more pass when
+    /// a check is already running.
+    fn schedule(self: &Arc<Self>, thread: ThreadRecord) {
+        {
+            let mut running = self.running();
+            if let Some(again) = running.get_mut(&thread.thread_id) {
+                *again = true;
+                return;
+            }
+            running.insert(thread.thread_id.clone(), false);
+        }
+        let titler = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                if let Err(error) = titler.title_if_due(&thread).await {
+                    tracing::debug!(?error, "thread title skipped");
+                }
+                let mut running = titler.running();
+                match running.get_mut(&thread.thread_id) {
+                    Some(again) if *again => *again = false,
+                    _ => {
+                        running.remove(&thread.thread_id);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Check every thread with a recent reply once.
+    async fn scan_recent(self: Arc<Self>) -> Result<(), OrchestratorError> {
+        let Some(engine) = self.engine.upgrade() else {
+            return Ok(()); // silent-ok: the backend is shutting down
+        };
+        let store = engine.store();
+        for id in store
+            .threads_replied_since(now_ms() - STARTUP_SCAN_MS)
+            .await?
+        {
+            if let Some(thread) = store.thread(&id).await? {
+                self.schedule(thread);
+            }
+        }
+        Ok(())
     }
 
     /// Title the thread now if it is due. `Ok(None)`: nothing was due, no
@@ -571,7 +623,9 @@ impl ThreadTitler {
             thread.scope.project_id.clone(),
         );
         let recent = recent_exchange(surface.as_ref(), &caller, id).await?;
-        if !recent.iter().any(|m| m.kind == TitleMessageKind::Assistant) {
+        let has = |kind| recent.iter().any(|m| m.kind == kind);
+        // A first title needs the person's words, not the reply alone.
+        if !has(TitleMessageKind::Assistant) || (saved.is_none() && !has(TitleMessageKind::User)) {
             return Ok(None);
         }
         let completion = TaskCompletionRequest {
@@ -622,6 +676,14 @@ pub(super) fn title_on_completion(
         Arc::downgrade(surface),
     ));
     engine.set_turn_listener(Arc::new(TitleOnCompletion(Arc::clone(&titler))));
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        let scan = Arc::clone(&titler);
+        runtime.spawn(async move {
+            if let Err(error) = scan.scan_recent().await {
+                tracing::warn!(%error, "startup title scan failed");
+            }
+        });
+    }
     titler
 }
 
@@ -630,16 +692,11 @@ struct TitleOnCompletion(Arc<ThreadTitler>);
 
 impl TurnCompletedListener for TitleOnCompletion {
     fn turn_completed(&self, thread: &ThreadRecord) {
-        if !self.0.running().insert(thread.thread_id.clone()) {
-            return;
-        }
-        let (titler, thread) = (Arc::clone(&self.0), thread.clone());
-        tokio::spawn(async move {
-            if let Err(error) = titler.title_if_due(&thread).await {
-                tracing::debug!(?error, "thread title skipped");
-            }
-            titler.running().remove(&thread.thread_id);
-        });
+        self.0.schedule(thread.clone());
+    }
+
+    fn busy(&self, thread: &ThreadId) -> bool {
+        self.0.running().contains_key(thread)
     }
 }
 
@@ -700,6 +757,8 @@ mod tests {
     static TASK_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     /// Exchanges about deploys after the first one in the "chat" timeline.
     static LATER_EXCHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    /// The task model takes its time, so turns can complete during a call.
+    static SLOW_MODEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     #[async_trait]
     impl ProductSurface for Inner {
@@ -712,13 +771,23 @@ mod tests {
                 return Err(ProductSurfaceError::not_found());
             }
             TASK_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if SLOW_MODEL.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
             let asked: TaskCompletionRequest = serde_json::from_value(request.input).unwrap();
             assert_eq!(asked.task, BackgroundTask::ThreadTitles);
             let text = if asked.prompt.starts_with("Current title:") {
                 // Only the latest messages: the first exchange is out of range.
                 assert!(!asked.prompt.contains("Plan the inbox for stage 5"));
                 // A re-title reads the saved title and the latest messages.
-                assert!(asked.prompt.contains("Inbox plan for stage 5"));
+                assert!(
+                    asked
+                        .prompt
+                        .contains("Current title:\nInbox plan for stage 5")
+                        || asked
+                            .prompt
+                            .contains("Current title:\nDeploy pipeline rollout")
+                );
                 assert!(asked.prompt.contains("Ship the deploy 3"));
                 "Deploy pipeline rollout"
             } else {
@@ -958,7 +1027,6 @@ mod tests {
             None,
         ));
         let surface: Arc<dyn ProductSurface> = orchestrated.clone();
-        let titler = title_on_completion(&engine, &surface);
         let before = TASK_CALLS.load(std::sync::atomic::Ordering::SeqCst);
         let calls = || TASK_CALLS.load(std::sync::atomic::Ordering::SeqCst) - before;
         let title = || async {
@@ -970,20 +1038,22 @@ mod tests {
                 .unwrap();
             (row.title, row.state)
         };
-        // One completed turn, as the journal observer reports it; waits for
-        // the spawned title work.
-        let reply = |outcome: TurnOutcome| {
-            let (engine, titler, chat) = (Arc::clone(&engine), Arc::clone(&titler), chat.clone());
+        let finish = |run: &str, outcome: TurnOutcome| {
+            let (engine, chat, run) = (Arc::clone(&engine), chat.clone(), run.to_string());
             async move {
-                engine.turn_finished(&chat, None, outcome, now_ms()).await;
-                for _ in 0..200 {
-                    if titler.running().is_empty() {
-                        return;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                panic!("title work did not finish");
+                engine
+                    .turn_finished(&chat, Some(run), outcome, now_ms())
+                    .await
             }
+        };
+        let settled = |titler: Arc<ThreadTitler>| async move {
+            for _ in 0..300 {
+                if titler.running().is_empty() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("title work did not finish");
         };
 
         // Pinned first: a pinned thread never shows as Working in the
@@ -996,17 +1066,36 @@ mod tests {
         .await
         .unwrap();
 
-        // A failed turn is not a reply.
-        reply(TurnOutcome::ended(
-            ironclaw_orchestrator::runtime::TurnEndStatus::Failed,
-            None,
-        ))
+        // Replayed at startup before the titler is wired: a failed turn
+        // (not a reply) and the first reply.
+        finish(
+            "r0",
+            TurnOutcome::ended(ironclaw_orchestrator::runtime::TurnEndStatus::Failed, None),
+        )
         .await;
+        finish("r1", TurnOutcome::completed(None)).await;
         assert_eq!(calls(), 0);
 
-        // The first reply: titled from the first exchange, which sits a
-        // page behind a long tool run. The pin is kept.
-        reply(TurnOutcome::completed(None)).await;
+        // Wiring scans recent replies: titled from the first exchange,
+        // which sits a page behind a long tool run. The pin is kept.
+        let titler = title_on_completion(&engine, &surface);
+        for _ in 0..300 {
+            if calls() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        settled(Arc::clone(&titler)).await;
+        // One completed turn, as the journal observer reports it; waits for
+        // the spawned title work.
+        let reply = |run: &str| {
+            let (finish, settled, titler) = (finish, settled, Arc::clone(&titler));
+            let run = run.to_string();
+            async move {
+                finish(&run, TurnOutcome::completed(None)).await;
+                settled(titler).await;
+            }
+        };
         assert_eq!(calls(), 1);
         assert_eq!(
             title().await,
@@ -1016,16 +1105,19 @@ mod tests {
             )
         );
 
-        // Two more replies: not due, no model call.
+        // Two more replies, one logged three times by a replay: not due,
+        // no model call.
         LATER_EXCHANGES.store(2, std::sync::atomic::Ordering::SeqCst);
-        reply(TurnOutcome::completed(None)).await;
-        reply(TurnOutcome::completed(None)).await;
+        reply("r2").await;
+        reply("r3").await;
+        reply("r3").await;
+        reply("r3").await;
         assert_eq!(calls(), 1);
 
         // The third reply since the title: the model re-reads the latest
         // messages and the inbox follows the new topic.
         LATER_EXCHANGES.store(3, std::sync::atomic::Ordering::SeqCst);
-        reply(TurnOutcome::completed(None)).await;
+        reply("r4").await;
         assert_eq!(calls(), 2);
         assert_eq!(title().await.0.as_deref(), Some("Deploy pipeline rollout"));
 
@@ -1052,8 +1144,43 @@ mod tests {
         assert_eq!(saved.replies, Some(4));
 
         // The count restarts from that reply.
-        reply(TurnOutcome::completed(None)).await;
+        reply("r5").await;
+        reply("r6").await;
         assert_eq!(calls(), 2);
+
+        // Reply 7 is due and its call is slow. Replies 8 to 10 complete
+        // during it; the sidebar sees the title pending; once the call
+        // ends, the re-title due at reply 10 still runs.
+        SLOW_MODEL.store(true, std::sync::atomic::Ordering::SeqCst);
+        finish("r7", TurnOutcome::completed(None)).await;
+        for _ in 0..300 {
+            if calls() == 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        for run in ["r8", "r9", "r10"] {
+            finish(run, TurnOutcome::completed(None)).await;
+        }
+        let pending = list_of(&orchestrated, "u1").await;
+        assert!(
+            pending
+                .rows
+                .iter()
+                .any(|r| r.thread_id == "chat" && r.title_pending)
+        );
+        settled(Arc::clone(&titler)).await;
+        SLOW_MODEL.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(calls(), 4);
+        let saved = engine
+            .store()
+            .inbox_title(&owner, &chat)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.replies, Some(10));
+        let done = list_of(&orchestrated, "u1").await;
+        assert!(done.rows.iter().all(|r| !r.title_pending));
     }
 
     #[test]

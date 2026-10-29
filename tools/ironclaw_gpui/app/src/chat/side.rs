@@ -161,13 +161,18 @@ impl ChatView {
 
     /// A link clicked in the conversation: a file the agent wrote opens in
     /// Outputs, a web page in the Browser tab. `external` (⌘-click) sends a
-    /// web page to the default browser instead.
+    /// web page to the default browser and a file on this Mac to its app.
     pub(super) fn open_link(&mut self, href: &str, external: bool, cx: &mut Context<Self>) {
         match link_target(href) {
             Link::File(path) => {
                 self.show_side(Tab::Outputs, cx);
                 self.outputs_open(path, cx);
             }
+            Link::Local(path) if !external => {
+                self.show_side(Tab::Outputs, cx);
+                self.outputs_open_local(path, cx);
+            }
+            Link::Local(path) => cx.open_url(&format!("file://{}", path.display())),
             Link::Web(url) if !external => self.browser_go(url, cx),
             Link::Web(url) | Link::Other(url) => cx.open_url(&url),
         }
@@ -700,6 +705,8 @@ impl ChatView {
 enum Link {
     /// A path in the conversation's workspace, as `/workspace/...`.
     File(String),
+    /// A file on this Mac (CLI providers write real paths).
+    Local(PathBuf),
     Web(String),
     Other(String),
 }
@@ -711,6 +718,10 @@ fn link_target(href: &str) -> Link {
     if lower.starts_with("http://") || lower.starts_with("https://") {
         return Link::Web(href.to_string());
     }
+    let href = match lower.starts_with("file://") {
+        true => &href[7..],
+        false => href,
+    };
     if href.contains(':') || href.starts_with('#') || href.is_empty() {
         return Link::Other(href.to_string());
     }
@@ -720,7 +731,12 @@ fn link_target(href: &str) -> Link {
         return Link::File(rel.to_string());
     }
     if rel.starts_with('/') {
-        return Link::Other(format!("file://{href}"));
+        return Link::Local(PathBuf::from(rel));
+    }
+    if let Some(rest) = rel.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return Link::Local(home.join(rest));
     }
     Link::File(format!("/workspace/{rel}"))
 }
@@ -772,8 +788,12 @@ mod tests {
             Link::Other("mailto:a@b.c".into())
         );
         assert_eq!(
-            link_target("/tmp/a.txt"),
-            Link::Other("file:///tmp/a.txt".into())
+            link_target("/tmp/a%20b.txt"),
+            Link::Local("/tmp/a b.txt".into())
+        );
+        assert_eq!(
+            link_target("file:///tmp/a.txt"),
+            Link::Local("/tmp/a.txt".into())
         );
     }
 }

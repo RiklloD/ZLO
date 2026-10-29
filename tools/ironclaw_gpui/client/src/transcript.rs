@@ -561,8 +561,13 @@ impl Transcript {
             }
             StreamEvent::FinalReply { reply } => {
                 let run = reply.turn_run_id.to_string();
+                // The reply streamed in already: finish that bubble in place,
+                // so the answer keeps its element and never reflows.
+                let key = self
+                    .streamed_reply(&run, &reply.text)
+                    .unwrap_or_else(|| format!("final:{run}"));
                 self.upsert(
-                    format!("final:{run}"),
+                    key,
                     Some(run.clone()),
                     Live::Text {
                         body: reply.text.clone(),
@@ -603,8 +608,20 @@ impl Transcript {
                 if let Some(run) = &run {
                     self.note_run(run);
                 }
+                // A finalized copy keyed by the stored message id lands in
+                // the bubble it streamed into rather than opening a new one.
+                let key = match &run {
+                    Some(run)
+                        if !narration
+                            && !id.starts_with("text:")
+                            && !self.live.contains_key(id) =>
+                    {
+                        self.streamed_reply(run, body).unwrap_or_else(|| id.clone())
+                    }
+                    _ => id.clone(),
+                };
                 self.upsert(
-                    id.clone(),
+                    key,
                     run,
                     Live::Text {
                         body: body.clone(),
@@ -695,6 +712,27 @@ impl Transcript {
         }
     }
 
+    /// The live, unflagged text of `run` that `reply` finishes: the same
+    /// words, or the start of them. Its key is the bubble the reader watched.
+    fn streamed_reply(&self, run: &str, reply: &str) -> Option<String> {
+        let reply = reply.trim();
+        self.order
+            .iter()
+            .rev()
+            .find_map(|k| {
+                let e = &self.live[k];
+                match &e.item {
+                    Live::Text {
+                        body,
+                        narration: false,
+                    } if e.run.as_deref() == Some(run) => Some((k, body.trim())),
+                    _ => None,
+                }
+            })
+            .filter(|(_, body)| !body.is_empty() && reply.starts_with(body))
+            .map(|(k, _)| k.clone())
+    }
+
     fn upsert_activity(&mut self, a: &CapabilityActivityView) {
         let title = a
             .subtitle
@@ -732,21 +770,28 @@ impl Transcript {
         status: ToolStatus,
     ) {
         let key = format!("tool:{invocation}");
-        // A preview carries a better title than a later bare activity frame.
-        let (title, detail) = match self.live.get(&key).map(|e| &e.item) {
+        // A row keeps the first title and detail it showed, so its label
+        // never flips mid-run; a late frame never reopens a finished call.
+        let (title, detail, status) = match self.live.get(&key).map(|e| &e.item) {
             Some(Live::Tool {
                 title: old_title,
                 detail: old_detail,
-                ..
+                status: old_status,
             }) => (
-                if title.contains('.') && !old_title.contains('.') {
-                    old_title.clone()
-                } else {
+                // A preview's title beats a bare capability id, once.
+                if old_title.contains('.') && !title.contains('.') {
                     title
+                } else {
+                    old_title.clone()
                 },
-                detail.or_else(|| old_detail.clone()),
+                old_detail.clone().or(detail),
+                if *old_status != ToolStatus::Running && status == ToolStatus::Running {
+                    *old_status
+                } else {
+                    status
+                },
             ),
-            _ => (title, detail),
+            _ => (title, detail, status),
         };
         self.upsert(
             key,
@@ -762,6 +807,13 @@ impl Transcript {
     fn upsert(&mut self, key: String, run: Option<String>, item: Live) {
         self.tick += 1;
         let tick = self.tick;
+        // A bare frame (some activity arrives without a run id) belongs to
+        // the run in flight, so it never lands in another run's group.
+        let run = run.or_else(|| {
+            (!self.live.contains_key(&key))
+                .then(|| self.active_run().map(str::to_string))
+                .flatten()
+        });
         match self.live.get_mut(&key) {
             Some(entry) => {
                 entry.item = item;
@@ -898,13 +950,23 @@ impl Transcript {
                 }
                 MessageKind::Assistant => {
                     let run = message.turn_run_id.clone();
-                    if run.is_some()
-                        && !emitted.contains(&run)
-                        && let Some((_, keys)) = groups.iter().find(|(r, _)| *r == run)
+                    let group = groups.iter().find(|(r, _)| run.is_some() && *r == run);
+                    if !emitted.contains(&run)
+                        && let Some((_, keys)) = group
                     {
                         self.activity_rows(keys, Some(&text), &mut rows);
                         emitted.insert(run.clone());
                     }
+                    // The bubble the reply streamed into keeps its key, so
+                    // the stored copy replaces it in place.
+                    let key = group
+                        .and_then(|(_, keys)| {
+                            keys.iter().find(|k| {
+                                matches!(&self.live[**k].item,
+                                    Live::Text { body, .. } if body.trim() == text.trim())
+                            })
+                        })
+                        .map_or(key, |k| k.to_string());
                     rows.push(Row::Assistant {
                         key,
                         text,
@@ -973,35 +1035,39 @@ impl Transcript {
                 })
             })
             .map(str::trim);
-        let mut bubble_row = None;
-        // What the model said last before each call: the reason it shows.
+        // What the model said to the person last before each call: the
+        // reason it shows. A thought already has its own row, so it is never
+        // borrowed as a reason (that drew the same paragraph twice).
         let mut said: Option<&str> = None;
         for key in keys {
             let entry = &self.live[*key];
-            if let Live::Text { body, .. } | Live::Thinking(body) = &entry.item {
+            if let Live::Text { body, .. } = &entry.item {
                 said = Some(body.as_str());
             }
             let said_reason = || said.and_then(reason::from_said);
             let row = match &entry.item {
+                // The bubble stays where it arrived: tools that follow it
+                // draw below, as they happened, and it never jumps.
                 Live::Text { body, .. } if Some(*key) == bubble => {
                     let streaming = entry
                         .run
                         .as_deref()
                         .is_none_or(|r| !self.settled.contains(r));
-                    bubble_row = Some(Row::Assistant {
+                    Row::Assistant {
                         key: key.to_string(),
                         text: body.clone(),
                         streaming,
-                    });
-                    continue;
+                    }
                 }
                 // A final reply frame duplicates the durable reply once it lands.
                 Live::Text { .. } if key.starts_with("final:") => continue,
-                Live::Text {
-                    body,
-                    narration: false,
-                } if Some(body.trim()) == reply
-                    || self.is_durable_reply(entry.run.as_deref(), body) =>
+                // Any live copy of the reply, flagged as narration or not.
+                // A CLI run's stored reply joins its segments.
+                Live::Text { body, .. }
+                    if Some(body.trim()) == reply
+                        || self.is_durable_reply(entry.run.as_deref(), body)
+                        || (key.contains(":cli:")
+                            && durable_reply.is_some_and(|r| r.contains(body.trim()))) =>
                 {
                     continue;
                 }
@@ -1059,7 +1125,6 @@ impl Transcript {
             };
             rows.push(row);
         }
-        rows.extend(bubble_row);
     }
 
     /// A live copy of a durable reply of `run`. A steered run replies more
@@ -1309,6 +1374,64 @@ mod tests {
         let rows = t.rows();
         assert!(matches!(&rows[0], Row::Narration { text, .. } if text == "Let me check."));
         assert!(matches!(&rows[1], Row::Assistant { text, .. } if text == "Done."));
+    }
+
+    fn tool(status: &str) -> StreamEvent {
+        frame(serde_json::json!({
+            "cursor": "c4", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "capability_activity": {
+                    "invocation_id": "6f1c1c0e-0000-4000-8000-0000000000aa",
+                    "turn_run_id": RUN, "capability_id": "ironclaw.shell",
+                    "status": status, "input_summary": "ls",
+                    "updated_at": "2026-10-28T00:00:00Z" } }
+            ]}
+        }))
+    }
+
+    /// Text, a tool, then the same text flagged as narration: the order
+    /// and the text's key hold at every step, and no thought becomes a
+    /// tool's reason.
+    #[test]
+    fn streamed_text_keeps_its_place_and_key_around_tools() {
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&frame(serde_json::json!({
+            "cursor": "c0", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "thinking": { "id": "th1", "run_id": RUN, "body": "Plan the listing." } }
+            ]}
+        })));
+        t.apply(&text_update("Let me look.", false, 0));
+        t.apply(&tool("running"));
+        let order = |t: &Transcript| {
+            t.rows()
+                .iter()
+                .map(|r| r.key().to_string())
+                .collect::<Vec<_>>()
+        };
+        let tool_key = "tool:6f1c1c0e-0000-4000-8000-0000000000aa";
+        let text_key = format!("text:{RUN}:0");
+        let want = vec!["th1".to_string(), text_key.clone(), tool_key.to_string()];
+        assert_eq!(order(&t), want);
+        t.apply(&text_update("Let me look.", true, 0));
+        assert_eq!(order(&t), want);
+        assert!(
+            t.rows()
+                .iter()
+                .all(|r| !matches!(r, Row::Tool { reason: Some(r), .. } if r.contains("Plan")))
+        );
+
+        // A late running frame never reopens the finished call.
+        t.apply(&tool("completed"));
+        t.apply(&tool("running"));
+        assert!(t.rows().iter().any(|r| matches!(
+            r,
+            Row::Tool {
+                status: ToolStatus::Completed,
+                ..
+            }
+        )));
     }
 
     #[test]

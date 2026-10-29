@@ -155,7 +155,11 @@ fn tool_kind(title: &str) -> ToolKind {
         .next()
         .unwrap_or(title)
         .to_ascii_lowercase();
-    let words: Vec<&str> = name.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+    let mut words: Vec<&str> = name.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+    // A CLI agent's calls arrive as `cli.<tool>`.
+    if words.len() > 1 && words[0] == "cli" {
+        words.remove(0);
+    }
     let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
     // An MCP server's tools are "called", whatever they are named.
     if words.first() == Some(&"mcp") {
@@ -165,14 +169,32 @@ fn tool_kind(title: &str) -> ToolKind {
     ]) {
         ToolKind::Command
     } else if has(&[
-        "write", "edit", "patch", "apply", "create", "delete", "move",
+        "write",
+        "edit",
+        "multiedit",
+        "notebookedit",
+        "patch",
+        "apply",
+        "create",
+        "delete",
+        "move",
     ]) {
         ToolKind::Edit
     } else if has(&["read", "list", "ls", "cat", "view", "get", "open"]) {
         ToolKind::Read
-    } else if has(&["search", "grep", "glob", "find", "query", "recall"]) {
+    } else if has(&[
+        "search",
+        "grep",
+        "glob",
+        "find",
+        "query",
+        "recall",
+        "websearch",
+    ]) {
         ToolKind::Search
-    } else if has(&["fetch", "http", "web", "browse", "url", "download"]) {
+    } else if has(&[
+        "fetch", "webfetch", "http", "web", "browse", "url", "download",
+    ]) {
         ToolKind::Fetch
     } else {
         ToolKind::Other
@@ -198,7 +220,8 @@ fn summary(rows: &[Row]) -> String {
             }
             Row::Gate { .. } => approvals += 1,
             Row::Skills { .. } => skills += 1,
-            Row::WorkSummary { text, .. } => extra.push(text.clone()),
+            // A run restates its status as it goes; only the latest counts.
+            Row::WorkSummary { text, .. } => extra = vec![text.clone()],
             _ => {}
         }
     }
@@ -255,30 +278,14 @@ struct Leaf {
     running: bool,
 }
 
-/// How many finished paragraphs a thought in progress shows.
-const LIVE_THOUGHT_PARAGRAPHS: usize = 3;
-
-/// The finished paragraphs of a thought still being written, newest last:
-/// a paragraph shows once a blank line closes it, never word by word.
-fn finished_paragraphs(text: &str) -> Option<String> {
-    let (done, _open) = text.rsplit_once("\n\n")?;
-    let paragraphs: Vec<&str> = done
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
-    let skip = paragraphs.len().saturating_sub(LIVE_THOUGHT_PARAGRAPHS);
-    let shown = paragraphs[skip..].join("\n\n");
-    (!shown.is_empty()).then_some(shown)
-}
-
-/// The tail thought of a live group: open under a "Thinking" label.
-fn live_thought(text: &str) -> Leaf {
+/// The tail thought of a live group, as Zeron draws it: a "Thinking" label
+/// and nothing more. Its words show once it ends, folded under "Thought".
+fn live_thought() -> Leaf {
     Leaf {
         icon: IconName::Bot,
         label: "Thinking".into(),
         detail: String::new(),
-        body: finished_paragraphs(text),
+        body: None,
         failed: false,
         running: true,
     }
@@ -297,7 +304,7 @@ fn tool_name(title: &str) -> (String, String) {
         .collect();
     if parts
         .first()
-        .is_some_and(|p| *p == "ironclaw" || *p == "builtin")
+        .is_some_and(|p| *p == "ironclaw" || *p == "builtin" || *p == "cli")
         && parts.len() > 1
     {
         parts.remove(0);
@@ -384,14 +391,6 @@ fn leaf(row: &Row) -> Option<Leaf> {
             icon: IconName::BookOpen,
             label: "Loaded".into(),
             detail: names.join(", "),
-            body: None,
-            failed: false,
-            running: false,
-        },
-        Row::WorkSummary { text, .. } => Leaf {
-            icon: IconName::FileText,
-            label: "Noted".into(),
-            detail: one_line(text),
             body: None,
             failed: false,
             running: false,
@@ -589,13 +588,10 @@ pub(super) fn render_activity(
         let open_key = format!("leaf:{row_key}");
         // The thought being written stays open; it folds once it ends.
         let thinking_now = live && ix + 1 == count && matches!(row, Row::Thinking { .. });
-        if let Row::Thinking { text, .. } = row
-            && thinking_now
-        {
-            leaf = live_thought(text);
+        if thinking_now {
+            leaf = live_thought();
         }
-        let expanded = leaf.body.is_some()
-            && (thinking_now || toggles.get(&open_key).copied().unwrap_or(false));
+        let expanded = leaf.body.is_some() && toggles.get(&open_key).copied().unwrap_or(false);
         if !live {
             motion::settle(row_key);
         } else if motion::arrive(
@@ -669,7 +665,9 @@ fn tree_row(
                         .when(leaf.running, |d| d.text_color(p.text))
                         .child(leaf.label),
                 )
-                .when(!leaf.detail.is_empty(), |d| {
+                // An opened row shows its text once, below; the label line keeps
+                // only the verb.
+                .when(!leaf.detail.is_empty() && !expanded, |d| {
                     d.child(
                         div()
                             .min_w_0()
@@ -841,17 +839,6 @@ mod tests {
             status: ToolStatus::Completed,
             reason: None,
         }
-    }
-
-    #[test]
-    fn a_live_thought_shows_only_its_finished_paragraphs() {
-        assert_eq!(finished_paragraphs("Reading the config"), None);
-        assert_eq!(
-            finished_paragraphs("One.\n\nTwo.\n\nThree is still go"),
-            Some("One.\n\nTwo.".into())
-        );
-        let long = "a\n\nb\n\nc\n\nd\n\ne";
-        assert_eq!(finished_paragraphs(long), Some("b\n\nc\n\nd".into()));
     }
 
     #[test]

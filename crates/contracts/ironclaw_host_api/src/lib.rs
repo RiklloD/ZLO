@@ -82,6 +82,7 @@ pub mod model_result_preview;
 pub mod process;
 pub mod product_adapter;
 pub mod product_adapter_error;
+pub mod reply_visuals;
 
 // There is deliberately no flat re-export prelude here. Every contract is
 // reached through the module that owns it — `ironclaw_host_api::scope::

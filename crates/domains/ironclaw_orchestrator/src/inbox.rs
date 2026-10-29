@@ -374,7 +374,9 @@ impl Store {
     pub async fn completed_replies(&self, thread: &ThreadId) -> Result<i64> {
         let count = self
             .row(
-                "SELECT COUNT(*) FROM orch_turns WHERE thread_id = ?1 AND status = ?2",
+                // A replayed journal frame can log the same run twice.
+                "SELECT COUNT(DISTINCT COALESCE(run_id, id)) FROM orch_turns \
+                 WHERE thread_id = ?1 AND status = ?2",
                 vec![
                     s(thread.as_str()),
                     s(crate::runtime::TurnEndStatus::Completed.as_str()),
@@ -383,6 +385,23 @@ impl Store {
             )
             .await?;
         Ok(count.unwrap_or(0)) // silent-ok: COUNT(*) always yields one row
+    }
+
+    /// Threads with a reply that ended at or after `since`.
+    pub async fn threads_replied_since(&self, since: Millis) -> Result<Vec<ThreadId>> {
+        let ids = self
+            .rows(
+                "SELECT DISTINCT thread_id FROM orch_turns WHERE status = ?1 AND ended_at >= ?2",
+                vec![
+                    s(crate::runtime::TurnEndStatus::Completed.as_str()),
+                    since.into(),
+                ],
+                |r| Cols::new(r).text(),
+            )
+            .await?;
+        ids.into_iter()
+            .map(|id| ThreadId::new(id).map_err(Into::into))
+            .collect()
     }
 
     /// Apply one lifecycle action (upsert, one statement).

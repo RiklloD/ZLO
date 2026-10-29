@@ -6,6 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use ironclaw_host_api::reply_visuals::REPLY_VISUALS_PROMPT;
 use ironclaw_host_api::turn::TurnOriginKind;
 use ironclaw_loop_contracts::{LoopRunContext, PromptMode};
 // The prompt *content* is owned by the loop tier — `ironclaw_loop_host`, beside
@@ -115,6 +116,17 @@ impl DefaultSystemPromptIdentitySource {
         let mut content = read_default_system_prompt(&self.storage_root, &self.prompt_path)?;
         append_section(&mut content, SELF_KNOWLEDGE_PROTOCOL_PROMPT);
         append_section(&mut content, PROGRESS_UPDATES_PROTOCOL_PROMPT);
+        // Visual blocks are drawn by the desktop app; an external messaging
+        // channel would show their JSON.
+        if !matches!(
+            run_context
+                .product_context
+                .as_ref()
+                .map(|context| context.origin),
+            Some(TurnOriginKind::Inbound)
+        ) {
+            append_section(&mut content, REPLY_VISUALS_PROMPT);
+        }
         if let Some(guidance) = self.protocols.memory_guidance.as_deref() {
             append_section(&mut content, guidance);
         }

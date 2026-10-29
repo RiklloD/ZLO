@@ -180,6 +180,8 @@ impl BridgedTurn {
             Some("stream_event") if frame["parent_tool_use_id"].is_null() => {
                 self.on_stream_event(&frame["event"])
             }
+            // Tool results come back as the user's turn: they finish the rows.
+            Some("user") if frame["parent_tool_use_id"].is_null() => self.on_tool_results(&frame),
             Some("result") => close(&self.stdin).await,
             _ => {}
         }
@@ -220,7 +222,8 @@ impl BridgedTurn {
                 let (bridge, stdin) = (Arc::clone(&self.bridge), Arc::clone(&self.stdin));
                 let (thread, run) = (self.thread.clone(), self.run_id.clone());
                 // Claimed here, in stream order, before the answer is spawned.
-                let claim = known.then(|| bridge.claim_call(&thread, &run));
+                let call_id = input["tool_use_id"].as_str().map(str::to_string);
+                let claim = known.then(|| bridge.claim_call(&thread, &run).with_call_id(call_id));
                 // Answered off the read loop: the CLI keeps streaming meanwhile.
                 tokio::spawn(async move {
                     let decision = if let Some(claim) = claim {
@@ -247,6 +250,19 @@ impl BridgedTurn {
             }
             _ => {
                 let _ = write_line(&self.stdin, &error(&request_id, "unsupported")).await; // silent-ok: the CLI is gone
+            }
+        }
+    }
+
+    fn on_tool_results(&self, frame: &Value) {
+        let Some(blocks) = frame["message"]["content"].as_array() else {
+            return;
+        };
+        for block in blocks.iter().filter(|b| b["type"] == "tool_result") {
+            if let Some(id) = block["tool_use_id"].as_str() {
+                let failed = block["is_error"].as_bool().unwrap_or(false);
+                self.bridge
+                    .tool_finished(&self.thread, &self.run_id, id, failed);
             }
         }
     }

@@ -12,9 +12,9 @@
 
 use std::sync::Arc;
 
-use ironclaw_cli_providers::bridge::{CliBridge, GateView, LiveEvent};
+use ironclaw_cli_providers::bridge::{CliBridge, GateView, LiveEvent, ToolState, ToolView};
 use ironclaw_extension_contracts::external::ExternalConversationRef;
-use ironclaw_host_api::ids::ThreadId;
+use ironclaw_host_api::ids::{CapabilityId, InvocationId, ThreadId};
 use ironclaw_host_api::product_adapter::{AdapterInstallationId, ProductAdapterId};
 use ironclaw_host_api::turn::{
     AcceptedMessageRef, EventCursor, ReplyTargetBindingRef, TurnRunId, TurnStatus,
@@ -22,6 +22,7 @@ use ironclaw_host_api::turn::{
 use ironclaw_orchestrator::profile_runtime::UserTurn;
 use ironclaw_orchestrator::runtime::{HistoryMessage, HistoryRole};
 use ironclaw_product_contracts::outbound::{
+    CapabilityActivityStatusView, CapabilityActivityView, CapabilityActivityViewInput,
     PROJECTION_TEXT_MAX_BYTES, ProductGateKind, ProductOutboundEnvelope, ProductOutboundPayload,
     ProductOutboundTarget, ProductProjectionItem, ProductProjectionState, ProjectionCursor,
 };
@@ -233,8 +234,18 @@ fn snapshot_events(bridge: &CliBridge, thread: &ThreadId) -> Vec<Value> {
         return Vec::new();
     };
     let mut items = vec![run_status(run, "running")];
-    items.extend(thinking_item(thread, &snap.run_id, &snap.thinking));
-    items.extend(text_item(thread, &snap.run_id, &snap.text));
+    // Segments and calls interleave as they happened: a call follows the
+    // segment that led to it.
+    for seg in &snap.segments {
+        items.extend(thinking_item(
+            thread,
+            &snap.run_id,
+            seg.segment,
+            &seg.thinking,
+        ));
+        items.extend(text_item(thread, &snap.run_id, seg.segment, &seg.text));
+    }
+    items.extend(snap.tools.iter().filter_map(|t| tool_item(thread, t)));
     items.extend(snap.gates.iter().filter_map(gate_item));
     envelope(thread, items).into_iter().collect()
 }
@@ -248,13 +259,16 @@ fn items_for(event: &LiveEvent) -> Option<Vec<ProductProjectionItem>> {
         LiveEvent::Text {
             thread,
             run_id,
+            segment,
             body,
-        } => vec![text_item(thread, run_id, body)?],
+        } => vec![text_item(thread, run_id, *segment, body)?],
         LiveEvent::Thinking {
             thread,
             run_id,
+            segment,
             body,
-        } => vec![thinking_item(thread, run_id, body)?],
+        } => vec![thinking_item(thread, run_id, *segment, body)?],
+        LiveEvent::Tool { thread, tool } => vec![tool_item(thread, tool)?],
         LiveEvent::GateOpened { gate, .. } => vec![gate_item(gate)?],
         LiveEvent::Ended { run_id, status, .. } => {
             let status = match *status {
@@ -278,12 +292,17 @@ fn run_status(run_id: TurnRunId, status: &str) -> ProductProjectionItem {
 
 /// The streamed reply. Past the projection's text bound the bubble stops
 /// growing; the durable reply replaces it when the turn ends.
-fn text_item(thread: &ThreadId, run_id: &str, body: &str) -> Option<ProductProjectionItem> {
+fn text_item(
+    thread: &ThreadId,
+    run_id: &str,
+    segment: u32,
+    body: &str,
+) -> Option<ProductProjectionItem> {
     if body.is_empty() || body.len() > PROJECTION_TEXT_MAX_BYTES {
         return None;
     }
     Some(ProductProjectionItem::Text {
-        id: format!("text:{run_id}:cli:{thread}"),
+        id: format!("text:{run_id}:cli:{thread}:{segment}"),
         run_id: Some(TurnRunId::parse(run_id).ok()?),
         body: body.to_string(),
         finalized: false,
@@ -292,15 +311,78 @@ fn text_item(thread: &ThreadId, run_id: &str, body: &str) -> Option<ProductProje
 }
 
 /// The streamed thinking, bounded like the reply.
-fn thinking_item(thread: &ThreadId, run_id: &str, body: &str) -> Option<ProductProjectionItem> {
+fn thinking_item(
+    thread: &ThreadId,
+    run_id: &str,
+    segment: u32,
+    body: &str,
+) -> Option<ProductProjectionItem> {
     if body.is_empty() || body.len() > PROJECTION_TEXT_MAX_BYTES {
         return None;
     }
     Some(ProductProjectionItem::Thinking {
-        id: format!("thinking:{run_id}:cli:{thread}"),
+        id: format!("thinking:{run_id}:cli:{thread}:{segment}"),
         run_id: Some(TurnRunId::parse(run_id).ok()?),
         body: body.to_string(),
     })
+}
+
+/// A CLI tool call as an activity row: `cli.<tool>` (`cli.bash`,
+/// `cli.mcp.server.tool`), its subject as the input summary.
+fn tool_item(thread: &ThreadId, tool: &ToolView) -> Option<ProductProjectionItem> {
+    let status = match tool.state {
+        ToolState::Running => CapabilityActivityStatusView::Running,
+        ToolState::Completed => CapabilityActivityStatusView::Completed,
+        ToolState::Failed => CapabilityActivityStatusView::Failed,
+    };
+    let view = CapabilityActivityView::new(CapabilityActivityViewInput {
+        invocation_id: InvocationId::parse(&tool.invocation).ok()?,
+        turn_run_id: Some(TurnRunId::parse(&tool.run_id).ok()?),
+        thread_id: Some(thread.clone()),
+        capability_id: cli_capability_id(&tool.tool_name)?,
+        status,
+        provider: None,
+        runtime: None,
+        process_id: None,
+        output_bytes: None,
+        error_kind: None,
+        error_detail: None,
+        subtitle: None,
+        input_summary: tool.subject.clone(),
+        updated_at: chrono::Utc::now(),
+        activity_order: None,
+    });
+    match view {
+        Ok(view) => Some(ProductProjectionItem::CapabilityActivity(view)),
+        Err(error) => {
+            tracing::debug!(%error, tool = %tool.tool_name, "cli tool row not projected");
+            None
+        }
+    }
+}
+
+/// `Bash` → `cli.bash`; `mcp__srv__do_it` → `cli.mcp.srv.do_it`. Each
+/// segment is folded to the id grammar (lowercase, `[a-z0-9_-]`).
+fn cli_capability_id(tool: &str) -> Option<CapabilityId> {
+    let segments: Vec<String> = tool
+        .split("__")
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let s: String = s
+                .chars()
+                .map(|c| match c.to_ascii_lowercase() {
+                    c @ ('a'..='z' | '0'..='9' | '_' | '-') => c,
+                    _ => '_',
+                })
+                .take(100)
+                .collect();
+            match s.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+                true => s,
+                false => format!("t{s}"),
+            }
+        })
+        .collect();
+    CapabilityId::new(format!("cli.{}", segments.join("."))).ok()
 }
 
 fn gate_item(gate: &GateView) -> Option<ProductProjectionItem> {
