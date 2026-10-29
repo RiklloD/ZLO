@@ -140,6 +140,7 @@ fn entry(role: HistoryRole, text: String, tool_calls: Vec<String>) -> HistoryMes
         tool_calls,
         run_id: None,
         hidden: false,
+        at: None,
     }
 }
 

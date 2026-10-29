@@ -79,6 +79,14 @@ pub struct Prefs {
     pub side_open: bool,
     pub side_width: f32,
     pub side_tab: String,
+    /// The work panel between the conversation and the right pane
+    /// (Changes, Files, Outputs): shown, width (0 keeps the default), tab.
+    pub work_open: bool,
+    pub work_width: f32,
+    pub work_tab: String,
+    /// Side chats by parent thread, newest last. They live under their
+    /// parent (session card, right pane), not in the inbox list.
+    pub side_chats: std::collections::HashMap<String, Vec<String>>,
     /// The project folder each thread's coding tabs read (thread id → path),
     /// and the last one picked, offered to threads without their own.
     pub project_folders: std::collections::HashMap<String, PathBuf>,
@@ -113,6 +121,10 @@ impl Default for Prefs {
             side_open: false,
             side_width: 0.,
             side_tab: String::new(),
+            work_open: false,
+            work_width: 0.,
+            work_tab: String::new(),
+            side_chats: Default::default(),
             project_folders: Default::default(),
             last_project: None,
         }
@@ -122,13 +134,15 @@ impl Default for Prefs {
 impl Global for Prefs {}
 
 impl Prefs {
-    /// Prefs saved before the rename to Numoh move to the new folder once.
+    /// Prefs saved before the rename to ZLO move to the new folder once.
     fn file() -> Option<PathBuf> {
         let config = dirs::config_dir()?;
-        let dir = config.join("Numoh");
-        let old = config.join("IronClaw Desktop");
-        if !dir.exists() && old.exists() {
-            let _ = std::fs::rename(&old, &dir);
+        let dir = config.join("ZLO");
+        for old_name in ["Numoh", "IronClaw Desktop"] {
+            let old = config.join(old_name);
+            if !dir.exists() && old.exists() {
+                let _ = std::fs::rename(&old, &dir);
+            }
         }
         Some(dir.join("prefs.json"))
     }

@@ -251,6 +251,9 @@ pub struct Transfer {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lineage {
+    /// The task that created this thread, when it is a delegated child.
+    #[serde(default)]
+    pub delegated_from: Option<TaskView>,
     /// The fork transfer that created this thread; its `source_thread` is
     /// the thread it was forked from.
     #[serde(default)]
@@ -349,7 +352,7 @@ impl Client {
     pub async fn cancel_task(&self, task_id: &str) -> Result<TaskView, ClientError> {
         self.orch_post(
             format!("{V2}/tasks/{}/cancel", seg(task_id)),
-            json!({"reason": "cancelled from Numoh"}),
+            json!({"reason": "cancelled from ZLO"}),
         )
         .await
     }

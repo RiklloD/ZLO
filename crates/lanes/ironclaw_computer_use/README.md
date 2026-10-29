@@ -18,7 +18,7 @@ screenshot frame for a route to read. No UI.
 
 | Piece | Behaviour |
 |---|---|
-| Config | On when the engine is bundled next to the backend (`../Helpers/Numoh Computer Use.app`, see `tools/ironclaw_gpui/bundle.sh`) or `COMPUTER_USE_BINARY` (absolute path) names one; `COMPUTER_USE_ENABLED=false` turns it off. Malformed config fails startup. The engine runs in-process (`OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY=1`), so macOS permissions belong to the app that started the backend. |
+| Config | On when the engine is bundled next to the backend (`../Helpers/ZLO Computer Use.app`, see `tools/ironclaw_gpui/bundle.sh`) or `COMPUTER_USE_BINARY` (absolute path) names one; `COMPUTER_USE_ENABLED=false` turns it off. Malformed config fails startup. The engine runs in-process (`OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY=1`), so macOS permissions belong to the app that started the backend. |
 | Process | Spawned on first use per (tenant, user, thread) with a scrubbed environment (`HOME`, `USER`, `PATH`, `TMPDIR`, locale, plus `OPEN_COMPUTER_USE_*` from config). `kill_on_drop`, so a dropped call kills it. |
 | Protocol | MCP `initialize` / `notifications/initialized`, then `tools/call`. Lines are bounded (32 MiB) before buffering. A JSON-RPC error keeps the process; a timeout, exit, oversize line or Stop kills it and the next call restarts it. |
 | Tools | `catalog/tools.json`, the server's own `tools/list` copied verbatim (offered without starting the process). |

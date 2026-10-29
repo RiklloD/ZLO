@@ -124,7 +124,9 @@ impl ChatView {
                 let merged = !lineage.merges_in.is_empty();
                 o.lineage = lineage;
                 o.lineage_loaded = true;
-                if forked {
+                // A side chat shows only its own messages; its parent is
+                // beside it.
+                if forked && !self.embedded {
                     self.load_fork_prefix(cx);
                 }
                 if merged {
@@ -135,6 +137,9 @@ impl ChatView {
             None => {}
         }
         let delegations = cx.default_global::<Delegations>();
+        if let Some(task) = &self.orch.lineage.delegated_from {
+            delegations.0.insert(self.thread_id.clone(), task.clone());
+        }
         for task in &self.orch.tasks {
             if let Some(child) = &task.child_thread_id {
                 delegations.0.insert(child.clone(), task.clone());
@@ -627,16 +632,21 @@ impl ChatView {
         if let Some(from) = &o.lineage.forked_from {
             let source = from.source_thread.clone();
             let title = crate::titles::get(cx, &source).unwrap_or_else(|| "a conversation".into());
-            chips.push(
-                link_chip(
-                    "strip-fork",
-                    IconName::Copy,
-                    format!("Forked from {title}"),
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.open_thread(source.clone(), cx)))
-                .into_any_element(),
-            );
+            // A side chat's pane already names its parent.
+            if !self.embedded {
+                chips.push(
+                    link_chip(
+                        "strip-fork",
+                        IconName::Copy,
+                        format!("Forked from {title}"),
+                        cx,
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.open_thread(source.clone(), cx)),
+                    )
+                    .into_any_element(),
+                );
+            }
             chips.push(
                 Button::new("merge-back")
                     .icon(IconName::Undo2)

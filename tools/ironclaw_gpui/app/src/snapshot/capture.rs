@@ -4,9 +4,9 @@
 //!
 //! The picture comes from `/usr/sbin/screencapture -l <window id>`, as the
 //! computer-use live view does. On current macOS that tool is built on
-//! ScreenCaptureKit, reads exactly one window (so Numoh's own windows are
-//! never in it, even when they overlap), and is charged to Numoh's Screen
-//! Recording grant because Numoh launches it. Driving SCScreenshotManager
+//! ScreenCaptureKit, reads exactly one window (so ZLO's own windows are
+//! never in it, even when they overlap), and is charged to ZLO's Screen
+//! Recording grant because ZLO launches it. Driving SCScreenshotManager
 //! directly would need Objective-C blocks and a new binding crate for the
 //! same pixels.
 
@@ -48,7 +48,7 @@ unsafe extern "C" {
 const ON_SCREEN_ONLY: u32 = 1;
 const EXCLUDE_DESKTOP_ELEMENTS: u32 = 16;
 
-/// The frontmost normal window that is not Numoh's: CoreGraphics lists
+/// The frontmost normal window that is not ZLO's: CoreGraphics lists
 /// on-screen windows front to back, so the first layer-0 window of another
 /// process is the one the user is looking at.
 pub(super) fn front_window() -> Result<Target, String> {
@@ -123,7 +123,7 @@ pub(super) fn picture(window_id: u32) -> Result<(Vec<u8>, u32, u32), String> {
         .map_err(|e| format!("The window capture is unreadable ({e})."))?;
     if looks_blank(&image) {
         return Err(
-            "The capture came back blank. Allow Numoh under System Settings › \
+            "The capture came back blank. Allow ZLO under System Settings › \
                     Privacy & Security › Screen Recording, then try again."
                 .into(),
         );
@@ -207,9 +207,9 @@ fn bundle_of(pid: i32) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// A file under Numoh's own temp folder.
+/// A file under ZLO's own temp folder.
 fn scratch(name: &str) -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("numoh-snapshots");
+    let dir = std::env::temp_dir().join("zlo-snapshots");
     std::fs::create_dir_all(&dir).map_err(|e| format!("No temp folder for the capture ({e})."))?;
     Ok(dir.join(name))
 }

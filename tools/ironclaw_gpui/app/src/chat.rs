@@ -126,16 +126,13 @@ pub struct ChatView {
     _computer_stop: Subscription,
     /// The right pane: activity, outputs, agents, routines, project tools.
     side: side::Side,
+    /// A side chat drawn inside its parent's right pane.
+    embedded: bool,
     _stream: Option<EventStream>,
     _pump: Task<()>,
 }
 
 impl ChatView {
-    /// The composer's model pill, for the ⇧⌘M shortcut.
-    pub fn picker(&self) -> Entity<ModelPicker> {
-        self.picker.clone()
-    }
-
     /// The prompt box, for the workspace's focus restore.
     pub fn composer(&self) -> Entity<TextareaState> {
         self.composer.clone()
@@ -175,6 +172,14 @@ pub struct OpenThread(pub String);
 
 impl EventEmitter<OpenThread> for ChatView {}
 
+/// A link clicked in a side chat: its parent's panes open it.
+pub(crate) struct SideLink {
+    pub(crate) href: String,
+    pub(crate) external: bool,
+}
+
+impl EventEmitter<SideLink> for ChatView {}
+
 /// A failed run's Logs button: show the gateway log lines for this run id.
 pub struct OpenRunLogs(pub String);
 
@@ -189,10 +194,40 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::build(backend, channel, limits, thread_id, false, window, cx)
+    }
+
+    /// A side chat inside its parent's right pane: no docks of its own.
+    fn new_side_chat_view(
+        backend: Backend,
+        channel: Option<String>,
+        limits: AttachmentLimits,
+        thread_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::build(backend, channel, limits, thread_id, true, window, cx)
+    }
+
+    // arch-exempt: too_many_args, the two constructors above are its only callers, local UI code
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        backend: Backend,
+        channel: Option<String>,
+        limits: AttachmentLimits,
+        thread_id: String,
+        embedded: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 8)
-                .placeholder("Do anything…")
+                .placeholder(if embedded {
+                    "Ask anything about this chat…"
+                } else {
+                    "Do anything…"
+                })
                 .submit_on_enter(true)
         });
         let subscription =
@@ -242,6 +277,11 @@ impl ChatView {
             let (backend, id) = (backend.clone(), thread_id.clone());
             cx.new(|cx| approval_mode::ApprovalPill::new(backend, id, cx))
         };
+        // A side chat's composer is a pane wide: icon-only pills.
+        if embedded {
+            picker.update(cx, |p, _| p.set_compact(true));
+            approval.update(cx, |p, _| p.set_compact(true));
+        }
         // The share's Stop also stops this conversation's turn.
         let computer_stop = cx.subscribe(&computer, |this, _, _: &computer::StopRun, cx| {
             this.stop(cx)
@@ -302,6 +342,7 @@ impl ChatView {
             computer,
             _computer_stop: computer_stop,
             side: Default::default(),
+            embedded,
             _stream: Some(stream),
             _pump: pump,
         };
@@ -310,7 +351,9 @@ impl ChatView {
         this.load_timeline(cx);
         this.load_commands(cx);
         this.refresh_orchestration(cx);
-        this.side_init(cx);
+        if !embedded {
+            this.side_init(cx);
+        }
         this
     }
 
@@ -519,7 +562,7 @@ impl ChatView {
             .file_name()
             .map(|n| n.to_owned())
             .unwrap_or_else(|| "file".into());
-        let dir = std::env::temp_dir().join("numoh").join(subdir);
+        let dir = std::env::temp_dir().join("zlo").join(subdir);
         let job = self.backend.spawn(move |c| {
             let fetched = fetch(c);
             async move {
@@ -1408,9 +1451,10 @@ impl Render for ChatView {
                 } else {
                     body.into_any_element()
                 };
-                div().flex_1().min_h_0().pt(px(30.)).child(body)
+                let top = if self.embedded { 4. } else { 30. };
+                div().flex_1().min_h_0().pt(px(top)).child(body)
             })
-            .child(self.outline.clone())
+            .when(!self.embedded, |d| d.child(self.outline.clone()))
             .child(self.computer.clone())
             .when_some(self.error.clone(), |this, error| {
                 this.child(
@@ -1451,7 +1495,10 @@ impl Render for ChatView {
                     .pt_2()
                     .child(self.render_composer(running, focused, cx)),
             );
-        let side = self.render_side(window, cx);
+        let docks = match self.embedded {
+            true => Vec::new(),
+            false => self.render_docks(window, cx),
+        };
         h_flex()
             .size_full()
             // The pane's edge drag follows the pointer anywhere in the chat.
@@ -1465,7 +1512,7 @@ impl Render for ChatView {
                 cx.listener(|this, _, _, cx| this.side_drag_end(cx)),
             )
             .child(main)
-            .children(side)
+            .children(docks)
     }
 }
 
@@ -1577,6 +1624,12 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &mut App) -> AnyElemen
         .into_any_element(),
         Row::WorkSummary { key, text, .. } => {
             activity_line(key, IconName::FileText, text.clone(), None, cx).into_any_element()
+        }
+        Row::Delegated { key, title, body } => {
+            let head =
+                activity_line(key, IconName::Bot, title.clone(), None, cx).into_any_element();
+            let body = visual::reply(&format!("{key}-body"), body, false, weak, cx);
+            card(cx).gap_2().child(head).child(body).into_any_element()
         }
         Row::Gate {
             key,
@@ -1723,8 +1776,11 @@ impl ChatView {
                 gpui_kit::component::tooltip::Tooltip::new("Attach files").build(w, cx)
             })
             .on_click(cx.listener(|this, _, window, cx| this.pick_files(window, cx)));
+        // Keyed by thread: a side chat's composer sits beside this one, and
+        // a shared key would make the two focus tweens fight every frame.
+        let key = format!("composer:{}", self.thread_id);
         let card = composer_card(
-            "composer",
+            &key,
             focused,
             true,
             Some(self.approval.clone().into_any_element()),
@@ -1769,6 +1825,25 @@ impl ChatView {
     }
 }
 
+/// The composer's fill and rim, `f` its focus progress. The model picker's
+/// panel wears the same surface so it reads as part of the composer;
+/// `solid` lifts the fill's alpha for text drawn over the transcript.
+pub(crate) fn composer_surface(palette: &Palette, f: f32, solid: bool) -> (Hsla, Hsla) {
+    let ink = |a: f32| {
+        if palette.light {
+            gpui_kit::hsla(0., 0., 0., a)
+        } else {
+            gpui_kit::hsla(0., 0., 1., a)
+        }
+    };
+    let fill = if palette.light {
+        gpui_kit::hsla(0., 0., 1., if solid { 0.94 } else { 0.8 })
+    } else {
+        motion::mix(palette.surface_card, palette.bg, 0.25).opacity(if solid { 0.96 } else { 0.86 })
+    };
+    (fill, motion::mix(ink(0.07), ink(0.14), f))
+}
+
 /// Zeron's composer pill. In a thread it docks to one 49 px line: attach,
 /// the text, the model and a round send button. It opens into two rows
 /// (text on top, controls below) when the text wraps, and the new-thread
@@ -1793,19 +1868,7 @@ pub(crate) fn composer_card(
     );
     // One plate, one short shadow (T3's design pass): it sits on the
     // transcript instead of floating over it.
-    let ink = |a: f32| {
-        if palette.light {
-            gpui_kit::hsla(0., 0., 0., a)
-        } else {
-            gpui_kit::hsla(0., 0., 1., a)
-        }
-    };
-    let fill = if palette.light {
-        gpui_kit::hsla(0., 0., 1., 0.8)
-    } else {
-        motion::mix(palette.surface_card, palette.bg, 0.25).opacity(0.86)
-    };
-    let rim = motion::mix(ink(0.07), ink(0.14), f);
+    let (fill, rim) = composer_surface(palette, f, false);
     let drop = |a: f32, y: f32, blur: f32, spread: f32| gpui_kit::BoxShadow {
         color: gpui_kit::hsla(0., 0., 0., a),
         offset: gpui_kit::point(px(0.), px(y)),
@@ -1843,10 +1906,18 @@ pub(crate) fn composer_card(
                     .h(px(32.))
                     .items_center()
                     .gap(px(4.))
-                    .child(picker)
-                    .children(access)
-                    .child(div().flex_1())
-                    .child(actions),
+                    // The pills give way first; attach and send never move.
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(picker)
+                            .children(access),
+                    )
+                    .child(div().flex_none().child(actions)),
             ),
     )
 }

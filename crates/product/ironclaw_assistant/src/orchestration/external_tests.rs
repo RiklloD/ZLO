@@ -7,9 +7,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ironclaw_cli_providers::bridge::{CliBridge, ToolDecision};
-use ironclaw_host_api::ids::{ActivityId, CapabilityId, TenantId, ThreadId, UserId};
+use ironclaw_host_api::ids::{ActivityId, AgentId, CapabilityId, TenantId, ThreadId, UserId};
 use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::model::{RuntimeId, ThreadRecord};
+use ironclaw_orchestrator::runtime::{
+    CreateThread, CreatedThread, HistoryMessage, HistoryRole, RuntimeCapabilities, RuntimeError,
+    SteerHow, SteerOutcome, TurnAdmission, TurnInput, TurnRuntime,
+};
 use ironclaw_product_contracts::surface::{
     ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceInvokeRequest,
     ProductSurfaceInvokeResponse, ProductSurfaceQueryPage, ProductSurfaceQueryRequest,
@@ -142,4 +146,106 @@ async fn cli_thread_gate_streams_and_resolves_for_its_owner_only() {
     let answered = resolve(owner).await.unwrap();
     assert_eq!(answered.output["outcome"], "resumed");
     assert_eq!(waiter.await.unwrap(), ToolDecision::Allow);
+}
+
+/// A CLI runtime whose session holds one reply.
+struct OneReply;
+
+#[async_trait]
+impl TurnRuntime for OneReply {
+    fn id(&self) -> RuntimeId {
+        RuntimeId::new("claude-cli").unwrap()
+    }
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities::default()
+    }
+    async fn create_thread(&self, _: CreateThread) -> Result<CreatedThread, RuntimeError> {
+        Err(RuntimeError::Unsupported("create"))
+    }
+    async fn start_turn(
+        &self,
+        _: &ThreadRecord,
+        _: TurnInput,
+    ) -> Result<TurnAdmission, RuntimeError> {
+        Err(RuntimeError::Unsupported("turns"))
+    }
+    async fn steer(
+        &self,
+        _: &ThreadRecord,
+        _: &str,
+        _: SteerHow,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        Err(RuntimeError::Unsupported("steer"))
+    }
+    async fn cancel(&self, _: &ThreadRecord, _: &str) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+    async fn history(
+        &self,
+        _: &ThreadRecord,
+        _: usize,
+    ) -> Result<Vec<HistoryMessage>, RuntimeError> {
+        Ok(vec![HistoryMessage {
+            role: HistoryRole::Assistant,
+            text: "Forty-two.".into(),
+            tool_calls: Vec::new(),
+            run_id: None,
+            hidden: false,
+            at: None,
+        }])
+    }
+}
+
+/// A fork or delegated child the orchestrator created never reached the
+/// session thread store, so the inner timeline answers 404. The surface
+/// still serves its timeline, in the gateway's shape, to its owner only.
+#[tokio::test]
+async fn orchestrator_made_cli_thread_serves_a_timeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+    let thread = ThreadId::new("cli-fork").unwrap();
+    let owner = ProductSurfaceCaller::new(
+        TenantId::new("t").unwrap(),
+        UserId::new("owner").unwrap(),
+        Some(AgentId::new("agent").unwrap()),
+        None,
+    );
+    let mut record = ThreadRecord::new(
+        thread.clone(),
+        scope_of(&owner),
+        RuntimeId::new("claude-cli").unwrap(),
+    );
+    record.title = Some("Side chat".into());
+    engine.store().ensure_thread(&record).await.unwrap();
+    engine.register_runtime(Arc::new(OneReply));
+    let surface = OrchestratedProductSurface::new(Arc::new(Inner), engine, None);
+
+    let timeline = |who: ProductSurfaceCaller| {
+        surface.query(
+            who,
+            ProductSurfaceQueryRequest {
+                view_id: crate::reborn_services::TIMELINE_VIEW.id.to_string(),
+                input: json!({"thread_id": thread.as_str(), "limit": 50}),
+                cursor: None,
+                limit: None,
+            },
+        )
+    };
+    let page = timeline(owner).await.unwrap();
+    let response: crate::reborn_services::RebornTimelineResponse =
+        serde_json::from_value(page.items[0].clone()).unwrap();
+    assert_eq!(response.thread.thread_id.as_str(), "cli-fork");
+    assert_eq!(response.thread.title.as_deref(), Some("Side chat"));
+    assert_eq!(response.messages.len(), 1);
+    assert_eq!(response.messages[0].content.as_deref(), Some("Forty-two."));
+    assert!(response.next_cursor.is_none());
+    // Anyone else still falls through to the inner 404.
+    assert!(timeline(caller("intruder")).await.is_err());
 }

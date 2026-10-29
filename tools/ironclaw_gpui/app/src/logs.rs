@@ -1,6 +1,6 @@
 //! Where to look when something breaks: the app writes its own log to
-//! `~/Library/Logs/Numoh/desktop.log` (stderr too, for `cargo run`), and
-//! the backend Numoh starts writes `serve.stderr.log` under its home. Both
+//! `~/Library/Logs/ZLO/desktop.log` (stderr too, for `cargo run`), and
+//! the backend ZLO starts writes `serve.stderr.log` under its home. Both
 //! open in Console from the connection screen.
 //!
 //! `IRONCLAW_DESKTOP_LOG` overrides the filter (`RUST_LOG` syntax).
@@ -18,7 +18,7 @@ const ROTATE_BYTES: u64 = 4 * 1024 * 1024;
 pub fn init() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("IRONCLAW_DESKTOP_LOG")
         .unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new("warn,numoh=info,ironclaw_gpui_client=info")
+            tracing_subscriber::EnvFilter::new("warn,zlo=info,ironclaw_gpui_client=info")
         });
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -42,7 +42,7 @@ fn open_desktop_log() -> Option<File> {
 
 pub fn desktop_log() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("Library/Logs/Numoh/desktop.log"))
+    Some(PathBuf::from(home).join("Library/Logs/ZLO/desktop.log"))
 }
 
 pub fn gateway_log() -> Option<PathBuf> {

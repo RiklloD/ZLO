@@ -7,8 +7,8 @@
 //! click reverses from the drawn width (`motion::state_t`).
 
 use gpui_kit::{
-    App, Div, Hsla, InteractiveElement as _, ParentElement as _, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    App, Div, Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
 use super::motion::{self, EASE, MotionSpec};
@@ -68,6 +68,37 @@ pub fn glyph(open: f32, right: bool, size: f32, color: Hsla) -> Div {
         .child(panel)
 }
 
+/// Zeron's session-card glyph: the sidebar frame with a panel in only its
+/// top-right corner, which grows a little while the card is open.
+pub fn card_glyph(open: f32, size: f32, color: Hsla) -> Div {
+    let s = size / 24.;
+    let stroke = 1.75;
+    let frame = div()
+        .absolute()
+        .left(px((3. - stroke / 2.) * s))
+        .top(px((4. - stroke / 2.) * s))
+        .w(px((18. + stroke) * s))
+        .h(px((16. + stroke) * s))
+        .rounded(px((4. + stroke / 2.) * s))
+        .border(px(stroke * s))
+        .border_color(color);
+    let side = motion::lerp(4.5, 6., open.clamp(0., 1.));
+    let corner = div()
+        .absolute()
+        .top(px(7.5 * s))
+        .right(px(6.5 * s))
+        .w(px(side * s))
+        .h(px(side * s))
+        .rounded(px(1. * s))
+        .bg(color);
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size))
+        .child(frame)
+        .child(corner)
+}
+
 /// The titlebar button for a column: a soft hover wash and the morphing
 /// glyph. The caller adds the click.
 pub fn toggle(
@@ -76,6 +107,20 @@ pub fn toggle(
     right: bool,
     label: &'static str,
     cx: &App,
+) -> Stateful<Div> {
+    toggle_with(id, open, label, cx, move |morph, color| {
+        glyph(morph, right, GLYPH_SIZE, color).into_any_element()
+    })
+}
+
+/// [`toggle`] around any glyph: `draw(morph, ink)` paints it for the
+/// 0..1 open state and the hover-mixed ink.
+pub fn toggle_with(
+    id: &'static str,
+    open: bool,
+    label: &'static str,
+    cx: &App,
+    draw: impl FnOnce(f32, Hsla) -> gpui_kit::AnyElement + 'static,
 ) -> Stateful<Div> {
     let p = *Palette::of(cx);
     let reduced = cx.reduce_motion();
@@ -101,10 +146,8 @@ pub fn toggle(
         .on_hover(motion::hover_listener(key, Style::of(cx).hover))
         .bg(wash.opacity(wash.a * hover))
         .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(label).build(w, cx))
-        .child(glyph(
-            morph,
-            right,
-            GLYPH_SIZE,
-            motion::mix(p.text_muted, p.text, hover),
-        ))
+        .child(draw(morph, motion::mix(p.text_muted, p.text, hover)))
 }
+
+/// The glyph size [`toggle_with`] callers draw at.
+pub const GLYPH_PX: f32 = GLYPH_SIZE;

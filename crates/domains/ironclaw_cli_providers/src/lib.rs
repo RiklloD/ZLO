@@ -43,7 +43,7 @@ pub(crate) fn system_note(profile: Option<&TurnProfile>, goal: Option<&str>) -> 
     join_notes([soul, visuals(), goal.map(goal_note)])
 }
 
-/// How to put a chart, table or stat tiles in a reply (Numoh draws them).
+/// How to put a chart, table or stat tiles in a reply (ZLO draws them).
 fn visuals() -> Option<String> {
     Some(REPLY_VISUALS_PROMPT.trim().to_string())
 }

@@ -1,7 +1,7 @@
 //! Unsent composer drafts, like t3code's: one per thread plus one for the
 //! new-thread screen, kept until the message is sent or the box is emptied.
 //! They live on this Mac only, one JSON file per draft under
-//! `~/Library/Application Support/Numoh/drafts/`. Memory updates on every
+//! `~/Library/Application Support/ZLO/drafts/`. Memory updates on every
 //! edit; the disk write waits 300 ms after the last one, and quit writes
 //! whatever is still pending. File cards come back with their files: a path
 //! is re-read on send, a pasted picture is kept inline as base64.
@@ -80,7 +80,7 @@ struct SavedFile {
 }
 
 fn dir() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("Numoh").join("drafts"))
+    Some(dirs::config_dir()?.join("ZLO").join("drafts"))
 }
 
 fn file_for(dir: &Path, key: &str) -> PathBuf {

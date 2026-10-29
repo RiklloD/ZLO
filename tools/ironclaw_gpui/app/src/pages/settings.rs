@@ -191,9 +191,9 @@ impl SettingsView {
                     "Open at login",
                     Some(
                         if bundled {
-                            "Starts Numoh when you log in to your Mac."
+                            "Starts ZLO when you log in to your Mac."
                         } else {
-                            "Available when Numoh runs from Numoh.app (tools/ironclaw_gpui/bundle.sh)."
+                            "Available when ZLO runs from ZLO.app (tools/ironclaw_gpui/bundle.sh)."
                         }
                         .into(),
                     ),

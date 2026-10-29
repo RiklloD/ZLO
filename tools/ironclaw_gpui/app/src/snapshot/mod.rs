@@ -1,5 +1,5 @@
 //! SnapShots, after T3 Code's: press both Shift keys (or the fallback combo
-//! from Settings) and Numoh captures the frontmost window of another app.
+//! from Settings) and ZLO captures the frontmost window of another app.
 //! The picture and a text part (app name, window title and the window's
 //! accessibility tree) go into the current chat draft as one chip, so the
 //! agent can read the screen, not only look at it. Off by default.
@@ -65,7 +65,7 @@ impl Global for SnapshotPrefs {}
 
 impl SnapshotPrefs {
     fn file() -> Option<PathBuf> {
-        Some(dirs::config_dir()?.join("Numoh").join("snapshots.json"))
+        Some(dirs::config_dir()?.join("ZLO").join("snapshots.json"))
     }
 
     fn load() -> Self {

@@ -32,7 +32,7 @@ impl Workspace {
             Some(limits) => {
                 snap.and_then(|snap| snapshot::stage_into(&mut draft.staged, snap, &limits, cx))
             }
-            None => Err("Numoh is not connected to IronClaw yet.".into()),
+            None => Err("ZLO is not connected to IronClaw yet.".into()),
         };
         draft.error = result.err().map(Into::into);
         let new = draft.staged.split_off(from);

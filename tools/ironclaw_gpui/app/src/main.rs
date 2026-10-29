@@ -1,4 +1,4 @@
-//! Numoh: a native GPUI window onto the local IronClaw gateway.
+//! ZLO: a native GPUI window onto the local IronClaw gateway.
 //!
 //! Opening the app starts the gateway's launchd job and quitting (Cmd+Q)
 //! stops it (`service.rs`). Closing the window keeps the app and the gateway
@@ -38,13 +38,15 @@ gpui_kit::actions!(
         OpenModelPicker,
         NewThread,
         ToggleSidebar,
-        ToggleRightPane
+        ToggleRightPane,
+        ToggleWorkPanel,
+        NewSideChat
     ]
 );
 
 fn main() {
     logs::init();
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "Numoh started");
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "ZLO started");
 
     let app = gpui_kit::application().with_assets(assets::AppAssets);
     app.on_reopen(|cx| {
@@ -80,11 +82,13 @@ fn main() {
             KeyBinding::new("cmd-shift-o", NewThread, None),
             KeyBinding::new("cmd-b", ToggleSidebar, None),
             KeyBinding::new("alt-cmd-b", ToggleRightPane, None),
+            KeyBinding::new("cmd-e", ToggleWorkPanel, None),
+            KeyBinding::new("alt-cmd-n", NewSideChat, None),
         ]);
         cx.set_menus(vec![
             Menu {
-                name: "Numoh".into(),
-                items: vec![MenuItem::action("Quit Numoh", Quit)],
+                name: "ZLO".into(),
+                items: vec![MenuItem::action("Quit ZLO", Quit)],
                 disabled: false,
             },
             Menu {
@@ -93,6 +97,8 @@ fn main() {
                     MenuItem::action("New Thread", NewThread),
                     MenuItem::action("Toggle Sidebar", ToggleSidebar),
                     MenuItem::action("Toggle Right Pane", ToggleRightPane),
+                    MenuItem::action("Toggle Changes and Files", ToggleWorkPanel),
+                    MenuItem::action("New Side Chat", NewSideChat),
                     MenuItem::action("Command Menu…", OpenCommandMenu),
                     MenuItem::action("Model Picker…", OpenModelPicker),
                     MenuItem::action("Toggle Status Bar", ToggleStatusBar),
@@ -112,7 +118,7 @@ fn open_main_window(cx: &mut App) {
         // Content runs under a transparent titlebar; the sidebar
         // keeps its top strip free so macOS still drags the window.
         titlebar: Some(TitlebarOptions {
-            title: Some("Numoh".into()),
+            title: Some("ZLO".into()),
             appears_transparent: true,
             traffic_light_position: Some(point(px(16.), px(17.))),
         }),
@@ -134,7 +140,7 @@ fn open_main_window(cx: &mut App) {
         });
         view
     }) {
-        eprintln!("numoh: cannot open a window: {e}");
+        eprintln!("zlo: cannot open a window: {e}");
         cx.quit();
         return;
     }

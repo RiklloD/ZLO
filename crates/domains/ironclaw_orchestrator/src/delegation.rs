@@ -436,9 +436,23 @@ impl Engine {
                 return Ok(());
             }
         }
+        // A parent that reads host files may pass the ones its brief names;
+        // the child's runtime attaches them, since host paths reach a
+        // sandboxed model redacted.
+        let files = if self.runtime(&parent.runtime_id)?.capabilities().host_files {
+            brief_paths(&brief)
+        } else {
+            Vec::new()
+        };
         // The child is a fresh thread: no hold applies to it yet.
         if !self
-            .deliver(&child.thread_id, brief, TurnOrigin::DelegatedBrief, false)
+            .deliver_with_files(
+                &child.thread_id,
+                brief,
+                TurnOrigin::DelegatedBrief,
+                false,
+                files,
+            )
             .await?
         {
             return Err(OrchestratorError::request(
@@ -520,6 +534,13 @@ impl Engine {
         } else {
             "working"
         };
+        let progress = match &t.child_thread {
+            Some(child) if !t.status.is_terminal() => self
+                .live_progress(&t.id, child)
+                .await?
+                .or_else(|| t.progress.clone()),
+            _ => t.progress.clone(),
+        };
         let mut view = json!({
             "taskId": t.id.as_str(), "title": t.title, "role": t.role.as_str(), "status": t.status.as_str(),
             "workState": work_state, "runtime": t.runtime_id.as_str(), "provider": t.provider, "model": t.model,
@@ -528,7 +549,7 @@ impl Engine {
             "profile": t.profile_id.as_ref().map(|p| p.as_str()),
             "depth": t.depth, "createdAt": t.created_at, "startedAt": t.started_at, "finishedAt": t.finished_at,
             "durationSeconds": (duration * 10.0).round() / 10.0,
-            "progress": t.progress, "usage": t.usage,
+            "progress": progress, "usage": t.usage,
             "summary": if t.status.is_terminal() { t.result.clone() } else { None },
             "error": t.error, "delivery": t.delivery.as_str(), "limitResetAt": t.limit_reset_at,
             "cancelRequested": t.cancel_requested, "pendingChildren": pending_children,
@@ -537,6 +558,46 @@ impl Engine {
             view["waitTimedOut"] = json!(timed_out);
         }
         Ok(view)
+    }
+
+    /// What a running child is doing right now, read from its transcript:
+    /// tool calls in the current run, the last one, and how long the child
+    /// has been silent (a hung provider call shows as a growing
+    /// `silentSeconds` instead of nothing). Stored on the task as well.
+    async fn live_progress(&self, id: &TaskId, child: &ThreadId) -> Result<Option<Value>> {
+        let Some(thread) = self.store.thread(child).await? else {
+            return Ok(None);
+        };
+        let messages = match self.history(&thread).await {
+            Ok(messages) => messages,
+            Err(error) => {
+                tracing::debug!(%error, "task progress: child history unreadable");
+                return Ok(None);
+            }
+        };
+        let run = thread
+            .active_run_id
+            .clone()
+            .or_else(|| messages.iter().rev().find_map(|m| m.run_id.clone()));
+        let current: Vec<_> = messages
+            .iter()
+            .filter(|m| run.is_none() || m.run_id == run)
+            .collect();
+        let tools: Vec<&String> = current.iter().flat_map(|m| &m.tool_calls).collect();
+        let last_at = current
+            .iter()
+            .filter_map(|m| m.at)
+            .max()
+            .or(thread.turn_started_at);
+        let progress = json!({
+            "running": thread.is_running(),
+            "toolCount": tools.len(),
+            "lastTool": tools.last(),
+            "lastActivityAt": last_at,
+            "silentSeconds": last_at.map(|at| (now_ms() - at).max(0) / 1000),
+        });
+        self.store.set_task_progress(id, &progress).await?;
+        Ok(Some(progress))
     }
 
     /// Task visible from `thread`: its own child, or one in its subtree.
@@ -658,7 +719,7 @@ impl Engine {
                     .cancel(&child, &reason)
                     .await
                 {
-                    tracing::debug!(%error, "orchestrator child cancel failed; tick will finalize");
+                    tracing::debug!(%error, task = %task.id, "orchestrator child cancel failed; tick will finalize");
                 }
             }
             _ => {
@@ -669,4 +730,40 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// Paths a brief names: absolute or `~/`, whole inside quotes or backticks
+/// (so spaces survive), else one whitespace-separated word without its
+/// surrounding punctuation. Syntax only; the runtime vets each one.
+pub(crate) fn brief_paths(text: &str) -> Vec<std::path::PathBuf> {
+    const MAX: usize = 8;
+    let quoted = ['`', '"', '\''].into_iter().flat_map(|q| {
+        text.split(q)
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 1)
+            .map(|(_, part)| part.trim())
+    });
+    let wrap = |c: char| "()[]<>{},;:!?\"'`*".contains(c);
+    let words = text
+        .split_whitespace()
+        .map(|w| w.trim_start_matches(wrap))
+        .map(|w| w.trim_end_matches(|c: char| wrap(c) || c == '.'));
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    for candidate in quoted.chain(words) {
+        let is_path = (candidate.starts_with('/') || candidate.starts_with("~/"))
+            && candidate.len() > 2
+            && !candidate.contains('\n');
+        // A word cut from a quoted path with spaces is not a path of its own.
+        let inside_quoted = out
+            .iter()
+            .any(|p| p.to_string_lossy().starts_with(candidate));
+        let path = std::path::PathBuf::from(candidate);
+        if is_path && !inside_quoted {
+            out.push(path);
+        }
+        if out.len() == MAX {
+            break;
+        }
+    }
+    out
 }

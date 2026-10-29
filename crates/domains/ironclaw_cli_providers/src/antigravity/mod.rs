@@ -761,6 +761,7 @@ impl TurnRuntime for AntigravityRuntime {
             steer_in_turn: false,
             reports_usage: true,
             reports_restart_cuts: false,
+            host_files: true,
         }
     }
 

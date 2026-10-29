@@ -42,6 +42,38 @@ pub enum ProviderRegistryLoadError {
     },
 }
 
+/// Size and modification time of a parsed `providers.json`.
+type UserDefsStamp = (Option<std::time::SystemTime>, u64);
+
+/// Last parse of each user overlay. A cache only: a changed stamp re-reads
+/// the file, and the lock is never held across file I/O.
+type UserDefsCache =
+    std::sync::Mutex<HashMap<std::path::PathBuf, (UserDefsStamp, Vec<ProviderDefinition>)>>;
+
+static USER_DEFS: std::sync::LazyLock<UserDefsCache> = std::sync::LazyLock::new(Default::default);
+
+fn cached_user_defs(
+    path: &std::path::Path,
+    stamp: UserDefsStamp,
+) -> Option<Vec<ProviderDefinition>> {
+    // A file without a modification time can't be told apart from its edit.
+    stamp.0?;
+    let cache = USER_DEFS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache
+        .get(path)
+        .filter(|(cached, _)| *cached == stamp)
+        .map(|(_, defs)| defs.clone())
+}
+
+fn cache_user_defs(path: &std::path::Path, stamp: UserDefsStamp, defs: &[ProviderDefinition]) {
+    let mut cache = USER_DEFS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.insert(path.to_path_buf(), (stamp, defs.to_vec()));
+}
+
 impl ProviderRegistryLoadError {
     fn overlay_path(&self) -> &str {
         match self {
@@ -447,6 +479,18 @@ impl ProviderRegistry {
         let mut all = builtin_provider_definitions();
 
         if let Some(user_path) = user_path {
+            // Model resolution reloads per turn; a file whose size and
+            // modification time match the last parse is not read again.
+            // silent-ok: a stamp only skips a re-read; without one the file is read below and its error surfaces there.
+            let stamp = std::fs::metadata(user_path)
+                .ok()
+                .map(|m| (m.modified().ok(), m.len()));
+            if let Some(stamp) = stamp
+                && let Some(defs) = cached_user_defs(user_path, stamp)
+            {
+                all.extend(defs);
+                return Ok(Self::new(all));
+            }
             let contents = match std::fs::read_to_string(user_path) {
                 Ok(contents) => Some(contents),
                 Err(source) if source.kind() == std::io::ErrorKind::NotFound => None,
@@ -468,6 +512,9 @@ impl ProviderRegistry {
                     path = %user_path.display(),
                     "Loaded user provider definitions"
                 );
+                if let Some(stamp) = stamp {
+                    cache_user_defs(user_path, stamp, &user_defs);
+                }
                 all.extend(user_defs);
             }
         }

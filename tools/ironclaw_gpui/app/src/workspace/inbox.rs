@@ -43,6 +43,8 @@ pub(super) struct Inbox {
     filters_open: bool,
     /// The new-thread button's profile menu.
     pub(super) new_menu_open: bool,
+    /// The pointer is on the new-thread button; see `ModelPicker::pill_hover`.
+    new_menu_hover: bool,
     profile: Option<String>,
     model: Option<String>,
     state: Option<InboxState>,
@@ -604,12 +606,20 @@ impl Workspace {
         let active = (self.page == Page::Chat)
             .then(|| self.active.as_ref().map(|(id, _)| id.clone()))
             .flatten();
+        let side_chats: std::collections::HashSet<&str> = crate::design::prefs::Prefs::of(cx)
+            .side_chats
+            .values()
+            .flatten()
+            .map(String::as_str)
+            .collect();
         let rows: Vec<InboxRow> = self
             .inbox
             .list
             .rows
             .iter()
             .filter(|r| self.inbox.matches(r, &query))
+            // Side chats live under their parent; a search still finds them.
+            .filter(|r| !query.is_empty() || !side_chats.contains(r.thread_id.as_str()))
             .cloned()
             .collect();
         let in_state = |s: &[InboxState]| -> Vec<&InboxRow> {
@@ -803,7 +813,9 @@ impl Workspace {
                         .right_0()
                         .occlude()
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.inbox.new_menu_open = false;
+                            if !this.inbox.new_menu_hover {
+                                this.inbox.new_menu_open = false;
+                            }
                             cx.notify();
                         }))
                         .child(self.render_picker(cx)),
@@ -862,19 +874,26 @@ impl Workspace {
                     })),
             )
             .child(
-                Button::new("new-thread")
-                    .icon(ExtraIcon::SquarePen)
-                    .ghost()
-                    .large()
-                    // The pen fills its box; at the filter's size it outweighs it.
-                    .icon_size(16.)
-                    .selected(self.inbox.new_menu_open)
-                    .tooltip("New thread")
-                    .accessibility_label("New thread")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.inbox.new_menu_open = !this.inbox.new_menu_open;
-                        cx.notify();
-                    })),
+                div()
+                    .id("new-thread-hover")
+                    .on_hover(cx.listener(|this, h: &bool, _, _| {
+                        this.inbox.new_menu_hover = *h;
+                    }))
+                    .child(
+                        Button::new("new-thread")
+                            .icon(ExtraIcon::SquarePen)
+                            .ghost()
+                            .large()
+                            // The pen fills its box; at the filter's size it outweighs it.
+                            .icon_size(16.)
+                            .selected(self.inbox.new_menu_open)
+                            .tooltip("New thread")
+                            .accessibility_label("New thread")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.inbox.new_menu_open = !this.inbox.new_menu_open;
+                                cx.notify();
+                            })),
+                    ),
             )
     }
 

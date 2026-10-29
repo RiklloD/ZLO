@@ -653,6 +653,32 @@ impl Workspace {
         }
     }
 
+    /// Esc closes what the user last opened: the model or thinking picker,
+    /// else the settings pages. The command menu handles its own Esc.
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.command.is_some() {
+            return false;
+        }
+        let picker = match self.page {
+            Page::Chat => self
+                .active
+                .as_ref()
+                .map(|(_, c)| c.read(cx).focused_picker(window, cx)),
+            Page::Draft => self.draft.as_ref().map(|d| d.picker()),
+            _ => None,
+        };
+        if let Some(picker) = picker.filter(|p| p.read(cx).is_open()) {
+            picker.update(cx, |p, cx| p.close(cx));
+            self.restore_composer(window, cx);
+            return true;
+        }
+        if self.in_settings() {
+            self.back_to_threads(window, cx);
+            return true;
+        }
+        false
+    }
+
     fn render_settings_nav(&self, cx: &Context<Self>) -> impl IntoElement {
         const GROUP_GAP: f32 = 10.;
         const HEADING: f32 = 26.;
@@ -747,7 +773,7 @@ impl Workspace {
                     .text_sm()
                     .font_semibold()
                     .text_color(p.text)
-                    .child(if settings { "Settings" } else { "Numoh" }),
+                    .child(if settings { "Settings" } else { "ZLO" }),
             );
         let footer = if settings {
             h_flex().p_2().child(
@@ -1432,6 +1458,12 @@ impl Render for Workspace {
                 // ⌘1..⌘9 open the Nth sidebar thread; an open model picker
                 // takes the key first in its capture phase.
                 .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                    if e.keystroke.key == "escape" {
+                        if this.dismiss(window, cx) {
+                            cx.stop_propagation();
+                        }
+                        return;
+                    }
                     let Some(ix) = kit::cmd_digit(&e.keystroke) else {
                         return;
                     };
@@ -1461,7 +1493,10 @@ impl Render for Workspace {
                 // ⇧⌘M opens the composer's model picker, open thread or draft.
                 .on_action(cx.listener(|this, _: &crate::OpenModelPicker, window, cx| {
                     let picker = match this.page {
-                        Page::Chat => this.active.as_ref().map(|(_, c)| c.read(cx).picker()),
+                        Page::Chat => this
+                            .active
+                            .as_ref()
+                            .map(|(_, c)| c.read(cx).focused_picker(window, cx)),
                         Page::Draft => this.draft.as_ref().map(|d| d.picker()),
                         _ => None,
                     };
@@ -1492,6 +1527,20 @@ impl Render for Workspace {
                         _ => Prefs::update(cx, |p| p.side_open = !p.side_open),
                     }
                     window.refresh();
+                }))
+                .on_action(cx.listener(|this, _: &crate::ToggleWorkPanel, window, cx| {
+                    match (&this.page, &this.active) {
+                        (Page::Chat, Some((_, chat))) => {
+                            chat.update(cx, |c, cx| c.toggle_work(cx));
+                        }
+                        _ => Prefs::update(cx, |p| p.work_open = !p.work_open),
+                    }
+                    window.refresh();
+                }))
+                .on_action(cx.listener(|this, _: &crate::NewSideChat, _, cx| {
+                    if let (Page::Chat, Some((_, chat))) = (&this.page, &this.active) {
+                        chat.update(cx, |c, cx| c.new_side_chat(cx));
+                    }
                 }))
                 .child(div().flex_1().min_h_0().child(body))
                 .when(show_status, |d| d.child(self.render_status_bar(cx)))
@@ -1603,13 +1652,14 @@ impl Workspace {
             self.sidebar_width(cx)
         };
         // The right pane belongs to an open thread (Appearance floats over it).
-        let (pane, pane_t) = match (self.page, &self.active) {
+        let ((pane, pane_t), (work, _)) = match (self.page, &self.active) {
             (Page::Chat | Page::Appearance, Some((_, chat))) => {
-                chat.read(cx).side_geometry(window, cx)
+                chat.read(cx).dock_sizes(window, cx)
             }
-            _ => (0., 0.),
+            _ => ((0., 0.), (0., 0.)),
         };
-        let pane_settled = if prefs.side_open { pane } else { 0. };
+        let pane_settled =
+            if prefs.side_open { pane } else { 0. } + if prefs.work_open { work } else { 0. };
         let layer = match area {
             "window" => wallpaper::overlay(vw, vh, cx)?.top_0().left_0(),
             "conversation" => wallpaper::overlay(vw - sidebar - pane_settled, vh - status, cx)?

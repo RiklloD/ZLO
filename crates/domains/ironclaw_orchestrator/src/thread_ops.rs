@@ -472,8 +472,15 @@ impl Engine {
                 })
                 .collect()
         };
+        // A child knows its parent from the store, not from whichever chat
+        // the app happened to open first.
+        let delegated_from = match self.store.task_for_child(thread).await? {
+            Some(task) => Some(self.task_view(&task, None).await?),
+            None => None,
+        };
         Ok(json!({
             "threadId": thread.as_str(),
+            "delegatedFrom": delegated_from,
             "forkedFrom": pick(TransferKind::Fork, false).last(),
             "forks": pick(TransferKind::Fork, true),
             "mergesIn": pick(TransferKind::MergeBack, false),

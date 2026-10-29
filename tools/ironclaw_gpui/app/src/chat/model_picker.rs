@@ -33,9 +33,19 @@ use crate::ui::*;
 /// IronClaw's own loop; its first model is the profile's.
 const NATIVE: &str = "ironclaw";
 const POPOVER_WIDTH: f32 = 380.;
-/// Fixed popover height: the box keeps its size whatever the rail or
-/// search shows.
-const POPOVER_HEIGHT: f32 = 420.;
+/// A fixed height on every tab, so switching tabs never resizes the
+/// panel; a longer list scrolls.
+const POPOVER_HEIGHT: f32 = 300.;
+/// Opening below, the panel clears the composer card: the pill's 28 px,
+/// the row's 2 px slack, the card's 8 px bottom padding and its rim, then
+/// an 8 px gap.
+const BELOW_OFFSET: f32 = 47.;
+/// Opening above, the gap between the pill and the panel.
+const ABOVE_OFFSET: f32 = 34.;
+/// The entrance: a critically damped spring, so no bounce, and a 6 px
+/// slide out of the pill.
+const ENTER: design::motion::Spring = design::motion::Spring::new(1., 220);
+const ENTER_SLIDE: f32 = 6.;
 /// Recent picks shown first in "All", after MonoCode's `pickers.rs`.
 const RECENTS: usize = 6;
 
@@ -104,6 +114,12 @@ pub struct ModelPicker {
     /// with no pick) reads as IronClaw's profile model.
     current: Option<(String, String)>,
     open: bool,
+    /// The pointer is on the model or thinking pill: a click there toggles
+    /// the menu, so the outside-click close stands aside.
+    pill_hover: bool,
+    /// A narrow composer (a side chat): pills show their icon only, the
+    /// name in a tooltip, and the popovers keep inside the window.
+    compact: bool,
     rail: Rail,
     /// Show hidden providers and models (dimmed) so they can be restored.
     show_hidden: bool,
@@ -147,6 +163,8 @@ impl ModelPicker {
             prefs: PickerPrefs::default(),
             current: None,
             open: false,
+            pill_hover: false,
+            compact: false,
             rail: Rail::All,
             show_hidden: false,
             effort: None,
@@ -382,6 +400,11 @@ impl ModelPicker {
         cx.notify();
     }
 
+    /// The model list or the thinking menu is showing.
+    pub fn is_open(&self) -> bool {
+        self.open || self.effort_open
+    }
+
     pub fn close(&mut self, cx: &mut Context<Self>) {
         if self.open || self.effort_open {
             self.open = false;
@@ -473,6 +496,11 @@ impl ModelPicker {
     /// Hidden providers plus hidden models, for the "Show hidden" toggle.
     fn hidden_count(&self) -> usize {
         self.prefs.hidden_providers.len() + self.prefs.hidden_models.len()
+    }
+
+    /// The model this thread runs, as its pill reads.
+    pub fn model_label(&self) -> String {
+        self.label().0
     }
 
     fn label(&self) -> (String, Option<String>) {
@@ -622,22 +650,20 @@ impl ModelPicker {
         let hidden_providers = self.prefs.hidden_providers.len();
         let hidden = self.hidden_count();
 
-        h_flex()
-            .id("model-popover")
+        panel_surface(h_flex().id("model-popover"), cx)
             .w(px(POPOVER_WIDTH))
             .h(px(POPOVER_HEIGHT))
             .items_stretch()
-            .rounded(px(design::PANEL_RADIUS))
-            .border_1()
-            .border_color(p.border_strong)
-            .bg(p.surface_overlay)
-            .shadow_lg()
             .overflow_hidden()
             .occlude()
             // A click inside keeps focus where it is (the search box, or
             // the composer), instead of the window root taking it.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                if !this.pill_hover {
+                    this.close(cx);
+                }
+            }))
             // ⌘ held here numbers models, not sidebar threads. Releases pass
             // through so a badge shown before the picker opened still clears.
             .on_modifiers_changed(
@@ -672,7 +698,6 @@ impl ModelPicker {
                 v_flex()
                     .id("model-rail")
                     .flex_none()
-                    .h_full()
                     .overflow_y_scroll()
                     .border_r_1()
                     .border_color(p.border)
@@ -684,20 +709,30 @@ impl ModelPicker {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .h_full()
+                    // A flat search line, ruled off from the list: no box,
+                    // no focus ring.
                     .child(
                         div()
                             .flex_none()
-                            .p_2()
-                            .child(Input::new(&self.search).small()),
+                            .px_1()
+                            .py_1()
+                            .border_b_1()
+                            .border_color(p.border)
+                            .child(
+                                Input::new(&self.search).small().appearance(false).prefix(
+                                    Icon::new(IconName::Search)
+                                        .size(px(14.))
+                                        .text_color(p.text_faint),
+                                ),
+                            ),
                     )
                     .child(
                         v_flex()
                             .id("model-list")
-                            .flex_1()
+                            .flex_auto()
                             .min_h_0()
                             .overflow_y_scroll()
-                            .child(v_flex().flex_shrink_0().px_1().pb_1().children(rows)),
+                            .child(v_flex().flex_shrink_0().px_1().py_1().children(rows)),
                     )
                     .when(hidden > 0, |d| {
                         d.child(
@@ -1024,20 +1059,18 @@ impl ModelPicker {
                 self,
             ));
         }
-        v_flex()
-            .id("effort-popover")
+        panel_surface(v_flex().id("effort-popover"), cx)
             .w(px(180.))
             .p_1()
-            .rounded(px(design::PANEL_RADIUS))
-            .border_1()
-            .border_color(p.border_strong)
-            .bg(p.surface_overlay)
-            .shadow_lg()
             .occlude()
             // A click inside keeps focus where it is (the search box, or
             // the composer), instead of the window root taking it.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                if !this.pill_hover {
+                    this.close(cx);
+                }
+            }))
             .children(rows)
     }
 
@@ -1055,6 +1088,7 @@ impl ModelPicker {
             .map_or_else(|| "Default".to_string(), effort_label);
         let pill = h_flex()
             .id("effort-pill")
+            .on_hover(cx.listener(|this, h: &bool, _, _| this.pill_hover = *h))
             .role(Role::Button)
             .aria_label(format!("Thinking: {label}"))
             .gap_1()
@@ -1068,8 +1102,16 @@ impl ModelPicker {
             .when(self.effort_open, |d| d.bg(p.active).text_color(p.text))
             .hover(|s| s.bg(p.hover).text_color(p.text))
             .child(Icon::new(ExtraIcon::Sparkles).xsmall())
-            .child(label)
-            .child(Icon::new(IconName::ChevronDown).xsmall())
+            .when(!self.compact, |d| {
+                d.child(label.clone())
+                    .child(Icon::new(IconName::ChevronDown).xsmall())
+            })
+            .when(self.compact && !self.effort_open, |d| {
+                let tip = SharedString::from(format!("Thinking: {label}"));
+                d.tooltip(move |w, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)
+                })
+            })
             .on_click(cx.listener(|this, _, _, cx| {
                 this.open = false;
                 this.effort_open = !this.effort_open;
@@ -1080,12 +1122,9 @@ impl ModelPicker {
                 .relative()
                 .child(pill)
                 .when(self.effort_open, |d| {
-                    d.child(gpui_kit::deferred(
-                        div()
-                            .absolute()
-                            .bottom(px(34.))
-                            .left_0()
-                            .child(self.render_effort_popover(&efforts, cx)),
+                    d.child(self.anchor(
+                        "effort-popover-in",
+                        self.render_effort_popover(&efforts, cx),
                     ))
                 })
                 .into_any_element(),
@@ -1108,6 +1147,7 @@ impl Render for ModelPicker {
             .unwrap_or_default();
         let pill = h_flex()
             .id("model-pill")
+            .on_hover(cx.listener(|this, h: &bool, _, _| this.pill_hover = *h))
             .role(Role::Button)
             .aria_label(format!("Model: {label}"))
             .gap_1p5()
@@ -1127,20 +1167,20 @@ impl Render for ModelPicker {
                 14.,
                 cx,
             ))
-            .child(label)
+            .when(!self.compact, |d| d.child(label.clone()))
             .when(self.busy, |d| d.child(Spinner::new().xsmall()))
-            .when(!self.busy, |d| {
+            .when(!self.busy && !self.compact, |d| {
                 d.child(Icon::new(IconName::ChevronDown).xsmall())
+            })
+            .when(self.compact && !self.open, |d| {
+                let tip = SharedString::from(label);
+                d.tooltip(move |w, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)
+                })
             })
             .on_click(cx.listener(|this, _, window, cx| this.toggle(window, cx)));
         let model = div().relative().child(pill).when(self.open, |d| {
-            d.child(gpui_kit::deferred(
-                div()
-                    .absolute()
-                    .bottom(px(34.))
-                    .left_0()
-                    .child(self.render_popover(window, cx)),
-            ))
+            d.child(self.anchor("model-popover-in", self.render_popover(window, cx)))
         });
         h_flex()
             .gap_0p5()
@@ -1149,6 +1189,69 @@ impl Render for ModelPicker {
             .children(self.render_effort(cx))
             .into_any_element()
     }
+}
+
+impl ModelPicker {
+    pub fn set_compact(&mut self, compact: bool) {
+        self.compact = compact;
+    }
+
+    /// Hangs a popover off its pill. The new-thread screen centers the
+    /// composer, so the panel opens below the card and leaves the title
+    /// visible; in a thread the composer sits at the bottom and it opens
+    /// above. Either way it slides 6 px out of the pill while fading in.
+    /// Each open renders a fresh element, so the entrance replays.
+    fn anchor(&self, id: &'static str, panel: impl IntoElement) -> AnyElement {
+        if self.compact {
+            // Opens above the pill, slid back inside a narrow pane's window.
+            // Pinned to the 28 px pill's top left, the gap as above.
+            let fit = gpui_kit::anchored()
+                .anchor(gpui_kit::Anchor::BottomLeft)
+                .offset(gpui_kit::point(px(0.), px(28. - ABOVE_OFFSET)))
+                .snap_to_window_with_margin(px(8.))
+                .child(design::motion::pop_in(
+                    div().child(panel),
+                    id,
+                    ENTER,
+                    ENTER_SLIDE,
+                ));
+            let slot = div().absolute().top_0().left_0().child(fit);
+            return gpui_kit::deferred(slot).into_any_element();
+        }
+        let below = self.thread_id.is_none();
+        let slot = div().absolute().left_0();
+        let slot = if below {
+            slot.top(px(BELOW_OFFSET))
+        } else {
+            slot.bottom(px(ABOVE_OFFSET))
+        };
+        let from = if below { -ENTER_SLIDE } else { ENTER_SLIDE };
+        gpui_kit::deferred(slot.child(design::motion::pop_in(div().child(panel), id, ENTER, from)))
+            .into_any_element()
+    }
+}
+
+/// The popovers' surface: the composer's fill and rim, a soft drop.
+fn panel_surface<E: Styled>(el: E, cx: &App) -> E {
+    let p = Palette::of(cx);
+    let (fill, rim) = crate::chat::composer_surface(p, 0., true);
+    let drop = |a: f32, y: f32, blur: f32, spread: f32| gpui_kit::BoxShadow {
+        color: gpui_kit::hsla(0., 0., 0., a),
+        offset: gpui_kit::point(px(0.), px(y)),
+        blur_radius: px(blur),
+        spread_radius: px(spread),
+        inset: false,
+    };
+    let shadows = if p.light {
+        vec![drop(0.08, 8., 24., -6.), drop(0.04, 1., 3., 0.)]
+    } else {
+        vec![drop(0.35, 8., 24., -6.), drop(0.2, 1., 3., 0.)]
+    };
+    el.rounded(px(design::PANEL_RADIUS))
+        .bg(fill)
+        .border_1()
+        .border_color(rim)
+        .shadow(shadows)
 }
 
 /// The thread's pick as `(provider, model)`; no model is the default.

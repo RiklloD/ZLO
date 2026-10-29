@@ -34,12 +34,16 @@ icon_assets!(
         FileCode,
         FolderGit,
         FolderPlus,
+        FolderTree,
+        MessagesSquare,
         GitCommitHorizontal,
         GitCompare,
         GitPullRequest,
         Image,
         ListTodo,
         MessageSquarePlus,
+        Laptop,
+        House,
         CircleDot,
         Upload
     ]

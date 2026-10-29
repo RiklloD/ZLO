@@ -1,5 +1,5 @@
 //! Host-owned configuration. Computer use is on when the engine ships inside
-//! Numoh.app (next to the backend) or `COMPUTER_USE_BINARY` names one, and
+//! ZLO.app (next to the backend) or `COMPUTER_USE_BINARY` names one, and
 //! `COMPUTER_USE_ENABLED=false` turns it off. The binary path comes from the
 //! host, never from a tool call.
 
@@ -15,12 +15,12 @@ pub(crate) const INHERITED_ENV: &[&str] = &[
 ];
 
 /// The engine bundled by `tools/ironclaw_gpui/bundle.sh`, relative to the
-/// backend executable (`Numoh.app/Contents/MacOS/numoh-backend`).
-const BUNDLED_ENGINE: &str = "../Helpers/Numoh Computer Use.app/Contents/MacOS/OpenComputerUse";
+/// backend executable (`ZLO.app/Contents/MacOS/zlo-backend`).
+const BUNDLED_ENGINE: &str = "../Helpers/ZLO Computer Use.app/Contents/MacOS/OpenComputerUse";
 
 /// The engine runs in-process instead of proxying to its own app agent. Its
 /// macOS permission checks then fall on the app that started the backend
-/// (Numoh), so one grant to Numoh covers clicks, typing and screenshots.
+/// (ZLO), so one grant to ZLO covers clicks, typing and screenshots.
 const IN_PROCESS_ENV: (&str, &str) = ("OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY", "1");
 
 #[derive(Debug, Clone)]
@@ -145,8 +145,10 @@ impl ComputerUseConfig {
     }
 }
 
-/// The patched fork: the engine bundled into Numoh, or the Hermes build.
+/// The patched fork: the engine bundled into ZLO, or the Hermes build.
 fn is_fork(binary: &std::path::Path) -> bool {
     let path = binary.to_string_lossy();
-    path.contains("Numoh Computer Use.app") || path.contains("(Dev).app")
+    path.contains("ZLO Computer Use.app")
+        || path.contains("Numoh Computer Use.app")
+        || path.contains("(Dev).app")
 }

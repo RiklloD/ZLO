@@ -1,9 +1,9 @@
-//! Numoh owns the local backend's lifetime: opening the app starts
-//! `Contents/MacOS/numoh-backend serve` as a child process, quitting stops it.
+//! ZLO owns the local backend's lifetime: opening the app starts
+//! `Contents/MacOS/zlo-backend serve` as a child process, quitting stops it.
 //!
-//! Running it as a child (not a launchd job) makes Numoh the "responsible"
+//! Running it as a child (not a launchd job) makes ZLO the "responsible"
 //! app for everything the backend and its computer-use engine do, so macOS
-//! asks for Accessibility and Screen Recording once, for Numoh.
+//! asks for Accessibility and Screen Recording once, for ZLO.
 //!
 //! A backend that exits on its own is restarted with backoff. Outside the app
 //! bundle (`cargo run`) the installed `~/.ironclaw/bin/ironclaw` is used.
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 /// The launchd job older installs used; retired on first start.
 const LEGACY_LABEL: &str = "com.ironclaw.reborn";
-const PID_FILE: &str = "numoh-backend.pid";
+const PID_FILE: &str = "zlo-backend.pid";
 const STOP_GRACE: Duration = Duration::from_secs(6);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// A run this long resets the restart backoff.
@@ -53,7 +53,7 @@ fn paths() -> Option<Paths> {
     let home = ironclaw_gpui_client::reborn_home().ok()?;
     let bundled = std::env::current_exe()
         .ok()
-        .and_then(|exe| Some(exe.parent()?.join("numoh-backend")));
+        .and_then(|exe| Some(exe.parent()?.join("zlo-backend")));
     let installed = dirs::home_dir().map(|h| h.join(".ironclaw/bin/ironclaw"));
     let backend = [bundled, installed]
         .into_iter()
@@ -74,7 +74,7 @@ pub fn start() {
     }
     sup.stopping.store(false, Ordering::SeqCst);
     std::thread::Builder::new()
-        .name("numoh-backend".into())
+        .name("zlo-backend".into())
         .spawn(move || {
             retire_launchd_job();
             stop_stale(&paths.home);
@@ -181,7 +181,7 @@ fn terminate(pid: u32) {
         .status();
 }
 
-/// A backend left over from a crashed Numoh still holds the port.
+/// A backend left over from a crashed ZLO still holds the port.
 fn stop_stale(home: &Path) {
     let Some(pid) = fs::read_to_string(home.join(PID_FILE))
         .ok()
@@ -195,7 +195,11 @@ fn stop_stale(home: &Path) {
             .output()
             .ok()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .is_some_and(|comm| comm.contains("numoh-backend") || comm.contains("ironclaw"))
+            .is_some_and(|comm| {
+                comm.contains("zlo-backend")
+                    || comm.contains("numoh-backend")
+                    || comm.contains("ironclaw")
+            })
     };
     if !alive(pid) {
         return;

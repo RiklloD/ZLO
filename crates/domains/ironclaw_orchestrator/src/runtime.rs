@@ -40,6 +40,11 @@ pub struct RuntimeCapabilities {
     /// this off.
     #[serde(default)]
     pub reports_restart_cuts: bool,
+    /// The runtime's agent reads host files itself (CLI agents). Host paths
+    /// in its delegation briefs may then reach a sandboxed child as
+    /// attachments; a sandboxed parent cannot widen its own reach that way.
+    #[serde(default)]
+    pub host_files: bool,
 }
 
 /// Token accounting for one turn (sum over its model calls).
@@ -161,6 +166,11 @@ pub struct TurnInput {
     /// The thread's profile as a CLI agent sees it; `None` without a
     /// profile or a [`ProfileContextSource`].
     pub profile: Option<TurnProfile>,
+    /// Host paths the text names that the runtime should hand its agent as
+    /// attachments (see [`RuntimeCapabilities::host_files`]). Candidates
+    /// only: the runtime checks each one before reading it. Runtimes whose
+    /// agent reads the host directly ignore them.
+    pub files: Vec<std::path::PathBuf>,
 }
 
 /// A profile's identity, folder and skills for one CLI turn.
@@ -277,6 +287,9 @@ pub struct HistoryMessage {
     /// Scaffolding the user never typed (context handoffs, auto-continue).
     #[serde(default)]
     pub hidden: bool,
+    /// When the message was written, if the runtime records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Millis>,
 }
 
 /// One provider and its models, as `t3_capabilities` shows them.

@@ -43,6 +43,7 @@ fn msg(role: HistoryRole, text: &str) -> HistoryMessage {
         tool_calls: vec![],
         run_id: None,
         hidden: false,
+        at: None,
     }
 }
 
@@ -359,6 +360,77 @@ async fn delegation_limits_and_result_delivery() {
 }
 
 #[tokio::test]
+async fn a_reply_after_cancel_or_a_follow_up_still_reaches_the_parent() {
+    let h = harness().await;
+    let task = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "review it"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let id = task["taskId"].as_str().unwrap().to_string();
+    let child = tid(task["childThreadId"].as_str().unwrap());
+    // The cancel finalizes without a result (the child looked idle) ...
+    h.engine
+        .store()
+        .set_turn_ended(&child, None, TurnState::Idle, None, now_ms())
+        .await
+        .unwrap();
+    h.engine
+        .cancel_task(&ctx("p"), &TaskId::new(&id).unwrap(), "stop")
+        .await
+        .unwrap();
+    assert_eq!(task_status(&h.engine, &id).await, TaskStatus::Cancelled);
+    h.engine.tick().await;
+    // ... and the run it could not stop finishes anyway.
+    finish(
+        &h.engine,
+        &child,
+        TurnOutcome::completed(Some("late review".into())),
+    )
+    .await;
+    finish(&h.engine, &tid("p"), TurnOutcome::completed(None)).await;
+    h.engine.tick().await;
+    let cards = h.rt.starts_on(&tid("p"));
+    assert!(
+        cards.last().is_some_and(|c| c.contains("late review")),
+        "the late reply is delivered: {cards:?}"
+    );
+
+    // A follow-up the person asks for in the child chat comes back too.
+    finish(&h.engine, &tid("p"), TurnOutcome::completed(None)).await;
+    finish(
+        &h.engine,
+        &child,
+        TurnOutcome::completed(Some("second pass".into())),
+    )
+    .await;
+    h.engine.tick().await;
+    let cards = h.rt.starts_on(&tid("p"));
+    assert!(cards.last().is_some_and(|c| c.contains("second pass")));
+}
+
+#[test]
+fn brief_paths_finds_absolute_and_home_paths() {
+    let brief = "Read `/Users/me/Downloads/My Page.html` and ~/notes/a.md, \
+                 then report. See (/tmp/x.txt). Not this: relative/a.md";
+    let paths: Vec<String> = crate::delegation::brief_paths(brief)
+        .into_iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "/Users/me/Downloads/My Page.html",
+            "~/notes/a.md",
+            "/tmp/x.txt"
+        ]
+    );
+}
+
+#[tokio::test]
 async fn restart_cut_turns_continue_once_idle() {
     let h = harness().await;
     let a = tid("a");
@@ -427,6 +499,9 @@ async fn restart_cut_turns_continue_once_idle() {
     assert_eq!(h.engine.prepare_for_shutdown().await.unwrap(), 1);
     let reopened = open_engine(&h.db).await;
     reopened.register_runtime(h.rt.clone());
+    // A runtime that reclaims the cut run on boot is stopped, not followed.
+    reopened.turn_started(&q, Some("r3".into()), now_ms()).await;
+    assert_eq!(*h.rt.cancelled.lock().unwrap(), vec![q.clone()]);
     reopened.queue_add(&q, "later", Author::User).await.unwrap();
     let cut = TurnOutcome {
         cut_by_restart: true,
@@ -755,7 +830,12 @@ async fn profiles_run_on_their_providers_runtime() {
     let same = tid("same");
     h.engine.ensure_thread(&same, &scope(), None).await.unwrap();
     store.set_thread_profile(&same, &coder).await.unwrap();
-    assert!(h.engine.bind_profile_runtime(&same, &profile).await.unwrap());
+    assert!(
+        h.engine
+            .bind_profile_runtime(&same, &profile)
+            .await
+            .unwrap()
+    );
     let mut on_m1 = profile.clone();
     on_m1.settings.default_model = Some("m1".into());
     assert!(h.engine.bind_profile_runtime(&same, &on_m1).await.unwrap());

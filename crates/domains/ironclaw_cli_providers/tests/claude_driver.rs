@@ -133,6 +133,7 @@ fn input() -> TurnInput {
         goal: None,
         effort: None,
         profile: None,
+        files: Vec::new(),
     }
 }
 

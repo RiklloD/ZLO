@@ -29,7 +29,7 @@ struct Last(Frame);
 impl Global for Last {}
 
 fn file() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("Numoh").join("window.json"))
+    Some(dirs::config_dir()?.join("ZLO").join("window.json"))
 }
 
 /// Where the main window should open.

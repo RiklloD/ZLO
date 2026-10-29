@@ -356,6 +356,7 @@ mod tests {
             tool_calls: Vec::new(),
             run_id: None,
             hidden: false,
+            at: None,
         }
     }
 

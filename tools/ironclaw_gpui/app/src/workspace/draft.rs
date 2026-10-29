@@ -29,6 +29,8 @@ pub(super) struct Draft {
     input: Entity<TextareaState>,
     picker: Entity<ModelPicker>,
     pub(super) menu_open: bool,
+    /// The pointer is on the profile switch; see `ModelPicker::pill_hover`.
+    menu_hover: bool,
     /// Files for the first message, handed to the thread on send.
     staged: Vec<StagedFile>,
     /// The `/` and `@` menu: skills and extensions only, since commands
@@ -125,6 +127,7 @@ impl Workspace {
                 input,
                 picker,
                 menu_open: false,
+                menu_hover: false,
                 staged,
                 menu: ComposerMenu::default(),
                 sending: false,
@@ -489,6 +492,11 @@ impl Workspace {
                 // the underline shows on hover and while the menu is open.
                 h_flex()
                     .id("draft-profile")
+                    .on_hover(cx.listener(|this, h: &bool, _, _| {
+                        if let Some(d) = this.draft.as_mut() {
+                            d.menu_hover = *h;
+                        }
+                    }))
                     .role(Role::Button)
                     .aria_label(format!("Profile: {name}"))
                     .gap_1()
@@ -528,7 +536,7 @@ impl Workspace {
                         .w(px(260.))
                         .occlude()
                         .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            if let Some(d) = this.draft.as_mut() {
+                            if let Some(d) = this.draft.as_mut().filter(|d| !d.menu_hover) {
                                 d.menu_open = false;
                             }
                             cx.notify();

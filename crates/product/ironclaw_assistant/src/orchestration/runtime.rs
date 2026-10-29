@@ -12,7 +12,8 @@ use ironclaw_host_api::ids::ActivityId;
 use ironclaw_orchestrator::model::{RuntimeId, ThreadRecord, ThreadScope};
 use ironclaw_orchestrator::runtime::*;
 use ironclaw_product_contracts::inbound_requests::{
-    ProductCancelRunRequest, ProductCreateThreadRequest, ProductSubmitTurnRequest,
+    ProductCancelRunRequest, ProductCreateThreadRequest, ProductInboundAttachment,
+    ProductSubmitTurnRequest,
 };
 use ironclaw_product_contracts::operator_llm::{
     NativeModelRoute, NativeModelRoutes, USER_MODEL_CATALOG_VIEW, UserModelCatalog,
@@ -78,6 +79,7 @@ impl AgentLoopRuntime {
         thread: &ThreadRecord,
         text: &str,
         model: Option<String>,
+        attachments: Vec<ProductInboundAttachment>,
     ) -> Result<RebornSubmitTurnResponse, RuntimeError> {
         SUBMIT_TURN_COMMAND
             .invoke_on(
@@ -87,7 +89,7 @@ impl AgentLoopRuntime {
                     client_action_id: Some(uuid::Uuid::new_v4().to_string()),
                     thread_id: Some(thread.thread_id.as_str().to_string()),
                     content: Some(text.to_string()),
-                    attachments: Vec::new(),
+                    attachments,
                     model,
                 },
                 ActivityId::new(),
@@ -124,6 +126,135 @@ pub(crate) fn native_turn_model_on(
     NativeModelRoute::turn_model(provider, model.as_deref(), effort)
 }
 
+/// The brief's host files a sandboxed child may receive, as inline uploads
+/// under the same budgets and format registry the submit decoder enforces
+/// (a file it would reject must not sink the whole brief). Only regular
+/// files under the home folder, outside hidden folders and `~/Library` (app
+/// data and credentials, not documents). The file read is the one that was
+/// checked: it is opened, its inode compared with the vetted path's, and
+/// read no further than the remaining budget. A skipped file is logged and
+/// left out; the child sees the brief either way.
+async fn host_attachments(paths: &[std::path::PathBuf]) -> Vec<ProductInboundAttachment> {
+    use base64::Engine as _;
+    use std::os::unix::fs::MetadataExt as _;
+    use tokio::io::AsyncReadExt as _;
+    let budgets = ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        tracing::debug!("brief attachments skipped: no HOME");
+        return Vec::new();
+    };
+    let home = match tokio::fs::canonicalize(&home).await {
+        Ok(home) => home,
+        Err(error) => {
+            tracing::debug!(%error, "brief attachments skipped: home unresolved");
+            return Vec::new();
+        }
+    };
+    let mut total = 0usize;
+    let mut out: Vec<ProductInboundAttachment> = Vec::new();
+    let mut seen = Vec::new();
+    for raw in paths {
+        if out.len() == budgets.max_count {
+            tracing::debug!("brief attachments: count budget reached");
+            break;
+        }
+        let path = match raw.strip_prefix("~") {
+            Ok(rest) => home.join(rest),
+            Err(_) => raw.clone(),
+        };
+        let real = match tokio::fs::canonicalize(&path).await {
+            Ok(real) => real,
+            // Most candidates are prose that only looks like a path.
+            Err(error) => {
+                tracing::debug!(%error, "brief path skipped: not found");
+                continue;
+            }
+        };
+        let Ok(rel) = real.strip_prefix(&home) else {
+            tracing::debug!("brief path skipped: outside home");
+            continue;
+        };
+        let hidden = rel
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
+        if hidden || rel.starts_with("Library") || seen.contains(&real) {
+            tracing::debug!("brief path skipped: hidden, Library or repeated");
+            continue;
+        }
+        let name = real.to_string_lossy().to_string();
+        let mime = crate::scoped_fs::project_filesystem_reader::mime_for_path(&name);
+        if !ironclaw_common::is_supported_mime(&mime) {
+            tracing::debug!(%mime, "brief path skipped: unsupported format");
+            continue;
+        }
+        let vetted = match tokio::fs::metadata(&real).await {
+            Ok(meta) => meta,
+            Err(error) => {
+                tracing::debug!(%error, "brief path skipped: metadata");
+                continue;
+            }
+        };
+        let room = budgets
+            .max_file_bytes
+            .min(budgets.max_total_bytes.saturating_sub(total));
+        if !vetted.is_file() || vetted.len() > room as u64 {
+            tracing::debug!("brief path skipped: not a file or over budget");
+            continue;
+        }
+        let file = match tokio::fs::File::open(&real).await {
+            Ok(file) => file,
+            Err(error) => {
+                tracing::debug!(%error, "brief path skipped: open");
+                continue;
+            }
+        };
+        // The opened file must be the vetted one, not a swapped-in link.
+        let opened = match file.metadata().await {
+            Ok(meta) => meta,
+            Err(error) => {
+                tracing::debug!(%error, "brief path skipped: opened metadata");
+                continue;
+            }
+        };
+        if !opened.is_file() || (opened.dev(), opened.ino()) != (vetted.dev(), vetted.ino()) {
+            tracing::debug!("brief path skipped: changed while opening");
+            continue;
+        }
+        let mut bytes = Vec::new();
+        if let Err(error) = file.take(room as u64 + 1).read_to_end(&mut bytes).await {
+            tracing::debug!(%error, "brief path skipped: read");
+            continue;
+        }
+        if bytes.len() > room {
+            tracing::debug!("brief path skipped: grew past the budget");
+            continue;
+        }
+        total += bytes.len();
+        out.push(ProductInboundAttachment {
+            mime_type: mime,
+            filename: crate::scoped_fs::project_filesystem_reader::file_name_of(&name),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            path: None,
+        });
+        seen.push(real);
+    }
+    out
+}
+
+/// `name(hint)` for a tool-preview row, so child-run summaries and task
+/// progress count real tool calls. The preview is our own JSON record.
+fn preview_tool_call(content: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let name = value.get("capability_id")?.as_str()?;
+    let hint = value
+        .get("input_summary")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.lines().next())
+        .unwrap_or("");
+    let hint: String = hint.chars().take(80).collect();
+    Some(format!("{name}({hint})"))
+}
+
 fn surface_error(error: ProductSurfaceError) -> RuntimeError {
     match error.status_code {
         404 => RuntimeError::ThreadNotFound,
@@ -146,6 +277,7 @@ impl TurnRuntime for AgentLoopRuntime {
             reports_usage: false,
             // An expired turn lease surfaces as `RecoveryRequired` in the journal.
             reports_restart_cuts: true,
+            host_files: false,
         }
     }
 
@@ -180,18 +312,23 @@ impl TurnRuntime for AgentLoopRuntime {
         input: TurnInput,
     ) -> Result<TurnAdmission, RuntimeError> {
         let model = native_turn_model(thread, input.model, input.effort.as_deref());
-        Ok(match self.submit(thread, &input.text, model).await? {
-            RebornSubmitTurnResponse::Submitted { run_id, .. }
-            | RebornSubmitTurnResponse::AlreadySubmitted { run_id, .. } => TurnAdmission::Started {
-                run_id: Some(run_id.to_string()),
-            },
-            RebornSubmitTurnResponse::DeferredBusy { active_run_id, .. } => {
-                TurnAdmission::Steered {
-                    run_id: Some(active_run_id.to_string()),
+        let attachments = host_attachments(&input.files).await;
+        Ok(
+            match self.submit(thread, &input.text, model, attachments).await? {
+                RebornSubmitTurnResponse::Submitted { run_id, .. }
+                | RebornSubmitTurnResponse::AlreadySubmitted { run_id, .. } => {
+                    TurnAdmission::Started {
+                        run_id: Some(run_id.to_string()),
+                    }
                 }
-            }
-            RebornSubmitTurnResponse::RejectedBusy { .. } => TurnAdmission::Busy,
-        })
+                RebornSubmitTurnResponse::DeferredBusy { active_run_id, .. } => {
+                    TurnAdmission::Steered {
+                        run_id: Some(active_run_id.to_string()),
+                    }
+                }
+                RebornSubmitTurnResponse::RejectedBusy { .. } => TurnAdmission::Busy,
+            },
+        )
     }
 
     async fn steer(
@@ -203,7 +340,7 @@ impl TurnRuntime for AgentLoopRuntime {
         if how == SteerHow::Restart {
             self.cancel(thread, "redirected").await?;
         }
-        Ok(match self.submit(thread, text, None).await? {
+        Ok(match self.submit(thread, text, None, Vec::new()).await? {
             RebornSubmitTurnResponse::DeferredBusy { .. } => SteerOutcome::Steered,
             RebornSubmitTurnResponse::RejectedBusy { .. } => SteerOutcome::Rejected,
             _ if how == SteerHow::Restart => SteerOutcome::Restarted,
@@ -280,12 +417,18 @@ impl TurnRuntime for AgentLoopRuntime {
                 };
                 let hidden = role == HistoryRole::User
                     && ENGINE_PREFIXES.iter().any(|p| text.starts_with(p));
+                let tool_calls = if m.kind == MessageKind::CapabilityDisplayPreview {
+                    preview_tool_call(&text).into_iter().collect()
+                } else {
+                    Vec::new()
+                };
                 Some(HistoryMessage {
                     role,
                     text,
-                    tool_calls: Vec::new(),
+                    tool_calls,
                     run_id: m.turn_run_id.clone(),
                     hidden,
+                    at: m.created_at.or(m.updated_at).map(|t| t.timestamp_millis()),
                 })
             })
             .collect())

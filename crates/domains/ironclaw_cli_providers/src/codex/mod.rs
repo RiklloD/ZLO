@@ -678,6 +678,7 @@ impl TurnRuntime for CodexRuntime {
             steer_in_turn: true,
             reports_usage: true,
             reports_restart_cuts: false,
+            host_files: true,
         }
     }
 

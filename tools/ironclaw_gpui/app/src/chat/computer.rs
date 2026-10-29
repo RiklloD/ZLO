@@ -140,7 +140,7 @@ pub struct ComputerShare {
     big: Option<u32>,
     busy: bool,
     note: Option<SharedString>,
-    /// macOS permissions Numoh still lacks while computer use is on.
+    /// macOS permissions ZLO still lacks while computer use is on.
     missing: Vec<crate::permissions::Permission>,
     permissions_hidden: bool,
 }
@@ -155,7 +155,7 @@ fn viewer_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    format!("numoh{:x}{:x}", std::process::id(), nanos & 0xffff_ffff)
+    format!("zlo{:x}{:x}", std::process::id(), nanos & 0xffff_ffff)
 }
 
 fn decode(jpeg: &[u8]) -> Option<Arc<RenderImage>> {
@@ -904,7 +904,7 @@ impl ComputerShare {
 }
 
 impl ComputerShare {
-    /// Computer use cannot act until Numoh has both permissions; say so
+    /// Computer use cannot act until ZLO has both permissions; say so
     /// before the agent tries, with one button that asks macOS.
     fn render_permissions(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = *Palette::of(cx);
@@ -926,13 +926,13 @@ impl ComputerShare {
             .text_xs()
             .text_color(p.text)
             .child(format!(
-                "Numoh needs {} to use apps for you.",
+                "ZLO needs {} to use apps for you.",
                 names.join(" and ")
             ))
             .child(div().text_color(p.text_faint).child(if screen {
-                "Click Allow, switch Numoh on in System Settings, then reopen Numoh."
+                "Click Allow, switch ZLO on in System Settings, then reopen ZLO."
             } else {
-                "Click Allow, then switch Numoh on in System Settings."
+                "Click Allow, then switch ZLO on in System Settings."
             }))
             .child(
                 h_flex()

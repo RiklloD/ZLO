@@ -35,9 +35,10 @@ use ironclaw_product_contracts::inbox::{
 use ironclaw_product_contracts::orchestration::*;
 use ironclaw_product_contracts::profiles::*;
 use ironclaw_product_contracts::surface::{
-    ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceInvokeRequest,
-    ProductSurfaceInvokeResponse, ProductSurfaceQueryPage, ProductSurfaceQueryRequest,
-    ProductSurfaceStreamRequest, ProductSurfaceStreamResponse, ProductSurfaceValidationCode,
+    ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode,
+    ProductSurfaceInvokeRequest, ProductSurfaceInvokeResponse, ProductSurfaceQueryPage,
+    ProductSurfaceQueryRequest, ProductSurfaceStreamRequest, ProductSurfaceStreamResponse,
+    ProductSurfaceValidationCode,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -829,7 +830,15 @@ impl ProductSurface for OrchestratedProductSurface {
                 .external_history(&thread)
                 .await
                 .map_err(ProductSurfaceError::internal_from)?;
-            let mut result = self.inner.query(caller, request).await?;
+            // A fork or delegated child the orchestrator made has no
+            // session thread for the inner timeline to read.
+            let mut result = match self.inner.query(caller, request).await {
+                Ok(result) => result,
+                Err(e) if e.code == ProductSurfaceErrorCode::NotFound => {
+                    external::bare_timeline(&thread).ok_or(e)?
+                }
+                Err(e) => return Err(e),
+            };
             if let Some(item) = result.items.first_mut() {
                 item["messages"] = Value::Array(external::timeline_messages(&id, &history, limit));
                 item["next_cursor"] = Value::Null;

@@ -1,13 +1,13 @@
 [package]
 name = "ironclaw_gpui"
-description = "Numoh: native GPUI frontend for the IronClaw gateway"
+description = "ZLO: native GPUI frontend for the IronClaw gateway"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "numoh"
+name = "zlo"
 path = "src/main.rs"
 
 [dependencies]

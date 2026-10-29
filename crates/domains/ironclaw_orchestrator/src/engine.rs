@@ -368,6 +368,19 @@ impl Engine {
         origin: TurnOrigin,
         respect_hold: bool,
     ) -> Result<bool> {
+        self.deliver_with_files(thread_id, text, origin, respect_hold, Vec::new())
+            .await
+    }
+
+    /// [`Self::deliver`], handing the runtime host files to attach.
+    pub(crate) async fn deliver_with_files(
+        &self,
+        thread_id: &ThreadId,
+        text: String,
+        origin: TurnOrigin,
+        respect_hold: bool,
+        files: Vec<std::path::PathBuf>,
+    ) -> Result<bool> {
         let _guard = self.dispatch.lock().await;
         if respect_hold && self.store.hold(thread_id).await?.is_some() {
             return Ok(false);
@@ -395,6 +408,7 @@ impl Engine {
                     goal,
                     effort: self.store.thread_effort(thread_id).await?,
                     profile: self.turn_profile(thread_id).await,
+                    files,
                 },
             )
             .await?;
@@ -512,7 +526,7 @@ impl Engine {
                 let now = now_ms();
                 for task in &tasks {
                     self.store
-                        .set_delivery(&task.id, Delivery::Pending, Delivery::Delivered, now)
+                        .ack_delivery(&task.id, task.result.as_deref(), now)
                         .await?;
                     if let Some(child) = &task.child_thread {
                         self.store.consume_result_transfers(child).await?;
@@ -668,10 +682,59 @@ impl Engine {
         }
     }
 
+    /// A finished task's child answered again: a reply that landed after a
+    /// cancel, or a follow-up the user asked for in the child chat. The
+    /// parent gets it as a fresh result card instead of never seeing it.
+    async fn redeliver_late_reply(
+        &self,
+        task: &TaskRecord,
+        thread: &ThreadRecord,
+        run_id: Option<&str>,
+        outcome: &TurnOutcome,
+    ) -> Result<()> {
+        // The same run's completion replayed is not a new reply. The turn log
+        // row for this event is already written, so a repeat counts two.
+        if let Some(run) = run_id
+            && self
+                .store
+                .completed_turn_logs(&thread.thread_id, run)
+                .await?
+                > 1
+        {
+            return Ok(());
+        }
+        let text = self.final_text(thread, outcome).await;
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(());
+        }
+        let reply = format!("Reply from the child chat after the task ended:\n\n{text}");
+        // Replies the parent has not seen yet are kept, the new one appended.
+        let result = match (&task.delivery, &task.result) {
+            (Delivery::Pending, Some(earlier)) => format!("{earlier}\n\n---\n\n{reply}"),
+            _ => reply,
+        };
+        self.store
+            .move_task(
+                &task.id,
+                &[task.status],
+                false,
+                task.status,
+                TaskPatch {
+                    result: Some(Some(clip(&result, 60_000))),
+                    delivery: Some(Delivery::Pending),
+                    ..TaskPatch::default()
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
     /// A child thread's turn ended: settle its task (T3 semantics).
     async fn settle_child_task(
         &self,
         thread: &ThreadRecord,
+        run_id: Option<&str>,
         outcome: &TurnOutcome,
         usage_armed: bool,
         restart_pending: bool,
@@ -680,6 +743,10 @@ impl Engine {
             return Ok(());
         };
         if task.status.is_terminal() {
+            if outcome.status == TurnEndStatus::Completed {
+                self.redeliver_late_reply(&task, thread, run_id, outcome)
+                    .await?;
+            }
             return Ok(());
         }
         let mut usage = task.usage.unwrap_or_default();
@@ -835,6 +902,24 @@ impl TurnEventSink for Engine {
             let Some(thread) = self.store.thread(thread_id).await? else {
                 return Ok(());
             };
+            // A runtime that resumes its own turns after a restart (IronClaw's
+            // loop reclaims the run lease) would carry on a turn a clean quit
+            // cut. That turn waits for the person's Continue: stop it. Only
+            // the run cut by the quit matches; a new message has a new run id.
+            if thread.is_running()
+                && run_id.is_some()
+                && thread.active_run_id == run_id
+                && self.store.hold(thread_id).await? == Some(HoldReason::Interrupted)
+            {
+                if let Err(error) = self
+                    .runtime(&thread.runtime_id)?
+                    .cancel(&thread, "interrupted by quit")
+                    .await
+                {
+                    tracing::debug!(%error, "could not stop a turn resumed after a clean quit");
+                }
+                return Ok(());
+            }
             self.mark_running(&thread, run_id.as_deref(), at).await?;
             if let Some(task) = self.store.task_for_child(thread_id).await? {
                 self.store
@@ -917,7 +1002,13 @@ impl TurnEventSink for Engine {
                 .await?;
                 restart_pending = true;
             }
-            self.settle_child_task(&thread, &outcome, usage_armed, restart_pending)
+            self.settle_child_task(
+                &thread,
+                run_id.as_deref(),
+                &outcome,
+                usage_armed,
+                restart_pending,
+            )
                 .await?;
             Ok(Some(thread))
         }

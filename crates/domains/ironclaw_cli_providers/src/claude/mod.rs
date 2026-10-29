@@ -570,6 +570,7 @@ impl TurnRuntime for ClaudeCliRuntime {
             reports_usage: true,
             // The CLI child dies with the backend; live-work rows cover it.
             reports_restart_cuts: false,
+            host_files: true,
         }
     }
 

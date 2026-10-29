@@ -33,7 +33,7 @@
 //! it as a zoom); notches A press ends a glide too. Off under reduced motion.
 //!
 //! Adapted from Zeron's `smooth_scroll.rs` (MIT, see `THIRD_PARTY_NOTICES.md`).
-//! Numoh's native web previews take their wheel from AppKit directly, so
+//! ZLO's native web previews take their wheel from AppKit directly, so
 //! the raw-wheel regions and the AppKit hook are left out.
 
 use std::cell::{Cell, RefCell};
@@ -62,7 +62,7 @@ const GRID_LINES: f32 = 1.0 / 4096.0;
 
 thread_local! {
     /// Cleared at the start of each wheel's capture phase; kept for parity
-    /// with Zeron's raw regions, none of which Numoh draws yet.
+    /// with Zeron's raw regions, none of which ZLO draws yet.
     static KEEP_RAW: Cell<bool> = const { Cell::new(false) };
 }
 

@@ -9,7 +9,11 @@
 //!   items are activity, like thinking and tool cards;
 //! - once a run reaches a terminal status the durable reply converges into the
 //!   bubble: the app reloads the timeline and the durable message replaces it;
-//! - thinking, narration and tool cards are live-only state, never durable.
+//! - thinking and narration are live-only state; tool cards are live too,
+//!   but rebuilt from the stored tool-preview rows when the timeline loads,
+//!   so a reopened chat still shows what each run did;
+//! - a message sent while a run works (a steer) sits where it was sent: the
+//!   run's activity before it renders above it, the rest below.
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,8 +25,8 @@ use ironclaw_product_contracts::outbound::{
 use crate::api::GateDecision;
 use crate::orchestration::MergedFork;
 use crate::wire::{
-    ATTACHMENTS_ONLY_CONTENT, CommandField, CommandOutcome, MessageKind, StreamEvent,
-    TimelineMessage, TimelinePage,
+    ATTACHMENTS_ONLY_CONTENT, CommandField, CommandOutcome, MessageKind, MessageStatus,
+    StreamEvent, TimelineMessage, TimelinePage,
 };
 
 mod attached;
@@ -88,6 +92,13 @@ pub enum Row {
         key: String,
         text: String,
     },
+    /// Finished delegated tasks the engine handed to this thread. Stored as
+    /// a user-kind message, but the person never typed it.
+    Delegated {
+        key: String,
+        title: String,
+        body: String,
+    },
     Gate {
         key: String,
         run_id: String,
@@ -142,6 +153,7 @@ impl Row {
             | Row::Tool { key, .. }
             | Row::Skills { key, .. }
             | Row::WorkSummary { key, .. }
+            | Row::Delegated { key, .. }
             | Row::Gate { key, .. }
             | Row::RunNotice { key, .. }
             | Row::Command { key, .. } => key,
@@ -178,6 +190,8 @@ struct LiveEntry {
     run: Option<String>,
     /// Tick of the last upsert; orders gates against later run statuses.
     tick: u64,
+    /// Wall-clock ms the entry first appeared; places it around steers.
+    at: i64,
     item: Live,
 }
 
@@ -264,6 +278,28 @@ pub fn readable(text: &str, chips: &[AttachmentChip]) -> String {
             AnchoredPart::Attachment(ix) => chips.get(ix).map_or("", |c| c.filename.as_str()),
         })
         .collect()
+}
+
+/// The engine's result-delivery turn (`result_turn_text` in the
+/// orchestrator): a title naming each task, and the results below it.
+fn delegated_result(text: &str) -> Option<(String, String)> {
+    let body = text.strip_prefix("Delegated work finished.")?;
+    let body = body
+        .trim_start()
+        .strip_prefix("Use these results to continue.")
+        .unwrap_or(body)
+        .trim()
+        .to_string();
+    let titles: Vec<&str> = body
+        .lines()
+        .filter(|l| l.starts_with("[T3 delegated task "))
+        .filter_map(|l| l.split('"').nth(1))
+        .collect();
+    let title = match titles.as_slice() {
+        [] => "Delegated work finished".to_string(),
+        list => format!("Delegated work finished: {}", list.join(", ")),
+    };
+    Some((title, body))
 }
 
 /// A message's text as a person reads it: without the attachments-only
@@ -353,8 +389,65 @@ impl Transcript {
     pub fn set_timeline(&mut self, page: TimelinePage) {
         let mut messages = page.messages;
         messages.sort_by_key(|m| m.sequence);
+        // The backend renumbers a steer when the model reads it; show it
+        // when it was sent instead, if every row carries its send time.
+        if messages.iter().all(|m| m.created_at.is_some()) {
+            messages.sort_by_key(|m| m.created_at);
+        }
+        for m in &messages {
+            if m.kind == MessageKind::CapabilityDisplayPreview {
+                self.seed_tool(m);
+            }
+        }
         self.durable = messages;
         self.reconcile_pending();
+    }
+
+    /// A stored tool preview becomes a tool card, unless the live stream
+    /// already drew it.
+    fn seed_tool(&mut self, m: &TimelineMessage) {
+        let Some(v) = m
+            .content
+            .as_deref()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
+        else {
+            return;
+        };
+        let field = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        let Some(invocation) = field("invocation_id") else {
+            return;
+        };
+        let key = format!("tool:{invocation}");
+        let status = match field("status").as_deref() {
+            Some("completed") => ToolStatus::Completed,
+            Some("failed" | "killed") => ToolStatus::Failed,
+            _ => ToolStatus::Running,
+        };
+        let detail = field("output_summary").or_else(|| field("input_summary"));
+        // A card the stream drew keeps its place; the stored row settles it
+        // when the stream missed the completion.
+        if let Some(entry) = self.live.get_mut(&key) {
+            if let Live::Tool {
+                detail: old_detail,
+                status: old_status,
+                ..
+            } = &mut entry.item
+                && status != ToolStatus::Running
+            {
+                *old_status = status;
+                if detail.is_some() {
+                    *old_detail = detail;
+                }
+            }
+            return;
+        }
+        let title = field("title")
+            .or_else(|| field("capability_id"))
+            .unwrap_or_else(|| "tool".into());
+        self.upsert_tool(invocation, m.turn_run_id.clone(), title, detail, status);
+        if let (Some(entry), Some(at)) = (self.live.get_mut(&key), m.created_at) {
+            entry.at = at.timestamp_millis();
+        }
     }
 
     pub fn set_prefix(&mut self, mut messages: Vec<TimelineMessage>) {
@@ -784,7 +877,12 @@ impl Transcript {
                 } else {
                     old_title.clone()
                 },
-                old_detail.clone().or(detail),
+                // Input while it runs, the output once it is done.
+                if status == ToolStatus::Running {
+                    old_detail.clone().or(detail)
+                } else {
+                    detail.or_else(|| old_detail.clone())
+                },
                 if *old_status != ToolStatus::Running && status == ToolStatus::Running {
                     *old_status
                 } else {
@@ -824,7 +922,16 @@ impl Transcript {
             }
             None => {
                 self.order.push(key.clone());
-                self.live.insert(key, LiveEntry { run, tick, item });
+                let at = chrono::Utc::now().timestamp_millis();
+                self.live.insert(
+                    key,
+                    LiveEntry {
+                        run,
+                        tick,
+                        at,
+                        item,
+                    },
+                );
             }
         }
     }
@@ -872,6 +979,8 @@ impl Transcript {
 
         let mut rows = Vec::new();
         let mut emitted: HashSet<Option<String>> = HashSet::new();
+        // Activity already drawn above a steer; never drawn twice.
+        let mut shown: HashSet<&str> = HashSet::new();
         // A run that fails before producing any output has no live group and
         // no reply; its notice goes right after the user message that started it.
         let quiet_run = |run: &str| {
@@ -921,6 +1030,12 @@ impl Transcript {
                 continue;
             }
             let key = format!("msg:{}", message.message_id);
+            if message.kind == MessageKind::User
+                && let Some((title, body)) = delegated_result(&text)
+            {
+                rows.push(Row::Delegated { key, title, body });
+                continue;
+            }
             match message.kind {
                 MessageKind::User => {
                     let uploads = message
@@ -935,10 +1050,32 @@ impl Transcript {
                         })
                         .collect();
                     let (text, attachments) = attached::split(&text, uploads);
+                    // A run already working when this was sent: what it did
+                    // before goes above the message, the rest below.
+                    if let Some(sent) = sent {
+                        for (run, keys) in &groups {
+                            let Some(r) = run.as_deref() else { continue };
+                            if emitted.contains(run) {
+                                continue;
+                            }
+                            let before: Vec<&str> = keys
+                                .iter()
+                                .copied()
+                                .filter(|k| !shown.contains(k) && self.live[*k].at < sent)
+                                .collect();
+                            if before.is_empty() {
+                                continue;
+                            }
+                            let reply = durable_replies.get(r).copied().or(Some(""));
+                            self.activity_rows(&before, reply, &mut rows);
+                            shown.extend(before);
+                        }
+                    }
                     rows.push(Row::User {
                         key,
                         text,
-                        pending: false,
+                        // Queued until the model reads it.
+                        pending: message.status == MessageStatus::Queued,
                         attachments,
                     });
                     if let Some(run) = message.turn_run_id.as_deref()
@@ -954,7 +1091,12 @@ impl Transcript {
                     if !emitted.contains(&run)
                         && let Some((_, keys)) = group
                     {
-                        self.activity_rows(keys, Some(&text), &mut rows);
+                        let rest: Vec<&str> = keys
+                            .iter()
+                            .copied()
+                            .filter(|k| !shown.contains(k))
+                            .collect();
+                        self.activity_rows(&rest, Some(&text), &mut rows);
                         emitted.insert(run.clone());
                     }
                     // The bubble the reply streamed into keeps its key, so
@@ -998,7 +1140,12 @@ impl Transcript {
                 continue;
             }
             let durable = run.as_deref().and_then(|r| durable_replies.get(r).copied());
-            self.activity_rows(keys, durable, &mut rows);
+            let rest: Vec<&str> = keys
+                .iter()
+                .copied()
+                .filter(|k| !shown.contains(k))
+                .collect();
+            self.activity_rows(&rest, durable, &mut rows);
             if let Some(run) = run {
                 self.notice_row(run, &mut rows);
             }
@@ -1251,6 +1398,82 @@ mod tests {
             "thread": { "thread_id": "t1" }, "messages": messages
         }))
         .expect("timeline decodes")
+    }
+
+    #[test]
+    fn reopened_chat_shows_stored_tools_around_a_steer_and_result_cards() {
+        let preview = |id: &str, title: &str| {
+            serde_json::json!({ "invocation_id": id, "capability_id": "builtin.read_file",
+                                "status": "completed", "title": title })
+            .to_string()
+        };
+        let at = |s: u32| format!("2026-10-29T18:{s:02}:00Z");
+        let page = serde_json::json!({ "thread": { "thread_id": "t1" }, "messages": [
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "review it", "created_at": at(10) },
+            { "message_id": "p1", "sequence": 2, "kind": "capability_display_preview",
+              "status": "finalized", "turn_run_id": RUN, "content": preview("i1", "Read a"),
+              "created_at": at(11) },
+            { "message_id": "p2", "sequence": 3, "kind": "capability_display_preview",
+              "status": "finalized", "turn_run_id": RUN, "content": preview("i2", "Read b"),
+              "created_at": at(13) },
+            // Sent at :12, renumbered when the model read it after "Read b".
+            { "message_id": "m2", "sequence": 4, "kind": "user", "status": "submitted",
+              "turn_run_id": RUN, "content": "give feedback now", "created_at": at(12) },
+            { "message_id": "m3", "sequence": 5, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "Here it is.", "created_at": at(14) },
+            { "message_id": "m4", "sequence": 6, "kind": "user", "status": "submitted",
+              "content": "Delegated work finished. Use these results to continue.\n\n[T3 delegated task completed] \"Review page\" — task t\n\nLooks good.",
+              "created_at": at(15) },
+        ]});
+        let mut t = Transcript::default();
+        t.set_timeline(serde_json::from_value(page).expect("timeline decodes"));
+        let labels: Vec<String> = t
+            .rows()
+            .iter()
+            .map(|r| match r {
+                Row::User { text, .. } => format!("user:{text}"),
+                Row::Tool { title, .. } => format!("tool:{title}"),
+                Row::Assistant { text, .. } => format!("reply:{text}"),
+                Row::Delegated { title, .. } => format!("result:{title}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "user:review it",
+                "tool:Read a",
+                "user:give feedback now",
+                "tool:Read b",
+                "reply:Here it is.",
+                "result:Delegated work finished: Review page",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stored_result_settles_a_card_whose_completion_was_missed() {
+        let mut t = Transcript::default();
+        t.upsert_tool(
+            "i1".into(),
+            Some(RUN.into()),
+            "Read a".into(),
+            Some("path: a".into()),
+            ToolStatus::Running,
+        );
+        let preview = serde_json::json!({ "invocation_id": "i1", "status": "completed",
+            "title": "Read a", "output_summary": "12 lines" })
+        .to_string();
+        t.set_timeline(
+            serde_json::from_value(serde_json::json!({ "thread": { "thread_id": "t1" },
+                "messages": [{ "message_id": "p1", "sequence": 1,
+                    "kind": "capability_display_preview", "status": "finalized",
+                    "turn_run_id": RUN, "content": preview }] }))
+            .expect("timeline decodes"),
+        );
+        assert!(t.rows().iter().any(|r| matches!(r,
+            Row::Tool { status: ToolStatus::Completed, detail: Some(d), .. } if d == "12 lines")));
     }
 
     #[test]

@@ -95,7 +95,7 @@ pub(super) fn trusted() -> bool {
 /// Walk the app's focused window (else its main or first window).
 pub(super) fn walk(pid: i32) -> Result<Tree, String> {
     if !trusted() {
-        return Err("Accessibility permission is off for Numoh.".into());
+        return Err("Accessibility permission is off for ZLO.".into());
     }
     // SAFETY: create rule; null handled by `Owned::new`.
     let app = Owned::new(unsafe { AXUIElementCreateApplication(pid) })

@@ -770,6 +770,7 @@ impl TurnRuntime for MuseRuntime {
             steer_in_turn: true,
             reports_usage: true,
             reports_restart_cuts: false,
+            host_files: true,
         }
     }
 

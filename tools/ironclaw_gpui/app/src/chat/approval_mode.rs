@@ -57,6 +57,10 @@ pub struct ApprovalPill {
     /// The global auto-approve switch, once loaded.
     global: Option<bool>,
     open: bool,
+    /// The pointer is on the pill; see `ModelPicker::pill_hover`.
+    pill_hover: bool,
+    /// Icon only, as `ModelPicker::compact`.
+    compact: bool,
     busy: bool,
     /// Counts loads and saves; a reply from an older one is dropped.
     seq: u64,
@@ -64,6 +68,10 @@ pub struct ApprovalPill {
 }
 
 impl ApprovalPill {
+    pub fn set_compact(&mut self, compact: bool) {
+        self.compact = compact;
+    }
+
     pub fn new(backend: Backend, thread_id: String, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             backend,
@@ -71,12 +79,19 @@ impl ApprovalPill {
             profile: None,
             global: None,
             open: false,
+            pill_hover: false,
+            compact: false,
             busy: false,
             seq: 0,
             _epoch: cx.observe_global::<ApprovalEpoch>(|this, cx| this.load(cx)),
         };
         this.load(cx);
         this
+    }
+
+    /// The thread's profile, once loaded (the session card shows it).
+    pub(super) fn profile(&self) -> Option<&ProfileInfo> {
+        self.profile.as_ref()
     }
 
     /// Reads the thread's profile and the global switch (again on each open,
@@ -286,6 +301,7 @@ impl Render for ApprovalPill {
         };
         let pill = h_flex()
             .id("approval-pill")
+            .on_hover(cx.listener(|this, h: &bool, _, _| this.pill_hover = *h))
             .role(Role::Button)
             .aria_label(format!("Approvals: {text}"))
             .gap_1p5()
@@ -303,10 +319,16 @@ impl Render for ApprovalPill {
                     .size(px(13.))
                     .text_color(tint(mark, self.global, &p)),
             )
-            .child(text)
+            .when(!self.compact, |d| d.child(text))
             .when(self.busy, |d| d.child(Spinner::new().xsmall()))
-            .when(!self.busy, |d| {
+            .when(!self.busy && !self.compact, |d| {
                 d.child(Icon::new(IconName::ChevronDown).xsmall())
+            })
+            .when(self.compact && !self.open, |d| {
+                let tip = SharedString::from(format!("Approvals: {text}"));
+                d.tooltip(move |w, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)
+                })
             })
             .on_click(cx.listener(|this, _, _, cx| this.toggle(cx)));
         let popover = self.open.then(|| self.render_popover(current, cx));
@@ -314,20 +336,39 @@ impl Render for ApprovalPill {
             .relative()
             .child(pill)
             .children(popover.map(|pop| {
-                gpui_kit::deferred(
+                let card = div()
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if this.pill_hover {
+                            return;
+                        }
+                        this.open = false;
+                        cx.notify();
+                    }))
+                    .child(pop);
+                // Narrow: slid back inside the window.
+                let placed = if self.compact {
+                    let fit = gpui_kit::anchored()
+                        .anchor(gpui_kit::Anchor::BottomLeft)
+                        .offset(gpui_kit::point(px(0.), px(28. - 34.)))
+                        .snap_to_window_with_margin(px(8.))
+                        .child(card);
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .child(fit)
+                        .into_any_element()
+                } else {
                     div()
                         .absolute()
                         .bottom(px(34.))
                         .left_0()
-                        .occlude()
-                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.open = false;
-                            cx.notify();
-                        }))
-                        .child(pop),
-                )
-                .with_priority(1)
+                        .child(card)
+                        .into_any_element()
+                };
+                gpui_kit::deferred(placed).with_priority(1)
             }))
             .into_any_element()
     }

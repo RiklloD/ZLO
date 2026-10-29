@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
-use super::{ChatView, Tab, side_open, side_tab};
+use super::{ChatView, Tab};
 use crate::design::Palette;
 use crate::native_view::{self, Slot, Source, WebCommand, WebState};
 use crate::ui::*;
@@ -60,7 +60,7 @@ impl ChatView {
             loop {
                 cx.background_executor().timer(wait).await;
                 let more = this.update(cx, |this, cx| {
-                    if !(side_open(cx) && side_tab(cx) == Tab::Browser) {
+                    if !this.tab_shown(Tab::Browser, cx) {
                         this.side.browser.polling = false;
                         return None;
                     }

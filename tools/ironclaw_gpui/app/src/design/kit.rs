@@ -138,6 +138,34 @@ pub fn floating(s: &Style, p: &Palette) -> Plate {
     }
 }
 
+/// A glass card: the theme's base plane let through at ~75%, a hairline
+/// rim and a soft drop, for light menus that float over the wallpaper
+/// (the session card). GPUI has no backdrop blur, so the fill stays dense
+/// enough to read on any scene.
+pub fn glass(s: &Style, p: &Palette) -> Plate {
+    let e = s.elevation;
+    Plate {
+        fill: Background::from(p.bg.opacity(if p.light { 0.72 } else { 0.78 })),
+        rim: if p.light { white(0.55) } else { white(0.08) },
+        shadows: vec![
+            shadow(
+                black((if p.light { 0.08 } else { 0.32 }) * e),
+                10.,
+                28.,
+                -10.,
+                false,
+            ),
+            shadow(
+                black((if p.light { 0.04 } else { 0.16 }) * e),
+                1.,
+                3.,
+                0.,
+                false,
+            ),
+        ],
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Primary,

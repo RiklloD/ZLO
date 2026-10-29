@@ -74,6 +74,7 @@ async fn one_turn(rt: &dyn TurnRuntime, recorder: &Recorder) {
             goal: None,
             effort: None,
             profile: None,
+            files: Vec::new(),
         },
     )
     .await

@@ -19,6 +19,7 @@ use ironclaw_host_api::product_adapter::{AdapterInstallationId, ProductAdapterId
 use ironclaw_host_api::turn::{
     AcceptedMessageRef, EventCursor, ReplyTargetBindingRef, TurnRunId, TurnStatus,
 };
+use ironclaw_orchestrator::model::ThreadRecord;
 use ironclaw_orchestrator::profile_runtime::UserTurn;
 use ironclaw_orchestrator::runtime::{HistoryMessage, HistoryRole};
 use ironclaw_product_contracts::outbound::{
@@ -31,9 +32,13 @@ use ironclaw_product_contracts::product_wire::{
     RebornSubmitTurnResponse,
 };
 use ironclaw_product_contracts::surface::{
-    ProductSurfaceError, ProductSurfaceEventSubscription, ProductSurfaceStreamResponse,
+    ProductSurfaceError, ProductSurfaceEventSubscription, ProductSurfaceQueryPage,
+    ProductSurfaceStreamResponse,
 };
+use ironclaw_threads::{SessionThreadRecord, ThreadScope as SessionThreadScope};
 use serde_json::{Value, json};
+
+use crate::reborn_services::RebornTimelineResponse;
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
@@ -112,6 +117,41 @@ pub(super) fn cancel_response(raw_run: &str) -> RebornCancelRunResponse {
 /// assistant text (one journal row per text block, split by tool calls) is
 /// one reply, joined like the live stream joins it, so the streamed bubble
 /// and the durable reply match.
+/// The timeline envelope of a CLI thread the orchestrator created itself (a
+/// fork or a delegated child), which the session thread store never saw:
+/// the thread header from the orchestrator's record, messages filled in by
+/// the caller. `None` when the thread has no agent to scope the header to.
+pub(super) fn bare_timeline(thread: &ThreadRecord) -> Option<ProductSurfaceQueryPage> {
+    let scope = &thread.scope;
+    let at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis;
+    let header = RebornTimelineResponse {
+        thread: SessionThreadRecord {
+            scope: SessionThreadScope {
+                tenant_id: scope.tenant_id.clone(),
+                agent_id: scope.agent_id.clone()?,
+                project_id: scope.project_id.clone(),
+                owner_user_id: Some(scope.user_id.clone()),
+                mission_id: None,
+            },
+            thread_id: thread.thread_id.clone(),
+            created_by_actor_id: scope.user_id.as_str().to_string(),
+            title: thread.title.clone(),
+            metadata_json: None,
+            goal: None,
+            created_at: at(thread.created_at),
+            updated_at: at(thread.updated_at),
+        },
+        messages: Vec::new(),
+        summary_artifacts: Vec::new(),
+        next_cursor: None,
+    };
+    Some(ProductSurfaceQueryPage {
+        // silent-ok: a struct of ids, strings and timestamps always serializes.
+        items: vec![serde_json::to_value(header).ok()?],
+        next_cursor: None,
+    })
+}
+
 pub(super) fn timeline_messages(
     thread: &ThreadId,
     history: &[HistoryMessage],
@@ -427,6 +467,7 @@ mod tests {
             tool_calls: Vec::new(),
             run_id: Some(run.to_string()),
             hidden: false,
+            at: None,
         }
     }
 

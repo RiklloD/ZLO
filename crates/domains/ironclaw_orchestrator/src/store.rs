@@ -720,6 +720,21 @@ impl Store {
         Ok(())
     }
 
+    /// How many completed turn-log rows `run` has on `thread`. More than one
+    /// means the same terminal event arrived again (a journal replay).
+    pub async fn completed_turn_logs(&self, thread: &ThreadId, run: &str) -> Result<u32> {
+        let n = self
+            .row(
+                "SELECT COUNT(*) FROM orch_turns WHERE thread_id = ?1 AND run_id = ?2 \
+                 AND status = 'completed'",
+                vec![s(thread.as_str()), s(run)],
+                |r| Cols::new(r).int(),
+            )
+            .await?
+            .unwrap_or(0);
+        Ok(n as u32)
+    }
+
     pub async fn turn_log(&self, thread: &ThreadId, limit: u32) -> Result<Vec<TurnLogRecord>> {
         self.rows(
             "SELECT id, thread_id, run_id, status, started_at, ended_at, usage, error FROM orch_turns \
@@ -966,6 +981,19 @@ impl Store {
             .exec(
                 "UPDATE orch_tasks SET delivery = ?3, delivered_at = ?4 WHERE id = ?1 AND delivery = ?2",
                 vec![s(id.as_str()), s(from.as_str()), s(to.as_str()), at.into()],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// Acknowledge a pending delivery only if its result is still the one
+    /// that was sent; a reply that landed meanwhile stays pending.
+    pub async fn ack_delivery(&self, id: &TaskId, sent: Option<&str>, at: Millis) -> Result<bool> {
+        let n = self
+            .exec(
+                "UPDATE orch_tasks SET delivery = 'delivered', delivered_at = ?3 \
+                 WHERE id = ?1 AND delivery = 'pending' AND result IS ?2",
+                vec![s(id.as_str()), opt(sent.map(str::to_string)), at.into()],
             )
             .await?;
         Ok(n > 0)

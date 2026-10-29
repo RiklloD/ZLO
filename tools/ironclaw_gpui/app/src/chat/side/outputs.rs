@@ -26,7 +26,7 @@ impl ChatView {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
         let dir = std::env::temp_dir()
-            .join("numoh")
+            .join("zlo")
             .join(&self.thread_id)
             .join("files");
         let local = dir.join(&name);

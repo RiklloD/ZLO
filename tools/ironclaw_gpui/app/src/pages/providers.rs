@@ -476,7 +476,7 @@ impl ProvidersView {
         );
     }
 
-    /// Remove a CLI agent from Numoh, or bring it back. The binary stays
+    /// Remove a CLI agent from ZLO, or bring it back. The binary stays
     /// installed; the agent is hidden from the model picker and this list.
     fn toggle_cli_hidden(&mut self, provider: String, cx: &mut Context<Self>) {
         let (Some(thread), Some(prefs)) = (self.catalog_thread.clone(), self.picker.as_mut())
@@ -1155,7 +1155,7 @@ impl ProvidersView {
                         .icon(IconName::Close)
                         .ghost()
                         .xsmall()
-                        .tooltip("Remove from Numoh (the CLI stays installed)")
+                        .tooltip("Remove from ZLO (the CLI stays installed)")
                 };
                 button.on_click(
                     cx.listener(move |this, _, _, cx| this.toggle_cli_hidden(provider.clone(), cx)),

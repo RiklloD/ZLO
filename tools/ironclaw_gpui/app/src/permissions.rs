@@ -1,8 +1,8 @@
 //! The two macOS permissions computer use needs, asked of macOS directly.
 //!
-//! The backend and its computer-use engine run as Numoh's children, so macOS
-//! charges both permissions to Numoh: what this process sees is what the
-//! engine gets. Asking adds Numoh to the System Settings list, so the user
+//! The backend and its computer-use engine run as ZLO's children, so macOS
+//! charges both permissions to ZLO: what this process sees is what the
+//! engine gets. Asking adds ZLO to the System Settings list, so the user
 //! only flips a switch.
 
 use std::ffi::c_void;
@@ -63,7 +63,7 @@ unsafe extern "C" {
     fn CFRelease(cf: *const c_void);
 }
 
-/// The permissions Numoh does not have yet.
+/// The permissions ZLO does not have yet.
 pub fn missing() -> Vec<Permission> {
     // SAFETY: plain status queries with no arguments.
     let (ax, screen) = unsafe { (AXIsProcessTrusted(), CGPreflightScreenCaptureAccess()) };
@@ -77,7 +77,7 @@ pub fn missing() -> Vec<Permission> {
     out
 }
 
-/// Put Numoh in each missing permission's list (macOS shows its own prompt)
+/// Put ZLO in each missing permission's list (macOS shows its own prompt)
 /// and open System Settings at the first one.
 pub fn request(missing: &[Permission]) {
     for permission in missing {
