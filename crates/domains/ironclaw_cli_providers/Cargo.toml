@@ -13,11 +13,11 @@ layer = "substrates"
 [dependencies]
 async-trait = "0.1"
 # Attached pictures go to Claude and Codex inline, base64-encoded.
-base64 = "0.22"
+base64 = "0.23"
 # Wire types for the CLI's stream-json protocol. Pinned exactly to the CLI
 # version the driver is tested against (`claude::EXPECTED_CLI_VERSION`); bump
 # both together, on purpose. Types only: the driver owns process handling.
-claude-codes = { version = "=2.1.302", default-features = false, features = ["types"] }
+claude-codes = { version = "=2.1.310", default-features = false, features = ["types"] }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # Approval reasons are redacted before they reach a card.
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
@@ -33,6 +33,6 @@ uuid = { version = "1", features = ["v4", "v7"] }
 [dev-dependencies]
 # The approval-record test opens the orchestrator store over a real libSQL file.
 ironclaw_libsql_runtime = { path = "../../substrates/ironclaw_libsql_runtime" }
-libsql = { version = "0.9", default-features = false, features = ["core"] }
+libsql = { version = "0.10", default-features = false, features = ["core"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }

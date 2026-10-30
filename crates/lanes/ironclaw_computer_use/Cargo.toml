@@ -12,7 +12,7 @@ layer = "runtimes"
 
 [dependencies]
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 # Live view: decode a window capture or the agent's screenshot, scale it and
 # re-encode it as a small JPEG (what Pillow did in the Hermes plugin).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
