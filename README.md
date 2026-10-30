@@ -1,343 +1,93 @@
-<p align="center">
-  <img src="ironclaw.png?v=2" alt="IronClaw" width="200"/>
-</p>
+# ZLO
 
-<h1 align="center">IronClaw</h1>
+My personal AI desktop app. Built in Rust for macOS, with a native [GPUI](https://www.gpui.rs/) interface and an [IronClaw](https://github.com/nearai/ironclaw) backend.
 
-<p align="center">
-  <strong>Your secure personal AI assistant, always on your side</strong>
-</p>
+I'm [Lorik](https://github.com/RiklloD). I'm a business student who likes to tinker with tech. I have more ideas than engineering experience, and I work with AI agents to turn those ideas into software I can use. ZLO is the app I'm building around that way of working.
 
-<p align="center">
-  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
-  <a href="https://t.me/ironclawAI"><img src="https://img.shields.io/badge/Telegram-%40ironclawAI-26A5E4?style=flat&logo=telegram&logoColor=white" alt="Telegram: @ironclawAI" /></a>
-  <a href="https://www.reddit.com/r/ironclawAI/"><img src="https://img.shields.io/badge/Reddit-r%2FironclawAI-FF4500?style=flat&logo=reddit&logoColor=white" alt="Reddit: r/ironclawAI" /></a>
-  <a href="https://gitcgr.com/nearai/ironclaw">
-    <img src="https://gitcgr.com/badge/nearai/ironclaw.svg" alt="gitcgr" />
-  </a>
-</p>
+## Why I'm building it
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh-CN.md">简体中文</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.ko.md">한국어</a>
-</p>
+I want an agent that can do work on my computer, not just tell me how to do it. I also want to see what it's doing, choose which model handles a task, and decide what it can access.
 
-<p align="center">
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#philosophy">Philosophy</a> •
-  <a href="#features">Features</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#security">Security</a> •
-  <a href="#architecture">Architecture</a>
-</p>
+The desktop app matters to me as much as the agent behind it. I want something light that feels at home on my Mac. Memory use and battery life are part of the product, not things to fix after adding every feature.
 
----
+This is my own working setup and a place to try ideas. It isn't a promise of a polished release or support for every machine.
 
-## Quick Start
+## What I'm working with
 
-Choose an `ironclaw-v*` tag from the [Releases page](https://github.com/nearai/ironclaw/releases/),
-then install it on macOS, Linux, or Windows/WSL. Replace `X.Y.Z` with the
-selected version, including any prerelease suffix:
+- A native, GPU-rendered Rust interface using GPUI. No Electron and no always-on embedded browser. Browser and document views are created when needed.
+- Chats, profiles, model selection, and an orchestrator for delegating work to other agents.
+- Tools, skills, memory, and MCP integrations through the IronClaw backend.
+- Computer use through my fork of the [computer-use engine](https://github.com/RiklloD/hermes-plugin-computer-use-plus).
+- Approval controls so I can choose between being asked first and giving a profile full access. Automatic approval is off by default.
 
-```bash
-IRONCLAW_RELEASE_TAG=ironclaw-vX.Y.Z
-curl --proto '=https' --tlsv1.2 -LsSf \
-  "https://github.com/nearai/ironclaw/releases/download/${IRONCLAW_RELEASE_TAG}/ironclaw-installer.sh" | sh
+I'm changing the app as I use it. The code and development notes are a better guide to its current state than a fixed feature checklist.
+
+## How it runs
+
+ZLO bundles the desktop window, backend, and computer-use helper in one macOS app. The window starts the backend as a child process. Quitting the app stops the backend and orchestrator too. I don't run a separate always-on service for it.
+
+The desktop talks to the backend over authenticated HTTP. My local setup uses libSQL, with state under `~/.ironclaw/reborn`, rather than a separate PostgreSQL server.
+
+Local storage doesn't mean every task stays on the machine. Using a remote model or an external integration sends the data needed for that request to that provider. Computer use also needs the relevant macOS permissions.
+
+## Finding your way around
+
+| Path | What's there |
+| --- | --- |
+| [`tools/ironclaw_gpui/`](tools/ironclaw_gpui/) | The desktop app and its separate Cargo workspace |
+| [`tools/ironclaw_gpui/app/`](tools/ironclaw_gpui/app/) | GPUI interface, native views, preferences, and backend supervision |
+| [`tools/ironclaw_gpui/client/`](tools/ironclaw_gpui/client/) | Typed HTTP client for the desktop |
+| [`crates/`](crates/) | IronClaw backend and my extensions to it |
+| [`crates/product/ironclaw_webui/`](crates/product/ironclaw_webui/) | The HTTP gateway used by ZLO |
+| [`AGENTS.md`](AGENTS.md) | Repository rules for working with coding agents |
+
+The React frontend inherited from IronClaw isn't ZLO's desktop interface. The gateway behind it is still used.
+
+You'll also see `ironclaw_*`, `.ironclaw`, and some older Numoh names in the code. ZLO is the app's name; I haven't renamed every internal crate, data path, or signing identifier. Keeping those stable makes upstream merges and macOS permissions easier to maintain.
+
+## Building from source
+
+This is a macOS development setup, not a cross-platform installer. It needs Xcode command-line tools, Rust through rustup, and an Apple Development signing identity. The repository pins the Rust toolchain in [`rust-toolchain.toml`](rust-toolchain.toml). The bundled computer-use engine currently targets Apple Silicon.
+
+```sh
+git clone https://github.com/RiklloD/zlo.git
+cd zlo
+sh tools/ironclaw_gpui/bundle.sh
 ```
 
-Then run the guided setup:
+The script builds the backend and desktop, downloads and verifies the pinned computer-use engine, signs the bundle, and installs it to `~/Applications/ZLO.app`. It replaces an existing local installation and quits the app first if it's running. It reopens the app if it was open before the install.
 
-```bash
-ironclaw onboard
+To build the bundle without installing it:
+
+```sh
+sh tools/ironclaw_gpui/bundle.sh --no-install
 ```
 
-Choose an LLM provider, enter its API key in the hidden prompt, and accept the
-default model or enter another one. IronClaw provisions its local configuration,
-encrypted credential store, and WebUI login token. On macOS and Linux it also
-installs and starts the background service, then prints a link that opens the
-WebUI.
+The bundle lands at `tools/ironclaw_gpui/target/ZLO.app`.
 
-Use `ironclaw status` to check the service and print the login link again.
-Windows users can start the WebUI in the foreground with `ironclaw serve`.
-See [Installation](#installation) for Windows installers and source builds.
+For changes to the desktop workspace:
 
-## Philosophy
-
-IronClaw is built on a simple principle: **your AI assistant should work for you, not against you**.
-
-In a world where AI systems are increasingly opaque about data handling and aligned with corporate interests, IronClaw takes a different approach:
-
-- **Your data stays yours** - All information is stored locally, encrypted, and never leaves your control
-- **Transparency by design** - Open source, auditable, no hidden telemetry or data harvesting
-- **Self-expanding capabilities** - Build new tools on the fly without waiting for vendor updates
-- **Defense in depth** - Multiple security layers protect against prompt injection and data exfiltration
-
-IronClaw is the AI assistant you can actually trust with your personal and professional life.
-
-## Features
-
-### Security First
-
-- **WASM Sandbox** - Untrusted tools run in isolated WebAssembly containers with capability-based permissions
-- **Credential Protection** - Secrets are never exposed to tools; injected at the host boundary with leak detection
-- **Prompt Injection Defense** - Pattern detection, content sanitization, and policy enforcement
-- **Endpoint Allowlisting** - HTTP requests only to explicitly approved hosts and paths
-
-### Always Available
-
-- **Multi-channel** - REPL, HTTP webhooks, WASM channels (Telegram, Slack), and web gateway
-- **Docker Sandbox** - Isolated container execution with per-job tokens and orchestrator/worker pattern
-- **Web Gateway** - Browser UI with real-time SSE/WebSocket streaming
-- **Routines** - Cron schedules, event triggers, webhook handlers for background automation
-- **Heartbeat System** - Proactive background execution for monitoring and maintenance tasks
-- **Parallel Jobs** - Handle multiple requests concurrently with isolated contexts
-- **Self-repair** - Automatic detection and recovery of stuck operations
-
-### Self-Expanding
-
-- **Dynamic Tool Building** - Describe what you need, and IronClaw builds it as a WASM tool
-- **MCP Protocol** - Connect to Model Context Protocol servers for additional capabilities
-- **Plugin Architecture** - Drop in new WASM tools and channels without restarting
-
-### Persistent Memory
-
-- **Hybrid Search** - Full-text + vector search using Reciprocal Rank Fusion
-- **Workspace Filesystem** - Flexible path-based storage for notes, logs, and context
-- **Identity Files** - Maintain consistent personality and preferences across sessions
-
-## Installation
-
-The [Releases page](https://github.com/nearai/ironclaw/releases/) provides
-pre-built binaries and installers.
-
-<details>
-  <summary>Install via Windows Installer (Windows)</summary>
-
-Open the selected `ironclaw-v*` release, download
-`ironclaw-x86_64-pc-windows-msvc.msi`, and run it.
-
-</details>
-
-<details>
-  <summary>Install via PowerShell script (Windows)</summary>
-
-```powershell
-$IronClawReleaseTag = "ironclaw-vX.Y.Z"
-irm "https://github.com/nearai/ironclaw/releases/download/$IronClawReleaseTag/ironclaw-installer.ps1" | iex
+```sh
+cd tools/ironclaw_gpui
+cargo check
+cargo clippy -p ironclaw_gpui -p ironclaw_gpui_client --all-targets -- -D warnings
 ```
 
-</details>
+Read [`AGENTS.md`](AGENTS.md) and the owning crate's guidance before changing backend code.
 
-<details>
-  <summary>Install via shell script (macOS, Linux, Windows/WSL)</summary>
+## Where it comes from
 
-```bash
-IRONCLAW_RELEASE_TAG=ironclaw-vX.Y.Z
-curl --proto '=https' --tlsv1.2 -LsSf \
-  "https://github.com/nearai/ironclaw/releases/download/${IRONCLAW_RELEASE_TAG}/ironclaw-installer.sh" | sh
-```
+ZLO is my personal fork of [IronClaw](https://github.com/nearai/ironclaw), built by [NEAR AI](https://github.com/nearai). I built my desktop app on that foundation and continue to change the backend for my own use. The agent runtime, security machinery, and much of this repository come from their work.
 
-</details>
+The interface uses [GPUI](https://www.gpui.rs/), the Rust UI framework developed for Zed. The computer-use helper comes from [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus).
 
-<details>
-  <summary>Build and install from source</summary>
-
-Source builds require Rust 1.96+ and Node.js 22+ with Corepack/pnpm.
-
-```bash
-git clone https://github.com/nearai/ironclaw.git
-cd ironclaw
-corepack enable pnpm
-cargo install --locked --path crates/app/ironclaw_cli
-```
-
-</details>
-
-## Configuration
-
-`ironclaw onboard` is the primary configuration path. It writes Reborn state
-under `$HOME/.ironclaw/reborn` by default, stores the selected LLM credential
-in the encrypted local secret store, and preserves existing configuration when
-it is run again.
-
-Inspect the current setup with:
-
-```bash
-ironclaw status
-ironclaw models status
-ironclaw config list
-```
-
-To switch providers after onboarding, select the route and then store its API
-key using the hidden prompt:
-
-```bash
-ironclaw models set-provider openai --model gpt-5-mini
-ironclaw config set openai.api_key
-```
-
-Additional settings use the same command. For example:
-
-```bash
-ironclaw config set google.client_id YOUR_CLIENT_ID
-ironclaw config set google.client_secret
-ironclaw config set google.redirect_uri YOUR_REDIRECT_URI
-ironclaw config set webui.token --rotate
-```
-
-Secret values never accept a positional argument; IronClaw prompts for them
-without echoing the value. Channels such as Slack and Telegram have no
-configuration-file settings and no CLI enablement key: install the extension
-and complete its setup on the WebUI Extensions page, which is what makes the
-route serve.
-
-Configuration writes never restart the service automatically. Run
-`ironclaw service restart` after a change that affects the running service,
-and use `ironclaw config set --help` for the complete list of supported keys.
-
-## Security
-
-IronClaw implements defense in depth to protect your data and prevent misuse.
-
-### WASM Sandbox
-
-All untrusted tools run in isolated WebAssembly containers:
-
-- **Capability-based permissions** - Explicit opt-in for HTTP, secrets, tool invocation
-- **Endpoint allowlisting** - HTTP requests only to approved hosts/paths
-- **Credential injection** - Secrets injected at host boundary, never exposed to WASM code
-- **Leak detection** - Scans requests and responses for secret exfiltration attempts
-- **Rate limiting** - Per-tool request limits to prevent abuse
-- **Resource limits** - Memory, CPU, and execution time constraints
-
-```
-WASM ──► Allowlist ──► Leak Scan ──► Credential ──► Execute ──► Leak Scan ──► WASM
-         Validator     (request)     Injector       Request     (response)
-```
-
-### Prompt Injection Defense
-
-External content passes through multiple security layers:
-
-- Pattern-based detection of injection attempts
-- Content sanitization and escaping
-- Policy rules with severity levels (Block/Warn/Review/Sanitize)
-- Tool output wrapping for safe LLM context injection
-
-### Data Protection
-
-- All data stored locally in IronClaw's application state
-- Secrets encrypted with AES-256-GCM
-- No telemetry, analytics, or data sharing
-- Full audit log of all tool executions
-
-## Architecture
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                          Channels                              │
-│  ┌──────┐  ┌──────┐   ┌─────────────┐  ┌─────────────┐         │
-│  │ REPL │  │ HTTP │   │WASM Channels│  │ Web Gateway │         │
-│  └──┬───┘  └──┬───┘   └──────┬──────┘  │ (SSE + WS)  │         │
-│     │         │              │         └──────┬──────┘         │
-│     └─────────┴──────────────┴────────────────┘                │
-│                              │                                 │
-│                    ┌─────────▼─────────┐                       │
-│                    │    Agent Loop     │  Intent routing       │
-│                    └────┬──────────┬───┘                       │
-│                         │          │                           │
-│              ┌──────────▼────┐  ┌──▼───────────────┐           │
-│              │  Scheduler    │  │ Routines Engine  │           │
-│              │(parallel jobs)│  │(cron, event, wh) │           │
-│              └──────┬────────┘  └────────┬─────────┘           │
-│                     │                    │                     │
-│       ┌─────────────┼────────────────────┘                     │
-│       │             │                                          │
-│   ┌───▼─────┐  ┌────▼────────────────┐                         │
-│   │ Local   │  │    Orchestrator     │                         │
-│   │Workers  │  │  ┌───────────────┐  │                         │
-│   │(in-proc)│  │  │ Docker Sandbox│  │                         │
-│   └───┬─────┘  │  │   Containers  │  │                         │
-│       │        │  │ ┌───────────┐ │  │                         │
-│       │        │  │ │Worker / CC│ │  │                         │
-│       │        │  │ └───────────┘ │  │                         │
-│       │        │  └───────────────┘  │                         │
-│       │        └─────────┬───────────┘                         │
-│       └──────────────────┤                                     │
-│                          │                                     │
-│              ┌───────────▼──────────┐                          │
-│              │    Tool Registry     │                          │
-│              │  Built-in, MCP, WASM │                          │
-│              └──────────────────────┘                          │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### Core Components
-
-| Component | Purpose |
-|-----------|---------|
-| **Agent Loop** | Main message handling and job coordination |
-| **Router** | Classifies user intent (command, query, task) |
-| **Scheduler** | Manages parallel job execution with priorities |
-| **Worker** | Executes jobs with LLM reasoning and tool calls |
-| **Orchestrator** | Container lifecycle, LLM proxying, per-job auth |
-| **Web Gateway** | Browser UI with chat, memory, jobs, logs, extensions, routines |
-| **Routines Engine** | Scheduled (cron) and reactive (event, webhook) background tasks |
-| **Workspace** | Persistent memory with hybrid search |
-| **Safety Layer** | Prompt injection defense and content sanitization |
-
-## Usage
-
-```bash
-# Check the background service and print the WebUI login link
-ironclaw status
-
-# Start an interactive terminal session
-ironclaw repl
-
-# Run one turn
-ironclaw run --message "hello"
-```
-
-## Development
-
-```bash
-# Format code
-cargo fmt
-
-# Lint
-cargo clippy --all --benches --tests --examples --all-features
-
-# Run tests
-createdb ironclaw_test
-cargo test
-
-# Run specific test
-cargo test test_name
-```
-
-- **Channels**: See [docs/channels/overview.mdx](docs/channels/overview.mdx) for setup of Telegram, Discord, and other channels.
-
-## OpenClaw Heritage
-
-IronClaw is a Rust reimplementation inspired by [OpenClaw](https://github.com/openclaw/openclaw). See [FEATURE_PARITY.md](FEATURE_PARITY.md) for the complete tracking matrix.
-
-Key differences:
-
-- **Rust vs TypeScript** - Native performance, memory safety, single binary
-- **WASM sandbox vs Docker** - Lightweight, capability-based security
-- **PostgreSQL vs SQLite** - Production-ready persistence
-- **Security-first design** - Multiple defense layers, credential protection
+This repository is my project, not an official IronClaw or NEAR AI release.
 
 ## License
 
-Licensed under either of:
+Licensed under either of the following, at your option:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
 
-at your option.
+Upstream license and attribution notices are retained. Bundled dependencies and the computer-use helper have their own licenses.
