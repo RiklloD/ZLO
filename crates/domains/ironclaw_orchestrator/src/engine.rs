@@ -64,6 +64,8 @@ pub struct Engine {
     profile_context: OnceLock<Arc<dyn ProfileContextSource>>,
     /// Told after every completed turn (thread titles), plugged in by the host.
     turn_listener: OnceLock<Arc<dyn TurnCompletedListener>>,
+    /// Worktree isolation's command runner and folder, plugged in by the host.
+    pub(crate) worktree_host: OnceLock<crate::worktree::WorktreeHost>,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -107,6 +109,7 @@ impl Engine {
             webhook_base: OnceLock::new(),
             profile_context: OnceLock::new(),
             turn_listener: OnceLock::new(),
+            worktree_host: OnceLock::new(),
         }))
     }
 
@@ -132,7 +135,7 @@ impl Engine {
 
     /// The thread's profile as its CLI agent sees it. Additive context: a
     /// failure is logged and the turn runs without it.
-    async fn turn_profile(&self, thread_id: &ThreadId) -> Option<TurnProfile> {
+    pub(crate) async fn turn_profile(&self, thread_id: &ThreadId) -> Option<TurnProfile> {
         let source = self.profile_context.get()?;
         let profile = match self.store.thread_profile(thread_id).await {
             Ok(profile) => profile?,
@@ -409,6 +412,7 @@ impl Engine {
                     effort: self.store.thread_effort(thread_id).await?,
                     profile: self.turn_profile(thread_id).await,
                     files,
+                    work_dir: self.thread_work_dir(thread_id).await?,
                 },
             )
             .await?;
@@ -607,6 +611,17 @@ impl Engine {
             Delivery::Pending
         } else {
             task.delivery
+        };
+        // A child in its own worktree settles it first, so the parent's
+        // result says whether its branch is waiting to be merged.
+        let worktree_note = match &task.child_thread {
+            Some(child) if !task.status.is_terminal() => self.settle_worktree(child).await,
+            _ => None,
+        };
+        let result = match (result, worktree_note) {
+            (Some(r), Some(note)) => Some(format!("{r}\n\n{note}")),
+            (None, Some(note)) if status == TaskStatus::Completed => Some(note),
+            (result, _) => result,
         };
         let patch = TaskPatch {
             result: Some(result.map(|r| clip(&r, 60_000))),

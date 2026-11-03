@@ -29,6 +29,9 @@ pub struct DelegateRequest {
     /// `inherit` (a subagent: this conversation rides along, same profile)
     /// or `brief` (the default: the child sees only `task`).
     pub context: Option<String>,
+    /// `shared` (the default: the parent's folder) or `worktree` (a git
+    /// worktree and branch of its own, from the parent folder's HEAD).
+    pub isolation: Option<String>,
 }
 
 /// What a child starts with besides its task.
@@ -279,6 +282,7 @@ impl Engine {
         };
         let timeout = req.timeout_s.unwrap_or(600.0).clamp(1.0, 3600.0);
         let child_context = ChildContext::parse(req.context.as_deref())?;
+        let isolation = crate::worktree::Isolation::parse(req.isolation.as_deref())?;
         let parent = self.ensure_thread(&ctx.thread_id, &ctx.scope, None).await?;
         let request_id = trimmed(&req.client_request_id);
         if let Some(rid) = &request_id
@@ -355,6 +359,13 @@ impl Engine {
             .map(|p| p.profile_id)
             .or_else(|| parent.profile_id.clone());
         let runtime = self.runtime(&runtime_id)?;
+        // Checked before the task exists: a cwd outside git starts nothing.
+        let worktree = match isolation {
+            crate::worktree::Isolation::Worktree => {
+                Some(self.worktree_preflight(&parent, None, &runtime).await?)
+            }
+            crate::worktree::Isolation::Shared => None,
+        };
         let title = clip_title(
             req.title
                 .as_deref()
@@ -400,10 +411,15 @@ impl Engine {
                 &runtime,
                 &settings,
                 inherited.as_deref(),
+                worktree.as_ref(),
             )
             .await
         {
             let message = error.to_string();
+            // A worktree made before the failure holds no work yet.
+            if let Some(child) = &task.child_thread {
+                self.settle_worktree(child).await;
+            }
             self.store
                 .move_task(
                     &task.id,
@@ -463,6 +479,7 @@ impl Engine {
         runtime: &std::sync::Arc<dyn TurnRuntime>,
         settings: &Settings,
         context: Option<&str>,
+        worktree: Option<&crate::worktree::WorktreePlan>,
     ) -> Result<()> {
         let created = runtime
             .create_thread(CreateThread {
@@ -516,6 +533,21 @@ impl Engine {
             settings.max_depth,
             context,
         );
+        let brief = match worktree {
+            Some(plan) => {
+                let binding = self
+                    .create_worktree(
+                        &child.thread_id,
+                        plan,
+                        &task.title,
+                        Some(parent.thread_id.clone()),
+                        Some(task.id.clone()),
+                    )
+                    .await?;
+                format!("{}\n\n{brief}", Self::worktree_brief_note(&binding))
+            }
+            None => brief,
+        };
         {
             // Stop / cancel may have landed while the child was being created.
             let current = self.require_task(&task.id).await?;
@@ -649,6 +681,14 @@ impl Engine {
         });
         if let Some(timed_out) = wait_timed_out {
             view["waitTimedOut"] = json!(timed_out);
+        }
+        if let Some(child) = &t.child_thread
+            && let Some(b) = self.store.worktree(child).await?
+        {
+            view["worktree"] = json!({
+                "path": b.path, "branch": b.branch.as_str(), "baseCommit": b.base_commit.as_str(),
+                "state": b.state.as_str(), "archiveRef": b.archive_ref,
+            });
         }
         Ok(view)
     }

@@ -171,6 +171,10 @@ pub struct TurnInput {
     /// only: the runtime checks each one before reading it. Runtimes whose
     /// agent reads the host directly ignore them.
     pub files: Vec<std::path::PathBuf>,
+    /// The thread's own git worktree: the turn's working directory, over
+    /// the profile folder and the runtime's default (see
+    /// [`TurnRuntime::supports_work_dir`]).
+    pub work_dir: Option<std::path::PathBuf>,
 }
 
 /// A profile's identity, folder and skills for one CLI turn.
@@ -379,6 +383,17 @@ pub trait TurnRuntime: Send + Sync {
         _request: CreateThread,
     ) -> Result<CreatedThread, RuntimeError> {
         Err(RuntimeError::Unsupported("native fork"))
+    }
+
+    /// The runtime runs a turn in [`TurnInput::work_dir`] when it is set
+    /// (worktree isolation needs it; runtimes that cannot are refused).
+    fn supports_work_dir(&self) -> bool {
+        false
+    }
+
+    /// The folder its agents work in when nothing else names one.
+    fn default_work_dir(&self) -> Option<std::path::PathBuf> {
+        None
     }
 
     /// Providers/models this runtime can run for `scope`.

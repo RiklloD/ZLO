@@ -42,6 +42,7 @@ pub mod store;
 pub mod telemetry;
 mod thread_ops;
 pub mod tools;
+pub mod worktree;
 
 #[cfg(test)]
 mod tests;

@@ -29,10 +29,12 @@ hmac = "0.13"
 sha2 = "0.11"
 subtle = "2"
 thiserror = "2"
-tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+# `.zlo/worktree.toml`, the project's worktree setup commands.
+toml = "1.1"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "fs"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process", "fs"] }

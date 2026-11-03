@@ -49,6 +49,16 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   as `interrupted` when the engine opens.
 - `goals` — `orch_goals`; the active goal rides every turn
   (`TurnInput.goal`, and the profile SOUL context on IronClaw's loop).
+- `worktree` — worktree isolation: `t3_delegate isolation='worktree'` (and
+  `Engine::start_worktree` for a user thread) runs `git worktree add -b
+  zlo/<slug>-<id>` from the thread folder's HEAD, records a
+  `WorktreeBinding` in `orch_worktrees` and hands its path to every turn as
+  `TurnInput.work_dir` (runtimes opt in with `supports_work_dir`). A child's
+  task end settles it (clean → removed with its branch, else kept);
+  `t3_thread worktree_status | merge_worktree | remove_worktree` act on it.
+  Git and the project's `.zlo/worktree.toml` `on_create` / `on_settle`
+  commands run through the host's `HostCommandRunner`
+  (`Engine::set_worktree_host`; composition wires the host process port).
 
 ## Tables
 
@@ -58,7 +68,8 @@ route, turn state), `orch_tasks`, `orch_queue`, `orch_holds`,
 (per-turn status and usage), `orch_profiles` (per user: settings JSON,
 `archived_at`; last use and thread count derive from `orch_threads`),
 `orch_settings`, `orch_meta`, `orch_schedules`, `orch_inbox`, `orch_goals`,
-`orch_cli_approvals`. First open imports
+`orch_cli_approvals`, `orch_worktrees` (append-only; a thread's newest row is
+its binding). First open imports
 the legacy `ironclaw_threads` thread records once (marker
 `legacy_threads_imported_v1`).
 
@@ -85,6 +96,11 @@ the legacy `ironclaw_threads` thread records once (marker
   IronClaw's loop (native API models) hides `builtin.spawn_subagent` on
   orchestrated turns and carries the same prompt in the turn's SOUL.md
   context.
+
+- Worktree work is never lost: nothing runs with `--force`; a removal
+  commits uncommitted changes on the branch first and keeps a branch with
+  unmerged commits (plus `refs/zlo/archive/<branch>`); merge conflicts abort
+  by default and come back as model-visible `merge_conflict`.
 
 - A thread's profile is set once (`profile_id IS NULL` guard) and never
   changes; a thread without one runs as `default`. Delegated children inherit

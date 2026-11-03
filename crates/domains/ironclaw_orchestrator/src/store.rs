@@ -466,6 +466,8 @@ impl Store {
             conn.execute_batch(crate::segments::SEGMENTS_SCHEMA).await?;
             conn.execute_batch(crate::cli_approvals::CLI_APPROVALS_SCHEMA)
                 .await?;
+            conn.execute_batch(crate::worktree::WORKTREES_SCHEMA)
+                .await?;
         }
         crate::schedules::upgrade_schema(self).await?;
         self.upgrade_inbox_schema().await?;
