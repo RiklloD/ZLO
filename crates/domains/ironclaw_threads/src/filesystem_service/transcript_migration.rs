@@ -75,52 +75,154 @@ where
                 (messages_root(scope, &thread_id)?, true),
                 (summaries_root(scope, &thread_id)?, false),
             ] {
-                let mut offset = 0u64;
-                let mut conflict_attempts = 0u32;
-                loop {
-                    let rows = self
-                        .filesystem
-                        .query(
-                            &scope.to_resource_scope(),
-                            &prefix,
-                            &Filter::All,
-                            Page::new(offset, Page::MAX_LIMIT),
-                        )
-                        .await?;
-                    if rows.is_empty() {
+                migrated =
+                    migrated.saturating_add(self.reproject_prefix(scope, &prefix, messages).await?);
+            }
+        }
+        Ok(migrated)
+    }
+
+    /// Rewrite the indexed projection of every message (or summary) row under
+    /// `prefix`, one bounded transactional page at a time, keeping each stored
+    /// body byte-for-byte. Shared by the transcript rebuild and the
+    /// history-search backfill.
+    async fn reproject_prefix(
+        &self,
+        scope: &ThreadScope,
+        prefix: &ScopedPath,
+        messages: bool,
+    ) -> Result<usize, SessionThreadError> {
+        let mut migrated = 0usize;
+        let mut offset = 0u64;
+        let mut conflict_attempts = 0u32;
+        loop {
+            let rows = match self
+                .filesystem
+                .query(
+                    &scope.to_resource_scope(),
+                    prefix,
+                    &Filter::All,
+                    Page::new(offset, Page::MAX_LIMIT),
+                )
+                .await
+            {
+                Ok(rows) => rows,
+                Err(error) if is_not_found(&error) => Vec::new(),
+                Err(error) => return Err(error.into()),
+            };
+            if rows.is_empty() {
+                break;
+            }
+            let received = rows.len();
+            match self.migrate_transcript_page(scope, messages, rows).await? {
+                TranscriptPageOutcome::Committed => {
+                    conflict_attempts = 0;
+                    migrated = migrated.saturating_add(received);
+                    if received < Page::MAX_LIMIT as usize {
                         break;
                     }
-                    let received = rows.len();
-                    match self.migrate_transcript_page(scope, messages, rows).await? {
-                        TranscriptPageOutcome::Committed => {
-                            conflict_attempts = 0;
-                            migrated = migrated.saturating_add(received);
-                            if received < Page::MAX_LIMIT as usize {
-                                break;
-                            }
-                            offset = offset.saturating_add(received as u64);
-                        }
-                        TranscriptPageOutcome::Conflict(error) => {
-                            // A live writer (turn finalization, preview append)
-                            // landed between this page's in-transaction reads
-                            // and its commit. Re-reading the page picks up the
-                            // committed versions, so the retry converges; the
-                            // bound keeps a pathological writer from pinning
-                            // the migration forever.
-                            conflict_attempts += 1;
-                            if conflict_attempts > TRANSCRIPT_PAGE_CONFLICT_RETRIES {
-                                return Err(error.into());
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                10u64.saturating_mul(conflict_attempts.into()),
-                            ))
-                            .await;
-                        }
+                    offset = offset.saturating_add(received as u64);
+                }
+                TranscriptPageOutcome::Conflict(error) => {
+                    // A live writer (turn finalization, preview append)
+                    // landed between this page's in-transaction reads
+                    // and its commit. Re-reading the page picks up the
+                    // committed versions, so the retry converges; the
+                    // bound keeps a pathological writer from pinning
+                    // the migration forever.
+                    conflict_attempts += 1;
+                    if conflict_attempts > TRANSCRIPT_PAGE_CONFLICT_RETRIES {
+                        return Err(error.into());
                     }
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        10u64.saturating_mul(conflict_attempts.into()),
+                    ))
+                    .await;
                 }
             }
         }
         Ok(migrated)
+    }
+
+    /// Advance the history-search backfill for `scope` by at most
+    /// `max_threads` threads and report whether it is complete.
+    ///
+    /// Messages written before the `search_text` projection existed carry no
+    /// searchable text. This re-projects them thread by thread (bodies are
+    /// never rewritten — LLM data is retained verbatim), in thread-id order,
+    /// persisting the last finished thread id so an interrupted backfill
+    /// resumes where it stopped. Concurrent callers may redo a thread; the
+    /// re-projection is idempotent and CAS-guarded per page. A completion
+    /// marker ends the work for good: messages written afterwards are
+    /// projected by the normal write path.
+    pub(super) async fn advance_history_search_backfill(
+        &self,
+        scope: &ThreadScope,
+        max_threads: usize,
+    ) -> Result<bool, SessionThreadError> {
+        let resource_scope = scope.to_resource_scope();
+        let marker = history_search_marker_path(scope)?;
+        if self
+            .filesystem
+            .get(&resource_scope, &marker)
+            .await?
+            .is_some()
+        {
+            return Ok(true);
+        }
+        let cursor_path = history_search_cursor_path(scope)?;
+        let cursor = match self.filesystem.get(&resource_scope, &cursor_path).await? {
+            Some(row) => Some(String::from_utf8(row.entry.body).map_err(|error| {
+                SessionThreadError::Deserialization(format!(
+                    "history search backfill cursor: {error}"
+                ))
+            })?),
+            None => None,
+        };
+        let root = scoped_path(&format!("{}/threads", scope_axes_string(scope)))?;
+        let entries = match self.filesystem.list_dir(&resource_scope, &root).await {
+            Ok(entries) => entries,
+            Err(error) if is_not_found(&error) => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let mut thread_ids = entries
+            .into_iter()
+            .filter(|entry| entry.file_type == FileType::Directory)
+            .map(|entry| entry.name)
+            .filter(|name| cursor.as_deref().is_none_or(|done| name.as_str() > done))
+            .collect::<Vec<_>>();
+        thread_ids.sort();
+        let remaining = thread_ids.len();
+        let mut last_done = None;
+        for raw in thread_ids.into_iter().take(max_threads.max(1)) {
+            let thread_id = ThreadId::new(raw.as_str()).map_err(invalid_path)?;
+            self.reproject_prefix(scope, &messages_root(scope, &thread_id)?, true)
+                .await?;
+            last_done = Some(raw);
+        }
+        if remaining > max_threads.max(1) {
+            if let Some(done) = last_done {
+                self.filesystem
+                    .put(
+                        &resource_scope,
+                        &cursor_path,
+                        Entry::bytes(done.into_bytes()),
+                        CasExpectation::Any,
+                    )
+                    .await?;
+            }
+            return Ok(false);
+        }
+        self.filesystem
+            .put(
+                &resource_scope,
+                &marker,
+                Entry::bytes(b"history-search-v1".to_vec()),
+                CasExpectation::Any,
+            )
+            .await?;
+        tracing::debug!(threads = remaining, "history search backfill complete");
+        Ok(true)
     }
 
     /// One transactional page of [`Self::migrate_transcript_indexes_for_scope`].
@@ -249,6 +351,20 @@ where
         }
         Ok(())
     }
+}
+
+fn history_search_marker_path(scope: &ThreadScope) -> Result<ScopedPath, SessionThreadError> {
+    scoped_path(&format!(
+        "{}/index-migrations/history-search-v1.complete",
+        scope_axes_string(scope)
+    ))
+}
+
+fn history_search_cursor_path(scope: &ThreadScope) -> Result<ScopedPath, SessionThreadError> {
+    scoped_path(&format!(
+        "{}/index-migrations/history-search-v1.cursor",
+        scope_axes_string(scope)
+    ))
 }
 
 fn transcript_index_migration_marker_path(

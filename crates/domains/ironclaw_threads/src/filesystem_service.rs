@@ -33,6 +33,7 @@
 //! `replay_accepted_inbound_message` recomputes that key from its scoped
 //! request and performs one exact read.
 
+mod history_search_query;
 mod message_lookup_index;
 mod message_read;
 mod thread_index;
@@ -375,6 +376,16 @@ where
                 fs_index_key("message_status")?,
                 IndexValue::Text(serde_enum_index_value(&record.status)?),
             );
+        // Searchable text (user + finalized assistant text only) for history
+        // search. Rows that stop being searchable (redaction, supersede)
+        // drop the key on their rewrite, so the FTS projection follows.
+        let entry = match crate::history_search::search_projection(record) {
+            Some(text) => entry.with_indexed(
+                fs_index_key(crate::history_search::SEARCH_TEXT_INDEX_KEY)?,
+                IndexValue::Text(text),
+            ),
+            None => entry,
+        };
         message_lookup_index::with_message_lookup_projections(entry, record)
     }
 
@@ -3869,6 +3880,13 @@ where
             ))),
             Err(PutError::Other(error)) => Err(error),
         }
+    }
+
+    async fn search_thread_messages(
+        &self,
+        request: crate::SearchThreadMessagesRequest,
+    ) -> Result<crate::SearchThreadMessagesResponse, SessionThreadError> {
+        self.search_history(request).await
     }
 
     async fn list_threads_for_scope(

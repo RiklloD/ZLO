@@ -1703,6 +1703,58 @@ impl SessionThreadService for InMemorySessionThreadService {
         })
     }
 
+    async fn search_thread_messages(
+        &self,
+        request: crate::SearchThreadMessagesRequest,
+    ) -> Result<crate::SearchThreadMessagesResponse, SessionThreadError> {
+        let terms = crate::history_query_terms(&request.query);
+        if terms.is_empty() {
+            return Ok(crate::SearchThreadMessagesResponse {
+                threads: Vec::new(),
+                index_complete: true,
+            });
+        }
+        let state = self.state.lock().await;
+        // Reference implementation: a scan of the scope's transcripts, with
+        // the same eligibility and scoring as the indexed backends.
+        let mut threads = HashMap::new();
+        let mut candidates = Vec::new();
+        for stored in state
+            .threads
+            .values()
+            .filter(|stored| stored.record.scope == request.scope)
+        {
+            let mut record = stored.record.clone();
+            if record.title.is_none()
+                && let Some(title) = derive_thread_title(&stored.messages)
+            {
+                record.title = Some(title);
+            }
+            threads.insert(record.thread_id.clone(), record);
+            candidates.extend(
+                stored
+                    .messages
+                    .iter()
+                    .filter(|message| crate::history_search::search_projection(message).is_some())
+                    .map(|message| crate::history_search::RankedCandidate {
+                        record: message.clone(),
+                        backend_rank: 0,
+                    }),
+            );
+        }
+        let groups = crate::history_search::group_ranked_candidates(
+            candidates,
+            &threads,
+            &terms,
+            crate::history_search::clamp_max_threads(request.max_threads),
+            crate::history_search::clamp_max_hits(request.max_hits_per_thread),
+        );
+        Ok(crate::SearchThreadMessagesResponse {
+            threads: groups,
+            index_complete: true,
+        })
+    }
+
     async fn read_thread_by_id(
         &self,
         thread_id: ThreadId,

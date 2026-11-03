@@ -43,5 +43,7 @@ test-support = []
 ironclaw_threads = { path = ".", features = ["test-support"] }
 # FaultInjecting decorator: test store fault paths through the real store
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
+# libSQL leg of the history-search conformance suite (`fts5`).
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

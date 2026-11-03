@@ -14,6 +14,7 @@ mod capability_display_preview;
 mod contract;
 mod error;
 mod filesystem_service;
+mod history_search;
 mod identifiers;
 mod in_memory;
 mod prepared_context;
@@ -59,6 +60,12 @@ pub use contract::{
     UpdateToolResultReferenceRequest, effective_tool_result_read_max_bytes,
 };
 pub use error::SessionThreadError;
+pub use history_search::{
+    HISTORY_SEARCH_MAX_HITS_PER_THREAD, HISTORY_SEARCH_MAX_THREADS, HISTORY_SEARCH_QUERY_MAX_CHARS,
+    HISTORY_SNIPPET_CHARS, MESSAGE_SEARCH_TEXT_MAX_CHARS, MessageSearchHit, SearchHitRole,
+    SearchThreadMessagesRequest, SearchThreadMessagesResponse, ThreadSearchResult,
+    history_query_terms, searchable_message_text, snippet_with_highlights, term_coverage,
+};
 pub use identifiers::{SummaryArtifactId, ThreadMessageId};
 pub use in_memory::InMemorySessionThreadService;
 pub use prepared_context::{

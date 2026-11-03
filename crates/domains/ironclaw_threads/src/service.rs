@@ -20,6 +20,7 @@ use crate::{
     ThreadMessageRecord, ThreadScope, ToolResultRecordRead, UpdateAssistantDraftRequest,
     UpdateThreadGoalRequest, UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
 };
+use crate::{SearchThreadMessagesRequest, SearchThreadMessagesResponse};
 
 /// Canonical Reborn session thread and transcript boundary.
 #[async_trait]
@@ -493,6 +494,24 @@ pub trait SessionThreadService: Send + Sync {
                 .to_string(),
         ))
     }
+
+    /// Full-text search over the visible message text (user messages and
+    /// finalized assistant replies) of every thread in `request.scope`,
+    /// grouped by thread with highlighted snippets. Tool output, system and
+    /// hidden text are never searched. The default fails closed so a backend
+    /// without a search index answers unavailable instead of "no matches".
+    ///
+    /// Implementations MUST scope results exactly as
+    /// [`list_threads_for_scope`](Self::list_threads_for_scope) does.
+    async fn search_thread_messages(
+        &self,
+        _request: SearchThreadMessagesRequest,
+    ) -> Result<SearchThreadMessagesResponse, SessionThreadError> {
+        Err(SessionThreadError::Backend(
+            "search_thread_messages is not implemented by this SessionThreadService backend"
+                .to_string(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -816,5 +835,12 @@ where
         request: ListThreadsForScopeRequest,
     ) -> Result<ListThreadsForScopeResponse, SessionThreadError> {
         self.as_ref().list_threads_for_scope(request).await
+    }
+
+    async fn search_thread_messages(
+        &self,
+        request: SearchThreadMessagesRequest,
+    ) -> Result<SearchThreadMessagesResponse, SessionThreadError> {
+        self.as_ref().search_thread_messages(request).await
     }
 }
