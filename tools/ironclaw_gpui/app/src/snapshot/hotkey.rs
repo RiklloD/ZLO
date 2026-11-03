@@ -4,8 +4,9 @@
 //! express. An NSEvent global monitor or a CGEventTap would see it, but
 //! both need a privacy grant (Accessibility or Input Monitoring) just to
 //! watch keys. Asking the window server for the current modifier state
-//! needs none, so a small thread polls it 20 times a second while SnapShots
-//! are on: one cheap call per tick, nothing at all while they are off.
+//! needs none, so a small thread polls it while SnapShots are on: 10 times
+//! a second, 20 while a Shift key is down so the chord lands just as fast.
+//! One cheap call per tick, nothing at all while SnapShots are off.
 //!
 //! The fallback combo goes through HIToolbox like the quick composer's
 //! shortcut, also without any permission. Its handler passes on presses of
@@ -18,7 +19,8 @@ use std::time::Duration;
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
-const POLL: Duration = Duration::from_millis(50);
+const POLL_IDLE: Duration = Duration::from_millis(100);
+const POLL_SHIFT: Duration = Duration::from_millis(50);
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -59,12 +61,12 @@ impl Trigger {
             .spawn(move || {
                 let mut held = false;
                 while !flag.load(Ordering::Relaxed) {
-                    let both = both_shifts_down();
+                    let (any, both) = shifts_down();
                     if both && !held && shift_tx.unbounded_send(()).is_err() {
                         break;
                     }
                     held = both;
-                    std::thread::sleep(POLL);
+                    std::thread::sleep(if any { POLL_SHIFT } else { POLL_IDLE });
                 }
             });
         let mut warning = spawned
@@ -91,16 +93,18 @@ impl Trigger {
     }
 }
 
-fn both_shifts_down() -> bool {
+/// (any Shift down, both Shifts down).
+fn shifts_down() -> (bool, bool) {
     // SAFETY: plain state queries with constant arguments.
     unsafe {
         let flags = CGEventSourceFlagsState(HID_STATE);
         if flags & SHIFT_MASK == 0 {
-            return false;
+            return (false, false);
         }
-        flags & BOTH_SHIFT_DEVICE_BITS == BOTH_SHIFT_DEVICE_BITS
+        let both = flags & BOTH_SHIFT_DEVICE_BITS == BOTH_SHIFT_DEVICE_BITS
             || (CGEventSourceKeyState(HID_STATE, LEFT_SHIFT)
-                && CGEventSourceKeyState(HID_STATE, RIGHT_SHIFT))
+                && CGEventSourceKeyState(HID_STATE, RIGHT_SHIFT));
+        (true, both)
     }
 }
 

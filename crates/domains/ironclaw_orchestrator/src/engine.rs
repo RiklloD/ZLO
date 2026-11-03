@@ -646,6 +646,16 @@ impl Engine {
                 consumed_at: None,
             })
             .await?;
+        if status == TaskStatus::Completed
+            && let Some(child) = &task.child_thread
+        {
+            // The subagent is done and its result is on its way to the
+            // parent: its thread leaves the inbox by itself. A failure here
+            // only leaves the row for the person to settle.
+            if let Err(error) = self.auto_settle_child(child).await {
+                tracing::debug!(%error, "could not auto-settle a finished subagent thread");
+            }
+        }
         if let Ok(mut map) = self.enforced.lock() {
             map.remove(&task.id);
         }
@@ -653,6 +663,18 @@ impl Engine {
             notify.notify_waiters();
         }
         Ok(true)
+    }
+
+    /// Settle a finished subagent's thread for the person who owns it.
+    async fn auto_settle_child(&self, child: &ThreadId) -> Result<()> {
+        let Some(thread) = self.store.thread(child).await? else {
+            return Ok(());
+        };
+        let owner = crate::profiles::ProfileOwner::from(&thread.scope);
+        self.store
+            .inbox_auto_settle(&owner, child, now_ms())
+            .await?;
+        Ok(())
     }
 
     pub(crate) fn register_waiter(&self, id: &TaskId) -> Result<Arc<Notify>> {

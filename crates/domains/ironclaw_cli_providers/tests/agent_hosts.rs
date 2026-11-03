@@ -575,7 +575,13 @@ async fn codex_starts_then_resumes_and_declines_without_a_bridge() {
         wait_for(|| recorder.finished.lock().unwrap().len() == n).await;
     }
     let log = std::fs::read_to_string(dir.path().join("codex.log")).unwrap();
-    assert!(log.contains("argv app-server --listen stdio://"), "{log}");
+    // Codex's own subagents are off: subagents are t3_delegate threads.
+    assert!(
+        log.contains(
+            "argv app-server --disable multi_agent --disable multi_agent_v2 --listen stdio://"
+        ),
+        "{log}"
+    );
     assert_eq!(
         log.matches(r#""method":"thread/start""#).count(),
         1,

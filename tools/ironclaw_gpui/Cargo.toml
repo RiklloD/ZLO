@@ -40,11 +40,13 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Vendored copies of two pinned GPUI crates, patched for scroll startup
-# (see vendor/PATCHES.md). Re-vendor on every gpui-kit bump.
+# Vendored copies of three pinned GPUI crates, patched for scroll startup
+# and idle frame pacing (see vendor/PATCHES.md). Re-vendor on every
+# gpui-kit bump.
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-base = { path = "vendor/gpui-base" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 
 [profile.release]
 lto = "thin"

@@ -335,8 +335,15 @@ pub fn mix(from: Hsla, to: Hsla, t: f32) -> Hsla {
 // Wall-clock tween stores. Main-thread `thread_local`s, so free element
 // builders can blend colors without threading `cx` through. An element
 // that unmounts mid-hover never sends its leave event, so every read stamps
-// the entry with the frame counter and [`pump`] drops entries that went a
-// whole frame unread.
+// the entry and [`pump`] drops entries left unread for a while. Not "one
+// frame unread": a cached view (the open chat) skips its reads on frames
+// it is replayed, and its hovers and states must survive those.
+
+/// A state nobody read for this long belongs to an unmounted element.
+const UNSEEN_STATE: Duration = Duration::from_secs(120);
+/// Hovers end with their leave event; this only catches an element that
+/// unmounted while hovered.
+const UNSEEN_HOVER: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Copy)]
 struct Tween {
@@ -345,7 +352,7 @@ struct Tween {
     started: Instant,
     duration: Duration,
     curve: CubicBezier,
-    seen: u64,
+    seen: Instant,
 }
 
 impl Tween {
@@ -367,7 +374,6 @@ impl Tween {
 struct Store {
     hovers: HashMap<SharedString, Tween>,
     states: HashMap<SharedString, Tween>,
-    frame: u64,
     /// A reveal or roll drew a mid-flight frame and needs the next one.
     pending_frame: bool,
 }
@@ -386,7 +392,6 @@ pub fn set_hover(key: &SharedString, hovered: bool, spec: MotionSpec, reduced: b
         if !hovered && current.is_none() {
             return;
         }
-        let seen = s.frame;
         s.hovers.insert(
             key.clone(),
             Tween {
@@ -399,7 +404,7 @@ pub fn set_hover(key: &SharedString, hovered: bool, spec: MotionSpec, reduced: b
                 started: now,
                 duration: spec.duration(),
                 curve: spec.curve,
-                seen,
+                seen: now,
             },
         );
     });
@@ -410,10 +415,9 @@ pub fn hover_t(key: &str) -> f32 {
     let now = Instant::now();
     STORE.with(|s| {
         let mut s = s.borrow_mut();
-        let frame = s.frame;
         match s.hovers.get_mut(key) {
             Some(t) => {
-                t.seen = frame;
+                t.seen = now;
                 t.value(now)
             }
             None => 0.,
@@ -443,14 +447,13 @@ pub fn state_t(key: &str, on: bool, spec: MotionSpec, reduced: bool) -> f32 {
     let target = if on { 1. } else { 0. };
     STORE.with(|s| {
         let mut s = s.borrow_mut();
-        let frame = s.frame;
         let entry = s.states.entry(key.to_string().into()).or_insert(Tween {
             origin: target,
             target,
             started: now,
             duration: spec.duration(),
             curve: spec.curve,
-            seen: frame,
+            seen: now,
         });
         if entry.target != target {
             let current = entry.value(now);
@@ -460,10 +463,10 @@ pub fn state_t(key: &str, on: bool, spec: MotionSpec, reduced: bool) -> f32 {
                 started: now,
                 duration: spec.duration(),
                 curve: spec.curve,
-                seen: frame,
+                seen: now,
             };
         }
-        entry.seen = frame;
+        entry.seen = now;
         entry.value(now)
     })
 }
@@ -474,14 +477,13 @@ pub fn glide(key: &str, to: f32, spec: MotionSpec, reduced: bool) -> f32 {
     let now = Instant::now();
     STORE.with(|s| {
         let mut s = s.borrow_mut();
-        let frame = s.frame;
         let entry = s.states.entry(key.to_string().into()).or_insert(Tween {
             origin: to,
             target: to,
             started: now,
             duration: spec.duration(),
             curve: spec.curve,
-            seen: frame,
+            seen: now,
         });
         if entry.target != to {
             let current = entry.value(now);
@@ -491,10 +493,10 @@ pub fn glide(key: &str, to: f32, spec: MotionSpec, reduced: bool) -> f32 {
                 started: now,
                 duration: spec.duration(),
                 curve: spec.curve,
-                seen: frame,
+                seen: now,
             };
         }
-        entry.seen = frame;
+        entry.seen = now;
         entry.value(now)
     })
 }
@@ -704,11 +706,9 @@ pub fn pump(window: &mut Window) {
     let now = Instant::now();
     let active = STORE.with(|s| {
         let mut s = s.borrow_mut();
-        s.frame += 1;
-        let frame = s.frame;
         let mut active = std::mem::take(&mut s.pending_frame);
         s.hovers.retain(|_, t| {
-            if t.seen + 1 < frame {
+            if now.saturating_duration_since(t.seen) > UNSEEN_HOVER {
                 return false;
             }
             let settled = t.settled(now);
@@ -716,7 +716,7 @@ pub fn pump(window: &mut Window) {
             !(settled && t.target == 0.)
         });
         s.states.retain(|_, t| {
-            if t.seen + 1 < frame {
+            if now.saturating_duration_since(t.seen) > UNSEEN_STATE {
                 return false;
             }
             active |= !t.settled(now);
@@ -725,7 +725,7 @@ pub fn pump(window: &mut Window) {
         active
     });
     if active {
-        window.request_animation_frame();
+        refresh_next_frame(window);
     }
 }
 
@@ -744,12 +744,20 @@ pub fn frame_tail() -> impl IntoElement {
                     || s.hovers.values().any(|t| !t.settled(now))
             });
             if busy {
-                window.request_animation_frame();
+                refresh_next_frame(window);
             }
         },
     )
     .absolute()
     .size_0()
+}
+
+/// Tweens live in this store, not in a view, so their next frame redraws
+/// every view. `request_animation_frame` would notify only the root, and a
+/// cached view (the open chat) would replay its stale frame. `refresh` is
+/// ignored mid-draw, hence the hop to the next frame.
+fn refresh_next_frame(window: &Window) {
+    window.on_next_frame(|window, _| window.refresh());
 }
 
 #[cfg(test)]

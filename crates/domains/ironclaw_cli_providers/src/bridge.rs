@@ -33,6 +33,11 @@ use ironclaw_orchestrator::tools::TOOLS;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, oneshot};
 
+/// What the agent reads when it reaches for its own subagent tool.
+const BUILTIN_SUBAGENT_DENIAL: &str = "Built-in subagents are switched off here. Start a subagent with the \
+     T3 orchestrator instead: t3_delegate (mcp__ironclaw__t3_delegate on Claude Code), which opens a thread \
+     the user can see and steer.";
+
 /// How long a tool call waits for a person before it is denied.
 pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Upper bound on a session token's life; turn end revokes it sooner.
@@ -661,8 +666,8 @@ impl CliBridge {
     }
 
     /// Decide a call claimed with [`Self::claim_call`]: deny it when its turn
-    /// is gone, allow it on a "Full access" profile, otherwise hold it as a
-    /// gate until its owner answers.
+    /// is gone or it would start a built-in subagent, allow it on a "Full
+    /// access" profile, otherwise hold it as a gate until its owner answers.
     pub async fn decide_call(
         &self,
         thread: &ThreadId,
@@ -674,6 +679,11 @@ impl CliBridge {
     ) -> ToolDecision {
         if !claim.live {
             return ToolDecision::Deny("No live turn to approve this call.".into());
+        }
+        // Backstop for the launch flags: a hidden subagent never runs, even
+        // on a "Full access" profile.
+        if crate::is_builtin_subagent_tool(tool_name) {
+            return ToolDecision::Deny(BUILTIN_SUBAGENT_DENIAL.into());
         }
         let call_id = claim.call_id.clone();
         if self.profile_full_access(thread).await {
@@ -1064,6 +1074,28 @@ mod tests {
         // Only thinking since: the call borrows nothing.
         bridge.thinking_delta(&thread, "r1", "More thoughts.", true);
         assert!(bridge.claim_call(&thread, "r1").said.is_none());
+    }
+
+    /// The CLI's own subagent tools are denied outright, before any gate or
+    /// "Full access" shortcut: subagents are orchestrator threads.
+    #[tokio::test]
+    async fn builtin_subagent_tools_are_denied_without_a_gate() {
+        let bridge = CliBridge::new(Duration::from_millis(200));
+        let thread = tid();
+        bridge.turn_started(&thread, "r1");
+        for tool in crate::BUILTIN_SUBAGENT_TOOLS {
+            let claim = bridge.claim_call(&thread, "r1");
+            let decision = bridge
+                .decide_call(&thread, "r1", tool, &json!({"prompt": "go"}), None, claim)
+                .await;
+            assert_eq!(
+                decision,
+                ToolDecision::Deny(BUILTIN_SUBAGENT_DENIAL.into()),
+                "{tool}"
+            );
+        }
+        let snap = bridge.snapshot(&thread).unwrap();
+        assert!(snap.gates.is_empty() && snap.tools.is_empty());
     }
 
     #[tokio::test]

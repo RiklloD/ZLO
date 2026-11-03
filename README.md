@@ -45,6 +45,16 @@ The React frontend inherited from IronClaw isn't ZLO's desktop interface. The ga
 
 You'll also see `ironclaw_*`, `.ironclaw`, and some older Numoh names in the code. ZLO is the app's name; I haven't renamed every internal crate, data path, or signing identifier. Keeping those stable makes upstream merges and macOS permissions easier to maintain.
 
+## Install
+
+On an Apple Silicon Mac, paste this into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RiklloD/zlo/main/install.sh | sh
+```
+
+It builds ZLO from source and installs it to `~/Applications/ZLO.app`. If the Xcode command-line tools are missing, it opens their installer and asks you to run the command again. It installs Rust if you don't have it. The first build takes 10 to 20 minutes. Run the same command again to update. Without an Apple Development signing identity the app is signed ad-hoc, so macOS asks for Accessibility and Screen Recording again after each update.
+
 ## Building from source
 
 This is a macOS development setup, not a cross-platform installer. It needs Xcode command-line tools, Rust through rustup, and an Apple Development signing identity. The repository pins the Rust toolchain in [`rust-toolchain.toml`](rust-toolchain.toml). The bundled computer-use engine currently targets Apple Silicon.

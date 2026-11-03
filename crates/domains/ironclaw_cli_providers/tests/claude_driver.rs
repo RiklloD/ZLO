@@ -41,7 +41,7 @@ impl TurnEventSink for Recorder {
 }
 
 const ANSWER: &str = r#"#!/bin/sh
-echo "$@" >> "$ARGS_LOG"
+{ echo "$@" | tr '\n' ' '; echo; } >> "$ARGS_LOG"
 read -r _line
 mkdir -p "$TRANSCRIPT_DIR" && echo '{"type":"user","message":{"role":"user","content":"hi"}}' > "$TRANSCRIPT_DIR/$SESSION.jsonl"
 echo '{"type":"system","subtype":"init","cwd":"/w","session_id":"s","tools":[],"mcp_servers":[],"model":"claude-haiku-5-5","permissionMode":"default"}'
@@ -192,7 +192,15 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
         "{}",
         lines[1]
     );
-    assert!(!lines[0].contains("--append-system-prompt"), "{}", lines[0]);
+    // Every turn carries the orchestrator's subagent rules; only the second
+    // carries the goal.
+    assert!(
+        lines[0].contains("--append-system-prompt")
+            && lines[0].contains("## Subagents (T3 orchestrator)"),
+        "{}",
+        lines[0]
+    );
+    assert!(!lines[0].contains("Ship stage 5"), "{}", lines[0]);
     assert!(
         lines[1].contains("--append-system-prompt") && lines[1].contains("Ship stage 5"),
         "{}",
@@ -202,8 +210,13 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
         assert!(line.contains("--tools  --strict-mcp-config"), "{line}");
         assert!(line.contains("--permission-prompts none"), "{line}");
         assert!(line.contains("--model claude-haiku-5-5"), "{line}");
+        // The CLI's own subagents are off: subagents are t3_delegate threads.
         assert!(
-            !line.contains("dangerously") && !line.contains("allowed"),
+            line.contains("--disallowedTools Agent,Task,Workflow"),
+            "{line}"
+        );
+        assert!(
+            !line.contains("dangerously") && !line.contains("--allowedTools"),
             "{line}"
         );
     }
@@ -249,7 +262,7 @@ async fn profile_soul_skills_and_folder_reach_the_cli() {
     let log = dir.path().join("profile-args.log");
     let body = ANSWER
         .replace(
-            "echo \"$@\" >> \"$ARGS_LOG\"",
+            "{ echo \"$@\" | tr '\\n' ' '; echo; } >> \"$ARGS_LOG\"",
             "{ printf 'PWD=%s ' \"$PWD\"; echo \"$@\" | tr '\\n' ' '; echo; } >> @LOG@",
         )
         .replace(
@@ -499,7 +512,11 @@ async fn bridged_turn_asks_before_each_tool_and_streams_text() {
     assert!(args.contains("--mcp-config") && args.contains("--strict-mcp-config"));
     assert!(args.contains("--permission-prompts none"), "{args}");
     assert!(
-        !args.contains("dangerously") && !args.contains("allowed"),
+        args.contains("--disallowedTools Agent,Task,Workflow"),
+        "{args}"
+    );
+    assert!(
+        !args.contains("dangerously") && !args.contains("--allowedTools"),
         "{args}"
     );
 

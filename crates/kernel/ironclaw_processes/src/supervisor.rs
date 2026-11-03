@@ -20,6 +20,10 @@ use crate::{
 };
 
 const MAX_CLAIMS_PER_DRAIN_BATCH: usize = 128;
+/// Ceiling for the idle poll backoff; a slower configured poll keeps its own.
+const IDLE_POLL_CEILING: Duration = Duration::from_secs(2);
+/// The idle poll never grows past this multiple of the configured poll.
+const IDLE_POLL_MAX_FACTOR: u32 = 16;
 
 #[derive(Debug, Clone)]
 pub struct ProcessSupervisorConfig {
@@ -414,8 +418,16 @@ async fn run_supervisor_loop(
     };
     let mut tasks = JoinSet::new();
     let mut active = HashMap::new();
-    let mut poll_tick = interval(context.config.poll_interval());
-    poll_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // The poll is a safety net for work no wake announced. While it finds
+    // nothing it backs off (`idle_poll_delay`); any sign of work snaps it back
+    // to the configured interval, so an idle host stops querying the journal
+    // several times a second.
+    let poll_base = context.config.poll_interval();
+    let mut idle_polls = 0u32;
+    // Fires at once, like the interval it replaced: a restart drains what
+    // was queued before it without waiting a poll.
+    let poll_sleep = sleep(Duration::ZERO);
+    tokio::pin!(poll_sleep);
     let mut recovery_tick = interval(context.config.lease_recovery_interval());
     recovery_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut claim_retry_pending = false;
@@ -429,6 +441,8 @@ async fn run_supervisor_loop(
                 }
             }
             Some(command) = command_rx.recv() => {
+                idle_polls = 0;
+                rearm_poll(poll_sleep.as_mut(), poll_base);
                 match command {
                     SupervisorCommand::Wake(scope) => {
                         drain_or_retry(&context, Some(scope), &mut tasks, &mut active, &mut claim_retry_pending).await;
@@ -443,10 +457,18 @@ async fn run_supervisor_loop(
                     }
                 }
             }
-            _ = poll_tick.tick() => {
-                drain_or_retry(&context, None, &mut tasks, &mut active, &mut claim_retry_pending).await;
+            () = &mut poll_sleep => {
+                let claimed = drain_or_retry(&context, None, &mut tasks, &mut active, &mut claim_retry_pending).await;
+                idle_polls = if claimed { 0 } else { idle_polls.saturating_add(1) };
+                poll_sleep
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + idle_poll_delay(poll_base, idle_polls));
             }
             Some(result) = tasks.join_next(), if !tasks.is_empty() => {
+                // A freed permit may admit a run that queued while all were
+                // busy; no wake announces that.
+                idle_polls = 0;
+                rearm_poll(poll_sleep.as_mut(), poll_base);
                 match result {
                     Ok(process_id) => {
                         active.remove(&process_id);
@@ -461,20 +483,51 @@ async fn run_supervisor_loop(
     }
 }
 
+/// Next idle poll after `idle_polls` empty ones in a row: the configured
+/// interval doubled per empty poll, capped at the smaller of 16x the
+/// interval and `IDLE_POLL_CEILING` (never below the interval itself).
+fn idle_poll_delay(base: Duration, idle_polls: u32) -> Duration {
+    let cap = base
+        .saturating_mul(IDLE_POLL_MAX_FACTOR)
+        .min(IDLE_POLL_CEILING.max(base));
+    base.saturating_mul(1u32 << idle_polls.min(IDLE_POLL_MAX_FACTOR.ilog2()))
+        .min(cap)
+}
+
+/// Bring the next poll forward to `base` from now, never push it back.
+fn rearm_poll(poll: std::pin::Pin<&mut tokio::time::Sleep>, base: Duration) {
+    let soon = tokio::time::Instant::now() + base;
+    if poll.deadline() > soon {
+        poll.reset(soon);
+    }
+}
+
+/// Drain the queue; true when it claimed at least one process.
 async fn drain_or_retry(
     context: &DrainContext,
     scope: Option<ResourceScope>,
     tasks: &mut JoinSet<ProcessId>,
     active: &mut HashMap<ProcessId, ClaimedIdentity>,
     retry_pending: &mut bool,
-) {
-    if !*retry_pending && drain_queued(context, scope, tasks, active).await {
+) -> bool {
+    if *retry_pending {
+        return false;
+    }
+    let outcome = drain_queued(context, scope, tasks, active).await;
+    if outcome.claim_failed {
         *retry_pending = true;
         schedule_retry(
             context.command_tx.clone(),
             context.config.claim_error_backoff(),
         );
     }
+    outcome.claimed
+}
+
+#[derive(Default)]
+struct DrainOutcome {
+    claim_failed: bool,
+    claimed: bool,
 }
 
 async fn drain_queued(
@@ -482,11 +535,12 @@ async fn drain_queued(
     scope_filter: Option<ResourceScope>,
     tasks: &mut JoinSet<ProcessId>,
     active: &mut HashMap<ProcessId, ClaimedIdentity>,
-) -> bool {
+) -> DrainOutcome {
+    let mut outcome = DrainOutcome::default();
     loop {
         let permits = acquire_claim_permits(&context.semaphore);
         if permits.is_empty() {
-            return false;
+            return outcome;
         }
         match context
             .runtime
@@ -499,8 +553,9 @@ async fn drain_queued(
             })
             .await
         {
-            Ok(claims) if claims.is_empty() => return false,
+            Ok(claims) if claims.is_empty() => return outcome,
             Ok(claims) => {
+                outcome.claimed = true;
                 for (claimed, permit) in claims.into_iter().zip(permits) {
                     let process_id = claimed.state.process_id;
                     if active.contains_key(&process_id) {
@@ -533,7 +588,7 @@ async fn drain_queued(
                         {
                             debug!(%error, %process_id, "deferred claim relinquish failed");
                         }
-                        return false;
+                        return outcome;
                     }
                     active.insert(
                         process_id,
@@ -548,7 +603,8 @@ async fn drain_queued(
             }
             Err(error) => {
                 debug!(%error, process_kind = ?context.process_kind, "process claim failed");
-                return true;
+                outcome.claim_failed = true;
+                return outcome;
             }
         }
     }
@@ -848,6 +904,18 @@ mod tests {
         Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn idle_poll_backs_off_to_its_cap_and_never_below_the_interval() {
+        let ms = Duration::from_millis;
+        // The turn runner's 200 ms poll doubles up to the 2 s ceiling.
+        let steps: Vec<_> = (0..6).map(|n| idle_poll_delay(ms(200), n)).collect();
+        assert_eq!(steps, [ms(200), ms(400), ms(800), ms(1600), ms(2000), ms(2000)]);
+        // A slower configured poll keeps its own pace.
+        assert_eq!(idle_poll_delay(Duration::from_secs(5), 9), Duration::from_secs(5));
+        // Tight test polls stay tight: at most 16x.
+        assert_eq!(idle_poll_delay(ms(1), u32::MAX), ms(16));
+    }
 
     use super::*;
     use crate::{

@@ -284,6 +284,15 @@ async fn stop_propagates_to_every_descendant() {
         task_status(&h.engine, grand["taskId"].as_str().unwrap()).await,
         TaskStatus::Cancelled
     );
+    // A subagent that did not finish its task stays in the inbox.
+    let owner = crate::profiles::ProfileOwner::from(&scope());
+    let records = h.engine.store().inbox_records(&owner).await.unwrap();
+    assert!(
+        records
+            .get(grand_thread.as_str())
+            .is_none_or(|r| r.settled_at.is_none()),
+        "a cancelled subagent is not auto-settled"
+    );
     // The idle level-1 child is finalized directly.
     assert_eq!(
         task_status(&h.engine, child["taskId"].as_str().unwrap()).await,
@@ -347,6 +356,16 @@ async fn delegation_limits_and_result_delivery() {
         TurnOutcome::completed(Some("done!".into())),
     )
     .await;
+    // The finished subagent's thread settles by itself; the parent stays.
+    let owner = crate::profiles::ProfileOwner::from(&scope());
+    let records = h.engine.store().inbox_records(&owner).await.unwrap();
+    assert!(
+        records
+            .get(child.as_str())
+            .is_some_and(|r| r.settled_at.is_some()),
+        "a completed subagent is auto-settled: {records:?}"
+    );
+    assert!(!records.contains_key("p"), "the parent is left alone");
     h.engine.tick().await;
     assert!(
         h.rt.starts_on(&tid("p")).is_empty(),
@@ -357,6 +376,68 @@ async fn delegation_limits_and_result_delivery() {
     let card = h.rt.starts_on(&tid("p"));
     assert_eq!(card.len(), 1);
     assert!(card[0].contains("done!"));
+}
+
+/// The two kinds of delegation: a subagent on this task gets the parent's
+/// conversation ahead of its task; a side thread gets only its brief.
+#[tokio::test]
+async fn a_subagent_inherits_the_conversation_and_a_side_thread_gets_only_its_brief() {
+    let h = harness().await;
+    let p = tid("p");
+    h.engine.ensure_thread(&p, &scope(), None).await.unwrap();
+    h.rt.history.lock().unwrap().insert(
+        p.clone(),
+        vec![
+            msg(HistoryRole::User, "We are fixing the flaky inbox poller."),
+            msg(HistoryRole::Assistant, "The poller backs off to 2 s."),
+        ],
+    );
+    let brief_of = |task: &serde_json::Value| {
+        let child = tid(task["childThreadId"].as_str().unwrap());
+        h.rt.starts_on(&child).join("\n")
+    };
+
+    let sub = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(
+                json!({"task": "Review the back-off.", "context": "inherit", "target": {"model": "m2"}}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let brief = brief_of(&sub);
+    assert!(brief.contains("conversation so far is below"), "{brief}");
+    assert!(
+        brief.contains("flaky inbox poller") && brief.contains("backs off to 2 s"),
+        "{brief}"
+    );
+    assert!(brief.ends_with("Review the back-off."), "{brief}");
+    assert_eq!(sub["model"], "m2");
+
+    let side = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "Summarize the README."})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let brief = brief_of(&side);
+    assert!(brief.contains("conversation is not available"), "{brief}");
+    assert!(!brief.contains("flaky inbox poller"), "{brief}");
+
+    let err = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(json!({"task": "x", "context": "everything"})).unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "invalid_request");
 }
 
 #[tokio::test]
@@ -815,6 +896,20 @@ async fn profiles_run_on_their_providers_runtime() {
     assert_eq!(child.model.as_deref(), Some("m2"));
     assert_eq!(cli.starts_on(&child.thread_id).len(), 1);
     assert!(h.rt.starts_on(&child.thread_id).is_empty());
+
+    // A subagent that inherits this conversation keeps this thread's profile.
+    let err = h
+        .engine
+        .delegate(
+            &ctx("p"),
+            serde_json::from_value(
+                json!({"task": "x", "context": "inherit", "target": {"profile": "coder"}}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "profile_unavailable");
 
     // A new thread on the profile moves to that runtime; user turns go there.
     let t = tid("t");

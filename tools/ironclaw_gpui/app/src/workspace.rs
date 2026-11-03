@@ -51,6 +51,9 @@ const STARTUP_POLL: Duration = Duration::from_millis(150);
 /// Status bar refresh while the window is in use. Telemetry also refreshes
 /// right after each run; usage windows are cached for a minute upstream.
 const STATUS_POLL: Duration = Duration::from_secs(10);
+/// Slack past the main column's entrance (and the launch fade, shorter)
+/// before the chat is drawn cached.
+const CACHE_AFTER_ENTER: Duration = Duration::from_millis(120);
 
 /// Whether the bottom status bar shows. Toggled app-wide with Cmd+Shift+S.
 pub fn toggle_status_bar(cx: &mut App) {
@@ -148,6 +151,9 @@ pub struct Workspace {
     sidebar_drag: Option<f32>,
     /// App launch, for the startup grace window.
     launched: std::time::Instant,
+    /// The main column's entrance key and when it last changed: the chat is
+    /// cached only once that fade is over (see `render`).
+    main_entered: (SharedString, std::time::Instant),
 }
 
 impl Workspace {
@@ -170,6 +176,7 @@ impl Workspace {
             main_window: window.window_handle(),
             sidebar_drag: None,
             launched: std::time::Instant::now(),
+            main_entered: (SharedString::default(), std::time::Instant::now()),
             _page_events: Vec::new(),
             _poll: None,
             connect_attempt: 0,
@@ -1303,6 +1310,25 @@ impl Render for Workspace {
                     (Page::Chat, Some((id, _))) => format!("main-chat-{id}").into(),
                     (page, _) => format!("main-{}", page as u8).into(),
                 };
+                if self.main_entered.0 != key {
+                    self.main_entered = (key.clone(), std::time::Instant::now());
+                }
+                // The open chat is the heaviest view by far. Cached, a frame
+                // where only the sidebar, the status bar or a hover changed
+                // replays it instead of laying out the transcript again. Not
+                // while the entrance fades it in (a replay keeps the opacity
+                // it was painted with) or while a native preview lives in it
+                // (placed at paint time, which a replay skips).
+                let cache_chat = self.main_entered.1.elapsed()
+                    >= s.enter.duration() + CACHE_AFTER_ENTER
+                    && !crate::native_view::alive();
+                let embed = |chat: &Entity<ChatView>| {
+                    if cache_chat {
+                        kit::cached_view(chat.clone())
+                    } else {
+                        chat.clone().into_any_element()
+                    }
+                };
                 let sidebar_full = self.sidebar_width(cx);
                 let sidebar_t = panels::reveal(
                     "sidebar-reveal",
@@ -1324,7 +1350,7 @@ impl Render for Workspace {
                     // previews live on the real thread or new-chat screen.
                     (Some(page), active) if self.page == Page::Appearance => {
                         let under = match active {
-                            Some((_, chat)) => chat.clone().into_any_element(),
+                            Some((_, chat)) => embed(chat),
                             None => self.render_empty(cx).into_any_element(),
                         };
                         div()
@@ -1342,7 +1368,7 @@ impl Render for Workspace {
                             .into_any_element()
                     }
                     (Some(page), _) => page,
-                    (None, Some((_, chat))) => chat.clone().into_any_element(),
+                    (None, Some((_, chat))) => embed(chat),
                     (None, None) => self.render_empty(cx).into_any_element(),
                 };
                 let over_main = [

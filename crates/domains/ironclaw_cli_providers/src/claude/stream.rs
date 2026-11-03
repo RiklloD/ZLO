@@ -31,6 +31,10 @@ struct ResultFold {
     is_error: bool,
     subtype: String,
     text: Option<String>,
+    /// Every non-empty reply of the turn, oldest first. A steer sent while
+    /// the turn runs gets its own `result`; the answer to the original
+    /// prompt (a delegated task's brief) must not be lost behind it.
+    replies: Vec<String>,
     usage: Option<TurnUsage>,
     context_window: Option<u64>,
 }
@@ -87,10 +91,18 @@ impl TurnFold {
                         .or_else(|| m.values().map(|e| e.context_window).max())
                         .filter(|w| *w > 0)
                 });
+                let mut replies = self.result.take().map(|f| f.replies).unwrap_or_default();
+                if !r.is_error
+                    && let Some(reply) =
+                        r.result.as_deref().map(str::trim).filter(|t| !t.is_empty())
+                {
+                    replies.push(reply.to_string());
+                }
                 self.result = Some(ResultFold {
                     is_error: r.is_error,
                     subtype: format!("{:?}", r.subtype).to_lowercase(),
                     text: r.result.clone(),
+                    replies,
                     usage: usage.map(|u| TurnUsage {
                         context_window,
                         ..u
@@ -170,9 +182,14 @@ impl TurnFold {
             );
         };
         if !result.is_error {
+            let text = if result.replies.len() > 1 {
+                Some(result.replies.join("\n\n"))
+            } else {
+                result.text.clone()
+            };
             return TurnOutcome {
                 usage: result.usage,
-                ..TurnOutcome::completed(result.text.clone())
+                ..TurnOutcome::completed(text)
             };
         }
         let text = result.text.as_deref().unwrap_or_default();
@@ -229,5 +246,34 @@ mod tests {
         assert_eq!(outcome.status, TurnEndStatus::Failed);
         assert_eq!(outcome.usage_limit_resets_at, Some(1_792_801_800_000));
         assert!(!outcome.error.unwrap_or_default().contains("hit your"));
+    }
+
+    /// A steer during a delegated child's turn ends in a second `result`.
+    /// The task result keeps the answer to the brief ahead of it (it used
+    /// to be replaced by the steer's reply).
+    #[test]
+    fn a_steered_turn_keeps_every_reply() {
+        let mut fold = TurnFold::default();
+        let t = Instant::now();
+        let result = |text: &str| {
+            format!(
+                r#"{{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"duration_api_ms":0,"num_turns":1,"result":"{text}","session_id":"s","total_cost_usd":0}}"#
+            )
+        };
+        fold.push_line(&result("## Review: the full findings"), t);
+        fold.push_line(&result("Stopped."), t + Duration::from_millis(5));
+        let outcome = fold.outcome(false, Some(0));
+        assert_eq!(outcome.status, TurnEndStatus::Completed);
+        assert_eq!(
+            outcome.final_text.as_deref(),
+            Some("## Review: the full findings\n\nStopped.")
+        );
+
+        let mut single = TurnFold::default();
+        single.push_line(&result("Only reply"), t);
+        assert_eq!(
+            single.outcome(false, Some(0)).final_text.as_deref(),
+            Some("Only reply")
+        );
     }
 }

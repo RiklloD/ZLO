@@ -26,6 +26,7 @@ use ironclaw_host_api::ids::ThreadId;
 use ironclaw_host_api::reply_visuals::REPLY_VISUALS_PROMPT;
 use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::runtime::{TurnEventSink, TurnProfile};
+use ironclaw_orchestrator::tools::DELEGATION_PROMPT;
 
 /// How a thread's goal reaches a CLI agent: added to the system prompt, or
 /// put ahead of the prompt where the protocol has no system prompt.
@@ -35,12 +36,27 @@ pub(crate) fn goal_note(goal: &str) -> String {
 
 /// What a CLI agent with a system prompt flag gets there: the profile's
 /// SOUL.md, the visuals format, then the thread goal.
+/// The CLI agents' own subagent tools. They are switched off: every
+/// subagent is an orchestrator thread (`t3_delegate`) the person can see.
+/// `Task` is the Claude CLI's older name for `Agent`.
+pub const BUILTIN_SUBAGENT_TOOLS: [&str; 3] = ["Agent", "Task", "Workflow"];
+
+/// Whether `tool` is one of [`BUILTIN_SUBAGENT_TOOLS`].
+pub fn is_builtin_subagent_tool(tool: &str) -> bool {
+    BUILTIN_SUBAGENT_TOOLS.contains(&tool)
+}
+
 pub(crate) fn system_note(profile: Option<&TurnProfile>, goal: Option<&str>) -> Option<String> {
     let soul = profile
         .map(|p| p.soul.trim())
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    join_notes([soul, visuals(), goal.map(goal_note)])
+    join_notes([soul, delegation(), visuals(), goal.map(goal_note)])
+}
+
+/// Subagents go through the orchestrator only.
+fn delegation() -> Option<String> {
+    Some(DELEGATION_PROMPT.trim().to_string())
 }
 
 /// How to put a chart, table or stat tiles in a reply (ZLO draws them).
@@ -65,7 +81,7 @@ pub(crate) fn session_preamble(profile: &TurnProfile) -> Option<String> {
                 s.index.trim()
             )
         });
-    join_notes([soul, visuals(), skills])
+    join_notes([soul, delegation(), visuals(), skills])
 }
 
 fn join_notes(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {

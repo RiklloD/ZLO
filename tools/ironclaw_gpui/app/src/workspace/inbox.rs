@@ -26,6 +26,8 @@ use crate::design::{self, Palette, Style, kit};
 use crate::jobs;
 use crate::ui::*;
 
+mod subagents;
+
 /// One context-menu entry's effect on a row, given its thread id.
 type RowAction = Box<dyn Fn(&mut Workspace, String, &mut Window, &mut Context<Workspace>)>;
 
@@ -65,6 +67,14 @@ pub(super) struct Inbox {
     polling: bool,
     /// Rows on screen at first load draw settled; later ones grow in.
     seeded: bool,
+    /// The visible rows' delegation tree: subagents fold under their parent.
+    tree: subagents::Tree,
+    /// Parents whose subagent list is unfolded (closed by default).
+    expanded: BTreeSet<String>,
+    /// The thread whose parents were last unfolded to show it.
+    revealed: Option<String>,
+    /// A search is on: every subagent list is unfolded.
+    unfold_subagents: bool,
     /// ⌘ alone is held: cards show their `⌘N` jump badge.
     pub(super) cmd_held: bool,
     /// Thread ids ⌘1..⌘9 open, in the order the cards show.
@@ -100,6 +110,7 @@ impl Inbox {
         self.list
             .rows
             .iter()
+            .filter(|r| !has_listed_parent(&self.list.rows, r))
             .find(|r| !matches!(r.state, InboxState::Snoozed | InboxState::Settled))
             .map(|r| r.thread_id.clone())
     }
@@ -184,14 +195,39 @@ impl Inbox {
     }
 }
 
-/// Choose only a confirmed open row; an empty result always means a fresh draft.
+/// A subagent drawn under its parent rather than as a row of its own.
+fn has_listed_parent(rows: &[InboxRow], row: &InboxRow) -> bool {
+    row.parent_thread_id
+        .as_deref()
+        .is_some_and(|p| p != row.thread_id && rows.iter().any(|r| r.thread_id == p))
+}
+
+/// Choose only a confirmed open row; an empty result always means a fresh
+/// draft. A settled subagent hands the screen back to its parent while the
+/// parent is open; otherwise the next top-level row takes it.
 fn next_after_settle(rows: &[InboxRow], settled: &str) -> Option<String> {
+    let open = |r: &InboxRow| {
+        matches!(
+            r.state,
+            InboxState::Pinned | InboxState::Inbox | InboxState::Working
+        )
+    };
+    let parent = rows
+        .iter()
+        .find(|r| r.thread_id == settled)
+        .and_then(|r| r.parent_thread_id.as_deref())
+        .and_then(|p| rows.iter().find(|r| r.thread_id == p))
+        .filter(|r| r.thread_id != settled && open(r));
+    if let Some(parent) = parent {
+        return Some(parent.thread_id.clone());
+    }
     rows.iter()
         .filter(|r| r.state == InboxState::Pinned)
         .chain(
             rows.iter()
                 .filter(|r| matches!(r.state, InboxState::Inbox | InboxState::Working)),
         )
+        .filter(|r| !has_listed_parent(rows, r))
         .find(|r| r.thread_id != settled)
         .map(|r| r.thread_id.clone())
 }
@@ -621,6 +657,15 @@ impl Workspace {
             // Side chats live under their parent; a search still finds them.
             .filter(|r| !query.is_empty() || !side_chats.contains(r.thread_id.as_str()))
             .cloned()
+            .collect();
+        // Subagents fold under their parent; the rest of the list is the
+        // top-level threads only.
+        self.inbox.tree = subagents::Tree::new(&rows);
+        self.inbox.unfold_subagents = !query.is_empty();
+        self.reveal_active_subagent(active.as_deref());
+        let rows: Vec<InboxRow> = rows
+            .into_iter()
+            .filter(|r| !self.inbox.tree.is_nested(&r.thread_id))
             .collect();
         let in_state = |s: &[InboxState]| -> Vec<&InboxRow> {
             rows.iter().filter(|r| s.contains(&r.state)).collect()
@@ -1399,10 +1444,13 @@ impl Workspace {
                         .when(unread, |d| d.font_semibold())
                         .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
                         .child(title_of(row).to_string()),
-                );
+                )
+                .children(self.render_subagent_line(row, false, cx));
+        let current = self.active.as_ref().map(|(id, _)| id.clone());
         v_flex()
             .child(card.context_menu(self.row_menu(row, cx)))
             .when(menu_open, |d| d.child(self.render_snooze_menu(&id, cx)))
+            .children(self.render_subagent_list(row, current.as_deref(), now, cx))
             .into_any_element()
     }
 
@@ -1454,88 +1502,97 @@ impl Workspace {
             (true, Some(at)) => wake_label(at),
             _ => short_age(row.settled_at.unwrap_or(row.last_activity_at), now),
         };
-        sidebar_row(SharedString::from(format!("slim-row-{id}")), active, cx)
-            .min_h(px(design::SIDEBAR_SLIM_HEIGHT))
-            .text_size(px(design::SIDEBAR_TITLE_SIZE))
-            .group(group.clone())
-            .aria_label(title_of(row).to_string())
-            .on_click(
-                cx.listener(move |this, _, window, cx| {
+        let slim =
+            sidebar_row(SharedString::from(format!("slim-row-{id}")), active, cx)
+                .min_h(px(design::SIDEBAR_SLIM_HEIGHT))
+                .text_size(px(design::SIDEBAR_TITLE_SIZE))
+                .group(group.clone())
+                .aria_label(title_of(row).to_string())
+                .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_thread(open_id.clone(), window, cx)
-                }),
-            )
-            .child(
-                div()
-                    .opacity(0.4)
-                    .child(profile_mark(&row.profile_id, &name, 0., cx)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(if unread { p.text } else { p.text_muted })
-                    .when(unread, |d| d.font_semibold())
-                    .child(title_of(row).to_string()),
-            )
-            .child(
-                h_flex()
-                    .gap_px()
-                    .invisible()
-                    .group_hover(group.clone(), |s| s.visible())
-                    .child(
-                        Button::new(SharedString::from(format!("unpark-{id}")))
-                            .when(snoozed, |b| b.icon(ExtraIcon::Bell))
-                            .when(!snoozed, |b| b.icon(IconName::Undo2))
-                            .ghost()
-                            .xsmall()
-                            .tooltip(if snoozed {
-                                "Wake now"
-                            } else {
-                                "Un-settle session"
-                            })
-                            .accessibility_label(if snoozed {
-                                "Wake now"
-                            } else {
-                                "Un-settle session"
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let action = if snoozed {
-                                    InboxAction::Wake
-                                } else {
-                                    InboxAction::Unsettle
-                                };
-                                this.inbox_mark(undo_id.clone(), action, None, cx)
-                            })),
-                    )
-                    .when(!snoozed, |d| {
-                        d.child(
-                            Button::new(SharedString::from(format!("delete-{id}")))
-                                .icon(IconName::Delete)
+                }))
+                .child(
+                    div()
+                        .opacity(0.4)
+                        .child(profile_mark(&row.profile_id, &name, 0., cx)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(if unread { p.text } else { p.text_muted })
+                        .when(unread, |d| d.font_semibold())
+                        .child(title_of(row).to_string()),
+                )
+                .child(
+                    h_flex()
+                        .gap_px()
+                        .invisible()
+                        .group_hover(group.clone(), |s| s.visible())
+                        .child(
+                            Button::new(SharedString::from(format!("unpark-{id}")))
+                                .when(snoozed, |b| b.icon(ExtraIcon::Bell))
+                                .when(!snoozed, |b| b.icon(IconName::Undo2))
                                 .ghost()
                                 .xsmall()
-                                .tooltip("Delete conversation")
-                                .accessibility_label("Delete conversation")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.delete_thread(delete_id.clone(), window, cx)
+                                .tooltip(if snoozed {
+                                    "Wake now"
+                                } else {
+                                    "Un-settle session"
+                                })
+                                .accessibility_label(if snoozed {
+                                    "Wake now"
+                                } else {
+                                    "Un-settle session"
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let action = if snoozed {
+                                        InboxAction::Wake
+                                    } else {
+                                        InboxAction::Unsettle
+                                    };
+                                    this.inbox_mark(undo_id.clone(), action, None, cx)
                                 })),
                         )
-                    }),
-            )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .items_center()
-                    .text_xs()
-                    .text_color(if snoozed { p.accent } else { p.text_faint })
-                    .group_hover(group, |s| s.invisible())
-                    .when(snoozed, |d| {
-                        d.child(Icon::new(ExtraIcon::AlarmClock).xsmall())
-                    })
-                    .child(label),
-            )
-            .context_menu(menu)
+                        .when(!snoozed, |d| {
+                            d.child(
+                                Button::new(SharedString::from(format!("delete-{id}")))
+                                    .icon(IconName::Delete)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Delete conversation")
+                                    .accessibility_label("Delete conversation")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.delete_thread(delete_id.clone(), window, cx)
+                                    })),
+                            )
+                        }),
+                )
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .items_center()
+                        .text_xs()
+                        .text_color(if snoozed { p.accent } else { p.text_faint })
+                        .group_hover(group, |s| s.invisible())
+                        .when(snoozed, |d| {
+                            d.child(Icon::new(ExtraIcon::AlarmClock).xsmall())
+                        })
+                        .child(label),
+                )
+                .context_menu(menu);
+        let line = self.render_subagent_line(row, true, cx);
+        let current = self.active.as_ref().map(|(id, _)| id.clone());
+        let list = self.render_subagent_list(row, current.as_deref(), now, cx);
+        if line.is_none() {
+            return slim.into_any_element();
+        }
+        v_flex()
+            .child(slim)
+            .children(line.map(|l| div().pl(px(34.)).pb(px(4.)).child(l)))
+            .children(list)
             .into_any_element()
     }
 }

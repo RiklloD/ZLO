@@ -76,6 +76,16 @@ the legacy `ironclaw_threads` thread records once (marker
   tasks stay live, and nothing runs until the user releases the hold
   (Continue), which resumes the cut turn before the queue drains.
 
+- Every subagent is an orchestrator thread (`t3_delegate`). Two kinds:
+  `context: "inherit"` (a subagent on the caller's task: the parent's
+  conversation rides ahead of the brief as a portable handoff, same profile)
+  and `context: "brief"` (default: a side task, `target.profile` allowed).
+  Runtimes switch off their agents' own subagent tools and add
+  `tools::DELEGATION_PROMPT` (`prompts/delegation.md`) to the system prompt;
+  IronClaw's loop (native API models) hides `builtin.spawn_subagent` on
+  orchestrated turns and carries the same prompt in the turn's SOUL.md
+  context.
+
 - A thread's profile is set once (`profile_id IS NULL` guard) and never
   changes; a thread without one runs as `default`. Delegated children inherit
   the parent's profile unless `target.profile` names another; forks keep it.

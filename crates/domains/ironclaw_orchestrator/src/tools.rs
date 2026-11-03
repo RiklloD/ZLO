@@ -15,6 +15,11 @@ use crate::error::OrchestratorError;
 use crate::model::*;
 use crate::runtime::SteerHow;
 
+/// How agents in orchestrated threads start subagents: only through these
+/// tools. Runtimes whose agent has its own subagent tools add it to the
+/// system prompt next to switching those tools off.
+pub const DELEGATION_PROMPT: &str = include_str!("../prompts/delegation.md");
+
 pub struct ToolSpec {
     pub name: &'static str,
     pub description: &'static str,
@@ -28,7 +33,8 @@ fn target_schema() -> Value {
         "properties": {
             "provider": {"type": "string", "description": "Provider slug from t3_capabilities."},
             "model": {"type": "string", "description": "A model advertised by that provider. Provider alone picks its first model."},
-            "reasoning_effort": {"type": "string", "description": "Optional effort, e.g. low, medium, high."}
+            "reasoning_effort": {"type": "string", "description": "Optional effort, e.g. low, medium, high."},
+            "profile": {"type": "string", "description": "t3_delegate with context='brief' only: run the child as this profile (name from t3_capabilities). Omit to keep this thread's profile."}
         }
     })
 }
@@ -41,12 +47,13 @@ pub const TOOLS: [ToolSpec; 6] = [
     },
     ToolSpec {
         name: "t3_delegate",
-        description: "T3 orchestrator: delegate one task to a child agent in a new, visible thread. The child gets ONLY the task text, never this thread's history, so include every fact, path and constraint it needs. mode='async' (default) returns a taskId immediately; the result is delivered back to this thread as a new turn when it finishes, so end your turn instead of polling. mode='wait' blocks until done or timeout_s (the child keeps running on timeout). For each review round, call t3_delegate again with the full brief, prior findings and objections, and a new client_request_id.",
+        description: "T3 orchestrator: start a subagent, the ONLY way to start one (never a built-in subagent/agent/task tool). It runs in a new thread the user can see and steer. context='inherit': a subagent on this task (another model, a reviewer, a parallel slice): it gets this conversation so far and keeps this thread's profile. context='brief' (default): a side task, optionally as another target.profile: the child gets ONLY the task text, so include every fact, path and constraint it needs. mode='async' (default) returns a taskId immediately; the result is delivered back to this thread as a new turn when it finishes, so end your turn instead of polling. mode='wait' blocks until done or timeout_s (the child keeps running on timeout). For each review round, call t3_delegate again with the full brief, prior findings and objections, and a new client_request_id.",
         schema: || {
             json!({
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string", "description": "Complete, self-contained brief for the child."},
+                    "task": {"type": "string", "description": "The child's task. With context='brief' it is all the child knows, so make it self-contained."},
+                    "context": {"type": "string", "enum": ["inherit", "brief"], "description": "inherit: the child also gets this conversation so far (same profile). brief (default): only the task."},
                     "title": {"type": "string", "description": "Short label shown in the UI."},
                     "role": {"type": "string", "enum": ["implementation", "research", "review", "design", "test", "general"]},
                     "target": target_schema(),

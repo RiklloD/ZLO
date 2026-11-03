@@ -669,6 +669,16 @@ pub fn popover(id: impl Into<ElementId>, cx: &App) -> impl FnOnce(Div) -> gpui_k
     }
 }
 
+/// `view` filling its parent, replayed from its last frame until it is
+/// notified (or its bounds change). For heavy views whose parent redraws
+/// often for other reasons: a sidebar dot ticking must not lay out the
+/// whole chat again. The view must repaint through `notify` alone: no
+/// paint-time side effects (native views), no ancestor opacity animating.
+pub fn cached_view<V: gpui_kit::Render>(view: gpui_kit::Entity<V>) -> gpui_kit::AnyElement {
+    view.cached(gpui_kit::StyleRefinement::default().size_full())
+        .into_any_element()
+}
+
 /// Three dots breathing in sequence: the "working" mark. A repeating
 /// animation, so it costs frames only while shown, and the battery saver
 /// freezes it.
@@ -676,7 +686,7 @@ pub fn pulse_dots(id: impl Into<ElementId>, color: Hsla) -> impl IntoElement {
     pulse::looping(
         id,
         Duration::from_millis(1200),
-        pulse::Rate::Smooth,
+        pulse::Rate::Half,
         move |t| {
             h_flex()
                 .gap(px(3.))
@@ -706,7 +716,7 @@ pub fn gradient_spinner(id: impl Into<ElementId>, cell: f32) -> impl IntoElement
     const TINTS: [u32; 3] = [0xB6D3EF, 0xEDB185, 0xF888A0];
     let gap = cell / 2.;
     let period = Duration::from_millis(motion::GRADIENT_SPIN_MS);
-    pulse::looping(id, period, pulse::Rate::Smooth, move |t| {
+    pulse::looping(id, period, pulse::Rate::Half, move |t| {
         v_flex()
             .gap(px(gap))
             .flex_none()
@@ -735,7 +745,7 @@ pub fn shimmer_text(
     pulse::looping(
         id,
         Duration::from_millis(1600),
-        pulse::Rate::Smooth,
+        pulse::Rate::Half,
         move |t| {
             let w = (t * std::f32::consts::TAU).sin() * 0.5 + 0.5;
             div().text_color(mix(p.text_faint, p.text, w)).child(text)

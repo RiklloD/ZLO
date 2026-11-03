@@ -179,6 +179,40 @@ fn sort_rows(rows: &mut [InboxRow], records: &HashMap<String, InboxRecord>) {
     });
 }
 
+/// A subagent waiting on the person brings every thread above it back from
+/// the Working shelf to the inbox: the sidebar folds subagents under their
+/// parent, and the parent's row is where the person sees "1 needs you".
+/// Statuses stay each thread's own, so the parent's line counts only the
+/// threads that really wait, and a working parent still reads as working.
+fn surface_waiting_subagents(rows: &mut [InboxRow]) {
+    let parents: HashMap<String, String> = rows
+        .iter()
+        .filter_map(|r| Some((r.thread_id.clone(), r.parent_thread_id.clone()?)))
+        .collect();
+    let mut waiting_above = std::collections::HashSet::new();
+    for row in rows.iter() {
+        if row.status != Some(InboxStatus::NeedsInput) {
+            continue;
+        }
+        let mut at = row.parent_thread_id.as_ref();
+        // Delegation is at most a few levels deep; the set ends a cycle.
+        while let Some(parent) = at {
+            if !waiting_above.insert(parent.clone()) {
+                break;
+            }
+            at = parents.get(parent);
+        }
+    }
+    for row in rows.iter_mut() {
+        if !waiting_above.contains(&row.thread_id) {
+            continue;
+        }
+        if row.state == InboxState::Working {
+            row.state = InboxState::Inbox;
+        }
+    }
+}
+
 pub(super) async fn list(
     engine: &Engine,
     home: Option<&ProfileHome>,
@@ -294,6 +328,7 @@ pub(super) async fn list(
             }
         })
         .collect();
+    surface_waiting_subagents(&mut rows);
     sort_rows(&mut rows, &records);
 
     let last_used_profile_id = profile_records
@@ -905,6 +940,84 @@ mod tests {
             )
             .await
             .map(|r| r.output)
+    }
+
+    fn bare(
+        id: &str,
+        parent: Option<&str>,
+        state: InboxState,
+        status: Option<InboxStatus>,
+    ) -> InboxRow {
+        InboxRow {
+            thread_id: id.into(),
+            title: None,
+            profile_id: DEFAULT_PROFILE_ID.into(),
+            state,
+            status,
+            engines: Vec::new(),
+            last_activity_at: 0,
+            snooze_until: None,
+            settled_at: None,
+            limit_reset_at: None,
+            working_since: None,
+            parent_thread_id: parent.map(str::to_string),
+            automation: false,
+            title_pending: false,
+        }
+    }
+
+    #[test]
+    fn a_waiting_subagent_brings_every_thread_above_it_back() {
+        let working = Some(InboxStatus::Working);
+        let mut rows = vec![
+            bare("root", None, InboxState::Working, working),
+            bare(
+                "mid",
+                Some("root"),
+                InboxState::Working,
+                Some(InboxStatus::Background),
+            ),
+            bare(
+                "leaf",
+                Some("mid"),
+                InboxState::Inbox,
+                Some(InboxStatus::NeedsInput),
+            ),
+            bare("pinned", None, InboxState::Pinned, working),
+            bare(
+                "kid",
+                Some("pinned"),
+                InboxState::Inbox,
+                Some(InboxStatus::NeedsInput),
+            ),
+            bare("busy", None, InboxState::Working, working),
+            bare("calm", Some("busy"), InboxState::Working, working),
+        ];
+        surface_waiting_subagents(&mut rows);
+        let at = |id: &str| {
+            let r = rows.iter().find(|r| r.thread_id == id).unwrap();
+            (r.state, r.status)
+        };
+        assert_eq!(at("root"), (InboxState::Inbox, working));
+        assert_eq!(
+            at("mid"),
+            (InboxState::Inbox, Some(InboxStatus::Background)),
+            "statuses stay their own; only the shelf moves"
+        );
+        assert_eq!(
+            at("leaf"),
+            (InboxState::Inbox, Some(InboxStatus::NeedsInput))
+        );
+        assert_eq!(
+            at("pinned"),
+            (InboxState::Pinned, working),
+            "a pin stays a pin"
+        );
+        assert_eq!(
+            at("busy"),
+            (InboxState::Working, working),
+            "working children change nothing"
+        );
     }
 
     #[tokio::test]

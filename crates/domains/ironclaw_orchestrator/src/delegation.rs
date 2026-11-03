@@ -26,6 +26,30 @@ pub struct DelegateRequest {
     pub mode: Option<String>,
     pub timeout_s: Option<f64>,
     pub client_request_id: Option<String>,
+    /// `inherit` (a subagent: this conversation rides along, same profile)
+    /// or `brief` (the default: the child sees only `task`).
+    pub context: Option<String>,
+}
+
+/// What a child starts with besides its task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildContext {
+    /// Only the brief: a side task, possibly as another profile.
+    Brief,
+    /// The parent's conversation so far, then the brief. Same profile.
+    Inherit,
+}
+
+impl ChildContext {
+    fn parse(raw: Option<&str>) -> Result<Self> {
+        match raw.map(str::trim) {
+            None | Some("") | Some("brief") => Ok(Self::Brief),
+            Some("inherit") => Ok(Self::Inherit),
+            Some(_) => Err(OrchestratorError::invalid(
+                "context must be inherit or brief",
+            )),
+        }
+    }
 }
 
 /// Provider/model (and, from stage 3, profile) for a child or fork.
@@ -195,19 +219,34 @@ impl Engine {
         }))
     }
 
-    fn brief(&self, task: &TaskRecord, parent_title: &str, max_depth: u32) -> String {
+    fn brief(
+        &self,
+        task: &TaskRecord,
+        parent_title: &str,
+        max_depth: u32,
+        context: Option<&str>,
+    ) -> String {
+        let knows = match context {
+            Some(_) => {
+                "The parent's conversation so far is below as context, then your task. Use it, but re-check \
+                 files and state before relying on them."
+            }
+            None => {
+                "You only know what is in this brief: the parent's conversation is not available to you."
+            }
+        };
+        let context = context.map(|c| format!("{c}\n\n")).unwrap_or_default();
         let delegate_more = if task.depth < max_depth {
-            "You may delegate further with t3_delegate if it genuinely helps.\n"
+            "You may delegate further with t3_delegate if it genuinely helps; never with a built-in subagent tool.\n"
         } else {
             ""
         };
         format!(
             "You are a delegated child agent (T3 orchestrator task {id}, role: {role}) working for a parent agent \
-             in the thread \"{parent}\". You only know what is in this brief: the parent's conversation is not \
-             available to you. Work autonomously. No one will answer questions during the task, so make reasonable \
+             in the thread \"{parent}\". {knows} Work autonomously. No one will answer questions during the task, so make reasonable \
              assumptions and state them.\n{hint}\nYour final message is returned to the parent verbatim, so end \
              with a self-contained report: what you did, the results or findings, files changed, commands/tests \
-             run with outcomes, and open issues.\n{delegate_more}\nTask:\n{prompt}",
+             run with outcomes, and open issues.\n{delegate_more}\n{context}Task:\n{prompt}",
             id = task.id,
             role = task.role,
             parent = if parent_title.is_empty() {
@@ -239,6 +278,7 @@ impl Engine {
             Some(_) => return Err(OrchestratorError::invalid("mode must be async or wait")),
         };
         let timeout = req.timeout_s.unwrap_or(600.0).clamp(1.0, 3600.0);
+        let child_context = ChildContext::parse(req.context.as_deref())?;
         let parent = self.ensure_thread(&ctx.thread_id, &ctx.scope, None).await?;
         let request_id = trimmed(&req.client_request_id);
         if let Some(rid) = &request_id
@@ -269,6 +309,25 @@ impl Engine {
         let profile = match trimmed(&target.profile) {
             Some(raw) => Some(self.delegation_profile(&raw, &parent.scope).await?),
             None => None,
+        };
+        let parent_profile = parent.profile_id.as_ref().map_or(
+            ironclaw_product_contracts::profiles::DEFAULT_PROFILE_ID,
+            |p| p.as_str(),
+        );
+        if child_context == ChildContext::Inherit
+            && profile
+                .as_ref()
+                .is_some_and(|p| p.profile_id.as_str() != parent_profile)
+        {
+            return Err(OrchestratorError::request(
+                "profile_unavailable",
+                "A subagent with context='inherit' keeps this thread's profile; use context='brief' to run as another profile.",
+            ));
+        }
+        // Read before the task exists: a failed read starts nothing.
+        let inherited = match child_context {
+            ChildContext::Inherit => self.inherited_context(&parent, &settings).await?,
+            ChildContext::Brief => None,
         };
         // A named profile without an engine override runs on its own engine.
         let profile_route = match &profile {
@@ -335,7 +394,13 @@ impl Engine {
         self.store.insert_task(&task).await?;
         self.store.set_hold(&parent.thread_id, None).await?;
         if let Err(error) = self
-            .start_child(&mut task, &parent, &runtime, &settings)
+            .start_child(
+                &mut task,
+                &parent,
+                &runtime,
+                &settings,
+                inherited.as_deref(),
+            )
             .await
         {
             let message = error.to_string();
@@ -365,12 +430,39 @@ impl Engine {
         self.maybe_wait(current, wait, timeout).await
     }
 
+    /// The parent's conversation as a portable handoff, for a subagent that
+    /// inherits it. `None` when the parent has no messages yet.
+    async fn inherited_context(
+        &self,
+        parent: &ThreadRecord,
+        settings: &Settings,
+    ) -> Result<Option<String>> {
+        let messages = self.history(parent).await?;
+        if messages.is_empty() {
+            return Ok(None);
+        }
+        let route = format!(
+            "{} / {}",
+            parent.provider.as_deref().unwrap_or("default provider"),
+            parent.model.as_deref().unwrap_or("default model")
+        );
+        Ok(Some(crate::handoff::portable_context(
+            &messages,
+            parent.title.as_deref().unwrap_or("untitled"),
+            parent.thread_id.as_str(),
+            &route,
+            "subagent",
+            settings.handoff_bytes,
+        )))
+    }
+
     async fn start_child(
         &self,
         task: &mut TaskRecord,
         parent: &ThreadRecord,
         runtime: &std::sync::Arc<dyn TurnRuntime>,
         settings: &Settings,
+        context: Option<&str>,
     ) -> Result<()> {
         let created = runtime
             .create_thread(CreateThread {
@@ -422,6 +514,7 @@ impl Engine {
             task,
             parent.title.as_deref().unwrap_or(""),
             settings.max_depth,
+            context,
         );
         {
             // Stop / cancel may have landed while the child was being created.

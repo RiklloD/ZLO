@@ -12,7 +12,8 @@
 //! known-safe read-only commands asks first, and every request becomes an
 //! IronClaw approval through [`crate::permissions::decide`] (allow once or
 //! decline; never "for session"). Without a bridge the sandbox is
-//! read-only and nothing is asked.
+//! read-only and nothing is asked. Codex's own subagents (`multi_agent`)
+//! are disabled: subagents are orchestrator threads (`t3_delegate`).
 
 mod fold;
 
@@ -44,6 +45,9 @@ use fold::TurnFold;
 pub const EXPECTED_CLI_VERSION: &str = "0.163.0";
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+/// Codex features that let the agent spawn its own subagents.
+const CODEX_SUBAGENT_FEATURES: [&str; 2] = ["multi_agent", "multi_agent_v2"];
+
 /// How long an app-server may drain after stdin closes before its group is killed.
 const DRAIN: Duration = Duration::from_secs(10);
 /// How long a `model/list` answer is reused.
@@ -135,7 +139,13 @@ impl CodexRuntime {
 
     fn spawn_server(&self) -> Result<(Child, i32), RuntimeError> {
         let mut cmd = Command::new(&self.config.binary);
-        cmd.args(["app-server", "--listen", "stdio://"])
+        cmd.arg("app-server");
+        // Subagents are orchestrator threads (`t3_delegate`), never Codex's
+        // own hidden ones.
+        for feature in CODEX_SUBAGENT_FEATURES {
+            cmd.args(["--disable", feature]);
+        }
+        cmd.args(["--listen", "stdio://"])
             // Keep the CLI's ChatGPT login; never an API-key override.
             .env_remove("OPENAI_API_KEY")
             .env_remove("CODEX_API_KEY")

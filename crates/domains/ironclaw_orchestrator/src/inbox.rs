@@ -199,6 +199,38 @@ fn action_columns(action: InboxAction) -> &'static [(&'static str, &'static str)
     }
 }
 
+/// The upsert writing one action's columns on one thread's record.
+fn mark_statement(
+    owner: &ProfileOwner,
+    thread: &ThreadId,
+    action: InboxAction,
+    until: Option<Millis>,
+    now: Millis,
+) -> (String, Vec<Value>) {
+    let columns = action_columns(action);
+    let names: Vec<&str> = columns.iter().map(|(c, _)| *c).collect();
+    let values: Vec<&str> = columns.iter().map(|(_, v)| *v).collect();
+    let sets: Vec<String> = columns.iter().map(|(c, v)| format!("{c} = {v}")).collect();
+    let sql = format!(
+        "INSERT INTO orch_inbox (tenant_id, user_id, thread_id, updated_at, {names}) \
+         VALUES (?1, ?2, ?3, ?4, {values}) \
+         ON CONFLICT (tenant_id, user_id, thread_id) DO UPDATE SET {sets}, updated_at = ?4",
+        names = names.join(", "),
+        values = values.join(", "),
+        sets = sets.join(", "),
+    );
+    let mut params = vec![
+        s(owner.tenant_id.as_str()),
+        s(owner.user_id.as_str()),
+        s(thread.as_str()),
+        Value::Integer(now),
+    ];
+    if let (InboxAction::Snooze, Some(until)) = (action, until) {
+        params.push(Value::Integer(until));
+    }
+    (sql, params)
+}
+
 /// Why a running turn waits on the person.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AwaitingKind {
@@ -404,7 +436,11 @@ impl Store {
             .collect()
     }
 
-    /// Apply one lifecycle action (upsert, one statement).
+    /// Apply one lifecycle action. A settle carries the delegation tree
+    /// with it: every subagent thread under `thread` (the owner's own) is
+    /// settled in the same transaction, so a parent and its subagents leave
+    /// the inbox together. Other actions touch `thread` alone, so a
+    /// subagent can still be settled or brought back one by one.
     pub async fn inbox_mark(
         &self,
         owner: &ProfileOwner,
@@ -418,29 +454,76 @@ impl Store {
                 "snooze needs `until` in the future (unix ms)",
             ));
         }
-        let columns = action_columns(action);
-        let names: Vec<&str> = columns.iter().map(|(c, _)| *c).collect();
-        let values: Vec<&str> = columns.iter().map(|(_, v)| *v).collect();
-        let sets: Vec<String> = columns.iter().map(|(c, v)| format!("{c} = {v}")).collect();
-        let sql = format!(
-            "INSERT INTO orch_inbox (tenant_id, user_id, thread_id, updated_at, {names}) \
-             VALUES (?1, ?2, ?3, ?4, {values}) \
-             ON CONFLICT (tenant_id, user_id, thread_id) DO UPDATE SET {sets}, updated_at = ?4",
-            names = names.join(", "),
-            values = values.join(", "),
-            sets = sets.join(", "),
-        );
-        let mut params = vec![
-            s(owner.tenant_id.as_str()),
-            s(owner.user_id.as_str()),
-            s(thread.as_str()),
-            Value::Integer(now),
-        ];
-        if let (InboxAction::Snooze, Some(until)) = (action, until) {
-            params.push(Value::Integer(until));
+        let mut threads = vec![thread.clone()];
+        if action == InboxAction::Settle {
+            threads.extend(self.delegated_descendants(owner, thread).await?);
         }
-        self.exec(&sql, params).await?;
-        Ok(())
+        let statements = threads
+            .iter()
+            .map(|t| mark_statement(owner, t, action, until, now))
+            .collect();
+        self.tx(statements).await
+    }
+
+    /// A subagent finished its task and handed its result back: settle its
+    /// thread unless the person pinned it. A snooze does not hold it: the
+    /// finished turn wakes a snooze anyway (see `classify`), so the settle
+    /// clears it, as the person's own settle would. New activity in the
+    /// thread brings it back, as for any settle.
+    pub async fn inbox_auto_settle(
+        &self,
+        owner: &ProfileOwner,
+        thread: &ThreadId,
+        now: Millis,
+    ) -> Result<bool> {
+        let written = self
+            .exec(
+                "INSERT INTO orch_inbox (tenant_id, user_id, thread_id, updated_at, settled_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?4) \
+                 ON CONFLICT (tenant_id, user_id, thread_id) \
+                 DO UPDATE SET settled_at = ?4, snooze_until = NULL, snoozed_at = NULL, \
+                   updated_at = ?4 \
+                 WHERE orch_inbox.pinned_at IS NULL",
+                vec![
+                    s(owner.tenant_id.as_str()),
+                    s(owner.user_id.as_str()),
+                    s(thread.as_str()),
+                    Value::Integer(now),
+                ],
+            )
+            .await?;
+        Ok(written > 0)
+    }
+
+    /// Every thread delegated under `thread`, at any depth, that belongs to
+    /// `owner` (`UNION` drops repeats, so a cycle ends the walk).
+    pub async fn delegated_descendants(
+        &self,
+        owner: &ProfileOwner,
+        thread: &ThreadId,
+    ) -> Result<Vec<ThreadId>> {
+        let ids = self
+            .rows(
+                "WITH RECURSIVE tree(id) AS ( \
+                   SELECT child_thread FROM orch_tasks \
+                     WHERE parent_thread = ?1 AND child_thread IS NOT NULL \
+                   UNION \
+                   SELECT k.child_thread FROM orch_tasks k JOIN tree ON k.parent_thread = tree.id \
+                     WHERE k.child_thread IS NOT NULL \
+                 ) \
+                 SELECT tree.id FROM tree JOIN orch_threads t ON t.thread_id = tree.id \
+                 WHERE tree.id <> ?1 AND t.tenant_id = ?2 AND t.user_id = ?3",
+                vec![
+                    s(thread.as_str()),
+                    s(owner.tenant_id.as_str()),
+                    s(owner.user_id.as_str()),
+                ],
+                |r| Cols::new(r).text(),
+            )
+            .await?;
+        ids.into_iter()
+            .map(|id| ThreadId::new(id).map_err(Into::into))
+            .collect()
     }
 
     /// The owner's engine threads with their inbox facts and engines.
@@ -818,6 +901,87 @@ mod tests {
             (None, None, Some(now + 1))
         );
         assert!(store.inbox_records(&other).await.unwrap().is_empty());
+        // Settling the parent settled its subagent with it, in one write.
+        let rec = &store.inbox_records(&owner).await.unwrap()["child"];
+        assert_eq!(rec.settled_at, Some(now + 1), "a settle carries the tree");
+        assert_eq!(
+            store.delegated_descendants(&owner, &parent).await.unwrap(),
+            std::slice::from_ref(&child)
+        );
+        assert!(
+            store
+                .delegated_descendants(&other, &parent)
+                .await
+                .unwrap()
+                .is_empty(),
+            "another user's tree is never reached"
+        );
+        // Un-settling (or settling) a subagent touches it alone.
+        store
+            .inbox_mark(&owner, &child, InboxAction::Unsettle, None, now + 2)
+            .await
+            .unwrap();
+        let records = store.inbox_records(&owner).await.unwrap();
+        assert_eq!(records["child"].settled_at, None);
+        assert_eq!(records["parent"].settled_at, Some(now + 1));
+
+        // A snooze (expired, or woken by the finished turn) never blocks
+        // the auto-settle; the settle clears it.
+        store
+            .inbox_mark(
+                &owner,
+                &child,
+                InboxAction::Snooze,
+                Some(now + 60_000),
+                now + 2,
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .inbox_auto_settle(&owner, &child, now + 3)
+                .await
+                .unwrap()
+        );
+        let rec = &store.inbox_records(&owner).await.unwrap()["child"];
+        assert_eq!(
+            (rec.settled_at, rec.snooze_until, rec.snoozed_at),
+            (Some(now + 3), None, None)
+        );
+        store
+            .inbox_mark(&owner, &child, InboxAction::Unsettle, None, now + 3)
+            .await
+            .unwrap();
+
+        // An auto-settle never overrides the person's own pin.
+        store
+            .inbox_mark(&owner, &child, InboxAction::Pin, None, now + 3)
+            .await
+            .unwrap();
+        assert!(
+            !store
+                .inbox_auto_settle(&owner, &child, now + 4)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.inbox_records(&owner).await.unwrap()["child"].settled_at,
+            None
+        );
+        store
+            .inbox_mark(&owner, &child, InboxAction::Unpin, None, now + 5)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .inbox_auto_settle(&owner, &child, now + 6)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.inbox_records(&owner).await.unwrap()["child"].settled_at,
+            Some(now + 6)
+        );
     }
 
     #[tokio::test]

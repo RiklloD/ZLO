@@ -1,8 +1,8 @@
 # Vendored GPUI crates
 
-Copies of `gpui-pre 0.3.9` and `gpui-base 0.8.0` from crates.io (sources only,
-example and bench targets removed), wired in through `[patch.crates-io]` in
-`../Cargo.toml`. Every change is marked `Numoh patch:`.
+Copies of `gpui-pre 0.3.9`, `gpui-base 0.8.0` and `gpui-pre-macos 0.3.9` from
+crates.io (sources only, example and bench targets removed), wired in through
+`[patch.crates-io]` in `../Cargo.toml`. Every change is marked `Numoh patch:`.
 
 Fixes the trackpad "stuck at the start of a scroll" feel:
 
@@ -29,7 +29,7 @@ Fixes the "elastic, springs back on release" scroll:
    tail-following "at the end" anchor reads as `-max`, not the full content
    height (up to a viewport past the max until the next layout).
 
-On a gpui-kit bump: re-copy both crates at the new versions and re-apply.
+On a gpui-kit bump: re-copy the crates at the new versions and re-apply.
 
 Fixes the "scrolling up jumps higher or lower, scrollbar thumb resizes":
 
@@ -40,3 +40,15 @@ Fixes the "scrolling up jumps higher or lower, scrollbar thumb resizes":
 9. `gpui-base/src/text/state.rs`, `MAX_SYNC_FULL_REPLACE_BYTES`: 64 KiB, was
    4 KiB. Longer markdown parsed in the background and laid out near-empty
    on its first frame, which is what the list measured.
+
+Battery: an idle window stops waking the main thread on every vsync:
+
+10. `gpui-pre-macos/src/window.rs`, `step`, `draw`, `start_display_link` and
+    the new `frame_waker` / `schedule_frame`: the display link parks after
+    8 vsyncs (about 70 ms at 120 Hz) that neither presented nor asked for a
+    frame, and restarts when GPUI reports work through those two hooks
+    (GPUI core already calls them for demand-driven platforms). Stock
+    macOS GPUI kept the link running, and calling `thermalState`, 120 times
+    a second for as long as the window was visible.
+11. `gpui-pre-macos/Cargo.toml`: `deprecated = "allow"`. Registry copies get
+    their lints capped, this path copy does not.

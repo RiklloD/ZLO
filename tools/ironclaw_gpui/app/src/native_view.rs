@@ -147,6 +147,13 @@ fn with<R>(slot: Slot, f: impl FnOnce(Option<&mut Surface>) -> R) -> R {
     SURFACES.with(|c| f(c.borrow_mut()[slot as usize].as_mut()))
 }
 
+/// A native view exists, shown or hidden awaiting its idle end. Showing and
+/// placing it happen in paint, which a cached GPUI view skips, so the view
+/// that hosts it must stay uncached meanwhile.
+pub fn alive() -> bool {
+    SURFACES.with(|cell| cell.borrow().iter().any(Option::is_some))
+}
+
 /// Call once per frame from the window's root view, before children render.
 /// A view that no element paints this frame is hidden right after it.
 /// `covered`: GPUI draws an overlay this frame, so the view stays hidden.

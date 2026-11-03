@@ -13,7 +13,9 @@
 //! The orchestrator tools come from the loopback MCP route
 //! (`--mcp-config`, this session's token only, `--strict-mcp-config`).
 //! Without a bridge, tools stay off (`--tools ""`). Either way: no allow
-//! rules, prompts answered "no", never `--dangerously-skip-permissions`.
+//! rules, prompts answered "no", never `--dangerously-skip-permissions`,
+//! and the CLI's own subagent tools (`Agent`, `Workflow`) are disallowed:
+//! subagents are orchestrator threads (`t3_delegate`).
 
 mod compact;
 mod control;
@@ -208,6 +210,10 @@ impl ClaudeCliRuntime {
             "--permission-prompts",
             "none",
         ]);
+        // Subagents are orchestrator threads the person can see and steer
+        // (`t3_delegate`), never the CLI's own hidden ones.
+        cmd.arg("--disallowedTools")
+            .arg(crate::BUILTIN_SUBAGENT_TOOLS.join(","));
         // Attached files are read from their landing folder (see `attachments`).
         if let Some(root) = crate::attachments::root() {
             cmd.arg("--add-dir").arg(root);

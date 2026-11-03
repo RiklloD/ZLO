@@ -1011,7 +1011,7 @@ impl Render for ComputerShare {
                 d.opacity(0.3 + 0.7 * (1. - (t * std::f32::consts::TAU).cos()) / 2.)
             });
         if status.pulse {
-            crate::design::pulse::request(crate::design::pulse::Rate::Smooth, window, cx);
+            crate::design::pulse::request(crate::design::pulse::Rate::Half, window, cx);
         }
         let held_elsewhere = session.human_has_control && !self.mine;
         let bar = h_flex()

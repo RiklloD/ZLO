@@ -457,20 +457,21 @@ impl ProfileIdentityContextSource {
     }
 }
 
-/// SOUL.md as the turn sees it: the profile soul, then the thread goal.
+/// SOUL.md as the turn sees it: the profile soul, the orchestrator's
+/// subagent rules (the same ones the CLI runtimes get), then the thread goal.
 fn profile_context(soul: Option<&str>, goal: Option<&str>) -> Option<String> {
     let soul = soul.map(str::trim).filter(|s| !s.is_empty());
+    let delegation = Some(ironclaw_orchestrator::tools::DELEGATION_PROMPT.trim());
     let goal = goal.map(str::trim).filter(|g| !g.is_empty()).map(|g| {
         format!(
             "## Thread goal\n\nThe user set this goal for the thread; keep working toward it:\n{g}"
         )
     });
-    match (soul, goal) {
-        (None, None) => None,
-        (Some(soul), None) => Some(soul.to_string()),
-        (None, Some(goal)) => Some(goal),
-        (Some(soul), Some(goal)) => Some(format!("{soul}\n\n{goal}")),
-    }
+    let parts: Vec<&str> = [soul, delegation, goal.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
 #[async_trait]
@@ -522,7 +523,10 @@ impl HostIdentityContextSource for ProfileIdentityContextSource {
 pub type McpCapabilityLister = Arc<dyn Fn() -> Vec<(ExtensionId, CapabilityId)> + Send + Sync>;
 
 /// Narrows the inner surface to the thread profile's capability allowlist
-/// and hides the tools of MCP servers the profile does not enable.
+/// and hides the tools of MCP servers the profile does not enable. The
+/// loop's own `spawn_subagent` is always hidden: in an orchestrated thread
+/// every subagent is an orchestrator thread (`t3_delegate`) the person can
+/// see and steer.
 pub struct ProfileCapabilitySurfaceResolver {
     inner: Arc<dyn CapabilitySurfaceProfileResolver>,
     engine: Arc<Engine>,
@@ -549,7 +553,14 @@ impl CapabilitySurfaceProfileResolver for ProfileCapabilitySurfaceResolver {
         &self,
         run_context: &LoopRunContext,
     ) -> std::result::Result<CapabilitySurfacePolicy, CapabilityResolveError> {
-        let mut policy = self.inner.resolve(run_context).await?;
+        let hidden_subagents =
+            CapabilityId::new(ironclaw_loop_host::DEFAULT_SPAWN_SUBAGENT_CAPABILITY_ID)
+                .map_err(|error| CapabilityResolveError::unavailable(error.to_string()))?;
+        let mut policy = self
+            .inner
+            .resolve(run_context)
+            .await?
+            .deny_capability_ids([hidden_subagents]);
         // Fail closed: an unreadable profile must not widen the surface.
         let profile = self
             .engine
@@ -679,10 +690,10 @@ mod tests {
         }
     }
 
-    /// The turn's identity context carries the active goal, and drops it
-    /// once the goal is done.
+    /// The turn's identity context always carries the orchestrator's
+    /// subagent rules, carries the active goal, and drops the goal once done.
     #[tokio::test]
-    async fn active_goal_reaches_the_native_loop_prompt() {
+    async fn active_goal_and_subagent_rules_reach_the_native_loop_prompt() {
         use ironclaw_host_api::ids::TenantId;
         use ironclaw_loop_contracts::{
             InMemoryRunProfileResolver, RunProfileResolutionRequest, RunProfileResolver,
@@ -724,7 +735,9 @@ mod tests {
                 .unwrap()
                 .map(|c| c.content)
         };
-        assert_eq!(context().await, None, "no soul and no goal: nothing added");
+        let rules = "## Subagents (T3 orchestrator)";
+        let bare = context().await.expect("the subagent rules ride every turn");
+        assert!(bare.contains(rules), "{bare}");
 
         engine
             .store()
@@ -734,14 +747,22 @@ mod tests {
         let content = context()
             .await
             .expect("the goal is in the identity context");
-        assert!(content.contains("Ship stage 5"), "{content}");
+        assert!(
+            content.contains("Ship stage 5") && content.contains(rules),
+            "{content}"
+        );
 
         engine
             .store()
             .set_goal(&thread, None, Some(GoalStatus::Done), 2)
             .await
             .unwrap();
-        assert_eq!(context().await, None, "a done goal is not sent");
+        let done = context().await.unwrap_or_default();
+        assert!(
+            !done.contains("Ship stage 5"),
+            "a done goal is not sent: {done}"
+        );
+        assert!(done.contains(rules), "{done}");
     }
 
     struct AllowAll;
@@ -757,7 +778,8 @@ mod tests {
     }
 
     /// A profile that enables some MCP servers loses the tools of the
-    /// others; plain tools and profiles without the list are untouched.
+    /// others; plain tools and profiles without the list are untouched. The
+    /// loop's own `spawn_subagent` is hidden everywhere.
     #[tokio::test]
     async fn profile_hides_tools_of_mcp_servers_it_does_not_enable() {
         use ironclaw_host_api::ids::{TenantId, UserId};
@@ -839,6 +861,12 @@ mod tests {
 
         let default_policy = policy_for(&on_default).await;
         assert!(default_policy.permits_capability_id(&id("linear.issues")));
+
+        // The loop's own subagents are hidden on every thread, with or
+        // without a profile: subagents are orchestrator threads.
+        for policy in [&work_policy, &default_policy] {
+            assert!(!policy.permits_capability_id(&id("builtin.spawn_subagent")));
+        }
     }
 
     #[test]
