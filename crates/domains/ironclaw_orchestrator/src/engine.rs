@@ -64,6 +64,10 @@ pub struct Engine {
     profile_context: OnceLock<Arc<dyn ProfileContextSource>>,
     /// Told after every completed turn (thread titles), plugged in by the host.
     turn_listener: OnceLock<Arc<dyn TurnCompletedListener>>,
+    /// Runs goal checks (`crate::goal_checks`), plugged in by the host.
+    pub(crate) goal_check_runner: OnceLock<Arc<dyn crate::goal_checks::GoalCheckRunner>>,
+    /// This engine, for work spawned off the tick (goal check runs).
+    pub(crate) me: Weak<Self>,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -91,7 +95,7 @@ impl Engine {
             tracing::debug!(imported, "orchestrator imported legacy threads");
         }
         let started_at = now_ms();
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|me| Self {
             store,
             runtimes: RwLock::new(HashMap::new()),
             default_runtime,
@@ -107,6 +111,8 @@ impl Engine {
             webhook_base: OnceLock::new(),
             profile_context: OnceLock::new(),
             turn_listener: OnceLock::new(),
+            goal_check_runner: OnceLock::new(),
+            me: me.clone(),
         }))
     }
 
@@ -132,7 +138,7 @@ impl Engine {
 
     /// The thread's profile as its CLI agent sees it. Additive context: a
     /// failure is logged and the turn runs without it.
-    async fn turn_profile(&self, thread_id: &ThreadId) -> Option<TurnProfile> {
+    pub(crate) async fn turn_profile(&self, thread_id: &ThreadId) -> Option<TurnProfile> {
         let source = self.profile_context.get()?;
         let profile = match self.store.thread_profile(thread_id).await {
             Ok(profile) => profile?,
@@ -236,6 +242,7 @@ impl Engine {
         log_step("results", self.deliver_results().await);
         log_step("transfers", self.deliver_transfers_now().await);
         log_step("usage limits", self.fire_usage_limits().await);
+        log_step("goal checks", self.run_goal_checks().await);
     }
 
     /// Clean quit: hold every thread this instance is running as
@@ -445,6 +452,7 @@ impl Engine {
 
     async fn boot(&self) -> Result<()> {
         self.store.requeue_sending().await?;
+        self.store.requeue_running_goal_checks().await?;
         // Live work another engine instance left behind was cut by its exit.
         for work in self.store.live_work().await? {
             if work.instance_id == self.instance_id {
@@ -1032,6 +1040,10 @@ impl TurnEventSink for Engine {
                 restart_pending,
             )
                 .await?;
+            if completed {
+                // A verified goal checks itself once the turn is done.
+                self.store.arm_goal_check(thread_id, at).await?;
+            }
             Ok(Some(thread))
         }
         .await;

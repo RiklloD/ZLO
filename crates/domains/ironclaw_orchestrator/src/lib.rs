@@ -25,6 +25,7 @@ pub mod cli_approvals;
 pub mod delegation;
 pub mod engine;
 pub mod error;
+pub mod goal_checks;
 pub mod goals;
 pub mod handoff;
 pub mod inbox;

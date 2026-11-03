@@ -150,6 +150,73 @@ pub struct GoalRecord {
     pub objective: String,
     pub status: GoalStatus,
     pub updated_at: i64,
+    /// The shell command that verifies the goal; goals stored before checks
+    /// existed (and goals without one) have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<GoalCheckRecord>,
+}
+
+/// A command that verifies a goal (`/goal <text> --check "<cmd>"`): it runs
+/// in the thread's folder after each completed turn; exit 0 meets the goal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalCheckSpec {
+    pub command: String,
+    /// Failed runs before the check stops and asks the person (default 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
+    /// Per-run time limit in seconds (default 120, at most 600).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+/// Where a goal's check stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalCheckStatus {
+    /// Set, never run.
+    NotRun,
+    /// A turn finished (or "Run check now"); runs once the thread is idle.
+    Pending,
+    /// The thread asks first and this command was never approved.
+    AwaitingApproval,
+    Running,
+    /// Exited 0: the goal is met.
+    Passed,
+    /// Exited non-zero; the failure went back to the agent as a follow-up.
+    Failed,
+    /// Out of attempts, refused, or unable to run: the person decides.
+    NeedsYou,
+    /// The person stopped automatic retries.
+    Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalCheckRecord {
+    pub command: String,
+    pub max_attempts: u32,
+    pub timeout_secs: u64,
+    pub status: GoalCheckStatus,
+    /// Failed runs since the check was set (or restarted).
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+    /// The bounded tail of the last run's output, or why it could not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tail: Option<String>,
+    /// Unix ms the last run ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ran_at: Option<i64>,
+}
+
+/// A person's action on a goal's check (the strip's buttons).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalCheckAction {
+    /// Run it now. Counts as approval of the command on an Ask-first
+    /// thread, and restarts the attempt count once retries ended.
+    RunNow,
+    StopRetrying,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,8 +227,10 @@ pub struct ThreadGoalResponse {
     pub goal: Option<GoalRecord>,
 }
 
-/// Set or replace the goal; `objective: None` clears it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Set or replace the goal; a request naming nothing (no objective, status,
+/// check or action) clears it. `check` sets (or replaces) the goal's check,
+/// `clear_check` removes it, `check_action` acts on it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadGoalSetRequest {
     pub thread_id: String,
@@ -169,6 +238,23 @@ pub struct ThreadGoalSetRequest {
     pub objective: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<GoalStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<GoalCheckSpec>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clear_check: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_action: Option<GoalCheckAction>,
+}
+
+impl ThreadGoalSetRequest {
+    /// Names nothing to set: the request clears the goal.
+    pub fn is_clear(&self) -> bool {
+        self.objective.is_none()
+            && self.status.is_none()
+            && self.check.is_none()
+            && !self.clear_check
+            && self.check_action.is_none()
+    }
 }
 
 // Outputs are JSON documents: the success shape named on each descriptor, or

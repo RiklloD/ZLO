@@ -135,3 +135,56 @@ fn product_stream_continuation_debug_and_identity_are_stable() {
         "ProductSurfaceEventSubscription { .. }"
     );
 }
+
+#[test]
+fn goal_records_without_a_check_still_deserialize_and_checks_round_trip() {
+    use ironclaw_product_contracts::inbox::{
+        GoalCheckAction, GoalCheckRecord, GoalCheckStatus, GoalRecord, GoalStatus,
+        ThreadGoalSetRequest,
+    };
+    // A goal written before checks existed.
+    let old: GoalRecord = serde_json::from_value(serde_json::json!({
+        "objective": "ship it", "status": "active", "updated_at": 5
+    }))
+    .unwrap();
+    assert_eq!(old.check, None);
+    assert!(
+        !serde_json::to_value(&old)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("check"),
+        "no check, no key: older clients read the same document"
+    );
+    let checked = GoalRecord {
+        check: Some(GoalCheckRecord {
+            command: "cargo test".into(),
+            max_attempts: 5,
+            timeout_secs: 120,
+            status: GoalCheckStatus::AwaitingApproval,
+            attempts: 1,
+            exit_code: Some(101),
+            output_tail: Some("1 failed".into()),
+            ran_at: Some(9),
+        }),
+        status: GoalStatus::Active,
+        ..old
+    };
+    let wire = serde_json::to_value(&checked).unwrap();
+    assert_eq!(wire["check"]["status"], "awaiting_approval");
+    assert_eq!(serde_json::from_value::<GoalRecord>(wire).unwrap(), checked);
+
+    // An old client's set request is still a set; an empty one still clears.
+    let set: ThreadGoalSetRequest =
+        serde_json::from_value(serde_json::json!({"thread_id": "t", "objective": "x"})).unwrap();
+    assert!(!set.is_clear());
+    let clear: ThreadGoalSetRequest =
+        serde_json::from_value(serde_json::json!({"thread_id": "t"})).unwrap();
+    assert!(clear.is_clear());
+    let act: ThreadGoalSetRequest = serde_json::from_value(
+        serde_json::json!({"thread_id": "t", "check_action": "stop_retrying"}),
+    )
+    .unwrap();
+    assert_eq!(act.check_action, Some(GoalCheckAction::StopRetrying));
+    assert!(!act.is_clear(), "an action never clears the goal");
+}
