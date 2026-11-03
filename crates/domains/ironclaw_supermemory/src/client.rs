@@ -26,7 +26,7 @@ use serde_json::Value;
 use crate::binding::SupermemoryCaller;
 use crate::config::{SUPERMEMORY_API_KEY_SECRET, SupermemoryConfig};
 use crate::error::SupermemoryError;
-use crate::wire::{self, WireDocument, WireMemory, WireProfile};
+use crate::wire::{self, WireDocument, WireDocumentPage, WireMemory, WireProfile};
 
 const KEY_CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_RATE_LIMIT_RETRIES: u32 = 2;
@@ -165,20 +165,61 @@ impl SupermemoryClient {
         key: &SecretString,
         id: &str,
     ) -> Result<WireDocument, SupermemoryError> {
-        if id.is_empty()
-            || !id
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-        {
-            return Err(SupermemoryError::Decode {
-                reason: "document id is not a safe path segment".to_string(),
-            });
-        }
-        let path = format!("/v3/documents/{id}");
+        let path = format!("/v3/documents/{}", safe_segment(id)?);
         let value = self
             .call(caller, key, NetworkMethod::Get, &path, None)
             .await?;
         wire::document(&value)
+    }
+
+    /// `POST /v3/documents/list` for one container, newest change first.
+    pub(crate) async fn list_documents(
+        &self,
+        caller: &SupermemoryCaller,
+        key: &SecretString,
+        body: &Value,
+    ) -> Result<WireDocumentPage, SupermemoryError> {
+        let value = self
+            .call(
+                caller,
+                key,
+                NetworkMethod::Post,
+                "/v3/documents/list",
+                Some(body),
+            )
+            .await?;
+        Ok(wire::document_page(&value))
+    }
+
+    /// `DELETE /v3/documents/{id}`.
+    pub(crate) async fn delete_document(
+        &self,
+        caller: &SupermemoryCaller,
+        key: &SecretString,
+        id: &str,
+    ) -> Result<(), SupermemoryError> {
+        let path = format!("/v3/documents/{}", safe_segment(id)?);
+        self.call(caller, key, NetworkMethod::Delete, &path, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// `DELETE /v4/memories` — Supermemory's soft "forget" for one extracted
+    /// memory in one container.
+    pub(crate) async fn forget_memory(
+        &self,
+        caller: &SupermemoryCaller,
+        key: &SecretString,
+        body: &Value,
+    ) -> Result<Value, SupermemoryError> {
+        self.call(
+            caller,
+            key,
+            NetworkMethod::Delete,
+            "/v4/memories",
+            Some(body),
+        )
+        .await
     }
 
     pub(crate) async fn search(
@@ -231,6 +272,8 @@ impl SupermemoryClient {
                     reason: error.to_string(),
                 })?;
             match response.status {
+                // A delete may answer 204 with no body.
+                200..=299 if response.body.is_empty() => return Ok(Value::Null),
                 200..=299 => return wire::parse_body(&response.body),
                 429 if attempt < MAX_RATE_LIMIT_RETRIES => {
                     tokio::time::sleep(self.retry_delay(attempt, &response)).await;
@@ -292,6 +335,22 @@ impl SupermemoryClient {
             .unwrap_or_else(|| self.retry_base_delay * 2u32.saturating_pow(attempt))
             .min(MAX_RETRY_AFTER)
     }
+}
+
+/// A provider-issued id, accepted only as a plain path segment.
+fn safe_segment(id: &str) -> Result<&str, SupermemoryError> {
+    if id.is_empty()
+        || id.len() > 200
+        || !id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        || id.chars().all(|ch| ch == '.')
+    {
+        return Err(SupermemoryError::InvalidInput {
+            reason: "document id is not a safe path segment".to_string(),
+        });
+    }
+    Ok(id)
 }
 
 #[cfg(test)]

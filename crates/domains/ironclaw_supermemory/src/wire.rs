@@ -27,11 +27,28 @@ pub(crate) struct WireProfile {
     pub(crate) search: Vec<WireMemory>,
 }
 
-/// `/v3/documents` add response, or `/v3/documents/{id}` read-back.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `/v3/documents` add response, `/v3/documents/{id}` read-back, or one row
+/// of `/v3/documents/list`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct WireDocument {
     pub(crate) id: String,
     pub(crate) status: Option<String>,
+    pub(crate) custom_id: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) summary: Option<String>,
+    pub(crate) content: Option<String>,
+    pub(crate) container_tags: Vec<String>,
+    pub(crate) created_at: Option<String>,
+    pub(crate) updated_at: Option<String>,
+}
+
+/// `/v3/documents/list` response.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WireDocumentPage {
+    pub(crate) documents: Vec<WireDocument>,
+    pub(crate) current_page: Option<u32>,
+    pub(crate) total_pages: Option<u32>,
+    pub(crate) total_items: Option<u64>,
 }
 
 pub(crate) fn parse_body(body: &[u8]) -> Result<Value, SupermemoryError> {
@@ -111,13 +128,57 @@ pub(crate) fn profile(value: &Value) -> WireProfile {
 }
 
 pub(crate) fn document(value: &Value) -> Result<WireDocument, SupermemoryError> {
+    // A read-back may wrap the row as `{"document": {...}}`.
+    let value = field(value, &["document"])
+        .filter(|inner| inner.is_object())
+        .unwrap_or(value);
     let id = string_field(value, &["id", "documentId", "document_id"]).ok_or_else(|| {
         SupermemoryError::Decode {
             reason: "document response carries no id".to_string(),
         }
     })?;
+    let container_tags = match field(value, &["containerTags", "container_tags"]) {
+        Some(Value::Array(tags)) => tags
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        _ => string_field(value, &["containerTag", "container_tag"])
+            .into_iter()
+            .collect(),
+    };
     Ok(WireDocument {
         id,
         status: string_field(value, &["status"]),
+        custom_id: string_field(value, &["customId", "custom_id"]),
+        title: string_field(value, &["title"]),
+        summary: string_field(value, &["summary"]),
+        content: string_field(value, &["content"]),
+        container_tags,
+        created_at: string_field(value, &["createdAt", "created_at"]),
+        updated_at: string_field(value, &["updatedAt", "updated_at"]),
     })
+}
+
+fn u64_field(value: &Value, names: &[&str]) -> Option<u64> {
+    number_field(value, names)
+        .filter(|number| number.is_finite() && *number >= 0.0)
+        .map(|number| number as u64)
+}
+
+/// Rows under `memories` (the documented key), `documents`, or a bare list;
+/// rows without an id are skipped.
+pub(crate) fn document_page(value: &Value) -> WireDocumentPage {
+    let rows = match field(value, &["memories", "documents"]) {
+        Some(rows) => list(Some(rows)),
+        None => list(Some(value)),
+    };
+    let pagination = field(value, &["pagination"]).unwrap_or(&Value::Null);
+    let as_u32 = |number: Option<u64>| number.and_then(|number| u32::try_from(number).ok());
+    WireDocumentPage {
+        documents: rows.iter().filter_map(|row| document(row).ok()).collect(),
+        current_page: as_u32(u64_field(pagination, &["currentPage", "current_page", "page"])),
+        total_pages: as_u32(u64_field(pagination, &["totalPages", "total_pages"])),
+        total_items: u64_field(pagination, &["totalItems", "total_items"]),
+    }
 }
