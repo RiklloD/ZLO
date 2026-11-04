@@ -24,6 +24,15 @@ pub enum MemoryAppendOutcome {
     Conflict,
 }
 
+/// Saved-version summary for one document (its provenance trail).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemoryDocumentHistory {
+    /// Earlier versions kept by overwrites.
+    pub version_count: u64,
+    /// Writer key recorded on the newest saved version.
+    pub last_changed_by: Option<String>,
+}
+
 /// Result of an optimistic atomic document replacement attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryWriteOutcome {
@@ -139,6 +148,33 @@ pub trait MemoryDocumentRepository: Send + Sync {
             FilesystemOperation::ReadFile,
             "memory backend does not support search",
         ))
+    }
+
+    /// Take `path` out of the live tree, but only while its body still hashes
+    /// to `expected_previous_hash`: `Written` when removed, `Conflict` when it
+    /// changed (nothing removed). Callers keep the body elsewhere first (the
+    /// service's archive copy); the version trail is left in place, so no
+    /// earlier content is lost. Default: unsupported, fail closed.
+    async fn remove_document_if_unchanged(
+        &self,
+        path: &MemoryDocumentPath,
+        expected_previous_hash: &str,
+    ) -> Result<MemoryWriteOutcome, FilesystemError> {
+        let _ = expected_previous_hash;
+        Err(memory_error(
+            path.virtual_path().unwrap_or_else(|_| valid_memory_path()),
+            FilesystemOperation::Delete,
+            "memory document repository does not support conditional removal",
+        ))
+    }
+
+    /// Saved-version summary for `path`. Default: no history recorded.
+    async fn document_history(
+        &self,
+        path: &MemoryDocumentPath,
+    ) -> Result<MemoryDocumentHistory, FilesystemError> {
+        let _ = path;
+        Ok(MemoryDocumentHistory::default())
     }
 }
 

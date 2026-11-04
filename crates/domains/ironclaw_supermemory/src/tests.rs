@@ -657,7 +657,13 @@ async fn list_documents_pages_one_bound_container_and_tolerates_drift() {
         }),
     );
     let page = supermemory
-        .list_documents(&caller(), Some(&profile_binding()), None, Some(2), Some(500))
+        .list_documents(
+            &caller(),
+            Some(&profile_binding()),
+            None,
+            Some(2),
+            Some(500),
+        )
         .await
         .unwrap();
     assert_eq!(page.container.as_str(), "work");
@@ -674,7 +680,13 @@ async fn list_documents_pages_one_bound_container_and_tolerates_drift() {
     assert_eq!(body["page"], 2);
 
     let denied = supermemory
-        .list_documents(&caller(), Some(&profile_binding()), Some("finance"), None, None)
+        .list_documents(
+            &caller(),
+            Some(&profile_binding()),
+            Some("finance"),
+            None,
+            None,
+        )
         .await;
     assert!(matches!(
         denied,
@@ -701,7 +713,11 @@ async fn delete_document_checks_container_then_reads_back_a_404() {
     let calls = egress.requests_to("/v3/documents/d1");
     assert_eq!(
         calls.iter().map(|call| call.method).collect::<Vec<_>>(),
-        vec![NetworkMethod::Get, NetworkMethod::Delete, NetworkMethod::Get]
+        vec![
+            NetworkMethod::Get,
+            NetworkMethod::Delete,
+            NetworkMethod::Get
+        ]
     );
     assert!(
         calls[1]
@@ -737,7 +753,10 @@ async fn delete_document_refuses_a_document_outside_the_primary_container() {
     let unsafe_id = supermemory
         .delete_document(&caller(), Some(&profile_binding()), "../v3/x")
         .await;
-    assert!(matches!(unsafe_id, Err(SupermemoryError::InvalidInput { .. })));
+    assert!(matches!(
+        unsafe_id,
+        Err(SupermemoryError::InvalidInput { .. })
+    ));
 }
 
 #[tokio::test]
@@ -752,11 +771,7 @@ async fn forget_memory_targets_the_primary_only_and_reports_the_api_flag() {
     ));
     assert!(egress.requests().is_empty());
 
-    egress.respond(
-        "/v4/memories",
-        200,
-        json!({"id": "m1", "forgotten": true}),
-    );
+    egress.respond("/v4/memories", 200, json!({"id": "m1", "forgotten": true}));
     let forgotten = supermemory
         .forget_memory(&caller(), Some(&profile_binding()), "work", "m1")
         .await

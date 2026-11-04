@@ -4958,6 +4958,7 @@ dependencies = [
  "ironclaw_memory_native",
  "ironclaw_safety",
  "jsonschema 0.49.9",
+ "libsql",
  "serde",
  "serde_json",
  "sha2 0.11.0",

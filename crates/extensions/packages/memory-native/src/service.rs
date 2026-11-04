@@ -9,8 +9,8 @@ use std::{cmp::Ordering, collections::BTreeMap, sync::Arc};
 
 use crate::{
     ChunkingMemoryDocumentIndexer, FilesystemMemoryDocumentRepository, MemoryAppendOutcome,
-    MemoryBackend, MemoryBackendCapabilities, MemoryBackendWriteOptions, MemorySearchRequest,
-    MemorySearchResult, MemoryWriteOutcome, RepositoryMemoryBackend,
+    MemoryBackend, MemoryBackendCapabilities, MemoryBackendWriteOptions, MemoryDocumentHistory,
+    MemorySearchRequest, MemorySearchResult, MemoryWriteOutcome, RepositoryMemoryBackend,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -86,6 +86,8 @@ const MEMORY_PATH: &str = "MEMORY.md";
 const HEARTBEAT_PATH: &str = "HEARTBEAT.md";
 const BOOTSTRAP_PATH: &str = "BOOTSTRAP.md";
 const PROFILE_DOCUMENT_PATH: &str = "context/profile.json";
+/// Where documents the user removes from the Memory page are kept.
+const ARCHIVE_ROOT: &str = "archive/";
 const MAX_MEMORY_PATCH_RETRIES: usize = 8;
 
 /// Snippets of the standing [`MEMORY_PATH`] document this provider prepends to
@@ -393,6 +395,77 @@ impl NativeMemoryService {
             content_hash: content_bytes_sha256(content.as_bytes()),
             content,
         })
+    }
+
+    /// Every document path in the caller's scope, sorted. The flat listing
+    /// the tree tool folds; the Memory page shows it as is.
+    pub async fn list_paths(
+        &self,
+        invocation: MemoryInvocation,
+    ) -> Result<Vec<String>, MemoryServiceError> {
+        let (scope, context) = self.scoped_context(&invocation)?;
+        let mut paths = self
+            .backend
+            .list_documents(&context, &scope)
+            .await
+            .map_err(MemoryServiceError::operation_from)?
+            .into_iter()
+            .map(|path| path.relative_path().to_string())
+            .collect::<Vec<_>>();
+        paths.sort();
+        Ok(paths)
+    }
+
+    /// Saved-version summary for one document (the page's provenance line).
+    pub async fn history(
+        &self,
+        invocation: MemoryInvocation,
+        path: &str,
+    ) -> Result<MemoryDocumentHistory, MemoryServiceError> {
+        reject_local_or_traversal_path(path)?;
+        let (scope, context) = self.scoped_context(&invocation)?;
+        let path = document_path(&scope, path)?;
+        self.backend
+            .document_history(&context, &path)
+            .await
+            .map_err(MemoryServiceError::operation_from)
+    }
+
+    /// Archive one document the user removes from the Memory page: its body
+    /// moves to `archive/<UTC timestamp>/<path>` (kept, browsable, never
+    /// searched or recalled) and the live path goes away, only while the
+    /// document still hashes to `expected_content_hash`. Nothing is deleted:
+    /// the body lives on under `archive/` and the version trail stays.
+    ///
+    /// Returns the archive path, or `None` on a conflict (the document changed
+    /// since the user read it; nothing moved).
+    pub async fn archive(
+        &self,
+        invocation: MemoryInvocation,
+        path: &str,
+        expected_content_hash: &str,
+    ) -> Result<Option<String>, MemoryServiceError> {
+        reject_local_or_traversal_path(path)?;
+        let relative = path.trim_matches('/');
+        if relative.is_empty()
+            || relative.starts_with(ARCHIVE_ROOT)
+            || is_thread_scoped_path(relative)
+        {
+            return Err(MemoryServiceError::input());
+        }
+        let (scope, context) = self.scoped_context(&invocation)?;
+        let live = document_path(&scope, relative)?;
+        let archived_relative = format!(
+            "{ARCHIVE_ROOT}{}/{relative}",
+            Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
+        );
+        let archived = document_path(&scope, &archived_relative)?;
+        let outcome = self
+            .backend
+            .archive_document(&context, &live, &archived, expected_content_hash)
+            .await
+            .map_err(MemoryServiceError::operation_from)?;
+        Ok((outcome == MemoryWriteOutcome::Written).then_some(archived_relative))
     }
 
     pub async fn tree(

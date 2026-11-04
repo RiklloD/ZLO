@@ -158,6 +158,36 @@ impl MemoryDocumentRepository for InMemoryMemoryDocumentRepository {
         Ok(())
     }
 
+    async fn remove_document_if_unchanged(
+        &self,
+        path: &MemoryDocumentPath,
+        expected_previous_hash: &str,
+    ) -> Result<MemoryWriteOutcome, FilesystemError> {
+        let virtual_path = path.virtual_path().unwrap_or_else(|_| valid_memory_path());
+        let mut documents = self.documents.lock().map_err(|_| {
+            memory_error(
+                virtual_path.clone(),
+                FilesystemOperation::Delete,
+                "memory document repository lock poisoned",
+            )
+        })?;
+        let Some(bytes) = documents.get(path) else {
+            return Err(FilesystemError::NotFound {
+                path: virtual_path,
+                operation: FilesystemOperation::Delete,
+            });
+        };
+        if content_bytes_sha256(bytes) != expected_previous_hash {
+            return Ok(MemoryWriteOutcome::Conflict);
+        }
+        documents.remove(path);
+        drop(documents);
+        if let Ok(mut metadata) = self.metadata.lock() {
+            metadata.remove(path);
+        }
+        Ok(MemoryWriteOutcome::Written)
+    }
+
     async fn list_documents(
         &self,
         scope: &MemoryDocumentScope,

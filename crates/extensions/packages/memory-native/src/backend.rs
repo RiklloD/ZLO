@@ -10,7 +10,8 @@ use crate::indexer::MemoryDocumentIndexer;
 use crate::metadata::{MemoryBackendWriteOptions, MemoryWriteOptions};
 use crate::path::{memory_backend_unsupported, memory_error, valid_memory_path};
 use crate::repo::{
-    MemoryAppendOutcome, MemoryDocumentRepository, MemoryWriteOutcome, scoped_memory_changed_by_key,
+    MemoryAppendOutcome, MemoryDocumentHistory, MemoryDocumentRepository, MemoryWriteOutcome,
+    scoped_memory_changed_by_key,
 };
 use crate::safety::{
     DefaultPromptWriteSafetyPolicy, PromptWriteSafetyCheck, enforce_prompt_write_safety,
@@ -19,10 +20,11 @@ use crate::safety::{
 use crate::schema::validate_content_against_schema;
 use crate::search::{MemorySearchRequest, MemorySearchResult};
 use crate::write_metadata::resolve_write_metadata;
-use ironclaw_memory::{MemoryContext, MemoryDocumentPath, MemoryDocumentScope};
 use ironclaw_memory::{
-    MemorySignificantEvent, MemorySignificantEventSink, MemorySignificantEventSource,
+    DocumentMetadata, MemorySignificantEvent, MemorySignificantEventKind,
+    MemorySignificantEventSink, MemorySignificantEventSource, MemorySignificantEventStatus,
 };
+use ironclaw_memory::{MemoryContext, MemoryDocumentPath, MemoryDocumentScope};
 use ironclaw_memory::{
     PromptProtectedPathRegistry, PromptWriteOperation, PromptWriteSafetyEventSink,
     PromptWriteSafetyPolicy, PromptWriteSource,
@@ -180,6 +182,36 @@ pub trait MemoryBackend: Send + Sync {
             FilesystemOperation::ReadFile,
             "memory backend does not support search",
         ))
+    }
+
+    /// Move `path` to `archive_path` while it still hashes to
+    /// `expected_previous_hash`. The archive copy is written first, unindexed,
+    /// so the body is never without a home; the live path is then removed
+    /// version-checked. `Conflict` when the document changed (the live path is
+    /// untouched). Default: unsupported, fail closed.
+    async fn archive_document(
+        &self,
+        context: &MemoryContext,
+        path: &MemoryDocumentPath,
+        archive_path: &MemoryDocumentPath,
+        expected_previous_hash: &str,
+    ) -> Result<MemoryWriteOutcome, FilesystemError> {
+        let _ = (path, archive_path, expected_previous_hash);
+        Err(memory_backend_unsupported(
+            context.scope(),
+            FilesystemOperation::Delete,
+            "memory backend does not support archiving documents",
+        ))
+    }
+
+    /// Saved-version summary for `path`. Default: none recorded.
+    async fn document_history(
+        &self,
+        context: &MemoryContext,
+        path: &MemoryDocumentPath,
+    ) -> Result<MemoryDocumentHistory, FilesystemError> {
+        let _ = (context, path);
+        Ok(MemoryDocumentHistory::default())
     }
 
     async fn compare_and_append_document(
@@ -525,6 +557,76 @@ where
                 .await;
         }
         Ok(())
+    }
+
+    async fn archive_document(
+        &self,
+        context: &MemoryContext,
+        path: &MemoryDocumentPath,
+        archive_path: &MemoryDocumentPath,
+        expected_previous_hash: &str,
+    ) -> Result<MemoryWriteOutcome, FilesystemError> {
+        ensure_file_documents_supported(
+            context,
+            FilesystemOperation::Delete,
+            self.capabilities.file_documents,
+        )?;
+        ensure_path_matches_context(context, path, FilesystemOperation::Delete)?;
+        ensure_path_matches_context(context, archive_path, FilesystemOperation::WriteFile)?;
+        let Some(bytes) = self.repository.read_document(path).await? else {
+            return Err(FilesystemError::NotFound {
+                path: path.virtual_path().unwrap_or_else(|_| valid_memory_path()),
+                operation: FilesystemOperation::Delete,
+            });
+        };
+        if content_bytes_sha256(&bytes) != expected_previous_hash {
+            return Ok(MemoryWriteOutcome::Conflict);
+        }
+        if self.repository.read_document(archive_path).await?.is_some() {
+            return Ok(MemoryWriteOutcome::Conflict);
+        }
+        // The archive copy is an ordinary document marked `skip_indexing`, so
+        // it is browsable but never searched or recalled.
+        let metadata = DocumentMetadata {
+            skip_indexing: Some(true),
+            ..DocumentMetadata::default()
+        };
+        let archive_options = MemoryBackendWriteOptions::with_metadata_overlay(Some(metadata));
+        self.write_document_with_backend_options(context, archive_path, &bytes, &archive_options)
+            .await?;
+        let outcome = self
+            .repository
+            .remove_document_if_unchanged(path, expected_previous_hash)
+            .await?;
+        if outcome == MemoryWriteOutcome::Written {
+            record_memory_significant_event(
+                self.memory_event_sink.as_ref(),
+                MemorySignificantEvent {
+                    kind: MemorySignificantEventKind::DocumentDeleted,
+                    source: MemorySignificantEventSource::RepositoryMemoryBackend,
+                    status: MemorySignificantEventStatus::Deleted,
+                    scope: path.scope().clone(),
+                    relative_path_hash: Some(content_sha256(path.relative_path())),
+                    byte_count: Some(bytes.len() as u64),
+                    chunk_count: None,
+                    result_count: None,
+                    full_text: None,
+                    vector: None,
+                    audit_context: context.audit_context().cloned(),
+                },
+            )
+            .await;
+        }
+        Ok(outcome)
+    }
+
+    async fn document_history(
+        &self,
+        context: &MemoryContext,
+        path: &MemoryDocumentPath,
+    ) -> Result<MemoryDocumentHistory, FilesystemError> {
+        ensure_path_matches_context(context, path, FilesystemOperation::ReadFile)?;
+        self.repository.document_history(path).await
     }
 
     async fn compare_and_append_document(

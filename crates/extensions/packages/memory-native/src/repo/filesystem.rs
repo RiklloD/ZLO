@@ -54,7 +54,7 @@ use ironclaw_memory::{MemoryDocumentPath, MemoryDocumentScope};
 use ironclaw_memory::{content_bytes_sha256, content_sha256};
 
 use super::{
-    MemoryAppendOutcome, MemoryDocumentRepository, MemoryWriteOutcome,
+    MemoryAppendOutcome, MemoryDocumentHistory, MemoryDocumentRepository, MemoryWriteOutcome,
     ensure_document_path_does_not_conflict, scoped_memory_changed_by_key,
 };
 
@@ -786,6 +786,91 @@ where
                 }
             }
         }
+    }
+
+    async fn remove_document_if_unchanged(
+        &self,
+        path: &MemoryDocumentPath,
+        expected_previous_hash: &str,
+    ) -> Result<MemoryWriteOutcome, FilesystemError> {
+        let virtual_path = Self::document_virtual_path(path, FilesystemOperation::Delete)?;
+        let Some((bytes, version)) = self
+            .read_document_with_version(path, FilesystemOperation::Delete)
+            .await?
+        else {
+            return Err(FilesystemError::NotFound {
+                path: virtual_path,
+                operation: FilesystemOperation::Delete,
+            });
+        };
+        if content_bytes_sha256(&bytes) != expected_previous_hash {
+            return Ok(MemoryWriteOutcome::Conflict);
+        }
+        // Version-checked: a write that lands between the read above and this
+        // delete wins, and the removal reports a conflict instead.
+        match self
+            .filesystem
+            .delete_if_version(&virtual_path, version)
+            .await
+        {
+            Ok(()) => {}
+            Err(FilesystemError::VersionMismatch { .. }) => {
+                return Ok(MemoryWriteOutcome::Conflict);
+            }
+            Err(error) => return Err(error),
+        }
+        // Derived state only: the metadata sidecar and search chunks. The
+        // `.versions/` trail stays, so every earlier body is still retained.
+        let meta = Self::metadata_virtual_path(path, FilesystemOperation::Delete)?;
+        match self.filesystem.delete(&meta).await {
+            Ok(()) | Err(FilesystemError::NotFound { .. }) => {}
+            Err(error) => return Err(error),
+        }
+        self.delete_chunks_kind_aware(path).await?;
+        Ok(MemoryWriteOutcome::Written)
+    }
+
+    async fn document_history(
+        &self,
+        path: &MemoryDocumentPath,
+    ) -> Result<MemoryDocumentHistory, FilesystemError> {
+        let prefix = Self::versions_prefix_path(path, FilesystemOperation::ReadFile)?;
+        let mut versions: Vec<(i64, Option<String>)> = self
+            .query_all(&prefix, &Filter::All)
+            .await?
+            .into_iter()
+            .filter(|versioned| {
+                versioned
+                    .entry
+                    .kind
+                    .as_ref()
+                    .is_some_and(|kind| kind.as_str() == VERSION_KIND)
+            })
+            .map(|versioned| {
+                let number = match versioned
+                    .entry
+                    .indexed
+                    .get(&Self::index_key(fs_keys::VERSION))
+                {
+                    Some(IndexValue::I64(number)) => *number,
+                    _ => 0,
+                };
+                let changed_by = serde_json::from_slice::<serde_json::Value>(&versioned.entry.body)
+                    .ok()
+                    .and_then(|payload| {
+                        payload
+                            .get("changed_by")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    });
+                (number, changed_by)
+            })
+            .collect();
+        versions.sort_by_key(|(number, _)| *number);
+        Ok(MemoryDocumentHistory {
+            version_count: versions.len() as u64,
+            last_changed_by: versions.pop().and_then(|(_, changed_by)| changed_by),
+        })
     }
 
     async fn read_document_metadata(

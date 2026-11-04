@@ -383,8 +383,10 @@ pub struct SupermemorySearchRequest {
 }
 
 /// `GET /api/webchat/v2/memory/supermemory/search?q=…`.
-pub const SUPERMEMORY_SEARCH_VIEW: ProductView<SupermemorySearchRequest, SupermemorySearchResponse> =
-    ProductView::unpaginated("memory.supermemory.search");
+pub const SUPERMEMORY_SEARCH_VIEW: ProductView<
+    SupermemorySearchRequest,
+    SupermemorySearchResponse,
+> = ProductView::unpaginated("memory.supermemory.search");
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupermemoryMemoryHit {
@@ -460,8 +462,14 @@ mod tests {
             memory_document_kind("MEMORY.md"),
             MemoryDocumentKind::Standing
         );
-        assert_eq!(memory_document_kind("USER.md"), MemoryDocumentKind::Identity);
-        assert_eq!(memory_document_kind("SOUL.md"), MemoryDocumentKind::Identity);
+        assert_eq!(
+            memory_document_kind("USER.md"),
+            MemoryDocumentKind::Identity
+        );
+        assert_eq!(
+            memory_document_kind("SOUL.md"),
+            MemoryDocumentKind::Identity
+        );
         assert_eq!(
             memory_document_kind("notes/USER.md"),
             MemoryDocumentKind::Note

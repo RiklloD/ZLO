@@ -177,7 +177,10 @@ pub(crate) fn document_page(value: &Value) -> WireDocumentPage {
     let as_u32 = |number: Option<u64>| number.and_then(|number| u32::try_from(number).ok());
     WireDocumentPage {
         documents: rows.iter().filter_map(|row| document(row).ok()).collect(),
-        current_page: as_u32(u64_field(pagination, &["currentPage", "current_page", "page"])),
+        current_page: as_u32(u64_field(
+            pagination,
+            &["currentPage", "current_page", "page"],
+        )),
         total_pages: as_u32(u64_field(pagination, &["totalPages", "total_pages"])),
         total_items: u64_field(pagination, &["totalItems", "total_items"]),
     }

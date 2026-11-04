@@ -30,7 +30,7 @@ pub use indexer::{
 pub use metadata::{MemoryBackendWriteOptions, MemoryWriteOptions};
 pub use repo::{
     FilesystemMemoryDocumentRepository, InMemoryMemoryDocumentRepository, MemoryAppendOutcome,
-    MemoryDocumentRepository, MemoryWriteOutcome,
+    MemoryDocumentHistory, MemoryDocumentRepository, MemoryWriteOutcome,
 };
 pub use safety::DefaultPromptWriteSafetyPolicy;
 pub use search::{FusionStrategy, MemorySearchRequest, MemorySearchResult};

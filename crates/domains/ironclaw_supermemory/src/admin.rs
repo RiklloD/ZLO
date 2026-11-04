@@ -230,10 +230,7 @@ impl Supermemory {
             Err(SupermemoryError::Http { status: 404 }) => true,
             Ok(_) => false,
             Err(error) => {
-                tracing::debug!(
-                    kind = error.kind(),
-                    "supermemory delete read-back failed"
-                );
+                tracing::debug!(kind = error.kind(), "supermemory delete read-back failed");
                 false
             }
         };
