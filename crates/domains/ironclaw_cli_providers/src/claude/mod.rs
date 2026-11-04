@@ -19,6 +19,7 @@
 
 mod compact;
 mod control;
+pub(crate) mod import;
 mod stream;
 mod transcript;
 
@@ -150,12 +151,25 @@ impl ClaudeCliRuntime {
     }
 
     /// Where a session runs: the shared work dir when it already started
-    /// there, else the profile's folder, else the shared work dir.
-    fn session_dir(&self, session_id: &str, profile: Option<&TurnProfile>) -> PathBuf {
+    /// there; the folder it was started in when its transcript is elsewhere
+    /// (a profile's folder, or a terminal session imported from
+    /// `~/.claude/projects`), as `--resume` finds it only from there; else
+    /// the profile's folder, else the shared work dir.
+    async fn session_dir(&self, session_id: &str, profile: Option<&TurnProfile>) -> PathBuf {
         let shared = &self.config.work_dir;
+        if self.transcript_path(shared, session_id).is_file() {
+            return shared.clone();
+        }
+        if let Some(path) = self.find_transcript(session_id).await
+            && let Some(dir) = transcript::cwd(&path).await
+            && dir.is_dir()
+            && self.transcript_path(&dir, session_id) == path
+        {
+            return dir;
+        }
         match profile.and_then(|p| p.folder.as_ref()) {
-            Some(folder) if !self.transcript_path(shared, session_id).is_file() => folder.clone(),
-            _ => shared.clone(),
+            Some(folder) => folder.clone(),
+            None => shared.clone(),
         }
     }
 
@@ -309,7 +323,7 @@ impl ClaudeCliRuntime {
         // A new turn ends the idle period: no compaction may touch the session.
         self.compactor.preempt(&thread.thread_id).await;
         let plan = TurnPlan {
-            dir: self.session_dir(&session_id, profile),
+            dir: self.session_dir(&session_id, profile).await,
             goal,
             effort,
             profile,

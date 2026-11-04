@@ -90,6 +90,10 @@ pub struct InboxRow {
     /// A generated title is being written; poll until it lands.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub title_pending: bool,
+    /// Imported from a terminal session: the source id
+    /// (`crate::session_import`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported: Option<String>,
 }
 
 /// A profile as the inbox shows it: badge, branch, picker order.

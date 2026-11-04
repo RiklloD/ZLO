@@ -17,18 +17,24 @@ base64 = "0.22"
 # Wire types for the CLI's stream-json protocol. Pinned exactly to the CLI
 # version the driver is tested against (`claude::EXPECTED_CLI_VERSION`); bump
 # both together, on purpose. Types only: the driver owns process handling.
+# Session import: transcript and rollout timestamps (RFC 3339).
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 claude-codes = { version = "=2.1.302", default-features = false, features = ["types"] }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # Approval reasons are redacted before they reach a card.
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_orchestrator = { path = "../ironclaw_orchestrator" }
+# Session import settings and report shapes (`session_import`).
+ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
 # Stop kills the CLI's whole process group (tool subprocesses included).
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 serde_json = "1"
+thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
 tracing = "0.1"
-# v7: Muse command and session ids are UUIDv7.
-uuid = { version = "1", features = ["v4", "v7"] }
+# v7: Muse command and session ids are UUIDv7. v5: imported sessions get a
+# stable thread id per caller and session.
+uuid = { version = "1", features = ["v4", "v5", "v7"] }
 
 [dev-dependencies]
 # The approval-record test opens the orchestrator store over a real libSQL file.

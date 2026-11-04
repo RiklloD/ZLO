@@ -176,6 +176,11 @@ impl Engine {
         }
     }
 
+    /// Whether a runtime with this id is registered in this backend.
+    pub fn has_runtime(&self, id: &RuntimeId) -> bool {
+        self.runtime(id).is_ok()
+    }
+
     pub(crate) fn runtime(&self, id: &RuntimeId) -> Result<Arc<dyn TurnRuntime>> {
         self.runtimes
             .read()

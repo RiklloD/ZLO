@@ -38,6 +38,7 @@ pub mod runtime;
 pub mod schedule_webhooks;
 pub mod schedules;
 pub mod segments;
+pub mod session_imports;
 pub mod store;
 pub mod telemetry;
 mod thread_ops;

@@ -16,6 +16,7 @@
 //! are disabled: subagents are orchestrator threads (`t3_delegate`).
 
 mod fold;
+pub(crate) mod import;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -71,14 +72,35 @@ pub struct CodexConfig {
 
 impl CodexConfig {
     fn transcript(&self, session: &str) -> PathBuf {
-        self.state_dir
-            .join("transcripts")
-            .join(format!("{session}.jsonl"))
+        transcript_in(&self.state_dir, session)
     }
 
     fn thread_file(&self, session: &str) -> PathBuf {
-        self.state_dir.join("threads").join(format!("{session}.id"))
+        thread_file_in(&self.state_dir, session)
     }
+}
+
+/// IronClaw's transcript of a session (`HistoryMessage` per line).
+pub(crate) fn transcript_in(state_dir: &Path, session: &str) -> PathBuf {
+    state_dir
+        .join("transcripts")
+        .join(format!("{session}.jsonl"))
+}
+
+/// The Codex thread id a session resumes (`thread/resume`).
+pub(crate) fn thread_file_in(state_dir: &Path, session: &str) -> PathBuf {
+    state_dir.join("threads").join(format!("{session}.id"))
+}
+
+/// Where a session runs when it is not the shared work dir: an imported
+/// terminal session keeps the folder it was started in.
+pub(crate) fn cwd_file_in(state_dir: &Path, session: &str) -> PathBuf {
+    state_dir.join("threads").join(format!("{session}.cwd"))
+}
+
+/// The driver's state folder (`~/.ironclaw/codex`).
+pub fn state_dir(home: &Path) -> PathBuf {
+    home.join(".ironclaw").join("codex")
 }
 
 /// What a steer or Stop needs from the running turn.
@@ -504,7 +526,7 @@ impl Turn {
     async fn open(&self, client: &RpcClient, fold: &mut TurnFold) -> Result<String, RpcError> {
         handshake(client).await?;
         let (approval, sandbox) = self.policy();
-        let cwd = canonical(&self.config.work_dir);
+        let cwd = canonical(&self.session_dir().await);
         let file = self.config.thread_file(&self.session);
         let saved = tokio::fs::read_to_string(&file)
             .await
@@ -558,6 +580,16 @@ impl Turn {
             .and_then(Value::as_str)
             .map(str::to_string);
         Ok(id)
+    }
+
+    /// The shared work dir, or the folder an imported session ran in when
+    /// it still exists.
+    async fn session_dir(&self) -> PathBuf {
+        let file = cwd_file_in(&self.config.state_dir, &self.session);
+        match tokio::fs::read_to_string(&file).await {
+            Ok(dir) if Path::new(dir.trim()).is_dir() => PathBuf::from(dir.trim()),
+            _ => self.config.work_dir.clone(), // silent-ok: no override means the shared work dir
+        }
     }
 
     /// Server requests: approvals go through the shared seam; everything a
@@ -825,7 +857,7 @@ pub fn find_binary(home: &Path) -> Option<PathBuf> {
 }
 
 pub fn default_config(home: &Path, binary: &Path) -> CodexConfig {
-    let state = home.join(".ironclaw").join("codex");
+    let state = state_dir(home);
     let codex_home = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex"));

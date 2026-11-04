@@ -18,6 +18,7 @@ mod journal;
 pub mod muse;
 pub mod permissions;
 mod rpc;
+pub mod session_import;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
