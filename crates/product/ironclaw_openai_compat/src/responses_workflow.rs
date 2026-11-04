@@ -1046,6 +1046,7 @@ fn response_surface_submit_request(
         content: Some(user_message_payload.text),
         attachments: Vec::new(),
         model: user_message_payload.requested_model,
+        mention_roots: Vec::new(),
     }
 }
 

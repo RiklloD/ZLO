@@ -241,10 +241,13 @@ pub fn restore(cx: &App, key: &str) -> Option<Draft> {
         let range = span.range();
         text.push_str(&old.text()[last..range.start]);
         last = range.end;
-        if let Some(id) = keys.get(span.token().id().as_ref()) {
+        // A mention chip names its target, not a staged file: it keeps its id.
+        let mention = ironclaw_gpui_client::mentions::token_mention(span.token().id())
+            .map(|_| span.token().id().to_string());
+        if let Some(id) = keys.get(span.token().id().as_ref()).cloned().or(mention) {
             let start = text.len();
             text.push_str(span.token().text());
-            let token = InlineToken::new(id.clone(), span.token().text().clone())
+            let token = InlineToken::new(id, span.token().text().clone())
                 .with_label(span.token().label().clone());
             spans.push((start..text.len(), token));
         }

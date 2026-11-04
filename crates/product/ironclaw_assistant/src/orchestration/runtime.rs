@@ -91,6 +91,7 @@ impl AgentLoopRuntime {
                     content: Some(text.to_string()),
                     attachments,
                     model,
+                    mention_roots: Vec::new(),
                 },
                 ActivityId::new(),
             )

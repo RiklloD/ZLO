@@ -5675,6 +5675,7 @@ async fn standalone_runtime_webui_bundle_reuses_thread_and_turn_services() {
             content: Some("hello webui stream".to_string()),
             attachments: Vec::new(),
             model: None,
+            mention_roots: Vec::new(),
         },
     )
     .await
@@ -7384,6 +7385,7 @@ async fn standalone_webui_bundle_records_selectable_filesystem_skill_context() {
             content: Some("$webui-helper please help".to_string()),
             attachments: Vec::new(),
             model: None,
+            mention_roots: Vec::new(),
         },
     )
     .await
@@ -7776,6 +7778,7 @@ async fn deferred_busy_message_not_auto_submitted_after_run_cancellation() {
             content: Some("message B while thread is busy".to_string()),
             attachments: Vec::new(),
             model: None,
+            mention_roots: Vec::new(),
         },
     )
     .await
@@ -7898,6 +7901,7 @@ async fn deferred_busy_message_not_auto_submitted_after_run_cancellation() {
             content: Some("message C after thread is free".to_string()),
             attachments: Vec::new(),
             model: None,
+            mention_roots: Vec::new(),
         },
     )
     .await

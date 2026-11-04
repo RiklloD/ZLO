@@ -8,6 +8,7 @@ mod external;
 #[cfg(test)]
 mod external_tests;
 mod inbox;
+mod mentions;
 mod observer;
 mod profile_context;
 mod profiles;

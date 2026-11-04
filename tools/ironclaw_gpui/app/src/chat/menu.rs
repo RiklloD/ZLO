@@ -1,17 +1,33 @@
 //! The `/` and `@` composer menu, shared by a thread's composer and the
 //! new-thread screen: its inventory, highlight, keys and popover.
+//!
+//! `@` lists mentions first (the Changes selection and git diff, files,
+//! folders, recent threads; `ironclaw_gpui_client::mentions`), then tools
+//! and skills. A picked mention becomes an atomic chip in the composer.
 
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use ironclaw_gpui_client::commands::{
-    MenuItem, MenuSources, complete_mention, menu_matches, tab_complete,
+    MenuItem, MenuSources, complete_mention, menu_matches_with, tab_complete, trigger_token,
+};
+use ironclaw_gpui_client::mentions::{
+    self, FileIndex, IndexCache, LineRange, MentionContext, MentionKind, ThreadEntry,
 };
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::{Client, ClientError};
 
+use crate::assets::ExtraIcon;
 use crate::design::kit;
 use crate::ui::*;
 use gpui_kit::ScrollHandle;
+
+/// File listings per project folder, shared by every composer.
+#[derive(Default)]
+struct MentionIndexes(IndexCache);
+
+impl Global for MentionIndexes {}
 
 #[derive(Default)]
 pub(crate) struct ComposerMenu {
@@ -21,6 +37,12 @@ pub(crate) struct ComposerMenu {
     dismissed: Option<SharedString>,
     /// Keeps the highlighted row in view as ↑ ↓ move it.
     scroll: ScrollHandle,
+    /// The project folder's listing, for `@` files and folders.
+    files: Option<Arc<FileIndex>>,
+    /// Lines picked in the Changes tab, offered as an `@` selection.
+    pub(crate) selection: Option<(PathBuf, LineRange)>,
+    /// The thread this composer belongs to, left out of `@` threads.
+    pub(crate) current_thread: Option<String>,
 }
 
 /// What a menu key did.
@@ -39,7 +61,22 @@ impl ComposerMenu {
         if self.dismissed.as_ref() == Some(&draft) {
             return Vec::new();
         }
-        menu_matches(&draft, &self.sources)
+        let ctx = MentionContext {
+            index: self.files.as_deref(),
+            threads: &[],
+            selection: self
+                .selection
+                .as_ref()
+                .map(|(path, range)| (path.as_path(), *range)),
+            current_thread: self.current_thread.as_deref(),
+        };
+        menu_matches_with(&draft, &self.sources, &ctx)
+    }
+
+    /// Whether an `@` word is being typed.
+    pub(crate) fn at_open(&self, composer: &Entity<TextareaState>, cx: &App) -> bool {
+        let draft = composer.read(cx).value();
+        trigger_token(&draft).is_some_and(|(_, token)| token.starts_with('@'))
     }
 
     /// The highlighted row, clamped to `len`.
@@ -75,9 +112,14 @@ impl ComposerMenu {
             "up" => self.index = (self.selected(len) + len - 1) % len,
             "down" => self.index = (self.selected(len) + 1) % len,
             "tab" => {
-                let draft = composer.read(cx).value();
-                if let Some(text) = tab_complete(&draft, &items, self.selected(len)) {
-                    set_text_at_end(composer, text, window, cx);
+                let item = &items[self.selected(len)];
+                if let MenuItem::Mention(_) = item {
+                    pick(item, composer, window, cx);
+                } else {
+                    let draft = composer.read(cx).value();
+                    if let Some(text) = tab_complete(&draft, &items, self.selected(len)) {
+                        set_text_at_end(composer, text, window, cx);
+                    }
                 }
             }
             "enter" => return pick(&items[self.selected(len)], composer, window, cx),
@@ -103,9 +145,99 @@ pub(crate) fn pick(
     if let MenuItem::Command(command) = item {
         return MenuKey::Command(command.clone());
     }
+    if let MenuItem::Mention(entry) = item {
+        insert_chip(composer, &entry.uri, &entry.label, window, cx);
+        return MenuKey::Handled;
+    }
     let text = complete_mention(&composer.read(cx).value(), item);
     set_text_at_end(composer, text, window, cx);
     MenuKey::Handled
+}
+
+/// Replace the `@word` being typed with a mention chip and a space.
+fn insert_chip(
+    composer: &Entity<TextareaState>,
+    uri: &mentions::MentionUri,
+    label: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let draft = composer.read(cx).value();
+    let start = trigger_token(&draft).map_or(draft.len(), |(start, _)| start);
+    let chip = mentions::chip_text(label);
+    let token = InlineToken::new(mentions::token_id(uri), chip.clone()).with_label(chip);
+    composer.update(cx, |state, cx| {
+        let placed = if start < draft.len() {
+            state.replace_range_with_token(start..draft.len(), token, window, cx)
+        } else {
+            state.replace_with_token(token, window, cx)
+        };
+        match placed {
+            Ok(()) => state.insert(" ", window, cx),
+            Err(error) => tracing::debug!(%error, "composer: mention chip not placed"),
+        }
+        state.focus(window, cx);
+    });
+}
+
+/// Point `@` files at `root`'s listing: the cached one at once, rebuilt in
+/// the background when missing or stale. `menu_of` finds the menu again
+/// when the listing lands.
+pub(crate) fn sync_index<V: 'static>(
+    root: Option<&Path>,
+    menu_of: fn(&mut V) -> Option<&mut ComposerMenu>,
+    view: &mut V,
+    cx: &mut Context<V>,
+) {
+    let Some(root) = root.map(Path::to_path_buf) else {
+        if let Some(menu) = menu_of(view) {
+            menu.files = None;
+        }
+        return;
+    };
+    let (cached, rebuild) = cx.default_global::<MentionIndexes>().0.get(&root);
+    if let Some(menu) = menu_of(view) {
+        menu.files = cached;
+    }
+    if !rebuild {
+        return;
+    }
+    cx.spawn(async move |this, cx| {
+        let dir = root.clone();
+        let index = cx
+            .background_spawn(async move { FileIndex::build(&dir) })
+            .await;
+        let index_root = index.root.clone();
+        let kept = this.update(cx, |view, cx| {
+            cx.default_global::<MentionIndexes>().0.put(index);
+            let (fresh, _) = cx.default_global::<MentionIndexes>().0.get(&index_root);
+            if let Some(menu) = menu_of(view) {
+                menu.files = fresh;
+            }
+            cx.notify();
+        });
+        if kept.is_err() {
+            cx.update(|cx| cx.default_global::<MentionIndexes>().0.abandon(&root));
+        }
+    })
+    .detach();
+}
+
+/// Recent threads from the inbox list, newest first.
+fn thread_entries(rows: Vec<ironclaw_gpui_client::inbox::InboxRow>) -> Vec<ThreadEntry> {
+    let mut threads: Vec<ThreadEntry> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let title = row.title.filter(|t| !t.trim().is_empty())?;
+            Some(ThreadEntry {
+                thread_id: row.thread_id,
+                title,
+                last_activity_at: row.last_activity_at,
+            })
+        })
+        .collect();
+    threads.sort_by_key(|t| std::cmp::Reverse(t.last_activity_at));
+    threads
 }
 
 fn set_text_at_end(
@@ -122,8 +254,8 @@ fn set_text_at_end(
     });
 }
 
-/// Fetch the menu's inventory. Skills and extensions only enrich it, so a
-/// failed fetch leaves those sections empty.
+/// Fetch the menu's inventory. Skills, extensions and threads only enrich
+/// it, so a failed fetch leaves those sections empty.
 pub(crate) async fn load(c: Client, commands: bool) -> Result<MenuSources, ClientError> {
     let commands = if commands {
         c.list_commands().await?.commands
@@ -136,7 +268,9 @@ pub(crate) async fn load(c: Client, commands: bool) -> Result<MenuSources, Clien
         .await
         .map(|l| l.extensions)
         .unwrap_or_default();
+    let threads = c.inbox().await.map(|l| l.rows).unwrap_or_default();
     Ok(MenuSources {
+        threads: thread_entries(threads),
         commands,
         skills: skills
             .into_iter()
@@ -210,7 +344,15 @@ pub(crate) fn render<V: 'static>(
             .role(Role::Button)
             .aria_label(item.label())
             .gap_3()
-            .child(div().font_medium().flex_none().child(item.label()))
+            .when_some(mention_icon(item), |row, icon| row.child(icon))
+            .child(
+                div()
+                    .font_medium()
+                    .flex_none()
+                    .max_w(px(320.))
+                    .truncate()
+                    .child(item.label()),
+            )
             .child(
                 div()
                     .flex_1()
@@ -234,4 +376,35 @@ pub(crate) fn render<V: 'static>(
             .p_1()
             .children(rows),
     ))
+}
+
+/// The leading icon of an `@` mention row.
+fn mention_icon(item: &MenuItem) -> Option<Icon> {
+    let MenuItem::Mention(entry) = item else {
+        return None;
+    };
+    Some(kind_icon(entry.kind).xsmall())
+}
+
+/// The icon for a mention of `kind`, in the menu and on its chip.
+pub(crate) fn kind_icon(kind: MentionKind) -> Icon {
+    match kind {
+        MentionKind::File => Icon::new(IconName::File),
+        MentionKind::Folder => Icon::new(IconName::Folder),
+        MentionKind::Thread => Icon::new(ExtraIcon::MessagesSquare),
+        MentionKind::Changes => Icon::new(ExtraIcon::FileDiff),
+    }
+}
+
+/// The section a mention belongs to, for its chip's icon.
+pub(crate) fn uri_kind(uri: &mentions::MentionUri) -> MentionKind {
+    use mentions::MentionUri as U;
+    match uri {
+        U::File { .. } => MentionKind::File,
+        U::Directory { .. } => MentionKind::Folder,
+        U::Thread { .. } => MentionKind::Thread,
+        U::GitDiff { .. } | U::Selection { .. } | U::Skill { .. } | U::Extension { .. } => {
+            MentionKind::Changes
+        }
+    }
 }

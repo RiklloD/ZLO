@@ -672,6 +672,7 @@ fn chat_surface_submit_request(
         content: Some(user_message_payload.text),
         attachments: product_attachments(attachments),
         model: user_message_payload.requested_model,
+        mention_roots: Vec::new(),
     }
 }
 

@@ -33,8 +33,8 @@ pub(super) struct Draft {
     menu_hover: bool,
     /// Files for the first message, handed to the thread on send.
     staged: Vec<StagedFile>,
-    /// The `/` and `@` menu: skills and extensions only, since commands
-    /// need a thread.
+    /// The `/` and `@` menu: no commands, since those need a thread; `@`
+    /// files come from the last project folder used.
     menu: ComposerMenu,
     sending: bool,
     error: Option<SharedString>,
@@ -107,6 +107,15 @@ impl Workspace {
                         if let Some(draft) = this.draft.as_mut() {
                             draft.menu.reset();
                             inline_files::prune(&draft.input, &mut draft.staged, cx);
+                            if draft.menu.at_open(&draft.input, cx) {
+                                let root = crate::design::prefs::Prefs::of(cx).last_project.clone();
+                                menu::sync_index(
+                                    root.as_deref(),
+                                    |w: &mut Self| w.draft.as_mut().map(|d| &mut d.menu),
+                                    this,
+                                    cx,
+                                );
+                            }
                         }
                     }
                     _ => {}

@@ -249,6 +249,7 @@ where
                     content: Some(suggested_prompt),
                     attachments: Vec::new(),
                     model: None,
+                    mention_roots: Vec::new(),
                 },
             )
             .await?;

@@ -13,6 +13,7 @@ pub mod computer_use;
 mod connection;
 mod error;
 mod inbox_calls;
+pub mod mentions;
 pub mod operator;
 pub mod orchestration;
 mod pages;

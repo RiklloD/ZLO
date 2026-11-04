@@ -52,6 +52,7 @@ pub mod inspector;
 pub mod interaction_commands;
 pub mod ironhub;
 pub mod lifecycle_service;
+pub mod mention;
 pub mod notification_inbox;
 pub mod notification_setup;
 pub mod operator_llm;

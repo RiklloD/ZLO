@@ -80,6 +80,107 @@ fn to_json<T: serde::Serialize>(value: T) -> Result<Value, OrchestratorError> {
     Ok(serde_json::to_value(value)?)
 }
 
+/// Bytes @-mention context may add for IronClaw's loop: its message cap is
+/// 64 KiB, and the typed text and a handoff need room too.
+const MENTION_LOOP_BUDGET: usize = 56 * 1024;
+/// The same for CLI engines, under T3 Code's 120 000-character prompt cap.
+const MENTION_CLI_BUDGET: usize = 96 * 1024;
+/// Messages of a mentioned thread read for its digest.
+const MENTION_THREAD_TIMELINE: u64 = 40;
+
+/// Mentioned threads, read as the sender: the orchestrator's record for the
+/// title and the scoped timeline view for its messages, so a thread the
+/// caller does not own reads as missing.
+struct CallerThreads<'a> {
+    surface: &'a OrchestratedProductSurface,
+    caller: &'a ProductSurfaceCaller,
+    scope: &'a ThreadScope,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct DigestPage {
+    messages: Vec<DigestMessage>,
+    summary_artifacts: Vec<DigestSummary>,
+}
+
+/// Timeline message kinds a digest keeps; CLI histories may carry others.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DigestKind {
+    User,
+    Assistant,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(serde::Deserialize)]
+struct DigestMessage {
+    kind: DigestKind,
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct DigestSummary {
+    content: String,
+}
+
+#[async_trait]
+impl super::mentions::ThreadDigests for CallerThreads<'_> {
+    async fn digest(&self, thread_id: &str) -> Option<super::mentions::ThreadDigest> {
+        let id = ThreadId::new(thread_id).ok()?;
+        let title = match self.surface.engine.owned_thread(&id, self.scope).await {
+            Ok(thread) => thread.title,
+            Err(error) => {
+                tracing::debug!(%error, "mentioned thread has no orchestrator record");
+                None
+            }
+        };
+        let request = ProductSurfaceQueryRequest {
+            view_id: TIMELINE_VIEW.id.to_string(),
+            input: serde_json::json!({
+                "thread_id": id.as_str(),
+                "limit": MENTION_THREAD_TIMELINE,
+            }),
+            cursor: None,
+            limit: None,
+        };
+        let page = match self.surface.query(self.caller.clone(), request).await {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::debug!(?error, "mentioned thread is not readable by the caller");
+                return None;
+            }
+        };
+        let item = page.items.into_iter().next()?;
+        let page: DigestPage = match serde_json::from_value(item) {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::debug!(%error, "mentioned thread timeline did not decode");
+                return None;
+            }
+        };
+        let messages = page
+            .messages
+            .into_iter()
+            .filter_map(|m| {
+                let who = match m.kind {
+                    DigestKind::User => "User",
+                    DigestKind::Assistant => "Assistant",
+                    DigestKind::Other => return None,
+                };
+                m.content.filter(|c| !c.trim().is_empty()).map(|c| (who, c))
+            })
+            .collect();
+        Some(super::mentions::ThreadDigest {
+            title,
+            summary: page.summary_artifacts.into_iter().last().map(|s| s.content),
+            messages,
+        })
+    }
+}
+
 pub(crate) fn scope_of(caller: &ProductSurfaceCaller) -> ThreadScope {
     ThreadScope {
         tenant_id: caller.tenant_id.clone(),
@@ -577,6 +678,29 @@ impl ProductSurface for OrchestratedProductSurface {
                     );
                     soft("user prompt", self.engine.on_user_prompt(&id).await);
                     let mut changed = false;
+                    // @-mentions expand before any handoff context is
+                    // prepended, so only the typed text's mentions count.
+                    let roots = std::mem::take(&mut body.mention_roots);
+                    if let Some(typed) = body.content.as_deref().filter(|t| t.contains("[@")) {
+                        let cli = self.external(&id, &scope).await.is_some();
+                        let (runtime, cap) = if cli {
+                            (super::mentions::MentionRuntime::Cli, MENTION_CLI_BUDGET)
+                        } else {
+                            (super::mentions::MentionRuntime::Loop, MENTION_LOOP_BUDGET)
+                        };
+                        let threads = CallerThreads {
+                            surface: self,
+                            caller: &caller,
+                            scope: &scope,
+                        };
+                        let budget = cap.saturating_sub(typed.len());
+                        let expanded =
+                            super::mentions::expand(typed, &roots, runtime, &threads, budget).await;
+                        body.content = Some(expanded);
+                        changed = true;
+                    } else if !roots.is_empty() {
+                        changed = true;
+                    }
                     match self.engine.take_next_message_context(&id).await {
                         Ok(Some(context)) => {
                             let typed = body.content.take().unwrap_or_default();

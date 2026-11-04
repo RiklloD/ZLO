@@ -10,6 +10,7 @@ use ironclaw_gpui_client::attachments::{self, StagedFile, format_bytes};
 use ironclaw_gpui_client::commands::{MenuItem, match_command, takes_arguments};
 use ironclaw_gpui_client::contract::ProductGateKind;
 use ironclaw_gpui_client::inbound_requests::{AnchoredPart, anchored_parts};
+use ironclaw_gpui_client::mentions::{self as mention, MentionPart, MentionSpan, MentionUri};
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::transcript::{
     self, AttachmentChip, GateState, PREFIX_KEY, Row, RunEnd, ToolStatus, Transcript,
@@ -239,6 +240,15 @@ impl ChatView {
                     InputEvent::Change => {
                         this.menu.reset();
                         inline_files::prune(&this.composer, &mut this.staged, cx);
+                        if this.menu.at_open(&this.composer, cx) {
+                            let root = this.mention_root(cx);
+                            menu::sync_index(
+                                root.as_deref(),
+                                |v: &mut Self| Some(&mut v.menu),
+                                this,
+                                cx,
+                            );
+                        }
                         cx.notify();
                     }
                     _ => {}
@@ -357,7 +367,17 @@ impl ChatView {
         this
     }
 
+    /// The folder `@` files come from and file mentions are read in: the
+    /// thread's project folder, else the last one used.
+    fn mention_root(&self, cx: &App) -> Option<PathBuf> {
+        self.side
+            .folder
+            .clone()
+            .or_else(|| crate::design::prefs::Prefs::of(cx).last_project.clone())
+    }
+
     fn load_commands(&mut self, cx: &mut Context<Self>) {
+        self.menu.current_thread = Some(self.thread_id.clone());
         let job = self.backend.spawn(|c| menu::load(c, true));
         let task = cx.spawn(async move |this, cx| {
             // Without the inventory every `/` line is sent as a normal message.
@@ -632,6 +652,7 @@ impl ChatView {
                 }) else {
                     return false;
                 };
+                let last = inline_files::restored(&last);
                 self.composer
                     .update(cx, |state, cx| state.set_value(last, window, cx));
                 return true;
@@ -953,6 +974,21 @@ impl ChatView {
         h
     }
 
+    /// The folder the backend may read `text`'s @-mentions from. A thread
+    /// without one of its own adopts the folder its mentions came from.
+    pub(super) fn mention_roots(&mut self, text: &str, cx: &mut Context<Self>) -> Vec<String> {
+        if !mention::needs_root(text) {
+            return Vec::new();
+        }
+        let Some(root) = self.mention_root(cx) else {
+            return Vec::new();
+        };
+        if self.side.folder.is_none() {
+            self.side_set_folder(root.clone(), true, cx);
+        }
+        vec![root.to_string_lossy().into_owned()]
+    }
+
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (text, files) = inline_files::outgoing(&self.composer, &self.staged, cx);
         if text.is_empty() && files.is_empty() {
@@ -1003,9 +1039,11 @@ impl ChatView {
         let thread_id = self.thread_id.clone();
         let body = text.clone();
         let wire = files.iter().map(StagedFile::to_wire).collect();
-        let job = self
-            .backend
-            .spawn(move |c| async move { c.send_message(&channel, &thread_id, &body, wire).await });
+        let roots = self.mention_roots(&text, cx);
+        let job = self.backend.spawn(move |c| async move {
+            c.send_message_with_roots(&channel, &thread_id, &body, wire, roots)
+                .await
+        });
         let task = cx.spawn_in(window, async move |this, cx| {
             let result = flatten(job.await);
             let _ = this.update_in(cx, |this, window, cx| match result {
@@ -1164,6 +1202,7 @@ impl Render for ChatView {
         use gpui_kit::Focusable as _;
         let focused = self.composer.focus_handle(cx).is_focused(window);
         let weak = cx.weak_entity();
+        self.menu.selection = self.changes_selection();
         let menu = self.menu.items(&self.composer, cx);
         let menu_index = self.menu.selected(menu.len());
         let running = self.running_run().is_some();
@@ -1537,15 +1576,16 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &mut App) -> AnyElemen
             pending,
             attachments,
         } => {
-            let parts = anchored_parts(text);
+            let parts = placed_parts(text);
             let placed: std::collections::HashSet<usize> = parts
                 .iter()
                 .filter_map(|part| match part {
-                    AnchoredPart::Attachment(ix) => Some(*ix),
-                    AnchoredPart::Text(_) => None,
+                    Placed::File(ix) => Some(*ix),
+                    Placed::Text(_) | Placed::Mention(_) => None,
                 })
                 .collect();
-            let body = if placed.is_empty() {
+            let chips = parts.iter().any(|p| !matches!(p, Placed::Text(_)));
+            let body = if !chips {
                 selectable(SharedString::from(format!("{key}-text")), text.clone())
                     .into_any_element()
             } else {
@@ -2272,11 +2312,36 @@ pub(crate) fn attachment_card(
         )
 }
 
-/// A sent message whose files sit between its words: each word and each
-/// card is one item of a wrapping row, so the cards flow with the text.
+/// One run of a sent message: words, a placed file, or a mention.
+enum Placed<'a> {
+    Text(&'a str),
+    File(usize),
+    Mention(MentionSpan),
+}
+
+/// `text` split at its attachment anchors and its mention links.
+fn placed_parts(text: &str) -> Vec<Placed<'_>> {
+    let mut out = Vec::new();
+    for part in anchored_parts(text) {
+        match part {
+            AnchoredPart::Attachment(ix) => out.push(Placed::File(ix)),
+            AnchoredPart::Text(run) => {
+                out.extend(mention::mention_parts(run).into_iter().map(|p| match p {
+                    MentionPart::Text(t) => Placed::Text(t),
+                    MentionPart::Mention(span) => Placed::Mention(span),
+                }))
+            }
+        }
+    }
+    out
+}
+
+/// A sent message whose files and mentions sit between its words: each
+/// word and each card is one item of a wrapping row, so the cards flow with
+/// the text.
 fn placed_body(
     key: &str,
-    parts: &[AnchoredPart<'_>],
+    parts: &[Placed<'_>],
     chips: &[AttachmentChip],
     weak: &WeakEntity<ChatView>,
     cx: &App,
@@ -2284,7 +2349,31 @@ fn placed_body(
     let mut items: Vec<AnyElement> = Vec::new();
     for part in parts {
         match part {
-            AnchoredPart::Text(run) => {
+            Placed::Mention(span) => {
+                let icon = menu::kind_icon(menu::uri_kind(&span.uri))
+                    .xsmall()
+                    .into_any_element();
+                let card = inline_files::inline_card(
+                    SharedString::from(format!("{key}-mention-{}", items.len())),
+                    Some(icon),
+                    &mention::chip_text(&span.label),
+                    px(22.),
+                    false,
+                    cx,
+                );
+                let card = match &span.uri {
+                    MentionUri::File { path, .. }
+                    | MentionUri::Directory { path }
+                    | MentionUri::Selection { path, .. } => {
+                        let path = PathBuf::from(path);
+                        card.cursor_pointer()
+                            .on_click(move |_, _, cx| cx.open_with_system(&path))
+                    }
+                    _ => card,
+                };
+                items.push(card.into_any_element());
+            }
+            Placed::Text(run) => {
                 for (n, line) in run.split('\n').enumerate() {
                     if n > 0 {
                         // A full-width item ends the row: the line break.
@@ -2297,7 +2386,7 @@ fn placed_body(
                     );
                 }
             }
-            AnchoredPart::Attachment(ix) => {
+            Placed::File(ix) => {
                 let Some(chip) = chips.get(*ix) else {
                     continue;
                 };
