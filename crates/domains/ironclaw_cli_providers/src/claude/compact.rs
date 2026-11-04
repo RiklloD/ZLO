@@ -126,6 +126,8 @@ impl IdleArm {
             bridge: rt.bridge.clone(),
             active: Arc::clone(&rt.active),
             profiles: Mutex::new(HashMap::new()),
+            // Compaction runs with the captured plan dir, never this map.
+            work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::clone(&rt.compactor),
         });
         Self {

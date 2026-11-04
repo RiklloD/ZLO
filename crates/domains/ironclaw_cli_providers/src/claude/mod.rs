@@ -105,6 +105,9 @@ pub struct ClaudeCliRuntime {
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     /// Each thread's last profile context, reused when Stop restarts a turn.
     profiles: Mutex<HashMap<ThreadId, TurnProfile>>,
+    /// Threads bound to their own git worktree (`TurnInput::work_dir`):
+    /// their sessions run there, over the profile folder.
+    work_dirs: Mutex<HashMap<ThreadId, PathBuf>>,
     /// Idle `/compact` timers, one per thread (see `compact.rs`).
     compactor: Arc<compact::IdleCompactor>,
 }
@@ -138,6 +141,7 @@ impl ClaudeCliRuntime {
             bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
             profiles: Mutex::new(HashMap::new()),
+            work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::default(),
         })
     }
@@ -149,14 +153,49 @@ impl ClaudeCliRuntime {
             .join(format!("{session_id}.jsonl"))
     }
 
-    /// Where a session runs: the shared work dir when it already started
-    /// there, else the profile's folder, else the shared work dir.
-    fn session_dir(&self, session_id: &str, profile: Option<&TurnProfile>) -> PathBuf {
+    /// Where a session runs: the thread's worktree, else the shared work
+    /// dir when it already started there, else the profile's folder, else
+    /// the shared work dir.
+    fn session_dir(
+        &self,
+        thread: &ThreadId,
+        session_id: &str,
+        profile: Option<&TurnProfile>,
+    ) -> PathBuf {
+        let bound = self
+            .work_dirs
+            .lock()
+            .ok() // silent-ok: a poisoned map only follows a panic elsewhere
+            .and_then(|m| m.get(thread).cloned());
+        if let Some(dir) = bound {
+            return dir;
+        }
         let shared = &self.config.work_dir;
         match profile.and_then(|p| p.folder.as_ref()) {
             Some(folder) if !self.transcript_path(shared, session_id).is_file() => folder.clone(),
             _ => shared.clone(),
         }
+    }
+
+    /// A session that moves to another folder (a thread that started in a
+    /// worktree after its first turns) takes its transcript along, so
+    /// `--resume` finds it there.
+    async fn follow_session(&self, session_id: &str, dir: &Path) -> Result<(), RuntimeError> {
+        let target = self.transcript_path(dir, session_id);
+        if target.is_file() {
+            return Ok(());
+        }
+        let Some(source) = self.find_transcript(session_id).await else {
+            return Ok(());
+        };
+        let copy = async {
+            if let Some(parent) = target.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::copy(&source, &target).await.map(drop)
+        };
+        copy.await
+            .map_err(|e| RuntimeError::Unavailable(format!("session transcript: {}", e.kind())))
     }
 
     /// The session's transcript wherever it ran (session ids are unique
@@ -309,7 +348,7 @@ impl ClaudeCliRuntime {
         // A new turn ends the idle period: no compaction may touch the session.
         self.compactor.preempt(&thread.thread_id).await;
         let plan = TurnPlan {
-            dir: self.session_dir(&session_id, profile),
+            dir: self.session_dir(&thread.thread_id, &session_id, profile),
             goal,
             effort,
             profile,
@@ -317,6 +356,7 @@ impl ClaudeCliRuntime {
         tokio::fs::create_dir_all(&plan.dir)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("work dir: {}", e.kind())))?;
+        self.follow_session(&session_id, &plan.dir).await?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let mcp = self.mcp_session(&thread.thread_id, &run_id).await;
         let end_mcp = {
@@ -580,6 +620,14 @@ impl TurnRuntime for ClaudeCliRuntime {
         }
     }
 
+    fn supports_work_dir(&self) -> bool {
+        true
+    }
+
+    fn default_work_dir(&self) -> Option<PathBuf> {
+        Some(self.config.work_dir.clone())
+    }
+
     async fn create_thread(&self, request: CreateThread) -> Result<CreatedThread, RuntimeError> {
         let thread_id = ThreadId::new(uuid::Uuid::new_v4().to_string())
             .map_err(|e| RuntimeError::Rejected(e.to_string()))?;
@@ -605,6 +653,12 @@ impl TurnRuntime for ClaudeCliRuntime {
         }
         if let (Some(profile), Ok(mut profiles)) = (&input.profile, self.profiles.lock()) {
             profiles.insert(thread.thread_id.clone(), profile.clone());
+        }
+        if let Ok(mut dirs) = self.work_dirs.lock() {
+            match &input.work_dir {
+                Some(dir) => dirs.insert(thread.thread_id.clone(), dir.clone()),
+                None => dirs.remove(&thread.thread_id),
+            };
         }
         let run_id = self
             .spawn_turn(

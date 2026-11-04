@@ -134,6 +134,7 @@ fn input() -> TurnInput {
         effort: None,
         profile: None,
         files: Vec::new(),
+        work_dir: None,
     }
 }
 
@@ -255,7 +256,8 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
 /// The profile reaches the CLI: the session runs in the profile folder with
 /// SOUL.md and the goal in its system prompt and the skills as a plugin; a
 /// Stop restart keeps it; a session that began in the shared folder stays
-/// there; history finds a transcript in either folder.
+/// there; a worktree-bound thread runs in its worktree; history finds a
+/// transcript in either folder.
 #[tokio::test]
 async fn profile_soul_skills_and_folder_reach_the_cli() {
     let dir = tempfile::tempdir().unwrap();
@@ -304,13 +306,39 @@ async fn profile_soul_skills_and_folder_reach_the_cli() {
         ));
     std::fs::create_dir_all(&shared).unwrap();
     std::fs::write(shared.join(format!("{session}.jsonl")), "").unwrap();
+    let profile_for_worktree = profile.clone();
     let mut turn = input();
     turn.profile = Some(profile);
     rt.start_turn(&legacy, turn).await.unwrap();
     wait_for(|| sink.finished.lock().unwrap().len() == 3).await;
 
+    // A thread bound to a worktree runs there (over the profile folder),
+    // resuming its session, whose transcript follows it; a Stop restart
+    // stays there too.
+    let worktree = dir.path().join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let mut turn = input();
+    turn.profile = Some(profile_for_worktree);
+    turn.work_dir = Some(worktree.clone());
+    rt.start_turn(&legacy, turn).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 4).await;
+    rt.steer(&legacy, "again", SteerHow::Restart).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 5).await;
+    assert!(
+        dir.path()
+            .join("projects")
+            .join(claude_codes::transcript::encode_project_dir(&worktree))
+            .join(format!("{session}.jsonl"))
+            .is_file()
+    );
+
     let args = std::fs::read_to_string(&log).unwrap();
     let lines: Vec<&str> = args.lines().collect();
+    let in_worktree = format!("PWD={} ", worktree.canonicalize().unwrap().display());
+    for line in &lines[3..5] {
+        assert!(line.starts_with(&in_worktree), "{line}");
+        assert!(line.contains(&format!("--resume {session}")), "{line}");
+    }
     let in_folder = format!("PWD={} ", folder.canonicalize().unwrap().display());
     let plugin_arg = format!("--plugin-dir {}", plugin.display());
     for line in &lines[..2] {
