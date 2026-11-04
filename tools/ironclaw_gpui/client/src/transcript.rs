@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 
 use ironclaw_product_contracts::outbound::{
     CapabilityActivityStatusView, CapabilityActivityView, CapabilityDisplayPreviewView,
-    ProductGateKind, ProductProjectionItem,
+    CliDetailKind, ProductGateKind, ProductProjectionItem,
 };
 
 use crate::api::GateDecision;
@@ -250,6 +250,25 @@ pub struct Transcript {
     prefix: Vec<TimelineMessage>,
     /// Forks merged back into this thread, each shown where it arrived.
     merges: Vec<MergedFork>,
+    /// Live detail a CLI agent reported (Codex): output tails by tool
+    /// invocation, the latest turn diff and review. Live-only, kept while
+    /// the view is open.
+    cli: CliDetails,
+}
+
+/// A bounded live body; `truncated` when the agent's text was cut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliBody {
+    pub run: Option<String>,
+    pub body: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Default)]
+struct CliDetails {
+    outputs: HashMap<String, CliBody>,
+    diff: Option<CliBody>,
+    review: Option<CliBody>,
 }
 
 /// A message sent from this view that the timeline does not show yet.
@@ -610,6 +629,32 @@ impl Transcript {
                 .is_some_and(|s| s.status == "cancel_requested")
     }
 
+    /// The streamed output tail of the tool row keyed `row_key`
+    /// (`tool:{invocation}`), when its agent reports one (Codex).
+    pub fn tool_output(&self, row_key: &str) -> Option<&CliBody> {
+        let invocation = row_key.strip_prefix("tool:")?;
+        self.cli.outputs.get(invocation)
+    }
+
+    /// Every streamed output tail, by tool row key (`tool:{invocation}`).
+    pub fn tool_outputs(&self) -> HashMap<String, CliBody> {
+        self.cli
+            .outputs
+            .iter()
+            .map(|(invocation, body)| (format!("tool:{invocation}"), body.clone()))
+            .collect()
+    }
+
+    /// The latest turn diff a CLI agent computed (Codex `turn/diff/updated`).
+    pub fn cli_turn_diff(&self) -> Option<&CliBody> {
+        self.cli.diff.as_ref()
+    }
+
+    /// The latest finished review's findings text (Codex `review/start`).
+    pub fn cli_review(&self) -> Option<&CliBody> {
+        self.cli.review.as_ref()
+    }
+
     pub fn apply(&mut self, event: &StreamEvent) -> Applied {
         let mut out = Applied::default();
         match event {
@@ -738,6 +783,29 @@ impl Transcript {
                     Some(run_id.to_string()),
                     Live::WorkSummary(body.clone()),
                 );
+            }
+            ProductProjectionItem::CliDetail {
+                run_id,
+                kind,
+                invocation_id,
+                body,
+                truncated,
+                ..
+            } => {
+                let detail = CliBody {
+                    run: run_id.map(|r| r.to_string()),
+                    body: body.clone(),
+                    truncated: *truncated,
+                };
+                match kind {
+                    CliDetailKind::ToolOutput => {
+                        if let Some(invocation) = invocation_id {
+                            self.cli.outputs.insert(invocation.to_string(), detail);
+                        }
+                    }
+                    CliDetailKind::TurnDiff => self.cli.diff = Some(detail),
+                    CliDetailKind::Review => self.cli.review = Some(detail),
+                }
             }
             ProductProjectionItem::SkillActivation {
                 id,
@@ -1372,6 +1440,45 @@ mod tests {
                             "body": body, "narration": narration } }
             ]}
         }))
+    }
+
+    #[test]
+    fn cli_detail_frames_feed_tool_output_turn_diff_and_review() {
+        let inv = "6f1c1c0e-0000-4000-8000-0000000000aa";
+        let mut t = Transcript::default();
+        let applied = t.apply(&frame(serde_json::json!({
+            "cursor": "c9", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "capability_activity": { "invocation_id": inv, "turn_run_id": RUN,
+                    "thread_id": "t1", "capability_id": "cli.shell", "status": "running",
+                    "input_summary": "cargo test", "updated_at": "2026-11-04T00:00:00Z" } },
+                { "cli_detail": { "id": format!("output:{inv}"), "run_id": RUN,
+                    "kind": "tool_output", "invocation_id": inv, "body": "running 3 tests\n" } },
+                { "cli_detail": { "id": format!("diff:{RUN}"), "run_id": RUN,
+                    "kind": "turn_diff", "body": "diff --git a/x b/x\n", "truncated": true } },
+            ]}
+        })));
+        assert!(applied.changed);
+        let row = t
+            .rows()
+            .into_iter()
+            .find(|r| matches!(r, Row::Tool { .. }))
+            .expect("tool row");
+        assert_eq!(
+            t.tool_output(row.key()).map(|o| o.body.as_str()),
+            Some("running 3 tests\n")
+        );
+        let diff = t.cli_turn_diff().unwrap();
+        assert!(diff.truncated && diff.run.as_deref() == Some(RUN));
+        assert!(t.cli_review().is_none());
+        t.apply(&frame(serde_json::json!({
+            "cursor": "c10", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "cli_detail": { "id": format!("review:{RUN}"), "run_id": RUN,
+                    "kind": "review", "body": "No issues found." } }
+            ]}
+        })));
+        assert_eq!(t.cli_review().unwrap().body, "No issues found.");
     }
 
     fn status(s: &str) -> StreamEvent {

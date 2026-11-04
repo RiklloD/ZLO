@@ -15,6 +15,7 @@ mod error;
 mod inbox_calls;
 pub mod operator;
 pub mod orchestration;
+pub mod review;
 mod pages;
 mod profile_calls;
 mod settings;
@@ -35,6 +36,10 @@ pub use ironclaw_extension_contracts::hosted_mcp;
 pub use ironclaw_extension_contracts::state as extension_state;
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;
+/// Runtime-native thread actions (Codex review, revert, compact).
+pub use ironclaw_product_contracts::orchestration::{
+    ReviewTarget, ThreadAction, ThreadActionOutcome,
+};
 pub use ironclaw_product_contracts::{
     inbound_requests, inbox, notification_inbox, operator_llm, package_lifecycle, product_wire,
     profiles, task_models, workspace_views,

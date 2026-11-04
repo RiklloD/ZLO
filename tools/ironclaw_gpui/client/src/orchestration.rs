@@ -752,3 +752,19 @@ impl Client {
         Ok(())
     }
 }
+
+impl Client {
+    /// A runtime-native thread operation (`POST /threads/{id}/action`):
+    /// a Codex review (runs as a turn), revert of the last turn, or
+    /// compaction. A runtime without it answers [`ClientError::Refused`].
+    pub async fn thread_action(
+        &self,
+        thread_id: &str,
+        action: &ironclaw_product_contracts::orchestration::ThreadAction,
+    ) -> Result<ironclaw_product_contracts::orchestration::ThreadActionOutcome, ClientError> {
+        let body = serde_json::to_value(action)
+            .map_err(|e| ClientError::Decode(format!("thread action: {e}")))?;
+        self.orch_post(format!("{V2}/threads/{}/action", seg(thread_id)), body)
+            .await
+    }
+}
