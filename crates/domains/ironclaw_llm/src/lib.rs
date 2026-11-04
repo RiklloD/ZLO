@@ -45,6 +45,7 @@ mod rig_adapter;
 pub mod runtime;
 pub mod session;
 pub mod smart_routing;
+pub mod speech;
 mod token_refreshing;
 pub mod trace_binding;
 // arch-exempt: scaffolding, Phase A helpers awaiting first per-provider caller, plan #4522
