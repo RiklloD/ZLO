@@ -1051,6 +1051,34 @@ pub enum ProductProjectionItem {
         skill_names: Vec<String>,
         feedback: Vec<String>,
     },
+    /// Something a coding-agent CLI reported alongside its turn that has no
+    /// IronClaw-loop equivalent (live command output, the turn's diff, a
+    /// review). Live-only and bounded: the durable record stays the CLI's
+    /// transcript, so a body past the bound is cut and `truncated` is set.
+    CliDetail {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<TurnRunId>,
+        kind: CliDetailKind,
+        /// The tool row a `tool_output` belongs to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invocation_id: Option<InvocationId>,
+        body: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        truncated: bool,
+    },
+}
+
+/// What a [`ProductProjectionItem::CliDetail`] carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliDetailKind {
+    /// The latest tail of a running command's output (stdout and stderr).
+    ToolOutput,
+    /// The turn's aggregated unified diff so far.
+    TurnDiff,
+    /// A finished code review's findings text.
+    Review,
 }
 
 impl ProductProjectionItem {
@@ -1181,6 +1209,25 @@ impl ProductProjectionItem {
                 }
                 Ok(())
             }
+            Self::CliDetail {
+                id,
+                kind,
+                invocation_id,
+                body,
+                ..
+            } => {
+                validate_bounded_text("projection_item_id", id, PROJECTION_ITEM_ID_MAX_BYTES)?;
+                if body.len() > PROJECTION_TEXT_MAX_BYTES {
+                    return Err(invalid("projection_cli_detail", "body exceeds its bound"));
+                }
+                if *kind == CliDetailKind::ToolOutput && invocation_id.is_none() {
+                    return Err(invalid(
+                        "projection_cli_detail",
+                        "tool output names the tool row it belongs to",
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -1247,6 +1294,17 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 run_id: TurnRunId,
                 skill_names: Vec<String>,
                 feedback: Vec<String>,
+            },
+            CliDetail {
+                id: String,
+                #[serde(default)]
+                run_id: Option<TurnRunId>,
+                kind: CliDetailKind,
+                #[serde(default)]
+                invocation_id: Option<InvocationId>,
+                body: String,
+                #[serde(default)]
+                truncated: bool,
             },
         }
         let value = match Wire::deserialize(deserializer)? {
@@ -1327,6 +1385,21 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 run_id,
                 skill_names,
                 feedback,
+            },
+            Wire::CliDetail {
+                id,
+                run_id,
+                kind,
+                invocation_id,
+                body,
+                truncated,
+            } => ProductProjectionItem::CliDetail {
+                id,
+                run_id,
+                kind,
+                invocation_id,
+                body,
+                truncated,
             },
         };
         value.validate().map_err(serde::de::Error::custom)?;
@@ -1931,6 +2004,32 @@ mod tests {
         });
 
         assert!(serde_json::from_value::<ApprovalPromptContextView>(json).is_err());
+    }
+
+    #[test]
+    fn cli_detail_round_trips_and_tool_output_needs_its_row() {
+        let run = TurnRunId::new();
+        let item = ProductProjectionItem::CliDetail {
+            id: format!("output:{run}:c1"),
+            run_id: Some(run),
+            kind: CliDetailKind::ToolOutput,
+            invocation_id: Some(InvocationId::new()),
+            body: "line 1\nline 2".into(),
+            truncated: true,
+        };
+        let json = serde_json::to_value(&item).expect("serialize");
+        assert_eq!(json["cli_detail"]["kind"], "tool_output");
+        let back: ProductProjectionItem = serde_json::from_value(json.clone()).expect("decode");
+        assert_eq!(back, item);
+
+        let mut orphan = json;
+        orphan["cli_detail"]["invocation_id"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ProductProjectionItem>(orphan).is_err());
+
+        let oversized = serde_json::json!({"cli_detail": {
+            "id": "diff:r", "kind": "turn_diff",
+            "body": "x".repeat(PROJECTION_TEXT_MAX_BYTES + 1)}});
+        assert!(serde_json::from_value::<ProductProjectionItem>(oversized).is_err());
     }
 
     #[test]

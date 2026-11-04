@@ -12,6 +12,20 @@ the `untrusted` approval policy behind the bridge (read-only and never
 asking without one); each approval is answered `accept` or `decline`, never
 for the session.
 
+Codex (checked against codex-cli `0.166.0`, `codex::EXPECTED_CLI_VERSION`)
+also streams what its app-server reports while a turn runs: reply and
+reasoning-summary deltas (the thinking row), tool rows with a bounded,
+throttled, display-redacted tail of command output, and the turn's
+aggregated diff, all as live-only bridge state (`LiveEvent::ToolOutput`,
+`TurnDiff`, `Review`; projected as `cli_detail` items). The durable journal
+keeps only the user prompt and the answer, as before. Runtime-native
+operations go through `TurnRuntime::thread_action`: a review
+(`review/start`, run as a turn whose findings are the answer), revert of
+the last turn (`thread/revert`; the journal keeps the turn behind a hidden
+marker, nothing is deleted, files are not touched) and compaction
+(`thread/compact/start`, now or after 4.5 idle minutes like Claude CLI
+threads when idle compaction is on).
+
 - **Family / layer:** `domains` / `substrates` · **Package:** `ironclaw_cli_providers`
 - **Use this when:** you change how a CLI agent runs a turn: process spawn,
   stream-json parsing, session resume, Stop, usage-limit mapping, telemetry.

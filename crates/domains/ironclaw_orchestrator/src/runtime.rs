@@ -17,6 +17,7 @@
 
 use async_trait::async_trait;
 use ironclaw_host_api::ids::ThreadId;
+use ironclaw_product_contracts::orchestration::{ThreadAction, ThreadActionOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::error::OrchestratorError;
@@ -384,6 +385,16 @@ pub trait TurnRuntime: Send + Sync {
     /// Providers/models this runtime can run for `scope`.
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
         Ok(Vec::new())
+    }
+
+    /// A runtime-native operation on an idle thread (review, revert,
+    /// compact). Runtimes without one answer `Unsupported`.
+    async fn thread_action(
+        &self,
+        _thread: &ThreadRecord,
+        _action: ThreadAction,
+    ) -> Result<ThreadActionOutcome, RuntimeError> {
+        Err(RuntimeError::Unsupported("thread actions"))
     }
 }
 

@@ -41,6 +41,8 @@ pub(crate) struct TurnFold {
     completed: Option<Value>,
     /// Last `error` notification that will not be retried.
     error: Option<Value>,
+    /// A review turn's findings (`exitedReviewMode`); they are its answer.
+    review: Option<String>,
 }
 
 fn n(v: &Value, key: &str) -> u64 {
@@ -149,6 +151,9 @@ impl TurnFold {
             }
             return;
         }
+        if self.push_review(kind, item) {
+            return;
+        }
         if HIDDEN_ITEMS.contains(&kind) || !self.tool_items.insert(id.to_string()) {
             return;
         }
@@ -166,7 +171,28 @@ impl TurnFold {
         self.tools.push(format!("{label}()"));
     }
 
+    /// Review mode markers: entering is scaffolding, exiting carries the
+    /// findings. `true` when `kind` was one of them.
+    fn push_review(&mut self, kind: &str, item: &Value) -> bool {
+        match kind {
+            "enteredReviewMode" => true,
+            "exitedReviewMode" => {
+                self.review = item
+                    .get("review")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .map(str::to_string);
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn answer(&self) -> Option<String> {
+        if let Some(review) = &self.review {
+            return Some(review.clone());
+        }
         self.messages
             .values()
             .filter(|(_, text)| !text.trim().is_empty())
@@ -342,6 +368,28 @@ mod tests {
         assert_eq!(entry.text, "Hello");
         assert_eq!(entry.tool_calls, vec!["shell()".to_string()]);
         assert_eq!(f.telemetry("codex").unwrap().context_max, Some(272000));
+    }
+
+    #[test]
+    fn a_review_turn_answers_with_its_findings() {
+        let mut f = fold();
+        f.push(
+            "item/completed",
+            &json!({"turnId": "t1", "item": {"type": "enteredReviewMode", "id": "e", "review": "current changes"}}),
+        );
+        f.push(
+            "item/completed",
+            &json!({"turnId": "t1", "item": {"type": "exitedReviewMode", "id": "x",
+                "review": "Review comment:\n\n- [P1] Off by one — /w/a.rs:3-3\n  i <= n"}}),
+        );
+        f.push(
+            "turn/completed",
+            &json!({"turn": {"id": "t1", "status": "completed", "error": null}}),
+        );
+        let out = f.outcome(false);
+        assert!(out.final_text.unwrap().contains("[P1] Off by one"));
+        let entry = f.assistant_message().unwrap();
+        assert!(entry.tool_calls.is_empty(), "review markers are not tools");
     }
 
     #[test]

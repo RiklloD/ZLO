@@ -14,8 +14,17 @@
 //! decline; never "for session"). Without a bridge the sandbox is
 //! read-only and nothing is asked. Codex's own subagents (`multi_agent`)
 //! are disabled: subagents are orchestrator threads (`t3_delegate`).
+//!
+//! While a turn runs, reply and reasoning-summary deltas, tool rows with
+//! their streaming output and the turn's diff go to the bridge's live
+//! state (`live.rs`). Review, revert and compaction are `thread_action`s
+//! (`actions.rs`); idle threads compact like Claude CLI threads do
+//! (`compact.rs`).
 
+mod actions;
+mod compact;
 mod fold;
+mod live;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,9 +49,10 @@ use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
 use fold::TurnFold;
+use ironclaw_product_contracts::orchestration::{ThreadAction, ThreadActionOutcome};
 
 /// The Codex release the wire handling was checked against.
-pub const EXPECTED_CLI_VERSION: &str = "0.163.0";
+pub const EXPECTED_CLI_VERSION: &str = "0.166.0";
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// Codex features that let the agent spawn its own subagents.
@@ -52,6 +62,16 @@ const CODEX_SUBAGENT_FEATURES: [&str; 2] = ["multi_agent", "multi_agent_v2"];
 const DRAIN: Duration = Duration::from_secs(10);
 /// How long a `model/list` answer is reused.
 const CATALOG_TTL: Duration = Duration::from_secs(600);
+/// How often throttled live detail (output tails, the diff) is flushed.
+const LIVE_FLUSH_EVERY: Duration = Duration::from_millis(400);
+
+/// What a turn sends Codex: a prompt (`turn/start`) or a review
+/// (`review/start`, findings as the answer).
+#[derive(Debug, Clone)]
+enum TurnKind {
+    Prompt,
+    Review(ironclaw_product_contracts::orchestration::ReviewTarget),
+}
 
 #[derive(Debug, Clone)]
 pub struct CodexConfig {
@@ -111,6 +131,8 @@ pub struct CodexRuntime {
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
     primed: crate::Primed,
+    /// Idle compaction timers, one per thread (see `compact.rs`).
+    compactor: Arc<compact::IdleCompactor>,
 }
 
 impl CodexRuntime {
@@ -127,6 +149,7 @@ impl CodexRuntime {
             active: Arc::new(Mutex::new(HashMap::new())),
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
+            compactor: Arc::default(),
         })
     }
 
@@ -138,29 +161,7 @@ impl CodexRuntime {
     }
 
     fn spawn_server(&self) -> Result<(Child, i32), RuntimeError> {
-        let mut cmd = Command::new(&self.config.binary);
-        cmd.arg("app-server");
-        // Subagents are orchestrator threads (`t3_delegate`), never Codex's
-        // own hidden ones.
-        for feature in CODEX_SUBAGENT_FEATURES {
-            cmd.args(["--disable", feature]);
-        }
-        cmd.args(["--listen", "stdio://"])
-            // Keep the CLI's ChatGPT login; never an API-key override.
-            .env_remove("OPENAI_API_KEY")
-            .env_remove("CODEX_API_KEY")
-            .current_dir(&self.config.work_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
-        let child = cmd
-            .spawn()
-            .map_err(|e| RuntimeError::Unavailable(format!("spawn codex: {}", e.kind())))?;
-        let pgid = rpc::group_of(&child)
-            .ok_or_else(|| RuntimeError::Unavailable("codex exited at spawn".into()))?;
-        Ok((child, pgid))
+        spawn_app_server(&self.config)
     }
 
     async fn spawn_turn(
@@ -169,6 +170,7 @@ impl CodexRuntime {
         text: &str,
         context: Option<&str>,
         effort: Option<&str>,
+        kind: TurnKind,
     ) -> Result<String, RuntimeError> {
         let session = thread
             .native_session_id
@@ -207,7 +209,9 @@ impl CodexRuntime {
             bridge: self.bridge.clone(),
             thread_id: thread.thread_id.clone(),
             run_id: run_id.clone(),
+            kind,
         };
+        let idle = compact::IdleArm::new(self, thread);
         let bridge = self.bridge.clone();
         let sink = self.sink.clone();
         let active = Arc::clone(&self.active);
@@ -229,6 +233,8 @@ impl CodexRuntime {
             if let Ok(mut map) = active.lock() {
                 map.remove(&thread_id);
             }
+            let context_used = telemetry.as_ref().and_then(|t| t.context_used);
+            let status = outcome.status;
             if let Some(sink) = sink.upgrade() {
                 if let Some(telemetry) = telemetry {
                     sink.turn_telemetry(&thread_id, telemetry, now_ms()).await;
@@ -237,6 +243,7 @@ impl CodexRuntime {
                     .await;
             }
             let _ = done_tx.send(true); // silent-ok: nobody waiting on this turn
+            idle.arm(status, context_used);
         });
         Ok(run_id)
     }
@@ -326,6 +333,33 @@ impl CodexRuntime {
     }
 }
 
+/// One `codex app-server` over stdio in its own process group.
+fn spawn_app_server(config: &CodexConfig) -> Result<(Child, i32), RuntimeError> {
+    let mut cmd = Command::new(&config.binary);
+    cmd.arg("app-server");
+    // Subagents are orchestrator threads (`t3_delegate`), never Codex's
+    // own hidden ones.
+    for feature in CODEX_SUBAGENT_FEATURES {
+        cmd.args(["--disable", feature]);
+    }
+    cmd.args(["--listen", "stdio://"])
+        // Keep the CLI's ChatGPT login; never an API-key override.
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("CODEX_API_KEY")
+        .current_dir(&config.work_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true);
+    let child = cmd
+        .spawn()
+        .map_err(|e| RuntimeError::Unavailable(format!("spawn codex: {}", e.kind())))?;
+    let pgid = rpc::group_of(&child)
+        .ok_or_else(|| RuntimeError::Unavailable("codex exited at spawn".into()))?;
+    Ok((child, pgid))
+}
+
 fn connect(
     child: &mut Child,
     pgid: i32,
@@ -377,6 +411,7 @@ struct Turn {
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
     run_id: String,
+    kind: TurnKind,
 }
 
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
@@ -396,11 +431,7 @@ impl Turn {
     }
 
     fn policy(&self) -> (&'static str, &'static str) {
-        if self.bridge.is_some() {
-            ("untrusted", "workspace-write")
-        } else {
-            ("never", "read-only")
-        }
+        session_policy(self.bridge.is_some())
     }
 
     async fn drive(
@@ -427,22 +458,7 @@ impl Turn {
         )
         .await;
 
-        let text = crate::with_context(&self.text, self.context.as_deref());
-        let mut params = json!({
-            "threadId": codex_thread,
-            "input": codex_input(&text).await,
-        });
-        if let Some(model) = &self.model {
-            params["model"] = json!(model);
-        }
-        if let Some(effort) = self
-            .effort
-            .as_ref()
-            .or(self.config.reasoning_effort.as_ref())
-        {
-            params["effort"] = json!(effort);
-        }
-        let admitted = client.request("turn/start", params, COMMAND_TIMEOUT).await;
+        let admitted = self.start(&client, &codex_thread).await;
         let turn_id = match admitted
             .as_ref()
             .ok()
@@ -472,7 +488,21 @@ impl Turn {
             });
         }
 
-        while let Some(message) = inbound.recv().await {
+        let mut live = live::LiveFold::for_turn(fold.turn_id.clone());
+        let mut flush = tokio::time::interval(LIVE_FLUSH_EVERY);
+        loop {
+            let message = tokio::select! {
+                message = inbound.recv() => message,
+                _ = flush.tick() => {
+                    if let Some(bridge) = &self.bridge {
+                        bridge.flush_details(&self.thread_id, &self.run_id);
+                    }
+                    continue;
+                }
+            };
+            let Some(message) = message else {
+                break;
+            };
             match message {
                 Inbound::Notification { method, params } => {
                     if params
@@ -482,6 +512,8 @@ impl Turn {
                     {
                         continue;
                     }
+                    let steps = live.push(&method, &params);
+                    live::apply(self.bridge.as_deref(), &self.thread_id, &self.run_id, steps);
                     if fold.push(&method, &params) {
                         break;
                     }
@@ -499,64 +531,47 @@ impl Turn {
         (outcome, fold.telemetry(&self.config.runtime_id))
     }
 
-    /// `initialize`, then resume the saved Codex thread or start one, in
-    /// the sandbox and approval policy above. Returns the Codex thread id.
-    async fn open(&self, client: &RpcClient, fold: &mut TurnFold) -> Result<String, RpcError> {
-        handshake(client).await?;
-        let (approval, sandbox) = self.policy();
-        let cwd = canonical(&self.config.work_dir);
-        let file = self.config.thread_file(&self.session);
-        let saved = tokio::fs::read_to_string(&file)
-            .await
-            .ok() // silent-ok: no file means the session has not started yet
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+    /// `turn/start` with the prompt, or `review/start` for a review.
+    async fn start(&self, client: &RpcClient, codex_thread: &str) -> Result<Value, RpcError> {
+        if let TurnKind::Review(target) = &self.kind {
+            return client
+                .request(
+                    "review/start",
+                    actions::review_params(codex_thread, target),
+                    COMMAND_TIMEOUT,
+                )
+                .await;
+        }
+        let text = crate::with_context(&self.text, self.context.as_deref());
         let mut params = json!({
-            "cwd": cwd,
-            "approvalPolicy": approval,
-            "sandbox": sandbox,
+            "threadId": codex_thread,
+            "input": codex_input(&text).await,
         });
         if let Some(model) = &self.model {
             params["model"] = json!(model);
         }
-        let result = match &saved {
-            Some(id) => {
-                params["threadId"] = json!(id);
-                params["excludeTurns"] = json!(true);
-                client
-                    .request("thread/resume", params, COMMAND_TIMEOUT)
-                    .await?
-            }
-            None => {
-                params["serviceName"] = json!("ironclaw");
-                client
-                    .request("thread/start", params, COMMAND_TIMEOUT)
-                    .await?
-            }
-        };
-        let id = result["thread"]
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| RpcError::Remote {
-                code: 0,
-                message: "codex returned no thread id".into(),
-                data: None,
-            })?;
-        if saved.as_deref() != Some(id.as_str()) {
-            if let Some(dir) = file.parent()
-                && let Err(error) = tokio::fs::create_dir_all(dir).await
-            {
-                tracing::debug!(error = %error.kind(), "codex: thread dir not created");
-            }
-            if let Err(error) = tokio::fs::write(&file, &id).await {
-                tracing::debug!(error = %error.kind(), "codex: thread id not saved");
-            }
+        if let Some(effort) = self
+            .effort
+            .as_ref()
+            .or(self.config.reasoning_effort.as_ref())
+        {
+            params["effort"] = json!(effort);
         }
-        fold.model = result
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        client.request("turn/start", params, COMMAND_TIMEOUT).await
+    }
+
+    /// `initialize`, then resume the saved Codex thread or start one, in
+    /// the sandbox and approval policy above. Returns the Codex thread id.
+    async fn open(&self, client: &RpcClient, fold: &mut TurnFold) -> Result<String, RpcError> {
+        let (id, model) = open_session(
+            client,
+            &self.config,
+            &self.session,
+            self.model.as_deref(),
+            self.policy(),
+        )
+        .await?;
+        fold.model = model;
         Ok(id)
     }
 
@@ -637,6 +652,88 @@ impl Turn {
     }
 }
 
+/// `initialize`, then resume `session`'s saved Codex thread or start one
+/// in the given `(approval policy, sandbox)`. Returns the Codex thread id
+/// and the model Codex picked.
+async fn open_session(
+    client: &RpcClient,
+    config: &CodexConfig,
+    session: &str,
+    model: Option<&str>,
+    (approval, sandbox): (&str, &str),
+) -> Result<(String, Option<String>), RpcError> {
+    handshake(client).await?;
+    let cwd = canonical(&config.work_dir);
+    let file = config.thread_file(session);
+    let saved = saved_thread(config, session).await;
+    let mut params = json!({
+        "cwd": cwd,
+        "approvalPolicy": approval,
+        "sandbox": sandbox,
+    });
+    if let Some(model) = model {
+        params["model"] = json!(model);
+    }
+    let result = match &saved {
+        Some(id) => {
+            params["threadId"] = json!(id);
+            params["excludeTurns"] = json!(true);
+            client
+                .request("thread/resume", params, COMMAND_TIMEOUT)
+                .await?
+        }
+        None => {
+            params["serviceName"] = json!("ironclaw");
+            client
+                .request("thread/start", params, COMMAND_TIMEOUT)
+                .await?
+        }
+    };
+    let id = result["thread"]
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| RpcError::Remote {
+            code: 0,
+            message: "codex returned no thread id".into(),
+            data: None,
+        })?;
+    if saved.as_deref() != Some(id.as_str()) {
+        if let Some(dir) = file.parent()
+            && let Err(error) = tokio::fs::create_dir_all(dir).await
+        {
+            tracing::debug!(error = %error.kind(), "codex: thread dir not created");
+        }
+        if let Err(error) = tokio::fs::write(&file, &id).await {
+            tracing::debug!(error = %error.kind(), "codex: thread id not saved");
+        }
+    }
+    let model = result
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok((id, model))
+}
+
+/// The Codex thread id saved for `session`; `None` before its first turn.
+async fn saved_thread(config: &CodexConfig, session: &str) -> Option<String> {
+    tokio::fs::read_to_string(config.thread_file(session))
+        .await
+        .ok() // silent-ok: no file means the session has not started yet
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// `(approval policy, sandbox)`: with a bridge to ask, the workspace
+/// sandbox and `untrusted`; without, read-only and nothing asked.
+fn session_policy(bridged: bool) -> (&'static str, &'static str) {
+    if bridged {
+        ("untrusted", "workspace-write")
+    } else {
+        ("never", "read-only")
+    }
+}
+
 fn open_failed(error: &RpcError) -> TurnOutcome {
     let lower = error.message().to_ascii_lowercase();
     let message = if lower.contains("auth") || lower.contains("login") {
@@ -711,6 +808,8 @@ impl TurnRuntime for CodexRuntime {
         if self.is_active(&thread.thread_id) {
             return Ok(TurnAdmission::Busy);
         }
+        // A new turn ends the idle period: no compaction may touch the session.
+        self.compactor.preempt(&thread.thread_id).await;
         let mut thread = thread.clone();
         if input.model.is_some() {
             thread.model = input.model;
@@ -725,6 +824,7 @@ impl TurnRuntime for CodexRuntime {
                 &input.text,
                 context.as_deref(),
                 input.effort.as_deref(),
+                TurnKind::Prompt,
             )
             .await?;
         Ok(TurnAdmission::Started {
@@ -777,12 +877,15 @@ impl TurnRuntime for CodexRuntime {
             return Ok(SteerOutcome::Rejected);
         }
         self.stop(&thread.thread_id).await;
-        self.spawn_turn(thread, text, None, None).await?;
+        self.compactor.preempt(&thread.thread_id).await;
+        self.spawn_turn(thread, text, None, None, TurnKind::Prompt)
+            .await?;
         Ok(SteerOutcome::Restarted)
     }
 
     async fn cancel(&self, thread: &ThreadRecord, _reason: &str) -> Result<(), RuntimeError> {
         self.stop(&thread.thread_id).await;
+        self.compactor.preempt(&thread.thread_id).await;
         Ok(())
     }
 
@@ -794,7 +897,11 @@ impl TurnRuntime for CodexRuntime {
         let Some(session) = thread.native_session_id.as_deref() else {
             return Ok(Vec::new());
         };
-        journal::read(&self.config.transcript(session), limit).await
+        // Whole journal: a revert marker hides rows written before it.
+        let all = journal::read(&self.config.transcript(session), usize::MAX).await?;
+        let mut shown = actions::apply_reverts(all);
+        let skip = shown.len().saturating_sub(limit);
+        Ok(shown.split_off(skip))
     }
 
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
@@ -816,6 +923,30 @@ impl TurnRuntime for CodexRuntime {
             model_efforts: Default::default(),
             brand: None,
         }])
+    }
+
+    async fn thread_action(
+        &self,
+        thread: &ThreadRecord,
+        action: ThreadAction,
+    ) -> Result<ThreadActionOutcome, RuntimeError> {
+        if self.is_active(&thread.thread_id) {
+            return Ok(ThreadActionOutcome::Busy);
+        }
+        self.compactor.preempt(&thread.thread_id).await;
+        match action {
+            ThreadAction::Review { target } => {
+                let label = actions::review_label(&target);
+                let run_id = self
+                    .spawn_turn(thread, &label, None, None, TurnKind::Review(target))
+                    .await?;
+                Ok(ThreadActionOutcome::Started {
+                    run_id: Some(run_id),
+                })
+            }
+            ThreadAction::RevertLastTurn => self.revert_last_turn(thread).await,
+            ThreadAction::Compact => self.compact_now(thread).await,
+        }
     }
 }
 

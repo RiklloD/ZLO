@@ -300,6 +300,27 @@ impl Engine {
         }))
     }
 
+    /// Run a runtime-native operation (review, revert, compact) on `thread`.
+    /// A running thread answers `Busy` without asking the runtime: those
+    /// operations need the session to themselves. A review runs as a turn
+    /// the runtime reports like any other.
+    pub async fn thread_action(
+        &self,
+        thread: &ThreadRecord,
+        action: ironclaw_product_contracts::orchestration::ThreadAction,
+    ) -> Result<ironclaw_product_contracts::orchestration::ThreadActionOutcome> {
+        use ironclaw_product_contracts::orchestration::ThreadActionOutcome;
+        let current = self.store.thread(&thread.thread_id).await?;
+        if current.as_ref().unwrap_or(thread).is_running() {
+            return Ok(ThreadActionOutcome::Busy);
+        }
+        tracing::debug!(thread = %thread.thread_id, action = action.label(), "thread action");
+        Ok(self
+            .runtime(&thread.runtime_id)?
+            .thread_action(thread, action)
+            .await?)
+    }
+
     /// Turn idle compaction of Claude CLI threads on or off (engine-wide).
     pub async fn set_idle_compact(&self, enabled: bool) -> Result<Value> {
         let settings = self

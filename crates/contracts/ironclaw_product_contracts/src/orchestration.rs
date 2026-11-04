@@ -191,3 +191,73 @@ pub const ORCHESTRATOR_MERGE_BACK_COMMAND: ProductSurfaceCommandDescriptor<
     OrchestratorMergeBackRequest,
     serde_json::Value,
 > = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_MERGE_BACK_COMMAND_ID);
+
+/// What a code review looks at (Codex `review/start` targets).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReviewTarget {
+    /// Staged, unstaged and untracked changes.
+    UncommittedChanges,
+    /// The current branch against `branch` (its merge base).
+    BaseBranch { branch: String },
+    /// One commit; `title` is a label for the person.
+    Commit {
+        sha: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    /// Free-form review instructions.
+    Custom { instructions: String },
+}
+
+/// A runtime-native thread operation (`TurnRuntime::thread_action` in `ironclaw_orchestrator`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ThreadAction {
+    /// Review code as a turn of the thread; findings are its reply.
+    Review { target: ReviewTarget },
+    /// Undo the thread's last turn in the runtime's own session. The
+    /// transcript keeps the turn, marked reverted (LLM data is never
+    /// deleted).
+    RevertLastTurn,
+    /// Summarize the session's context now.
+    Compact,
+}
+
+impl ThreadAction {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Review { .. } => "review",
+            Self::RevertLastTurn => "revert_last_turn",
+            Self::Compact => "compact",
+        }
+    }
+}
+
+/// How a [`ThreadAction`] went.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ThreadActionOutcome {
+    /// The action runs as a turn (`review`); it streams like one.
+    Started { run_id: Option<String> },
+    /// A turn is running; nothing was done.
+    Busy,
+    /// Finished; `note` is a short line for the person.
+    Done { note: String },
+}
+
+/// A runtime-native operation on one thread (`POST /threads/{id}/action`):
+/// Codex review, revert of the last turn, or compaction. The answer is the
+/// serialized [`ThreadActionOutcome`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorThreadActionRequest {
+    pub thread_id: String,
+    pub action: ThreadAction,
+}
+
+pub const ORCHESTRATOR_THREAD_ACTION_COMMAND_ID: &str = "orchestrator.thread_action";
+pub const ORCHESTRATOR_THREAD_ACTION_COMMAND: ProductSurfaceCommandDescriptor<
+    OrchestratorThreadActionRequest,
+    serde_json::Value,
+> = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_THREAD_ACTION_COMMAND_ID);
