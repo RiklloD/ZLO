@@ -2,6 +2,7 @@
 // arch-exempt: large_file, product activity view compatibility before DTO split, plan #6543
 
 use chrono::{DateTime, Utc};
+use ironclaw_host_api::agent_plan::{AgentPlan, QuestionForm};
 use ironclaw_host_api::turn::{ReplyTargetBindingRef, SanitizedFailure, TurnRunId};
 use ironclaw_host_api::{
     action::NetworkMethod,
@@ -1051,6 +1052,23 @@ pub enum ProductProjectionItem {
         skill_names: Vec<String>,
         feedback: Vec<String>,
     },
+    /// The agent's whole working plan as of its latest update (each update
+    /// replaces the last). `id` is stable per thread, so the newest frame
+    /// wins.
+    Plan {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<TurnRunId>,
+        plan: AgentPlan,
+    },
+    /// A structured question the run waits on, answered through gate
+    /// resolution with an `answer` (or declined). Shown as a form, not an
+    /// approval card.
+    Question {
+        run_id: TurnRunId,
+        gate_ref: String,
+        form: QuestionForm,
+    },
 }
 
 impl ProductProjectionItem {
@@ -1181,6 +1199,22 @@ impl ProductProjectionItem {
                 }
                 Ok(())
             }
+            Self::Plan { id, plan, .. } => {
+                validate_bounded_text("projection_item_id", id, PROJECTION_ITEM_ID_MAX_BYTES)?;
+                if !plan.is_bounded() {
+                    return Err(invalid("projection_plan", "plan exceeds its bounds"));
+                }
+                Ok(())
+            }
+            Self::Question { gate_ref, form, .. } => {
+                validate_bounded_text(
+                    "projection_gate_ref",
+                    gate_ref,
+                    PROJECTION_ITEM_ID_MAX_BYTES,
+                )?;
+                form.validate()
+                    .map_err(|error| invalid("projection_question", error.to_string()))
+            }
         }
     }
 }
@@ -1247,6 +1281,17 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 run_id: TurnRunId,
                 skill_names: Vec<String>,
                 feedback: Vec<String>,
+            },
+            Plan {
+                id: String,
+                #[serde(default)]
+                run_id: Option<TurnRunId>,
+                plan: AgentPlan,
+            },
+            Question {
+                run_id: TurnRunId,
+                gate_ref: String,
+                form: QuestionForm,
             },
         }
         let value = match Wire::deserialize(deserializer)? {
@@ -1327,6 +1372,16 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 run_id,
                 skill_names,
                 feedback,
+            },
+            Wire::Plan { id, run_id, plan } => ProductProjectionItem::Plan { id, run_id, plan },
+            Wire::Question {
+                run_id,
+                gate_ref,
+                form,
+            } => ProductProjectionItem::Question {
+                run_id,
+                gate_ref,
+                form,
             },
         };
         value.validate().map_err(serde::de::Error::custom)?;
@@ -1931,6 +1986,65 @@ mod tests {
         });
 
         assert!(serde_json::from_value::<ApprovalPromptContextView>(json).is_err());
+    }
+
+    #[test]
+    fn projection_state_round_trips_plan_and_question_items_and_rejects_bad_forms() {
+        use ironclaw_host_api::agent_plan::{
+            AgentPlan, PlanEntry, PlanEntryStatus, QuestionField, QuestionFieldKind, QuestionForm,
+        };
+        let run_id = TurnRunId::new();
+        let form = QuestionForm {
+            source: Some("Claude".into()),
+            message: None,
+            fields: vec![QuestionField {
+                id: "name".into(),
+                label: "Name?".into(),
+                header: None,
+                description: None,
+                required: true,
+                kind: QuestionFieldKind::Text {
+                    multiline: false,
+                    default: None,
+                },
+            }],
+        };
+        let state = ProductProjectionState::new(
+            "thread-1",
+            vec![
+                ProductProjectionItem::Plan {
+                    id: "plan:cli:thread-1:1".into(),
+                    run_id: Some(run_id),
+                    plan: AgentPlan::new(
+                        [PlanEntry::new("Look", PlanEntryStatus::InProgress)],
+                        None,
+                        Utc::now(),
+                    ),
+                },
+                ProductProjectionItem::Question {
+                    run_id,
+                    gate_ref: "gate:question-1".into(),
+                    form: form.clone(),
+                },
+            ],
+        )
+        .expect("valid plan and question projection");
+        let value = serde_json::to_value(&state).expect("serialize");
+        assert_eq!(
+            value["items"][0]["plan"]["plan"]["entries"][0]["status"],
+            "in_progress"
+        );
+        assert_eq!(
+            value["items"][1]["question"]["form"]["fields"][0]["kind"]["type"],
+            "text"
+        );
+        let decoded: ProductProjectionState =
+            serde_json::from_value(value.clone()).expect("decode");
+        assert_eq!(decoded, state);
+
+        let mut bad = value;
+        bad["items"][1]["question"]["form"]["fields"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<ProductProjectionState>(bad).is_err());
     }
 
     #[test]

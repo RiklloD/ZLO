@@ -4026,6 +4026,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "claude-codes",
  "ironclaw_host_api",
  "ironclaw_libsql_runtime",

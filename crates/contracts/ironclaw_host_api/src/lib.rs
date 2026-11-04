@@ -35,6 +35,7 @@
 #![warn(unreachable_pub)]
 
 pub mod action;
+pub mod agent_plan;
 pub mod approval;
 pub mod attachment;
 pub mod audit;

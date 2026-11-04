@@ -12,8 +12,11 @@
 
 use std::sync::Arc;
 
-use ironclaw_cli_providers::bridge::{CliBridge, GateView, LiveEvent, ToolState, ToolView};
+use ironclaw_cli_providers::bridge::{
+    CliBridge, GateView, LiveEvent, QuestionView, ToolState, ToolView,
+};
 use ironclaw_extension_contracts::external::ExternalConversationRef;
+use ironclaw_host_api::agent_plan::{AgentPlan, QuestionAnswer};
 use ironclaw_host_api::ids::{CapabilityId, InvocationId, ThreadId};
 use ironclaw_host_api::product_adapter::{AdapterInstallationId, ProductAdapterId};
 use ironclaw_host_api::turn::{
@@ -33,7 +36,7 @@ use ironclaw_product_contracts::product_wire::{
 };
 use ironclaw_product_contracts::surface::{
     ProductSurfaceError, ProductSurfaceEventSubscription, ProductSurfaceQueryPage,
-    ProductSurfaceStreamResponse,
+    ProductSurfaceStreamResponse, ProductSurfaceValidationCode,
 };
 use ironclaw_threads::{SessionThreadRecord, ThreadScope as SessionThreadScope};
 use serde_json::{Value, json};
@@ -203,16 +206,38 @@ pub(super) fn timeline_messages(
     rows.into_iter().skip(skip).collect()
 }
 
-/// `gate.resolve` on a CLI thread: answer the pending tool call. "Always"
-/// is not offered (it would be an allow rule) and counts as once.
+/// How the person resolved a CLI gate.
+pub(super) enum CliGateAnswer {
+    /// An approval gate, allowed or not.
+    Approval(bool),
+    /// A question gate: the answers, or `None` when dismissed.
+    Question(Option<QuestionAnswer>),
+}
+
+/// `gate.resolve` on a CLI thread: answer the pending tool call or
+/// question. "Always" is not offered (it would be an allow rule) and counts
+/// as once. An answer that does not fit its form is refused and the
+/// question stays open.
 pub(super) fn resolve_gate(
     bridge: &CliBridge,
     thread: &ThreadId,
     run: &str,
     gate_ref: &str,
-    approved: bool,
+    answer: CliGateAnswer,
 ) -> Result<RebornResolveGateResponse, ProductSurfaceError> {
-    if !bridge.resolve_gate(thread, gate_ref, approved) {
+    let resolved = match answer {
+        CliGateAnswer::Approval(approved) => bridge.resolve_gate(thread, gate_ref, approved),
+        CliGateAnswer::Question(answer) => bridge
+            .answer_question(thread, gate_ref, answer)
+            .map_err(|error| {
+                tracing::debug!(%error, "cli question answer refused");
+                ProductSurfaceError::validation(
+                    "answer",
+                    ProductSurfaceValidationCode::InvalidValue,
+                )
+            })?,
+    };
+    if !resolved {
         return Err(ProductSurfaceError::not_found());
     }
     Ok(RebornResolveGateResponse::Resumed(
@@ -268,7 +293,14 @@ pub(super) fn live_stream(
 
 fn snapshot_events(bridge: &CliBridge, thread: &ThreadId) -> Vec<Value> {
     let Some(snap) = bridge.snapshot(thread) else {
-        return Vec::new();
+        // No turn runs: the thread's last plan still shows.
+        let plan = bridge
+            .plan_of(thread)
+            .and_then(|(seq, run, plan)| plan_item(thread, &run, seq, &plan));
+        return plan
+            .and_then(|item| envelope(thread, vec![item]))
+            .into_iter()
+            .collect();
     };
     let Ok(run) = TurnRunId::parse(&snap.run_id) else {
         return Vec::new();
@@ -287,12 +319,20 @@ fn snapshot_events(bridge: &CliBridge, thread: &ThreadId) -> Vec<Value> {
     }
     items.extend(snap.tools.iter().filter_map(|t| tool_item(thread, t)));
     items.extend(snap.gates.iter().filter_map(gate_item));
+    items.extend(
+        snap.plan
+            .as_ref()
+            .and_then(|(seq, plan)| plan_item(thread, &snap.run_id, *seq, plan)),
+    );
+    items.extend(snap.questions.iter().filter_map(question_item));
     envelope(thread, items).into_iter().collect()
 }
 
 fn items_for(event: &LiveEvent) -> Option<Vec<ProductProjectionItem>> {
     Some(match event {
-        LiveEvent::Started { run_id, .. } | LiveEvent::GateClosed { run_id, .. } => {
+        LiveEvent::Started { run_id, .. }
+        | LiveEvent::GateClosed { run_id, .. }
+        | LiveEvent::QuestionClosed { run_id, .. } => {
             // A later status closes an answered gate in the client.
             vec![run_status(TurnRunId::parse(run_id).ok()?, "running")]
         }
@@ -310,6 +350,13 @@ fn items_for(event: &LiveEvent) -> Option<Vec<ProductProjectionItem>> {
         } => vec![thinking_item(thread, run_id, *segment, body)?],
         LiveEvent::Tool { thread, tool } => vec![tool_item(thread, tool)?],
         LiveEvent::GateOpened { gate, .. } => vec![gate_item(gate)?],
+        LiveEvent::Plan {
+            thread,
+            run_id,
+            seq,
+            plan,
+        } => vec![plan_item(thread, run_id, *seq, plan)?],
+        LiveEvent::QuestionOpened { question, .. } => vec![question_item(question)?],
         LiveEvent::Ended { run_id, status, .. } => {
             let status = match *status {
                 "completed" | "cancelled" => *status,
@@ -439,6 +486,29 @@ fn gate_item(gate: &GateView) -> Option<ProductProjectionItem> {
     })
 }
 
+/// One plan update: its own row (`seq` numbers the thread's updates), the
+/// newest of which is the thread's plan.
+fn plan_item(
+    thread: &ThreadId,
+    run_id: &str,
+    seq: u64,
+    plan: &AgentPlan,
+) -> Option<ProductProjectionItem> {
+    Some(ProductProjectionItem::Plan {
+        id: format!("plan:cli:{thread}:{seq}"),
+        run_id: TurnRunId::parse(run_id).ok(),
+        plan: plan.clone(),
+    })
+}
+
+fn question_item(question: &QuestionView) -> Option<ProductProjectionItem> {
+    Some(ProductProjectionItem::Question {
+        run_id: TurnRunId::parse(&question.run_id).ok()?,
+        gate_ref: question.gate_ref.clone(),
+        form: question.form.clone(),
+    })
+}
+
 fn envelope(thread: &ThreadId, items: Vec<ProductProjectionItem>) -> Option<Value> {
     let state = ProductProjectionState::new(thread.as_str(), items).ok()?;
     let target = ProductOutboundTarget::new(
@@ -469,6 +539,121 @@ mod tests {
             hidden: false,
             at: None,
         }
+    }
+
+    fn items(frames: &[Value]) -> Vec<Value> {
+        frames
+            .iter()
+            .flat_map(|f| {
+                f["payload"]["projection_update"]["state"]["items"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// A CLI turn's plan and question reach the stream as typed items, the
+    /// plan outlives the turn, and the question's answer goes back through
+    /// gate resolution (a misfit answer is refused and the form stays).
+    #[tokio::test]
+    async fn cli_plans_and_questions_stream_and_answers_resolve_them() {
+        use ironclaw_host_api::agent_plan::{
+            PlanEntry, PlanEntryStatus, QuestionField, QuestionFieldKind, QuestionForm,
+            QuestionOption, QuestionValue,
+        };
+        let bridge = CliBridge::new(std::time::Duration::from_secs(5));
+        let thread = ThreadId::new("cli-forms").unwrap();
+        let run = Uuid::new_v4().to_string();
+        bridge.turn_started(&thread, &run);
+        bridge.plan_updated(
+            &thread,
+            &run,
+            AgentPlan::new(
+                [PlanEntry::new("Look", PlanEntryStatus::InProgress)],
+                None,
+                chrono::Utc::now(),
+            ),
+        );
+        let form = QuestionForm {
+            source: Some("Claude".into()),
+            message: None,
+            fields: vec![QuestionField {
+                id: "q".into(),
+                label: "Go?".into(),
+                header: None,
+                description: None,
+                required: true,
+                kind: QuestionFieldKind::Choice {
+                    options: vec![QuestionOption::new("Yes")],
+                    multi: false,
+                    allow_other: false,
+                },
+            }],
+        };
+        let mut events = bridge.subscribe();
+        let asker = Arc::clone(&bridge);
+        let (t, r) = (thread.clone(), run.clone());
+        let waiting = tokio::spawn(async move {
+            let claim = asker.claim_call(&t, &r);
+            asker.ask(&t, &r, "AskUserQuestion", form, claim).await
+        });
+        let opened = loop {
+            let event = events.recv().await.unwrap();
+            if matches!(event, LiveEvent::QuestionOpened { .. }) {
+                break event;
+            }
+        };
+        let streamed = items_for(&opened).unwrap();
+        let ProductProjectionItem::Question { gate_ref, form, .. } = &streamed[0] else {
+            panic!("a question item: {streamed:?}");
+        };
+        assert_eq!(form.fields[0].label, "Go?");
+
+        let snapshot = items(&snapshot_events(&bridge, &thread));
+        let kinds: Vec<&str> = snapshot
+            .iter()
+            .filter_map(|i| i.as_object()?.keys().next().map(String::as_str))
+            .collect();
+        assert!(
+            kinds.contains(&"plan") && kinds.contains(&"question"),
+            "{kinds:?}"
+        );
+
+        let mut misfit = QuestionAnswer::default();
+        misfit
+            .values
+            .insert("q".into(), QuestionValue::Choices(vec!["No".into()]));
+        assert!(
+            resolve_gate(
+                &bridge,
+                &thread,
+                &run,
+                gate_ref,
+                CliGateAnswer::Question(Some(misfit))
+            )
+            .is_err()
+        );
+        let mut answer = QuestionAnswer::default();
+        answer
+            .values
+            .insert("q".into(), QuestionValue::Choices(vec!["Yes".into()]));
+        resolve_gate(
+            &bridge,
+            &thread,
+            &run,
+            gate_ref,
+            CliGateAnswer::Question(Some(answer.clone())),
+        )
+        .unwrap();
+        assert_eq!(
+            waiting.await.unwrap(),
+            ironclaw_cli_providers::bridge::QuestionOutcome::Answered(answer)
+        );
+        bridge.turn_ended(&thread, &run, "completed");
+        let after = items(&snapshot_events(&bridge, &thread));
+        assert_eq!(after.len(), 1, "only the kept plan: {after:?}");
+        assert_eq!(after[0]["plan"]["plan"]["entries"][0]["content"], "Look");
     }
 
     /// The streamed bubble joins text blocks with a blank line; the durable

@@ -16,6 +16,7 @@
 //! are disabled: subagents are orchestrator threads (`t3_delegate`).
 
 mod fold;
+mod plan;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -482,6 +483,14 @@ impl Turn {
                     {
                         continue;
                     }
+                    plan::on_notification(
+                        self.bridge.as_deref(),
+                        &self.thread_id,
+                        &self.run_id,
+                        fold.turn_id.as_deref(),
+                        &method,
+                        &params,
+                    );
                     if fold.push(&method, &params) {
                         break;
                     }
@@ -563,6 +572,17 @@ impl Turn {
     /// Server requests: approvals go through the shared seam; everything a
     /// person would have to answer mid-turn is declined.
     fn answer_request(&self, client: &RpcClient, id: Value, method: &str, params: &Value) {
+        if plan::answer_question(
+            self.bridge.as_ref(),
+            client,
+            &self.thread_id,
+            &self.run_id,
+            &id,
+            method,
+            params,
+        ) {
+            return;
+        }
         let approval = match method {
             "item/commandExecution/requestApproval" => Some((
                 "shell",

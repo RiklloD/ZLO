@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use ironclaw_host_api::agent_plan::{AgentPlan, QuestionForm};
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::cli_approvals::{CliApprovalDecision, CliApprovalRecord};
 use ironclaw_orchestrator::engine::{CallContext, Engine};
@@ -92,6 +93,18 @@ pub struct ToolView {
     pub state: ToolState,
 }
 
+mod questions;
+
+pub use questions::QuestionOutcome;
+
+/// A structured question the turn waits on, as the person sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionView {
+    pub gate_ref: String,
+    pub run_id: String,
+    pub form: QuestionForm,
+}
+
 /// A change to a thread's live CLI turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiveEvent {
@@ -133,6 +146,22 @@ pub enum LiveEvent {
         run_id: String,
         status: &'static str,
     },
+    /// The agent replaced its plan. `seq` numbers the thread's updates.
+    Plan {
+        thread: ThreadId,
+        run_id: String,
+        seq: u64,
+        plan: AgentPlan,
+    },
+    QuestionOpened {
+        thread: ThreadId,
+        question: QuestionView,
+    },
+    QuestionClosed {
+        thread: ThreadId,
+        run_id: String,
+        gate_ref: String,
+    },
 }
 
 impl LiveEvent {
@@ -144,7 +173,10 @@ impl LiveEvent {
             | Self::Tool { thread, .. }
             | Self::GateOpened { thread, .. }
             | Self::GateClosed { thread, .. }
-            | Self::Ended { thread, .. } => thread,
+            | Self::Ended { thread, .. }
+            | Self::Plan { thread, .. }
+            | Self::QuestionOpened { thread, .. }
+            | Self::QuestionClosed { thread, .. } => thread,
         }
     }
 }
@@ -157,6 +189,9 @@ pub struct LiveSnapshot {
     pub segments: Vec<SegmentView>,
     pub tools: Vec<ToolView>,
     pub gates: Vec<GateView>,
+    /// The turn's latest plan and its update number.
+    pub plan: Option<(u64, AgentPlan)>,
+    pub questions: Vec<QuestionView>,
 }
 
 /// What the model wrote between two tool calls.
@@ -214,6 +249,7 @@ struct LiveTurn {
     /// Calls by the CLI's own id, when it has one.
     tools: Vec<(Option<String>, ToolView)>,
     gates: Vec<PendingGate>,
+    questions: Vec<questions::PendingQuestion>,
 }
 
 /// Unsent bodies of one segment, thinking before text.
@@ -229,6 +265,7 @@ impl LiveTurn {
             past: Vec::new(),
             tools: Vec::new(),
             gates: Vec::new(),
+            questions: Vec::new(),
         }
     }
 
@@ -321,6 +358,9 @@ pub struct CliBridge {
     mcp_url: OnceLock<String>,
     /// Where approvals are recorded, set once by the host.
     ledger: OnceLock<Store>,
+    /// Each thread's latest plan with its update number, kept past the
+    /// turn so a stream that opens later still shows it.
+    plans: Mutex<HashMap<ThreadId, (u64, String, AgentPlan)>>,
 }
 
 impl std::fmt::Debug for CliBridge {
@@ -338,6 +378,7 @@ impl CliBridge {
             events: broadcast::channel(EVENT_BUFFER).0,
             mcp_url: OnceLock::new(),
             ledger: OnceLock::new(),
+            plans: Mutex::new(HashMap::new()),
         })
     }
 
@@ -434,11 +475,14 @@ impl CliBridge {
             thinking: turn.thinking.body.clone(),
             text: turn.text.body.clone(),
         });
+        let plan = self.plan_of(thread).map(|(seq, _, plan)| (seq, plan));
         Some(LiveSnapshot {
             run_id: turn.run_id.clone(),
             segments,
             tools: turn.tools.iter().map(|(_, t)| t.clone()).collect(),
             gates: turn.gates.iter().map(|g| g.view.clone()).collect(),
+            plan,
+            questions: turn.questions.iter().map(|q| q.view.clone()).collect(),
         })
     }
 
@@ -587,11 +631,15 @@ impl CliBridge {
         let unsent = turn.as_mut().map(LiveTurn::flush).unwrap_or_default();
         self.emit_text(thread, run_id, unsent);
         self.emit_tools(thread, done);
-        for gate in turn.map(|t| t.gates).unwrap_or_default() {
+        let (gates, waiting) = turn.map(|t| (t.gates, t.questions)).unwrap_or_default();
+        for gate in gates {
             let _ = gate.answer.send((
                 ToolDecision::Deny("The turn ended.".into()),
                 CliApprovalDecision::TurnEnded,
             )); // silent-ok: the waiter already gave up
+        }
+        for question in waiting {
+            let _ = question.answer.send(QuestionOutcome::TurnEnded); // silent-ok: the waiter already gave up
         }
         self.emit(LiveEvent::Ended {
             thread: thread.clone(),
@@ -779,17 +827,28 @@ impl CliBridge {
     /// Only `run_id`'s gates: a late steer never answers the next turn's.
     pub fn decline_pending(&self, thread: &ThreadId, run_id: &str, reason: &str) -> usize {
         let reason: String = reason.chars().take(GATE_BODY_MAX_CHARS).collect();
-        let pending = self
+        let (pending, waiting) = self
             .live
             .lock()
             .ok()
             .and_then(|mut live| {
                 live.get_mut(thread)
                     .filter(|t| t.run_id == run_id)
-                    .map(|t| std::mem::take(&mut t.gates))
+                    .map(|t| {
+                        (
+                            std::mem::take(&mut t.gates),
+                            std::mem::take(&mut t.questions),
+                        )
+                    })
             })
             .unwrap_or_default(); // silent-ok: a poisoned map only follows a panic elsewhere
-        let declined = pending.len();
+        let declined = pending.len() + waiting.len();
+        // A question waiting on the form is answered by what they typed.
+        for question in waiting {
+            let _ = question
+                .answer
+                .send(QuestionOutcome::Replied(reason.clone())); // silent-ok: the waiter already gave up
+        }
         for gate in pending {
             let _ = gate.answer.send((
                 ToolDecision::Deny(reason.clone()),

@@ -745,13 +745,26 @@ impl ProductSurface for OrchestratedProductSurface {
                         .and_then(|raw| ThreadId::new(raw).ok())
                     && self.external(&id, &scope).await.is_some()
                 {
-                    let approved = body.resolution.as_deref() == Some("approved");
+                    let gate_ref = body.gate_ref.as_deref().unwrap_or_default();
+                    // A question gate takes answers ("answered") or a dismissal.
+                    let answer = if gate_ref
+                        .starts_with(ironclaw_host_api::agent_plan::QUESTION_GATE_REF_PREFIX)
+                    {
+                        external::CliGateAnswer::Question(
+                            body.answer
+                                .filter(|_| body.resolution.as_deref() == Some("answered")),
+                        )
+                    } else {
+                        external::CliGateAnswer::Approval(
+                            body.resolution.as_deref() == Some("approved"),
+                        )
+                    };
                     let response = external::resolve_gate(
                         bridge,
                         &id,
                         body.run_id.as_deref().unwrap_or_default(),
-                        body.gate_ref.as_deref().unwrap_or_default(),
-                        approved,
+                        gate_ref,
+                        answer,
                     )?;
                     return Ok(ProductSurfaceInvokeResponse {
                         output: serde_json::to_value(response)

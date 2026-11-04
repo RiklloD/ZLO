@@ -7234,6 +7234,7 @@ async fn standalone_webui_bundle_routes_approval_gates_into_interaction_service(
             resolution: Some("approved".to_string()),
             always: None,
             credential_ref: None,
+            answer: None,
         },
     )
     .await
@@ -7304,6 +7305,7 @@ async fn standalone_webui_bundle_routes_auth_gates_into_interaction_service() {
             resolution: Some("declined".to_string()),
             always: None,
             credential_ref: None,
+            answer: None,
         },
     )
     .await

@@ -14,6 +14,7 @@ pub mod claude;
 
 pub mod antigravity;
 pub mod codex;
+pub mod interaction;
 mod journal;
 pub mod muse;
 pub mod permissions;

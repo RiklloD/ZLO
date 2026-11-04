@@ -39,6 +39,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
 use crate::bridge::{CallClaim, CliBridge};
+use crate::interaction;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
@@ -594,6 +595,12 @@ impl Turn {
                     && params.get("sessionId").and_then(Value::as_str) == Some(session_id)
                 {
                     fold.push_update(&params["update"], Instant::now());
+                    if let (Some(bridge), Some(plan)) = (
+                        self.bridge.as_deref(),
+                        interaction::acp_plan(&params["update"]),
+                    ) {
+                        bridge.plan_updated(&self.thread_id, &self.run_id, plan);
+                    }
                 }
             }
             Inbound::Request { id, method, params } => {
@@ -609,6 +616,24 @@ impl Turn {
                     let question = params["toolCall"]["toolCallId"]
                         .as_str()
                         .is_some_and(|id| id.starts_with("interaction_"));
+                    // A native question is a form, not an approval.
+                    if question
+                        && let (Some(bridge), Some(form)) =
+                            (bridge.clone(), interaction::acp_interaction_form(&params))
+                    {
+                        let claim = bridge.claim_call(&thread, &run);
+                        tokio::spawn(async move {
+                            let outcome = bridge
+                                .ask(&thread, &run, "antigravity_question", form.clone(), claim)
+                                .await;
+                            let answer =
+                                interaction::acp_interaction_reply(&form, outcome.answer());
+                            if let Err(error) = client.respond(&id, answer) {
+                                tracing::debug!(error = %error.label(), "antigravity: reply not sent");
+                            }
+                        });
+                        return;
+                    }
                     let claim = if question {
                         CallClaim::default()
                     } else {

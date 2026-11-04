@@ -272,6 +272,11 @@ pub struct ProductResolveGateRequest {
     pub always: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<String>,
+    /// The person's answers to a question gate (`resolution: "answered"`).
+    /// A question resolved `declined` reaches the agent as "the user
+    /// declined to answer".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<ironclaw_host_api::agent_plan::QuestionAnswer>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
