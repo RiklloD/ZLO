@@ -8,6 +8,7 @@ mod compaction;
 mod snapshots;
 mod tools;
 mod traces;
+mod voice;
 
 use ironclaw_gpui_client::Backend;
 use ironclaw_gpui_client::product_wire::SettingsToolPermissionState;
@@ -37,6 +38,7 @@ pub enum Section {
     Appearance,
     Permissions,
     Traces,
+    Voice,
 }
 
 pub struct SettingsView {
@@ -56,6 +58,9 @@ pub struct SettingsView {
     notice: Option<SharedString>,
     /// The Appearance select whose menu is open.
     pub(super) appearance_menu: Option<&'static str>,
+    /// Voice → wake phrase.
+    pub(super) wake_phrase: Entity<InputState>,
+    _wake_phrase: Subscription,
 }
 
 impl EventEmitter<PageEvent> for SettingsView {}
@@ -64,6 +69,22 @@ impl SettingsView {
     pub fn new(backend: Backend, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tool_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search tools"));
         let _tool_search = cx.subscribe(&tool_search, |_, _, _: &InputEvent, cx| cx.notify());
+        let phrase = crate::voice::VoicePrefs::of(cx).wake_phrase;
+        let wake_phrase = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Hey ZLO")
+                .default_value(phrase)
+        });
+        // Saved on Enter or leaving the field, not per keystroke (each save
+        // restarts the wake recognizer).
+        let _wake_phrase = cx.subscribe(&wake_phrase, |_, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                let phrase = input.read(cx).value().trim().to_string();
+                if !phrase.is_empty() && phrase != crate::voice::VoicePrefs::of(cx).wake_phrase {
+                    crate::voice::VoicePrefs::update(cx, move |p| p.wake_phrase = phrase);
+                }
+            }
+        });
         let mut this = Self {
             backend: backend.clone(),
             section: Section::General,
@@ -78,6 +99,8 @@ impl SettingsView {
             error: None,
             notice: None,
             appearance_menu: None,
+            wake_phrase,
+            _wake_phrase,
         };
         this.refresh(cx);
         this
@@ -221,6 +244,7 @@ impl Render for SettingsView {
             Section::Appearance => "Appearance",
             Section::Permissions => "Permissions",
             Section::Traces => "Trace Commons",
+            Section::Voice => "Voice",
         };
         let body = v_flex()
             .child(header(title, actions))
@@ -243,6 +267,7 @@ impl Render for SettingsView {
                 .child(self.compaction.clone()),
             Section::Appearance => body.child(appearance::render(self.appearance_menu, cx)),
             Section::Permissions => body.child(self.render_tools(cx)),
+            Section::Voice => body.child(voice::render(self, cx)),
             Section::Traces => body
                 .child(group_header(
                     "Contributions",

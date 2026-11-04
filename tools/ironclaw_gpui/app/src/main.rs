@@ -21,6 +21,7 @@ mod service;
 mod snapshot;
 mod titles;
 mod ui;
+mod voice;
 mod window_state;
 mod workspace;
 

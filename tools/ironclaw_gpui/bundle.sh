@@ -110,6 +110,10 @@ cat > "$app/Contents/Info.plist" <<EOF
     <string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>ZLO listens while you dictate, talk to it, or (if you turn it on) for its wake word.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>ZLO turns your speech into text on this Mac so you can dictate messages.</string>
 </dict>
 </plist>
 EOF

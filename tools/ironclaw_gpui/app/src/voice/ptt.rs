@@ -1,0 +1,289 @@
+//! The push-to-talk key: hold a lone modifier (Right Option by default).
+//!
+//! A modifier on its own is not something `RegisterEventHotKey` can watch,
+//! and an event tap needs Input Monitoring. Like the SnapShot trigger
+//! (`snapshot/hotkey.rs`), a small thread asks the window server for key
+//! state instead, which needs no permission: 10 times a second while the
+//! shortcut is on (the SnapShot watcher's own cadence), 30 while the key is
+//! down so release lands fast. Nothing runs while the shortcut is off.
+//!
+//! Holding is what counts. A quick tap does nothing, the take starts after
+//! [`HOLD`], and any other key or modifier pressed during the hold (Option+E
+//! typing é) cancels it, so the key keeps its normal job.
+
+use std::time::{Duration, Instant};
+
+/// How long the key must be held alone before the mic opens.
+pub(crate) const HOLD: Duration = Duration::from_millis(180);
+
+/// The modifier keys Settings offers, as saved names and labels.
+pub(crate) const KEYS: [(&str, &str); 4] = [
+    ("right_alt", "R ⌥"),
+    ("right_cmd", "R ⌘"),
+    ("right_ctrl", "R ⌃"),
+    ("fn", "fn"),
+];
+
+/// One look at the keyboard.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Sample {
+    pub key_down: bool,
+    /// Any other modifier is down.
+    pub other_modifiers: bool,
+    /// The system's running count of key presses (any key).
+    pub key_presses: u32,
+    pub at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PttEvent {
+    Start,
+    Stop,
+    /// Part of a chord after all: drop what was recorded.
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum State {
+    Up,
+    /// Down alone since `since`, `presses` key presses seen then.
+    Pending {
+        since: Instant,
+        presses: u32,
+    },
+    Active {
+        presses: u32,
+    },
+    /// A chord: wait for release and do nothing.
+    Chord,
+}
+
+pub(crate) struct Detector {
+    state: State,
+}
+
+impl Default for Detector {
+    fn default() -> Self {
+        Self { state: State::Up }
+    }
+}
+
+impl Detector {
+    /// Whether the key is down (poll faster).
+    pub fn held(&self) -> bool {
+        self.state != State::Up
+    }
+
+    pub fn update(&mut self, s: Sample) -> Option<PttEvent> {
+        let (next, event) = match self.state {
+            State::Up if s.key_down && !s.other_modifiers => (
+                State::Pending {
+                    since: s.at,
+                    presses: s.key_presses,
+                },
+                None,
+            ),
+            State::Up if s.key_down => (State::Chord, None),
+            State::Up => (State::Up, None),
+            State::Pending { .. } if !s.key_down => (State::Up, None),
+            State::Pending { presses, .. } if s.other_modifiers || s.key_presses != presses => {
+                (State::Chord, None)
+            }
+            State::Pending { since, presses } if s.at.duration_since(since) >= HOLD => {
+                (State::Active { presses }, Some(PttEvent::Start))
+            }
+            pending @ State::Pending { .. } => (pending, None),
+            State::Active { .. } if !s.key_down => (State::Up, Some(PttEvent::Stop)),
+            State::Active { presses } if s.other_modifiers || s.key_presses != presses => {
+                (State::Chord, Some(PttEvent::Cancel))
+            }
+            active @ State::Active { .. } => (active, None),
+            State::Chord if !s.key_down => (State::Up, None),
+            State::Chord => (State::Chord, None),
+        };
+        self.state = next;
+        event
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) use mac::Watcher;
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use futures::channel::mpsc::{UnboundedReceiver, unbounded};
+
+    use super::{Detector, PttEvent, Sample};
+
+    const POLL_IDLE: Duration = Duration::from_millis(100);
+    const POLL_HELD: Duration = Duration::from_millis(33);
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventSourceFlagsState(state: i32) -> u64;
+        fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
+        fn CGEventSourceCounterForEventType(state: i32, event: u32) -> u32;
+    }
+
+    /// kCGEventSourceStateHIDSystemState.
+    const HID_STATE: i32 = 1;
+    /// kCGEventKeyDown.
+    const KEY_DOWN: u32 = 10;
+    const SHIFT: u64 = 0x0002_0000;
+    const CONTROL: u64 = 0x0004_0000;
+    const ALTERNATE: u64 = 0x0008_0000;
+    const COMMAND: u64 = 0x0010_0000;
+    const FN: u64 = 0x0080_0000;
+    /// NX_DEVICE*KEYMASK: which side of a modifier pair is down.
+    const LEFT_ALT: u64 = 0x20;
+    const LEFT_CMD: u64 = 0x08;
+    const LEFT_CTRL: u64 = 0x01;
+
+    /// (virtual key code, its own flag, its left twin's device bit).
+    fn key(name: &str) -> (u16, u64, u64) {
+        match name {
+            "right_cmd" => (54, COMMAND, LEFT_CMD),
+            "right_ctrl" => (62, CONTROL, LEFT_CTRL),
+            "fn" => (63, FN, 0),
+            _ => (61, ALTERNATE, LEFT_ALT),
+        }
+    }
+
+    /// Live while the shortcut is on; dropping it stops the thread.
+    pub(crate) struct Watcher {
+        stop: Arc<AtomicBool>,
+    }
+
+    impl Drop for Watcher {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    impl Watcher {
+        pub(crate) fn new(name: &str) -> Result<(Self, UnboundedReceiver<PttEvent>), String> {
+            let (tx, rx) = unbounded();
+            let stop = Arc::new(AtomicBool::new(false));
+            let flag = stop.clone();
+            let (code, own, twin) = key(name);
+            std::thread::Builder::new()
+                .name("voice-ptt".into())
+                .spawn(move || {
+                    let mut detector = Detector::default();
+                    while !flag.load(Ordering::Relaxed) {
+                        // SAFETY: plain state queries with constant arguments.
+                        let sample = unsafe {
+                            let flags = CGEventSourceFlagsState(HID_STATE);
+                            let others = (SHIFT | CONTROL | ALTERNATE | COMMAND | FN) & !own;
+                            Sample {
+                                key_down: CGEventSourceKeyState(HID_STATE, code),
+                                // Both Options down is a chord too.
+                                other_modifiers: flags & others != 0
+                                    || (twin != 0 && flags & twin != 0),
+                                key_presses: CGEventSourceCounterForEventType(HID_STATE, KEY_DOWN),
+                                at: Instant::now(),
+                            }
+                        };
+                        if let Some(event) = detector.update(sample)
+                            && tx.unbounded_send(event).is_err()
+                        {
+                            break;
+                        }
+                        std::thread::sleep(if detector.held() {
+                            POLL_HELD
+                        } else {
+                            POLL_IDLE
+                        });
+                    }
+                })
+                .map_err(|e| format!("The push-to-talk watcher did not start ({e})."))?;
+            Ok((Self { stop }, rx))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Keys {
+        d: Detector,
+        t0: Instant,
+        presses: u32,
+    }
+
+    impl Keys {
+        fn new() -> Self {
+            Self {
+                d: Detector::default(),
+                t0: Instant::now(),
+                presses: 7,
+            }
+        }
+        fn at(&mut self, ms: u64, down: bool, others: bool) -> Option<PttEvent> {
+            self.d.update(Sample {
+                key_down: down,
+                other_modifiers: others,
+                key_presses: self.presses,
+                at: self.t0 + Duration::from_millis(ms),
+            })
+        }
+    }
+
+    #[test]
+    fn hold_starts_and_release_stops() {
+        let mut k = Keys::new();
+        assert_eq!(k.at(0, true, false), None);
+        assert!(k.d.held());
+        assert_eq!(k.at(100, true, false), None);
+        assert_eq!(k.at(200, true, false), Some(PttEvent::Start));
+        assert_eq!(k.at(2000, true, false), None);
+        assert_eq!(k.at(2030, false, false), Some(PttEvent::Stop));
+        assert!(!k.d.held());
+    }
+
+    #[test]
+    fn a_tap_does_nothing() {
+        let mut k = Keys::new();
+        k.at(0, true, false);
+        assert_eq!(k.at(100, false, false), None);
+        assert_eq!(k.at(300, false, false), None);
+    }
+
+    #[test]
+    fn typing_during_the_hold_is_a_chord() {
+        let mut k = Keys::new();
+        k.at(0, true, false);
+        k.presses += 1;
+        assert_eq!(k.at(100, true, false), None);
+        assert_eq!(k.at(500, true, false), None, "a chord never starts");
+        assert_eq!(k.at(600, false, false), None);
+    }
+
+    #[test]
+    fn typing_after_the_start_cancels() {
+        let mut k = Keys::new();
+        k.at(0, true, false);
+        assert_eq!(k.at(200, true, false), Some(PttEvent::Start));
+        k.presses += 1;
+        assert_eq!(k.at(300, true, false), Some(PttEvent::Cancel));
+        assert_eq!(k.at(400, false, false), None);
+    }
+
+    #[test]
+    fn other_modifiers_make_a_chord() {
+        let mut k = Keys::new();
+        // Pressed together with Shift.
+        assert_eq!(k.at(0, true, true), None);
+        assert_eq!(k.at(300, true, false), None);
+        k.at(400, false, false);
+        // Shift added during an active take.
+        k.at(500, true, false);
+        assert_eq!(k.at(700, true, false), Some(PttEvent::Start));
+        assert_eq!(k.at(800, true, true), Some(PttEvent::Cancel));
+    }
+}

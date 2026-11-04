@@ -24,6 +24,8 @@ pub(super) struct Quick {
     #[cfg(target_os = "macos")]
     _hotkey: Option<hotkey::Registration>,
     window: Option<AnyWindowHandle>,
+    /// The open composer, for voice to type into.
+    view: Option<Entity<QuickComposer>>,
     _listen: Option<Task<()>>,
     _events: Option<Subscription>,
 }
@@ -110,7 +112,8 @@ impl Render for QuickComposer {
                         .child(div().size(px(6.)).rounded_full().bg(p.accent))
                         .child(div().flex_1().child("New thread in IronClaw"))
                         .child("↵ send")
-                        .child("esc close"),
+                        .child("esc close")
+                        .child(crate::voice::ui::composer_controls(&self.input, None, cx)),
                 ),
         );
         div()
@@ -154,8 +157,22 @@ impl Workspace {
         let _ = cx;
     }
 
+    /// The open quick composer's input and window, for voice.
+    pub(super) fn quick_input(&self, cx: &App) -> Option<(Entity<TextareaState>, AnyWindowHandle)> {
+        let view = self.quick.view.as_ref()?;
+        Some((view.read(cx).input.clone(), self.quick.window?))
+    }
+
+    /// Open the quick composer unless it is open (voice from another app).
+    pub(super) fn open_quick(&mut self, cx: &mut Context<Self>) {
+        if self.quick.window.is_none() {
+            self.toggle_quick(cx);
+        }
+    }
+
     fn close_quick(&mut self, cx: &mut App) {
         self.quick._events = None;
+        self.quick.view = None;
         if let Some(handle) = self.quick.window.take() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
@@ -205,6 +222,7 @@ impl Workspace {
         match (opened, built) {
             (Ok(handle), Some(view)) => {
                 self.quick.window = Some(handle.into());
+                self.quick.view = Some(view.clone());
                 self.quick._events = Some(cx.subscribe(&view, |this, _, event, cx| match event {
                     QuickEvent::Close => this.close_quick(cx),
                     QuickEvent::Send(text) => {

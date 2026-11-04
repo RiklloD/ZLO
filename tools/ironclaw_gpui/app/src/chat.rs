@@ -802,6 +802,10 @@ impl ChatView {
         if let Some(end @ (RunEnd::Completed | RunEnd::Failed)) = ended {
             if end == RunEnd::Failed {
                 tracing::warn!(thread_id = %self.thread_id, "run failed");
+                crate::voice::reply_failed(cx);
+            }
+            if end == RunEnd::Completed {
+                crate::voice::reply_finished(&self.thread_id, &self.rows, cx);
             }
             cx.emit(RunEnded {
                 thread_id: self.thread_id.clone(),
@@ -1811,7 +1815,15 @@ impl ChatView {
                         }),
                 ),
             self.picker.clone(),
-            h_flex().gap(px(6.)).child(attach).child(send),
+            h_flex()
+                .gap(px(6.))
+                .child(attach)
+                .child(crate::voice::ui::composer_controls(
+                    &self.composer,
+                    Some(&self.thread_id),
+                    cx,
+                ))
+                .child(send),
             cx,
         );
         // From the new-thread screen it glides down from the hero's spot,

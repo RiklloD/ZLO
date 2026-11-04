@@ -602,7 +602,11 @@ impl Workspace {
                                 }),
                         ),
                     draft.picker.clone(),
-                    h_flex().gap(px(6.)).child(attach).child(send),
+                    h_flex()
+                        .gap(px(6.))
+                        .child(attach)
+                        .child(crate::voice::ui::composer_controls(&draft.input, None, cx))
+                        .child(send),
                     cx,
                 )
                 .max_w(px(hero_w.unwrap_or(HERO_WIDTH)))
