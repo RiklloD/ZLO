@@ -226,6 +226,10 @@ pub(super) async fn list(
     let records = store.inbox_records(&owner).await.map_err(internal)?;
     let epoch = store.inbox_epoch().await.map_err(internal)?;
     let profile_records = store.profiles(&owner).await.map_err(internal)?;
+    let imported = store
+        .imported_thread_sources(&owner)
+        .await
+        .map_err(internal)?;
 
     let request = ProductListThreadsRequest::default().set_limit(SESSION_THREADS);
     let input = serde_json::to_value(request).map_err(ProductSurfaceError::internal_from)?;
@@ -324,6 +328,7 @@ pub(super) async fn list(
                 automation: d.automation,
                 title_pending: ThreadId::new(thread_id.as_str())
                     .is_ok_and(|id| engine.after_turn_busy(&id)),
+                imported: imported.get(&thread_id).cloned(),
                 thread_id,
             }
         })
@@ -963,6 +968,7 @@ mod tests {
             parent_thread_id: parent.map(str::to_string),
             automation: false,
             title_pending: false,
+            imported: None,
         }
     }
 

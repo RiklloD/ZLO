@@ -13,6 +13,7 @@ mod profile_context;
 mod profiles;
 mod runtime;
 mod schedules;
+mod session_import;
 mod stitched;
 mod surface;
 mod telemetry;

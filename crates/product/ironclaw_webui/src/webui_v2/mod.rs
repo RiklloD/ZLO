@@ -129,6 +129,7 @@ pub use descriptors::{
     WEBUI_V2_ROUTE_INBOX_LIST, WEBUI_V2_ROUTE_INBOX_MUTATE, WEBUI_V2_ROUTE_TASK_MODELS_GET,
     WEBUI_V2_ROUTE_TASK_MODELS_SET, WEBUI_V2_ROUTE_THREAD_GOAL_GET, WEBUI_V2_ROUTE_THREAD_GOAL_SET,
 };
+pub use descriptors::{WEBUI_V2_ROUTE_SESSION_IMPORT_RUN, WEBUI_V2_ROUTE_SESSION_IMPORT_STATUS};
 pub use error::{WebUiV2HttpError, WebUiV2HttpErrorBody};
 pub use handlers::{
     admin_get_thread_scrape_artifact, admin_get_thread_scrape_run_artifact,

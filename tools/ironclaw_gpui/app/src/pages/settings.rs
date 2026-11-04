@@ -5,6 +5,7 @@
 
 mod appearance;
 mod compaction;
+pub mod session_import;
 mod snapshots;
 mod tools;
 mod traces;
@@ -52,6 +53,7 @@ pub struct SettingsView {
     _tool_search: Subscription,
     traces: Entity<traces::TracePanel>,
     compaction: Entity<compaction::CompactionPanel>,
+    session_import: Entity<session_import::SessionImportPanel>,
     error: Option<SharedString>,
     notice: Option<SharedString>,
     /// The Appearance select whose menu is open.
@@ -75,6 +77,8 @@ impl SettingsView {
             _tool_search,
             traces: cx.new(|cx| traces::TracePanel::new(backend.clone(), cx)),
             compaction: cx.new(|cx| compaction::CompactionPanel::new(backend.clone(), cx)),
+            session_import: cx
+                .new(|cx| session_import::SessionImportPanel::new(backend.clone(), cx)),
             error: None,
             notice: None,
             appearance_menu: None,
@@ -93,6 +97,7 @@ impl SettingsView {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.traces.update(cx, |t, cx| t.refresh(cx));
         self.compaction.update(cx, |p, cx| p.refresh(cx));
+        self.session_import.update(cx, |p, cx| p.refresh(cx));
         jobs::run(
             &self.backend,
             cx,
@@ -240,7 +245,13 @@ impl Render for SettingsView {
                 .child(self.render_desktop(cx))
                 .child(snapshots::render(cx))
                 .child(group_header("Conversations", None, cx))
-                .child(self.compaction.clone()),
+                .child(self.compaction.clone())
+                .child(group_header(
+                    "Import terminal sessions",
+                    Some("Claude Code and Codex sessions you ran in a terminal, as threads you can search and continue."),
+                    cx,
+                ))
+                .child(self.session_import.clone()),
             Section::Appearance => body.child(appearance::render(self.appearance_menu, cx)),
             Section::Permissions => body.child(self.render_tools(cx)),
             Section::Traces => body
