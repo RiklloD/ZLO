@@ -208,6 +208,7 @@ impl ChatView {
         self.transcript.active_run().is_some()
             || self.orch.queue.external_run().is_some()
             || self.orch.tasks.iter().any(|t| t.status.is_live())
+            || self.orch.goal.check_in_flight()
     }
 
     /// The running turn, streamed (IronClaw's loop) or polled (CLI runtime).

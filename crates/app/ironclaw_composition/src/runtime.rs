@@ -3386,6 +3386,13 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
             .map_err(|error| RebornRuntimeError::MalformedConfig {
                 reason: format!("orchestrator turn observer wiring failed: {error}"),
             })?;
+        // Goal checks run where the shell runs, under the shell's approvals.
+        engine.set_goal_check_runner(Arc::new(
+            crate::goal_check_runner::HostGoalCheckRunner::new(
+                services.shell_process_port.clone(),
+                capability_host::approval_settings(&services),
+            ),
+        ));
     }
     processes
         .subscribe_process_observer(Arc::new(

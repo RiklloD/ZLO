@@ -41,6 +41,8 @@ pub enum GoalCheckGate {
     Allowed,
     /// Ask first: run only a command the person approved.
     AskFirst,
+    /// The shell tool asks each time: every run needs its own approval.
+    AskEachRun,
     /// The policy refuses shell commands here (a tool override, a deployment
     /// without a process runtime); the reason is shown to the person.
     Refused(String),
@@ -127,10 +129,11 @@ impl Engine {
             if thread.is_running() || self.store.hold(&due.thread_id).await?.is_some() {
                 continue;
             }
-            match runner.gate(&thread).await {
+            let gate = runner.gate(&thread).await;
+            match &gate {
                 GoalCheckGate::Allowed => {}
-                GoalCheckGate::AskFirst if due.approved => {}
-                GoalCheckGate::AskFirst => {
+                GoalCheckGate::AskFirst | GoalCheckGate::AskEachRun if due.approved => {}
+                GoalCheckGate::AskFirst | GoalCheckGate::AskEachRun => {
                     self.store
                         .move_goal_check(
                             &due.thread_id,
@@ -148,7 +151,9 @@ impl Engine {
                             &due.thread_id,
                             &due.command,
                             GoalCheckStatus::Pending,
-                            &CheckResult::Blocked { reason },
+                            &CheckResult::Blocked {
+                                reason: reason.clone(),
+                            },
                             now_ms(),
                         )
                         .await?;
@@ -167,6 +172,12 @@ impl Engine {
                 .await?
             {
                 continue;
+            }
+            if gate == GoalCheckGate::AskEachRun {
+                // This run spends the approval; the next one asks again.
+                self.store
+                    .consume_goal_check_approval(&due.thread_id)
+                    .await?;
             }
             let Some(engine) = self.me.upgrade() else {
                 return Ok(());

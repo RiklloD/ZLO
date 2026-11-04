@@ -264,6 +264,10 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) host_runtime: Arc<dyn ironclaw_host_runtime::HostRuntime>,
     pub(crate) user_sandbox_process_port:
         Option<Arc<ironclaw_host_runtime::UserSandboxProcessPort>>,
+    /// The process port `builtin.shell` runs on, for goal checks: the user
+    /// sandbox when bound, else the local host port. `None` means no shell.
+    // arch-exempt: optional_arc, deployments without a process backend have no shell, plan #goal-checks
+    pub(crate) shell_process_port: Option<Arc<dyn ironclaw_host_runtime::RuntimeProcessPort>>,
     #[cfg(test)]
     pub(crate) turn_coordinator: Arc<dyn ironclaw_turns::TurnCoordinator>,
     pub(crate) product_auth: Arc<RebornProductAuthServices>,

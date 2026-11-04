@@ -500,6 +500,16 @@ impl Store {
         self.goal(thread).await
     }
 
+    /// Spend a one-run approval (the shell tool asks each time).
+    pub(crate) async fn consume_goal_check_approval(&self, thread: &ThreadId) -> Result<()> {
+        self.exec(
+            "UPDATE orch_goals SET check_approved = NULL WHERE thread_id = ?1",
+            vec![s(thread.as_str())],
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Runs a previous process left `running` were cut by its exit: they
     /// run again.
     pub(crate) async fn requeue_running_goal_checks(&self) -> Result<u64> {

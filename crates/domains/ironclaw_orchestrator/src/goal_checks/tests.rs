@@ -326,6 +326,32 @@ async fn ask_first_waits_for_approval_of_each_command() {
 }
 
 #[tokio::test]
+async fn ask_each_time_spends_the_approval_on_one_run() {
+    let h = harness().await;
+    let runner = FakeRunner::new(GoalCheckGate::AskEachRun);
+    h.engine.set_goal_check_runner(runner.clone());
+    let a = tid("a");
+    goal_with_check(&h.engine, &a, "cargo test", 5).await;
+    runner.answer(1, "fail");
+    h.engine
+        .store()
+        .goal_check_action(&a, GoalCheckAction::RunNow, now_ms())
+        .await
+        .unwrap();
+    h.engine.tick().await;
+    assert_eq!(settled(&h.engine, &a).await.status, GoalCheckStatus::Failed);
+    h.engine.tick().await; // the follow-up turn
+    finish(&h.engine, &a, TurnOutcome::completed(None)).await;
+    h.engine.tick().await;
+    assert_eq!(
+        check(&h.engine, &a).await.status,
+        GoalCheckStatus::AwaitingApproval,
+        "the same command asks again"
+    );
+    assert_eq!(runner.runs().len(), 1);
+}
+
+#[tokio::test]
 async fn refused_checks_need_the_person_and_never_run() {
     let h = harness().await;
     let runner = FakeRunner::new(GoalCheckGate::Refused(

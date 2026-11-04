@@ -731,8 +731,9 @@ pub(super) async fn build_backend_production(
         &first_party_bundles,
         Arc::clone(&extension_installation_store),
     )?;
-    let services = if let Some(process_port) = local_process_port {
-        services.with_runtime_process_port(Arc::new(process_port))
+    let local_process_port = local_process_port.map(Arc::new);
+    let services = if let Some(process_port) = &local_process_port {
+        services.with_runtime_process_port(Arc::clone(process_port))
     } else {
         services
     };
@@ -740,6 +741,13 @@ pub(super) async fn build_backend_production(
         RebornRuntimeProcessBinding::None => None,
         RebornRuntimeProcessBinding::UserSandbox { process_port } => Some(Arc::clone(process_port)),
     };
+    // Goal checks run where the shell tool runs: the sandbox binding wins.
+    let shell_process_port: Option<Arc<dyn ironclaw_host_runtime::RuntimeProcessPort>> =
+        match (&user_sandbox_process_port, &local_process_port) {
+            (Some(sandbox), _) => Some(Arc::clone(sandbox) as _),
+            (None, Some(host)) => Some(Arc::clone(host) as _),
+            (None, None) => None,
+        };
     let services = apply_production_runtime_process_binding(
         services,
         production_wiring.runtime_process_binding,
@@ -1414,6 +1422,7 @@ pub(super) async fn build_backend_production(
         delivery_client_bootstrap,
         host_runtime,
         user_sandbox_process_port,
+        shell_process_port,
         #[cfg(test)]
         turn_coordinator,
         readiness: readiness_for(profile, true, true, product_auth_ready),

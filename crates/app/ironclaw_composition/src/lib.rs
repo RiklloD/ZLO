@@ -34,6 +34,7 @@ mod error;
 mod extension_host_assembly;
 mod factory;
 mod filesystem_assembly;
+mod goal_check_runner;
 mod google_oauth_secret_store;
 mod host_access_assembly;
 mod input;

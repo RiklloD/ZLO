@@ -112,6 +112,30 @@ pub(super) struct CapabilityPortWiring {
 
 // arch-exempt: too_many_args, a missing CapabilityWiringContext would only aggregate independently owned runtime services for this composition seam, plan #7193
 #[allow(clippy::too_many_arguments)]
+/// The approval settings the capability gate reads: stored overrides and
+/// auto-approve, under each thread's profile mode. Goal checks read the same.
+pub(super) fn approval_settings(
+    services: &RebornRuntimeStores,
+) -> Arc<dyn ApprovalSettingsProvider> {
+    let tool_permission_overrides: Arc<
+        dyn ironclaw_approvals::CapabilityPermissionOverrideStorePort,
+    > = services.tool_permission_overrides.clone();
+    let auto_approve_settings: Arc<dyn ironclaw_approvals::AutoApproveSettingStorePort> =
+        services.auto_approve_settings.clone();
+    let approval_settings: Arc<dyn ApprovalSettingsProvider> =
+        Arc::new(StoreApprovalSettingsProvider::new(
+            tool_permission_overrides,
+            auto_approve_settings,
+            services.persistent_approval_policies.clone(),
+        ));
+    Arc::new(
+        crate::profile_approval_mode::ProfileApprovalSettingsProvider::new(
+            approval_settings,
+            Arc::clone(&services.profile_approval_engine),
+        ),
+    )
+}
+
 pub(super) fn capability_wiring(
     services: &RebornRuntimeStores,
     thread_service: Arc<dyn SessionThreadService>,
@@ -135,23 +159,7 @@ pub(super) fn capability_wiring(
         services.approval_requests.clone();
     let capability_leases: Arc<dyn ironclaw_authorization::CapabilityLeaseStorePort> =
         services.capability_leases.clone();
-    let tool_permission_overrides: Arc<
-        dyn ironclaw_approvals::CapabilityPermissionOverrideStorePort,
-    > = services.tool_permission_overrides.clone();
-    let auto_approve_settings: Arc<dyn ironclaw_approvals::AutoApproveSettingStorePort> =
-        services.auto_approve_settings.clone();
-    let approval_settings: Arc<dyn ApprovalSettingsProvider> =
-        Arc::new(StoreApprovalSettingsProvider::new(
-            tool_permission_overrides,
-            auto_approve_settings,
-            services.persistent_approval_policies.clone(),
-        ));
-    let approval_settings: Arc<dyn ApprovalSettingsProvider> = Arc::new(
-        crate::profile_approval_mode::ProfileApprovalSettingsProvider::new(
-            approval_settings,
-            Arc::clone(&services.profile_approval_engine),
-        ),
-    );
+    let approval_settings = approval_settings(services);
     let outbound_preference_write_requires_approval = effects_require_approval(
         services.runtime_policy.as_ref(),
         policy.as_ref(),

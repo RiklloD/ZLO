@@ -4,8 +4,8 @@
 //! to the plain thread list, every row in the main list.
 
 use ironclaw_product_contracts::inbox::{
-    GoalStatus, InboxAction, InboxEngine, InboxListResponse, InboxRow, InboxState,
-    ThreadGoalResponse,
+    GoalCheckAction, GoalCheckSpec, GoalStatus, InboxAction, InboxEngine, InboxListResponse,
+    InboxRow, InboxState, ThreadGoalResponse,
 };
 use ironclaw_product_contracts::profiles::DEFAULT_PROFILE_ID;
 use ironclaw_product_contracts::task_models::TaskModels;
@@ -98,6 +98,33 @@ impl Client {
         status: Option<GoalStatus>,
     ) -> Result<ThreadGoalResponse, ClientError> {
         let body = json!({ "objective": objective, "status": status });
+        let path = format!("{V2}/threads/{}/goal", seg(thread_id));
+        document(self.post(&path, &body).await?)
+    }
+
+    /// Set the goal and its check in one write (`/goal <text> --check`).
+    /// `objective: None` keeps the current goal and only sets the check.
+    pub async fn set_thread_goal_check(
+        &self,
+        thread_id: &str,
+        objective: Option<&str>,
+        check: Option<&GoalCheckSpec>,
+    ) -> Result<ThreadGoalResponse, ClientError> {
+        let body = match check {
+            Some(check) => json!({ "objective": objective, "check": check }),
+            None => json!({ "objective": objective, "clear_check": true }),
+        };
+        let path = format!("{V2}/threads/{}/goal", seg(thread_id));
+        document(self.post(&path, &body).await?)
+    }
+
+    /// "Run check now" / "Stop retrying" on the goal strip.
+    pub async fn goal_check_action(
+        &self,
+        thread_id: &str,
+        action: GoalCheckAction,
+    ) -> Result<ThreadGoalResponse, ClientError> {
+        let body = json!({ "check_action": action });
         let path = format!("{V2}/threads/{}/goal", seg(thread_id));
         document(self.post(&path, &body).await?)
     }
