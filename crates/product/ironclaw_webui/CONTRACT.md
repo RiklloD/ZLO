@@ -159,6 +159,7 @@ candidate module.
 | `usage` | Subscription usage windows and the coding CLIs' token history for the Usage page (CLI-login 5-hour/weekly windows, coding-plan quotas, per-day token totals) — its own file, two `ironclaw_product_contracts::usage` descriptors | Per-thread context/TPS telemetry (that is the thread telemetry route) | `handlers/usage.rs::usage_report`, `handlers/usage.rs::UsageHistoryQuery`, `handlers/usage.rs::usage_history` |
 | `computer-use` | A thread's computer-use session (state + latest screenshot frame), its Stop / take over / hand back, and the live view (every session of the caller, one window's picture) — its own file, one `ironclaw_product_contracts::computer_use` descriptor each | Running a computer-use action (that is an approval-gated capability, never a route) | `handlers/computer_use.rs::ComputerUseSessionQuery`, `handlers/computer_use.rs::computer_use_session`, `handlers/computer_use.rs::ComputerUseControlBody`, `handlers/computer_use.rs::computer_use_control`, `handlers/computer_use.rs::ComputerUseStateQuery`, `handlers/computer_use.rs::computer_use_state`, `handlers/computer_use.rs::ComputerUseFrameQuery`, `handlers/computer_use.rs::computer_use_frame` |
 | `inbox` | The v2 inbox and goals: the caller's joined inbox list, one lifecycle mark (pin/snooze/settle/visit) on a thread, a thread's goal read/write, and the background-task models — its own file, each handler one `ironclaw_product_contracts::inbox` descriptor | The plain thread list (that is `threads`) | `handlers/inbox.rs::inbox_list`, `handlers/inbox.rs::InboxMutateBody`, `handlers/inbox.rs::inbox_mutate`, `handlers/inbox.rs::thread_goal`, `handlers/inbox.rs::ThreadGoalBody`, `handlers/inbox.rs::thread_goal_set`, `handlers/inbox.rs::task_models_get`, `handlers/inbox.rs::task_models_set` |
+| `history` | History search across the caller's past chats: discover/scroll/read/browse inferred from the query parameters — its own file, one `ironclaw_product_contracts::history` descriptor | Thread listing (that is `threads`) or a thread's timeline | `handlers/history.rs::history_search` |
 
 Three placement calls worth stating, because each is an item whose *name*
 suggests one owner and whose *use* is another:
@@ -240,6 +241,7 @@ closed (`500`) if that layer is missing (locked by
 | `webui.v2.computer_use.frame` | GET | `/api/webchat/v2/threads/{thread_id}/computer-use/frame` | `?window_id=&width=&fps=&after_seq=` | `ProductSurface` |
 | `webui.v2.inbox.list` | GET | `/api/webchat/v2/inbox` | — | `ProductSurface` |
 | `webui.v2.inbox.mutate` | POST | `/api/webchat/v2/inbox/{thread_id}` | — | `ProductSurface` |
+| `webui.v2.history.search` | GET | `/api/webchat/v2/history/search` | `?query=&thread_id=&around_message_id=&around_sequence=&limit=&window=&from_sequence=` | `ProductSurface` |
 | `webui.v2.task_models.get` | GET | `/api/webchat/v2/llm/task-models` | — | `ProductSurface` |
 | `webui.v2.task_models.set` | POST | `/api/webchat/v2/llm/task-models` | — | `ProductSurface` |
 | `webui.v2.goals.get` / `set` | GET/POST | `/api/webchat/v2/threads/{thread_id}/goal` | — | `ProductSurface` |

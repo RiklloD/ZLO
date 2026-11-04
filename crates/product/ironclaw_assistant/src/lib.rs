@@ -49,6 +49,7 @@ mod fakes;
 mod delivery_coordinator;
 mod filesystem_ledger;
 mod gate_state;
+pub mod history_search;
 mod in_memory_ledger;
 mod inbound_turn;
 pub mod inspector_store;

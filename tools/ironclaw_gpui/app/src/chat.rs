@@ -91,6 +91,8 @@ pub struct ChatView {
     turn_heights: Rc<RefCell<HashMap<String, f32>>>,
     /// Scroll the newest user message to the top on the next item sync.
     pin_next: bool,
+    /// A history-search hit to scroll to once its message is in the list.
+    reveal: Option<String>,
     /// When the last message was sent: MonoCode's prompt rise lifts it from
     /// the composer to its place, then the reply rows slide in.
     prompt_rise: Option<Instant>,
@@ -323,6 +325,7 @@ impl ChatView {
             list_height: Rc::default(),
             turn_heights: Rc::default(),
             pin_next: false,
+            reveal: None,
             prompt_rise: None,
             arrive: false,
             pacer: pace::Pacer::default(),
@@ -820,6 +823,28 @@ impl ChatView {
         flow::is_open(key, live, &self.toggles)
     }
 
+    /// Scroll to `message_id` (a history-search hit) as soon as it is in
+    /// the loaded transcript.
+    pub fn reveal_message(&mut self, message_id: String, cx: &mut Context<Self>) {
+        self.reveal = Some(message_id);
+        self.try_reveal(cx);
+    }
+
+    fn try_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.reveal.as_deref() else {
+            return;
+        };
+        let Some(ix) = self.items.iter().position(|item| match item {
+            Item::Activity { rows, .. } => rows.iter().any(|r| r.key().ends_with(target)),
+            other => other.key().ends_with(target),
+        }) else {
+            return;
+        };
+        self.reveal = None;
+        self.scroller.update(cx, |s, cx| s.scroll_to_item(ix, cx));
+        cx.notify();
+    }
+
     /// Fold rows into list items and tell the virtual list exactly what
     /// moved, so only changed items are re-measured while text streams.
     fn sync_items(&mut self, live: bool, stopping: bool, cx: &mut Context<Self>) {
@@ -880,6 +905,7 @@ impl ChatView {
         let prompts = outline_prompts(&new_items);
         self.outline.update(cx, |o, cx| o.set(prompts, cx));
         self.items = Rc::new(new_items);
+        self.try_reveal(cx);
     }
 
     /// The reserve's height this frame: while held, exactly what keeps the

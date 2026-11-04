@@ -32,6 +32,8 @@ pub use profiles::{
     profiles_import_hermes, profiles_list,
 };
 pub use usage::{usage_history, usage_report};
+mod history;
+pub use history::history_search;
 mod inbox;
 pub use inbox::{
     inbox_list, inbox_mutate, task_models_get, task_models_set, thread_goal, thread_goal_set,

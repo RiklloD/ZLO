@@ -12,6 +12,7 @@ pub mod commands;
 pub mod computer_use;
 mod connection;
 mod error;
+mod history_calls;
 mod inbox_calls;
 pub mod operator;
 pub mod orchestration;
@@ -36,6 +37,6 @@ pub use ironclaw_extension_contracts::state as extension_state;
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{
-    inbound_requests, inbox, notification_inbox, operator_llm, package_lifecycle, product_wire,
+    history, inbound_requests, inbox, notification_inbox, operator_llm, package_lifecycle, product_wire,
     profiles, task_models, workspace_views,
 };

@@ -87,8 +87,11 @@ pub(super) struct Inbox {
 impl Inbox {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
-        let sub = cx.subscribe_in(&input, window, |_, _, event, _, cx| {
+        let sub = cx.subscribe_in(&input, window, |this, input, event, _, cx| {
             if let InputEvent::Change = event {
+                // Message text matches too: the backend searches past chats.
+                let query = input.read(cx).value().to_string();
+                this.search_messages(&query, cx);
                 cx.notify();
             }
         });
@@ -653,7 +656,12 @@ impl Workspace {
             .list
             .rows
             .iter()
-            .filter(|r| self.inbox.matches(r, &query))
+            .filter(|r| {
+                self.inbox.matches(r, &query)
+                    // A message in the thread matches: the filters still apply.
+                    || (self.message_search.hit(&query, &r.thread_id).is_some()
+                        && self.inbox.matches(r, ""))
+            })
             // Side chats live under their parent; a search still finds them.
             .filter(|r| !query.is_empty() || !side_chats.contains(r.thread_id.as_str()))
             .cloned()
@@ -1445,6 +1453,7 @@ impl Workspace {
                         .when(row.parent_thread_id.is_some(), |d| d.child("↳ "))
                         .child(title_of(row).to_string()),
                 )
+                .children(self.render_message_snippet(row, cx))
                 .children(self.render_subagent_line(row, false, cx));
         let current = self.active.as_ref().map(|(id, _)| id.clone());
         v_flex()
@@ -1452,6 +1461,33 @@ impl Workspace {
             .when(menu_open, |d| d.child(self.render_snooze_menu(&id, cx)))
             .children(self.render_subagent_list(row, current.as_deref(), now, cx))
             .into_any_element()
+    }
+
+    /// Under a row that matched by message text (not by its title): the
+    /// matching snippet; a click opens the thread at that message.
+    fn render_message_snippet(&self, row: &InboxRow, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let query = self.inbox.query(cx);
+        if query.is_empty() || title_of(row).to_lowercase().contains(&query) {
+            return None;
+        }
+        let hit = self.message_search.hit(&query, &row.thread_id)?.clone();
+        let p = *Palette::of(cx);
+        let (thread_id, message_id) = (row.thread_id.clone(), hit.message_id.clone());
+        Some(
+            div()
+                .id(SharedString::from(format!("row-hit-{}", row.thread_id)))
+                .w_full()
+                .min_w_0()
+                .truncate()
+                .text_size(px(design::SIDEBAR_META_SIZE))
+                .text_color(p.text_muted)
+                .child(super::message_search::snippet_text(&hit, cx))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_thread_at(thread_id.clone(), message_id.clone(), window, cx)
+                }))
+                .into_any_element(),
+        )
     }
 
     fn render_snooze_menu(&self, thread_id: &str, cx: &mut Context<Self>) -> impl IntoElement {
