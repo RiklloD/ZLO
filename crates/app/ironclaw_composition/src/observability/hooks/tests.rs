@@ -1023,3 +1023,45 @@ fn capability_provider_contracts() -> ironclaw_extension_registry::HostApiContra
         .expect("register capability provider contract");
     contracts
 }
+
+// ─── Settings hook inventory ─────────────────────────────────────────────
+
+/// The read-only catalog lists every projected extension hook with its
+/// point and the `Installed` tier, live only when the flags allow it.
+#[test]
+fn hook_catalog_lists_extension_hooks_with_point_trust_and_flag_state() {
+    let registry = projection_with(&[(
+        "catalog-ext",
+        ManifestSource::InstalledLocal,
+        own_deny_hook("deny-run", "catalog-ext.run"),
+    )]);
+    let master_only =
+        super::catalog::hook_catalog(HooksActivationConfig::enabled(), Some(&registry), false);
+    let hook = master_only
+        .hooks
+        .iter()
+        .find(|hook| hook.id == "catalog-ext/deny-run")
+        .expect("extension hook listed");
+    assert_eq!(
+        hook.trust_class,
+        ironclaw_product_contracts::hooks_catalog::HookTrustClassView::Installed
+    );
+    assert_eq!(
+        hook.source,
+        ironclaw_product_contracts::hooks_catalog::HookSource::Extension
+    );
+    assert_eq!(hook.points, vec!["before_capability".to_string()]);
+    assert_eq!(hook.owner.as_deref(), Some("catalog-ext"));
+    assert!(!hook.enabled, "third-party hooks need the sub-flag too");
+
+    let both = super::catalog::hook_catalog(
+        HooksActivationConfig::enabled().with_third_party_enabled(true),
+        Some(&registry),
+        false,
+    );
+    assert!(
+        both.hooks
+            .iter()
+            .any(|hook| hook.id == "catalog-ext/deny-run" && hook.enabled)
+    );
+}

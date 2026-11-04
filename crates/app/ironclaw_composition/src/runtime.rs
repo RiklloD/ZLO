@@ -659,6 +659,8 @@ pub struct RebornRuntime {
         Option<Arc<dyn ironclaw_product_contracts::ironhub::IronhubLinkService>>,
     pub(crate) owner_user_id: UserId,
     pub(crate) extension_filesystem: Arc<CompositeRootFilesystem>,
+    /// What the Memory page and the hooks view are served from.
+    pub(crate) memory_page: crate::memory_page_parts::MemoryPageParts,
     pub(crate) session_inbound_ledger: Arc<dyn ironclaw_assistant::IdempotencyLedger>,
     pub(crate) session_channel_directory:
         Arc<dyn ironclaw_product_contracts::session_ingress::SessionChannelDirectory>,
@@ -3826,6 +3828,9 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     // and projected into a `HookProjectionRegistry` that carries ONLY hook
     // metadata (no `ExtensionRegistry`, no `ExtensionPackage`) and reaches ONLY
     // this hook factory, not the capability catalog or surface resolver.
+    // Kept for the Settings hook inventory (built below, once memory upkeep
+    // wiring is known).
+    let mut hook_projection_registry = None;
     let hook_dispatcher_builder_factory = if let Some(local_runtime) = local_runtime {
         let extension_filesystem = local_runtime.extension_filesystem.as_ref();
         let third_party_input = crate::observability::hooks::ThirdPartyDiscoveryInput {
@@ -3841,14 +3846,17 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         .map_err(|error| RebornRuntimeError::InvalidArgument {
             reason: format!("hook projection registry assembly failed: {error}"),
         })?;
-        crate::observability::hooks::build_hook_dispatcher_builder_factory_for_tenant(
-            hooks_config,
-            &projection_registry,
-            &validated_identity.tenant_id,
-        )
-        .map_err(|error| RebornRuntimeError::InvalidArgument {
-            reason: format!("hook framework activation failed: {error}"),
-        })?
+        let factory =
+            crate::observability::hooks::build_hook_dispatcher_builder_factory_for_tenant(
+                hooks_config,
+                &projection_registry,
+                &validated_identity.tenant_id,
+            )
+            .map_err(|error| RebornRuntimeError::InvalidArgument {
+                reason: format!("hook framework activation failed: {error}"),
+            })?;
+        hook_projection_registry = Some(projection_registry);
+        factory
     } else if hooks_config.is_enabled() {
         return Err(RebornRuntimeError::MalformedConfig {
             reason: "hook framework is not supported or wired for production runtime launch"
@@ -4077,6 +4085,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
                 as ironclaw_turn_runner::runtime::AfterTurnHookWiring)
         }
     };
+    let memory_upkeep_hook_wired = memory_scheduled_op_hook_wiring.is_some();
     let crate::memory_provider_factory::MemoryLifecycleConsumers {
         memory_context_service: wired_memory_context_service,
         after_turn_memory_writer: wired_after_turn_memory_writer,
@@ -4940,7 +4949,30 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         None => None,
     };
 
+    let memory_page = crate::memory_page_parts::MemoryPageParts {
+        documents: local_runtime
+            .filter(|local_runtime| {
+                local_runtime.memory_service_resolver.resolved_binding()
+                    == ironclaw_host_runtime::memory_binding::MemoryProviderBinding::Native
+            })
+            .map(|local_runtime| {
+                Arc::new(crate::memory_page_parts::NativeMemoryDocuments::new(
+                    Arc::clone(&local_runtime.extension_filesystem)
+                        as Arc<dyn ironclaw_filesystem::RootFilesystem>,
+                ))
+                    as Arc<dyn ironclaw_product_contracts::memory_page::MemoryDocumentsSource>
+            }),
+        supermemory: Arc::clone(&supermemory),
+        hooks: Arc::new(crate::memory_page_parts::StaticHookCatalog(
+            crate::observability::hooks::catalog::hook_catalog(
+                hooks_config,
+                hook_projection_registry.as_ref(),
+                memory_upkeep_hook_wired,
+            ),
+        )),
+    };
     let runtime = RebornRuntime {
+        memory_page,
         host_runtime: services.host_runtime.clone(),
         user_sandbox_process_port: services.user_sandbox_process_port.clone(),
         product_auth: services.product_auth.clone(),
