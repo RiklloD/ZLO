@@ -56,6 +56,10 @@ pub struct OrchestratorQueueMutationRequest {
 #[serde(deny_unknown_fields)]
 pub struct OrchestratorForkRequest {
     pub thread_id: String,
+    /// Seed the fork with a bounded digest of the conversation instead of
+    /// branching the runtime's session (a fresh, smaller context).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub summary: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,6 +164,110 @@ pub struct ThreadTelemetryResponse {
     pub tps: Option<f64>,
     pub cache_hit_rate: Option<f64>,
     pub updated_at: Option<i64>,
+}
+
+/// What fills a thread's context window (the desktop meter's popover).
+pub const ORCHESTRATOR_THREAD_CONTEXT_VIEW: ProductView<
+    OrchestratorThreadRequest,
+    ThreadContextReport,
+> = ProductView::unpaginated("orchestrator.thread_context");
+
+/// A thread's context window broken down by what fills it. `categories`
+/// always sum to `used`; when `source` is `provider` the total is the
+/// provider's own count and only the split is estimated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadContextReport {
+    pub thread_id: String,
+    pub runtime_id: String,
+    pub used: u64,
+    pub max: Option<u64>,
+    pub level: ContextLevel,
+    pub source: ContextSource,
+    pub categories: Vec<ContextCategoryUsage>,
+    /// Tool definitions by owner, largest first.
+    pub tool_owners: Vec<ContextToolOwnerUsage>,
+    /// Message that compacts this thread when sent (the runtime's own
+    /// compaction command); `None` when it has no manual compaction.
+    pub compact_prompt: Option<String>,
+    /// The runtime compacts by itself near the limit.
+    pub auto_compacts: bool,
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCategory {
+    /// Identity: the base system prompt and the profile's SOUL.
+    SystemPrompt,
+    /// Extra instructions: skills, delegation, reply visuals, AGENTS.md.
+    Instructions,
+    ToolDefinitions,
+    UserMessages,
+    AssistantMessages,
+    ToolResults,
+    CompactionSummaries,
+    Attachments,
+    /// Provider-counted tokens nothing above accounts for (a CLI's own
+    /// system prompt and built-in tools).
+    Unattributed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextCategoryUsage {
+    pub category: ContextCategory,
+    pub tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "name", rename_all = "snake_case")]
+pub enum ContextToolOwner {
+    Builtin,
+    Mcp(String),
+    Extension(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextToolOwnerUsage {
+    pub owner: ContextToolOwner,
+    pub tokens: u64,
+    pub tools: u32,
+}
+
+/// Where `used` comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextSource {
+    /// The provider's usage report of the latest model call.
+    Provider,
+    /// A token estimate over what ZLO knows the prompt holds.
+    Estimated,
+}
+
+/// Meter state: warning from 80 % of the window, exceeded from 100 %.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextLevel {
+    Normal,
+    Warning,
+    Exceeded,
+}
+
+impl ContextLevel {
+    pub const WARNING_RATIO: f64 = 0.8;
+
+    /// `Normal` when the window is unknown.
+    pub fn of(used: u64, max: Option<u64>) -> Self {
+        match max {
+            Some(max) if max > 0 && used >= max => Self::Exceeded,
+            Some(max) if max > 0 && used as f64 >= max as f64 * Self::WARNING_RATIO => {
+                Self::Warning
+            }
+            _ => Self::Normal,
+        }
+    }
 }
 
 pub const ORCHESTRATOR_TASK_CANCEL_COMMAND_ID: &str = "orchestrator.task_cancel";

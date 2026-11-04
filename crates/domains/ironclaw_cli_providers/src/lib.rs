@@ -84,6 +84,38 @@ pub(crate) fn session_preamble(profile: &TurnProfile) -> Option<String> {
     join_notes([soul, delegation(), visuals(), skills])
 }
 
+/// Estimated tokens of what a CLI agent with a system prompt flag gets
+/// from ZLO besides the transcript: the [`system_note`] pieces, the
+/// profile's skill index, and the orchestrator tools of the loopback MCP
+/// server. The CLI's own system prompt and tools are not ZLO's to measure.
+pub(crate) fn injected_context(
+    profile: Option<&TurnProfile>,
+    goal: Option<&str>,
+) -> ironclaw_orchestrator::context_report::ContextSample {
+    use ironclaw_product_contracts::orchestration::ContextCategory;
+    let mut sample = ironclaw_orchestrator::context_report::ContextSample::default();
+    if let Some(profile) = profile {
+        sample.add_text(ContextCategory::SystemPrompt, profile.soul.trim());
+        if let Some(skills) = &profile.skills {
+            sample.add_text(ContextCategory::Instructions, &skills.index);
+        }
+    }
+    for note in [delegation(), visuals(), goal.map(goal_note)]
+        .into_iter()
+        .flatten()
+    {
+        sample.add_text(ContextCategory::Instructions, &note);
+    }
+    for tool in &ironclaw_orchestrator::tools::TOOLS {
+        let chars = tool.name.len() + tool.description.len() + (tool.schema)().to_string().len();
+        sample.add_tool(
+            &format!("mcp-{}.{}", bridge::MCP_SERVER_NAME, tool.name),
+            u64::try_from(chars).unwrap_or(u64::MAX),
+        );
+    }
+    sample
+}
+
 fn join_notes(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {
     let parts: Vec<String> = parts.into_iter().flatten().collect();
     (!parts.is_empty()).then(|| parts.join("\n\n"))
@@ -262,5 +294,33 @@ pub fn register_muse_runtime(
             tracing::debug!(%error, "muse runtime id rejected");
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironclaw_product_contracts::orchestration::{ContextCategory, ContextToolOwner};
+
+    use super::*;
+
+    #[test]
+    fn injected_context_counts_the_soul_the_notes_and_the_orchestrator_tools() {
+        let profile = TurnProfile {
+            soul: "You are a careful engineer. ".repeat(20),
+            ..TurnProfile::default()
+        };
+        let bare = injected_context(None, None);
+        let full = injected_context(Some(&profile), Some("ship the meter"));
+        assert_eq!(bare.tokens(ContextCategory::SystemPrompt), 0);
+        assert!(full.tokens(ContextCategory::SystemPrompt) > 100);
+        assert!(
+            full.tokens(ContextCategory::Instructions) > bare.tokens(ContextCategory::Instructions)
+        );
+        assert_eq!(full.tools.len(), 1);
+        assert_eq!(full.tools[0].owner, ContextToolOwner::Mcp("ironclaw".into()));
+        assert_eq!(
+            full.tools[0].tools as usize,
+            ironclaw_orchestrator::tools::TOOLS.len()
+        );
     }
 }

@@ -132,7 +132,7 @@ impl Engine {
 
     /// The thread's profile as its CLI agent sees it. Additive context: a
     /// failure is logged and the turn runs without it.
-    async fn turn_profile(&self, thread_id: &ThreadId) -> Option<TurnProfile> {
+    pub(crate) async fn turn_profile(&self, thread_id: &ThreadId) -> Option<TurnProfile> {
         let source = self.profile_context.get()?;
         let profile = match self.store.thread_profile(thread_id).await {
             Ok(profile) => profile?,

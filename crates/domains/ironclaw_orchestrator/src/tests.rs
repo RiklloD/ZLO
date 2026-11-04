@@ -22,6 +22,7 @@ struct FakeRuntime {
     /// A second runtime (a CLI driver stand-in) advertising one provider of
     /// this name; `None` is the default runtime `fake`.
     name: Option<&'static str>,
+    history_reads: Mutex<u32>,
 }
 
 impl FakeRuntime {
@@ -114,11 +115,30 @@ impl TurnRuntime for FakeRuntime {
         self.cancelled.lock().unwrap().push(t.thread_id.clone());
         Ok(())
     }
+    fn compaction(&self) -> RuntimeCompaction {
+        RuntimeCompaction {
+            manual_prompt: self.name.map(|_| "/compact"),
+            automatic: false,
+        }
+    }
+    fn injected_context(
+        &self,
+        _profile: Option<&TurnProfile>,
+        _goal: Option<&str>,
+    ) -> crate::context_report::ContextSample {
+        let mut sample = crate::context_report::ContextSample::default();
+        if self.name.is_some() {
+            sample.add(ironclaw_product_contracts::orchestration::ContextCategory::Instructions, 300);
+            sample.add_tool("mcp-ironclaw.t3_delegate", 2_000);
+        }
+        sample
+    }
     async fn history(
         &self,
         t: &ThreadRecord,
         _limit: usize,
     ) -> Result<Vec<HistoryMessage>, RuntimeError> {
+        *self.history_reads.lock().unwrap() += 1;
         Ok(self
             .history
             .lock()
@@ -1459,4 +1479,135 @@ async fn an_effort_pick_rides_the_route_and_a_switch_keeps_only_its_own() {
         .await
         .unwrap();
     assert_eq!(store.thread_effort(&a).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn cli_context_reports_sum_to_the_provider_count_and_reuse_the_turns_estimate() {
+    use crate::telemetry::TurnTelemetry;
+    use ironclaw_product_contracts::orchestration::{
+        ContextCategory, ContextLevel, ContextSource, ContextToolOwner,
+    };
+    let h = harness().await;
+    let cli = Arc::new(FakeRuntime {
+        name: Some("cli"),
+        ..Default::default()
+    });
+    h.engine.register_runtime(cli.clone());
+    let a = tid("a");
+    let thread = h
+        .engine
+        .ensure_thread(&a, &scope(), Some(&RuntimeId::new("cli").unwrap()))
+        .await
+        .unwrap();
+    cli.history.lock().unwrap().insert(
+        a.clone(),
+        vec![
+            msg(HistoryRole::User, &"question ".repeat(200)),
+            msg(HistoryRole::Assistant, &"answer ".repeat(100)),
+        ],
+    );
+
+    // Before any turn reports, the whole report is an estimate.
+    let r = h.engine.context_report(&thread).await.unwrap();
+    assert_eq!(r.source, ContextSource::Estimated);
+    assert_eq!(r.categories.iter().map(|c| c.tokens).sum::<u64>(), r.used);
+    assert_eq!(r.compact_prompt.as_deref(), Some("/compact"));
+    assert!(!r.auto_compacts);
+
+    let report = |used: u64| TurnTelemetry {
+        context_used: Some(used),
+        context_max: Some(10_000),
+        ..TurnTelemetry::default()
+    };
+    h.engine.turn_telemetry(&a, report(8_500), 1_000).await;
+    let r = h.engine.context_report(&thread).await.unwrap();
+    assert_eq!((r.used, r.max), (8_500, Some(10_000)));
+    assert_eq!(r.source, ContextSource::Provider);
+    assert_eq!(r.level, ContextLevel::Warning);
+    assert_eq!(r.categories.iter().map(|c| c.tokens).sum::<u64>(), 8_500);
+    assert!(
+        r.categories
+            .iter()
+            .any(|c| c.category == ContextCategory::Unattributed)
+    );
+    assert_eq!(r.tool_owners[0].owner, ContextToolOwner::Mcp("ironclaw".into()));
+    let reads = *cli.history_reads.lock().unwrap();
+
+    // The same turn: the stored estimate is reused, not recomputed.
+    h.engine.context_report(&thread).await.unwrap();
+    assert_eq!(*cli.history_reads.lock().unwrap(), reads);
+
+    // A new turn reports: estimated again, and over the window.
+    h.engine.turn_telemetry(&a, report(12_000), 2_000).await;
+    let r = h.engine.context_report(&thread).await.unwrap();
+    assert_eq!(*cli.history_reads.lock().unwrap(), reads + 1);
+    assert_eq!(r.level, ContextLevel::Exceeded);
+    assert_eq!(r.categories.iter().map(|c| c.tokens).sum::<u64>(), 12_000);
+}
+
+#[tokio::test]
+async fn native_context_reports_use_the_recorded_prompt_sample() {
+    use crate::context_report::ContextSample;
+    use crate::telemetry::TurnTelemetry;
+    use ironclaw_product_contracts::orchestration::{ContextCategory, ContextSource};
+    let h = harness().await;
+    let a = tid("a");
+    let thread = h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    let mut sample = ContextSample {
+        window: Some(200_000),
+        ..ContextSample::default()
+    };
+    sample.add(ContextCategory::SystemPrompt, 4_000);
+    sample.add(ContextCategory::UserMessages, 1_000);
+    sample.add_tool("builtin.shell", 8_000);
+    h.engine.record_context_sample(&a, &sample, 10).await.unwrap();
+    h.engine
+        .turn_telemetry(
+            &a,
+            TurnTelemetry {
+                context_used: Some(6_000),
+                ..TurnTelemetry::default()
+            },
+            20,
+        )
+        .await;
+    let r = h.engine.context_report(&thread).await.unwrap();
+    assert_eq!(r.source, ContextSource::Provider);
+    assert_eq!(r.max, Some(200_000));
+    assert_eq!(r.used, 6_000);
+    assert_eq!(r.categories.iter().map(|c| c.tokens).sum::<u64>(), 6_000);
+    assert!(r.auto_compacts);
+    assert_eq!(r.compact_prompt, None);
+    // The transcript is not re-read for native threads.
+    assert_eq!(*h.rt.history_reads.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_summary_fork_carries_a_digest_even_where_sessions_branch_natively() {
+    let h = harness().await;
+    let src = tid("src");
+    h.engine.ensure_thread(&src, &scope(), None).await.unwrap();
+    h.rt.history.lock().unwrap().insert(
+        src.clone(),
+        vec![
+            msg(HistoryRole::User, "plan it"),
+            msg(HistoryRole::Assistant, "the plan"),
+        ],
+    );
+    let source = h.engine.store().thread(&src).await.unwrap().unwrap();
+    let fork = h
+        .engine
+        .fork_from_summary(&ctx("src"), &source, None, Author::User)
+        .await
+        .unwrap();
+    assert_eq!(fork["strategy"], "portable_context");
+    assert!(fork["title"].as_str().unwrap().ends_with("(from summary)"));
+    let fork_id = tid(fork["forkThreadId"].as_str().unwrap());
+    let context = h
+        .engine
+        .take_next_message_context(&fork_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(context.contains("the plan"));
 }

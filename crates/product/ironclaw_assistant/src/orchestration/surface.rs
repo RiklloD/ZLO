@@ -251,6 +251,16 @@ impl OrchestratedProductSurface {
                     .await,
                 )
             }
+            v if v == ORCHESTRATOR_THREAD_CONTEXT_VIEW.id => {
+                let req: OrchestratorThreadRequest = decode(input)?;
+                answer(
+                    async {
+                        let thread = self.owned(&req.thread_id, scope).await?;
+                        to_json(engine.context_report(&thread).await?)
+                    }
+                    .await,
+                )
+            }
             v if v == PROFILES_VIEW.id || v == PROFILE_VIEW.id => answer(
                 async {
                     let home = self.home()?;
@@ -434,6 +444,16 @@ impl OrchestratedProductSurface {
                 answer(
                     async {
                         let source = self.owned(&req.thread_id, scope).await?;
+                        if req.summary {
+                            return engine
+                                .fork_from_summary(
+                                    &Self::ctx(&source, scope),
+                                    &source,
+                                    req.title.as_deref(),
+                                    Author::User,
+                                )
+                                .await;
+                        }
                         let target = ironclaw_orchestrator::delegation::Target {
                             provider: req.provider.clone(),
                             model: req.model.clone(),

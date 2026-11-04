@@ -22,6 +22,8 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # Approval reasons are redacted before they reach a card.
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_orchestrator = { path = "../ironclaw_orchestrator" }
+# Context-report categories (what ZLO injects into a CLI prompt).
+ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
 # Stop kills the CLI's whole process group (tool subprocesses included).
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 serde_json = "1"

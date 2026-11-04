@@ -248,6 +248,47 @@ impl Engine {
         target: Option<&Target>,
         created_by: Author,
     ) -> Result<Value> {
+        let spec = ForkSpec {
+            run,
+            title,
+            target,
+            summary: false,
+        };
+        self.fork_with(ctx, source, spec, created_by).await
+    }
+
+    /// A fresh thread seeded with a bounded digest of `source` instead of a
+    /// branch of its session: the "new thread from summary" a full context
+    /// window offers.
+    pub async fn fork_from_summary(
+        &self,
+        ctx: &CallContext,
+        source: &ThreadRecord,
+        title: Option<&str>,
+        created_by: Author,
+    ) -> Result<Value> {
+        let spec = ForkSpec {
+            run: None,
+            title,
+            target: None,
+            summary: true,
+        };
+        self.fork_with(ctx, source, spec, created_by).await
+    }
+
+    async fn fork_with(
+        &self,
+        ctx: &CallContext,
+        source: &ThreadRecord,
+        spec: ForkSpec<'_>,
+        created_by: Author,
+    ) -> Result<Value> {
+        let ForkSpec {
+            run,
+            title,
+            target,
+            summary,
+        } = spec;
         let messages = self.history(source).await?;
         if messages.is_empty() {
             return Err(OrchestratorError::invalid(
@@ -281,6 +322,7 @@ impl Engine {
         let source_title = source.title.clone().unwrap_or_else(|| "thread".into());
         let name = match title.map(str::trim).filter(|t| !t.is_empty()) {
             Some(t) => t.to_string(),
+            None if summary => format!("{source_title} (from summary)"),
             None if run.is_some() => format!("{source_title} (fork @ run {ordinal})"),
             None => format!("{source_title} (fork)"),
         };
@@ -294,6 +336,7 @@ impl Engine {
         };
         // A thread that switched runtime has no single native session to branch.
         let native = runtime.capabilities().native_fork
+            && !summary
             && latest
             && runtime_id == source.runtime_id
             && self.store.segments(&source.thread_id).await?.is_empty();
@@ -495,4 +538,13 @@ fn steer_label(outcome: &SteerOutcome) -> &'static str {
         SteerOutcome::Restarted => "restarted",
         SteerOutcome::Rejected => "rejected",
     }
+}
+
+/// What a fork copies: up to which run, under which name and route, and
+/// whether as a digest rather than a session branch.
+struct ForkSpec<'a> {
+    run: Option<usize>,
+    title: Option<&'a str>,
+    target: Option<&'a Target>,
+    summary: bool,
 }

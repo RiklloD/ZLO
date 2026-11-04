@@ -385,6 +385,32 @@ pub trait TurnRuntime: Send + Sync {
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
         Ok(Vec::new())
     }
+
+    /// How this runtime's sessions shed context.
+    fn compaction(&self) -> RuntimeCompaction {
+        RuntimeCompaction::default()
+    }
+
+    /// Estimated tokens of what the runtime puts in every prompt besides the
+    /// transcript (its system note, the profile's SOUL, the tools it adds),
+    /// for context reports. Empty when it adds nothing ZLO can measure.
+    fn injected_context(
+        &self,
+        _profile: Option<&TurnProfile>,
+        _goal: Option<&str>,
+    ) -> crate::context_report::ContextSample {
+        crate::context_report::ContextSample::default()
+    }
+}
+
+/// A runtime's compaction entry points.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeCompaction {
+    /// A message that compacts the session when sent as a turn (a CLI's
+    /// own slash command).
+    pub manual_prompt: Option<&'static str>,
+    /// The runtime compacts by itself near the window's limit.
+    pub automatic: bool,
 }
 
 /// Where runtimes report turn lifecycle. Implemented by the engine.

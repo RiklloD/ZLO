@@ -1061,7 +1061,7 @@ fn prompt_leak_detector() -> &'static LeakDetector {
     DETECTOR.get_or_init(LeakDetector::new)
 }
 
-fn prompt_component_kind(
+pub(crate) fn prompt_component_kind(
     index: usize,
     identity_message_count: u32,
     message: &HostManagedPromptDiagnosticMessage,
@@ -2411,6 +2411,7 @@ mod tests {
                         "identity sk-diagnostic\u{1b}testvalue0123456789 {}",
                         "x".repeat(70 * 1024)
                     ),
+                    image_count: 0,
                 },
                 HostManagedPromptDiagnosticMessage {
                     role: HostManagedModelMessageRole::System,
@@ -2419,6 +2420,7 @@ mod tests {
                     )
                     .expect("ref"),
                     content: "Follow the workspace instructions.".to_string(),
+                    image_count: 0,
                 },
                 HostManagedPromptDiagnosticMessage {
                     role: HostManagedModelMessageRole::System,
@@ -2427,12 +2429,14 @@ mod tests {
                     )
                     .expect("ref"),
                     content: "Use workspace search when needed.".to_string(),
+                    image_count: 0,
                 },
                 HostManagedPromptDiagnosticMessage {
                     role: HostManagedModelMessageRole::User,
                     content_ref: ironclaw_host_api::turn::LoopMessageRef::new("msg:thread.user")
                         .expect("ref"),
                     content: "hello".to_string(),
+                    image_count: 0,
                 },
             ],
             identity_message_count: 1,
@@ -2442,6 +2446,7 @@ mod tests {
                 SkillName::new(secret.clone()).expect("secret-like skill name"),
             ],
             capability_ids: vec![CapabilityId::new("filesystem.read").expect("capability")],
+            tool_definition_sizes: Vec::new(),
             requested_model: Some(
                 ModelProfileId::new("diagnostic-profile").expect("model profile"),
             ),

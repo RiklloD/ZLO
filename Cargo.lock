@@ -4030,6 +4030,7 @@ dependencies = [
  "ironclaw_host_api",
  "ironclaw_libsql_runtime",
  "ironclaw_orchestrator",
+ "ironclaw_product_contracts",
  "ironclaw_safety",
  "libsql",
  "nix",
