@@ -31,6 +31,11 @@ pub use profiles::{
     profile_create, profile_delete, profile_get, profile_thread_create, profile_update,
     profiles_import_hermes, profiles_list,
 };
+mod schedules;
+pub use schedules::{
+    schedule_create, schedule_delete, schedule_preview, schedule_rotate_secret, schedule_run,
+    schedule_secret, schedule_update, schedules_list,
+};
 pub use usage::{usage_history, usage_report};
 mod inbox;
 pub use inbox::{

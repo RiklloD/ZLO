@@ -89,7 +89,7 @@ pub(crate) fn scope_of(caller: &ProductSurfaceCaller) -> ThreadScope {
     }
 }
 
-fn decode<T: DeserializeOwned>(input: Value) -> Result<T, ProductSurfaceError> {
+pub(super) fn decode<T: DeserializeOwned>(input: Value) -> Result<T, ProductSurfaceError> {
     serde_json::from_value(input).map_err(|error| {
         tracing::debug!(%error, "orchestrator request rejected");
         ProductSurfaceError::validation("body", ProductSurfaceValidationCode::InvalidValue)
@@ -98,7 +98,9 @@ fn decode<T: DeserializeOwned>(input: Value) -> Result<T, ProductSurfaceError> {
 
 /// Correctable failures are answered as the T3 error document; ownership
 /// misses are 404; storage faults stay sanitized 5xx.
-fn answer(result: Result<Value, OrchestratorError>) -> Result<Value, ProductSurfaceError> {
+pub(super) fn answer(
+    result: Result<Value, OrchestratorError>,
+) -> Result<Value, ProductSurfaceError> {
     match result {
         Ok(value) => Ok(value),
         Err(error) if error.code().ends_with("not_found") => Err(ProductSurfaceError::not_found()),
@@ -241,6 +243,9 @@ impl OrchestratedProductSurface {
                 )
             }
             v if v == ORCHESTRATOR_PROVIDERS_VIEW.id => answer(engine.providers_view(scope).await),
+            v if super::schedules::is_view(v) => {
+                super::schedules::view(engine, v, input, scope).await
+            }
             v if v == ORCHESTRATOR_THREAD_TELEMETRY_VIEW.id => {
                 let req: OrchestratorThreadRequest = decode(input)?;
                 answer(
@@ -363,6 +368,9 @@ impl OrchestratedProductSurface {
                     async { to_json(profiles::import_hermes(engine, self.home()?, scope).await?) }
                         .await,
                 )
+            }
+            ORCHESTRATOR_SCHEDULE_MUTATE_COMMAND_ID => {
+                super::schedules::mutate(engine, decode(input)?, scope).await
             }
             ORCHESTRATOR_TASK_CANCEL_COMMAND_ID => {
                 let req: OrchestratorTaskCancelRequest = decode(input)?;

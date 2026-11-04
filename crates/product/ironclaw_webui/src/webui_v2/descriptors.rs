@@ -196,6 +196,21 @@ pub const WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS: &str = "/api/webchat/v2/provi
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK: &str = "/api/webchat/v2/tasks/{task_id}";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL: &str =
     "/api/webchat/v2/tasks/{task_id}/cancel";
+pub const WEBUI_V2_ROUTE_SCHEDULES_LIST: &str = "webui.v2.schedules.list";
+pub const WEBUI_V2_ROUTE_SCHEDULE_CREATE: &str = "webui.v2.schedules.create";
+pub const WEBUI_V2_ROUTE_SCHEDULE_PREVIEW: &str = "webui.v2.schedules.preview";
+pub const WEBUI_V2_ROUTE_SCHEDULE_UPDATE: &str = "webui.v2.schedules.update";
+pub const WEBUI_V2_ROUTE_SCHEDULE_DELETE: &str = "webui.v2.schedules.delete";
+pub const WEBUI_V2_ROUTE_SCHEDULE_RUN: &str = "webui.v2.schedules.run";
+pub const WEBUI_V2_ROUTE_SCHEDULE_ROTATE_SECRET: &str = "webui.v2.schedules.rotate_secret";
+pub const WEBUI_V2_ROUTE_SCHEDULE_SECRET: &str = "webui.v2.schedules.secret";
+pub const WEBUI_V2_PATTERN_SCHEDULES: &str = "/api/webchat/v2/schedules";
+pub const WEBUI_V2_PATTERN_SCHEDULE_PREVIEW: &str = "/api/webchat/v2/schedules/preview";
+pub const WEBUI_V2_PATTERN_SCHEDULE: &str = "/api/webchat/v2/schedules/{schedule_id}";
+pub const WEBUI_V2_PATTERN_SCHEDULE_RUN: &str = "/api/webchat/v2/schedules/{schedule_id}/run";
+pub const WEBUI_V2_PATTERN_SCHEDULE_ROTATE_SECRET: &str =
+    "/api/webchat/v2/schedules/{schedule_id}/rotate-secret";
+pub const WEBUI_V2_PATTERN_SCHEDULE_SECRET: &str = "/api/webchat/v2/schedules/{schedule_id}/secret";
 pub const WEBUI_V2_ROUTE_PROFILES_LIST: &str = "webui.v2.profiles.list";
 pub const WEBUI_V2_ROUTE_PROFILE_CREATE: &str = "webui.v2.profiles.create";
 pub const WEBUI_V2_ROUTE_PROFILE_GET: &str = "webui.v2.profiles.get";
@@ -438,6 +453,46 @@ pub fn webui_v2_routes_with_artifact_flags(
         orchestrator_thread_merge_back_descriptor(),
         orchestrator_task_descriptor(),
         orchestrator_task_cancel_descriptor(),
+        schedule_route_descriptor(
+            WEBUI_V2_ROUTE_SCHEDULES_LIST,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_SCHEDULES,
+        ),
+        schedule_route_descriptor(
+            WEBUI_V2_ROUTE_SCHEDULE_CREATE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SCHEDULES,
+        ),
+        schedule_route_descriptor(
+            WEBUI_V2_ROUTE_SCHEDULE_PREVIEW,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SCHEDULE_PREVIEW,
+        ),
+        schedule_route_descriptor(
+            WEBUI_V2_ROUTE_SCHEDULE_UPDATE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SCHEDULE,
+        ),
+        schedule_route_descriptor(
+            WEBUI_V2_ROUTE_SCHEDULE_DELETE,
+            NetworkMethod::Delete,
+            WEBUI_V2_PATTERN_SCHEDULE,
+        ),
+        schedule_route_descriptor(
+            WEBUI_V2_ROUTE_SCHEDULE_RUN,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SCHEDULE_RUN,
+        ),
+        schedule_route_descriptor(
+            WEBUI_V2_ROUTE_SCHEDULE_ROTATE_SECRET,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SCHEDULE_ROTATE_SECRET,
+        ),
+        schedule_route_descriptor(
+            WEBUI_V2_ROUTE_SCHEDULE_SECRET,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_SCHEDULE_SECRET,
+        ),
         profile_route_descriptor(
             WEBUI_V2_ROUTE_PROFILES_LIST,
             NetworkMethod::Get,
@@ -1742,6 +1797,16 @@ fn orchestrator_task_cancel_descriptor() -> IngressRouteDescriptor {
             AllowedEffectPath::ProductSurface,
         ),
     )
+}
+
+/// Schedule routes: reads on the read policy; writes carry a prompt (at
+/// most 32 KiB, escaped as JSON), so 64 KiB bodies.
+fn schedule_route_descriptor(
+    route_id: &'static str,
+    method: NetworkMethod,
+    pattern: &'static str,
+) -> IngressRouteDescriptor {
+    profile_route_descriptor(route_id, method, pattern)
 }
 
 /// Profile routes: reads on the read policy; writes carry SOUL.md (at most

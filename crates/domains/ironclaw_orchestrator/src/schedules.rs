@@ -53,10 +53,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS orch_schedules_request ON orch_schedules(threa
 "#;
 
 /// Columns added after the table first shipped, with their definitions.
-const ADDED_COLUMNS: [(&str, &str); 3] = [
+const ADDED_COLUMNS: [(&str, &str); 6] = [
     ("new_thread", "INTEGER NOT NULL DEFAULT 0"),
     ("webhook_token", "TEXT"),
     ("signature", "TEXT"),
+    ("last_run_thread_id", "TEXT"),
+    ("last_delivery_at", "INTEGER"),
+    ("last_delivery_status", "TEXT"),
 ];
 
 /// Bring an existing `orch_schedules` up to the current columns.
@@ -133,11 +136,17 @@ pub struct ScheduleRecord {
     /// Webhook schedules: the optional HMAC-SHA256 check
     /// (`{header, encoding, prefix, secret}`).
     pub signature: Option<Value>,
+    /// The thread the latest run was posted into.
+    pub last_run_thread_id: Option<ThreadId>,
+    /// Webhook schedules: when the latest request bearing the right token
+    /// arrived, and how it was answered (`crate::schedule_webhooks`).
+    pub last_delivery_at: Option<Millis>,
+    pub last_delivery_status: Option<String>,
 }
 
 const COLS: &str = "id, tenant_id, user_id, thread_id, title, prompt, spec, enabled, next_run_at, \
                     last_run_at, run_count, last_error, created_at, new_thread, webhook_token, \
-                    signature";
+                    signature, last_run_thread_id, last_delivery_at, last_delivery_status";
 
 fn schedule_row(row: &libsql::Row) -> Result<ScheduleRecord> {
     let mut c = Cols::new(row);
@@ -161,6 +170,9 @@ fn schedule_row(row: &libsql::Row) -> Result<ScheduleRecord> {
             .otext()?
             .map(|raw| serde_json::from_str(&raw))
             .transpose()?,
+        last_run_thread_id: c.otext()?.map(ThreadId::new).transpose()?,
+        last_delivery_at: c.oint()?,
+        last_delivery_status: c.otext()?,
     })
 }
 
@@ -237,7 +249,9 @@ impl Engine {
             .await
     }
 
-    fn schedule_view(&self, r: &ScheduleRecord) -> Value {
+    /// `reveal_url`: the URL carries the webhook's token, so the desktop
+    /// list shows a masked one and reveals it on request.
+    fn schedule_view(&self, r: &ScheduleRecord, reveal_url: bool) -> Value {
         let describe = if is_webhook(&r.spec) {
             "on each webhook request".to_string()
         } else {
@@ -252,9 +266,17 @@ impl Engine {
             "bindToCurrentThread": !r.new_thread,
             "nextRunAt": r.next_run_at, "lastRunAt": r.last_run_at, "runCount": r.run_count,
             "lastError": r.last_error, "createdAt": r.created_at,
+            "lastRunThreadId": r.last_run_thread_id.as_ref().map(ThreadId::as_str),
+            "lastDelivery": r.last_delivery_status.as_ref().map(|status| {
+                json!({"status": status, "at": r.last_delivery_at})
+            }),
         });
         if is_webhook(&r.spec) {
-            view["webhookUrl"] = json!(self.webhook_url(r));
+            if reveal_url {
+                view["webhookUrl"] = json!(self.webhook_url(r));
+            } else {
+                view["webhookUrlMasked"] = json!(self.webhook_url_masked(r));
+            }
             // The secret never leaves the store.
             view["signature"] = r.signature.as_ref().map_or(Value::Null, |s| {
                 json!({"header": s["header"], "encoding": s["encoding"], "prefix": s["prefix"], "hasSecret": true})
@@ -269,26 +291,26 @@ impl Engine {
             .schedule(id)
             .await?
             .ok_or_else(|| OrchestratorError::Store("schedule row vanished after write".into()))?;
-        Ok(json!({"ok": true, "schedule": self.schedule_view(&record)}))
+        Ok(json!({"ok": true, "schedule": self.schedule_view(&record, true)}))
     }
 
     async fn schedule_list(&self, ctx: &CallContext) -> Result<Value> {
-        let rows = self
-            .store
+        let rows = self.owned_schedules(&ctx.scope).await?;
+        let views: Vec<Value> = rows.iter().map(|r| self.schedule_view(r, true)).collect();
+        Ok(json!({"ok": true, "schedules": views}))
+    }
+
+    async fn owned_schedules(&self, scope: &ThreadScope) -> Result<Vec<ScheduleRecord>> {
+        self.store
             .rows(
                 &format!(
                     "SELECT {COLS} FROM orch_schedules WHERE tenant_id = ?1 AND user_id = ?2 \
                      ORDER BY created_at"
                 ),
-                vec![
-                    s(ctx.scope.tenant_id.as_str()),
-                    s(ctx.scope.user_id.as_str()),
-                ],
+                vec![s(scope.tenant_id.as_str()), s(scope.user_id.as_str())],
                 schedule_row,
             )
-            .await?;
-        let views: Vec<Value> = rows.iter().map(|r| self.schedule_view(r)).collect();
-        Ok(json!({"ok": true, "schedules": views}))
+            .await
     }
 
     fn check_schedule_text(planner: &dyn SchedulePlanner, prompt: &str) -> Result<String> {
@@ -461,8 +483,8 @@ impl Engine {
         self.store
             .exec(
                 "UPDATE orch_schedules SET last_run_at = ?2, run_count = run_count + 1, \
-                 last_error = NULL WHERE id = ?1",
-                vec![s(r.id.as_str()), now.into()],
+                 last_error = NULL, last_run_thread_id = ?3 WHERE id = ?1",
+                vec![s(r.id.as_str()), now.into(), s(target.as_str())],
             )
             .await?;
         Ok((id, target))
@@ -549,6 +571,130 @@ impl Engine {
             self.post_schedule(&r, &r.prompt, now).await?;
         }
         Ok(())
+    }
+}
+
+/// Slots a preview shows.
+const PREVIEW_RUNS: usize = 3;
+
+/// The desktop's schedule surface (the product tier's `orchestrator.schedule*`
+/// operations). Ownership is the caller's tenant and user, as for the tool.
+impl Engine {
+    /// One `t3_schedule` action on behalf of `ctx` (`create` posts into
+    /// `ctx.thread_id`, which the caller has already checked it owns).
+    pub async fn schedule_action(&self, ctx: &CallContext, args: Value) -> Result<Value> {
+        let args: ScheduleArgs = serde_json::from_value(args)
+            .map_err(|e| OrchestratorError::invalid(format!("bad schedule request: {e}")))?;
+        self.schedule_tool(ctx, args).await
+    }
+
+    /// Every schedule of `scope`'s user, with webhook URLs masked.
+    pub async fn schedule_list_for(&self, scope: &ThreadScope) -> Result<Value> {
+        let rows = self.owned_schedules(scope).await?;
+        let mut views = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let mut view = self.schedule_view(r, false);
+            // The run's profile and model live on the schedule's thread.
+            if let Some(thread) = self.store.thread(&r.thread_id).await? {
+                view["profileId"] = json!(thread.profile_id.as_ref().map(|p| p.as_str()));
+                view["provider"] = json!(thread.provider);
+                view["model"] = json!(thread.model);
+            }
+            views.push(view);
+        }
+        Ok(json!({"ok": true, "schedules": views}))
+    }
+
+    /// Validate a schedule (and optionally its prompt) without storing
+    /// anything: the canonical spec, its label and the next fire times.
+    pub fn schedule_preview(&self, raw: &Value, prompt: Option<&str>) -> Result<Value> {
+        let planner = self.planner()?;
+        if let Some(prompt) = prompt {
+            Self::check_schedule_text(&*planner, prompt)?;
+        }
+        let spec = normalize_spec(&*planner, raw)?;
+        let mut runs = Vec::new();
+        if !is_webhook(&spec) {
+            let mut at = now_ms();
+            let mut last = None;
+            while runs.len() < PREVIEW_RUNS {
+                let Some(next) = planner.next_after(&spec, last, at)? else {
+                    break;
+                };
+                runs.push(next);
+                last = Some(next);
+                at = next;
+            }
+        }
+        let describe = if is_webhook(&spec) {
+            "on each webhook request".to_string()
+        } else {
+            planner.describe(&spec)
+        };
+        Ok(json!({"ok": true, "schedule": spec, "describe": describe, "nextRuns": runs}))
+    }
+
+    async fn schedule_owned_by(
+        &self,
+        scope: &ThreadScope,
+        id: &ScheduleId,
+    ) -> Result<ScheduleRecord> {
+        match self.schedule(id).await? {
+            Some(r) if r.tenant_id == scope.tenant_id && r.user_id == scope.user_id => Ok(r),
+            _ => Err(OrchestratorError::not_found(
+                "schedule_not_found",
+                format!("No schedule {id} for this user."),
+            )),
+        }
+    }
+
+    /// The webhook's full URL and signing secret. Only the desktop's
+    /// explicit Reveal asks for this; the tool never returns the secret.
+    pub async fn schedule_reveal(&self, scope: &ThreadScope, id: &ScheduleId) -> Result<Value> {
+        let r = self.schedule_owned_by(scope, id).await?;
+        if !is_webhook(&r.spec) {
+            return Err(OrchestratorError::invalid(
+                "only webhook schedules have a secret",
+            ));
+        }
+        Ok(json!({
+            "ok": true,
+            "id": r.id.as_str(),
+            "webhookUrl": self.webhook_url(&r),
+            "signature": r.signature,
+        }))
+    }
+
+    /// A fresh signing secret for a webhook schedule; the URL stays. A
+    /// webhook without a signature gains the desktop's default one.
+    pub async fn schedule_rotate_secret(
+        &self,
+        scope: &ThreadScope,
+        id: &ScheduleId,
+    ) -> Result<Value> {
+        let r = self.schedule_owned_by(scope, id).await?;
+        if !is_webhook(&r.spec) {
+            return Err(OrchestratorError::invalid(
+                "only webhook schedules have a secret",
+            ));
+        }
+        let mut raw = r.signature.clone().unwrap_or_else(|| {
+            json!({"header": crate::schedule_webhooks::DEFAULT_SIGNATURE_HEADER, "prefix": "sha256=", "encoding": "hex"})
+        });
+        raw["secret"] = Value::Null;
+        raw["generate"] = json!(true);
+        let signature = crate::schedule_webhooks::check_signature(&r.spec, Some(&raw))?;
+        self.store
+            .exec(
+                "UPDATE orch_schedules SET signature = ?2, updated_at = ?3 WHERE id = ?1",
+                vec![
+                    s(r.id.as_str()),
+                    opt_json(signature.as_ref())?,
+                    now_ms().into(),
+                ],
+            )
+            .await?;
+        self.schedule_readback(&r.id).await
     }
 }
 

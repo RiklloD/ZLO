@@ -24,6 +24,8 @@ use crate::store::s;
 
 /// Path prefix of the webhook route; the last segment is `<id>.<token>`.
 pub const WEBHOOK_PATH_PREFIX: &str = "/api/orchestrator/webhooks/";
+/// The signature header the desktop's webhook schedules use.
+pub const DEFAULT_SIGNATURE_HEADER: &str = "x-zlo-signature";
 /// Largest request body a webhook accepts.
 pub const MAX_WEBHOOK_BODY_BYTES: usize = 64 * 1024;
 /// Same bound as a stored prompt.
@@ -78,6 +80,8 @@ pub(crate) fn new_token() -> String {
 }
 
 /// Validate a `signature` argument against the spec; `None` clears it.
+/// `generate: true` (and no `secret`) makes the backend pick the secret, so
+/// it is never typed into a chat or a tool call.
 pub(crate) fn check_signature(spec: &Value, raw: Option<&Value>) -> Result<Option<Value>> {
     let Some(raw) = raw.filter(|v| !v.is_null()) else {
         return Ok(None);
@@ -92,9 +96,19 @@ pub(crate) fn check_signature(spec: &Value, raw: Option<&Value>) -> Result<Optio
         .filter(|h| !h.is_empty())
         .ok_or_else(|| OrchestratorError::invalid("signature.header is required"))?
         .to_ascii_lowercase();
-    let secret = text("secret")
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| OrchestratorError::invalid("signature.secret is required"))?;
+    let generated;
+    let secret = match text("secret").filter(|v| !v.is_empty()) {
+        Some(secret) => secret,
+        None if raw.get("generate").and_then(Value::as_bool) == Some(true) => {
+            generated = new_token();
+            generated.as_str()
+        }
+        None => {
+            return Err(OrchestratorError::invalid(
+                "signature.secret is required (or generate: true)",
+            ));
+        }
+    };
     let encoding = match text("encoding").unwrap_or("hex") {
         e @ ("hex" | "base64") => e,
         _ => {
@@ -214,6 +228,30 @@ impl Engine {
         Some(format!("{base}{WEBHOOK_PATH_PREFIX}{}.{token}", r.id))
     }
 
+    /// The URL with its token hidden, for lists.
+    pub(crate) fn webhook_url_masked(&self, r: &ScheduleRecord) -> Option<String> {
+        let base = self.webhook_base.get()?;
+        r.webhook_token.as_deref()?;
+        Some(format!("{base}{WEBHOOK_PATH_PREFIX}{}.••••", r.id))
+    }
+
+    /// Note how a request bearing the schedule's token was answered. Only
+    /// holders of the URL reach this, so strangers cannot write the row.
+    async fn note_delivery(&self, record: &ScheduleRecord, status: &str) {
+        let noted = self
+            .store
+            .exec(
+                "UPDATE orch_schedules SET last_delivery_at = ?2, last_delivery_status = ?3 \
+                 WHERE id = ?1",
+                vec![s(record.id.as_str()), now_ms().into(), s(status)],
+            )
+            .await;
+        if let Err(error) = noted {
+            // silent-ok: the delivery status is advisory; the request's answer stands.
+            tracing::debug!(%error, schedule = %record.id, "webhook delivery status not saved");
+        }
+    }
+
     /// Run the webhook schedule named by the URL's last segment
     /// (`<id>.<token>`) for one request.
     pub async fn fire_webhook(
@@ -238,9 +276,11 @@ impl Engine {
         if let Some(signature) = &record.signature
             && !signature_ok(signature, request)
         {
+            self.note_delivery(&record, "unauthorized").await;
             return Err(WebhookRefusal::Unauthorized);
         }
         if !record.enabled {
+            self.note_delivery(&record, "paused").await;
             return Err(WebhookRefusal::Paused);
         }
         let prompt = render(&record.prompt, request);
@@ -259,12 +299,13 @@ impl Engine {
                     vec![s(record.id.as_str()), s(error.to_string())],
                 )
                 .await; // silent-ok: the refusal itself is the answer; last_error is advisory
+            self.note_delivery(&record, "rejected").await;
             return Err(WebhookRefusal::Rejected);
         }
-        let (queued, thread) = self
-            .post_schedule(&record, &prompt, now_ms())
-            .await
-            .map_err(|error| internal("webhook post", &error))?;
+        let posted = self.post_schedule(&record, &prompt, now_ms()).await;
+        self.note_delivery(&record, if posted.is_ok() { "accepted" } else { "failed" })
+            .await;
+        let (queued, thread) = posted.map_err(|error| internal("webhook post", &error))?;
         Ok(json!({"ok": true, "queuedId": queued.as_str(), "threadId": thread.as_str()}))
     }
 }
