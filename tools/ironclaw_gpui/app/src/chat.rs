@@ -802,7 +802,7 @@ impl ChatView {
         if let Some(end @ (RunEnd::Completed | RunEnd::Failed)) = ended {
             if end == RunEnd::Failed {
                 tracing::warn!(thread_id = %self.thread_id, "run failed");
-                crate::voice::reply_failed(cx);
+                crate::voice::reply_failed(&self.thread_id, cx);
             }
             if end == RunEnd::Completed {
                 crate::voice::reply_finished(&self.thread_id, &self.rows, cx);
@@ -1049,6 +1049,9 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Talk mode sent this from a composer that is now gone (new-thread
+        // screen, quick composer): it listens here next.
+        crate::voice::thread_created(&self.thread_id, &self.composer, window.window_handle(), cx);
         self.staged = files;
         self.arrive = true;
         crate::design::dock::take_off(cx.reduce_motion());

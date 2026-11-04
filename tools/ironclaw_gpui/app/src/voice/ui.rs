@@ -39,10 +39,16 @@ pub(crate) fn composer_controls(
         "Dictate".to_string()
     };
     let target = input.clone();
+    let mic_thread = thread.map(str::to_string);
     let mut mic = round_button("voice-mic", IconName::Mic, dictating, mic_label, cx)
         .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
         .on_click(move |_, window, cx| {
-            super::toggle_dictation(target.clone(), window.window_handle(), cx)
+            super::toggle_dictation(
+                target.clone(),
+                window.window_handle(),
+                mic_thread.clone(),
+                cx,
+            )
         })
         .into_any_element();
     if let Some(thread) = thread {
@@ -70,6 +76,7 @@ pub(crate) fn composer_controls(
             .into_any_element();
     }
     let talk_target = input.clone();
+    let talk_thread = thread.map(str::to_string);
     let talk_button = round_button(
         "voice-talk",
         ExtraIcon::AudioLines,
@@ -86,7 +93,12 @@ pub(crate) fn composer_controls(
         .build(w, cx)
     })
     .on_click(move |_, window, cx| {
-        super::toggle_talk(Some(talk_target.clone()), Some(window.window_handle()), cx)
+        super::toggle_talk(
+            Some(talk_target.clone()),
+            Some(window.window_handle()),
+            talk_thread.clone(),
+            cx,
+        )
     });
     // Speaking shows everywhere (a reply read aloud has no composer); the
     // rest only on the composer voice is typing into.

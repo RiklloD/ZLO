@@ -22,9 +22,11 @@ mod apple;
 mod composer;
 mod coordinator;
 mod engine;
+mod mic;
 mod ptt;
 mod speakable;
 mod transcript;
+mod turn;
 pub(crate) mod ui;
 mod wake;
 
@@ -40,6 +42,8 @@ use serde::{Deserialize, Serialize};
 use self::composer::{Live, Target};
 use self::coordinator::{Coordinator, Effect, Input, Mode, Purpose, TalkPhase, Timing};
 use self::engine::{PrivacyPane, SpeechSynthesizer, SpeechToText, SttConfig, SttEvent, SttSink};
+use self::mic::{Mic, Start};
+use self::turn::PendingTurn;
 use crate::ui::*;
 use crate::workspace::Workspace;
 
@@ -47,9 +51,6 @@ pub(crate) use self::ptt::KEYS as HOTKEYS;
 
 const TICK: Duration = Duration::from_millis(200);
 const SPEECH_POLL: Duration = Duration::from_millis(250);
-/// A session that ends this fast without a word is a failure, so a
-/// recognizer that refuses to run cannot spin the mic in a loop.
-const MIN_SESSION: Duration = Duration::from_secs(1);
 /// The wake recognizer restarts past this much text, keeping it light.
 const WAKE_TEXT_LIMIT: usize = 240;
 
@@ -184,14 +185,13 @@ struct Voice {
     workspace: WeakEntity<Workspace>,
     window: AnyWindowHandle,
     coord: Coordinator,
-    stt: Box<dyn SpeechToText>,
+    /// The engine behind its session gate.
+    mic: Mic,
     tts: Box<dyn SpeechSynthesizer>,
     sink: SttSink,
     _events: Task<()>,
-    /// The current mic session; events from older ones are dropped.
-    session: u64,
-    session_started: Instant,
-    session_words: bool,
+    /// The talk-mode message waiting for its reply.
+    turn: PendingTurn,
     /// The recognizer's latest full transcript.
     heard: String,
     live: Option<Live>,
@@ -199,7 +199,6 @@ struct Voice {
     target: Option<Target>,
     tick: Option<Task<()>>,
     speech_poll: Option<Task<()>>,
-    authorizing: bool,
     _hotkey: Option<HotkeyArm>,
     notice: Option<Notice>,
 }
@@ -241,19 +240,16 @@ pub(crate) fn start(workspace: WeakEntity<Workspace>, window: AnyWindowHandle, c
         workspace,
         window,
         coord: Coordinator::new(prefs.timing(), now),
-        stt,
+        mic: Mic::new(stt, now),
         tts,
         sink,
         _events: listen,
-        session: 0,
-        session_started: now,
-        session_words: false,
+        turn: PendingTurn::default(),
         heard: String::new(),
         live: None,
         target: None,
         tick: None,
         speech_poll: None,
-        authorizing: false,
         _hotkey: None,
         notice: None,
     });
@@ -321,13 +317,16 @@ pub(crate) fn dismiss_notice(cx: &mut App) {
 pub(crate) fn toggle_dictation(
     input: Entity<TextareaState>,
     window: AnyWindowHandle,
+    thread: Option<String>,
     cx: &mut App,
 ) {
     cx.defer(move |cx| {
+        // A click that starts a dictation (also from wake listening, where
+        // the mic is already on) types into the clicked composer.
         if let Some(v) = voice_mut(cx)
-            && !v.coord.mic_on()
+            && v.coord.starts_dictation()
         {
-            v.target = Some(Target::new(&input, window));
+            v.target = Some(Target::new(&input, window, thread));
         }
         send(cx, Input::MicClicked);
     });
@@ -337,6 +336,7 @@ pub(crate) fn toggle_dictation(
 pub(crate) fn toggle_talk(
     input: Option<Entity<TextareaState>>,
     window: Option<AnyWindowHandle>,
+    thread: Option<String>,
     cx: &mut App,
 ) {
     cx.defer(move |cx| {
@@ -344,7 +344,7 @@ pub(crate) fn toggle_talk(
             && let Some(v) = voice_mut(cx)
             && !matches!(v.coord.mode(), Mode::Talk(_))
         {
-            v.target = Some(Target::new(&input, window));
+            v.target = Some(Target::new(&input, window, thread));
         }
         send(cx, Input::TalkToggled);
     });
@@ -372,42 +372,69 @@ pub(crate) fn toggle_read_aloud(thread: &str, cx: &mut App) {
     });
 }
 
-/// A chat's run finished with `rows` on screen: speak the reply if talk
-/// mode waits for it or the thread reads aloud.
+/// A chat's run finished with `rows` on screen: speak the reply if it
+/// answers talk mode's own message, or if the thread reads aloud.
 pub(crate) fn reply_finished(thread: &str, rows: &[Row], cx: &mut App) {
-    if !cx.has_global::<Voice>() {
+    let Some(v) = cx.try_global::<Voice>() else {
         return;
-    }
-    let waiting = matches!(
-        cx.global::<Voice>().coord.mode(),
-        Mode::Talk(TalkPhase::Thinking)
-    );
-    if !waiting && !VoicePrefs::of(cx).reads(thread) {
+    };
+    let token = talk_answer(v, thread);
+    if token.is_none() && !VoicePrefs::of(cx).reads(thread) {
         return;
     }
     let spoken = last_reply(rows)
         .map(speakable::speakable)
         .unwrap_or_default();
-    cx.defer(move |cx| {
-        if waiting {
-            send(cx, Input::ReplyFinished(spoken));
-        } else {
-            send(cx, Input::ReadAloud(spoken));
-        }
+    cx.defer(move |cx| match token {
+        Some(token) => answer(token, spoken, cx),
+        None => send(cx, Input::ReadAloud(spoken)),
     });
 }
 
-/// A chat's run failed: talk mode says so and listens again.
-pub(crate) fn reply_failed(cx: &mut App) {
-    if cx.has_global::<Voice>()
-        && cx.global::<Voice>().coord.mode() == Mode::Talk(TalkPhase::Thinking)
+/// A chat's run failed: if it was talk mode's turn, say so and listen again.
+pub(crate) fn reply_failed(thread: &str, cx: &mut App) {
+    let Some(token) = cx
+        .try_global::<Voice>()
+        .and_then(|v| talk_answer(v, thread))
+    else {
+        return;
+    };
+    cx.defer(move |cx| answer(token, "That run failed. See the screen.".into(), cx));
+}
+
+/// The pending talk turn's token when `thread` answers it.
+fn talk_answer(v: &Voice, thread: &str) -> Option<u64> {
+    (v.coord.mode() == Mode::Talk(TalkPhase::Thinking))
+        .then(|| v.turn.answers(thread))
+        .flatten()
+}
+
+/// Deliver a talk-mode answer unless the turn moved on since it was taken.
+fn answer(token: u64, spoken: String, cx: &mut App) {
+    let Some(v) = voice_mut(cx) else {
+        return;
+    };
+    if !v.turn.current(token) || v.coord.mode() != Mode::Talk(TalkPhase::Thinking) {
+        return;
+    }
+    v.turn.clear();
+    send(cx, Input::ReplyFinished(spoken));
+}
+
+/// A new thread got its first message in `composer` (both the new-thread
+/// screen and the quick composer end here). If talk mode sent it, the turn
+/// waits for this thread and talk mode listens in its composer next: the
+/// composer that sent it is gone.
+pub(crate) fn thread_created(
+    thread: &str,
+    composer: &Entity<TextareaState>,
+    window: AnyWindowHandle,
+    cx: &mut App,
+) {
+    if let Some(v) = voice_mut(cx)
+        && v.turn.claim_new(thread)
     {
-        cx.defer(|cx| {
-            send(
-                cx,
-                Input::ReplyFinished("That run failed. See the screen.".into()),
-            )
-        });
+        v.target = Some(Target::new(composer, window, Some(thread.to_string())));
     }
 }
 
@@ -463,11 +490,18 @@ fn follow_mode(cx: &mut App) {
         });
         cx.global_mut::<Voice>().tick = Some(tick);
     }
+    let v = cx.global_mut::<Voice>();
+    if !matches!(v.coord.mode(), Mode::Talk(_)) {
+        v.turn.clear();
+    }
     // Words now go to a composer (dictation start, a barge-in, wake
-    // capture): link one and type what was heard so far.
+    // capture): link one and type what was heard so far. A composer that
+    // went away (sent draft, closed quick composer) is replaced by the one
+    // in front.
     let v = cx.global::<Voice>();
     if v.coord.routes_text() && v.live.is_none() {
-        let Some(target) = v.target.clone().or_else(|| resolve(false, cx)) else {
+        let live_target = v.target.clone().filter(Target::alive);
+        let Some(target) = live_target.or_else(|| resolve(false, cx)) else {
             return;
         };
         let v = cx.global_mut::<Voice>();
@@ -483,8 +517,8 @@ fn follow_mode(cx: &mut App) {
 fn run(effect: Effect, cx: &mut App) {
     match effect {
         Effect::StartMic(purpose) => start_mic(purpose, cx),
-        Effect::StopMic => cx.global_mut::<Voice>().stt.stop(),
-        Effect::EndAudio => cx.global_mut::<Voice>().stt.end_audio(),
+        Effect::StopMic => cx.global_mut::<Voice>().mic.stop(),
+        Effect::EndAudio => cx.global_mut::<Voice>().mic.end_audio(),
         Effect::Commit => {
             with_live(cx, |live, cx| live.commit(cx));
             cx.global_mut::<Voice>().live = None;
@@ -494,7 +528,13 @@ fn run(effect: Effect, cx: &mut App) {
             cx.global_mut::<Voice>().live = None;
         }
         Effect::Send => {
-            if let Some(target) = cx.global::<Voice>().target.clone() {
+            let v = cx.global_mut::<Voice>();
+            if let Some(target) = v.target.clone() {
+                // Talk mode sends as it starts thinking: wait for this
+                // thread (or the one this composer creates).
+                if v.coord.mode() == Mode::Talk(TalkPhase::Thinking) {
+                    v.turn.sent(target.thread.clone());
+                }
                 target.send(cx);
             }
         }
@@ -541,7 +581,7 @@ fn resolve(open_quick: bool, cx: &mut App) -> Option<Target> {
         })
         .ok()
         .flatten()
-        .map(|(input, window)| Target::new(&input, window))
+        .map(|(input, window, thread)| Target::new(&input, window, thread))
 }
 
 /// The heard text that belongs in the composer (after the wake phrase in
@@ -559,59 +599,72 @@ fn routed_text(cx: &App) -> String {
 
 fn start_mic(purpose: Purpose, cx: &mut App) {
     let v = cx.global_mut::<Voice>();
-    v.stt.stop();
     v.live = None;
     v.heard.clear();
-    v.session += 1;
-    v.session_started = Instant::now();
-    v.session_words = false;
-    if matches!(purpose, Purpose::Dictation | Purpose::Talk) && v.target.is_none() {
+    let needs_target = matches!(purpose, Purpose::Dictation | Purpose::Talk)
+        && !v.target.as_ref().is_some_and(Target::alive);
+    if needs_target {
         let target = resolve(false, cx);
         cx.global_mut::<Voice>().target = target;
     }
-    #[cfg(target_os = "macos")]
-    if !apple::authorized() {
-        // The first use asks macOS; the mic starts once both are granted.
-        if cx.global::<Voice>().authorizing {
-            return;
+    let config = mic_config(purpose, cx);
+    let v = cx.global_mut::<Voice>();
+    let sink = v.sink.clone();
+    match v
+        .mic
+        .start(purpose, authorized(), &config, sink, Instant::now())
+    {
+        Start::Opened => tracing::debug!(?purpose, "voice: mic on"),
+        Start::Waiting => {}
+        Start::Failed(failure) => fail(failure, cx),
+        Start::Authorize => {
+            // The first use asks macOS. The mic opens on a yes only if that
+            // start is still current (nothing stopped or replaced it) and
+            // the mode still wants that session.
+            #[cfg(target_os = "macos")]
+            cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+                let result = apple::authorize().await;
+                cx.update(|cx| {
+                    let Some(v) = voice_mut(cx) else { return };
+                    let waiting = v.mic.authorized();
+                    match (result, waiting) {
+                        (Ok(()), Some(purpose)) if v.coord.mic_purpose() == Some(purpose) => {
+                            let config = mic_config(purpose, cx);
+                            let v = cx.global_mut::<Voice>();
+                            let sink = v.sink.clone();
+                            if let Err(failure) = v.mic.open(&config, sink, Instant::now()) {
+                                fail(failure, cx);
+                            }
+                        }
+                        (Ok(()), _) => {}
+                        (Err(failure), Some(_)) => fail(failure, cx),
+                        // Denied for a start nobody waits for any more:
+                        // only say why.
+                        (Err(failure), None) => {
+                            v.notice = Some(Notice {
+                                text: failure.message,
+                                pane: failure.pane,
+                            });
+                        }
+                    }
+                    cx.refresh_windows();
+                });
+            })
+            .detach();
         }
-        cx.global_mut::<Voice>().authorizing = true;
-        let session = cx.global::<Voice>().session;
-        cx.spawn(async move |cx| {
-            let result = apple::authorize().await;
-            cx.update(|cx| {
-                cx.global_mut::<Voice>().authorizing = false;
-                match result {
-                    // Still wanted (nothing moved on meanwhile)?
-                    Ok(()) if cx.global::<Voice>().session == session => open_mic(purpose, cx),
-                    Ok(()) => {}
-                    Err(failure) => fail(failure, cx),
-                }
-            });
-        })
-        .detach();
-        return;
     }
-    open_mic(purpose, cx);
 }
 
-fn open_mic(purpose: Purpose, cx: &mut App) {
+fn mic_config(purpose: Purpose, cx: &App) -> SttConfig {
     let prefs = VoicePrefs::of(cx);
     let mut hints = vec!["ZLO".to_string()];
     if purpose == Purpose::Wake {
         hints.push(prefs.wake_phrase.clone());
     }
-    let config = SttConfig {
+    SttConfig {
         purpose,
         on_device_only: prefs.on_device_only,
         hints,
-    };
-    let v = cx.global_mut::<Voice>();
-    let (session, sink) = (v.session, v.sink.clone());
-    if let Err(failure) = v.stt.start(session, &config, sink) {
-        fail(failure, cx);
-    } else {
-        tracing::debug!(?purpose, session, "voice: mic on");
     }
 }
 
@@ -636,22 +689,16 @@ fn on_stt(session: u64, event: SttEvent, cx: &mut App) {
     let Some(v) = voice_mut(cx) else {
         return;
     };
-    if session != v.session {
+    // Stale sessions are dropped; an end tears the session down here.
+    let Some(event) = v.mic.accept(session, event, Instant::now()) else {
         return;
-    }
+    };
     match event {
         SttEvent::Partial(text) | SttEvent::Final(text)
             if text.is_empty() && v.heard.is_empty() => {}
         SttEvent::Partial(text) => heard(text, false, cx),
         SttEvent::Final(text) => heard(text, true, cx),
-        SttEvent::Ended { mut error, fatal } => {
-            if error.is_none()
-                && !v.session_words
-                && v.session_started.elapsed() < MIN_SESSION
-                && v.coord.mic_on()
-            {
-                error = Some("the recognizer stopped right away".into());
-            }
+        SttEvent::Ended { error, fatal } => {
             send(cx, Input::RecognizerEnded { error, fatal });
         }
     }
@@ -673,7 +720,6 @@ fn heard(text: String, is_final: bool, cx: &mut App) {
     }
     let routed = routed_text(cx);
     let words = !routed.trim().is_empty();
-    cx.global_mut::<Voice>().session_words |= words;
     if cx.global::<Voice>().coord.routes_text() {
         with_live(cx, |live, cx| {
             if is_final {
@@ -730,6 +776,11 @@ fn speak(text: &str, cx: &mut App) {
 /// (Re)arm the push-to-talk watcher to match the preferences.
 fn arm_hotkey(cx: &mut App) {
     let prefs = VoicePrefs::of(cx);
+    // The old watcher may be mid-hold: no release will come from it, so
+    // end that take before dropping it.
+    if cx.global::<Voice>()._hotkey.is_some() {
+        send(cx, Input::HotkeyLost);
+    }
     let v = cx.global_mut::<Voice>();
     v._hotkey = None;
     if !prefs.hotkey_enabled {
@@ -749,7 +800,7 @@ fn arm_hotkey(cx: &mut App) {
                     cx.update(|cx| {
                         if input == Input::HotkeyDown
                             && let Some(v) = voice_mut(cx)
-                            && !v.coord.mic_on()
+                            && v.coord.starts_dictation()
                         {
                             // Aim at whatever is in front now.
                             v.target = None;
@@ -759,6 +810,8 @@ fn arm_hotkey(cx: &mut App) {
                         send(cx, input)
                     });
                 }
+                // The watcher thread stopped: a held take has no release.
+                cx.update(|cx| send(cx, Input::HotkeyLost));
             });
             cx.global_mut::<Voice>()._hotkey = Some(HotkeyArm {
                 _watcher: watcher,

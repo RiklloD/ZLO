@@ -87,6 +87,9 @@ pub(crate) enum Input {
     HotkeyUp,
     /// The key turned out to be part of a chord (Option+E): drop the take.
     HotkeyCancel,
+    /// The push-to-talk watcher went away (shortcut changed or turned
+    /// off) while the key may be held: no release will ever come.
+    HotkeyLost,
     MicClicked,
     TalkToggled,
     /// Escape, the pill's ✕, or the Stop button.
@@ -129,6 +132,8 @@ pub(crate) struct Timing {
     pub capture_max: Duration,
     /// Talk mode with nothing said ends itself after this.
     pub talk_idle: Duration,
+    /// Hard stop for one dictation (key held or mic clicked).
+    pub dictation_max: Duration,
 }
 
 impl Default for Timing {
@@ -140,6 +145,7 @@ impl Default for Timing {
             capture_idle: Duration::from_secs(6),
             capture_max: Duration::from_secs(20),
             talk_idle: Duration::from_secs(120),
+            dictation_max: Duration::from_secs(300),
         }
     }
 }
@@ -152,6 +158,9 @@ pub(crate) struct Coordinator {
     /// When the current mode (or mic session) began.
     since: Instant,
     last_heard: Instant,
+    /// Talk mode's last sign of life (words, a reply); recognizer restarts
+    /// do not count, so a quiet talk mode still ends on time.
+    talk_active: Instant,
     /// The current utterance has words.
     words: bool,
     speaking: bool,
@@ -167,6 +176,7 @@ impl Coordinator {
             mode: Mode::Idle,
             since: now,
             last_heard: now,
+            talk_active: now,
             words: false,
             speaking: false,
             wake: false,
@@ -200,11 +210,33 @@ impl Coordinator {
     pub fn needs_tick(&self) -> bool {
         matches!(
             self.mode,
-            Mode::Finishing { .. }
+            Mode::Dictating(_)
+                | Mode::Finishing { .. }
                 | Mode::Talk(TalkPhase::Listening)
                 | Mode::WakeArmed
                 | Mode::WakeCapture
         )
+    }
+
+    /// Whether a mic click (or the key) starts a new dictation now, so the
+    /// clicked composer becomes the target.
+    pub fn starts_dictation(&self) -> bool {
+        matches!(
+            self.mode,
+            Mode::Idle | Mode::WakeListening | Mode::WakeArmed | Mode::WakeCapture
+        )
+    }
+
+    /// The mic session this mode wants open now, if any: a start that was
+    /// waiting on permission opens only if it still matches.
+    pub fn mic_purpose(&self) -> Option<Purpose> {
+        match self.mode {
+            Mode::Dictating(_) => Some(Purpose::Dictation),
+            Mode::Talk(TalkPhase::Listening) => Some(Purpose::Talk),
+            Mode::Talk(TalkPhase::Speaking) => Some(Purpose::BargeIn),
+            Mode::WakeListening | Mode::WakeArmed | Mode::WakeCapture => Some(Purpose::Wake),
+            Mode::Idle | Mode::Finishing { .. } | Mode::Talk(TalkPhase::Thinking) => None,
+        }
     }
 
     /// Whether the mic is on in this mode.
@@ -246,6 +278,14 @@ impl Coordinator {
                     self.rest(&mut fx, now);
                 }
             }
+            // No release is coming: end the take now, keeping (not sending)
+            // what was said.
+            Input::HotkeyLost => {
+                if self.mode == M::Dictating(Trigger::Hotkey) {
+                    fx.push(E::EndAudio);
+                    self.enter(M::Finishing { send: false }, now);
+                }
+            }
             Input::MicClicked => match self.mode {
                 M::Idle | M::WakeListening | M::WakeArmed => {
                     self.dictate(Trigger::Button, &mut fx, now)
@@ -270,6 +310,7 @@ impl Coordinator {
                         fx.push(E::Commit);
                     }
                     self.failures = 0;
+                    self.talk_active = now;
                     self.enter(M::Talk(TalkPhase::Listening), now);
                     self.start_mic(Purpose::Talk, &mut fx, now);
                 }
@@ -306,6 +347,7 @@ impl Coordinator {
                 self.words = words;
                 if words {
                     self.failures = 0;
+                    self.talk_active = now;
                 }
                 // Speaking over a reply interrupts it; the words already
                 // heard start the next message.
@@ -337,6 +379,7 @@ impl Coordinator {
             }
             Input::ReplyFinished(text) => {
                 if self.mode == M::Talk(TalkPhase::Thinking) {
+                    self.talk_active = now;
                     if text.trim().is_empty() {
                         self.enter(M::Talk(TalkPhase::Listening), now);
                         self.start_mic(Purpose::Talk, &mut fx, now);
@@ -385,6 +428,10 @@ impl Coordinator {
         let quiet = now.saturating_duration_since(self.last_heard);
         let t = self.timing;
         match self.mode {
+            Mode::Dictating(_) if in_mode >= t.dictation_max => {
+                fx.push(E::EndAudio);
+                self.enter(Mode::Finishing { send: false }, now);
+            }
             Mode::Finishing { send } if in_mode >= t.finish_grace => {
                 self.finalize(send, fx, now);
             }
@@ -392,7 +439,9 @@ impl Coordinator {
                 if self.words && quiet >= t.silence {
                     fx.extend([E::StopMic, E::Commit, E::Send]);
                     self.enter(Mode::Talk(TalkPhase::Thinking), now);
-                } else if !self.words && in_mode >= t.talk_idle {
+                } else if !self.words
+                    && now.saturating_duration_since(self.talk_active) >= t.talk_idle
+                {
                     self.exit_talk(fx, now);
                     fx.push(E::Notice("Talk mode ended after a quiet spell.".into()));
                 }
@@ -426,6 +475,11 @@ impl Coordinator {
 
     fn recognizer_ended(&mut self, error: Option<String>, fx: &mut Vec<Effect>, now: Instant) {
         use Effect as E;
+        // The session is over whatever happens next: tear it down first
+        // (the engine's tap would keep the mic open), then restart or rest.
+        if self.mic_on() && !matches!(self.mode, Mode::Finishing { .. }) {
+            fx.push(E::StopMic);
+        }
         match self.mode {
             Mode::Dictating(_) => {
                 fx.push(E::Commit);
@@ -496,7 +550,7 @@ impl Coordinator {
     }
 
     fn exit_talk(&mut self, fx: &mut Vec<Effect>, now: Instant) {
-        if self.mode != Mode::Talk(TalkPhase::Thinking) {
+        if self.mode != Mode::Talk(TalkPhase::Thinking) && !fx.contains(&Effect::StopMic) {
             fx.push(Effect::StopMic);
         }
         fx.push(Effect::Discard);
@@ -744,7 +798,7 @@ mod tests {
             fatal: false,
         };
         for _ in 0..MAX_FAILURES {
-            assert_eq!(t.send(fail()), vec![StartMic(Purpose::Talk)]);
+            assert_eq!(t.send(fail()), vec![StopMic, StartMic(Purpose::Talk)]);
         }
         let fx = t.send(fail());
         assert_eq!(t.c.mode(), Mode::Idle);
@@ -761,7 +815,7 @@ mod tests {
                 error: None,
                 fatal: false
             }),
-            vec![Commit, Send]
+            vec![StopMic, Commit, Send]
         );
         assert_eq!(t.c.mode(), Mode::Talk(TalkPhase::Thinking));
     }
@@ -886,5 +940,178 @@ mod tests {
             vec![StopSpeaking, StartMic(Purpose::Talk)]
         );
         assert_eq!(t.c.mode(), Mode::Talk(TalkPhase::Listening));
+    }
+
+    /// Put the coordinator in a mode where the mic is on.
+    fn setups() -> Vec<(&'static str, Vec<Input>)> {
+        vec![
+            ("hotkey dictation", vec![Input::HotkeyDown, heard()]),
+            ("button dictation", vec![Input::MicClicked]),
+            ("finishing", vec![Input::HotkeyDown, Input::HotkeyUp]),
+            ("talk with words", vec![Input::TalkToggled, heard()]),
+            ("talk without words", vec![Input::TalkToggled]),
+            (
+                "talk speaking",
+                vec![
+                    Input::TalkToggled,
+                    heard(),
+                    Input::Tick,
+                    Input::ReplyFinished("Hi.".into()),
+                ],
+            ),
+            ("wake listening", vec![Input::SetWake(true)]),
+            ("wake armed", vec![Input::SetWake(true), Input::WakePhrase]),
+            (
+                "wake capture with words",
+                vec![
+                    Input::SetWake(true),
+                    Input::WakePhrase,
+                    Input::Tick,
+                    heard(),
+                ],
+            ),
+            (
+                "wake capture without words",
+                vec![Input::SetWake(true), Input::WakePhrase, Input::Tick],
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_recognizer_end_tears_the_session_down() {
+        for error in [None, Some("glitch".to_string())] {
+            for (name, inputs) in setups() {
+                let mut t = Clock::new();
+                for input in inputs {
+                    // Spaced so ticks fire their timers.
+                    t.at(2100, input);
+                }
+                assert!(t.c.mic_on(), "{name}: setup leaves the mic on");
+                let fx = t.send(Input::RecognizerEnded {
+                    error: error.clone(),
+                    fatal: false,
+                });
+                let stop = fx.iter().position(|e| *e == StopMic);
+                assert!(stop.is_some(), "{name} ({error:?}): no StopMic in {fx:?}");
+                if let Some(start) = fx.iter().position(|e| matches!(e, StartMic(_))) {
+                    assert!(
+                        stop < Some(start),
+                        "{name}: StartMic before StopMic in {fx:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn giving_up_on_the_wake_word_frees_the_mic() {
+        let mut t = Clock::new();
+        t.send(Input::SetWake(true));
+        let fail = || Input::RecognizerEnded {
+            error: Some("glitch".into()),
+            fatal: false,
+        };
+        for _ in 0..MAX_FAILURES {
+            t.send(fail());
+        }
+        let fx = t.send(fail());
+        assert_eq!(t.c.mode(), Mode::Idle);
+        assert_eq!(fx.first(), Some(&StopMic), "{fx:?}");
+    }
+
+    #[test]
+    fn talk_quiet_timeout_survives_recognizer_restarts() {
+        let mut t = Clock::new();
+        t.send(Input::TalkToggled);
+        // The recognizer ends on its own every 50 s and is restarted.
+        for _ in 0..2 {
+            let fx = t.at(
+                50_000,
+                Input::RecognizerEnded {
+                    error: None,
+                    fatal: false,
+                },
+            );
+            assert!(fx.contains(&StartMic(Purpose::Talk)), "{fx:?}");
+            t.send(Input::Tick);
+        }
+        // 2 min 10 s with nothing said: talk mode ends.
+        let fx = t.at(30_000, Input::Tick);
+        assert_eq!(t.c.mode(), Mode::Idle, "{fx:?}");
+        assert!(matches!(fx.last(), Some(Notice(_))));
+    }
+
+    #[test]
+    fn words_reset_the_talk_quiet_timeout() {
+        let mut t = Clock::new();
+        t.send(Input::TalkToggled);
+        t.at(100_000, heard());
+        // The recognizer drops the utterance (no final), restarts empty.
+        t.send(Input::RecognizerEnded {
+            error: Some("x".into()),
+            fatal: false,
+        });
+        assert_eq!(t.at(60_000, Input::Tick), vec![]);
+        assert!(matches!(t.c.mode(), Mode::Talk(_)));
+    }
+
+    #[test]
+    fn losing_the_hotkey_mid_hold_ends_the_take_without_sending() {
+        let mut t = Clock::new();
+        t.send(Input::SetAutoSend(true));
+        t.send(Input::HotkeyDown);
+        t.at(100, heard());
+        assert_eq!(t.send(Input::HotkeyLost), vec![EndAudio]);
+        assert_eq!(t.at(800, Input::Tick), vec![StopMic, Commit]);
+        assert_eq!(t.c.mode(), Mode::Idle);
+        // Nothing held: losing the key changes nothing.
+        assert_eq!(t.send(Input::HotkeyLost), vec![]);
+    }
+
+    #[test]
+    fn dictation_has_a_hard_stop() {
+        for start in [Input::HotkeyDown, Input::MicClicked] {
+            let mut t = Clock::new();
+            t.send(start.clone());
+            assert!(t.c.needs_tick(), "{start:?}: dictation needs the timer");
+            t.at(1000, heard());
+            let max = Timing::default().dictation_max.as_millis() as u64;
+            assert_eq!(t.at(max - 2000, Input::Tick), vec![]);
+            assert_eq!(t.at(1000, Input::Tick), vec![EndAudio], "{start:?}");
+            assert_eq!(t.at(800, Input::Tick), vec![StopMic, Commit]);
+        }
+    }
+
+    #[test]
+    fn a_click_starts_dictation_from_resting_and_wake_modes_only() {
+        let mut t = Clock::new();
+        assert!(t.c.starts_dictation());
+        t.send(Input::SetWake(true));
+        assert!(t.c.mic_on());
+        assert!(
+            t.c.starts_dictation(),
+            "wake listening hands the mic to a click"
+        );
+        t.send(Input::WakePhrase);
+        assert!(t.c.starts_dictation());
+        t.send(Input::MicClicked);
+        assert!(!t.c.starts_dictation(), "a second click stops instead");
+        t.send(Input::Exit);
+        t.send(Input::TalkToggled);
+        assert!(!t.c.starts_dictation());
+    }
+
+    #[test]
+    fn a_late_permission_grant_opens_only_what_the_mode_still_wants() {
+        let mut t = Clock::new();
+        t.send(Input::HotkeyDown);
+        assert_eq!(t.c.mic_purpose(), Some(Purpose::Dictation));
+        // Released while macOS was asking: nothing is wanted any more.
+        t.send(Input::HotkeyUp);
+        assert_eq!(t.c.mic_purpose(), None);
+        t.at(800, Input::Tick);
+        assert_eq!(t.c.mic_purpose(), None);
+        t.send(Input::SetWake(true));
+        assert_eq!(t.c.mic_purpose(), Some(Purpose::Wake));
     }
 }

@@ -11,19 +11,32 @@ use gpui_kit::{AnyWindowHandle, EntityInputHandler as _};
 use super::transcript::{Change, Stabilizer};
 use crate::ui::*;
 
-/// A composer and the window it lives in.
+/// A composer, the window it lives in, and the thread it writes to
+/// (`None` for the new-thread and quick composers, which create one).
 #[derive(Clone)]
 pub(crate) struct Target {
     pub input: WeakEntity<TextareaState>,
     pub window: AnyWindowHandle,
+    pub thread: Option<String>,
 }
 
 impl Target {
-    pub fn new(input: &Entity<TextareaState>, window: AnyWindowHandle) -> Self {
+    pub fn new(
+        input: &Entity<TextareaState>,
+        window: AnyWindowHandle,
+        thread: Option<String>,
+    ) -> Self {
         Self {
             input: input.downgrade(),
             window,
+            thread,
         }
+    }
+
+    /// The composer still exists (a sent draft or a closed quick composer
+    /// drops theirs).
+    pub fn alive(&self) -> bool {
+        self.input.upgrade().is_some()
     }
 
     pub fn is(&self, input: &Entity<TextareaState>) -> bool {
