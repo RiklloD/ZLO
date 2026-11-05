@@ -52,6 +52,7 @@ impl Mic {
         }
     }
 
+    #[cfg(test)]
     pub fn session(&self) -> u64 {
         self.session
     }
