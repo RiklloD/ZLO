@@ -43,7 +43,8 @@ use self::composer::{Live, Target};
 use self::coordinator::{Coordinator, Effect, Input, Mode, Purpose, TalkPhase, Timing};
 use self::engine::{PrivacyPane, SpeechSynthesizer, SpeechToText, SttConfig, SttEvent, SttSink};
 use self::mic::{Mic, Start};
-use self::turn::PendingTurn;
+pub(crate) use self::turn::Submission;
+use self::turn::{Answer, PendingTurn};
 use crate::ui::*;
 use crate::workspace::Workspace;
 
@@ -192,6 +193,9 @@ struct Voice {
     _events: Task<()>,
     /// The talk-mode message waiting for its reply.
     turn: PendingTurn,
+    /// The composer talk mode just pressed Enter in, and the claim it must
+    /// take (`take_submission`).
+    submitting: Option<(gpui_kit::EntityId, Submission)>,
     /// The recognizer's latest full transcript.
     heard: String,
     live: Option<Live>,
@@ -245,6 +249,7 @@ pub(crate) fn start(workspace: WeakEntity<Workspace>, window: AnyWindowHandle, c
         sink,
         _events: listen,
         turn: PendingTurn::default(),
+        submitting: None,
         heard: String::new(),
         live: None,
         target: None,
@@ -323,10 +328,9 @@ pub(crate) fn toggle_dictation(
     cx.defer(move |cx| {
         // A click that starts a dictation (also from wake listening, where
         // the mic is already on) types into the clicked composer.
-        if let Some(v) = voice_mut(cx)
-            && v.coord.starts_dictation()
-        {
-            v.target = Some(Target::new(&input, window, thread));
+        if let Some(v) = voice_mut(cx) {
+            let starts = v.coord.starts_dictation();
+            aim(&mut v.target, Target::new(&input, window, thread), starts);
         }
         send(cx, Input::MicClicked);
     });
@@ -372,70 +376,145 @@ pub(crate) fn toggle_read_aloud(thread: &str, cx: &mut App) {
     });
 }
 
-/// A chat's run finished with `rows` on screen: speak the reply if it
-/// answers talk mode's own message, or if the thread reads aloud.
-pub(crate) fn reply_finished(thread: &str, rows: &[Row], cx: &mut App) {
-    let Some(v) = cx.try_global::<Voice>() else {
-        return;
-    };
-    let token = talk_answer(v, thread);
-    if token.is_none() && !VoicePrefs::of(cx).reads(thread) {
-        return;
+/// Point dictation at `chosen` when the click starts one (from idle or
+/// any wake state, where the mic may already be on); a click that stops a
+/// dictation leaves the target alone.
+fn aim<T>(slot: &mut Option<T>, chosen: T, starts_dictation: bool) {
+    if starts_dictation {
+        *slot = Some(chosen);
     }
-    let spoken = last_reply(rows)
-        .map(speakable::speakable)
-        .unwrap_or_default();
-    cx.defer(move |cx| match token {
-        Some(token) => answer(token, spoken, cx),
-        None => send(cx, Input::ReadAloud(spoken)),
-    });
 }
 
-/// A chat's run failed: if it was talk mode's turn, say so and listen again.
-pub(crate) fn reply_failed(thread: &str, cx: &mut App) {
-    let Some(token) = cx
-        .try_global::<Voice>()
-        .and_then(|v| talk_answer(v, thread))
-    else {
-        return;
-    };
-    cx.defer(move |cx| answer(token, "That run failed. See the screen.".into(), cx));
-}
-
-/// The pending talk turn's token when `thread` answers it.
-fn talk_answer(v: &Voice, thread: &str) -> Option<u64> {
-    (v.coord.mode() == Mode::Talk(TalkPhase::Thinking))
-        .then(|| v.turn.answers(thread))
-        .flatten()
-}
-
-/// Deliver a talk-mode answer unless the turn moved on since it was taken.
-fn answer(token: u64, spoken: String, cx: &mut App) {
-    let Some(v) = voice_mut(cx) else {
-        return;
-    };
-    if !v.turn.current(token) || v.coord.mode() != Mode::Talk(TalkPhase::Thinking) {
-        return;
+/// The composer that handles an Enter takes talk mode's claim on it, if
+/// talk mode pressed it there, and carries it through the send.
+pub(crate) fn take_submission(
+    composer: &Entity<TextareaState>,
+    cx: &mut App,
+) -> Option<Submission> {
+    let v = voice_mut(cx)?;
+    let (id, sub) = v.submitting?;
+    if id != composer.entity_id() {
+        return None;
     }
-    v.turn.clear();
-    send(cx, Input::ReplyFinished(spoken));
+    v.submitting = None;
+    Some(sub)
 }
 
-/// A new thread got its first message in `composer` (both the new-thread
-/// screen and the quick composer end here). If talk mode sent it, the turn
-/// waits for this thread and talk mode listens in its composer next: the
-/// composer that sent it is gone.
-pub(crate) fn thread_created(
+/// The gateway took talk mode's message into `thread` as `run` (when the
+/// ack names it). Talk mode listens in this thread's composer next: a
+/// new-thread or quick composer is gone after the send.
+pub(crate) fn submission_accepted(
+    sub: Submission,
     thread: &str,
+    run: Option<String>,
     composer: &Entity<TextareaState>,
     window: AnyWindowHandle,
     cx: &mut App,
 ) {
-    if let Some(v) = voice_mut(cx)
-        && v.turn.claim_new(thread)
+    bound(sub, thread, composer, window, cx, |turn| {
+        turn.accepted(sub, thread, run)
+    });
+}
+
+/// Talk mode's message waits in `thread`'s queue behind `behind`.
+pub(crate) fn submission_queued(
+    sub: Submission,
+    thread: &str,
+    behind: Option<String>,
+    composer: &Entity<TextareaState>,
+    window: AnyWindowHandle,
+    cx: &mut App,
+) {
+    bound(sub, thread, composer, window, cx, |turn| {
+        turn.queued(sub, thread, behind)
+    });
+}
+
+fn bound(
+    sub: Submission,
+    thread: &str,
+    composer: &Entity<TextareaState>,
+    window: AnyWindowHandle,
+    cx: &mut App,
+    bind: impl FnOnce(&mut PendingTurn) -> Option<Answer>,
+) {
+    let Some(v) = voice_mut(cx) else { return };
+    if !v.turn.waits_for(sub) {
+        return;
+    }
+    let early = bind(&mut v.turn);
+    if !v
+        .target
+        .as_ref()
+        .is_some_and(|t| t.alive() && t.thread.is_some())
     {
         v.target = Some(Target::new(composer, window, Some(thread.to_string())));
     }
+    if let Some(answer) = early {
+        cx.defer(move |cx| deliver(answer, cx));
+    }
+}
+
+/// Talk mode's message was not sent: say why and leave talk mode.
+pub(crate) fn submission_refused(sub: Submission, why: &str, cx: &mut App) {
+    if let Some(v) = voice_mut(cx)
+        && v.turn.refused(sub)
+    {
+        let why = why.to_string();
+        cx.defer(move |cx| send(cx, Input::SendRefused(why)));
+    }
+}
+
+/// A chat's run `run` ended in `thread` with `rows` on screen. Talk mode
+/// speaks it only when it answers its own message; otherwise the thread's
+/// read-aloud choice decides.
+pub(crate) fn run_ended(
+    thread: &str,
+    run: Option<&str>,
+    completed: bool,
+    rows: &[Row],
+    cx: &mut App,
+) {
+    let Some(v) = cx.try_global::<Voice>() else {
+        return;
+    };
+    let thinking = v.coord.mode() == Mode::Talk(TalkPhase::Thinking);
+    let reads = completed && VoicePrefs::of(cx).reads(thread);
+    if !thinking && !reads {
+        return;
+    }
+    let spoken = if completed {
+        last_reply(rows)
+            .map(speakable::speakable)
+            .unwrap_or_default()
+    } else {
+        "That run failed. See the screen.".to_string()
+    };
+    if thinking {
+        let answer = cx
+            .global_mut::<Voice>()
+            .turn
+            .run_ended(thread, run, spoken.clone());
+        if let Some(answer) = answer {
+            cx.defer(move |cx| deliver(answer, cx));
+            return;
+        }
+    }
+    if reads {
+        cx.defer(move |cx| send(cx, Input::ReadAloud(spoken)));
+    }
+}
+
+/// Speak a talk-mode answer unless the turn moved on since it was found.
+fn deliver(answer: Answer, cx: &mut App) {
+    let Some(v) = voice_mut(cx) else {
+        return;
+    };
+    if !v.turn.current(answer.token) || v.coord.mode() != Mode::Talk(TalkPhase::Thinking) {
+        return;
+    }
+    v.turn.clear();
+    send(cx, Input::ReplyFinished(answer.spoken));
 }
 
 /// The assistant's words in the last turn (after the last user message).
@@ -493,6 +572,7 @@ fn follow_mode(cx: &mut App) {
     let v = cx.global_mut::<Voice>();
     if !matches!(v.coord.mode(), Mode::Talk(_)) {
         v.turn.clear();
+        v.submitting = None;
     }
     // Words now go to a composer (dictation start, a barge-in, wake
     // capture): link one and type what was heard so far. A composer that
@@ -529,14 +609,30 @@ fn run(effect: Effect, cx: &mut App) {
         }
         Effect::Send => {
             let v = cx.global_mut::<Voice>();
-            if let Some(target) = v.target.clone() {
-                // Talk mode sends as it starts thinking: wait for this
-                // thread (or the one this composer creates).
-                if v.coord.mode() == Mode::Talk(TalkPhase::Thinking) {
-                    v.turn.sent(target.thread.clone());
+            let target = v.target.clone().filter(Target::alive);
+            if v.coord.mode() != Mode::Talk(TalkPhase::Thinking) {
+                if let Some(target) = target {
+                    target.send(cx);
                 }
+                return;
+            }
+            // Talk mode: the composer handling this Enter takes the claim
+            // and reports what the gateway made of the message.
+            let sub = v.turn.submit();
+            v.submitting = target.as_ref().map(|t| (t.input.entity_id(), sub));
+            if let Some(target) = target {
                 target.send(cx);
             }
+            // The Enter has been handled by now: an untaken claim means
+            // nothing was sent.
+            cx.defer(move |cx| {
+                if let Some(v) = voice_mut(cx)
+                    && v.submitting.is_none_or(|(_, s)| s == sub)
+                {
+                    v.submitting = None;
+                    submission_refused(sub, "The message wasn't sent.", cx);
+                }
+            });
         }
         Effect::Speak(text) => speak(&text, cx),
         Effect::StopSpeaking => {
@@ -946,6 +1042,22 @@ mod tests {
         p.read_aloud_threads.insert("b".into(), false);
         assert!(!p.reads("b"));
         assert!(p.reads("c"));
+    }
+
+    #[test]
+    fn a_click_from_wake_listening_aims_at_the_clicked_composer() {
+        use self::coordinator::Timing;
+        let now = Instant::now();
+        let mut c = Coordinator::new(Timing::default(), now);
+        let mut target = Some("old composer");
+        c.handle(Input::SetWake(true), now);
+        assert!(c.mic_on(), "the wake word holds the mic");
+        aim(&mut target, "clicked", c.starts_dictation());
+        assert_eq!(target, Some("clicked"));
+        c.handle(Input::MicClicked, now);
+        // The second click stops that dictation; the target stays put.
+        aim(&mut target, "another", c.starts_dictation());
+        assert_eq!(target, Some("clicked"));
     }
 
     #[test]

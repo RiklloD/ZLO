@@ -31,7 +31,8 @@ pub(super) struct Quick {
 }
 
 pub(super) enum QuickEvent {
-    Send(String),
+    /// The text, and talk mode's claim when it pressed Enter here.
+    Send(String, Option<crate::voice::Submission>),
     Close,
 }
 
@@ -55,9 +56,12 @@ impl QuickComposer {
         let subs = vec![
             cx.subscribe(&input, |this, _, event, cx| {
                 if let InputEvent::PressEnter { shift: false, .. } = event {
+                    let voice = crate::voice::take_submission(&this.input, cx);
                     let text = this.input.read(cx).value().trim().to_string();
                     if !text.is_empty() {
-                        cx.emit(QuickEvent::Send(text));
+                        cx.emit(QuickEvent::Send(text, voice));
+                    } else if let Some(sub) = voice {
+                        crate::voice::submission_refused(sub, "There was nothing to send.", cx);
                     }
                 }
             }),
@@ -225,15 +229,16 @@ impl Workspace {
                 self.quick.view = Some(view.clone());
                 self.quick._events = Some(cx.subscribe(&view, |this, _, event, cx| match event {
                     QuickEvent::Close => this.close_quick(cx),
-                    QuickEvent::Send(text) => {
-                        let text = text.clone();
+                    QuickEvent::Send(text, voice) => {
+                        let (text, voice) = (text.clone(), *voice);
                         this.close_quick(cx);
                         let main = this.main_window;
                         cx.spawn(async move |this, cx| {
                             let _ = main.update(cx, |_, window, cx| {
                                 window.activate_window();
-                                let _ =
-                                    this.update(cx, |this, cx| this.quick_send(text, window, cx));
+                                let _ = this.update(cx, |this, cx| {
+                                    this.quick_send(text, voice, window, cx)
+                                });
                             });
                         })
                         .detach();

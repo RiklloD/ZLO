@@ -149,14 +149,20 @@ impl Workspace {
 
     /// A prompt from the quick composer: the new-thread screen's send, with
     /// its profile and model choice.
-    pub(super) fn quick_send(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn quick_send(
+        &mut self,
+        text: String,
+        voice: Option<crate::voice::Submission>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.open_draft(window, cx);
         if let Some(draft) = self.draft.as_ref() {
             draft
                 .input
                 .update(cx, |s, cx| s.set_value(text, window, cx));
         }
-        self.send_draft(window, cx);
+        self.send_draft_as(voice, window, cx);
     }
 
     /// A profile picked in either menu: open the draft screen in it.
@@ -207,12 +213,37 @@ impl Workspace {
     /// Create the thread in the chosen profile, apply the model pick, open
     /// it and send the first message there.
     fn send_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Talk mode's claim, when it pressed this Enter.
+        let voice = self
+            .draft
+            .as_ref()
+            .and_then(|d| crate::voice::take_submission(&d.input, cx));
+        self.send_draft_as(voice, window, cx);
+    }
+
+    /// Send the draft as a new thread. `voice` (talk mode's claim on this
+    /// send) rides along to the new thread's first message, so only this
+    /// send can answer it; a send that does not happen refuses it.
+    fn send_draft_as(
+        &mut self,
+        voice: Option<crate::voice::Submission>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let refuse = |why: &str, cx: &mut App| {
+            if let Some(sub) = voice {
+                crate::voice::submission_refused(sub, why, cx);
+            }
+        };
         let (Some(backend), Some(draft)) = (self.backend.clone(), self.draft.as_mut()) else {
-            return;
+            return refuse("There is no new-thread screen to send from.", cx);
         };
         let (text, files) = inline_files::outgoing(&draft.input, &draft.staged, cx);
-        if (text.is_empty() && files.is_empty()) || draft.sending {
-            return;
+        if text.is_empty() && files.is_empty() {
+            return refuse("There was nothing to send.", cx);
+        }
+        if draft.sending {
+            return refuse("A new thread is still being created; try again.", cx);
         }
         let content = draft.input.read(cx).content();
         draft.sending = true;
@@ -251,10 +282,17 @@ impl Workspace {
                     this.refresh_inbox(cx);
                     this.open_thread(id, window, cx);
                     if let Some((_, chat)) = this.active.clone() {
-                        chat.update(cx, |chat, cx| chat.send_text(content, files, window, cx));
+                        chat.update(cx, |chat, cx| {
+                            chat.send_text(content, files, voice, window, cx)
+                        });
+                    } else if let Some(sub) = voice {
+                        crate::voice::submission_refused(sub, "The new thread did not open.", cx);
                     }
                 }
                 Err(e) => {
+                    if let Some(sub) = voice {
+                        crate::voice::submission_refused(sub, &e.to_string(), cx);
+                    }
                     if let Some(draft) = this.draft.as_mut() {
                         draft.sending = false;
                         draft.error = Some(e.to_string().into());

@@ -110,6 +110,9 @@ pub(crate) enum Input {
     },
     /// A reply finished; its spoken form (may be empty).
     ReplyFinished(String),
+    /// Talk mode's message was not sent (the running turn refused it, the
+    /// send failed, or nothing took it): why, to show.
+    SendRefused(String),
     /// Read a reply aloud outside talk mode.
     ReadAloud(String),
     SpeechFinished,
@@ -389,6 +392,12 @@ impl Coordinator {
                         self.enter(M::Talk(TalkPhase::Speaking), now);
                         self.start_mic(Purpose::BargeIn, &mut fx, now);
                     }
+                }
+            }
+            Input::SendRefused(why) => {
+                if self.mode == M::Talk(TalkPhase::Thinking) {
+                    self.exit_talk(&mut fx, now);
+                    fx.push(E::Notice(why));
                 }
             }
             Input::ReadAloud(text) => {
@@ -1045,14 +1054,31 @@ mod tests {
     fn words_reset_the_talk_quiet_timeout() {
         let mut t = Clock::new();
         t.send(Input::TalkToggled);
+        // Words at 100 s that the recognizer then takes back: talk mode
+        // stays listening (nothing to send), but the person was active.
         t.at(100_000, heard());
-        // The recognizer drops the utterance (no final), restarts empty.
-        t.send(Input::RecognizerEnded {
-            error: Some("x".into()),
-            fatal: false,
-        });
-        assert_eq!(t.at(60_000, Input::Tick), vec![]);
-        assert!(matches!(t.c.mode(), Mode::Talk(_)));
+        t.at(100, Input::Heard { words: false });
+        assert_eq!(t.c.mode(), Mode::Talk(TalkPhase::Listening));
+        // 160 s since talk mode started, 60 s since the words: still on.
+        assert_eq!(t.at(59_900, Input::Tick), vec![]);
+        assert_eq!(t.c.mode(), Mode::Talk(TalkPhase::Listening));
+        // 120 s after the words: it ends.
+        let fx = t.at(60_000, Input::Tick);
+        assert_eq!(t.c.mode(), Mode::Idle, "{fx:?}");
+    }
+
+    #[test]
+    fn a_refused_send_ends_talk_mode_and_says_why() {
+        let mut t = Clock::new();
+        t.send(Input::TalkToggled);
+        t.at(100, heard());
+        t.at(2000, Input::Tick);
+        assert_eq!(t.c.mode(), Mode::Talk(TalkPhase::Thinking));
+        let fx = t.send(Input::SendRefused("busy".into()));
+        assert_eq!(t.c.mode(), Mode::Idle);
+        assert_eq!(fx.last(), Some(&Notice("busy".into())));
+        // Outside a waiting turn it changes nothing.
+        assert_eq!(t.send(Input::SendRefused("busy".into())), vec![]);
     }
 
     #[test]

@@ -203,11 +203,23 @@ async fn read_up_to(
     Ok((out, true))
 }
 
-/// `body` with the request's credentials and anything credential-shaped
-/// (a long run of letters, digits, `-` and `_` mixing letters and digits)
-/// replaced: providers echo rejected keys in their error messages.
+/// `body` with the request's credentials replaced (providers echo a
+/// rejected key in their error messages), plus anything that is plainly a
+/// credential: a documented key format (`sk-…` for OpenAI, `sk_…` for
+/// ElevenLabs) or a long mixed letter-and-digit value within two words
+/// after a credential word (`key`, `token`, `secret`, `bearer`,
+/// `authorization`, `password`). Model, voice and request ids stay, since
+/// they are what makes an error actionable.
 pub(crate) fn redact(body: &str, secrets: &[&str]) -> String {
     const REDACTED: &str = "[redacted]";
+    const CREDENTIAL_WORDS: [&str; 6] = [
+        "key",
+        "token",
+        "secret",
+        "bearer",
+        "authorization",
+        "password",
+    ];
     let mut out = body.to_string();
     for secret in secrets.iter().filter(|s| !s.is_empty()) {
         out = out.replace(secret, REDACTED);
@@ -215,15 +227,30 @@ pub(crate) fn redact(body: &str, secrets: &[&str]) -> String {
     let token_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     let mut clean = String::with_capacity(out.len());
     let mut rest = out.as_str();
+    // Words left in which a value counts as the credential just named.
+    let mut after_credential_word = 0u8;
     while let Some(start) = rest.find(token_char) {
         clean.push_str(&rest[..start]);
         let tail = &rest[start..];
         let len = tail.find(|c: char| !token_char(c)).unwrap_or(tail.len());
         let token = &tail[..len];
-        let looks_secret = token.len() >= 20
+        let lower = token.to_ascii_lowercase();
+        let documented =
+            (lower.starts_with("sk-") || lower.starts_with("sk_")) && token.len() >= 12;
+        let in_context = after_credential_word > 0
+            && token.len() >= 16
             && token.chars().any(|c| c.is_ascii_digit())
             && token.chars().any(|c| c.is_ascii_alphabetic());
-        clean.push_str(if looks_secret { REDACTED } else { token });
+        clean.push_str(if documented || in_context {
+            REDACTED
+        } else {
+            token
+        });
+        after_credential_word = if CREDENTIAL_WORDS.iter().any(|w| lower.ends_with(w)) {
+            2
+        } else {
+            after_credential_word.saturating_sub(1)
+        };
         rest = &tail[len..];
     }
     clean.push_str(rest);
@@ -260,6 +287,50 @@ pub(crate) mod test_server {
             tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
                 .await
                 .is_ok()
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// Answer one request with `status` and a chunked body (no length) of
+    /// `total` bytes, written in `chunk`-byte pieces until the client hangs
+    /// up. The handle yields how many body bytes went out, so a test can
+    /// tell a capped read (stops early) from one that buffers it all.
+    pub(crate) async fn serve_streaming(
+        status: u16,
+        total: usize,
+        chunk: usize,
+    ) -> (String, tokio::task::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 4096];
+            let mut head = Vec::new();
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut buf).await.expect("read");
+                assert!(n > 0, "client closed before sending headers");
+                head.extend_from_slice(&buf[..n]);
+            }
+            let reply = format!(
+                "HTTP/1.1 {status} X\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+            );
+            if socket.write_all(reply.as_bytes()).await.is_err() {
+                return 0;
+            }
+            let piece = vec![b'x'; chunk];
+            let mut sent = 0;
+            while sent < total {
+                let frame = format!("{chunk:x}\r\n");
+                let ok = socket.write_all(frame.as_bytes()).await.is_ok()
+                    && socket.write_all(&piece).await.is_ok()
+                    && socket.write_all(b"\r\n").await.is_ok();
+                if !ok {
+                    return sent;
+                }
+                sent += chunk;
+            }
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+            sent
         });
         (format!("http://{addr}"), handle)
     }
@@ -341,21 +412,50 @@ mod tests {
     }
 
     #[test]
-    fn redaction_removes_the_key_and_token_like_strings() {
+    fn redaction_removes_the_key_and_credential_shaped_tokens() {
         let body = r#"{"error":"Incorrect API key provided: sk-proj-abc123. Key sk-live-ABCDEFGH1234567890abcdef is bad"}"#;
         let clean = redact(body, &["sk-proj-abc123"]);
         assert!(!clean.contains("sk-proj-abc123"), "{clean}");
         assert!(!clean.contains("ABCDEFGH1234567890abcdef"), "{clean}");
         assert!(clean.contains("Incorrect API key provided"), "{clean}");
-        // Ordinary words and short ids survive.
-        assert_eq!(
-            redact("voice_id not found: abc123", &[]),
-            "voice_id not found: abc123"
-        );
+        // ElevenLabs keys, bearer tokens, and a long value right after a
+        // credential word.
+        for (body, secret) in [
+            (
+                "invalid key sk_9f8e7d6c5b4a3f2e1d0c",
+                "sk_9f8e7d6c5b4a3f2e1d0c",
+            ),
+            (
+                "Bearer eyJhbGciOiJIUzI1NiJ9abc123",
+                "eyJhbGciOiJIUzI1NiJ9abc123",
+            ),
+            (
+                "api_key: a1b2c3d4e5f6g7h8i9j0 rejected",
+                "a1b2c3d4e5f6g7h8i9j0",
+            ),
+            ("token=Zx9Yw8Vu7Ts6Rq5Po4Nm", "Zx9Yw8Vu7Ts6Rq5Po4Nm"),
+        ] {
+            let clean = redact(body, &[]);
+            assert!(!clean.contains(secret), "{body} -> {clean}");
+        }
+    }
+
+    #[test]
+    fn redaction_keeps_ordinary_ids() {
+        for body in [
+            "voice_id not found: abc123",
+            "model eleven_multilingual_v2 does not support this voice",
+            "voice 21m00Tcm4TlvDq8ikWAM is not available on your plan",
+            "unknown model gpt-4o-mini-tts-2025-03-20",
+            "request req_0123456789abcdef0123 failed, retry later",
+            "The key for model eleven_multilingual_v2 is fine",
+        ] {
+            assert_eq!(redact(body, &[]), body);
+        }
     }
 
     #[tokio::test]
-    async fn oversized_audio_is_refused_while_reading() {
+    async fn a_declared_oversized_body_is_refused_before_reading() {
         use super::test_server::serve_once_with;
         let (base, _server) = serve_once_with(200, String::new(), vec![7u8; 64 * 1024]).await;
         let response = reqwest::get(&base).await.expect("response");
@@ -365,6 +465,30 @@ mod tests {
         assert!(
             matches!(err, SpeechSynthesisError::AudioTooLarge { max: 1024 }),
             "{err}"
+        );
+    }
+
+    /// 64 MiB, far past what socket buffers hold, so a read that buffers it
+    /// all makes the server send nearly all of it.
+    const STREAM_TOTAL: usize = 64 * 1024 * 1024;
+
+    #[tokio::test]
+    async fn streamed_audio_past_the_cap_stops_reading_early() {
+        use super::test_server::serve_streaming;
+        let (base, server) = serve_streaming(200, STREAM_TOTAL, 16 * 1024).await;
+        let response = reqwest::get(&base).await.expect("response");
+        assert_eq!(response.content_length(), None, "no declared length");
+        let err = read_audio_capped(response, SpeechFormat::Mp3, &[], 64 * 1024)
+            .await
+            .expect_err("over the cap");
+        assert!(
+            matches!(err, SpeechSynthesisError::AudioTooLarge { .. }),
+            "{err}"
+        );
+        let sent = server.await.expect("server");
+        assert!(
+            sent < STREAM_TOTAL / 4,
+            "the reader kept going: {sent} of {STREAM_TOTAL} bytes went out"
         );
     }
 
@@ -381,9 +505,8 @@ mod tests {
 
     #[tokio::test]
     async fn huge_error_bodies_are_cut_short() {
-        use super::test_server::serve_once_with;
-        let body = "x".repeat(2 * 1024 * 1024).into_bytes();
-        let (base, _server) = serve_once_with(500, String::new(), body).await;
+        use super::test_server::serve_streaming;
+        let (base, server) = serve_streaming(500, STREAM_TOTAL, 16 * 1024).await;
         let response = reqwest::get(&base).await.expect("response");
         let err = read_audio_capped(response, SpeechFormat::Mp3, &[], 1024)
             .await
@@ -394,6 +517,11 @@ mod tests {
             message.len() < 1024,
             "error text is bounded: {} bytes",
             message.len()
+        );
+        let sent = server.await.expect("server");
+        assert!(
+            sent < STREAM_TOTAL / 4,
+            "the error body was read past its limit: {sent} of {STREAM_TOTAL} bytes"
         );
     }
 

@@ -20,15 +20,30 @@ const REJECTED_OUTCOME: &str = "rejected_busy";
 impl ChatView {
     /// Enter while a turn runs: the message joins that turn, shown as the
     /// person's row inside it rather than as the start of a new turn.
-    pub(super) fn steer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// `voice` is talk mode's claim on this message: it learns whether the
+    /// turn took it, queued it behind itself, or refused it.
+    pub(super) fn steer(
+        &mut self,
+        voice: Option<crate::voice::Submission>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let refuse = |why: &str, cx: &mut Context<Self>| {
+            if let Some(sub) = voice {
+                crate::voice::submission_refused(sub, why, cx);
+            }
+        };
         let (text, files) = super::inline_files::outgoing(&self.composer, &self.staged, cx);
         if text.is_empty() && files.is_empty() {
-            return;
+            return refuse("There was nothing to send.", cx);
         }
         let Some(channel) = self.channel.clone() else {
+            refuse("This gateway has no chat channel configured.", cx);
             self.set_error("This gateway has no chat channel configured.", cx);
             return;
         };
+        // The turn this message steers (or would wait behind).
+        let steered = self.running_run();
         let draft = self.composer.read(cx).content();
         self.composer
             .update(cx, |state, cx| state.clean(window, cx));
@@ -47,7 +62,13 @@ impl ChatView {
             .spawn(move |c| async move { c.send_message(&channel, &thread_id, &body, wire).await });
         let task = cx.spawn_in(window, async move |this, cx| {
             let result = flatten(job.await);
-            let _ = this.update_in(cx, |this, window, cx| match result {
+            let _ = this.update_in(cx, |this, window, cx| {
+                match (&result, voice) {
+                    (Ok(ack), Some(sub)) => this.report_voice(sub, ack, steered, window, cx),
+                    (Err(e), Some(sub)) => crate::voice::submission_refused(sub, &e.to_string(), cx),
+                    (_, None) => {}
+                }
+                match result {
                 // The turn refused it: never show it as sent. The words go
                 // back in the composer so Stop or ⌥Enter can act on them.
                 Ok(ack) if ack.outcome.as_deref() == Some(REJECTED_OUTCOME) => {
@@ -89,9 +110,53 @@ impl ChatView {
                     this.set_error(e.to_string(), cx);
                     this.refresh_rows(cx);
                 }
+                }
             });
         });
         self.keep(task);
+    }
+
+    /// Tell talk mode what the gateway made of its message: refused (the
+    /// running turn was busy), queued behind `running`, or taken, as the
+    /// run the ack names (a steer joins `running`).
+    pub(super) fn report_voice(
+        &self,
+        sub: crate::voice::Submission,
+        ack: &ironclaw_gpui_client::wire::SubmitAck,
+        running: Option<String>,
+        window: &Window,
+        cx: &mut App,
+    ) {
+        let handle = window.window_handle();
+        if ack.outcome.as_deref() == Some(REJECTED_OUTCOME) {
+            crate::voice::submission_refused(
+                sub,
+                "The running turn didn't take your message; it's back in the composer.",
+                cx,
+            );
+        } else if ack
+            .notice
+            .as_deref()
+            .is_some_and(|n| n.starts_with(QUEUED_NOTICE))
+        {
+            crate::voice::submission_queued(
+                sub,
+                &self.thread_id,
+                running.or_else(|| self.running_run()),
+                &self.composer,
+                handle,
+                cx,
+            );
+        } else {
+            crate::voice::submission_accepted(
+                sub,
+                &self.thread_id,
+                ack.run_id.clone().or(running),
+                &self.composer,
+                handle,
+                cx,
+            );
+        }
     }
 
     /// Decline the approval the steer replaces. A CLI engine has usually
