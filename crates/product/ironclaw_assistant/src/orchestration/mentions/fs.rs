@@ -93,11 +93,6 @@ impl Roots {
         Self(out)
     }
 
-    #[cfg(test)]
-    pub(super) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// Open `raw` (absolute, as the mention names it) inside a root without
     /// following symlinks.
     pub(super) fn open(&self, raw: &str, want: Want) -> Result<Opened, &'static str> {
@@ -204,12 +199,12 @@ mod tests {
             &home.path().join("Library/Mail"),
         ] {
             assert!(
-                vet(&[broad], home.path()).is_empty(),
+                vet(&[broad], home.path()).0.is_empty(),
                 "{broad:?} was accepted"
             );
         }
-        assert!(!vet(&[&project], home.path()).is_empty());
-        assert!(!vet(&[&home.path().join("code")], home.path()).is_empty());
+        assert!(!vet(&[&project], home.path()).0.is_empty());
+        assert!(!vet(&[&home.path().join("code")], home.path()).0.is_empty());
     }
 
     #[test]

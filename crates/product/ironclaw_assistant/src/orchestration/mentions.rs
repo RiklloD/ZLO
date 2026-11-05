@@ -815,11 +815,11 @@ mod tests {
         }
         .to_link("review");
         let ext = MentionUri::Extension {
-            name: "github".into(),
+            name: "tracker".into(),
         }
-        .to_link("github");
+        .to_link("tracker");
         let out = run(&format!("use {skill} and {ext}"), &[], MentionRuntime::Loop).await;
-        assert_eq!(out, "use /review and @github");
+        assert_eq!(out, "use /review and @tracker");
         // A resend of an already-expanded message is expanded once.
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.txt");
