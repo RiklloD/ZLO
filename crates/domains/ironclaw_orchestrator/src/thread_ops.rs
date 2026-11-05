@@ -352,24 +352,30 @@ impl Engine {
                 source.provider.as_deref().unwrap_or("default provider"),
                 source.model.as_deref().unwrap_or("default model")
             );
-            let mut text = handoff::portable_context(
+            let budget = self.store.settings().await?.handoff_bytes;
+            // A fork of a fork: its history no longer holds the context it was
+            // seeded with, so carry that along ahead of its own conversation.
+            // One budget covers both: the inheritance gets at most half (its
+            // newest part), the conversation the rest.
+            let seed = self
+                .store
+                .fork_origin(&source.thread_id)
+                .await?
+                .and_then(|o| o.handoff)
+                .map(|seed| handoff::clip_inherited(&seed, budget / 2));
+            let digest_budget = budget.saturating_sub(seed.as_ref().map_or(0, |s| s.len() + 2));
+            let digest = handoff::portable_context(
                 &messages[..cut],
                 &source_title,
                 source.thread_id.as_str(),
                 &route,
                 "fork",
-                self.store.settings().await?.handoff_bytes,
+                digest_budget,
             );
-            // A fork of a fork: its history no longer holds the context it was
-            // seeded with, so carry that along ahead of its own conversation.
-            if let Some(seed) = self
-                .store
-                .fork_origin(&source.thread_id)
-                .await?
-                .and_then(|o| o.handoff)
-            {
-                text = format!("{seed}\n\n{text}");
-            }
+            let text = match seed {
+                Some(seed) => format!("{seed}\n\n{digest}"),
+                None => digest,
+            };
             (
                 runtime.create_thread(request).await?,
                 TransferStrategy::PortableContext,

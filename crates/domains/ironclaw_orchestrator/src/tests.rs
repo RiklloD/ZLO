@@ -1620,3 +1620,57 @@ async fn a_summary_fork_carries_a_digest_even_where_sessions_branch_natively() {
         .unwrap();
     assert!(context.contains("the plan"));
 }
+
+#[tokio::test]
+async fn summary_fork_chains_stay_inside_one_handoff_budget() {
+    let h = harness().await;
+    let budget = 6_000;
+    h.engine
+        .store()
+        .set_settings(&json!({ "handoff_bytes": budget }))
+        .await
+        .unwrap();
+    let long = |tag: &str| format!("{tag} {}", "detail ".repeat(300));
+    let mut source_id = tid("gen0");
+    h.engine
+        .ensure_thread(&source_id, &scope(), None)
+        .await
+        .unwrap();
+    for generation in 0..4 {
+        h.rt.history.lock().unwrap().insert(
+            source_id.clone(),
+            (0..6)
+                .flat_map(|i| {
+                    [
+                        msg(HistoryRole::User, &long(&format!("g{generation} ask {i}"))),
+                        msg(
+                            HistoryRole::Assistant,
+                            &long(&format!("g{generation} answer {i}")),
+                        ),
+                    ]
+                })
+                .collect(),
+        );
+        let source = h.engine.store().thread(&source_id).await.unwrap().unwrap();
+        let fork = h
+            .engine
+            .fork_from_summary(&ctx(source_id.as_str()), &source, None, Author::User)
+            .await
+            .unwrap();
+        let fork_id = tid(fork["forkThreadId"].as_str().unwrap());
+        let injected = h
+            .engine
+            .take_next_message_context(&fork_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            injected.len() <= budget,
+            "generation {generation}: {} bytes over a {budget}-byte budget",
+            injected.len()
+        );
+        // The newest conversation is always carried.
+        assert!(injected.contains(&format!("g{generation} answer 5")));
+        source_id = fork_id;
+    }
+}

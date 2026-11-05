@@ -223,6 +223,20 @@ fn body(header: String, items: Vec<String>, budget: usize, end: &str) -> String 
     format!("{header}{note}\n\n{}\n\n{end}", kept.join("\n\n"))
 }
 
+/// Context a fork inherited from its own source, clipped to `max_bytes`:
+/// its newest part, marked when anything older was dropped. Lets a chain of
+/// forks share one handoff budget instead of stacking every ancestor's.
+pub fn clip_inherited(seed: &str, max_bytes: usize) -> String {
+    const MARK: &str = "[earlier inherited context omitted]\n";
+    if seed.len() <= max_bytes {
+        return seed.to_string();
+    }
+    format!(
+        "{MARK}{}",
+        tail(seed, max_bytes.saturating_sub(MARK.len()))
+    )
+}
+
 /// Full-thread handoff for a target that cannot share the source's state.
 pub fn portable_context(
     messages: &[HistoryMessage],
