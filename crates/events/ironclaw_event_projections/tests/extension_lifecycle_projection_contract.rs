@@ -180,6 +180,7 @@ fn extension_lifecycle_audit(event: ExtensionLifecycleEvent) -> AuditEnvelope {
             kind: extension_lifecycle_decision_kind(event.operation).to_string(),
             reason: None,
             actor: None,
+            feedback: None,
         },
         result: None,
     }

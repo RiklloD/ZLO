@@ -1524,7 +1524,7 @@ mod tests {
         // Build a run context (no disposition on context — disposition travels
         // via the resume request, not the host context).
         let context = run_context_for_driver(&driver);
-        let disposition = Some(GateResumeDisposition::Denied);
+        let disposition = Some(GateResumeDisposition::Denied { feedback: None });
 
         // Stage a checkpoint payload whose execution state has a parked auth
         // resume (disposition: None — as it would be when written at block time).
@@ -1604,7 +1604,7 @@ mod tests {
         );
 
         // Call the real helper — not an inline copy of the logic.
-        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied);
+        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied { feedback: None });
 
         // Assert the disposition was stamped onto the auth slot.
         let disposition = state
@@ -1613,7 +1613,10 @@ mod tests {
             .disposition
             .expect("disposition must be Some after stamp_resume_disposition");
         assert!(
-            matches!(disposition, GateResumeDisposition::Denied),
+            matches!(
+                disposition,
+                GateResumeDisposition::Denied { feedback: None }
+            ),
             "disposition must be Denied after stamp_resume_disposition, got {disposition:?}"
         );
     }
@@ -1633,7 +1636,7 @@ mod tests {
         state.last_gate = None;
 
         // stamp_resume_disposition should be a no-op when last_gate is None.
-        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied);
+        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied { feedback: None });
 
         // Disposition must remain None — no-op.
         assert!(
@@ -1715,7 +1718,7 @@ mod tests {
         );
 
         // Call the real helper — not an inline copy.
-        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied);
+        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied { feedback: None });
 
         // Assert the disposition was stamped onto the approval slot.
         let disposition = state
@@ -1724,7 +1727,10 @@ mod tests {
             .disposition
             .expect("disposition must be Some after stamp_resume_disposition");
         assert!(
-            matches!(disposition, GateResumeDisposition::Denied),
+            matches!(
+                disposition,
+                GateResumeDisposition::Denied { feedback: None }
+            ),
             "disposition must be Denied after stamp_resume_disposition, got {disposition:?}"
         );
         // Auth resume must remain absent — stamping must not create it.
@@ -1748,7 +1754,7 @@ mod tests {
         // Clear last_gate to simulate a checkpoint without a recorded gate.
         state.last_gate = None;
 
-        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied);
+        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied { feedback: None });
 
         // Disposition must remain None — no-op.
         assert!(
@@ -1810,7 +1816,7 @@ mod tests {
             "staged pending_external_tool_resume must start with disposition: None"
         );
 
-        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied);
+        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied { feedback: None });
 
         let disposition = state
             .pending_external_tool_resume
@@ -1818,7 +1824,10 @@ mod tests {
             .disposition
             .expect("disposition must be Some after stamp_resume_disposition");
         assert!(
-            matches!(disposition, GateResumeDisposition::Denied),
+            matches!(
+                disposition,
+                GateResumeDisposition::Denied { feedback: None }
+            ),
             "disposition must be Denied after stamp_resume_disposition, got {disposition:?}"
         );
         assert!(
@@ -1961,7 +1970,7 @@ mod tests {
                     run_id: context.run_id,
                     checkpoint_id,
                     resolved_run_profile: context.resolved_run_profile.clone(),
-                    resume_disposition: Some(GateResumeDisposition::Denied),
+                    resume_disposition: Some(GateResumeDisposition::Denied { feedback: None }),
                 },
                 &host,
             )
@@ -1996,7 +2005,7 @@ mod tests {
 
         let mut state = state_with_both_resumes_last_gate_approval(&context);
 
-        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied);
+        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied { feedback: None });
 
         // CRITICAL: auth slot must NOT be corrupted — this is the bug assertion.
         assert!(
@@ -2017,7 +2026,10 @@ mod tests {
             .disposition
             .expect("pending_approval_resume.disposition must be Some(Denied) after stamp");
         assert!(
-            matches!(approval_disposition, GateResumeDisposition::Denied),
+            matches!(
+                approval_disposition,
+                GateResumeDisposition::Denied { feedback: None }
+            ),
             "pending_approval_resume.disposition must be Denied, got {approval_disposition:?}"
         );
     }
@@ -2112,7 +2124,7 @@ mod tests {
         );
 
         // Call with the ambiguous state — should warn and stamp neither.
-        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied);
+        stamp_resume_disposition(&mut state, GateResumeDisposition::Denied { feedback: None });
 
         // BOTH dispositions must remain None — fail closed.
         assert!(

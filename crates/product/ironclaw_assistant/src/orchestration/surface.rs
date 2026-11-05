@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ironclaw_cli_providers::bridge::CliBridge;
+use ironclaw_cli_providers::bridge::{CliBridge, GateAnswer};
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::error::OrchestratorError;
@@ -25,8 +25,8 @@ use ironclaw_orchestrator::model::{
     Author, QueueItemId, TaskId, ThreadRecord, ThreadScope, TransferDelivery,
 };
 use ironclaw_product_contracts::inbound_requests::{
-    AnchoredPart, ProductCancelRunRequest, ProductCreateThreadRequest, ProductResolveGateRequest,
-    ProductSubmitTurnRequest, anchored_parts,
+    AnchoredPart, ProductCancelRunRequest, ProductCreateThreadRequest, ProductGateResolution,
+    ProductResolveGateRequest, ProductSubmitTurnRequest, anchored_parts,
 };
 use ironclaw_product_contracts::inbox::{
     INBOX_MUTATE_COMMAND_ID, INBOX_VIEW, InboxMutationRequest, THREAD_GOAL_SET_COMMAND_ID,
@@ -745,13 +745,30 @@ impl ProductSurface for OrchestratedProductSurface {
                         .and_then(|raw| ThreadId::new(raw).ok())
                     && self.external(&id, &scope).await.is_some()
                 {
-                    let approved = body.resolution.as_deref() == Some("approved");
+                    // The same ingress validation as a native gate: feedback is
+                    // bounded, and refused on anything but a decline.
+                    let answer = match crate::product_surface_inbound::parse_gate_resolution(
+                        body.resolution.clone(),
+                        body.always,
+                        body.credential_ref.clone(),
+                        body.feedback.clone(),
+                    )? {
+                        ProductGateResolution::Approved { .. } => GateAnswer::Approve,
+                        ProductGateResolution::Declined { feedback } => {
+                            GateAnswer::Decline { feedback }
+                        }
+                        // A CLI tool call has no credential to provide; as
+                        // before, anything but an approval declines it.
+                        ProductGateResolution::CredentialProvided { .. } => {
+                            GateAnswer::Decline { feedback: None }
+                        }
+                    };
                     let response = external::resolve_gate(
                         bridge,
                         &id,
                         body.run_id.as_deref().unwrap_or_default(),
                         body.gate_ref.as_deref().unwrap_or_default(),
-                        approved,
+                        answer,
                     )?;
                     return Ok(ProductSurfaceInvokeResponse {
                         output: serde_json::to_value(response)

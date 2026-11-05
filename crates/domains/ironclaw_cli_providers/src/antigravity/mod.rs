@@ -682,7 +682,10 @@ async fn permission_answer(
     };
     let kind = match permissions::decide(bridge, thread, run_id, &request, claim).await {
         PermissionDecision::AllowOnce => "allow_once",
-        PermissionDecision::Deny => "reject_once",
+        // ACP's permission outcome is an option id with no message, and this
+        // runtime has no in-turn steer, so a rejection's feedback cannot
+        // reach the agent mid-turn; the bridge still records it.
+        PermissionDecision::Deny { .. } => "reject_once",
     };
     params["options"]
         .as_array()
@@ -1002,7 +1005,7 @@ mod tests {
             tokio::task::yield_now().await;
         };
         assert_eq!(gate.body.as_deref(), Some("rm -rf"));
-        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, true));
+        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, crate::bridge::GateAnswer::Approve));
         assert_eq!(
             waiter.await.unwrap(),
             json!({"outcome": {"outcome": "selected", "optionId": "yes"}})

@@ -2082,16 +2082,59 @@ impl RebornIntegrationHarness {
     /// See [`approve_gate`](Self::approve_gate) for why this resumes with
     /// `ResumeTurnPrecondition::BlockedApprovalGate`.
     pub async fn deny_gate(&self, run_id: TurnRunId, gate_ref: &TurnGateRef) -> HarnessResult<()> {
+        self.deny_gate_with(run_id, gate_ref, None).await
+    }
+
+    /// [`deny_gate`](Self::deny_gate) with the person's "no, do X instead":
+    /// the feedback is recorded with the durable denial and resumes the run
+    /// as the rejected call's model-visible result.
+    pub async fn deny_gate_with_feedback(
+        &self,
+        run_id: TurnRunId,
+        gate_ref: &TurnGateRef,
+        feedback: &str,
+    ) -> HarnessResult<()> {
+        let feedback = ironclaw_host_api::turn::DenialFeedback::new(feedback)?;
+        self.deny_gate_with(run_id, gate_ref, Some(feedback)).await
+    }
+
+    async fn deny_gate_with(
+        &self,
+        run_id: TurnRunId,
+        gate_ref: &TurnGateRef,
+        feedback: Option<ironclaw_host_api::turn::DenialFeedback>,
+    ) -> HarnessResult<()> {
         self.capability_recorder
-            .deny_standalone_gate(gate_ref)
+            .deny_standalone_gate(gate_ref, feedback.clone())
             .await?;
         self.resume_run(
             run_id,
             gate_ref.clone(),
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback }),
             ResumeTurnPrecondition::BlockedApprovalGate,
         )
         .await
+    }
+
+    /// Every message's text across the captured model requests (all roles,
+    /// tool results included), in call order. Same per-thread `scripted_llm`
+    /// source as `captured_system_prompts`.
+    pub(super) fn captured_model_message_texts(&self) -> Vec<String> {
+        self.scripted_llm
+            .captured_requests()
+            .into_iter()
+            .flatten()
+            .map(|message| message.content)
+            .collect()
+    }
+
+    /// Assert some captured model request carried `text` (any role).
+    pub async fn assert_model_saw_text(&self, text: &str) -> HarnessResult<()> {
+        let seen = self.captured_model_message_texts();
+        if seen.iter().any(|content| content.contains(text)) {
+            return Ok(());
+        }
+        Err(format!("no model request carried {text:?}; saw {seen:#?}").into())
     }
 
     /// Deny a blocked AUTH gate and resume the run (user-declines path). Unlike
@@ -2116,7 +2159,7 @@ impl RebornIntegrationHarness {
         self.resume_run(
             run_id,
             gate_ref.clone(),
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback: None }),
             ResumeTurnPrecondition::BlockedAuthGate,
         )
         .await
@@ -2136,7 +2179,7 @@ impl RebornIntegrationHarness {
         self.resume_run(
             run_id,
             gate_ref.clone(),
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback: None }),
             ResumeTurnPrecondition::BlockedExternalToolGate,
         )
         .await

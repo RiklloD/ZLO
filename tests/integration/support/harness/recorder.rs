@@ -135,12 +135,16 @@ impl HarnessCapabilityRecorder {
         }
     }
 
-    pub(crate) async fn deny_standalone_gate(&self, gate_ref: &TurnGateRef) -> HarnessResult<()> {
+    pub(crate) async fn deny_standalone_gate(
+        &self,
+        gate_ref: &TurnGateRef,
+        feedback: Option<ironclaw_host_api::turn::DenialFeedback>,
+    ) -> HarnessResult<()> {
         match self {
             Self::Recording(_) => {
                 Err("recording capability port has no local-dev approvals".into())
             }
-            Self::HostRuntime(harness) => harness.deny_standalone_gate(gate_ref).await,
+            Self::HostRuntime(harness) => harness.deny_standalone_gate(gate_ref, feedback).await,
         }
     }
 

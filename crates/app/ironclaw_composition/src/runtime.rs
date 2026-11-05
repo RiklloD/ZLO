@@ -5168,6 +5168,7 @@ async fn append_trusted_laptop_access_audit(
                 kind: "allowed".to_string(),
                 reason: None,
                 actor: None,
+                feedback: None,
             },
             result: Some(ActionResultSummary {
                 success: true,

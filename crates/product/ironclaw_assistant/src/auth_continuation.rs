@@ -149,7 +149,7 @@ impl ProductAuthTurnGateResumeDispatcher {
             AuthContinuationRef::TurnGateResume { .. }
         ) {
             let flow_id = event.flow_id;
-            self.dispatch_turn_gate(event, Some(GateResumeDisposition::Denied), true)
+            self.dispatch_turn_gate(event, Some(GateResumeDisposition::denied()), true)
                 .await
                 .map(|_| ())
                 .map_err(|error| {
@@ -208,7 +208,10 @@ impl ProductAuthTurnGateResumeDispatcher {
             .await
             .map_err(map_auth_resume_error)?;
         let gate_resolution_ref = parse_gate_ref(gate_ref.as_str())?;
-        let denied = resume_disposition == Some(GateResumeDisposition::Denied);
+        let denied = matches!(
+            resume_disposition,
+            Some(GateResumeDisposition::Denied { .. })
+        );
         let gate_is_current = state.status == TurnStatus::BlockedAuth
             && state.gate_ref.as_ref() == Some(&gate_resolution_ref);
         if ignore_stale_gate && !gate_is_current {
@@ -915,7 +918,7 @@ mod tests {
         );
         assert_eq!(
             resumes[0].resume_disposition,
-            Some(GateResumeDisposition::Denied)
+            Some(GateResumeDisposition::Denied { feedback: None })
         );
         assert!(
             resumes[0]
@@ -923,7 +926,7 @@ mod tests {
                 .as_str()
                 .contains(&binding_ref_segment(
                     "disposition",
-                    GateResumeDisposition::Denied.as_str()
+                    GateResumeDisposition::Denied { feedback: None }.as_str()
                 ))
         );
         let page = inbox

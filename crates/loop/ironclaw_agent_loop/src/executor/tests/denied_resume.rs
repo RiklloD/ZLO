@@ -47,7 +47,7 @@ async fn capability_stage_denied_approval_resume_surfaces_gate_declined_failure_
         input_ref: denied_input_ref,
         effective_capability_ids: vec![capability_id()],
         provider_replay,
-        disposition: Some(GateResumeDisposition::Denied),
+        disposition: Some(GateResumeDisposition::Denied { feedback: None }),
     });
 
     let step = CapabilityStage
@@ -129,6 +129,99 @@ async fn capability_stage_denied_approval_resume_surfaces_gate_declined_failure_
     assert_eq!(recovery.same_call_retry, SameCallRetryConstraint::Forbidden);
 }
 
+/// "No, do X instead": an approval denied WITH feedback still short-circuits
+/// exactly like a plain denial (no dispatch, slot cleared, turn continues),
+/// and the person's words become the rejected call's model-visible result so
+/// the model adapts instead of stopping.
+#[tokio::test]
+async fn capability_stage_denied_approval_resume_with_feedback_hands_feedback_to_the_model() {
+    let host = MockHost::new(Vec::new());
+    let family = crate::families::default();
+    let ctx = StageContext {
+        planner: family.planner(),
+        host: &host,
+    };
+    let mut calls = match provider_calls_response().output {
+        ParentLoopOutput::CapabilityCalls(calls) => calls,
+        ParentLoopOutput::AssistantReply(_) => panic!("expected provider calls fixture"),
+    };
+    let denied_activity_id = CapabilityActivityId::new();
+    calls[0].activity_id = denied_activity_id;
+    let feedback = ironclaw_host_api::turn::DenialFeedback::new(
+        "Don't delete it. Move it to the archive folder instead.",
+    )
+    .expect("valid feedback");
+
+    let mut state = LoopExecutionState::initial_for_run(host.run_context());
+    state.pending_approval_resume = Some(PendingApprovalResume {
+        gate_ref: LoopGateRef::new("gate:approval-feedback-test").expect("valid"),
+        capability_id: capability_id(),
+        approval_request_id: ApprovalRequestId::new(),
+        resume_token: CapabilityResumeToken::new(denied_activity_id.to_string())
+            .expect("valid token"),
+        activity_id: denied_activity_id,
+        correlation_id: CorrelationId::new(),
+        surface_version: calls[0].surface_version.clone(),
+        input_ref: calls[0].input_ref.clone(),
+        effective_capability_ids: vec![capability_id()],
+        provider_replay: calls[0].provider_replay.clone(),
+        disposition: Some(GateResumeDisposition::Denied {
+            feedback: Some(feedback),
+        }),
+    });
+
+    let step = CapabilityStage
+        .process(
+            ctx,
+            CapabilityInput {
+                state,
+                surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
+                    &host,
+                    VisibleCapabilityRequest,
+                )
+                .await
+                .expect("visible surface"),
+                calls,
+            },
+        )
+        .await
+        .expect("capability stage");
+
+    let TurnCompletedStep::Continue {
+        state: final_state, ..
+    } = step
+    else {
+        panic!("a denial with feedback must continue the turn, not end it");
+    };
+    assert!(final_state.pending_approval_resume.is_none());
+    assert!(
+        host.batch_invocations().is_empty(),
+        "feedback never turns a denial into a dispatch"
+    );
+    let appended = host.appended_result_refs();
+    assert_eq!(appended.len(), 1);
+    let observation = appended[0]
+        .model_observation
+        .as_ref()
+        .expect("the rejected call has a model-visible result");
+    assert_eq!(observation.status, ToolObservationStatus::Error);
+    let ToolObservationDetail::GenericFailure {
+        failure_kind,
+        detail,
+    } = &observation.detail
+    else {
+        panic!("gate-declined observation must carry generic failure detail");
+    };
+    assert_eq!(*failure_kind, FailureKind::GateDeclined);
+    assert_eq!(
+        detail.as_deref(),
+        Some(
+            "The user rejected this call: Don't delete it. Move it to the archive folder instead.\n\
+             Do not retry the same call; follow the user's feedback."
+        ),
+    );
+}
+
 #[tokio::test]
 async fn capability_stage_denied_auth_resume_surfaces_gate_declined_failure_and_continues() {
     // Use a provider call fixture (provider_replay set) so the observation is
@@ -167,7 +260,9 @@ async fn capability_stage_denied_auth_resume_surfaces_gate_declined_failure_and_
         ),
         activity_id: denied_activity_id,
         prior_approval: None,
-        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied),
+        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied {
+            feedback: None,
+        }),
     });
 
     // Use provider_calls_response so provider_replay is set, enabling the
@@ -227,7 +322,7 @@ async fn capability_stage_denied_auth_resume_surfaces_gate_declined_failure_and_
         .expect("denied auth resume reaches the capability lifecycle");
     assert_eq!(
         auth_resume.disposition,
-        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied)
+        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { feedback: None })
     );
     assert!(auth_resume.resume_token.is_none());
     // 4. One model-visible observation appended with GateDeclined error + Forbidden retry.
@@ -338,7 +433,8 @@ async fn auth_gate_without_resume_token_records_activity_id_for_denial_failure()
         .pending_auth_resume
         .as_mut()
         .expect("pending auth resume")
-        .disposition = Some(ironclaw_host_api::turn::GateResumeDisposition::Denied);
+        .disposition =
+        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { feedback: None });
 
     let phase2 = CapabilityStage
         .process(
@@ -380,7 +476,7 @@ async fn auth_gate_without_resume_token_records_activity_id_for_denial_failure()
         .expect("denied tokenless resume reaches the capability lifecycle");
     assert_eq!(
         denied_resume.disposition,
-        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied)
+        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { feedback: None })
     );
     assert!(
         denied_resume.resume_token.is_none(),
@@ -463,7 +559,9 @@ async fn capability_stage_denied_auth_resume_only_fails_matching_call_remaining_
         resume_token: None,
         activity_id: denied_activity_id,
         prior_approval: None,
-        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied),
+        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied {
+            feedback: None,
+        }),
     });
 
     // Build a batch with two calls:
@@ -562,7 +660,7 @@ async fn capability_stage_denied_auth_resume_only_fails_matching_call_remaining_
         .expect("X must carry the typed denied auth resume");
     assert_eq!(
         x_resume.disposition,
-        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied)
+        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { feedback: None })
     );
     assert!(x_resume.resume_token.is_none());
     let y_invocation = batches[0]
@@ -685,7 +783,9 @@ async fn capability_stage_denied_auth_resume_only_fails_matching_activity_when_c
         resume_token: None,
         activity_id: denied_activity_id,
         prior_approval: None,
-        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied),
+        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied {
+            feedback: None,
+        }),
     });
 
     let calls = vec![
@@ -760,7 +860,7 @@ async fn capability_stage_denied_auth_resume_only_fails_matching_activity_when_c
             .as_ref()
             .expect("denied activity carries the typed denied auth resume")
             .disposition,
-        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied)
+        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { feedback: None })
     );
     let surviving_invocation = batches[0]
         .invocations
@@ -885,7 +985,9 @@ async fn capability_stage_denied_auth_resume_one_denied_two_remaining_all_dispat
         resume_token: None,
         activity_id: denied_activity_id,
         prior_approval: None,
-        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied),
+        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied {
+            feedback: None,
+        }),
     });
 
     // Three calls: X (denied), Y (unrelated), Z (unrelated).
@@ -990,7 +1092,7 @@ async fn capability_stage_denied_auth_resume_one_denied_two_remaining_all_dispat
             .as_ref()
             .expect("X carries the typed denied auth resume")
             .disposition,
-        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied)
+        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { feedback: None })
     );
     let dispatched_ids: std::collections::HashSet<_> = batches[0]
         .invocations
@@ -1127,7 +1229,9 @@ async fn capability_stage_denied_approval_resume_only_fails_matching_call_remain
         input_ref: CapabilityInputRef::new("input:approval-deny-x").expect("valid"),
         effective_capability_ids: vec![capability_id()],
         provider_replay: None,
-        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied),
+        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied {
+            feedback: None,
+        }),
     });
 
     // Build a batch with two calls:
@@ -1342,7 +1446,9 @@ async fn capability_stage_denied_approval_resume_no_matching_call_dispatches_unr
         input_ref: CapabilityInputRef::new("input:approval-deny-no-match-x").expect("valid"),
         effective_capability_ids: vec![capability_id()],
         provider_replay: None,
-        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied),
+        disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied {
+            feedback: None,
+        }),
     });
 
     // The model emits ONLY call Y (other_capability_id); no X in this batch.
@@ -1479,7 +1585,7 @@ async fn capability_stage_denied_external_tool_resume_clears_matching_slot_witho
         input_ref: denied_call.input_ref.clone(),
         effective_capability_ids: vec![capability_id()],
         provider_replay: denied_call.provider_replay.clone(),
-        disposition: Some(GateResumeDisposition::Denied),
+        disposition: Some(GateResumeDisposition::Denied { feedback: None }),
     });
 
     let calls = vec![

@@ -10,10 +10,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ironclaw_cli_providers::antigravity::{AntigravityConfig, AntigravityRuntime};
-use ironclaw_cli_providers::bridge::{CliBridge, DEFAULT_APPROVAL_TIMEOUT};
+use ironclaw_cli_providers::bridge::{CliBridge, DEFAULT_APPROVAL_TIMEOUT, GateAnswer};
 use ironclaw_cli_providers::codex::{CodexConfig, CodexRuntime};
 use ironclaw_cli_providers::muse::{MuseConfig, MuseRuntime};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
+use ironclaw_host_api::turn::DenialFeedback;
 use ironclaw_orchestrator::model::{Millis, ThreadRecord, ThreadScope};
 use ironclaw_orchestrator::runtime::*;
 use ironclaw_orchestrator::telemetry::TurnTelemetry;
@@ -449,7 +450,7 @@ async fn muse_with_a_bridge_asks_the_owner_and_runs_the_approved_call() {
     };
     assert_eq!(gate.tool_name, "bash");
     assert_eq!(gate.body.as_deref(), Some("rm -rf /"));
-    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, true));
+    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, GateAnswer::Approve));
     wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
 
     let log = std::fs::read_to_string(dir.path().join("muse.log")).unwrap();
@@ -539,7 +540,16 @@ done
 "#;
 
 fn codex(dir: &Path, recorder: &Arc<Recorder>, bridge: Option<Arc<CliBridge>>) -> CodexRuntime {
-    let body = CODEX.replace("__LOG__", &dir.join("codex.log").display().to_string());
+    codex_with(dir, recorder, bridge, CODEX)
+}
+
+fn codex_with(
+    dir: &Path,
+    recorder: &Arc<Recorder>,
+    bridge: Option<Arc<CliBridge>>,
+    script_body: &str,
+) -> CodexRuntime {
+    let body = script_body.replace("__LOG__", &dir.join("codex.log").display().to_string());
     std::fs::write(dir.join("auth.json"), "{}").unwrap();
     CodexRuntime::new(
         CodexConfig {
@@ -610,6 +620,59 @@ async fn codex_starts_then_resumes_and_declines_without_a_bridge() {
     assert_eq!(history[3].tool_calls, vec!["shell()".to_string()]);
 }
 
+/// "No, do X instead" on Codex: its approval reply has no message field, so
+/// the call is declined and the feedback follows as a `turn/steer` into the
+/// same turn. The fake server holds the turn open after the decline and only
+/// completes it once the steer arrives.
+#[tokio::test]
+async fn codex_rejection_declines_then_steers_the_feedback_into_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let held = CODEX.replace(
+        "  case \"$line\" in\n",
+        "  case \"$line\" in\n    *'\"decision\":\"decline\"'*) ;;\n    *'\"method\":\"turn/steer\"'*)\n      reply \"$id\" '{\"turnId\":\"tu-1\"}'\n      emit turn/completed '{\"threadId\":\"cx-1\",\"turn\":{\"id\":\"tu-1\",\"status\":\"completed\",\"error\":null}}' ;;\n",
+    );
+    assert_ne!(held, CODEX, "the fake server variant must apply");
+    let rt = codex_with(dir.path(), &recorder, Some(Arc::clone(&bridge)), &held);
+    let thread = thread(&rt, "gpt-b").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+
+    let gate = loop {
+        if let Some(g) = bridge
+            .snapshot(&thread.thread_id)
+            .and_then(|s| s.gates.first().cloned())
+        {
+            break g;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let feedback = DenialFeedback::new("run the tests instead").unwrap();
+    assert!(bridge.resolve_gate(
+        &thread.thread_id,
+        &gate.gate_ref,
+        GateAnswer::Decline {
+            feedback: Some(feedback)
+        }
+    ));
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+
+    let log = std::fs::read_to_string(dir.path().join("codex.log")).unwrap();
+    let decline = log
+        .find(r#""decision":"decline""#)
+        .unwrap_or_else(|| panic!("declined: {log}"));
+    let steer = log
+        .find(r#""method":"turn/steer""#)
+        .unwrap_or_else(|| panic!("steered: {log}"));
+    assert!(decline < steer, "the decline goes first: {log}");
+    assert!(
+        log.contains("The user rejected this call: run the tests instead"),
+        "{log}"
+    );
+    assert!(log.contains(r#""expectedTurnId":"tu-1""#), "{log}");
+    assert!(!log.contains(r#""decision":"accept""#), "{log}");
+}
+
 /// With the bridge: workspace sandbox, `untrusted` policy, and the shell
 /// approval waits as a gate; the owner's approval answers `accept`.
 #[tokio::test]
@@ -632,7 +695,7 @@ async fn codex_with_a_bridge_asks_the_owner_and_accepts_once() {
     };
     assert_eq!(gate.tool_name, "shell");
     assert_eq!(gate.body.as_deref(), Some("rm -rf /"));
-    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, true));
+    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, GateAnswer::Approve));
     wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
 
     let log = std::fs::read_to_string(dir.path().join("codex.log")).unwrap();

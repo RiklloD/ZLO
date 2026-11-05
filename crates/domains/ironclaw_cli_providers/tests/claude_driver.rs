@@ -10,9 +10,10 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ironclaw_cli_providers::bridge::{CliBridge, LiveEvent, SessionGrant};
+use ironclaw_cli_providers::bridge::{CliBridge, GateAnswer, LiveEvent, SessionGrant};
 use ironclaw_cli_providers::claude::{ClaudeCliConfig, ClaudeCliRuntime};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
+use ironclaw_host_api::turn::DenialFeedback;
 use ironclaw_orchestrator::model::{Millis, RuntimeId, ThreadRecord, ThreadScope};
 use ironclaw_orchestrator::runtime::*;
 use ironclaw_orchestrator::telemetry::TurnTelemetry;
@@ -418,7 +419,7 @@ async fn follow_turn(
     bridge: &CliBridge,
     events: &mut tokio::sync::broadcast::Receiver<LiveEvent>,
     thread: &ThreadId,
-    answer: Option<bool>,
+    answer: Option<GateAnswer>,
 ) -> Vec<LiveEvent> {
     let mut seen = Vec::new();
     loop {
@@ -426,8 +427,8 @@ async fn follow_turn(
             .await
             .expect("live event")
             .unwrap();
-        if let (LiveEvent::GateOpened { gate, .. }, Some(approved)) = (&event, answer) {
-            assert!(bridge.resolve_gate(thread, &gate.gate_ref, approved));
+        if let (LiveEvent::GateOpened { gate, .. }, Some(answer)) = (&event, answer.clone()) {
+            assert!(bridge.resolve_gate(thread, &gate.gate_ref, answer));
         }
         let ended = matches!(event, LiveEvent::Ended { .. });
         seen.push(event);
@@ -457,7 +458,13 @@ async fn bridged_turn_asks_before_each_tool_and_streams_text() {
     else {
         panic!("turn not started");
     };
-    let seen = follow_turn(&bridge, &mut events, &thread.thread_id, Some(true)).await;
+    let seen = follow_turn(
+        &bridge,
+        &mut events,
+        &thread.thread_id,
+        Some(GateAnswer::Approve),
+    )
+    .await;
     wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
 
     // The person's allow reached the CLI as the hook's decision.
@@ -540,6 +547,49 @@ async fn bridged_turn_asks_before_each_tool_and_streams_text() {
         Duration::from_secs(60),
     );
     assert!(bridge.resolve_token(&fresh).is_some());
+}
+
+/// "No, do X instead" on Claude Code: the call is denied through the
+/// PreToolUse hook and the person's words are the hook's reason, which the
+/// CLI hands to the model as the denied call's result.
+#[tokio::test]
+async fn rejected_tool_call_carries_the_feedback_in_the_hook_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    bridge.set_mcp_url("http://127.0.0.1:9/api/cli-bridge/mcp".into());
+    let rt = bridged_runtime(
+        dir.path(),
+        bridged_script(dir.path()),
+        &sink,
+        Some(Arc::clone(&bridge)),
+    );
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    let feedback = DenialFeedback::new("list only the src folder").unwrap();
+    follow_turn(
+        &bridge,
+        &mut events,
+        &thread.thread_id,
+        Some(GateAnswer::Decline {
+            feedback: Some(feedback),
+        }),
+    )
+    .await;
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+
+    let answer = std::fs::read_to_string(dir.path().join("answer.log")).unwrap();
+    assert!(
+        answer.contains(r#""permissionDecision":"deny""#),
+        "{answer}"
+    );
+    assert!(
+        answer.contains(
+            r#""permissionDecisionReason":"The user rejected this call: list only the src folder""#
+        ),
+        "{answer}"
+    );
 }
 
 #[tokio::test]

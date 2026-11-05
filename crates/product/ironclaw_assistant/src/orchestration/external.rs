@@ -12,7 +12,9 @@
 
 use std::sync::Arc;
 
-use ironclaw_cli_providers::bridge::{CliBridge, GateView, LiveEvent, ToolState, ToolView};
+use ironclaw_cli_providers::bridge::{
+    CliBridge, GateAnswer, GateView, LiveEvent, ToolState, ToolView,
+};
 use ironclaw_extension_contracts::external::ExternalConversationRef;
 use ironclaw_host_api::ids::{CapabilityId, InvocationId, ThreadId};
 use ironclaw_host_api::product_adapter::{AdapterInstallationId, ProductAdapterId};
@@ -204,15 +206,16 @@ pub(super) fn timeline_messages(
 }
 
 /// `gate.resolve` on a CLI thread: answer the pending tool call. "Always"
-/// is not offered (it would be an allow rule) and counts as once.
+/// is not offered (it would be an allow rule) and counts as once. A decline
+/// may carry the person's feedback ("no, do X instead").
 pub(super) fn resolve_gate(
     bridge: &CliBridge,
     thread: &ThreadId,
     run: &str,
     gate_ref: &str,
-    approved: bool,
+    answer: GateAnswer,
 ) -> Result<RebornResolveGateResponse, ProductSurfaceError> {
-    if !bridge.resolve_gate(thread, gate_ref, approved) {
+    if !bridge.resolve_gate(thread, gate_ref, answer) {
         return Err(ProductSurfaceError::not_found());
     }
     Ok(RebornResolveGateResponse::Resumed(

@@ -267,12 +267,17 @@ pub struct ListPendingApprovalsResponse {
     pub approvals: Vec<PendingApprovalInteractionView>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalInteractionDecision {
     ApproveOnce,
     AlwaysAllow,
-    Deny,
+    /// Reject the call. `feedback` ("no, do X instead") is recorded with the
+    /// denial and becomes the rejected call's model-visible result.
+    Deny {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feedback: Option<ironclaw_host_api::turn::DenialFeedback>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

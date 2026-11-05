@@ -1468,7 +1468,11 @@ impl HostRuntimeCapabilityHarness {
     /// persisted request to `Denied` (no lease issued) via `ApprovalResolver::deny`.
     /// The caller then resumes the run with `GateResumeDisposition::Denied` so the
     /// executor surfaces a non-retryable authorization failure to the model.
-    pub(crate) async fn deny_standalone_gate(&self, gate_ref: &TurnGateRef) -> HarnessResult<()> {
+    pub(crate) async fn deny_standalone_gate(
+        &self,
+        gate_ref: &TurnGateRef,
+        feedback: Option<ironclaw_host_api::turn::DenialFeedback>,
+    ) -> HarnessResult<()> {
         let approval_parts = self
             .approval_parts
             .as_ref()
@@ -1491,6 +1495,7 @@ impl HostRuntimeCapabilityHarness {
                 request_id,
                 DenyApproval {
                     denied_by: Principal::User(scope.user_id.clone()),
+                    feedback,
                 },
             )
             .await?;

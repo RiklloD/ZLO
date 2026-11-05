@@ -72,6 +72,7 @@ fn audit_for(scope: &ResourceScope, status: &str) -> AuditEnvelope {
             kind: "allow".to_string(),
             reason: None,
             actor: None,
+            feedback: None,
         },
         result: Some(ActionResultSummary {
             success: true,

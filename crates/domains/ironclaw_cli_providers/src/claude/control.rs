@@ -88,9 +88,12 @@ pub(super) async fn close(stdin: &SharedStdin) {
 }
 
 fn hook_answer(request_id: &str, decision: &ToolDecision) -> String {
-    let (verdict, reason) = match decision {
-        ToolDecision::Allow => ("allow", "Approved in IronClaw."),
-        ToolDecision::Deny(reason) => ("deny", reason.as_str()),
+    // A rejection's feedback rides the hook's own reason field: Claude Code
+    // hands `permissionDecisionReason` to the model as the denied call's
+    // result, so "no, do X instead" reaches it without a separate steer.
+    let (verdict, reason) = match decision.denial_message() {
+        None => ("allow", "Approved in IronClaw.".to_string()),
+        Some(reason) => ("deny", reason),
     };
     json!({
         "type": "control_response",

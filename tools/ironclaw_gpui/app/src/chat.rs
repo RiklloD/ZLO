@@ -38,6 +38,7 @@ pub mod model_picker;
 mod orchestration;
 mod outline;
 mod pace;
+mod reject_feedback;
 mod side;
 mod snapshot;
 mod steer;
@@ -79,6 +80,8 @@ pub struct ChatView {
     items: Rc<Vec<Item>>,
     /// Activity groups the reader opened or closed by hand.
     toggles: HashMap<String, bool>,
+    /// The open "Reject with feedback…" field under an approval card.
+    reject: Option<reject_feedback::RejectEditor>,
     /// When the live run began, for the pending row's seconds. The start
     /// itself lives in `run_clock`, so it outlives this view.
     run_started: Option<Instant>,
@@ -318,6 +321,7 @@ impl ChatView {
             folded: None,
             items: Rc::new(Vec::new()),
             toggles: HashMap::new(),
+            reject: None,
             run_started: None,
             reserve: None,
             list_height: Rc::default(),
@@ -1105,6 +1109,13 @@ impl ChatView {
         decision: GateDecision,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .reject
+            .as_ref()
+            .is_some_and(|editor| editor.gate_ref == gate_ref)
+        {
+            self.reject = None;
+        }
         self.transcript.mark_gate_resolving(&gate_ref, decision);
         self.refresh_rows(cx);
         let thread_id = self.thread_id.clone();
@@ -1194,6 +1205,7 @@ impl Render for ChatView {
         }
         let travel = (self.list_height.get() - 160.).max(0.);
         let toggles = self.toggles.clone();
+        let reject_open = self.reject_snapshot();
         let since = self.run_started;
 
         // The run each row belongs to (1-based), for "fork from here".
@@ -1252,6 +1264,22 @@ impl Render for ChatView {
                     &weak,
                 )
                 .into_any_element(),
+                // An approval card with its "Reject with feedback…" field open.
+                Item::Row(row @ Row::Gate { gate_ref, .. })
+                    if reject_open
+                        .as_ref()
+                        .is_some_and(|(open, _)| open == gate_ref) =>
+                {
+                    let card = render_row(row, &weak, cx);
+                    match reject_feedback::render_reject_editor(
+                        gate_ref,
+                        reject_open.as_ref(),
+                        &weak,
+                    ) {
+                        Some(editor) => v_flex().child(card).child(editor).into_any_element(),
+                        None => card,
+                    }
+                }
                 Item::Row(row) => render_row(row, &weak, cx),
                 Item::Activity { key, rows, live } => {
                     let open = flow::is_open(key, *live, &toggles);
@@ -2432,6 +2460,11 @@ fn render_gate(
                     ))
                 })
                 .child(decide("Decline", "decline", GateDecision::Decline).ghost())
+                // "No, do X instead" explains a rejected tool call; other
+                // gate kinds have no call to explain.
+                .when(matches!(kind, ProductGateKind::Approval), |this| {
+                    this.child(reject_feedback::reject_button(key, run_id, gate_ref, weak))
+                })
                 .into_any_element(),
         ),
     };

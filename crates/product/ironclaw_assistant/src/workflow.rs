@@ -944,7 +944,7 @@ async fn resolve_via_delivered_approval_route(
                 actor: TurnActor::new(selected.actor_user_id.clone()),
                 run_id_hint: Some(selected.route.run_id),
                 gate_ref,
-                decision,
+                decision: decision.clone(),
                 idempotency_key: idempotency_key.clone(),
             })
             .await
@@ -1444,7 +1444,7 @@ fn approval_interaction_decision(
 ) -> Result<ApprovalInteractionDecision, ProductSurfaceFailure> {
     match decision {
         ApprovalDecision::ApproveOnce => Ok(ApprovalInteractionDecision::ApproveOnce),
-        ApprovalDecision::Deny => Ok(ApprovalInteractionDecision::Deny),
+        ApprovalDecision::Deny => Ok(ApprovalInteractionDecision::Deny { feedback: None }),
         ApprovalDecision::AlwaysAllow => Ok(ApprovalInteractionDecision::AlwaysAllow),
     }
 }

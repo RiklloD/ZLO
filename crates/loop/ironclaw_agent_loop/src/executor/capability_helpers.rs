@@ -71,7 +71,7 @@ pub(super) fn capability_invocation_from_auth_resume_candidate(
 ) -> LoopRequest {
     let auth_resume = if matches!(
         pending_auth.disposition,
-        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied)
+        Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { .. })
     ) {
         Some(CapabilityAuthResume::denied(pending_auth.gate_ref.clone()))
     } else {

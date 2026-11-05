@@ -1013,7 +1013,7 @@ async fn denied_auth_on_parked_gate_cancels_flow_and_resumes_with_denial_disposi
     );
     assert!(matches!(
         resumes[0].resume_disposition,
-        Some(GateResumeDisposition::Denied)
+        Some(GateResumeDisposition::Denied { feedback: None })
     ));
     assert!(coordinator.cancellations().is_empty());
     let notifications = inbox
@@ -1179,7 +1179,7 @@ async fn denied_auth_without_flow_record_resumes_parked_auth_run() {
     );
     assert!(matches!(
         resumes[0].resume_disposition,
-        Some(GateResumeDisposition::Denied)
+        Some(GateResumeDisposition::Denied { feedback: None })
     ));
 }
 

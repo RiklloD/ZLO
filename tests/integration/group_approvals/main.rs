@@ -57,6 +57,7 @@ mod scenario_failure_category_demasked;
 mod scenario_gate_ref_edge_cases;
 mod scenario_gate_then_approve;
 mod scenario_gate_then_deny;
+mod scenario_gate_then_reject_with_feedback;
 mod scenario_submit_inbound_approval_resolution;
 
 use reborn_support::builder::StorageMode;
@@ -76,6 +77,10 @@ async fn approvals_group_e2e() {
         scenario_gate_then_approve::run(&g).await,
     );
     report.record("gate_then_deny", scenario_gate_then_deny::run(&g).await);
+    report.record(
+        "gate_then_reject_with_feedback",
+        scenario_gate_then_reject_with_feedback::run(&g).await,
+    );
     report.record(
         "concurrent_dual_gate_resume",
         scenario_concurrent_dual_gate_resume::run(&g).await,
@@ -160,6 +165,10 @@ async fn approvals_group_libsql_e2e() {
         scenario_gate_then_approve::run(&g).await,
     );
     report.record("gate_then_deny", scenario_gate_then_deny::run(&g).await);
+    report.record(
+        "gate_then_reject_with_feedback",
+        scenario_gate_then_reject_with_feedback::run(&g).await,
+    );
     report.record(
         "concurrent_dual_gate_resume",
         scenario_concurrent_dual_gate_resume::run(&g).await,

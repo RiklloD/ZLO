@@ -673,13 +673,18 @@ impl Turn {
         let approval_id = approval_id.to_string();
         let session_id = self.session_id.clone();
         let bridge = self.bridge.clone();
+        let live = Arc::clone(&self.live);
         let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
         let claim = permissions::claim(bridge.as_deref(), &thread, &run);
         // The decision waits for a person; the turn's events keep flowing.
         tokio::spawn(async move {
             let decision =
                 permissions::decide(bridge.as_deref(), &thread, &run, &request, claim).await;
-            let Some(choice) = choice_for(&approval, decision) else {
+            let feedback = match &decision {
+                PermissionDecision::Deny { feedback } => feedback.clone(),
+                PermissionDecision::AllowOnce => None,
+            };
+            let Some(choice) = choice_for(&approval, &decision) else {
                 return;
             };
             let params = json!({
@@ -695,14 +700,45 @@ impl Turn {
                 .await
             {
                 tracing::debug!(error = %error.label(), "muse: approval decision not admitted");
+                return;
+            }
+            if let Some(feedback) = feedback {
+                steer_rejection_feedback(&live, &feedback).await;
             }
         });
     }
 }
 
+/// Muse's approval choice carries no message, so a rejection's feedback
+/// ("no, do X instead") follows the denial as a `turn/steer` into the same
+/// turn. The denial itself was already decided; a failed steer leaves it a
+/// plain denial.
+async fn steer_rejection_feedback(
+    live: &Mutex<Option<LiveTurn>>,
+    feedback: &ironclaw_host_api::turn::DenialFeedback,
+) {
+    let Some(live) = live.lock().ok().and_then(|l| l.clone()) else {
+        tracing::debug!("muse: rejection feedback not steered (no live turn)");
+        return;
+    };
+    let params = json!({
+        "sessionId": live.session_id,
+        "commandId": command_id(),
+        "expectedTurnId": live.turn_id,
+        "input": [{"type": "text", "text": crate::bridge::rejection_message(feedback)}],
+    });
+    if let Err(error) = live
+        .client
+        .request("turn/steer", params, COMMAND_TIMEOUT)
+        .await
+    {
+        tracing::debug!(error = %error.label(), "muse: rejection feedback not steered");
+    }
+}
+
 /// The native choice for a decision. A denial takes the once-scoped
 /// `denied` choice, else `abort` (shell approvals offer no `denied`).
-fn choice_for(approval: &Value, decision: PermissionDecision) -> Option<String> {
+fn choice_for(approval: &Value, decision: &PermissionDecision) -> Option<String> {
     let choices: Vec<&Value> = approval["availableChoices"]
         .as_array()
         .into_iter()
@@ -724,7 +760,7 @@ fn choice_for(approval: &Value, decision: PermissionDecision) -> Option<String> 
     };
     match decision {
         PermissionDecision::AllowOnce => pick(&["approved"]),
-        PermissionDecision::Deny => pick(&["denied", "abort"]),
+        PermissionDecision::Deny { .. } => pick(&["denied", "abort"]),
     }
 }
 
@@ -933,7 +969,7 @@ mod tests {
             {"choiceId": "stop", "decision": "abort"},
         ]});
         assert_eq!(
-            choice_for(&approval, PermissionDecision::Deny).as_deref(),
+            choice_for(&approval, &PermissionDecision::DENY).as_deref(),
             Some("no")
         );
         let shell = json!({"availableChoices": [
@@ -941,7 +977,7 @@ mod tests {
             {"choiceId": "stop", "decision": "abort"},
         ]});
         assert_eq!(
-            choice_for(&shell, PermissionDecision::Deny).as_deref(),
+            choice_for(&shell, &PermissionDecision::DENY).as_deref(),
             Some("stop")
         );
     }

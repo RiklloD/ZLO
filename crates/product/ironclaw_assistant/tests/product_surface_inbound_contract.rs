@@ -5,6 +5,7 @@ use ironclaw_assistant::{
     DecodeInboundAttachments, IntoProductInboundCommand, ProductInboundCommand,
 };
 use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, ThreadId, UserId};
+use ironclaw_host_api::turn::{DENIAL_FEEDBACK_MAX_CHARS, DenialFeedback};
 use ironclaw_product_contracts::inbound_requests::{
     ProductCancelReason, ProductCancelRunRequest, ProductCreateThreadRequest,
     ProductGateResolution, ProductInboundAttachment, ProductResolveGateRequest,
@@ -415,6 +416,7 @@ fn invalid_gate_resolution_returns_stable_validation_error() {
         resolution: Some("not_a_resolution".to_string()),
         always: None,
         credential_ref: None,
+        feedback: None,
     };
 
     let err = request
@@ -424,6 +426,75 @@ fn invalid_gate_resolution_returns_stable_validation_error() {
     assert_validation_error(
         &err,
         "resolution",
+        ProductSurfaceValidationCode::InvalidValue,
+    );
+}
+
+fn gate_request(resolution: &str, feedback: Option<String>) -> ProductResolveGateRequest {
+    ProductResolveGateRequest {
+        client_action_id: Some("gate-1".to_string()),
+        thread_id: Some("thread-alpha".to_string()),
+        run_id: Some(run_id()),
+        gate_ref: Some("gate-alpha".to_string()),
+        resolution: Some(resolution.to_string()),
+        always: None,
+        credential_ref: None,
+        feedback,
+    }
+}
+
+fn gate_resolution(request: ProductResolveGateRequest) -> ProductGateResolution {
+    let ProductInboundCommand::ResolveGate { resolution, .. } =
+        request.into_command(caller()).expect("valid gate request")
+    else {
+        panic!("expected a gate resolution command");
+    };
+    resolution
+}
+
+/// "No, do X instead" is validated at ingress: trimmed and bounded on a
+/// decline, a blank field is a plain decline, and feedback is refused on
+/// anything but a decline so it can never ride along with an approval.
+#[test]
+fn gate_decline_feedback_is_validated_at_ingress() {
+    assert_eq!(
+        gate_resolution(gate_request(
+            "declined",
+            Some("  use the staging db  ".into())
+        )),
+        ProductGateResolution::Declined {
+            feedback: Some(DenialFeedback::new("use the staging db").expect("valid")),
+        }
+    );
+    assert_eq!(
+        gate_resolution(gate_request("declined", Some(" \n ".into()))),
+        ProductGateResolution::Declined { feedback: None }
+    );
+    assert_eq!(
+        gate_resolution(gate_request("declined", None)),
+        ProductGateResolution::Declined { feedback: None }
+    );
+
+    let too_long = gate_request("declined", Some("x".repeat(DENIAL_FEEDBACK_MAX_CHARS + 1)))
+        .into_command(caller())
+        .expect_err("feedback over the bound");
+    assert_validation_error(&too_long, "feedback", ProductSurfaceValidationCode::TooLong);
+
+    let control = gate_request("declined", Some("ring\u{7}".into()))
+        .into_command(caller())
+        .expect_err("control character");
+    assert_validation_error(
+        &control,
+        "feedback",
+        ProductSurfaceValidationCode::InvalidControlCharacter,
+    );
+
+    let on_approval = gate_request("approved", Some("do X".into()))
+        .into_command(caller())
+        .expect_err("feedback on an approval");
+    assert_validation_error(
+        &on_approval,
+        "feedback",
         ProductSurfaceValidationCode::InvalidValue,
     );
 }
@@ -626,7 +697,10 @@ fn declined_is_the_only_decline_wire_string() {
     let ProductInboundCommand::ResolveGate { resolution, .. } = command else {
         panic!("expected resolve-gate command");
     };
-    assert_eq!(resolution, ProductGateResolution::Declined);
+    assert_eq!(
+        resolution,
+        ProductGateResolution::Declined { feedback: None }
+    );
 
     for retired in ["denied", "cancelled"] {
         let request: ProductResolveGateRequest = serde_json::from_value(json!({

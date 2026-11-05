@@ -399,6 +399,7 @@ On a harness built from a `live_approvals` group:
 - `submit_turn_until_blocked(text)` — submits a turn and waits for `TurnStatus::BlockedApproval`, returning `(run_id, gate_ref)`.
 - `approve_gate(run_id, &gate_ref)` — resolves the persisted approval request to an issued lease and resumes the run.
 - `deny_gate(run_id, &gate_ref)` — resolves to `Denied` and resumes with `GateResumeDisposition::Denied`; the executor surfaces a non-retryable authorization failure to the model.
+- `deny_gate_with_feedback(run_id, &gate_ref, text)` — the "no, do X instead" variant: the feedback rides the durable denial and `GateResumeDisposition::Denied { feedback }`, and reaches the model as the rejected call's result. Pair with `assert_model_saw_text(needle)`, which checks every captured model request message (any role, tool results included).
 - `wait_for_status(run_id, expected)` — polls the turn-state store until the run reaches `expected`; fails fast on a different terminal status.
 - `enable_auto_approve()` — flips the per-`(tenant, user)` CAS-persisted auto-approve toggle ON; the flip persists across threads in the group because the store is shared.
 - `assert_process_ownership(run_ids)` — validates the row-native process tree while a run may still be executing.

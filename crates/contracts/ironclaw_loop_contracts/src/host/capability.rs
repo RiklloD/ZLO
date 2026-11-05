@@ -398,7 +398,7 @@ impl CapabilityAuthResume {
         Self {
             gate_ref,
             resume_token: None,
-            disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::Denied),
+            disposition: Some(ironclaw_host_api::turn::GateResumeDisposition::denied()),
             prior_approval: None,
         }
     }

@@ -722,7 +722,7 @@ fn pending_auth_resume_denied_disposition_round_trips_through_checkpoint_payload
         resume_token: None,
         activity_id: CapabilityActivityId::new(),
         prior_approval: None,
-        disposition: Some(GateResumeDisposition::Denied),
+        disposition: Some(GateResumeDisposition::Denied { feedback: None }),
     });
     let payload = encode_payload(&state);
     let restored =
@@ -733,7 +733,7 @@ fn pending_auth_resume_denied_disposition_round_trips_through_checkpoint_payload
             .pending_auth_resume
             .as_ref()
             .and_then(|r| r.disposition.as_ref()),
-        Some(&GateResumeDisposition::Denied),
+        Some(&GateResumeDisposition::Denied { feedback: None }),
         "PendingAuthResume with Denied disposition must survive checkpoint encode/decode"
     );
     assert_eq!(
@@ -852,7 +852,7 @@ fn pending_approval_resume_denied_disposition_round_trips_through_checkpoint_pay
         input_ref: CapabilityInputRef::new("input:approval-denied").expect("valid input ref"),
         effective_capability_ids: vec![],
         provider_replay: None,
-        disposition: Some(GateResumeDisposition::Denied),
+        disposition: Some(GateResumeDisposition::Denied { feedback: None }),
     });
     let payload = encode_payload(&state);
     let restored =
@@ -863,7 +863,7 @@ fn pending_approval_resume_denied_disposition_round_trips_through_checkpoint_pay
             .pending_approval_resume
             .as_ref()
             .and_then(|r| r.disposition.as_ref()),
-        Some(&GateResumeDisposition::Denied),
+        Some(&GateResumeDisposition::Denied { feedback: None }),
         "PendingApprovalResume with Denied disposition must survive checkpoint encode/decode"
     );
     assert_eq!(

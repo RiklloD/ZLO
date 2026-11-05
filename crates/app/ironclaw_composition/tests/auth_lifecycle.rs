@@ -336,7 +336,7 @@ async fn assert_lifecycle_uninstall_denies_blocked_auth_gate(fail_flow_before_un
     );
     assert_eq!(
         resumes[0].resume_disposition,
-        Some(GateResumeDisposition::Denied)
+        Some(GateResumeDisposition::Denied { feedback: None })
     );
 
     services

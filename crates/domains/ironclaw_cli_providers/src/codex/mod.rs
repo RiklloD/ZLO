@@ -618,22 +618,62 @@ impl Turn {
         };
         let client = client.clone();
         let bridge = self.bridge.clone();
+        let live = Arc::clone(&self.live);
         let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
         let claim = permissions::claim(bridge.as_deref(), &thread, &run);
         // The decision waits for a person; the turn's events keep flowing.
         tokio::spawn(async move {
             let decision =
                 permissions::decide(bridge.as_deref(), &thread, &run, &request, claim).await;
+            let feedback = match &decision {
+                PermissionDecision::Deny { feedback } => feedback.clone(),
+                PermissionDecision::AllowOnce => None,
+            };
             let answer = match (decision, v2) {
                 (PermissionDecision::AllowOnce, true) => json!({"decision": "accept"}),
-                (PermissionDecision::Deny, true) => json!({"decision": "decline"}),
+                (PermissionDecision::Deny { .. }, true) => json!({"decision": "decline"}),
                 (PermissionDecision::AllowOnce, false) => json!({"decision": "approved"}),
-                (PermissionDecision::Deny, false) => json!({"decision": "denied"}),
+                (PermissionDecision::Deny { .. }, false) => json!({"decision": "denied"}),
             };
             if let Err(error) = client.respond(&id, answer) {
                 tracing::debug!(error = %error.label(), "codex: approval reply not sent");
+                return;
+            }
+            if let Some(feedback) = feedback {
+                steer_rejection_feedback(&live, &feedback).await;
             }
         });
+    }
+}
+
+/// Codex's approval reply has no message field, so a rejection's feedback
+/// ("no, do X instead") follows the decline as a `turn/steer` into the same
+/// turn: the agent reads why the call was declined and what to do instead.
+/// The decline itself was already sent; a steer that fails leaves it a plain
+/// decline.
+async fn steer_rejection_feedback(
+    live: &Mutex<Option<LiveTurn>>,
+    feedback: &ironclaw_host_api::turn::DenialFeedback,
+) {
+    let Some(live) = live.lock().ok().and_then(|l| l.clone()) else {
+        tracing::debug!("codex: rejection feedback not steered (no live turn)");
+        return;
+    };
+    let params = json!({
+        "threadId": live.codex_thread,
+        "expectedTurnId": live.turn_id,
+        "input": [{
+            "type": "text",
+            "text": crate::bridge::rejection_message(feedback),
+            "text_elements": [],
+        }],
+    });
+    if let Err(error) = live
+        .client
+        .request("turn/steer", params, COMMAND_TIMEOUT)
+        .await
+    {
+        tracing::debug!(error = %error.label(), "codex: rejection feedback not steered");
     }
 }
 

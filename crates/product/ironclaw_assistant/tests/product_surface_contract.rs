@@ -320,7 +320,7 @@ impl ApprovalInteractionService for RecordingApprovalInteractionService {
                         event_cursor: EventCursor(21),
                     })
                 }
-                ApprovalInteractionDecision::Deny => {
+                ApprovalInteractionDecision::Deny { .. } => {
                     ResolveApprovalInteractionResponse::Resumed(ResumeTurnResponse {
                         run_id,
                         status: TurnStatus::Queued,
@@ -1536,7 +1536,10 @@ async fn approval_resolution_deny_routes_through_approval_interaction_service() 
     assert_eq!(resolutions.len(), 1);
     assert_eq!(resolutions[0].gate_ref, gate_ref);
     assert_eq!(resolutions[0].run_id_hint, None);
-    assert_eq!(resolutions[0].decision, ApprovalInteractionDecision::Deny);
+    assert_eq!(
+        resolutions[0].decision,
+        ApprovalInteractionDecision::Deny { feedback: None }
+    );
 }
 
 #[tokio::test]

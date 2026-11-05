@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn gate_resume_disposition_denied_round_trips() {
-        let disposition = GateResumeDisposition::Denied;
+        let disposition = GateResumeDisposition::Denied { feedback: None };
         let json = serde_json::to_string(&disposition).expect("serialize");
         assert_eq!(disposition.as_str(), "denied");
         assert_eq!(json, format!("\"{}\"", disposition.as_str()));
@@ -264,7 +264,7 @@ mod tests {
         );
 
         // --- 3. Some round-trip: Denied (unit variant) ---
-        let disposition = GateResumeDisposition::Denied;
+        let disposition = GateResumeDisposition::Denied { feedback: None };
         let some_request = make_resume_request(Some(disposition.clone()));
         let some_json = serde_json::to_value(&some_request).expect("serialize Some request");
         let disposition_value = some_json
@@ -312,7 +312,7 @@ mod tests {
             serde_json::from_value(json_value).expect("legacy JSON must deserialize");
         assert_eq!(
             deserialized.resume_disposition,
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback: None }),
             "legacy 'auth_resume_disposition' key must deserialize into resume_disposition"
         );
 

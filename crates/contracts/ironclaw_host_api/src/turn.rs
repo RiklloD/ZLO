@@ -1059,23 +1059,131 @@ impl BlockedReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// How a parked gate was answered when the run resumes without its effect.
+/// Wire: a denial without feedback stays the bare `"denied"` every persisted
+/// run record carries; with feedback it is `{"denied":{"feedback":"..."}}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateResumeDisposition {
     /// The user explicitly declined the gate (auth OR approval). The executor
-    /// surfaces this to the model as a non-retryable authorization failure rather
-    /// than re-dispatching the gate.
-    ///
-    /// New variants (e.g. `Deferred`) may be added here as needs arise.
-    Denied,
+    /// surfaces a model-visible gate-declined failure instead of re-dispatching,
+    /// carrying the user's `feedback` ("no, do X instead") when given. Feedback
+    /// never changes the decision.
+    Denied { feedback: Option<DenialFeedback> },
 }
 
 impl GateResumeDisposition {
+    pub const fn denied() -> Self {
+        Self::Denied { feedback: None }
+    }
+
     /// Stable snake_case value shared with the serde wire representation.
     pub const fn as_str(&self) -> &'static str {
         match self {
-            Self::Denied => "denied",
+            Self::Denied { .. } => "denied",
         }
+    }
+
+    pub fn denial_feedback(&self) -> Option<&DenialFeedback> {
+        match self {
+            Self::Denied { feedback } => feedback.as_ref(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DispositionUnit {
+    Denied,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DispositionFields {
+    Denied { feedback: DenialFeedback },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum DispositionWire {
+    Unit(DispositionUnit),
+    Fields(DispositionFields),
+}
+
+impl Serialize for GateResumeDisposition {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.clone() {
+            Self::Denied { feedback: None } => DispositionWire::Unit(DispositionUnit::Denied),
+            Self::Denied {
+                feedback: Some(feedback),
+            } => DispositionWire::Fields(DispositionFields::Denied { feedback }),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GateResumeDisposition {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match DispositionWire::deserialize(deserializer)? {
+            DispositionWire::Unit(DispositionUnit::Denied) => Self::denied(),
+            DispositionWire::Fields(DispositionFields::Denied { feedback }) => Self::Denied {
+                feedback: Some(feedback),
+            },
+        })
+    }
+}
+
+/// Most characters of [`DenialFeedback`].
+pub const DENIAL_FEEDBACK_MAX_CHARS: usize = 2_000;
+
+/// What a person typed when rejecting a gated call ("no, do X instead"):
+/// trimmed, non-empty, at most [`DENIAL_FEEDBACK_MAX_CHARS`] characters, no
+/// control characters besides newline and tab. Validated on the wire too.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct DenialFeedback(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DenialFeedbackError {
+    #[error("denial feedback is empty")]
+    Empty,
+    #[error("denial feedback is longer than {DENIAL_FEEDBACK_MAX_CHARS} characters")]
+    TooLong,
+    #[error("denial feedback contains a control character")]
+    ControlCharacter,
+}
+
+impl DenialFeedback {
+    pub fn new(raw: impl Into<String>) -> Result<Self, DenialFeedbackError> {
+        let trimmed = raw.into().trim().to_string();
+        if trimmed.is_empty() {
+            Err(DenialFeedbackError::Empty)
+        } else if trimmed.chars().count() > DENIAL_FEEDBACK_MAX_CHARS {
+            Err(DenialFeedbackError::TooLong)
+        } else if trimmed
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t')
+        {
+            Err(DenialFeedbackError::ControlCharacter)
+        } else {
+            Ok(Self(trimmed))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for DenialFeedback {
+    type Error = DenialFeedbackError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<DenialFeedback> for String {
+    fn from(value: DenialFeedback) -> Self {
+        value.0
     }
 }
 

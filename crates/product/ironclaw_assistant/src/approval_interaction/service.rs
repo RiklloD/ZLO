@@ -7,7 +7,7 @@ use ironclaw_approvals::{
     PersistentApprovalPolicyInput, PersistentApprovalPolicyKey, PersistentApprovalPolicyStorePort,
     ToolPermissionOverrideKey,
 };
-use ironclaw_host_api::turn::{TurnGateRef, TurnRunId, TurnStatus};
+use ironclaw_host_api::turn::{DenialFeedback, TurnGateRef, TurnRunId, TurnStatus};
 use ironclaw_host_api::{
     action::Action, ids::CapabilityId, resource::ResourceScope, scope::Principal,
 };
@@ -336,6 +336,7 @@ impl DefaultApprovalInteractionService {
         request: ResolveApprovalInteractionRequest,
         gate: ApprovalGateRecord,
         run_id: TurnRunId,
+        feedback: Option<DenialFeedback>,
     ) -> Result<ResolveApprovalInteractionResponse, ProductSurfaceFailure> {
         match gate.status() {
             ApprovalStatus::Pending => {
@@ -345,6 +346,7 @@ impl DefaultApprovalInteractionService {
                         gate.request().id,
                         DenyApproval {
                             denied_by: Principal::User(request.actor.user_id.clone()),
+                            feedback: feedback.clone(),
                         },
                     )
                     .await?;
@@ -358,7 +360,7 @@ impl DefaultApprovalInteractionService {
         }
         // The denial side effect is local to the first-time path; the resume +
         // response mapping is shared with `replay_denied_gate`.
-        self.resume_denied(request, run_id).await
+        self.resume_denied(request, run_id, feedback).await
     }
 
     /// Resume a run whose approval gate was denied, carrying
@@ -371,6 +373,7 @@ impl DefaultApprovalInteractionService {
         &self,
         request: ResolveApprovalInteractionRequest,
         run_id: TurnRunId,
+        feedback: Option<DenialFeedback>,
     ) -> Result<ResolveApprovalInteractionResponse, ProductSurfaceFailure> {
         let response = self
             .turn_coordinator
@@ -381,7 +384,7 @@ impl DefaultApprovalInteractionService {
                 gate_resolution_ref: request.gate_ref.clone(),
                 precondition: ResumeTurnPrecondition::BlockedApprovalGate,
                 idempotency_key: request.idempotency_key,
-                resume_disposition: Some(GateResumeDisposition::Denied),
+                resume_disposition: Some(GateResumeDisposition::Denied { feedback }),
             })
             .await
             .map_err(map_approval_resume_error)?;
@@ -419,7 +422,11 @@ impl DefaultApprovalInteractionService {
         // a repeated key before running the precondition check, so this is
         // idempotent regardless of current run state. A fresh key on a finished
         // run still errors via the precondition (correctly StaleGate).
-        self.resume_denied(request, run_id).await
+        let feedback = match &request.decision {
+            ApprovalInteractionDecision::Deny { feedback } => feedback.clone(),
+            _ => None,
+        };
+        self.resume_denied(request, run_id, feedback).await
     }
 }
 
@@ -459,7 +466,7 @@ impl ApprovalInteractionService for DefaultApprovalInteractionService {
         match (
             self.turn_gate_state(&request, run_id).await?,
             gate.status(),
-            request.decision,
+            request.decision.clone(),
         ) {
             (BlockedGateState::ParkedOnGate, _, ApprovalInteractionDecision::ApproveOnce) => {
                 self.approve_gate(request, gate, run_id, false).await
@@ -467,8 +474,8 @@ impl ApprovalInteractionService for DefaultApprovalInteractionService {
             (BlockedGateState::ParkedOnGate, _, ApprovalInteractionDecision::AlwaysAllow) => {
                 self.approve_gate(request, gate, run_id, true).await
             }
-            (BlockedGateState::ParkedOnGate, _, ApprovalInteractionDecision::Deny) => {
-                self.deny_gate(request, gate, run_id).await
+            (BlockedGateState::ParkedOnGate, _, ApprovalInteractionDecision::Deny { feedback }) => {
+                self.deny_gate(request, gate, run_id, feedback).await
             }
             (
                 BlockedGateState::NotParkedOnGate,
@@ -485,7 +492,7 @@ impl ApprovalInteractionService for DefaultApprovalInteractionService {
             (
                 BlockedGateState::NotParkedOnGate,
                 ApprovalStatus::Denied,
-                ApprovalInteractionDecision::Deny,
+                ApprovalInteractionDecision::Deny { .. },
             ) => self.replay_denied_gate(request, run_id).await,
             _ => Err(approval_rejected(
                 ApprovalInteractionRejectionKind::StaleGate,

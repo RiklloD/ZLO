@@ -1,6 +1,6 @@
 use std::{collections::HashSet, ops::ControlFlow};
 
-use ironclaw_host_api::turn::CapabilityActivityId;
+use ironclaw_host_api::turn::{CapabilityActivityId, DenialFeedback};
 use ironclaw_host_api::{
     resolution::{Blocked, Resolution, Suspension, ToolVerdict},
     result_meta::{CapabilityRecoveryHint, FailureKind, SameCallRetryConstraint},
@@ -59,6 +59,41 @@ pub(super) struct CapabilityErrorHandling {
     pub(super) retry_mode: CapabilityRetryMode,
 }
 
+/// Which gate a denied resume terminalizes, and what the person said.
+pub(super) struct DeniedResume {
+    /// Planner-visible summary; a compile-time constant validated by
+    /// `SanitizedStrategySummary::from_trusted_static`.
+    pub(super) planner_summary: &'static str,
+    /// "No, do X instead" — only an approval denial carries it.
+    pub(super) feedback: Option<DenialFeedback>,
+}
+
+/// The model-visible result of a call whose gate was denied: a correctable
+/// `GateDeclined` failure (never a host error), carrying the person's
+/// feedback when they gave some so the model can follow it.
+pub(super) fn denied_resume_failure(
+    feedback: Option<&DenialFeedback>,
+) -> ironclaw_loop_contracts::CapabilityFailure {
+    let (safe_summary, text) = match feedback {
+        Some(feedback) => (
+            "The user rejected the capability request and said what to do instead.",
+            format!(
+                "The user rejected this call: {}\nDo not retry the same call; follow the user's feedback.",
+                feedback.as_str()
+            ),
+        ),
+        None => (
+            "The user declined the capability request.",
+            "The capability did not run because its pending gate was denied or cancelled. Revise the approach or ask the user before trying again.".to_string(),
+        ),
+    };
+    ironclaw_loop_contracts::CapabilityFailure {
+        error_kind: FailureKind::GateDeclined,
+        safe_summary: safe_summary.to_string(),
+        detail: CapabilityFailureDetail::Diagnostic { text },
+    }
+}
+
 fn outcome_step_from_consumed_step(step: BatchStep) -> OutcomeStep {
     match step {
         BatchStep::Continue(next) => OutcomeStep::Continue(next),
@@ -71,9 +106,10 @@ impl CapabilityStage {
     ///
     /// Partitions `visible_calls` by the parked call's `activity_id`. For the
     /// matching call, synthesises a model-visible `GateDeclined` failure via
-    /// `handle_capability_error` and uses `planner_summary` as the
-    /// planner-visible strategy summary (must pass
-    /// `validate_loop_safe_summary`).
+    /// `handle_capability_error` (see [`denied_resume_failure`]; an approval
+    /// denial's feedback becomes the call's result) and uses
+    /// `denied.planner_summary` as the planner-visible strategy summary (must
+    /// pass `validate_loop_safe_summary`).
     ///
     /// Returns `ControlFlow::Break(step)` if `handle_capability_error` produced
     /// an `Exit` (caller should propagate it immediately), or
@@ -103,7 +139,7 @@ impl CapabilityStage {
         signatures: &mut HashSet<CapabilityCallSignature>,
         capability_batch: &mut CapabilityBatchTurnSummary,
         denied_activity_id: CapabilityActivityId,
-        planner_summary: &'static str,
+        denied: DeniedResume,
         visible_calls: Vec<CapabilityCallCandidate>,
     ) -> Result<
         ControlFlow<TurnCompletedStep, (LoopExecutionState, Vec<CapabilityCallCandidate>)>,
@@ -132,20 +168,14 @@ impl CapabilityStage {
                     },
                 )
                 .await;
-            let failure = ironclaw_loop_contracts::CapabilityFailure {
-                error_kind: FailureKind::GateDeclined,
-                safe_summary: "The user declined the capability request.".to_string(),
-                detail: CapabilityFailureDetail::Diagnostic {
-                    text: "The capability did not run because its pending gate was denied or cancelled. Revise the approach or ask the user before trying again.".to_string(),
-                },
-            };
+            let failure = denied_resume_failure(denied.feedback.as_ref());
             state
                 .recent_failure_kinds
                 .push(capability_error_to_failure_kind(failure.error_kind));
             let model_observation = Some(model_visible_capability_failure_observation(&failure));
             let summary = CapabilityErrorSummary {
                 kind: failure.error_kind,
-                safe_summary: SanitizedStrategySummary::from_trusted_static(planner_summary),
+                safe_summary: SanitizedStrategySummary::from_trusted_static(denied.planner_summary),
             };
             match Box::pin(self.handle_capability_error(
                 ctx,

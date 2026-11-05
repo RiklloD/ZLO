@@ -307,13 +307,13 @@ impl RebornIntegrationHarness {
         gate_ref: &TurnGateRef,
     ) -> HarnessResult<()> {
         self.capability_recorder
-            .deny_standalone_gate(gate_ref)
+            .deny_standalone_gate(gate_ref, None)
             .await?;
         self.resume_run_in_scope(
             scope,
             run_id,
             gate_ref.clone(),
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback: None }),
             ResumeTurnPrecondition::BlockedApprovalGate,
         )
         .await

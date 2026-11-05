@@ -1184,6 +1184,7 @@ fn audit_before_record(request: &CapabilityObligationRequest<'_>) -> AuditEnvelo
             kind: "obligation_satisfied".to_string(),
             reason: None,
             actor: None,
+            feedback: None,
         },
         result: Some(ActionResultSummary {
             success: true,
@@ -1221,6 +1222,7 @@ fn audit_after_record(
             kind: "obligation_satisfied".to_string(),
             reason: None,
             actor: None,
+            feedback: None,
         },
         result: Some(ActionResultSummary {
             success: true,

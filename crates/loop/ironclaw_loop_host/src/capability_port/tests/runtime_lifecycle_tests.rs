@@ -916,7 +916,7 @@ async fn denied_auth_resume_rejects_mismatched_optional_token_before_runtime() {
                 gate_ref: LoopGateRef::new("gate:auth-malformed-denial")
                     .expect("valid auth gate ref"),
                 resume_token: Some(resume_token_for_different_activity(activity_id)),
-                disposition: Some(ironclaw_turns::GateResumeDisposition::Denied),
+                disposition: Some(ironclaw_turns::GateResumeDisposition::Denied { feedback: None }),
                 prior_approval: None,
             }),
         })

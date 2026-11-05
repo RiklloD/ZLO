@@ -363,7 +363,7 @@ mod tests {
             serde_json::from_value(json_val2).expect("deserialize TurnRunRecord with legacy key");
         assert_eq!(
             deserialized2.resume_disposition,
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback: None }),
             "resume_disposition must be Some(Denied) when legacy key auth_resume_disposition is present"
         );
     }

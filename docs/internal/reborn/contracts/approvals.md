@@ -215,12 +215,34 @@ resolver
         approval_request_id,
         DenyApproval {
             denied_by: Principal::User(scope.user_id.clone()),
+            feedback: None,
         },
     )
     .await?;
 ```
 
 No lease is issued for denied requests.
+
+*Amended 2026-11-04 (reject with feedback).* A denial may carry the person's
+`DenialFeedback` ("no, do X instead"): trimmed, non-empty, at most 2,000
+characters, no control characters besides newline and tab, validated at the
+product ingress (`ProductResolveGateRequest.feedback`, refused on anything but
+`resolution: "declined"`) and again on the wire. It travels in two places and
+never changes the decision:
+
+- the `ApprovalResolved` audit record's `DecisionSummary.feedback` (absent on
+  approvals and on rows written before it existed);
+- the run's resume disposition, `GateResumeDisposition::Denied { feedback }`
+  (wire: `"denied"` without feedback, so persisted runs keep loading;
+  `{"denied":{"feedback":"…"}}` with it). The agent loop turns it into the
+  rejected call's model-visible `GateDeclined` result
+  ("The user rejected this call: …") and the turn continues.
+
+CLI runtimes get the same answer through `CliBridge::resolve_gate`: Claude
+Code reads it as the PreToolUse hook's deny reason; Codex and Muse get a
+decline followed by a `turn/steer` with the text; Antigravity (ACP, no
+message field, no in-turn steer) gets a plain reject. `orch_cli_approvals`
+records the text as the decision's reason.
 
 Approval resolution is ordered fail-closed around lease persistence:
 
@@ -239,7 +261,7 @@ let resolver = ApprovalResolver::new(&approvals, &leases).with_audit_sink(&audit
 
 Successful approve and deny transitions emit `AuditEnvelope::approval_resolved(...)` records with `AuditStage::ApprovalResolved`, the original approval correlation ID, the approval request ID, a summarized action, and `DecisionSummary { kind: "approved" | "denied", actor: Some(resolver principal), ... }`.
 
-The audit records do not include approval reasons, replay input, invocation fingerprints, lease IDs, lease contents, raw host paths, or secret values. The same redaction contract applies when records are persisted through `JsonlAuditSink` at a tenant/user/agent scoped virtual path from `scoped_audit_log_path(&scope, "approval-audit.jsonl")`. Audit sink failures are ignored and must not change approval resolution outcomes.
+Apart from a denial's feedback (the person's own words, bounded as above), the audit records do not include approval reasons, replay input, invocation fingerprints, lease IDs, lease contents, raw host paths, or secret values. The same redaction contract applies when records are persisted through `JsonlAuditSink` at a tenant/user/agent scoped virtual path from `scoped_audit_log_path(&scope, "approval-audit.jsonl")`. Audit sink failures are ignored and must not change approval resolution outcomes.
 
 ---
 
