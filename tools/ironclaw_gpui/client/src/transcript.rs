@@ -264,11 +264,43 @@ pub struct CliBody {
     pub truncated: bool,
 }
 
+/// Output tails a view keeps: the newest rows' only.
+const CLI_OUTPUTS_MAX: usize = 64;
+/// Bytes of one output tail a view keeps (the newest end).
+const CLI_OUTPUT_MAX_BYTES: usize = 8 * 1024;
+
 #[derive(Debug, Default)]
 struct CliDetails {
-    outputs: HashMap<String, CliBody>,
+    /// By tool row key (`tool:{invocation}`). Shared with the renderer:
+    /// cloning is a pointer copy, and a frame copies the map only when the
+    /// renderer still holds the previous one.
+    outputs: std::sync::Arc<HashMap<String, CliBody>>,
+    /// Row keys oldest first, for eviction past [`CLI_OUTPUTS_MAX`].
+    order: std::collections::VecDeque<String>,
     diff: Option<CliBody>,
     review: Option<CliBody>,
+}
+
+impl CliDetails {
+    fn put_output(&mut self, key: String, mut body: CliBody) {
+        if body.body.len() > CLI_OUTPUT_MAX_BYTES {
+            let mut cut = body.body.len() - CLI_OUTPUT_MAX_BYTES;
+            while !body.body.is_char_boundary(cut) {
+                cut += 1;
+            }
+            body.body.replace_range(..cut, "");
+            body.truncated = true;
+        }
+        let outputs = std::sync::Arc::make_mut(&mut self.outputs);
+        if outputs.insert(key.clone(), body).is_none() {
+            self.order.push_back(key);
+        }
+        while self.order.len() > CLI_OUTPUTS_MAX {
+            if let Some(old) = self.order.pop_front() {
+                outputs.remove(&old);
+            }
+        }
+    }
 }
 
 /// A message sent from this view that the timeline does not show yet.
@@ -632,17 +664,13 @@ impl Transcript {
     /// The streamed output tail of the tool row keyed `row_key`
     /// (`tool:{invocation}`), when its agent reports one (Codex).
     pub fn tool_output(&self, row_key: &str) -> Option<&CliBody> {
-        let invocation = row_key.strip_prefix("tool:")?;
-        self.cli.outputs.get(invocation)
+        self.cli.outputs.get(row_key)
     }
 
-    /// Every streamed output tail, by tool row key (`tool:{invocation}`).
-    pub fn tool_outputs(&self) -> HashMap<String, CliBody> {
-        self.cli
-            .outputs
-            .iter()
-            .map(|(invocation, body)| (format!("tool:{invocation}"), body.clone()))
-            .collect()
+    /// The retained output tails, by tool row key (`tool:{invocation}`):
+    /// a shared handle, not a copy.
+    pub fn tool_outputs(&self) -> std::sync::Arc<HashMap<String, CliBody>> {
+        std::sync::Arc::clone(&self.cli.outputs)
     }
 
     /// The latest turn diff a CLI agent computed (Codex `turn/diff/updated`).
@@ -800,7 +828,7 @@ impl Transcript {
                 match kind {
                     CliDetailKind::ToolOutput => {
                         if let Some(invocation) = invocation_id {
-                            self.cli.outputs.insert(invocation.to_string(), detail);
+                            self.cli.put_output(format!("tool:{invocation}"), detail);
                         }
                     }
                     CliDetailKind::TurnDiff => self.cli.diff = Some(detail),
@@ -1440,6 +1468,54 @@ mod tests {
                             "body": body, "narration": narration } }
             ]}
         }))
+    }
+
+    /// A long-open view keeps the newest output tails only, each bounded,
+    /// and handing them to the renderer copies nothing.
+    #[test]
+    fn output_tails_are_bounded_and_shared_not_copied() {
+        let mut t = Transcript::default();
+        let output = |n: usize, body: String| {
+            frame(serde_json::json!({
+                "cursor": "c", "type": "projection_update",
+                "state": { "thread_id": "t1", "items": [
+                    { "cli_detail": { "id": format!("output:{n}"), "run_id": RUN,
+                        "kind": "tool_output",
+                        "invocation_id": format!("6f1c1c0e-0000-4000-8000-{n:012}"),
+                        "body": body } }
+                ]}
+            }))
+        };
+        for n in 0..(CLI_OUTPUTS_MAX + 6) {
+            t.apply(&output(n, format!("line {n}\n")));
+        }
+        let first = t.tool_outputs();
+        assert_eq!(first.len(), CLI_OUTPUTS_MAX);
+        assert!(
+            t.tool_output("tool:6f1c1c0e-0000-4000-8000-000000000000")
+                .is_none()
+        );
+        assert!(
+            t.tool_output(&format!(
+                "tool:6f1c1c0e-0000-4000-8000-{:012}",
+                CLI_OUTPUTS_MAX + 5
+            ))
+            .is_some()
+        );
+        assert!(std::sync::Arc::ptr_eq(&first, &t.tool_outputs()));
+        // One oversized tail keeps its newest bytes.
+        t.apply(&output(
+            1000,
+            format!("{}tail-end", "x".repeat(3 * CLI_OUTPUT_MAX_BYTES)),
+        ));
+        let big = t
+            .tool_output("tool:6f1c1c0e-0000-4000-8000-000000001000")
+            .unwrap();
+        assert!(big.body.len() <= CLI_OUTPUT_MAX_BYTES && big.truncated);
+        assert!(big.body.ends_with("tail-end"));
+        // The renderer's old handle is untouched by the new frame.
+        assert_eq!(first.len(), CLI_OUTPUTS_MAX);
+        assert!(!first.contains_key("tool:6f1c1c0e-0000-4000-8000-000000001000"));
     }
 
     #[test]

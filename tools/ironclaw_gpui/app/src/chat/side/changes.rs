@@ -17,7 +17,6 @@ use gpui_kit::component::diff::{
 };
 
 use super::{ChatView, Tab, empty, error_line, git, loading, short_path};
-use ironclaw_gpui_client::ThreadAction;
 
 mod codex;
 use crate::assets::ExtraIcon;
@@ -74,6 +73,12 @@ pub(super) struct State {
     turn_stats: Option<(usize, usize, usize)>,
     list_hidden: bool,
     codex: codex::State,
+    /// The run the checkpoint was taken for, once the gateway admitted it
+    /// (Codex reverts exactly that run on Undo).
+    checkpoint_run: Option<String>,
+    /// Codex already reverted the checkpoint's turn; only the files are
+    /// left to restore.
+    restore_pending: bool,
 }
 
 impl State {
@@ -203,6 +208,8 @@ impl ChatView {
 
     /// Record the working tree before a turn, for its card.
     pub(super) fn changes_checkpoint(&mut self, cx: &mut Context<Self>) {
+        // A new turn: the old checkpoint's run no longer pairs with it.
+        self.side.changes.checkpoint_run = None;
         let Some(repo) = self.side.repo.clone() else {
             return;
         };
@@ -223,6 +230,16 @@ impl ChatView {
             });
         })
         .detach();
+    }
+
+    /// Another folder: a Codex workspace refusal was about the old one.
+    pub(super) fn changes_folder_changed(&mut self) {
+        self.side.changes.codex.mismatch = None;
+    }
+
+    /// The gateway admitted the turn the checkpoint was taken for.
+    pub(super) fn changes_turn_admitted(&mut self, run: Option<String>) {
+        self.side.changes.checkpoint_run = run;
     }
 
     /// Run a git mutation off the UI thread, then refresh.
@@ -523,6 +540,13 @@ impl ChatView {
         // The last turn's card.
         if let Some((files, add, del)) = state.turn_stats.filter(|s| s.0 > 0) {
             let undo_armed = state.confirm.as_deref() == Some("undo-turn");
+            // On Codex threads Undo needs the checkpoint's run and this
+            // folder to be Codex's workspace.
+            let codex = self.is_codex();
+            let codex_restore_only = codex && state.restore_pending;
+            let codex_undo_blocked = codex
+                && (state.codex.mismatch.is_some()
+                    || (state.checkpoint_run.is_none() && !state.restore_pending));
             col = col.child(
                 v_flex()
                     .mx_2()
@@ -591,23 +615,29 @@ impl ChatView {
                             )
                             .child(
                                 Button::new("turn-undo")
-                                    .label(if undo_armed {
-                                        "Undo? Click again"
-                                    } else {
-                                        "Undo"
+                                    .label(match (undo_armed, codex_restore_only) {
+                                        (true, _) => "Undo? Click again",
+                                        (false, true) => "Restore files",
+                                        (false, false) => "Undo",
                                     })
                                     .icon(IconName::Undo2)
                                     .xsmall()
                                     .when(undo_armed, |b| b.danger())
                                     .when(!undo_armed, |b| b.ghost())
-                                    .disabled(busy.is_some())
-                                    .tooltip(if self.is_codex() {
-                                        "Put every file this turn touched back as it was, and revert the turn in Codex"
+                                    .disabled(busy.is_some() || codex_undo_blocked)
+                                    .tooltip(if codex {
+                                        "Revert this turn in Codex, then put every file it touched back as it was"
                                     } else {
                                         "Put every file this turn touched back as it was"
                                     })
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(move |this, _, _, cx| {
                                         if !this.confirmed("undo-turn", cx) {
+                                            return;
+                                        }
+                                        // Codex threads: one coordinated
+                                        // operation, conversation first.
+                                        if codex {
+                                            this.codex_undo(cx);
                                             return;
                                         }
                                         let Some(cp) = this.side.changes.checkpoint.clone() else {
@@ -621,15 +651,6 @@ impl ChatView {
                                                 if n == 1 { "" } else { "s" }
                                             )))
                                         });
-                                        // Codex forgets the turn too; the
-                                        // transcript keeps it, hidden.
-                                        if this.is_codex() {
-                                            this.codex_action(
-                                                ThreadAction::RevertLastTurn,
-                                                "revert",
-                                                cx,
-                                            );
-                                        }
                                     })),
                             ),
                     ),

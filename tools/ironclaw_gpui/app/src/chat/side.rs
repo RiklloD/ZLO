@@ -322,6 +322,7 @@ impl ChatView {
         remember: bool,
         cx: &mut Context<Self>,
     ) {
+        self.changes_folder_changed();
         if remember {
             let thread = self.thread_id.clone();
             let saved = folder.clone();
@@ -368,6 +369,11 @@ impl ChatView {
     /// A turn is about to start: remember the working tree for its card.
     pub(super) fn side_turn_started(&mut self, cx: &mut Context<Self>) {
         self.changes_checkpoint(cx);
+    }
+
+    /// The gateway admitted the turn whose checkpoint was just taken.
+    pub(super) fn side_turn_admitted(&mut self, run: Option<String>) {
+        self.changes_turn_admitted(run);
     }
 
     /// A turn ended: files, changes and outputs may have moved.

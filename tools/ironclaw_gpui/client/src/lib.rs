@@ -8,6 +8,7 @@
 mod api;
 pub mod attachments;
 mod backend;
+pub mod codex_undo;
 pub mod commands;
 pub mod computer_use;
 mod connection;
@@ -36,7 +37,7 @@ pub use ironclaw_extension_contracts::hosted_mcp;
 pub use ironclaw_extension_contracts::state as extension_state;
 /// Runtime-native thread actions (Codex review, revert, compact).
 pub use ironclaw_product_contracts::orchestration::{
-    ReviewTarget, ThreadAction, ThreadActionOutcome,
+    ReviewTarget, ThreadAction, ThreadActionOutcome, ThreadActionRefusal,
 };
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;
