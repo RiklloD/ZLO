@@ -9868,3 +9868,60 @@ async fn remove_extension_uses_client_gesture_idempotency_not_permanent_input_de
         "the remove client action id must survive response-lost retries as the ProductSurface activity id"
     );
 }
+
+#[tokio::test]
+async fn history_search_route_forwards_typed_params_and_bounds_the_query() {
+    let services = Arc::new(StubServices::default());
+    let router = router_with(services.clone());
+
+    let _ = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/webchat/v2/history/search?query=deploy%20plan&thread_id=t-1&limit=7")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("history search");
+    {
+        let queries = services.view_queries.lock().expect("lock");
+        assert_eq!(queries.len(), 1);
+        assert_eq!(
+            queries[0].view_id.as_str(),
+            ironclaw_product_contracts::history::HISTORY_SEARCH_VIEW.id
+        );
+        assert_eq!(queries[0].params["query"], "deploy plan");
+        assert_eq!(queries[0].params["thread_id"], "t-1");
+        assert_eq!(queries[0].params["limit"], 7);
+    }
+
+    // Over-long text is rejected at the edge, before the surface sees it.
+    let long = "a".repeat(ironclaw_product_contracts::history::HISTORY_QUERY_MAX_CHARS + 1);
+    let rejected = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/webchat/v2/history/search?query={long}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("history search");
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    // Unknown parameters are refused too.
+    let unknown = router
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/webchat/v2/history/search?sql=drop")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("history search");
+    assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(services.view_queries.lock().expect("lock").len(), 1);
+}

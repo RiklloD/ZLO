@@ -4571,13 +4571,14 @@ where
                             ProductSurfaceValidationCode::InvalidValue,
                         )
                     })?;
-                let scope = crate::history_search::caller_thread_scope(&caller).ok_or_else(|| {
-                    ProductSurfaceError::from_status(
-                        ProductSurfaceErrorCode::InvalidRequest,
-                        400,
-                        false,
-                    )
-                })?;
+                let scope =
+                    crate::history_search::caller_thread_scope(&caller).ok_or_else(|| {
+                        ProductSurfaceError::from_status(
+                            ProductSurfaceErrorCode::InvalidRequest,
+                            400,
+                            false,
+                        )
+                    })?;
                 let response = crate::history_search::run_history_search(
                     self.thread_service.as_ref(),
                     &scope,

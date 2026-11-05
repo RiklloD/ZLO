@@ -18,6 +18,7 @@ use ironclaw_host_api::ingress::{
     StreamingMode, WebSocketOriginPolicy,
 };
 use ironclaw_host_api::{action::NetworkMethod, ingress::IngressScopeSource};
+use ironclaw_webui::webui_v2::WEBUI_V2_ROUTE_HISTORY_SEARCH;
 use ironclaw_webui::webui_v2::{
     WEBUI_V2_ROUTE_ADD_PROJECT_MEMBER, WEBUI_V2_ROUTE_ADMIN_CREATE_USER,
     WEBUI_V2_ROUTE_ADMIN_DELETE_USER, WEBUI_V2_ROUTE_ADMIN_DELETE_USER_SECRET,
@@ -946,6 +947,23 @@ fn expected_table() -> Vec<Expected> {
             route_id: WEBUI_V2_ROUTE_USAGE_HISTORY,
             method: NetworkMethod::Get,
             pattern: "/api/webchat/v2/usage/history",
+            listener_class: ListenerClass::LocalGateway,
+            auth_schemes: &[IngressAuthScheme::BearerToken],
+            scope_source: IngressScopeSource::AuthenticatedCaller,
+            body_limit: BodyLimitPolicy::NoBody,
+            rate_limit_max: 120,
+            rate_limit_window_seconds: 60,
+            rate_limit_scope: RateLimitScope::PerCaller,
+            cors: CorsPolicy::SameOriginOnly,
+            websocket_origin: WebSocketOriginPolicy::NotApplicable,
+            streaming: StreamingMode::None,
+            audit: AuditTraceClass::UserAction,
+            effect_path: AllowedEffectPath::ProductSurface,
+        },
+        Expected {
+            route_id: WEBUI_V2_ROUTE_HISTORY_SEARCH,
+            method: NetworkMethod::Get,
+            pattern: "/api/webchat/v2/history/search",
             listener_class: ListenerClass::LocalGateway,
             auth_schemes: &[IngressAuthScheme::BearerToken],
             scope_source: IngressScopeSource::AuthenticatedCaller,

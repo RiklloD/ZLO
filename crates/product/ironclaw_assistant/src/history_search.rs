@@ -17,11 +17,10 @@ use ironclaw_product_contracts::history::{
     HistorySearchRequest, HistorySearchResponse, HistoryThreadOrigin, HistoryThreadResult,
 };
 use ironclaw_threads::{
-    HISTORY_SEARCH_MAX_HITS_PER_THREAD, ListThreadsForScopeRequest, MessageKind,
-    SearchHitRole, SearchThreadMessagesRequest, SessionThreadError, SessionThreadRecord,
-    SessionThreadService, ThreadHistoryRequest, ThreadMessageId, ThreadMessageRangeRequest,
-    ThreadMessageRecord, ThreadScope, record_is_prepared_context_hidden,
-    searchable_message_text,
+    HISTORY_SEARCH_MAX_HITS_PER_THREAD, ListThreadsForScopeRequest, MessageKind, SearchHitRole,
+    SearchThreadMessagesRequest, SessionThreadError, SessionThreadRecord, SessionThreadService,
+    ThreadHistoryRequest, ThreadMessageId, ThreadMessageRangeRequest, ThreadMessageRecord,
+    ThreadScope, record_is_prepared_context_hidden, searchable_message_text,
 };
 use thiserror::Error;
 
@@ -45,9 +44,8 @@ pub enum HistorySearchError {
 impl HistorySearchError {
     fn from_thread(error: SessionThreadError) -> Self {
         match error {
-            SessionThreadError::UnknownThread { .. } | SessionThreadError::UnknownMessage { .. } => {
-                Self::NotFound
-            }
+            SessionThreadError::UnknownThread { .. }
+            | SessionThreadError::UnknownMessage { .. } => Self::NotFound,
             other => Self::Unavailable(other),
         }
     }
@@ -162,7 +160,11 @@ async fn discover(
     request: &HistorySearchRequest,
 ) -> Result<HistorySearchResponse, HistorySearchError> {
     let query = request.query.clone().unwrap_or_default();
-    let only = request.thread_id.as_deref().map(parse_thread_id).transpose()?;
+    let only = request
+        .thread_id
+        .as_deref()
+        .map(parse_thread_id)
+        .transpose()?;
     let limit = thread_limit(request);
     // Narrowing to one thread searches wider and filters, so that thread's
     // hits are not crowded out by better-ranked threads.
@@ -456,7 +458,13 @@ mod tests {
             &[("morning invoice report", "invoice report sent")],
         )
         .await;
-        thread(&service, "mine", None, &[("where is the invoice?", "in billing")]).await;
+        thread(
+            &service,
+            "mine",
+            None,
+            &[("where is the invoice?", "in billing")],
+        )
+        .await;
         let found = ask(
             &service,
             HistorySearchRequest {
@@ -527,7 +535,13 @@ mod tests {
         let texts: Vec<&str> = window.messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(
             texts,
-            ["question 4", "answer 4", "question 5", "answer 5", "question 6"]
+            [
+                "question 4",
+                "answer 4",
+                "question 5",
+                "answer 5",
+                "question 6"
+            ]
         );
     }
 
@@ -535,7 +549,13 @@ mod tests {
     async fn read_is_bounded_per_message_and_pages_forward() {
         let service = InMemorySessionThreadService::default();
         let huge = "x".repeat(HISTORY_MESSAGE_MAX_CHARS + 50);
-        thread(&service, "big", None, &[(huge.as_str(), "ok"), ("next", "done")]).await;
+        thread(
+            &service,
+            "big",
+            None,
+            &[(huge.as_str(), "ok"), ("next", "done")],
+        )
+        .await;
         let first = ask(
             &service,
             HistorySearchRequest {
@@ -572,7 +592,9 @@ mod tests {
     async fn browse_lists_recent_threads_and_bad_ids_are_correctable() {
         let service = InMemorySessionThreadService::default();
         thread(&service, "one", None, &[("hello", "hi")]).await;
-        let browsed = ask(&service, HistorySearchRequest::default()).await.unwrap();
+        let browsed = ask(&service, HistorySearchRequest::default())
+            .await
+            .unwrap();
         assert_eq!(browsed.mode, HistorySearchMode::Browse);
         assert_eq!(browsed.threads[0].thread_id, "one");
         let missing = ask(

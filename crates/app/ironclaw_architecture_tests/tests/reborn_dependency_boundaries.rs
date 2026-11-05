@@ -1158,7 +1158,13 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // which the desktop client writes and ironclaw_assistant reads. The
         // placement itself lives in ironclaw_assistant. Count read from this
         // test's failure message.
-        ("ironclaw_product_contracts", 17_878),
+        // 17_878 -> 18_218 (2026-11-05, history search): the `history`
+        // module — the `history.search` view descriptor, its request/
+        // response DTOs and bounds, shared by the WebUI route, the desktop
+        // client and the model tool. Search, ranking and lineage live in
+        // ironclaw_threads and ironclaw_assistant. Count read from this
+        // test's failure message.
+        ("ironclaw_product_contracts", 18_218),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

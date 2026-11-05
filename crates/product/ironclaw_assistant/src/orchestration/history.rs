@@ -384,10 +384,12 @@ mod tests {
                 next_from_sequence: None,
                 index_complete: true,
             };
-            Ok(ironclaw_product_contracts::surface::ProductSurfaceQueryPage {
-                items: vec![serde_json::to_value(response).unwrap()],
-                next_cursor: None,
-            })
+            Ok(
+                ironclaw_product_contracts::surface::ProductSurfaceQueryPage {
+                    items: vec![serde_json::to_value(response).unwrap()],
+                    next_cursor: None,
+                },
+            )
         }
 
         async fn stream_events(
@@ -461,9 +463,20 @@ mod tests {
             .unwrap();
         let response: HistorySearchResponse =
             serde_json::from_value(page.items[0].clone()).unwrap();
-        let ids: Vec<&str> = response.threads.iter().map(|t| t.thread_id.as_str()).collect();
-        assert_eq!(ids, ["fork", "other"], "the fork and its root are one result");
-        assert_eq!(response.threads[0].lineage_root_thread_id.as_deref(), Some("root"));
+        let ids: Vec<&str> = response
+            .threads
+            .iter()
+            .map(|t| t.thread_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["fork", "other"],
+            "the fork and its root are one result"
+        );
+        assert_eq!(
+            response.threads[0].lineage_root_thread_id.as_deref(),
+            Some("root")
+        );
         assert_eq!(response.threads[0].related_thread_ids, ["root"]);
     }
 
