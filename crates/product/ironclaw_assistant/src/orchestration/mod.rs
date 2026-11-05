@@ -9,6 +9,8 @@ mod external;
 mod external_tests;
 mod inbox;
 mod mentions;
+#[cfg(test)]
+mod mentions_surface_tests;
 mod observer;
 mod profile_context;
 mod profiles;
