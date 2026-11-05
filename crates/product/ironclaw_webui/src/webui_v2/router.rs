@@ -76,6 +76,13 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_USER_MODEL_POLICY, WEBUI_V2_PATTERN_USER_MODEL_PREFERENCE,
 };
 use crate::webui_v2::descriptors::{
+    WEBUI_V2_PATTERN_HOOKS, WEBUI_V2_PATTERN_MEMORY_ARCHIVE, WEBUI_V2_PATTERN_MEMORY_DOCUMENT,
+    WEBUI_V2_PATTERN_MEMORY_DOCUMENTS, WEBUI_V2_PATTERN_MEMORY_SEARCH,
+    WEBUI_V2_PATTERN_SUPERMEMORY, WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT,
+    WEBUI_V2_PATTERN_SUPERMEMORY_DOCUMENTS, WEBUI_V2_PATTERN_SUPERMEMORY_FORGET,
+    WEBUI_V2_PATTERN_SUPERMEMORY_SEARCH,
+};
+use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_COMPUTER_USE, WEBUI_V2_PATTERN_COMPUTER_USE_FRAME,
     WEBUI_V2_PATTERN_COMPUTER_USE_STATE,
 };
@@ -437,6 +444,40 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         )
         .route(WEBUI_V2_PATTERN_USAGE_REPORT, get(handlers::usage_report))
         .route(WEBUI_V2_PATTERN_USAGE_HISTORY, get(handlers::usage_history))
+        .route(
+            WEBUI_V2_PATTERN_MEMORY_DOCUMENTS,
+            get(handlers::memory_tree).post(handlers::memory_write),
+        )
+        .route(
+            WEBUI_V2_PATTERN_MEMORY_DOCUMENT,
+            get(handlers::memory_document),
+        )
+        .route(
+            WEBUI_V2_PATTERN_MEMORY_ARCHIVE,
+            post(handlers::memory_archive),
+        )
+        .route(WEBUI_V2_PATTERN_MEMORY_SEARCH, get(handlers::memory_search))
+        .route(
+            WEBUI_V2_PATTERN_SUPERMEMORY,
+            get(handlers::supermemory_status),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SUPERMEMORY_DOCUMENTS,
+            get(handlers::supermemory_documents),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SUPERMEMORY_SEARCH,
+            get(handlers::supermemory_search),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT,
+            post(handlers::supermemory_delete_document),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SUPERMEMORY_FORGET,
+            post(handlers::supermemory_forget),
+        )
+        .route(WEBUI_V2_PATTERN_HOOKS, get(handlers::hooks_catalog))
         .route(WEBUI_V2_PATTERN_INBOX, get(handlers::inbox_list))
         .route(WEBUI_V2_PATTERN_INBOX_THREAD, post(handlers::inbox_mutate))
         .route(

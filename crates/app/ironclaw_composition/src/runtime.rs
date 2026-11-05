@@ -4086,6 +4086,28 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         }
     };
     let memory_upkeep_hook_wired = memory_scheduled_op_hook_wiring.is_some();
+    let memory_page = crate::memory_page_parts::MemoryPageParts {
+        documents: local_runtime
+            .filter(|local_runtime| {
+                local_runtime.memory_service_resolver.resolved_binding()
+                    == ironclaw_host_runtime::memory_binding::MemoryProviderBinding::Native
+            })
+            .map(|local_runtime| {
+                Arc::new(crate::memory_page_parts::NativeMemoryDocuments::new(
+                    Arc::clone(&local_runtime.extension_filesystem)
+                        as Arc<dyn ironclaw_filesystem::RootFilesystem>,
+                ))
+                    as Arc<dyn ironclaw_product_contracts::memory_page::MemoryDocumentsSource>
+            }),
+        supermemory: Arc::clone(&supermemory),
+        hooks: Arc::new(crate::memory_page_parts::StaticHookCatalog(
+            crate::observability::hooks::catalog::hook_catalog(
+                hooks_config,
+                hook_projection_registry.as_ref(),
+                memory_upkeep_hook_wired,
+            ),
+        )),
+    };
     let crate::memory_provider_factory::MemoryLifecycleConsumers {
         memory_context_service: wired_memory_context_service,
         after_turn_memory_writer: wired_after_turn_memory_writer,
@@ -4949,28 +4971,6 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         None => None,
     };
 
-    let memory_page = crate::memory_page_parts::MemoryPageParts {
-        documents: local_runtime
-            .filter(|local_runtime| {
-                local_runtime.memory_service_resolver.resolved_binding()
-                    == ironclaw_host_runtime::memory_binding::MemoryProviderBinding::Native
-            })
-            .map(|local_runtime| {
-                Arc::new(crate::memory_page_parts::NativeMemoryDocuments::new(
-                    Arc::clone(&local_runtime.extension_filesystem)
-                        as Arc<dyn ironclaw_filesystem::RootFilesystem>,
-                ))
-                    as Arc<dyn ironclaw_product_contracts::memory_page::MemoryDocumentsSource>
-            }),
-        supermemory: Arc::clone(&supermemory),
-        hooks: Arc::new(crate::memory_page_parts::StaticHookCatalog(
-            crate::observability::hooks::catalog::hook_catalog(
-                hooks_config,
-                hook_projection_registry.as_ref(),
-                memory_upkeep_hook_wired,
-            ),
-        )),
-    };
     let runtime = RebornRuntime {
         memory_page,
         host_runtime: services.host_runtime.clone(),

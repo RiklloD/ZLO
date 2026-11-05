@@ -13,7 +13,12 @@ use crate::observability::hooks::HooksActivationConfig;
 use crate::observability::hooks::catalog::{MEMORY_UPKEEP_HOOK_ID, hook_catalog};
 
 fn caller(user: &str) -> ProductSurfaceCaller {
-    ProductSurfaceCaller::new(TenantId::new("t1").unwrap(), UserId::new(user).unwrap())
+    ProductSurfaceCaller::new(
+        TenantId::new("t1").unwrap(),
+        UserId::new(user).unwrap(),
+        None,
+        None,
+    )
 }
 
 fn write(path: &str, content: &str, expected: Option<String>) -> MemoryWriteRequest {

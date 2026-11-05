@@ -214,6 +214,33 @@ pub const WEBUI_V2_PATTERN_USAGE_REPORT: &str = "/api/webchat/v2/usage";
 pub const WEBUI_V2_ROUTE_USAGE_HISTORY: &str = "webui.v2.usage.history";
 pub const WEBUI_V2_PATTERN_USAGE_HISTORY: &str = "/api/webchat/v2/usage/history";
 
+// Memory page routes (local memory documents + Supermemory) and the hooks view.
+pub const WEBUI_V2_ROUTE_MEMORY_TREE: &str = "webui.v2.memory.tree";
+pub const WEBUI_V2_ROUTE_MEMORY_WRITE: &str = "webui.v2.memory.write";
+pub const WEBUI_V2_ROUTE_MEMORY_DOCUMENT: &str = "webui.v2.memory.document";
+pub const WEBUI_V2_ROUTE_MEMORY_ARCHIVE: &str = "webui.v2.memory.archive";
+pub const WEBUI_V2_ROUTE_MEMORY_SEARCH: &str = "webui.v2.memory.search";
+pub const WEBUI_V2_ROUTE_SUPERMEMORY_STATUS: &str = "webui.v2.memory.supermemory.status";
+pub const WEBUI_V2_ROUTE_SUPERMEMORY_DOCUMENTS: &str = "webui.v2.memory.supermemory.documents";
+pub const WEBUI_V2_ROUTE_SUPERMEMORY_SEARCH: &str = "webui.v2.memory.supermemory.search";
+pub const WEBUI_V2_ROUTE_SUPERMEMORY_DELETE_DOCUMENT: &str =
+    "webui.v2.memory.supermemory.delete_document";
+pub const WEBUI_V2_ROUTE_SUPERMEMORY_FORGET: &str = "webui.v2.memory.supermemory.forget";
+pub const WEBUI_V2_ROUTE_HOOKS_CATALOG: &str = "webui.v2.hooks.catalog";
+pub const WEBUI_V2_PATTERN_MEMORY_DOCUMENTS: &str = "/api/webchat/v2/memory/documents";
+pub const WEBUI_V2_PATTERN_MEMORY_DOCUMENT: &str = "/api/webchat/v2/memory/documents/content";
+pub const WEBUI_V2_PATTERN_MEMORY_ARCHIVE: &str = "/api/webchat/v2/memory/documents/archive";
+pub const WEBUI_V2_PATTERN_MEMORY_SEARCH: &str = "/api/webchat/v2/memory/search";
+pub const WEBUI_V2_PATTERN_SUPERMEMORY: &str = "/api/webchat/v2/memory/supermemory";
+pub const WEBUI_V2_PATTERN_SUPERMEMORY_DOCUMENTS: &str =
+    "/api/webchat/v2/memory/supermemory/documents";
+pub const WEBUI_V2_PATTERN_SUPERMEMORY_SEARCH: &str = "/api/webchat/v2/memory/supermemory/search";
+pub const WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT: &str =
+    "/api/webchat/v2/memory/supermemory/documents/delete";
+pub const WEBUI_V2_PATTERN_SUPERMEMORY_FORGET: &str =
+    "/api/webchat/v2/memory/supermemory/memories/forget";
+pub const WEBUI_V2_PATTERN_HOOKS: &str = "/api/webchat/v2/hooks";
+
 // Computer-use routes (a thread's session + latest frame; Stop / take over).
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_SESSION: &str = "webui.v2.computer_use.session";
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL: &str = "webui.v2.computer_use.control";
@@ -475,6 +502,61 @@ pub fn webui_v2_routes_with_artifact_flags(
         ),
         usage_report_descriptor(),
         usage_history_descriptor(),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_MEMORY_TREE,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_MEMORY_DOCUMENTS,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_MEMORY_WRITE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_MEMORY_DOCUMENTS,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_MEMORY_DOCUMENT,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_MEMORY_DOCUMENT,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_MEMORY_ARCHIVE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_MEMORY_ARCHIVE,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_MEMORY_SEARCH,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_MEMORY_SEARCH,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_SUPERMEMORY_STATUS,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_SUPERMEMORY,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_SUPERMEMORY_DOCUMENTS,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_SUPERMEMORY_DOCUMENTS,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_SUPERMEMORY_SEARCH,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_SUPERMEMORY_SEARCH,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_SUPERMEMORY_DELETE_DOCUMENT,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_SUPERMEMORY_FORGET,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SUPERMEMORY_FORGET,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_HOOKS_CATALOG,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_HOOKS,
+        ),
         computer_use_session_descriptor(),
         computer_use_control_descriptor(),
         computer_use_live_descriptor(
@@ -1760,6 +1842,36 @@ fn profile_route_descriptor(
         ),
         _ => mutation_policy(
             body_limit_kib(64),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    };
+    descriptor(route_id, method, pattern, policy)
+}
+
+/// Memory page and hooks routes. Reads use the standard read budget; the
+/// document save carries a whole document, so its body cap sits just above
+/// `MAX_MEMORY_DOCUMENT_BYTES` (512 KiB) plus JSON escaping headroom; the
+/// other mutations carry an id or a path.
+fn memory_route_descriptor(
+    route_id: &'static str,
+    method: NetworkMethod,
+    pattern: &'static str,
+) -> IngressRouteDescriptor {
+    let policy = match method {
+        NetworkMethod::Get => read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+        _ => mutation_policy(
+            body_limit_kib(if route_id == WEBUI_V2_ROUTE_MEMORY_WRITE {
+                1024
+            } else {
+                4
+            }),
             mutation_rate_limit(),
             AuditTraceClass::UserAction,
             AllowedEffectPath::ProductSurface,
