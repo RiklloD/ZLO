@@ -975,7 +975,13 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // shallow paging, redaction, and continuation behavior remain in
         // `ironclaw_threads`; host API only names the provider-neutral controls
         // and refuses replay of an unredacted page. Count read from this gate.
-        ("ironclaw_host_api", 21_311),
+        // 21_311 -> 21_985 (2026-11-05, PLAN-FORMS): `agent_plan` — the one
+        // plan / question-form vocabulary every runtime folds into (Claude
+        // CLI, Codex, ACP, MCP elicitation, `builtin.plan_update`), with its
+        // shape bounds, answer-fit check and the model-visible answer line.
+        // Vendor parsing stays in ironclaw_cli_providers; the capability in
+        // ironclaw_host_runtime. Count read from this test's failure message.
+        ("ironclaw_host_api", 21_985),
         // 14_479 -> 13_949 (2026-08-07, #7157): downward re-capture after the
         // delivery-heuristic vocabulary (stored trigger delivery targets and
         // their run-profile plumbing) left this crate with the two-lane
@@ -1158,7 +1164,12 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // which the desktop client writes and ironclaw_assistant reads. The
         // placement itself lives in ironclaw_assistant. Count read from this
         // test's failure message.
-        ("ironclaw_product_contracts", 17_878),
+        // 17_878 -> 18_134 (2026-11-05, PLAN-FORMS): the appended `Plan` and
+        // `Question` projection items (wire, validation, round-trip test) and
+        // the optional `answer` on `ProductResolveGateRequest`. Projection of
+        // CLI plans/questions lives in ironclaw_assistant. Count read from
+        // this test's failure message.
+        ("ironclaw_product_contracts", 18_134),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
