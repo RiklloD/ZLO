@@ -31,11 +31,24 @@ pub(crate) struct CodexScan {
     pub(crate) subagent: bool,
     pub(crate) started_at: Option<Millis>,
     pub(crate) first_prompt: Option<String>,
-    pub(crate) messages: Vec<HistoryMessage>,
+    pub(crate) messages: Vec<Folded>,
     pub(crate) last_at: Option<Millis>,
     pub(crate) last_user_at: Option<Millis>,
+    /// Offset after the last line this batch covers: a turn boundary (no
+    /// reply half-folded), or the end of the file.
     pub(crate) end: u64,
+    /// The batch reached the end of what was readable.
+    pub(crate) eof: bool,
     pub(crate) bad_lines: u32,
+}
+
+/// One folded message and the offset after the source line that completed
+/// it. Folding the same bytes from the same boundary yields the same pairs,
+/// so an interrupted append is recognized by its offsets on retry.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Folded {
+    pub(crate) message: HistoryMessage,
+    pub(crate) end: u64,
 }
 
 #[derive(Default)]
@@ -43,6 +56,8 @@ struct Reply {
     text: String,
     tools: Vec<String>,
     at: Option<Millis>,
+    /// Offset after the last line folded into it.
+    end: u64,
 }
 
 fn timestamp(v: &Value) -> Option<Millis> {
@@ -107,6 +122,8 @@ fn tool_label(item: &Value) -> Option<String> {
 struct Fold {
     out: CodexScan,
     reply: Reply,
+    /// Offset after the line being folded.
+    line_end: u64,
 }
 
 impl Fold {
@@ -117,7 +134,14 @@ impl Fold {
         }
         let mut m = journal::message(HistoryRole::Assistant, reply.text, reply.tools);
         m.at = reply.at;
-        self.out.messages.push(m);
+        self.out.messages.push(Folded {
+            message: m,
+            end: reply.end,
+        });
+    }
+
+    fn reply_open(&self) -> bool {
+        !self.reply.text.is_empty() || !self.reply.tools.is_empty()
     }
 
     fn meta(&mut self, meta: &Value, at: Option<Millis>) {
@@ -154,6 +178,7 @@ impl Fold {
         if let Some(label) = tool_label(item) {
             self.reply.tools.push(label);
             self.reply.at = at.or(self.reply.at);
+            self.reply.end = self.line_end;
             return;
         }
         if item.get("type").and_then(Value::as_str) != Some("message") {
@@ -176,7 +201,10 @@ impl Fold {
                 let mut m = journal::message(HistoryRole::User, text, Vec::new());
                 m.hidden = hidden;
                 m.at = at;
-                self.out.messages.push(m);
+                self.out.messages.push(Folded {
+                    message: m,
+                    end: self.line_end,
+                });
             }
             Some("assistant") if !text.trim().is_empty() => {
                 if !self.reply.text.is_empty() {
@@ -184,6 +212,7 @@ impl Fold {
                 }
                 self.reply.text.push_str(text.trim());
                 self.reply.at = at.or(self.reply.at);
+                self.reply.end = self.line_end;
             }
             _ => {}
         }
@@ -210,23 +239,36 @@ impl Fold {
     }
 }
 
-/// Read `path` from `from` (a line boundary).
-pub(crate) async fn scan(path: &Path, from: u64) -> std::io::Result<CodexScan> {
-    let mut lines = Lines::open(path, from).await?;
+/// Fold `lines` (starting at `from`, a turn boundary) until `max` messages
+/// are folded and no reply is half-folded, or the end. Memory is one batch.
+pub(crate) async fn scan(mut lines: Lines, from: u64, max: usize) -> std::io::Result<CodexScan> {
     let mut fold = Fold {
-        out: CodexScan::default(),
+        out: CodexScan {
+            end: from,
+            ..CodexScan::default()
+        },
         reply: Reply::default(),
+        line_end: from,
     };
-    while let Some(line) = lines.next_line().await? {
+    loop {
+        let Some(line) = lines.next_line().await? else {
+            fold.flush();
+            fold.out.eof = true;
+            fold.out.end = lines.end();
+            break;
+        };
+        fold.line_end = lines.end();
         match serde_json::from_slice::<Value>(&line) {
             Ok(v) => fold.line(&v),
             Err(_) => fold.out.bad_lines += 1, // silent-ok: a malformed record is counted and skipped
         }
+        if fold.out.messages.len() >= max && !fold.reply_open() {
+            fold.out.end = fold.line_end;
+            break;
+        }
     }
-    fold.flush();
     let mut out = fold.out;
     out.bad_lines += lines.skipped;
-    out.end = lines.end();
     Ok(out)
 }
 
@@ -272,7 +314,9 @@ mod tests {
             id_from_file_name(&path).as_deref(),
             Some("01a19dc0-9936-7d50-8808-84fea8a23fa6")
         );
-        let scan = scan(&path, 0).await.unwrap();
+        let scan = scan(Lines::open(&path, 0).await.unwrap(), 0, usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(
             scan.id.as_deref(),
             Some("01a19dc0-9936-7d50-8808-84fea8a23fa6")
@@ -285,6 +329,7 @@ mod tests {
         let rows: Vec<_> = scan
             .messages
             .iter()
+            .map(|f| &f.message)
             .map(|m| (m.role, m.hidden, m.text.as_str(), m.tool_calls.clone()))
             .collect();
         assert_eq!(
@@ -305,9 +350,57 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(scan.messages[1].at, Some(1_790_848_802_000));
+        assert_eq!(scan.messages[1].message.at, Some(1_790_848_802_000));
         assert_eq!(scan.last_user_at, Some(1_790_848_802_000));
         assert_eq!(scan.end as usize, ROLLOUT.join("\n").len() + 1);
+    }
+
+    #[tokio::test]
+    async fn batches_resume_at_turn_boundaries_and_match_one_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.jsonl");
+        // Many turns: each a prompt, a tool call and a reply.
+        let mut lines = vec![ROLLOUT[0].to_string()];
+        for n in 0..20 {
+            let at = format!("2026-10-01T11:{n:02}:00.000Z");
+            lines.push(format!(
+                r#"{{"timestamp":"{at}","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"step {n}"}}]}}}}"#
+            ));
+            lines.push(format!(
+                r#"{{"timestamp":"{at}","type":"response_item","payload":{{"type":"function_call","name":"shell","arguments":"{{}}"}}}}"#
+            ));
+            lines.push(format!(
+                r#"{{"timestamp":"{at}","type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"done {n}"}}]}}}}"#
+            ));
+        }
+        tokio::fs::write(&path, format!("{}\n", lines.join("\n")))
+            .await
+            .unwrap();
+        let whole = scan(Lines::open(&path, 0).await.unwrap(), 0, usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(whole.messages.len(), 40);
+
+        let mut batched = Vec::new();
+        let mut from = 0;
+        let mut batches = 0;
+        loop {
+            let batch = scan(Lines::open(&path, from).await.unwrap(), from, 3)
+                .await
+                .unwrap();
+            batches += 1;
+            // A batch holds at most what it was asked for plus the turn it
+            // was finishing.
+            assert!(batch.messages.len() <= 4, "{}", batch.messages.len());
+            assert!(batch.messages.iter().all(|m| m.end > from && m.end <= batch.end));
+            batched.extend(batch.messages);
+            from = batch.end;
+            if batch.eof {
+                break;
+            }
+        }
+        assert!(batches > 10);
+        assert_eq!(batched, whole.messages, "batches fold exactly as one pass");
     }
 
     #[tokio::test]
@@ -323,7 +416,9 @@ mod tests {
         tokio::fs::write(&path, format!("{}\n", legacy.join("\n")))
             .await
             .unwrap();
-        let scan = scan(&path, 0).await.unwrap();
+        let scan = scan(Lines::open(&path, 0).await.unwrap(), 0, usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(scan.id.as_deref(), Some("0b5e"));
         assert_eq!(scan.messages.len(), 2);
         assert_eq!(scan.started_at, Some(1_746_086_400_000));
@@ -333,6 +428,7 @@ mod tests {
         tokio::fs::write(&spawned, format!("{meta}\n"))
             .await
             .unwrap();
-        assert!(super::scan(&spawned, 0).await.unwrap().subagent);
+        let lines = Lines::open(&spawned, 0).await.unwrap();
+        assert!(super::scan(lines, 0, usize::MAX).await.unwrap().subagent);
     }
 }

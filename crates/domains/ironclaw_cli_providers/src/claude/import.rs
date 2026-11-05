@@ -4,7 +4,7 @@
 //! history for every Claude CLI thread (`transcript::read`), so an imported
 //! thread shows, searches and resumes from the very file the terminal wrote.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ironclaw_orchestrator::model::Millis;
 use ironclaw_orchestrator::runtime::HistoryRole;
@@ -39,9 +39,8 @@ fn scaffolding(text: &str) -> bool {
     t.is_empty() || t.starts_with('<') || t.starts_with("Caveat:")
 }
 
-/// Read `path` from `from` (a line boundary).
-pub(crate) async fn scan(path: &Path, from: u64) -> std::io::Result<ClaudeScan> {
-    let mut lines = Lines::open(path, from).await?;
+/// Read `lines`, which start at `from` (a line boundary).
+pub(crate) async fn scan(mut lines: Lines, from: u64) -> std::io::Result<ClaudeScan> {
     let mut out = ClaudeScan {
         end: from,
         ..ClaudeScan::default()
@@ -121,9 +120,9 @@ mod tests {
         // The last line is still being written.
         let body = format!("{}\n{{\"type\":\"user\"", FIXTURE.join("\n"));
         tokio::fs::write(&path, &body).await.unwrap();
-        let scan = scan(&path, 0).await.unwrap();
+        let scan = scan(Lines::open(&path, 0).await.unwrap(), 0).await.unwrap();
         assert_eq!(scan.session_id.as_deref(), Some("7f0c"));
-        assert_eq!(scan.cwd.as_deref(), Some(Path::new("/work/app")));
+        assert_eq!(scan.cwd.as_deref(), Some(std::path::Path::new("/work/app")));
         assert_eq!(scan.title.as_deref(), Some("Flaky login test"));
         assert_eq!(
             scan.first_prompt.as_deref(),
@@ -142,7 +141,8 @@ mod tests {
         tokio::fs::write(&path, format!("{}\n{more}\n", FIXTURE.join("\n")))
             .await
             .unwrap();
-        let grown = super::scan(&path, scan.end).await.unwrap();
+        let lines = Lines::open(&path, scan.end).await.unwrap();
+        let grown = super::scan(lines, scan.end).await.unwrap();
         assert_eq!(grown.messages, 1);
         assert_eq!(grown.last_user_at, Some(1_790_852_400_000));
     }

@@ -18,24 +18,35 @@
 //! sessions, empty ones and anything under the app's own home. Every new
 //! thread lands in the inbox's Settled shelf with nothing unseen.
 //!
-//! Incremental: the ledger keeps each file's size, mtime and the offset of
-//! the last complete line read. An unchanged file is not opened; a grown one
-//! is read from the offset only. Once a turn ran on a thread here, the app's
-//! own record is authoritative and the import only moves the watermark.
+//! Incremental: the ledger keeps a checkpoint per file: the offset after the
+//! last complete line read, the file's identity (device and inode) and a
+//! digest of the bytes before the offset. A file that is the same file with
+//! the same bytes up to the checkpoint is read from there only; anything
+//! else (replaced, truncated, rewritten in place) is read again from the
+//! start and reconciled without dropping what was already imported. Codex
+//! transcript lines carry the offset of the source line they came from, so
+//! an append interrupted before the ledger moved is recognized, not
+//! repeated. Once a turn ran on a thread here, the app's own record is
+//! authoritative and the import only notes the file as seen.
+//!
+//! Folders are walked without following symlinks and only regular files are
+//! read (`files`), each up to the size it was listed at. A run stops at its
+//! [`Limits`] (bytes, time, files listed) and leaves the rest `deferred`.
 
+pub(crate) mod files;
 pub(crate) mod lines;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::error::OrchestratorError;
 use ironclaw_orchestrator::model::{Millis, RuntimeId, ThreadRecord, ThreadScope, clip, now_ms};
 use ironclaw_orchestrator::profiles::ProfileOwner;
-use ironclaw_orchestrator::runtime::HistoryMessage;
 use ironclaw_orchestrator::session_imports::{
     ImportGrowth, ImportLedgerEntry, ImportWatermark, ImportedThread, SessionImportState,
 };
@@ -44,8 +55,6 @@ use ironclaw_product_contracts::session_import::{
     BACKGROUND_RESCAN_MIN_MS, ImportTrigger, SessionImportCounts, SessionImportRequest,
     SessionImportSource, SessionImportStatus,
 };
-use tokio::io::AsyncWriteExt;
-
 use crate::claude::import as claude_import;
 use crate::codex::import as codex_import;
 
@@ -84,6 +93,9 @@ pub struct ImportPaths {
     pub codex_sessions: PathBuf,
     /// The Codex driver's state folder (`codex::state_dir`).
     pub codex_state: PathBuf,
+    /// Imported Claude sessions' folder records (`claude::imports_dir` of
+    /// the Claude driver's work dir).
+    pub claude_imports: PathBuf,
     /// Sessions that ran under these folders are this app's own.
     pub own_roots: Vec<PathBuf>,
 }
@@ -97,38 +109,101 @@ impl ImportPaths {
             claude_projects: home.join(".claude").join("projects"),
             codex_sessions: codex_home.join("sessions"),
             codex_state: crate::codex::state_dir(home),
+            claude_imports: crate::claude::imports_dir(&home.join(".ironclaw").join("claude-cli")),
             own_roots: vec![home.join(".ironclaw")],
         }
     }
 }
 
-/// A file as found on disk.
+/// A regular file as found on disk.
 struct Candidate {
     path: PathBuf,
     native_id: String,
-    size: u64,
-    mtime_ms: Millis,
+    file: files::FileInfo,
 }
 
-/// The ledger's answer for one file.
+/// The ledger's answer for one file, after checking its checkpoint.
 enum Known {
     New,
-    /// Counted and settled (unchanged, deleted, or only the mark moved).
+    /// Counted and settled (unchanged, deleted, or continued here).
     Done,
-    /// Grew since the watermark: read from it.
+    /// The same file, grown past the checkpoint: read from it.
     Grew(ImportLedgerEntry),
+    /// Not the file that was read (replaced, truncated or rewritten in
+    /// place): read it again from the start and reconcile.
+    Rewritten(ImportLedgerEntry),
 }
 
-/// What a session file said, for a new thread or its growth.
+/// What a session file said, for a new thread or what it added.
 #[derive(Debug, Default)]
 struct SessionFacts {
     title: Option<String>,
     created: Option<Millis>,
     last: Option<Millis>,
     last_user: Option<Millis>,
-    /// Offset after the last complete line read.
+    /// Offset after the last complete line read, and the digest before it.
     end: u64,
+    fingerprint: String,
+    generation: i64,
     messages: u64,
+    /// `messages` is the file's whole count (it was read from the start).
+    recount: bool,
+}
+
+/// How much one run may do. A run that reaches a limit stops; what is left
+/// is counted `deferred` and read by the next run.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Limits {
+    /// Bytes read from session files.
+    pub(crate) bytes: u64,
+    pub(crate) time: Duration,
+    /// Files listed per source.
+    pub(crate) files: usize,
+    /// Codex messages folded and written per batch.
+    pub(crate) batch: usize,
+    /// Entries in the cache of skipped files.
+    pub(crate) skip_cache: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            bytes: 512 * 1024 * 1024,
+            time: Duration::from_secs(120),
+            files: 50_000,
+            batch: 256,
+            skip_cache: 20_000,
+        }
+    }
+}
+
+/// What is left of a run's [`Limits`].
+struct Budget {
+    bytes: u64,
+    deadline: Instant,
+}
+
+impl Budget {
+    fn spent(&self) -> bool {
+        self.bytes == 0 || Instant::now() >= self.deadline
+    }
+
+    fn take(&mut self, bytes: u64) {
+        self.bytes = self.bytes.saturating_sub(bytes);
+    }
+}
+
+/// Points where an import writes; tests fail a run at each one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// The Codex transcript copy is written (new import).
+    Transcript,
+    /// The Codex thread id is saved (new import).
+    ThreadFile,
+    /// The session's folder record is written (new import).
+    Workspace,
+    /// A Codex batch was appended, before the ledger moved.
+    Appended,
 }
 
 /// What a run needs for one source.
@@ -146,19 +221,25 @@ struct Pass<'a> {
 
 pub struct SessionImporter {
     paths: ImportPaths,
+    limits: Limits,
     running: AtomicBool,
-    /// Files skipped at their current size and mtime (empty, a subagent's,
-    /// this app's): not read again until they change. A cache: a restart
-    /// reads them once more.
-    skipped: Mutex<HashMap<PathBuf, (u64, Millis)>>,
+    /// Files skipped at their current identity, size and mtime (empty, a
+    /// subagent's, this app's): not read again until they change. A
+    /// bounded cache: a restart, or a full cache, reads them once more.
+    skipped: Mutex<HashMap<PathBuf, files::FileInfo>>,
+    #[cfg(test)]
+    fail_at: Mutex<Option<Step>>,
 }
 
 impl SessionImporter {
     pub fn new(paths: ImportPaths) -> Self {
         Self {
             paths,
+            limits: Limits::default(),
             running: AtomicBool::new(false),
             skipped: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            fail_at: Mutex::new(None),
         }
     }
 
@@ -319,6 +400,10 @@ impl SessionImporter {
         let owner = ProfileOwner::from(scope);
         let store = engine.store();
         let state = store.session_import_state(&owner).await?;
+        let mut budget = Budget {
+            bytes: self.limits.bytes,
+            deadline: Instant::now() + self.limits.time,
+        };
         let mut out = BTreeMap::new();
         for spec in &SOURCES {
             let runtime = RuntimeId::new(spec.runtime)?;
@@ -347,9 +432,13 @@ impl SessionImporter {
             };
             for candidate in candidates {
                 pass.counts.found += 1;
+                if budget.spent() {
+                    pass.counts.deferred += 1;
+                    continue;
+                }
                 let outcome = match spec.id {
-                    CLAUDE_CODE => self.claude(&mut pass, &candidate).await,
-                    _ => self.codex(&mut pass, &candidate).await,
+                    CLAUDE_CODE => self.claude(&mut pass, &candidate, &mut budget).await,
+                    _ => self.codex(&mut pass, &candidate, &mut budget).await,
                 };
                 if let Err(error) = outcome {
                     tracing::debug!(%error, source = spec.id, "session import: file not imported");
@@ -364,16 +453,41 @@ impl SessionImporter {
 
     // ── shared steps ────────────────────────────────────────────────────
 
+    /// A failure injected at `step` (tests); nothing otherwise.
+    fn step(&self, step: Step) -> Result<(), ImportError> {
+        #[cfg(test)]
+        if self.fail_at.lock().is_ok_and(|f| *f == Some(step)) {
+            return Err(ImportError::Injected(step));
+        }
+        let _ = step;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_at(&self, step: Option<Step>) {
+        if let Ok(mut f) = self.fail_at.lock() {
+            *f = step;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_limits(&mut self, limits: Limits) {
+        self.limits = limits;
+    }
+
     fn known_skip(&self, c: &Candidate) -> bool {
         self.skipped
             .lock()
-            .map(|m| m.get(&c.path) == Some(&(c.size, c.mtime_ms)))
+            .map(|m| m.get(&c.path) == Some(&c.file))
             .unwrap_or(false) // silent-ok: a poisoned cache only re-reads files
     }
 
     fn remember_skip(&self, c: &Candidate) {
         if let Ok(mut m) = self.skipped.lock() {
-            m.insert(c.path.clone(), (c.size, c.mtime_ms));
+            if m.len() >= self.limits.skip_cache {
+                m.clear();
+            }
+            m.insert(c.path.clone(), c.file.clone());
         }
     }
 
@@ -381,44 +495,82 @@ impl SessionImporter {
         dir.is_some_and(|d| self.paths.own_roots.iter().any(|r| d.starts_with(r)))
     }
 
-    /// What the ledger says about a file. Settles every case but growth.
-    async fn known(&self, pass: &mut Pass<'_>, c: &Candidate) -> Result<Known, ImportError> {
+    /// The file, opened for reading only if it is still the one listed.
+    async fn open(&self, c: &Candidate) -> Result<tokio::fs::File, ImportError> {
+        Ok(files::open_regular(&c.path, &c.file.id).await?)
+    }
+
+    /// Lines of the file from `from` up to its listed size. The caller
+    /// charges what it consumed to the run's budget.
+    async fn lines(&self, c: &Candidate, from: u64) -> Result<lines::Lines, ImportError> {
+        let file = self.open(c).await?;
+        let limit = c.file.size.saturating_sub(from);
+        Ok(lines::Lines::from_file(file, from, limit, lines::MAX_LINE).await?)
+    }
+
+    async fn fingerprint(&self, c: &Candidate, offset: u64) -> Result<String, ImportError> {
+        let mut file = self.open(c).await?;
+        Ok(files::fingerprint(&mut file, offset).await?)
+    }
+
+    /// What the ledger says about a file, its checkpoint checked against
+    /// the bytes on disk. Settles every case but growth and rewrites.
+    async fn known(
+        &self,
+        pass: &mut Pass<'_>,
+        c: &Candidate,
+        budget: &mut Budget,
+    ) -> Result<Known, ImportError> {
         let Some(entry) = pass.ledger.get(&c.native_id).cloned() else {
             return Ok(Known::New);
         };
-        let wm = entry.watermark;
+        let wm = &entry.watermark;
         if !entry.thread_live {
             pass.counts.skipped += 1;
-        } else if wm.size == c.size && wm.mtime_ms == c.mtime_ms {
-            pass.counts.unchanged += 1;
-        } else if entry.adopted || c.size < wm.offset {
-            // Continued here (the app's record wins), or rewritten in place
-            // (re-reading could duplicate messages): only move the mark.
-            let growth = ImportGrowth {
-                watermark: ImportWatermark {
-                    size: c.size,
-                    mtime_ms: c.mtime_ms,
-                    offset: c.size,
-                },
-                ..ImportGrowth::default()
-            };
-            pass.store
-                .advance_import(
-                    &pass.owner,
-                    pass.source,
-                    &c.native_id,
-                    &entry.thread_id,
-                    &growth,
-                )
-                .await?;
-            pass.counts.unchanged += 1;
-        } else {
-            return Ok(Known::Grew(entry));
+            return Ok(Known::Done);
         }
-        Ok(Known::Done)
+        let same_meta = wm.size == c.file.size && wm.mtime_ms == c.file.mtime_ms;
+        if entry.adopted {
+            // Continued here: the app's own record is the thread's; only
+            // note the file as seen.
+            if !same_meta || wm.file_id != c.file.id {
+                let growth = ImportGrowth {
+                    watermark: ImportWatermark {
+                        size: c.file.size,
+                        mtime_ms: c.file.mtime_ms,
+                        file_id: c.file.id.clone(),
+                        ..wm.clone()
+                    },
+                    ..ImportGrowth::default()
+                };
+                pass.store
+                    .advance_import(
+                        &pass.owner,
+                        pass.source,
+                        &c.native_id,
+                        &entry.thread_id,
+                        &growth,
+                    )
+                    .await?;
+            }
+            pass.counts.unchanged += 1;
+            return Ok(Known::Done);
+        }
+        if wm.file_id != c.file.id || c.file.size < wm.offset {
+            return Ok(Known::Rewritten(entry));
+        }
+        budget.take(files::FINGERPRINT_WINDOW);
+        if self.fingerprint(c, wm.offset).await? != wm.fingerprint {
+            return Ok(Known::Rewritten(entry));
+        }
+        if same_meta || c.file.size == wm.offset {
+            pass.counts.unchanged += 1;
+            return Ok(Known::Done);
+        }
+        Ok(Known::Grew(entry))
     }
 
-    /// Record growth read from a session (`added` new messages).
+    /// Record what was read from a session.
     async fn advance(
         &self,
         pass: &mut Pass<'_>,
@@ -427,12 +579,9 @@ impl SessionImporter {
         facts: &SessionFacts,
     ) -> Result<(), ImportError> {
         let growth = ImportGrowth {
-            watermark: ImportWatermark {
-                size: c.size,
-                mtime_ms: c.mtime_ms,
-                offset: facts.end,
-            },
+            watermark: self.watermark(c, facts),
             messages_added: facts.messages,
+            recount: facts.recount,
             last_user_at: facts.last_user,
             last_at: facts.last,
         };
@@ -445,12 +594,18 @@ impl SessionImporter {
                 &growth,
             )
             .await?;
-        if facts.messages > 0 {
-            pass.counts.updated += 1;
-        } else {
-            pass.counts.unchanged += 1;
-        }
         Ok(())
+    }
+
+    fn watermark(&self, c: &Candidate, facts: &SessionFacts) -> ImportWatermark {
+        ImportWatermark {
+            size: c.file.size,
+            mtime_ms: c.file.mtime_ms,
+            offset: facts.end,
+            file_id: c.file.id.clone(),
+            fingerprint: facts.fingerprint.clone(),
+            generation: facts.generation,
+        }
     }
 
     fn thread_id(&self, pass: &Pass<'_>, native_id: &str) -> Result<ThreadId, ImportError> {
@@ -475,11 +630,12 @@ impl SessionImporter {
             pass.scope.clone(),
             pass.runtime.clone(),
         );
-        let created = facts.created.unwrap_or(c.mtime_ms);
+        let created = facts.created.unwrap_or(c.file.mtime_ms);
         record.native_session_id = Some(c.native_id.clone());
         record.provider = Some(pass.runtime.as_str().to_string());
         record.title = facts
             .title
+            .as_deref()
             .map(|t| t.lines().next().unwrap_or_default().trim().to_string())
             .filter(|t| !t.is_empty())
             .map(|t| clip(&t, TITLE_CHARS));
@@ -491,11 +647,7 @@ impl SessionImporter {
             source: pass.source.to_string(),
             native_id: c.native_id.clone(),
             path: c.path.display().to_string(),
-            watermark: ImportWatermark {
-                size: c.size,
-                mtime_ms: c.mtime_ms,
-                offset: facts.end,
-            },
+            watermark: self.watermark(c, &facts),
             messages: facts.messages,
         })
     }
@@ -523,6 +675,9 @@ enum ImportError {
     Store(#[from] OrchestratorError),
     #[error("encode: {0}")]
     Encode(#[from] serde_json::Error),
+    #[cfg(test)]
+    #[error("injected failure at {0:?}")]
+    Injected(Step),
 }
 
 impl From<ironclaw_host_api::error::HostApiError> for ImportError {
@@ -531,57 +686,8 @@ impl From<ironclaw_host_api::error::HostApiError> for ImportError {
     }
 }
 
-async fn stat(path: &Path) -> Option<(u64, Millis)> {
-    let meta = tokio::fs::metadata(path).await.ok()?; // silent-ok: a file that vanished mid-scan is simply not found
-    let mtime = meta
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis();
-    Some((meta.len(), i64::try_from(mtime).unwrap_or(i64::MAX)))
-}
-
-async fn dir_entries(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
-        return out; // silent-ok: a CLI that never ran has no sessions folder
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        out.push(entry.path());
-    }
-    out.sort();
-    out
-}
-
 fn jsonl(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "jsonl")
-}
-
-/// Write `messages` as journal lines, replacing the file or appending.
-async fn write_journal(
-    path: &Path,
-    messages: &[HistoryMessage],
-    append: bool,
-) -> Result<(), ImportError> {
-    let mut body = String::new();
-    for m in messages {
-        body.push_str(&serde_json::to_string(m)?);
-        body.push('\n');
-    }
-    if let Some(dir) = path.parent() {
-        tokio::fs::create_dir_all(dir).await?;
-    }
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(append)
-        .truncate(!append)
-        .open(path)
-        .await?;
-    file.write_all(body.as_bytes()).await?;
-    file.flush().await?;
-    Ok(())
 }
 
 mod claude;

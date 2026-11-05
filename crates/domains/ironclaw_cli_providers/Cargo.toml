@@ -27,8 +27,11 @@ ironclaw_orchestrator = { path = "../ironclaw_orchestrator" }
 # Session import settings and report shapes (`session_import`).
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
 # Stop kills the CLI's whole process group (tool subprocesses included).
-nix = { version = "0.31", default-features = false, features = ["signal"] }
+# `fs`: session import opens transcripts with O_NOFOLLOW | O_NONBLOCK.
+nix = { version = "0.31", default-features = false, features = ["signal", "fs"] }
 serde_json = "1"
+# Session import: digests of a checkpoint's preceding bytes and message keys.
+sha2 = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
 tracing = "0.1"

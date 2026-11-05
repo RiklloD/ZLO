@@ -1,18 +1,20 @@
 //! Complete JSONL lines from a byte offset, in bounded memory: a line longer
 //! than [`MAX_LINE`] is skipped whole (counted, never buffered past the cap),
 //! and a trailing line without its newline (a live writer mid-line) is left
-//! for the next read, so [`Lines::end`] is always a line boundary.
+//! for the next read, so [`Lines::end`] is always a line boundary. Reading
+//! stops at a byte limit (the size the file was listed at), so a file that
+//! keeps growing while it is read never keeps the reader going.
 
 use std::io::SeekFrom;
 use std::path::Path;
 
-use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader, Take};
 
 /// Longest line kept (a pasted image inlined as base64 can exceed it).
 pub(crate) const MAX_LINE: usize = 8 * 1024 * 1024;
 
 pub(crate) struct Lines {
-    reader: BufReader<tokio::fs::File>,
+    reader: BufReader<Take<tokio::fs::File>>,
     /// Bytes consumed from the start of the file.
     offset: u64,
     /// Offset after the last complete line.
@@ -30,10 +32,20 @@ impl Lines {
     }
 
     pub(crate) async fn open_capped(path: &Path, from: u64, max: usize) -> std::io::Result<Self> {
-        let mut file = tokio::fs::File::open(path).await?;
+        let file = tokio::fs::File::open(path).await?;
+        Self::from_file(file, from, u64::MAX, max).await
+    }
+
+    /// Lines of an opened file from `from`, reading at most `limit` bytes.
+    pub(crate) async fn from_file(
+        mut file: tokio::fs::File,
+        from: u64,
+        limit: u64,
+        max: usize,
+    ) -> std::io::Result<Self> {
         file.seek(SeekFrom::Start(from)).await?;
         Ok(Self {
-            reader: BufReader::with_capacity(64 * 1024, file),
+            reader: BufReader::with_capacity(64 * 1024, file.take(limit)),
             offset: from,
             end: from,
             buf: Vec::new(),
@@ -116,5 +128,11 @@ mod tests {
             .unwrap();
         let mut rest = Lines::open_capped(&path, lines.end(), 10).await.unwrap();
         assert_eq!(rest.next_line().await.unwrap().unwrap(), b"torn");
+        // A byte limit ends the read at the listed size, mid-line or not.
+        let file = tokio::fs::File::open(&path).await.unwrap();
+        let mut bounded = Lines::from_file(file, 0, 4, 10).await.unwrap();
+        assert_eq!(bounded.next_line().await.unwrap().unwrap(), b"a");
+        assert_eq!(bounded.next_line().await.unwrap(), None);
+        assert_eq!(bounded.end(), 2);
     }
 }

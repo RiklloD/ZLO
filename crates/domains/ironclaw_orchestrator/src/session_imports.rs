@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS orch_session_imports (
   size INTEGER NOT NULL,
   mtime_ms INTEGER NOT NULL,
   read_offset INTEGER NOT NULL,
+  file_id TEXT NOT NULL DEFAULT '',
+  fingerprint TEXT NOT NULL DEFAULT '',
+  generation INTEGER NOT NULL DEFAULT 0,
   messages INTEGER NOT NULL,
   imported_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -56,12 +59,19 @@ CREATE TABLE IF NOT EXISTS orch_session_import_state (
 const SETTLE_GRACE_MS: Millis = 1000;
 
 /// How far a session file was read: its size and mtime when last looked
-/// at, and the byte offset after the last complete line taken in.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// at, the byte offset after the last complete line taken in, and what
+/// proves the file is still the one read: its identity (device and inode)
+/// and a digest of the bytes just before `offset`. A file whose identity or
+/// digest no longer matches was replaced or rewritten, not appended to.
+/// `generation` counts those replacements.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportWatermark {
     pub size: u64,
     pub mtime_ms: Millis,
     pub offset: u64,
+    pub file_id: String,
+    pub fingerprint: String,
+    pub generation: i64,
 }
 
 /// One ledger row as the importer needs it.
@@ -91,10 +101,13 @@ pub struct ImportedThread {
 }
 
 /// What a grown session added since its watermark.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportGrowth {
     pub watermark: ImportWatermark,
     pub messages_added: u64,
+    /// The file was re-read from the start: `messages_added` is its new
+    /// message count rather than an increment.
+    pub recount: bool,
     pub last_user_at: Option<Millis>,
     pub last_at: Option<Millis>,
 }
@@ -147,7 +160,8 @@ impl Store {
         params.push(s(source));
         let rows = self
             .rows(
-                "SELECT i.native_id, i.thread_id, i.size, i.mtime_ms, i.read_offset, i.messages, \
+                "SELECT i.native_id, i.thread_id, i.size, i.mtime_ms, i.read_offset, \
+                   i.file_id, i.fingerprint, i.generation, i.messages, \
                    t.thread_id IS NOT NULL, \
                    t.turn_started_at IS NOT NULL OR COALESCE(t.turn_state, 'idle') = 'running' \
                  FROM orch_session_imports i LEFT JOIN orch_threads t ON t.thread_id = i.thread_id \
@@ -164,6 +178,9 @@ impl Store {
                                 size: uint(c.int()?),
                                 mtime_ms: c.int()?,
                                 offset: uint(c.int()?),
+                                file_id: c.text()?,
+                                fingerprint: c.text()?,
+                                generation: c.int()?,
                             },
                             messages: uint(c.int()?),
                             thread_live: c.int()? != 0,
@@ -216,6 +233,9 @@ impl Store {
             int(imported.watermark.offset),
             int(imported.messages),
             Value::Integer(now),
+            s(&imported.watermark.file_id),
+            s(&imported.watermark.fingerprint),
+            Value::Integer(imported.watermark.generation),
         ]);
         let mut inbox = owner_params(owner);
         inbox.extend([
@@ -227,8 +247,9 @@ impl Store {
             crate::store::insert_thread_sql(r),
             (
                 "INSERT OR IGNORE INTO orch_session_imports (tenant_id, user_id, source, native_id, \
-                   thread_id, path, size, mtime_ms, read_offset, messages, imported_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)"
+                   thread_id, path, size, mtime_ms, read_offset, messages, imported_at, updated_at, \
+                   file_id, fingerprint, generation) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12, ?13, ?14)"
                     .to_string(),
                 ledger,
             ),
@@ -303,10 +324,15 @@ impl Store {
             int(growth.watermark.offset),
             int(growth.messages_added),
             Value::Integer(now),
+            s(&growth.watermark.file_id),
+            s(&growth.watermark.fingerprint),
+            Value::Integer(growth.watermark.generation),
+            Value::Integer(i64::from(growth.recount)),
         ]);
         statements.push((
             "UPDATE orch_session_imports SET size = ?5, mtime_ms = ?6, read_offset = ?7, \
-               messages = messages + ?8, updated_at = ?9 \
+               messages = CASE WHEN ?13 THEN ?8 ELSE messages + ?8 END, updated_at = ?9, \
+               file_id = ?10, fingerprint = ?11, generation = ?12 \
              WHERE tenant_id = ?1 AND user_id = ?2 AND source = ?3 AND native_id = ?4"
                 .to_string(),
             ledger,
@@ -421,6 +447,7 @@ mod tests {
                 size: 10,
                 mtime_ms: 5,
                 offset: 10,
+                ..ImportWatermark::default()
             },
             messages: 2,
         }
@@ -498,10 +525,12 @@ mod tests {
                 size: offset,
                 mtime_ms: at,
                 offset,
+                ..ImportWatermark::default()
             },
             messages_added: 1,
             last_user_at: Some(at),
             last_at: Some(at),
+            ..ImportGrowth::default()
         };
         // The session grew in the terminal: newer, still settled.
         store
@@ -523,6 +552,38 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(state_of(&store, "thread-s2").await, InboxState::Settled);
+    }
+
+    #[tokio::test]
+    async fn a_reread_replaces_the_count_and_keeps_identity_and_generation() {
+        let (_dir, store) = store().await;
+        let owner = ProfileOwner::from(&scope());
+        let now = now_ms();
+        let thread = ThreadId::new("thread-s3").unwrap();
+        store
+            .record_imported_thread(&owner, &imported("s3", now - 9_000, now - 8_000))
+            .await
+            .unwrap();
+        let reread = ImportGrowth {
+            watermark: ImportWatermark {
+                size: 40,
+                mtime_ms: now,
+                offset: 38,
+                file_id: "1:42".into(),
+                fingerprint: "abc".into(),
+                generation: 1,
+            },
+            messages_added: 7,
+            recount: true,
+            ..ImportGrowth::default()
+        };
+        store
+            .advance_import(&owner, "src", "s3", &thread, &reread)
+            .await
+            .unwrap();
+        let entry = &store.import_ledger(&owner, "src").await.unwrap()["s3"];
+        assert_eq!(entry.messages, 7, "a re-read counts, it does not add");
+        assert_eq!(entry.watermark, reread.watermark);
     }
 
     #[tokio::test]

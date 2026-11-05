@@ -93,7 +93,7 @@ pub(crate) fn thread_file_in(state_dir: &Path, session: &str) -> PathBuf {
 }
 
 /// Where a session runs when it is not the shared work dir: an imported
-/// terminal session keeps the folder it was started in.
+/// terminal session's folder and its identity (`crate::workspace`).
 pub(crate) fn cwd_file_in(state_dir: &Path, session: &str) -> PathBuf {
     state_dir.join("threads").join(format!("{session}.cwd"))
 }
@@ -199,6 +199,10 @@ impl CodexRuntime {
         tokio::fs::create_dir_all(&self.config.work_dir)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("work dir: {}", e.kind())))?;
+        // An imported session resumes in its own folder, or not at all.
+        let cwd = crate::workspace::resolve(&cwd_file_in(&self.config.state_dir, &session))
+            .await?
+            .unwrap_or_else(|| self.config.work_dir.clone());
         let (mut child, pgid) = self.spawn_server()?;
         let (client, inbound) = connect(&mut child, pgid)?;
 
@@ -220,6 +224,7 @@ impl CodexRuntime {
         let turn = Turn {
             config: Arc::clone(&self.config),
             session,
+            cwd,
             model: thread.model.clone(),
             text: text.to_string(),
             context: context.map(str::to_string),
@@ -387,6 +392,9 @@ struct Turn {
     config: Arc<CodexConfig>,
     /// IronClaw's session key (`native_session_id`).
     session: String,
+    /// The thread's working directory: the shared work dir, or an imported
+    /// session's own folder (checked before the turn started).
+    cwd: PathBuf,
     model: Option<String>,
     text: String,
     /// Profile preamble and thread goal, sent ahead of `text` but never journaled.
@@ -526,7 +534,7 @@ impl Turn {
     async fn open(&self, client: &RpcClient, fold: &mut TurnFold) -> Result<String, RpcError> {
         handshake(client).await?;
         let (approval, sandbox) = self.policy();
-        let cwd = canonical(&self.session_dir().await);
+        let cwd = canonical(&self.cwd);
         let file = self.config.thread_file(&self.session);
         let saved = tokio::fs::read_to_string(&file)
             .await
@@ -580,16 +588,6 @@ impl Turn {
             .and_then(Value::as_str)
             .map(str::to_string);
         Ok(id)
-    }
-
-    /// The shared work dir, or the folder an imported session ran in when
-    /// it still exists.
-    async fn session_dir(&self) -> PathBuf {
-        let file = cwd_file_in(&self.config.state_dir, &self.session);
-        match tokio::fs::read_to_string(&file).await {
-            Ok(dir) if Path::new(dir.trim()).is_dir() => PathBuf::from(dir.trim()),
-            _ => self.config.work_dir.clone(), // silent-ok: no override means the shared work dir
-        }
     }
 
     /// Server requests: approvals go through the shared seam; everything a
