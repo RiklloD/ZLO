@@ -1048,3 +1048,114 @@ async fn product_surface_channel_extension_remove_deletes_the_durable_membership
 
     runtime.shutdown().await.expect("runtime shutdown");
 }
+
+/// The production-assembled surface serves the Memory page over the bound
+/// native provider and the hooks view, end to end through `ProductSurface`.
+#[tokio::test]
+async fn runtime_product_surface_serves_the_memory_page_and_hook_catalog() {
+    use ironclaw_product_contracts::hooks_catalog::{HOOK_CATALOG_VIEW, HookCatalogRequest};
+    use ironclaw_product_contracts::memory_page::{
+        MEMORY_ARCHIVE_COMMAND, MEMORY_DOCUMENT_VIEW, MEMORY_TREE_VIEW, MEMORY_WRITE_COMMAND,
+        MemoryArchiveOutcome, MemoryArchiveRequest, MemoryDocumentRequest, MemoryTreeRequest,
+        MemoryWriteOutcome, MemoryWriteRequest, SUPERMEMORY_STATUS_VIEW,
+        SupermemoryStatusRequest,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = crate::RebornRuntimeInput::from_build_input(
+        crate::deployment::local_filesystem_build_input(
+            "runtime-owner",
+            dir.path().join("standalone"),
+        )
+        .with_runtime_policy(
+            crate::standalone_runtime_policy().expect("standalone policy resolves"),
+        ),
+    )
+    .with_identity(crate::RebornRuntimeIdentity {
+        tenant_id: "tenant-alpha".to_string(),
+        agent_id: "agent-alpha".to_string(),
+        source_binding_id: "webui-test-source".to_string(),
+        reply_target_binding_id: "webui-test-reply".to_string(),
+    });
+    let runtime = crate::build_reborn_runtime(input)
+        .await
+        .expect("runtime builds");
+    let bundle = runtime
+        .product_surface(None)
+        .expect("product surface build");
+    let surface =
+        ironclaw_product_contracts::surface::BoundProductSurface::new(bundle, caller("alice"));
+
+    let tree = MEMORY_TREE_VIEW
+        .query_on(&surface, MemoryTreeRequest {}, None)
+        .await
+        .expect("tree");
+    assert!(tree.available, "the native provider is bound by default");
+
+    let written = MEMORY_WRITE_COMMAND
+        .invoke_on(
+            &surface,
+            MemoryWriteRequest {
+                path: "notes/page.md".to_string(),
+                content: "written from the Memory page".to_string(),
+                expected_content_hash: None,
+            },
+            ironclaw_host_api::ids::ActivityId::new(),
+        )
+        .await
+        .expect("write");
+    assert_eq!(written.outcome, MemoryWriteOutcome::Written);
+    let read = MEMORY_DOCUMENT_VIEW
+        .query_on(
+            &surface,
+            MemoryDocumentRequest {
+                path: "notes/page.md".to_string(),
+            },
+            None,
+        )
+        .await
+        .expect("read back");
+    assert_eq!(read.content, "written from the Memory page");
+
+    let archived = MEMORY_ARCHIVE_COMMAND
+        .invoke_on(
+            &surface,
+            MemoryArchiveRequest {
+                path: "notes/page.md".to_string(),
+                expected_content_hash: read.content_hash,
+            },
+            ironclaw_host_api::ids::ActivityId::new(),
+        )
+        .await
+        .expect("archive");
+    assert_eq!(archived.outcome, MemoryArchiveOutcome::Archived);
+    let tree = MEMORY_TREE_VIEW
+        .query_on(&surface, MemoryTreeRequest {}, None)
+        .await
+        .expect("tree");
+    assert!(
+        tree.documents
+            .iter()
+            .any(|doc| Some(&doc.path) == archived.archived_path.as_ref())
+    );
+
+    let status = SUPERMEMORY_STATUS_VIEW
+        .query_on(&surface, SupermemoryStatusRequest::default(), None)
+        .await
+        .expect("supermemory status");
+    assert!(status.available);
+    assert!(!status.key_configured, "no key in a fresh deployment");
+    assert!(!status.active);
+
+    let hooks = HOOK_CATALOG_VIEW
+        .query_on(&surface, HookCatalogRequest {}, None)
+        .await
+        .expect("hooks");
+    assert!(!hooks.toggle_supported);
+    assert!(
+        hooks
+            .hooks
+            .iter()
+            .any(|hook| hook.id == "memory.scheduled_ops.after_turn")
+    );
+}
