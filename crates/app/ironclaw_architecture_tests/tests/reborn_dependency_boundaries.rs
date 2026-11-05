@@ -1158,7 +1158,16 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // which the desktop client writes and ironclaw_assistant reads. The
         // placement itself lives in ironclaw_assistant. Count read from this
         // test's failure message.
-        ("ironclaw_product_contracts", 17_878),
+        // 17_878 -> 18_184 (2026-11-05, Codex app-server protocol): the
+        // `ThreadAction`/`ReviewTarget`/`ThreadActionOutcome` vocabulary and
+        // the `orchestrator.thread_action` command descriptor
+        // (`orchestration`), and the live-only
+        // `ProductProjectionItem::CliDetail` item with its `CliDetailKind`,
+        // bound validation and wire decoder (`outbound`). DTOs and shape
+        // validation only; the actions run in ironclaw_cli_providers behind
+        // `TurnRuntime::thread_action`, the projection in ironclaw_assistant.
+        // Count read from this test's failure message.
+        ("ironclaw_product_contracts", 18_184),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
