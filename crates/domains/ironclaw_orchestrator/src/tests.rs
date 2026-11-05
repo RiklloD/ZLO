@@ -1674,3 +1674,70 @@ async fn summary_fork_chains_stay_inside_one_handoff_budget() {
         source_id = fork_id;
     }
 }
+
+#[tokio::test]
+async fn the_final_reply_is_not_split_into_the_input_it_followed() {
+    use crate::context_report::estimate_tokens;
+    use crate::telemetry::TurnTelemetry;
+    use ironclaw_product_contracts::orchestration::{ContextCategory, ContextSource};
+    let h = harness().await;
+    let cli = Arc::new(FakeRuntime {
+        name: Some("cli"),
+        ..Default::default()
+    });
+    h.engine.register_runtime(cli.clone());
+    let a = tid("a");
+    let thread = h
+        .engine
+        .ensure_thread(&a, &scope(), Some(&RuntimeId::new("cli").unwrap()))
+        .await
+        .unwrap();
+    let question = "a short question";
+    let reply = "a very long final answer ".repeat(2_000);
+    cli.history.lock().unwrap().insert(
+        a.clone(),
+        vec![
+            msg(HistoryRole::User, question),
+            msg(HistoryRole::Assistant, &reply),
+        ],
+    );
+    let tokens = |r: &ironclaw_product_contracts::orchestration::ThreadContextReport,
+                  c: ContextCategory| {
+        r.categories
+            .iter()
+            .find(|x| x.category == c)
+            .map_or(0, |x| x.tokens)
+    };
+
+    // No provider count yet: the estimate is the thread's occupancy, reply
+    // included.
+    let r = h.engine.context_report(&thread).await.unwrap();
+    assert_eq!(r.source, ContextSource::Estimated);
+    assert_eq!(
+        tokens(&r, ContextCategory::AssistantMessages),
+        estimate_tokens(&reply)
+    );
+
+    // The provider counted the last call's input: the reply was its output,
+    // so it neither shows as input nor squeezes the categories that were.
+    h.engine
+        .turn_telemetry(
+            &a,
+            TurnTelemetry {
+                context_used: Some(2_000),
+                context_max: Some(200_000),
+                ..TurnTelemetry::default()
+            },
+            1_000,
+        )
+        .await;
+    let r = h.engine.context_report(&thread).await.unwrap();
+    assert_eq!(r.source, ContextSource::Provider);
+    assert_eq!(r.used, 2_000);
+    assert_eq!(tokens(&r, ContextCategory::AssistantMessages), 0);
+    assert_eq!(
+        tokens(&r, ContextCategory::UserMessages),
+        estimate_tokens(question)
+    );
+    assert_eq!(r.categories.iter().map(|c| c.tokens).sum::<u64>(), 2_000);
+}

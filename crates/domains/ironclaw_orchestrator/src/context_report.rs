@@ -144,12 +144,23 @@ impl ContextSample {
     /// The transcript part of a CLI thread's prompt: everything since its
     /// latest compaction (the CLI drops what came before), hidden scaffolding
     /// (a compaction's summary, a context handoff) counted as summaries.
-    pub fn add_history(&mut self, messages: &[HistoryMessage]) {
+    ///
+    /// `input_only` measures what the latest model call read, to match a
+    /// provider count of that call's input: the turn's final reply was the
+    /// call's output, so it is left out. Without a provider count the
+    /// estimate is the thread's occupancy, reply included.
+    pub fn add_history(&mut self, messages: &[HistoryMessage], input_only: bool) {
         let start = messages
             .iter()
             .rposition(is_compaction_marker)
             .map_or(0, |i| i + 1);
-        for message in &messages[start..] {
+        let mut end = messages.len();
+        if input_only {
+            while end > start && is_final_reply(&messages[end - 1]) {
+                end -= 1;
+            }
+        }
+        for message in &messages[start..end] {
             let category = match message.role {
                 _ if message.hidden => ContextCategory::CompactionSummaries,
                 HistoryRole::User => ContextCategory::UserMessages,
@@ -163,6 +174,11 @@ impl ContextSample {
             }
         }
     }
+}
+
+/// An answer row with no tool call after it: output of the turn's last call.
+fn is_final_reply(message: &HistoryMessage) -> bool {
+    message.role == HistoryRole::Assistant && !message.hidden && message.tool_calls.is_empty()
 }
 
 fn is_compaction_marker(message: &HistoryMessage) -> bool {
@@ -333,7 +349,10 @@ impl Engine {
                         .filter(|g| g.status == GoalStatus::Active)
                         .map(|g| g.objective);
                     let mut sample = runtime.injected_context(profile.as_ref(), goal.as_deref());
-                    sample.add_history(&self.history(thread).await?);
+                    sample.add_history(
+                        &self.history(thread).await?,
+                        telemetry.context_used.is_some(),
+                    );
                     sample.turn_key = key;
                     if let Some(at) = updated_at {
                         self.store.put_context_sample(id, &sample, at).await?;
@@ -468,7 +487,7 @@ mod tests {
             msg(HistoryRole::Assistant, "an answer", false),
         ];
         let mut s = ContextSample::default();
-        s.add_history(&history);
+        s.add_history(&history, false);
         assert!(s.tokens(ContextCategory::CompactionSummaries) >= 100);
         assert_eq!(
             s.tokens(ContextCategory::UserMessages),
