@@ -1158,7 +1158,15 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // which the desktop client writes and ironclaw_assistant reads. The
         // placement itself lives in ironclaw_assistant. Count read from this
         // test's failure message.
-        ("ironclaw_product_contracts", 17_878),
+        // 17_878 -> 18_123 (2026-11-05, context breakdown): the
+        // `orchestrator.thread_context` view descriptor, its
+        // `ThreadContextReport` wire DTO with the category / tool-owner /
+        // source / level vocabulary the desktop meter renders, the
+        // `ContextLevel::of` 80 %/100 % threshold on that type's own shape,
+        // and the fork request's `summary` flag. Measuring and reconciling
+        // live in ironclaw_orchestrator::context_report. Count read from
+        // this test's failure message.
+        ("ironclaw_product_contracts", 18_123),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
