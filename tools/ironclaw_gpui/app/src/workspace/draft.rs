@@ -38,6 +38,9 @@ pub(super) struct Draft {
     menu: ComposerMenu,
     sending: bool,
     error: Option<SharedString>,
+    /// Start the thread in a new git worktree of the last project folder
+    /// (the Local / New worktree switch) instead of working in place.
+    worktree: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -132,6 +135,7 @@ impl Workspace {
                 menu: ComposerMenu::default(),
                 sending: false,
                 error: None,
+                worktree: false,
                 _subs: subs,
             });
         } else if let Some(draft) = &self.draft {
@@ -220,6 +224,12 @@ impl Workspace {
         let profile = draft.profile.clone();
         let pick = draft.picker.read(cx).pending();
         let effort = draft.picker.read(cx).pending_effort();
+        let worktree = draft.worktree.then(|| {
+            crate::design::prefs::Prefs::of(cx)
+                .last_project
+                .clone()
+                .map(|p| p.to_string_lossy().into_owned())
+        });
         cx.notify();
         jobs::run_in(
             &backend,
@@ -241,6 +251,10 @@ impl Workspace {
                         c.set_thread_effort(&id, &effort).await?;
                     }
                     (None, None) => {}
+                }
+                // Made before the first message, so every turn runs there.
+                if let Some(source) = worktree {
+                    c.start_thread_worktree(&id, source.as_deref()).await?;
                 }
                 Ok(id)
             },
@@ -485,6 +499,35 @@ impl Workspace {
         )
         .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Attach files").build(w, cx))
         .on_click(cx.listener(|this, _, window, cx| this.pick_draft_files(window, cx)));
+        let in_worktree = draft.worktree;
+        let place = h_flex()
+            .id("draft-worktree")
+            .role(Role::Button)
+            .px_2()
+            .h(px(28.))
+            .gap_1()
+            .items_center()
+            .rounded_full()
+            .text_xs()
+            .cursor_pointer()
+            .text_color(if in_worktree { p.text } else { p.text_faint })
+            .hover(|s| s.text_color(p.text))
+            .child(Icon::new(ExtraIcon::GitBranch).xsmall())
+            .child(if in_worktree { "New worktree" } else { "Local" })
+            .tooltip(move |w, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(if in_worktree {
+                    "Runs in its own git worktree and branch of the last project folder (committed work only)"
+                } else {
+                    "Works in the project folder itself"
+                })
+                .build(w, cx)
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(d) = this.draft.as_mut() {
+                    d.worktree = !d.worktree;
+                }
+                cx.notify();
+            }));
         let profile_switch = div()
             .relative()
             .child(
@@ -602,7 +645,7 @@ impl Workspace {
                                 }),
                         ),
                     draft.picker.clone(),
-                    h_flex().gap(px(6.)).child(attach).child(send),
+                    h_flex().gap(px(6.)).child(place).child(attach).child(send),
                     cx,
                 )
                 .max_w(px(hero_w.unwrap_or(HERO_WIDTH)))

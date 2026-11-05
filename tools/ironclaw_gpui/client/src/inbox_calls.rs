@@ -53,6 +53,7 @@ impl Client {
                 working_since: None,
                 parent_thread_id: None,
                 automation: false,
+                worktree_branch: None,
                 title_pending: false,
             })
             .collect();

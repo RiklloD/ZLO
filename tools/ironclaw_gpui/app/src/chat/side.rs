@@ -179,6 +179,9 @@ pub(super) struct Side {
     /// The project folder, and whether git knows it (its top folder then).
     pub(super) folder: Option<PathBuf>,
     pub(super) repo: Option<PathBuf>,
+    /// The thread's own git worktree, when it has one: the coding tabs
+    /// then read that folder, and the title shows its branch.
+    pub(super) worktree: Option<ironclaw_gpui_client::orchestration::WorktreeView>,
     /// The dock whose inner edge is dragged, and its live width.
     drag: Option<(Dock, f32)>,
     /// Each dock widened to [`WIDE_SHARE`], by [`Dock::ix`].
@@ -206,6 +209,7 @@ impl ChatView {
         if let Some(folder) = Prefs::of(cx).project_folders.get(&self.thread_id).cloned() {
             self.side_set_folder(folder, false, cx);
         }
+        self.side_worktree_load(cx);
         self.side_chat_restore(cx);
         self.side_load_shown(cx);
     }
@@ -313,6 +317,27 @@ impl ChatView {
             Tab::History => self.history_refresh(cx),
             Tab::Console => {}
         }
+    }
+
+    /// A thread bound to its own git worktree works there: point the coding
+    /// tabs at it (without remembering it as the thread's project folder).
+    fn side_worktree_load(&mut self, cx: &mut Context<Self>) {
+        let thread = self.thread_id.clone();
+        crate::jobs::run(
+            &self.backend,
+            cx,
+            move |c| async move { c.thread_worktree(&thread).await },
+            |this, result, cx| match result {
+                Ok(Some(view)) if view.bound() => {
+                    let path = PathBuf::from(&view.path);
+                    this.side.worktree = Some(view);
+                    this.side_set_folder(path, false, cx);
+                }
+                Ok(_) => {}
+                // Older gateways have no worktree route.
+                Err(e) => tracing::debug!(error = %e, "worktree status unavailable"),
+            },
+        );
     }
 
     /// Point the coding tabs at `folder`. `remember` saves it for this thread.
@@ -768,6 +793,26 @@ impl ChatView {
                     .text_color(p.text)
                     .child(tab.label()),
             )
+            .when(tab.coding(), |d| {
+                d.when_some(self.side.worktree.as_ref(), |d, wt| {
+                    let tip: SharedString =
+                        format!("Own git worktree {} on branch {}", wt.path, wt.branch).into();
+                    d.child(
+                        h_flex()
+                            .id(SharedString::from(format!("{}-worktree", dock.key())))
+                            .flex_none()
+                            .gap_0p5()
+                            .items_center()
+                            .max_w(px(160.))
+                            .text_color(p.text_muted)
+                            .child(Icon::new(ExtraIcon::GitBranch).xsmall())
+                            .child(div().truncate().child(wt.branch.clone()))
+                            .tooltip(move |w, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)
+                            }),
+                    )
+                })
+            })
             .when(tab.coding(), |d| {
                 d.when_some(self.side.folder.as_ref(), |d, folder| {
                     d.child(

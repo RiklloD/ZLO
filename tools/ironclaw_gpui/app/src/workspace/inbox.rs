@@ -1264,7 +1264,11 @@ impl Workspace {
         let id = row.thread_id.clone();
         let profile = self.inbox.profile(&row.profile_id);
         let name = profile.map_or_else(|| row.profile_id.clone(), |p| p.display_name.clone());
-        let branch = profile.and_then(|p| p.git_branch.clone());
+        // A thread in its own worktree shows that branch, not the profile's.
+        let branch = row
+            .worktree_branch
+            .clone()
+            .or_else(|| profile.and_then(|p| p.git_branch.clone()));
         let group: SharedString = format!("card-{id}").into();
         let pinned = row.state == InboxState::Pinned;
         let menu_open = self.inbox.snooze_menu.as_deref() == Some(id.as_str());
@@ -1858,6 +1862,7 @@ mod tests {
             working_since: None,
             parent_thread_id: None,
             automation: false,
+            worktree_branch: None,
             title_pending: false,
         }
     }

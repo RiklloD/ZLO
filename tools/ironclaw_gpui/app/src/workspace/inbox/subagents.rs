@@ -472,6 +472,7 @@ mod tests {
             working_since: None,
             parent_thread_id: parent.map(str::to_string),
             automation: false,
+            worktree_branch: None,
             title_pending: false,
         }
     }
