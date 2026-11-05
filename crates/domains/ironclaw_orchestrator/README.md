@@ -50,6 +50,9 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   (`schedule_reveal` / `schedule_rotate_secret`) only on explicit request;
   each row records its last run's thread and the last webhook request's
   outcome (only requests bearing the URL's token are recorded).
+  The model (`t3_schedule`) may add a signature to an unsigned webhook but
+  never replace, regenerate or remove an existing one (`ScheduleAuthority`);
+  `signature: null` removes it on the owner's path.
 - `cli_approvals` — `orch_cli_approvals`, the durable record of CLI tool
   approvals the `ironclaw_cli_providers` bridge asks; open rows are closed
   as `interrupted` when the engine opens.

@@ -190,8 +190,26 @@ pub(crate) struct ScheduleArgs {
     schedule: Option<Value>,
     bind_to_current_thread: Option<bool>,
     enabled: Option<bool>,
-    signature: Option<Value>,
+    /// Absent: keep the stored signature. `null`: remove it. A value: set it.
+    #[serde(deserialize_with = "present")]
+    signature: Option<Option<Value>>,
     client_request_id: Option<String>,
+}
+
+/// Keeps a JSON `null` apart from an absent key (`Some(None)` vs `None`).
+fn present<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Option<Value>>, D::Error> {
+    Ok(Some(Option::deserialize(d)?))
+}
+
+/// Who asks for a schedule change. The model (`t3_schedule`) may not
+/// replace, regenerate or remove an existing signing secret; the owner on
+/// the Automations page may.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScheduleAuthority {
+    Model,
+    Owner,
 }
 
 impl Engine {
@@ -204,7 +222,12 @@ impl Engine {
         })
     }
 
-    pub(crate) async fn schedule_tool(&self, ctx: &CallContext, a: ScheduleArgs) -> Result<Value> {
+    pub(crate) async fn schedule_tool(
+        &self,
+        ctx: &CallContext,
+        a: ScheduleArgs,
+        authority: ScheduleAuthority,
+    ) -> Result<Value> {
         match a.action.as_str() {
             "list" => self.schedule_list(ctx).await,
             "create" => self.schedule_create(ctx, a).await,
@@ -216,7 +239,7 @@ impl Engine {
                         .ok_or_else(|| OrchestratorError::invalid("id is required"))?;
                 let record = self.owned_schedule(ctx, &ScheduleId::new(id)?).await?;
                 match a.action.as_str() {
-                    "update" => self.schedule_update(record, a).await,
+                    "update" => self.schedule_update(record, a, authority).await,
                     "delete" => self.schedule_delete(record).await,
                     _ => self.schedule_run_now(record).await,
                 }
@@ -332,7 +355,11 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| OrchestratorError::invalid("schedule is required"))?;
         let spec = normalize_spec(&*planner, raw)?;
-        let signature = crate::schedule_webhooks::check_signature(&spec, a.signature.as_ref())?;
+        let signature = crate::schedule_webhooks::check_signature(
+            &spec,
+            a.signature.clone().flatten().as_ref(),
+        )?;
+        let enabled = a.enabled.unwrap_or(true);
         let request = a
             .client_request_id
             .as_deref()
@@ -366,7 +393,7 @@ impl Engine {
                 "INSERT INTO orch_schedules (id, tenant_id, user_id, thread_id, title, prompt, spec, \
                  enabled, next_run_at, client_request_id, created_at, updated_at, new_thread, \
                  webhook_token, signature) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?10, ?11, ?12, ?13)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?14, ?8, ?9, ?10, ?10, ?11, ?12, ?13)",
                 vec![
                     s(id.as_str()),
                     s(ctx.scope.tenant_id.as_str()),
@@ -381,13 +408,19 @@ impl Engine {
                     i64::from(a.bind_to_current_thread == Some(false)).into(),
                     token.map_or(Sql::Null, s),
                     opt_json(signature.as_ref())?,
+                    i64::from(enabled).into(),
                 ],
             )
             .await?;
         self.schedule_readback(&id).await
     }
 
-    async fn schedule_update(&self, r: ScheduleRecord, a: ScheduleArgs) -> Result<Value> {
+    async fn schedule_update(
+        &self,
+        r: ScheduleRecord,
+        a: ScheduleArgs,
+        authority: ScheduleAuthority,
+    ) -> Result<Value> {
         let planner = self.planner()?;
         let prompt = match a.prompt.as_deref() {
             Some(p) => Self::check_schedule_text(&*planner, p)?,
@@ -397,10 +430,18 @@ impl Engine {
             Some(raw) => normalize_spec(&*planner, raw)?,
             None => r.spec.clone(),
         };
-        // `signature` absent keeps the stored one; `null` removes it.
+        // `signature` absent keeps the stored one; `null` removes it. An
+        // existing secret is the owner's to change, never the model's.
+        if authority == ScheduleAuthority::Model && a.signature.is_some() && r.signature.is_some() {
+            return Err(OrchestratorError::request(
+                "signature_owner_only",
+                "This webhook's signing secret is managed on the Automations page (rotate or turn off signing there).",
+            ));
+        }
         let signature = match &a.signature {
             None if is_webhook(&spec) => r.signature.clone(),
-            given => crate::schedule_webhooks::check_signature(&spec, given.as_ref())?,
+            None => None,
+            Some(given) => crate::schedule_webhooks::check_signature(&spec, given.as_ref())?,
         };
         let token = match (is_webhook(&spec), &r.webhook_token) {
             (true, Some(token)) => Some(token.clone()),
@@ -585,7 +626,8 @@ impl Engine {
     pub async fn schedule_action(&self, ctx: &CallContext, args: Value) -> Result<Value> {
         let args: ScheduleArgs = serde_json::from_value(args)
             .map_err(|e| OrchestratorError::invalid(format!("bad schedule request: {e}")))?;
-        self.schedule_tool(ctx, args).await
+        self.schedule_tool(ctx, args, ScheduleAuthority::Owner)
+            .await
     }
 
     /// Every schedule of `scope`'s user, with webhook URLs masked.

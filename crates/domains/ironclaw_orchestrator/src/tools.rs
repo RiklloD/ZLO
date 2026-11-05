@@ -120,7 +120,7 @@ pub const TOOLS: [ToolSpec; 6] = [
     },
     ToolSpec {
         name: "t3_schedule",
-        description: "T3 orchestrator scheduled prompts that run even when no turn is active. action=create with prompt and schedule as an OBJECT: {type:'interval', everyMs:3600000} (at least 60000) or {type:'fixed_time', timeOfDay:'09:00', weekdays:[1,2,3,4,5], timezone:'Europe/Zurich'} (0=Sunday; timezone defaults to the backend's local zone) or {type:'cron', expression:'0 9 * * MON-FRI', timezone:'Europe/Zurich'} (5-field cron; write weekdays as names, numbers count 1=Sunday) or {type:'webhook'} (runs per request to the returned loopback webhookUrl; prompt placeholders {{body.path}}, {{headers.name}}, {{query.name}}, {{body}}, {{request}}; optional signature {header, encoding:'hex'|'base64', prefix, secret} for HMAC-SHA256, or generate:true instead of secret to have the backend make one the user reveals on the Automations page). Runs post into THIS thread by default as a queued message (bind_to_current_thread=true; it waits while the thread is busy or stopped); false starts a fresh thread per run. Report nextRunAt. Also: list, update (id + fields; enabled=false pauses), delete (id), run_now (id).",
+        description: "T3 orchestrator scheduled prompts that run even when no turn is active. action=create with prompt and schedule as an OBJECT: {type:'interval', everyMs:3600000} (at least 60000) or {type:'fixed_time', timeOfDay:'09:00', weekdays:[1,2,3,4,5], timezone:'Europe/Zurich'} (0=Sunday; timezone defaults to the backend's local zone) or {type:'cron', expression:'0 9 * * MON-FRI', timezone:'Europe/Zurich'} (5-field cron; write weekdays as names, numbers count 1=Sunday) or {type:'webhook'} (runs per request to the returned loopback webhookUrl; prompt placeholders {{body.path}}, {{headers.name}}, {{query.name}}, {{body}}, {{request}}; optional signature {header, encoding:'hex'|'base64', prefix, secret} for HMAC-SHA256, or generate:true instead of secret to have the backend make one the user reveals on the Automations page). Runs post into THIS thread by default as a queued message (bind_to_current_thread=true; it waits while the thread is busy or stopped); false starts a fresh thread per run. Report nextRunAt. Also: list, update (id + fields; enabled=false pauses; create also takes enabled; an existing webhook signature can only be changed by the user on the Automations page), delete (id), run_now (id).",
         schema: || {
             json!({
                 "type": "object",
@@ -320,7 +320,10 @@ impl Engine {
                     ))),
                 }
             }
-            "t3_schedule" => self.schedule_tool(ctx, args(input)?).await,
+            "t3_schedule" => {
+                let authority = crate::schedules::ScheduleAuthority::Model;
+                self.schedule_tool(ctx, args(input)?, authority).await
+            }
             other => Err(OrchestratorError::invalid(format!("unknown tool {other}"))),
         }
     }

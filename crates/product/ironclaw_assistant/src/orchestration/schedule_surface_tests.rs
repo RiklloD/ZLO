@@ -250,6 +250,24 @@ async fn schedules_round_trip_through_the_surface_for_their_owner_only() {
         .unwrap();
     assert_ne!(again["signature"]["secret"].as_str().unwrap(), secret);
 
+    // Turning signing off: an explicit null reaches the engine (absent keeps it).
+    let kept = f
+        .mutate(
+            "owner",
+            json!({"action": "update", "schedule_id": hook_id, "title": "Deploys!"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(kept["schedule"]["signature"]["hasSecret"], true, "{kept}");
+    let unsigned = f
+        .mutate(
+            "owner",
+            json!({"action": "update", "schedule_id": hook_id, "signature": null}),
+        )
+        .await
+        .unwrap();
+    assert!(unsigned["schedule"]["signature"].is_null(), "{unsigned}");
+
     // Strangers: no list, no reveal, no edit, no schedule on someone's thread.
     let theirs = f
         .view("intruder", ORCHESTRATOR_SCHEDULES_VIEW.id, json!({}))

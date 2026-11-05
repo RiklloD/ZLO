@@ -34,8 +34,9 @@ pub struct ScheduleBody {
     pub bind_to_current_thread: Option<bool>,
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(default)]
-    pub signature: Option<Value>,
+    /// Absent keeps the stored signature; `null` turns signing off.
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub signature: Option<Option<Value>>,
     #[serde(default)]
     pub client_request_id: Option<String>,
 }

@@ -4,7 +4,7 @@
 //! rotation, the last request's status and a signed `curl` example.
 
 use chrono::{DateTime, Utc};
-use ironclaw_gpui_client::schedules::{ScheduleInfo, ScheduleSecret, curl_example};
+use ironclaw_gpui_client::schedules::{LastOutcome, ScheduleInfo, ScheduleSecret, curl_example};
 
 use super::{AutomationsView, ScheduleAction};
 use crate::jobs;
@@ -37,16 +37,16 @@ impl AutomationsView {
         if let Some(next) = s.next_run_at.filter(|_| s.enabled).and_then(at) {
             facts.push(format!("Next {}", jobs::when(next)));
         }
-        if let Some(last) = s.last_run_at.and_then(at) {
-            let status = if s.last_error.is_some() {
-                " (failed)"
-            } else {
-                " (ok)"
-            };
-            facts.push(format!("Last {}{status}", jobs::ago(last)));
-        } else {
-            facts.push("Never run".into());
-        }
+        // The row knows when a run was queued, not how its turn ended:
+        // that is in the run's thread (one click away).
+        facts.push(match s.last_outcome() {
+            LastOutcome::Never => "Never run".into(),
+            LastOutcome::Queued(ms) => match at(ms) {
+                Some(last) => format!("Last queued {}", jobs::ago(last)),
+                None => "Last queued".into(),
+            },
+            LastOutcome::Failed(_) => "Last attempt failed".into(),
+        });
         let profile = s.profile_id.clone().unwrap_or_else(|| "default".into());
         facts.push(match &s.model {
             Some(model) => format!(
@@ -284,9 +284,7 @@ impl AutomationsView {
         });
         let curl_open = self.show_curl.contains(&id);
         let curl = curl_example(
-            revealed
-                .and_then(|r| r.webhook_url.as_deref())
-                .unwrap_or("$ZLO_WEBHOOK_URL"),
+            revealed.and_then(|r| r.webhook_url.as_deref()),
             revealed.and_then(|r| r.signature.as_ref()),
             signed,
         );
@@ -438,7 +436,9 @@ impl AutomationsView {
                                 .as_ref()
                                 .map(|s| s.secret.clone())
                                 .unwrap_or_default(),
-                            CopyWhat::Curl => curl_example(&url, secret.signature.as_ref(), signed),
+                            CopyWhat::Curl => {
+                                curl_example(Some(&url), secret.signature.as_ref(), signed)
+                            }
                         };
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                     }

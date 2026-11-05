@@ -210,7 +210,8 @@ pub enum OrchestratorScheduleAction {
 /// spec (`{type:'interval', everyMs}`, `{type:'fixed_time', timeOfDay,
 /// weekdays, timezone}`, `{type:'cron', expression, timezone}` or
 /// `{type:'webhook'}`); `signature` is `{header, prefix, encoding,
-/// generate: true}` — the desktop never sends a secret.
+/// generate: true}` — the desktop never sends a secret — or `null` to
+/// turn signing off.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrchestratorScheduleMutationRequest {
@@ -230,10 +231,26 @@ pub struct OrchestratorScheduleMutationRequest {
     pub bind_to_current_thread: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature: Option<serde_json::Value>,
+    /// `None` (key absent): keep the stored signature. `Some(None)`
+    /// (`"signature": null`): turn signing off. `Some(Some(v))`: set it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub signature: Option<Option<serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_request_id: Option<String>,
+}
+
+/// For `Option<Option<T>>` fields: a present key (even `null`) is `Some`,
+/// so "set to null" stays apart from "absent". Pair with `#[serde(default)]`.
+pub fn deserialize_present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(d)?))
 }
 
 /// Validate a schedule spec (and optionally its prompt) without storing it.

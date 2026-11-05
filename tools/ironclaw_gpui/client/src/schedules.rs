@@ -361,6 +361,28 @@ impl ScheduleInfo {
     }
 }
 
+/// What the row can honestly say about its latest run. The backend records
+/// when a run was *queued* into its thread (and failures to queue one), not
+/// how the turn ended — that lives in the run's thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LastOutcome {
+    Never,
+    /// Queued at this unix-ms time.
+    Queued(i64),
+    /// The schedule could not queue a run (bad spec, thread gone, …).
+    Failed(String),
+}
+
+impl ScheduleInfo {
+    pub fn last_outcome(&self) -> LastOutcome {
+        match (&self.last_error, self.last_run_at) {
+            (Some(error), _) => LastOutcome::Failed(error.clone()),
+            (None, Some(at)) => LastOutcome::Queued(at),
+            (None, None) => LastOutcome::Never,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchedulePreview {
@@ -457,18 +479,34 @@ struct ScheduleListDoc {
     schedules: Vec<ScheduleInfo>,
 }
 
+/// One POSIX shell word for `value`, whatever it holds: single-quoted, with
+/// each `'` written as `'\''`. Header names, prefixes and secrets can come
+/// from a model-made schedule, so nothing is pasted raw.
+fn sh(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 /// A copy-paste request that signs its body the way the webhook checks it.
-/// Without a revealed secret the command reads it from `$ZLO_WEBHOOK_SECRET`.
-pub fn curl_example(url: &str, signature: Option<&RevealedSignature>, signed: bool) -> String {
-    let body = r#"{"event":"test","message":"hello from curl"}"#;
+/// `url` `None` and an unrevealed secret read `$ZLO_WEBHOOK_URL` and
+/// `$ZLO_WEBHOOK_SECRET`. Every interpolated value is shell-quoted.
+pub fn curl_example(
+    url: Option<&str>,
+    signature: Option<&RevealedSignature>,
+    signed: bool,
+) -> String {
+    let body = sh(r#"{"event":"test","message":"hello from curl"}"#);
+    let url = url.map_or_else(|| "\"$ZLO_WEBHOOK_URL\"".to_string(), sh);
     if !signed {
         return format!(
-            "curl -X POST '{url}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{body}'"
+            "curl -X POST {url} \\\n  -H 'Content-Type: application/json' \\\n  -d {body}"
         );
     }
-    let (header, prefix, secret) = match signature {
-        Some(s) => (s.header.as_str(), s.prefix.as_str(), s.secret.as_str()),
-        None => (SIGNATURE_HEADER, SIGNATURE_PREFIX, "$ZLO_WEBHOOK_SECRET"),
+    let (header, secret) = match signature {
+        Some(s) => (format!("{}: {}", s.header, s.prefix), sh(&s.secret)),
+        None => (
+            format!("{SIGNATURE_HEADER}: {SIGNATURE_PREFIX}"),
+            "\"$ZLO_WEBHOOK_SECRET\"".to_string(),
+        ),
     };
     let base64 = signature.is_some_and(|s| s.encoding == "base64");
     let digest = if base64 {
@@ -476,10 +514,11 @@ pub fn curl_example(url: &str, signature: Option<&RevealedSignature>, signed: bo
     } else {
         "openssl dgst -sha256 -hmac \"$SECRET\" -hex | sed 's/^.* //'"
     };
+    let header = sh(&header);
     format!(
-        "SECRET='{secret}'\nBODY='{body}'\nSIG=$(printf '%s' \"$BODY\" | {digest})\n\
-         curl -X POST '{url}' \\\n  -H 'Content-Type: application/json' \\\n  \
-         -H \"{header}: {prefix}$SIG\" \\\n  -d \"$BODY\""
+        "SECRET={secret}\nBODY={body}\nSIG=$(printf '%s' \"$BODY\" | {digest})\n\
+         curl -X POST {url} \\\n  -H 'Content-Type: application/json' \\\n  \
+         -H {header}\"$SIG\" \\\n  -d \"$BODY\""
     )
 }
 
@@ -736,6 +775,79 @@ mod tests {
         assert!(clock.body()["signature"].is_null());
     }
 
+    /// Run `script` in `sh` with `curl` and `openssl` stubbed: curl prints
+    /// each argument as `<arg>`, openssl reports its key as `KEY<key>` on
+    /// stderr. Returns (stdout, stderr).
+    fn run_stubbed(script: &str) -> (String, String) {
+        let stubs = r#"curl() { for a in "$@"; do printf '<%s>\n' "$a"; done; }
+openssl() { cat >/dev/null; printf 'KEY<%s>\n' "$4" >&2; echo '(stdin)= deadbeef'; }
+"#;
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{stubs}{script}"))
+            .env("ZLO_WEBHOOK_URL", "http://env/url")
+            .env("ZLO_WEBHOOK_SECRET", "env-secret")
+            .output()
+            .unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    #[test]
+    fn curl_examples_quote_hostile_values_so_nothing_runs_on_paste() {
+        let sig = RevealedSignature {
+            header: "x-sig$(echo PWNED-HEADER >&2)".into(),
+            prefix: "`echo PWNED-PREFIX >&2`".into(),
+            encoding: "hex".into(),
+            secret: "k'; echo PWNED-SECRET >&2; '\n$(echo PWNED-NL >&2)".into(),
+        };
+        let url = "http://h/x'$(echo PWNED-URL >&2)'";
+        let (stdout, stderr) = run_stubbed(&curl_example(Some(url), Some(&sig), true));
+        assert!(
+            !stderr.lines().any(|l| l.starts_with("PWNED")),
+            "payload ran: {stderr}"
+        );
+        assert!(stdout.contains(&format!("<{url}>")), "{stdout}");
+        assert!(
+            stdout.contains("<x-sig$(echo PWNED-HEADER >&2): `echo PWNED-PREFIX >&2`deadbeef>"),
+            "{stdout}"
+        );
+        assert!(stderr.contains(&format!("KEY<{}>", sig.secret)), "{stderr}");
+
+        // Unrevealed: the URL and secret come from the environment.
+        let (stdout, stderr) = run_stubbed(&curl_example(None, None, true));
+        assert!(stdout.contains("<http://env/url>"), "{stdout}");
+        assert!(
+            stdout.contains("<x-zlo-signature: sha256=deadbeef>"),
+            "{stdout}"
+        );
+        assert!(stderr.contains("KEY<env-secret>"), "{stderr}");
+        let (stdout, _) = run_stubbed(&curl_example(Some(url), None, false));
+        assert!(stdout.contains(&format!("<{url}>")), "{stdout}");
+    }
+
+    #[test]
+    fn last_run_reports_queued_never_ok() {
+        // The row only knows the run was queued (`post_schedule`); a turn
+        // that later fails or is stopped leaves it untouched.
+        let mut row: ScheduleInfo = serde_json::from_value(json!({
+            "id": "s1", "title": "t", "prompt": "p", "schedule": {"type": "webhook"},
+            "enabled": true, "threadId": "t1", "nextRunAt": null, "lastRunAt": 5,
+            "lastError": null}))
+        .unwrap();
+        assert_eq!(row.last_outcome(), LastOutcome::Queued(5));
+        row.last_error = Some("thread_not_found".into());
+        assert_eq!(
+            row.last_outcome(),
+            LastOutcome::Failed("thread_not_found".into())
+        );
+        row.last_run_at = None;
+        row.last_error = None;
+        assert_eq!(row.last_outcome(), LastOutcome::Never);
+    }
+
     #[test]
     fn curl_examples_sign_the_body_and_secrets_stay_out_of_debug() {
         let sig = RevealedSignature {
@@ -744,13 +856,16 @@ mod tests {
             encoding: "hex".into(),
             secret: "s3cr3t".into(),
         };
-        let shown = curl_example("http://127.0.0.1:1/h", Some(&sig), true);
+        let shown = curl_example(Some("http://127.0.0.1:1/h"), Some(&sig), true);
         assert!(shown.contains("SECRET='s3cr3t'"), "{shown}");
         assert!(shown.contains("-hmac \"$SECRET\" -hex"));
-        assert!(shown.contains("x-zlo-signature: sha256=$SIG"));
-        let masked = curl_example("http://127.0.0.1:1/h", None, true);
+        assert!(
+            shown.contains("-H 'x-zlo-signature: sha256='\"$SIG\""),
+            "{shown}"
+        );
+        let masked = curl_example(Some("http://127.0.0.1:1/h"), None, true);
         assert!(masked.contains("$ZLO_WEBHOOK_SECRET") && !masked.contains("s3cr3t"));
-        assert!(!curl_example("u", None, false).contains("SIG"));
+        assert!(!curl_example(Some("u"), None, false).contains("SIG"));
         let secret = ScheduleSecret {
             webhook_url: Some("http://x/hook.token".into()),
             signature: Some(sig),

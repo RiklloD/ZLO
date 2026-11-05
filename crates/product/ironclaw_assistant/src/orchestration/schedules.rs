@@ -322,25 +322,14 @@ pub(super) async fn mutate(
             });
             // Absent keeps the stored signature on update; null removes it.
             if let Some(signature) = req.signature.clone() {
-                args["signature"] = signature;
+                args["signature"] = signature.unwrap_or(Value::Null);
             }
             if let Some(map) = args.as_object_mut() {
                 map.retain(|key, value| key == "signature" || !value.is_null());
             }
-            let done = engine.schedule_action(&ctx, args).await?;
-            // A schedule made paused: the tool always creates it enabled.
-            if req.action == OrchestratorScheduleAction::Create
-                && req.enabled == Some(false)
-                && let Some(id) = done["schedule"]["id"].as_str()
-            {
-                return engine
-                    .schedule_action(
-                        &ctx,
-                        json!({"action": "update", "id": id, "enabled": false}),
-                    )
-                    .await;
-            }
-            Ok(done)
+            // `enabled` rides on the create itself: a paused schedule is
+            // never stored active, not even between two writes.
+            engine.schedule_action(&ctx, args).await
         }
         .await,
     )

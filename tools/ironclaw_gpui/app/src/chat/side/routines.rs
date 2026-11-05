@@ -12,7 +12,7 @@ use ironclaw_gpui_client::product_wire::{
     RebornAutomationInfo, RebornAutomationRecentRunStatus, RebornAutomationSource,
     RebornAutomationState,
 };
-use ironclaw_gpui_client::schedules::ScheduleInfo;
+use ironclaw_gpui_client::schedules::{LastOutcome, ScheduleInfo};
 
 use super::{ChatView, empty, error_line, heading, loading, scroll};
 use crate::design::{Palette, kit};
@@ -145,7 +145,7 @@ impl ChatView {
                     .last_run_thread_id
                     .clone()
                     .unwrap_or_else(|| s.thread_id.clone());
-                let failed = s.last_error.is_some();
+                let failed = matches!(s.last_outcome(), LastOutcome::Failed(_));
                 v_flex()
                     .mx_2()
                     .px_2()
@@ -202,17 +202,18 @@ impl ChatView {
                                 .items_center()
                                 .text_xs()
                                 .text_color(p.text_muted)
+                                // Only queuing is known here; the run's thread has its result.
                                 .child(div().size(px(6.)).rounded_full().bg(if failed {
                                     p.danger
                                 } else {
-                                    p.success
+                                    p.text_faint
                                 }))
                                 .child(format!(
                                     "{} {}",
                                     if failed {
-                                        "Last run failed"
+                                        "Last attempt failed"
                                     } else {
-                                        "Last run"
+                                        "Last queued"
                                     },
                                     crate::jobs::ago(last)
                                 ))

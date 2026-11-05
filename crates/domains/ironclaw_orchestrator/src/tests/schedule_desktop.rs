@@ -171,3 +171,111 @@ async fn previews_list_reveal_rotate_and_record_the_last_delivery() {
             .is_err()
     );
 }
+
+async fn signed_hook(h: &Harness) -> (ScheduleId, String) {
+    h.engine.set_webhook_base("http://127.0.0.1:9".into());
+    h.engine.set_schedule_planner(Arc::new(FakePlanner));
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    let created = h
+        .engine
+        .schedule_action(
+            &ctx("a"),
+            json!({"action": "create", "prompt": "hook", "schedule": {"type": "webhook"},
+                   "signature": {"header": "x-zlo-signature", "prefix": "sha256=", "generate": true}}),
+        )
+        .await
+        .unwrap();
+    let id = ScheduleId::new(created["schedule"]["id"].as_str().unwrap()).unwrap();
+    let secret = h.engine.schedule_reveal(&scope(), &id).await.unwrap()["signature"]["secret"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (id, secret)
+}
+
+/// The model's `t3_schedule` may not replace, regenerate or strip an
+/// existing signing secret: rotation and removal are the owner's, on the
+/// Automations page.
+#[tokio::test]
+async fn model_updates_cannot_replace_or_strip_an_existing_signature() {
+    let h = harness().await;
+    let (id, secret) = signed_hook(&h).await;
+    for signature in [
+        json!({"header": "x-zlo-signature", "generate": true}),
+        json!({"header": "x-zlo-signature", "secret": "chosen-by-the-model"}),
+        serde_json::Value::Null,
+    ] {
+        let answer = h
+            .engine
+            .call_tool(
+                "t3_schedule",
+                &ctx("a"),
+                &json!({"action": "update", "id": id.as_str(), "signature": signature}),
+            )
+            .await;
+        assert_eq!(answer["ok"], false, "{answer}");
+        let now = h.engine.schedule_reveal(&scope(), &id).await.unwrap();
+        assert_eq!(now["signature"]["secret"], secret.as_str(), "{signature}");
+    }
+    // Other fields still update through the tool.
+    let renamed = h
+        .engine
+        .call_tool(
+            "t3_schedule",
+            &ctx("a"),
+            &json!({"action": "update", "id": id.as_str(), "title": "Renamed"}),
+        )
+        .await;
+    assert_eq!(renamed["schedule"]["title"], "Renamed", "{renamed}");
+    assert_eq!(renamed["schedule"]["signature"]["hasSecret"], true);
+}
+
+/// The owner turning signing off: `signature: null` removes it (absent keeps it).
+#[tokio::test]
+async fn owner_null_signature_removes_it_and_absent_keeps_it() {
+    let h = harness().await;
+    let (id, _) = signed_hook(&h).await;
+    let kept = h
+        .engine
+        .schedule_action(
+            &ctx("a"),
+            json!({"action": "update", "id": id.as_str(), "title": "t"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(kept["schedule"]["signature"]["hasSecret"], true, "{kept}");
+    let off = h
+        .engine
+        .schedule_action(
+            &ctx("a"),
+            json!({"action": "update", "id": id.as_str(), "signature": null}),
+        )
+        .await
+        .unwrap();
+    assert!(off["schedule"]["signature"].is_null(), "{off}");
+    assert!(h.engine.schedule_reveal(&scope(), &id).await.unwrap()["signature"].is_null());
+}
+
+/// A schedule created paused is paused from its first write: a tick right
+/// after the insert fires nothing (FakePlanner makes it due immediately).
+#[tokio::test]
+async fn paused_create_is_paused_from_the_first_write() {
+    let h = harness().await;
+    h.engine.set_schedule_planner(Arc::new(FakePlanner));
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    let created = h
+        .engine
+        .schedule_action(
+            &ctx("a"),
+            json!({"action": "create", "prompt": "digest", "enabled": false,
+                   "schedule": {"type": "interval", "everyMs": 3_600_000}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created["schedule"]["enabled"], false, "{created}");
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    h.engine.tick().await;
+    assert!(h.engine.store().queue(&a, false).await.unwrap().is_empty());
+}
