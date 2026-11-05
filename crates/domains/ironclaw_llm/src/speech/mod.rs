@@ -73,6 +73,9 @@ pub enum SpeechSynthesisError {
 
     #[error("Speech synthesis returned no audio")]
     EmptyAudio,
+
+    #[error("Speech synthesis returned more than {max} bytes of audio")]
+    AudioTooLarge { max: usize },
 }
 
 /// Trait for text-to-speech providers.
@@ -113,45 +116,118 @@ pub(crate) fn normalized_base(url: impl Into<String>) -> String {
     url
 }
 
+/// The most audio one reply may return (a minute of 128 kbit/s MP3 is
+/// about 1 MiB; this leaves room for slower formats and longer text).
+pub(crate) const MAX_AUDIO_BYTES: usize = 16 * 1024 * 1024;
+/// How much of a provider's error body is read, and shown.
+const ERROR_BODY_LIMIT: usize = 4 * 1024;
+const ERROR_TEXT_LIMIT: usize = 512;
+
 /// Build the shared hardened client, failing construction instead of
-/// degrading to an unhardened default.
+/// degrading to an unhardened default. Redirects are never followed: the
+/// requests carry credentials (`xi-api-key` is not a header reqwest strips
+/// on a cross-origin hop) and the endpoints never redirect legitimately.
 pub(crate) fn client() -> Result<reqwest::Client, SpeechSynthesisError> {
     crate::config::hardened_client_builder(crate::config::SPEECH_REQUEST_TIMEOUT_SECS)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| SpeechSynthesisError::ClientBuild {
             reason: e.to_string(),
         })
 }
 
-/// Read a provider response: audio bytes on success, a bounded error body
-/// otherwise (provider error bodies carry no secrets, but can be large).
+/// Read a provider response: audio bytes on success (at most
+/// [`MAX_AUDIO_BYTES`]), a bounded, redacted error otherwise. `secrets`
+/// are the credentials the request carried.
 pub(crate) async fn read_audio(
     response: reqwest::Response,
     format: SpeechFormat,
+    secrets: &[&str],
 ) -> Result<SynthesizedSpeech, SpeechSynthesisError> {
-    const ERROR_BODY_LIMIT: usize = 512;
+    read_audio_capped(response, format, secrets, MAX_AUDIO_BYTES).await
+}
+
+pub(crate) async fn read_audio_capped(
+    mut response: reqwest::Response,
+    format: SpeechFormat,
+    secrets: &[&str],
+    max: usize,
+) -> Result<SynthesizedSpeech, SpeechSynthesisError> {
     let status = response.status();
     if !status.is_success() {
-        let body = match response.text().await {
-            Ok(body) => body,
+        let body = match read_up_to(&mut response, ERROR_BODY_LIMIT).await {
+            Ok((bytes, _)) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(e) => format!("(error body unreadable: {e})"),
         };
-        let body: String = body.chars().take(ERROR_BODY_LIMIT).collect();
+        let body: String = redact(&body, secrets)
+            .chars()
+            .take(ERROR_TEXT_LIMIT)
+            .collect();
         return Err(SpeechSynthesisError::RequestFailed(format!(
             "HTTP {status}: {body}"
         )));
     }
-    let audio = response
-        .bytes()
+    if response
+        .content_length()
+        .is_some_and(|len| len > max as u64)
+    {
+        return Err(SpeechSynthesisError::AudioTooLarge { max });
+    }
+    let (audio, complete) = read_up_to(&mut response, max)
         .await
         .map_err(|e| SpeechSynthesisError::RequestFailed(e.to_string()))?;
+    if !complete {
+        return Err(SpeechSynthesisError::AudioTooLarge { max });
+    }
     if audio.is_empty() {
         return Err(SpeechSynthesisError::EmptyAudio);
     }
-    Ok(SynthesizedSpeech {
-        audio: audio.to_vec(),
-        format,
-    })
+    Ok(SynthesizedSpeech { audio, format })
+}
+
+/// At most `max` bytes of the body, chunk by chunk; `true` when the body
+/// ended within them.
+async fn read_up_to(
+    response: &mut reqwest::Response,
+    max: usize,
+) -> Result<(Vec<u8>, bool), reqwest::Error> {
+    let mut out = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let room = max - out.len();
+        if chunk.len() > room {
+            out.extend_from_slice(&chunk[..room]);
+            return Ok((out, false));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok((out, true))
+}
+
+/// `body` with the request's credentials and anything credential-shaped
+/// (a long run of letters, digits, `-` and `_` mixing letters and digits)
+/// replaced: providers echo rejected keys in their error messages.
+pub(crate) fn redact(body: &str, secrets: &[&str]) -> String {
+    const REDACTED: &str = "[redacted]";
+    let mut out = body.to_string();
+    for secret in secrets.iter().filter(|s| !s.is_empty()) {
+        out = out.replace(secret, REDACTED);
+    }
+    let token_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let mut clean = String::with_capacity(out.len());
+    let mut rest = out.as_str();
+    while let Some(start) = rest.find(token_char) {
+        clean.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let len = tail.find(|c: char| !token_char(c)).unwrap_or(tail.len());
+        let token = &tail[..len];
+        let looks_secret = token.len() >= 20
+            && token.chars().any(|c| c.is_ascii_digit())
+            && token.chars().any(|c| c.is_ascii_alphabetic());
+        clean.push_str(if looks_secret { REDACTED } else { token });
+        rest = &tail[len..];
+    }
+    clean.push_str(rest);
+    clean
 }
 
 #[cfg(test)]
@@ -171,6 +247,30 @@ pub(crate) mod test_server {
     pub(crate) async fn serve_once(
         status: u16,
         body: &'static [u8],
+    ) -> (String, tokio::task::JoinHandle<Recorded>) {
+        serve_once_with(status, String::new(), body.to_vec()).await
+    }
+
+    /// A base URL whose listener reports whether anyone connected within a
+    /// second (redirect tests: the second origin must never be reached).
+    pub(crate) async fn never_contacted() -> (String, tokio::task::JoinHandle<bool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
+                .await
+                .is_ok()
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// [`serve_once`] with extra response header lines (each ending in
+    /// `\r\n`) and an owned body. Writes tolerate a client that hangs up
+    /// early (a capped read stops reading).
+    pub(crate) async fn serve_once_with(
+        status: u16,
+        headers: String,
+        body: Vec<u8>,
     ) -> (String, tokio::task::JoinHandle<Recorded>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
@@ -201,11 +301,11 @@ pub(crate) mod test_server {
                 buf.extend_from_slice(&chunk[..n]);
             }
             let reply = format!(
-                "HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                "HTTP/1.1 {status} X\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n",
                 body.len()
             );
-            socket.write_all(reply.as_bytes()).await.expect("write");
-            socket.write_all(body).await.expect("write body");
+            let _ = socket.write_all(reply.as_bytes()).await;
+            let _ = socket.write_all(&body).await;
             Recorded {
                 head,
                 body: buf[body_start..body_start + length].to_vec(),
@@ -238,6 +338,63 @@ mod tests {
     fn normalized_base_strips_trailing_slashes() {
         assert_eq!(normalized_base("https://x.test//"), "https://x.test");
         assert_eq!(normalized_base("https://x.test"), "https://x.test");
+    }
+
+    #[test]
+    fn redaction_removes_the_key_and_token_like_strings() {
+        let body = r#"{"error":"Incorrect API key provided: sk-proj-abc123. Key sk-live-ABCDEFGH1234567890abcdef is bad"}"#;
+        let clean = redact(body, &["sk-proj-abc123"]);
+        assert!(!clean.contains("sk-proj-abc123"), "{clean}");
+        assert!(!clean.contains("ABCDEFGH1234567890abcdef"), "{clean}");
+        assert!(clean.contains("Incorrect API key provided"), "{clean}");
+        // Ordinary words and short ids survive.
+        assert_eq!(
+            redact("voice_id not found: abc123", &[]),
+            "voice_id not found: abc123"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_audio_is_refused_while_reading() {
+        use super::test_server::serve_once_with;
+        let (base, _server) = serve_once_with(200, String::new(), vec![7u8; 64 * 1024]).await;
+        let response = reqwest::get(&base).await.expect("response");
+        let err = read_audio_capped(response, SpeechFormat::Mp3, &[], 1024)
+            .await
+            .expect_err("over the cap");
+        assert!(
+            matches!(err, SpeechSynthesisError::AudioTooLarge { max: 1024 }),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_within_the_cap_is_kept_whole() {
+        use super::test_server::serve_once_with;
+        let (base, _server) = serve_once_with(200, String::new(), vec![7u8; 3000]).await;
+        let response = reqwest::get(&base).await.expect("response");
+        let speech = read_audio_capped(response, SpeechFormat::Mp3, &[], 4096)
+            .await
+            .expect("audio");
+        assert_eq!(speech.audio.len(), 3000);
+    }
+
+    #[tokio::test]
+    async fn huge_error_bodies_are_cut_short() {
+        use super::test_server::serve_once_with;
+        let body = "x".repeat(2 * 1024 * 1024).into_bytes();
+        let (base, _server) = serve_once_with(500, String::new(), body).await;
+        let response = reqwest::get(&base).await.expect("response");
+        let err = read_audio_capped(response, SpeechFormat::Mp3, &[], 1024)
+            .await
+            .expect_err("500");
+        let message = err.to_string();
+        assert!(message.contains("500"), "{message}");
+        assert!(
+            message.len() < 1024,
+            "error text is bounded: {} bytes",
+            message.len()
+        );
     }
 
     #[test]

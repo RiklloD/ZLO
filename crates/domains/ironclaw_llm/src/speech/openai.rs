@@ -85,7 +85,7 @@ impl SpeechSynthesisProvider for OpenAiSpeechProvider {
             .send()
             .await
             .map_err(|e| SpeechSynthesisError::RequestFailed(e.to_string()))?;
-        super::read_audio(response, format).await
+        super::read_audio(response, format, &[self.api_key.expose_secret()]).await
     }
 }
 
@@ -139,19 +139,43 @@ mod tests {
 
     #[tokio::test]
     async fn http_error_keeps_status_and_bounded_body() {
-        let (base, server) = serve_once(401, b"{\"error\":\"bad key\"}").await;
+        // Providers echo the key they rejected; it must not reach the error.
+        let (base, server) =
+            serve_once(401, b"{\"error\":\"Incorrect API key provided: sk-test\"}").await;
         let err = provider(&base)
             .synthesize("Hi", Some("echo"), SpeechFormat::Mp3)
             .await
             .expect_err("401");
         let message = err.to_string();
         assert!(message.contains("401"), "{message}");
-        assert!(message.contains("bad key"), "{message}");
+        assert!(message.contains("Incorrect API key"), "{message}");
         assert!(
             !message.contains("sk-test"),
             "the key must not leak: {message}"
         );
         server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed_with_the_key() {
+        use super::super::test_server::{never_contacted, serve_once_with};
+        let (elsewhere, contacted) = never_contacted().await;
+        let (base, server) = serve_once_with(
+            307,
+            format!("location: {elsewhere}/v1/audio/speech\r\n"),
+            Vec::new(),
+        )
+        .await;
+        let err = provider(&base)
+            .synthesize("Hi", None, SpeechFormat::Mp3)
+            .await
+            .expect_err("a redirect is an error");
+        assert!(err.to_string().contains("307"), "{err}");
+        server.await.expect("server");
+        assert!(
+            !contacted.await.expect("listener"),
+            "the second origin was reached"
+        );
     }
 
     #[tokio::test]

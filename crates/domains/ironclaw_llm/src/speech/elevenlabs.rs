@@ -93,7 +93,7 @@ impl SpeechSynthesisProvider for ElevenLabsSpeechProvider {
             .send()
             .await
             .map_err(|e| SpeechSynthesisError::RequestFailed(e.to_string()))?;
-        super::read_audio(response, format).await
+        super::read_audio(response, format, &[self.api_key.expose_secret()]).await
     }
 }
 
@@ -131,6 +131,42 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&seen.body).expect("json");
         assert_eq!(body["text"], "Hello");
         assert_eq!(body["model_id"], DEFAULT_MODEL);
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed_with_the_key() {
+        use super::super::test_server::{never_contacted, serve_once_with};
+        let (elsewhere, contacted) = never_contacted().await;
+        let (base, server) =
+            serve_once_with(307, format!("location: {elsewhere}/steal\r\n"), Vec::new()).await;
+        let err = provider(&base)
+            .synthesize("Hi", Some("abc123"), SpeechFormat::Mp3)
+            .await
+            .expect_err("a redirect is an error");
+        assert!(err.to_string().contains("307"), "{err}");
+        server.await.expect("server");
+        assert!(
+            !contacted.await.expect("listener"),
+            "xi-api-key went to the second origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_echoed_key_never_reaches_the_error() {
+        let (base, server) = serve_once(
+            401,
+            b"{\"detail\":{\"message\":\"Invalid API key: xi-test\"}}",
+        )
+        .await;
+        let err = provider(&base)
+            .synthesize("Hi", Some("abc123"), SpeechFormat::Mp3)
+            .await
+            .expect_err("401");
+        let message = err.to_string();
+        assert!(message.contains("401"), "{message}");
+        assert!(message.contains("Invalid API key"), "{message}");
+        assert!(!message.contains("xi-test"), "{message}");
+        server.await.expect("server");
     }
 
     #[tokio::test]
