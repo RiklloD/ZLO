@@ -32,6 +32,7 @@ use claude_codes::ClaudeOutput;
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::model::now_ms;
 use ironclaw_orchestrator::runtime::{TurnEndStatus, TurnOutcome, TurnProfile};
+use ironclaw_orchestrator::telemetry::TurnTelemetry;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -190,6 +191,11 @@ impl IdleArm {
         // A run cut before its process started cost nothing: no row.
         if !run.started {
             return;
+        }
+        // No turn reports this run, so the meter learns here what it left.
+        if let Some(telemetry) = run.telemetry(&self.runtime.config.runtime_id) {
+            sink.turn_telemetry(&self.thread_id, telemetry, now_ms())
+                .await;
         }
         if let Some(dir) = self
             .runtime
@@ -350,6 +356,8 @@ struct CompactRun {
     cache_creation_tokens: u64,
     output_tokens: u64,
     error: Option<String>,
+    /// The same frames folded as a turn's: what the meter reports after.
+    fold: super::stream::TurnFold,
 }
 
 impl CompactRun {
@@ -360,11 +368,21 @@ impl CompactRun {
         }
     }
 
+    /// The context the compaction left, for the status bar; `None` unless
+    /// it finished cleanly.
+    fn telemetry(&self, provider: &str) -> Option<TurnTelemetry> {
+        if !self.done || self.error.is_some() {
+            return None;
+        }
+        self.fold.telemetry(provider)
+    }
+
     fn push_line(&mut self, line: &str) {
         let line = line.trim();
         if line.is_empty() {
             return;
         }
+        self.fold.push_line(line, std::time::Instant::now());
         // silent-ok: frames the wire types do not know carry nothing we count
         let Ok(frame) = ClaudeOutput::parse_json_tolerant(line) else {
             return;
@@ -440,6 +458,31 @@ async fn append_record(path: &Path, record: &serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_finished_idle_compaction_reports_the_context_it_left() {
+        let mut run = CompactRun {
+            started: true,
+            ..CompactRun::default()
+        };
+        run.push_line(
+            r#"{"type":"system","subtype":"compact_boundary","session_id":"s","uuid":"b","compact_metadata":{"pre_tokens":170010,"post_tokens":9000,"trigger":"manual"}}"#,
+        );
+        // Not done yet: nothing to publish.
+        assert!(run.telemetry("claude-cli").is_none());
+        run.push_line(
+            r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":600,"duration_api_ms":500,"num_turns":1,"result":"","session_id":"s","total_cost_usd":0.01,"usage":{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":900},"modelUsage":{"claude-haiku-5-5":{"inputTokens":10,"outputTokens":900,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.01,"contextWindow":200000,"maxOutputTokens":32000}}}"#,
+        );
+        let t = run.telemetry("claude-cli").expect("telemetry");
+        assert_eq!(
+            (t.context_used, t.context_max),
+            (Some(9_000), Some(200_000))
+        );
+        assert_eq!(t.provider.as_deref(), Some("claude-cli"));
+        // A failed or cut run changed nothing the meter should show.
+        run.error = Some("timed out".into());
+        assert!(run.telemetry("claude-cli").is_none());
+    }
 
     #[test]
     fn only_completed_turns_with_a_large_context_arm_the_timer() {

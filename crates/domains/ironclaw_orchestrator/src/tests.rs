@@ -1741,3 +1741,65 @@ async fn the_final_reply_is_not_split_into_the_input_it_followed() {
     );
     assert_eq!(r.categories.iter().map(|c| c.tokens).sum::<u64>(), 2_000);
 }
+
+#[tokio::test]
+async fn a_compaction_without_a_new_user_turn_refreshes_the_report() {
+    use crate::telemetry::TurnTelemetry;
+    use ironclaw_product_contracts::orchestration::{ContextLevel, ContextSource};
+    let h = harness().await;
+    let cli = Arc::new(FakeRuntime {
+        name: Some("cli"),
+        ..Default::default()
+    });
+    h.engine.register_runtime(cli.clone());
+    let a = tid("a");
+    let thread = h
+        .engine
+        .ensure_thread(&a, &scope(), Some(&RuntimeId::new("cli").unwrap()))
+        .await
+        .unwrap();
+    let old = "old exchange ".repeat(4_000);
+    cli.history.lock().unwrap().insert(
+        a.clone(),
+        vec![
+            msg(HistoryRole::User, &old),
+            msg(HistoryRole::Assistant, "done"),
+        ],
+    );
+    let telemetry = |used: Option<u64>| TurnTelemetry {
+        context_used: used,
+        context_max: Some(10_000),
+        ..TurnTelemetry::default()
+    };
+    h.engine
+        .turn_telemetry(&a, telemetry(Some(9_000)), 1_000)
+        .await;
+    let r = h.engine.context_report(&thread).await.unwrap();
+    assert_eq!(r.level, ContextLevel::Warning);
+
+    // The idle compactor runs: the transcript gains its marker and summary,
+    // and the driver reports what the compaction left. No user turn.
+    cli.history.lock().unwrap().get_mut(&a).unwrap().extend([
+        msg(HistoryRole::System, "Compacted"),
+        HistoryMessage {
+            hidden: true,
+            ..msg(HistoryRole::Assistant, "summary of the old exchange")
+        },
+    ]);
+    h.engine
+        .turn_telemetry(&a, telemetry(Some(900)), 2_000)
+        .await;
+    let r = h.engine.context_report(&thread).await.unwrap();
+    assert_eq!((r.used, r.level), (900, ContextLevel::Normal));
+    assert_eq!(r.categories.iter().map(|c| c.tokens).sum::<u64>(), 900);
+
+    // When the CLI gives no post-compaction count the report is an estimate
+    // of what is left, labelled so, never the stale exact figure.
+    h.engine.turn_telemetry(&a, telemetry(None), 3_000).await;
+    let r = h.engine.context_report(&thread).await.unwrap();
+    assert_eq!(r.source, ContextSource::Estimated);
+    // The fake runtime injects ~800 tokens; the compacted-away exchange
+    // alone was ~13k.
+    assert!(r.used < 1_000, "estimate after compaction: {}", r.used);
+    assert_eq!(r.level, ContextLevel::Normal);
+}

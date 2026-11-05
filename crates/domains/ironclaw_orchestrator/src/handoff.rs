@@ -231,10 +231,7 @@ pub fn clip_inherited(seed: &str, max_bytes: usize) -> String {
     if seed.len() <= max_bytes {
         return seed.to_string();
     }
-    format!(
-        "{MARK}{}",
-        tail(seed, max_bytes.saturating_sub(MARK.len()))
-    )
+    format!("{MARK}{}", tail(seed, max_bytes.saturating_sub(MARK.len())))
 }
 
 /// Full-thread handoff for a target that cannot share the source's state.

@@ -248,12 +248,7 @@ mod tests {
                     "Search before answering.",
                     0,
                 ),
-                message(
-                    System,
-                    "msg:summary-1",
-                    "Earlier we planned the meter.",
-                    0,
-                ),
+                message(System, "msg:summary-1", "Earlier we planned the meter.", 0),
                 message(
                     User,
                     "msg:user-1",
@@ -331,7 +326,9 @@ mod tests {
                 .expect("db"),
         );
         let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).expect("runtime"));
-        let engine = Engine::open_libsql(runtime, "ironclaw").await.expect("engine");
+        let engine = Engine::open_libsql(runtime, "ironclaw")
+            .await
+            .expect("engine");
         let sink = OrchestratorTelemetrySink::new(
             Arc::new(crate::inspector_store::InMemoryDiagnosticStore::default()),
             Arc::clone(&engine),

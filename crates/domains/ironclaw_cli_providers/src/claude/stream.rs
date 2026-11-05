@@ -13,6 +13,11 @@ pub(crate) struct TurnFold {
     model: Option<String>,
     /// Prompt-side tokens of the latest assistant message: (fresh, read, write).
     last_prompt: Option<(u64, u64, u64)>,
+    /// A compaction after the latest assistant message, with the context it
+    /// left when the CLI says (`post_tokens`). The call before it read the
+    /// whole uncompacted context, so its figure no longer describes the
+    /// session.
+    compacted: Option<Option<u64>>,
     /// Streamed generation of the message in flight.
     first_delta: Option<Instant>,
     message_output: u64,
@@ -56,11 +61,17 @@ impl TurnFold {
             ClaudeOutput::Assistant(msg) => {
                 self.model = Some(msg.message.model.clone());
                 if let Some(u) = msg.message.usage {
+                    self.compacted = None;
                     self.last_prompt = Some((
                         u64::from(u.input_tokens),
                         u64::from(u.cache_read_input_tokens),
                         u64::from(u.cache_creation_input_tokens),
                     ));
+                }
+            }
+            ClaudeOutput::System(sys) => {
+                if let Some(boundary) = sys.as_compact_boundary() {
+                    self.compacted = Some(boundary.compact_metadata.post_tokens);
                 }
             }
             ClaudeOutput::StreamEvent(ev) => self.push_stream_event(&ev.event, now),
@@ -158,14 +169,25 @@ impl TurnFold {
         self.limit_windows.as_ref()
     }
 
+    /// After a compaction the context is what it left (`None` when the CLI
+    /// does not say, so readers estimate instead of showing a stale count).
     pub(crate) fn telemetry(&self, provider: &str) -> Option<TurnTelemetry> {
-        let (input, read, write) = self.last_prompt?;
+        let measured = match (self.compacted, self.last_prompt) {
+            (Some(left), _) => TurnTelemetry {
+                context_used: left,
+                ..TurnTelemetry::default()
+            },
+            (None, Some((input, read, write))) => {
+                TurnTelemetry::from_prompt_tokens(input, read, write)
+            }
+            (None, None) => return None,
+        };
         Some(TurnTelemetry {
             provider: Some(provider.to_string()),
             model: self.model.clone(),
             context_max: self.result.as_ref().and_then(|r| r.context_window),
             tps: tokens_per_second(self.generated_tokens, self.generation_ms),
-            ..TurnTelemetry::from_prompt_tokens(input, read, write)
+            ..measured
         })
     }
 
@@ -229,6 +251,65 @@ fn mentions_usage_limit(text: &str) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    const BIG_CALL: &str = r#"{"type":"assistant","message":{"id":"m","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[{"type":"text","text":"summary"}],"usage":{"input_tokens":10,"cache_read_input_tokens":170000,"cache_creation_input_tokens":0,"output_tokens":900}},"session_id":"s","uuid":"a1"}"#;
+    const RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":600,"duration_api_ms":500,"num_turns":1,"result":"","session_id":"s","total_cost_usd":0.01,"usage":{"input_tokens":10,"cache_read_input_tokens":170000,"cache_creation_input_tokens":0,"output_tokens":900},"modelUsage":{"claude-haiku-5-5":{"inputTokens":10,"outputTokens":900,"cacheReadInputTokens":170000,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.01,"contextWindow":200000,"maxOutputTokens":32000}}}"#;
+
+    fn boundary(post: Option<u64>) -> String {
+        let post = post
+            .map(|p| format!(r#","post_tokens":{p}"#))
+            .unwrap_or_default();
+        format!(
+            r#"{{"type":"system","subtype":"compact_boundary","session_id":"s","uuid":"b","compact_metadata":{{"pre_tokens":170010,"trigger":"manual"{post}}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_compaction_reports_the_context_it_left_not_the_one_it_read() {
+        let t = Instant::now();
+        let mut fold = TurnFold::default();
+        for line in [BIG_CALL, &boundary(Some(9_000)), RESULT] {
+            fold.push_line(line, t);
+        }
+        let tel = fold.telemetry("claude-cli").expect("telemetry");
+        assert_eq!(
+            (tel.context_used, tel.context_max),
+            (Some(9_000), Some(200_000))
+        );
+
+        // No post-compaction count: the exact figure is gone, not stale.
+        let mut fold = TurnFold::default();
+        for line in [BIG_CALL, &boundary(None), RESULT] {
+            fold.push_line(line, t);
+        }
+        let tel = fold.telemetry("claude-cli").expect("telemetry");
+        assert_eq!((tel.context_used, tel.context_max), (None, Some(200_000)));
+
+        // A call after the boundary measured the compacted context itself.
+        let mut fold = TurnFold::default();
+        let after = BIG_CALL.replace("170000", "7000");
+        for line in [BIG_CALL, &boundary(Some(9_000)), &after, RESULT] {
+            fold.push_line(line, t);
+        }
+        assert_eq!(
+            fold.telemetry("claude-cli")
+                .expect("telemetry")
+                .context_used,
+            Some(7_010)
+        );
+
+        // A compaction alone (the idle /compact run streams no call of its own).
+        let mut fold = TurnFold::default();
+        for line in [&boundary(Some(9_000)), RESULT] {
+            fold.push_line(line, t);
+        }
+        assert_eq!(
+            fold.telemetry("claude-cli")
+                .expect("telemetry")
+                .context_used,
+            Some(9_000)
+        );
+    }
 
     #[test]
     fn usage_limit_result_arms_resume_at_reset() {
