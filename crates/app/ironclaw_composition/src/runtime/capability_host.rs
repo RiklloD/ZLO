@@ -110,8 +110,6 @@ pub(super) struct CapabilityPortWiring {
     pub(super) display_previews: Arc<CapabilityDisplayPreviewStore>,
 }
 
-// arch-exempt: too_many_args, a missing CapabilityWiringContext would only aggregate independently owned runtime services for this composition seam, plan #7193
-#[allow(clippy::too_many_arguments)]
 /// The approval settings the capability gate reads: stored overrides and
 /// auto-approve, under each thread's profile mode. Goal checks read the same.
 pub(super) fn approval_settings(
@@ -136,6 +134,8 @@ pub(super) fn approval_settings(
     )
 }
 
+// arch-exempt: too_many_args, a missing CapabilityWiringContext would only aggregate independently owned runtime services for this composition seam, plan #7193
+#[allow(clippy::too_many_arguments)]
 pub(super) fn capability_wiring(
     services: &RebornRuntimeStores,
     thread_service: Arc<dyn SessionThreadService>,
