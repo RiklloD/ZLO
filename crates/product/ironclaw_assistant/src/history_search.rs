@@ -13,8 +13,8 @@ use ironclaw_host_api::ids::ThreadId;
 use ironclaw_product_contracts::history::{
     HISTORY_DEFAULT_READ_MESSAGES, HISTORY_DEFAULT_THREADS, HISTORY_DEFAULT_WINDOW,
     HISTORY_MAX_READ_MESSAGES, HISTORY_MAX_THREADS, HISTORY_MAX_WINDOW, HISTORY_MESSAGE_MAX_CHARS,
-    HistoryHighlight, HistoryHit, HistoryMessage, HistoryRole, HistorySearchMode,
-    HistorySearchRequest, HistorySearchResponse, HistoryThreadOrigin, HistoryThreadResult,
+    HistoryHighlight, HistoryHit, HistorySearchMessage, HistorySearchMode, HistorySearchRequest,
+    HistorySearchResponse, HistorySearchRole, HistoryThreadOrigin, HistoryThreadResult,
 };
 use ironclaw_threads::{
     HISTORY_SEARCH_MAX_HITS_PER_THREAD, ListThreadsForScopeRequest, MessageKind, SearchHitRole,
@@ -141,10 +141,10 @@ fn thread_result(record: &SessionThreadRecord) -> HistoryThreadResult {
     }
 }
 
-fn role(kind: SearchHitRole) -> HistoryRole {
+fn role(kind: SearchHitRole) -> HistorySearchRole {
     match kind {
-        SearchHitRole::User => HistoryRole::User,
-        SearchHitRole::Assistant => HistoryRole::Assistant,
+        SearchHitRole::User => HistorySearchRole::User,
+        SearchHitRole::Assistant => HistorySearchRole::Assistant,
     }
 }
 
@@ -250,11 +250,11 @@ async fn browse(
     })
 }
 
-fn history_message(record: &ThreadMessageRecord) -> Option<HistoryMessage> {
+fn history_message(record: &ThreadMessageRecord) -> Option<HistorySearchMessage> {
     let text = searchable_message_text(record)?;
     let role = match record.kind {
-        MessageKind::User => HistoryRole::User,
-        MessageKind::Assistant => HistoryRole::Assistant,
+        MessageKind::User => HistorySearchRole::User,
+        MessageKind::Assistant => HistorySearchRole::Assistant,
         _ => return None,
     };
     let truncated = text.chars().count() > HISTORY_MESSAGE_MAX_CHARS;
@@ -265,7 +265,7 @@ fn history_message(record: &ThreadMessageRecord) -> Option<HistoryMessage> {
     } else {
         text.to_string()
     };
-    Some(HistoryMessage {
+    Some(HistorySearchMessage {
         message_id: record.message_id.to_string(),
         sequence: record.sequence,
         role,
@@ -323,7 +323,8 @@ async fn scroll(
         })
         .await
         .map_err(HistorySearchError::from_thread)?;
-    let visible: Vec<HistoryMessage> = range.messages.iter().filter_map(history_message).collect();
+    let visible: Vec<HistorySearchMessage> =
+        range.messages.iter().filter_map(history_message).collect();
     let center = visible
         .iter()
         .position(|m| m.sequence >= anchor)
@@ -364,7 +365,7 @@ async fn read(
         .iter()
         .filter(|m| m.sequence >= from)
         .filter_map(history_message);
-    let messages: Vec<HistoryMessage> = visible.by_ref().take(limit).collect();
+    let messages: Vec<HistorySearchMessage> = visible.by_ref().take(limit).collect();
     let next_from_sequence = visible.next().map(|m| m.sequence);
     Ok(HistorySearchResponse {
         mode: HistorySearchMode::Read,

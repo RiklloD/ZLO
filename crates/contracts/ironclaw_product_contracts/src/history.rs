@@ -96,7 +96,7 @@ pub enum HistoryThreadOrigin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HistoryRole {
+pub enum HistorySearchRole {
     User,
     Assistant,
 }
@@ -113,7 +113,7 @@ pub struct HistoryHit {
     pub thread_id: String,
     pub message_id: String,
     pub sequence: u64,
-    pub role: HistoryRole,
+    pub role: HistorySearchRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
     pub snippet: String,
@@ -141,10 +141,10 @@ pub struct HistoryThreadResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryMessage {
+pub struct HistorySearchMessage {
     pub message_id: String,
     pub sequence: u64,
-    pub role: HistoryRole,
+    pub role: HistorySearchRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
     pub text: String,
@@ -166,7 +166,7 @@ pub struct HistorySearchResponse {
     pub thread: Option<HistoryThreadResult>,
     /// Scroll and read, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub messages: Vec<HistoryMessage>,
+    pub messages: Vec<HistorySearchMessage>,
     /// Read: the sequence to pass as `from_sequence` for the next page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_from_sequence: Option<u64>,
