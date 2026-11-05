@@ -193,6 +193,10 @@ pub enum GoalCheckStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoalCheckRecord {
+    /// Bumped on every change to the check. "Run check now" names the
+    /// revision the person saw, so it never approves a command they did not.
+    #[serde(default)]
+    pub revision: u64,
     pub command: String,
     pub max_attempts: u32,
     pub timeout_secs: u64,
@@ -214,7 +218,8 @@ pub struct GoalCheckRecord {
 #[serde(rename_all = "snake_case")]
 pub enum GoalCheckAction {
     /// Run it now. Counts as approval of the command on an Ask-first
-    /// thread, and restarts the attempt count once retries ended.
+    /// thread, and restarts the attempt count once retries ended. Needs
+    /// `check_revision`: the revision of the check the person was shown.
     RunNow,
     StopRetrying,
 }
@@ -244,6 +249,10 @@ pub struct ThreadGoalSetRequest {
     pub clear_check: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_action: Option<GoalCheckAction>,
+    /// With `check_action: run_now`: the [`GoalCheckRecord::revision`] the
+    /// person approved. A check changed since is refused, not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_revision: Option<u64>,
 }
 
 impl ThreadGoalSetRequest {

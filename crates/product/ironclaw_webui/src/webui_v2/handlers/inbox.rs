@@ -81,6 +81,8 @@ pub struct ThreadGoalBody {
     pub clear_check: bool,
     #[serde(default)]
     pub check_action: Option<GoalCheckAction>,
+    #[serde(default)]
+    pub check_revision: Option<u64>,
 }
 
 /// `POST /api/webchat/v2/threads/{thread_id}/goal` — an empty body clears it.
@@ -97,6 +99,7 @@ pub async fn thread_goal_set(
         check: body.check,
         clear_check: body.clear_check,
         check_action: body.check_action,
+        check_revision: body.check_revision,
     };
     Ok(Json(
         invoke_product_command(state.services(), caller, THREAD_GOAL_SET_COMMAND, request).await?,

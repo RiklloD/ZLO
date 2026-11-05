@@ -118,13 +118,15 @@ impl Client {
         document(self.post(&path, &body).await?)
     }
 
-    /// "Run check now" / "Stop retrying" on the goal strip.
+    /// "Run check now" / "Stop retrying" on the goal strip. `revision` is
+    /// the check the person saw; "Run check now" approves only that one.
     pub async fn goal_check_action(
         &self,
         thread_id: &str,
         action: GoalCheckAction,
+        revision: u64,
     ) -> Result<ThreadGoalResponse, ClientError> {
-        let body = json!({ "check_action": action });
+        let body = json!({ "check_action": action, "check_revision": revision });
         let path = format!("{V2}/threads/{}/goal", seg(thread_id));
         document(self.post(&path, &body).await?)
     }

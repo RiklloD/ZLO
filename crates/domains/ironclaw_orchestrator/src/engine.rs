@@ -61,11 +61,13 @@ pub struct Engine {
     /// Loopback base of the webhook route, known once the gateway is bound.
     pub(crate) webhook_base: OnceLock<String>,
     /// SOUL.md, folder and skills of a thread's profile for CLI turns.
-    profile_context: OnceLock<Arc<dyn ProfileContextSource>>,
+    pub(crate) profile_context: OnceLock<Arc<dyn ProfileContextSource>>,
     /// Told after every completed turn (thread titles), plugged in by the host.
     turn_listener: OnceLock<Arc<dyn TurnCompletedListener>>,
     /// Runs goal checks (`crate::goal_checks`), plugged in by the host.
     pub(crate) goal_check_runner: OnceLock<Arc<dyn crate::goal_checks::GoalCheckRunner>>,
+    /// Goal check executions in flight, cancelled on Stop, turn start, shutdown.
+    pub(crate) goal_check_tasks: StdMutex<crate::goal_checks::GoalCheckTasks>,
     /// This engine, for work spawned off the tick (goal check runs).
     pub(crate) me: Weak<Self>,
 }
@@ -112,6 +114,7 @@ impl Engine {
             profile_context: OnceLock::new(),
             turn_listener: OnceLock::new(),
             goal_check_runner: OnceLock::new(),
+            goal_check_tasks: StdMutex::new(HashMap::new()),
             me: me.clone(),
         }))
     }
@@ -253,6 +256,7 @@ impl Engine {
         if self.shutting_down.swap(true, Ordering::SeqCst) {
             return Ok(0);
         }
+        self.abort_goal_checks();
         let mine: Vec<_> = self
             .store
             .live_work()
@@ -359,6 +363,7 @@ impl Engine {
                 .set_hold(thread_id, Some(HoldReason::Stopped))
                 .await?;
             self.store.cancel_armed_recoveries(thread_id).await?;
+            self.cancel_goal_check(thread_id).await?;
             self.mark_cancel_tree(thread_id, "parent stopped").await?;
         }
         self.stop_descendants(thread_id).await
@@ -395,7 +400,7 @@ impl Engine {
         let Some(thread) = self.store.thread(thread_id).await? else {
             return Ok(false);
         };
-        if thread.is_running() {
+        if thread.is_running() || self.goal_check_running(thread_id) {
             return Ok(false);
         }
         let runtime = self.runtime(&thread.runtime_id)?;
@@ -929,6 +934,12 @@ impl TurnEventSink for Engine {
             return;
         }
         let result: Result<()> = async {
+            // A turn changes what a goal check verifies: a check in flight is
+            // cancelled and runs again once this turn is done.
+            {
+                let _guard = self.dispatch.lock().await;
+                self.cancel_goal_check(thread_id).await?;
+            }
             let Some(thread) = self.store.thread(thread_id).await? else {
                 return Ok(());
             };

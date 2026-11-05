@@ -298,12 +298,18 @@ impl ChatView {
         );
     }
 
-    fn goal_check_action(&mut self, action: GoalCheckAction, cx: &mut Context<Self>) {
+    /// `revision` is the check the strip showed when it was clicked.
+    fn goal_check_action(
+        &mut self,
+        action: GoalCheckAction,
+        revision: u64,
+        cx: &mut Context<Self>,
+    ) {
         let thread_id = self.thread_id.clone();
         run(
             &self.backend,
             cx,
-            move |c| async move { c.goal_check_action(&thread_id, action).await },
+            move |c| async move { c.goal_check_action(&thread_id, action, revision).await },
             |this, result, cx| this.apply_goal(result, cx),
         );
     }
@@ -468,6 +474,9 @@ impl ChatView {
             )
         }) && !done;
         let has_check = check.is_some();
+        // What "Run check now" approves: the check drawn here, not whatever
+        // the state holds when the click lands.
+        let shown_revision = check.map(|c| c.revision).unwrap_or_default();
         let strip = h_flex()
             .id("goal-strip")
             .group("goal-strip")
@@ -515,8 +524,12 @@ impl ChatView {
                                 .xsmall()
                                 .tooltip("Run check now")
                                 .accessibility_label("Run check now")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.goal_check_action(GoalCheckAction::RunNow, cx)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.goal_check_action(
+                                        GoalCheckAction::RunNow,
+                                        shown_revision,
+                                        cx,
+                                    )
                                 })),
                         )
                     })
@@ -528,8 +541,12 @@ impl ChatView {
                                 .xsmall()
                                 .tooltip("Stop retrying")
                                 .accessibility_label("Stop retrying")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.goal_check_action(GoalCheckAction::StopRetrying, cx)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.goal_check_action(
+                                        GoalCheckAction::StopRetrying,
+                                        shown_revision,
+                                        cx,
+                                    )
                                 })),
                         )
                     })
@@ -711,6 +728,7 @@ mod tests {
     #[test]
     fn chips_say_where_the_check_stands() {
         let mut c = GoalCheckRecord {
+            revision: 1,
             command: "cargo test".into(),
             max_attempts: 5,
             timeout_secs: 120,

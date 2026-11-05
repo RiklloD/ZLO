@@ -14,7 +14,7 @@ use ironclaw_product_contracts::inbox::{
 
 use super::*;
 use crate::engine::Engine;
-use crate::model::{QueueStatus, now_ms};
+use crate::model::{Author, QueueStatus, now_ms};
 use crate::runtime::{TurnEndStatus, TurnOutcome};
 use crate::tests::{finish, harness, open_engine, scope, tid};
 
@@ -260,7 +260,12 @@ async fn failing_check_queues_a_bounded_follow_up_until_attempts_run_out() {
     runner.answer(0, "ok");
     h.engine
         .store()
-        .goal_check_action(&a, GoalCheckAction::RunNow, now_ms())
+        .goal_check_action(
+            &a,
+            GoalCheckAction::RunNow,
+            Some(check(&h.engine, &a).await.revision),
+            now_ms(),
+        )
         .await
         .unwrap();
     assert_eq!(check(&h.engine, &a).await.attempts, 0);
@@ -295,7 +300,12 @@ async fn ask_first_waits_for_approval_of_each_command() {
     runner.answer(1, "fail");
     h.engine
         .store()
-        .goal_check_action(&a, GoalCheckAction::RunNow, now_ms())
+        .goal_check_action(
+            &a,
+            GoalCheckAction::RunNow,
+            Some(check(&h.engine, &a).await.revision),
+            now_ms(),
+        )
         .await
         .unwrap();
     h.engine.tick().await;
@@ -335,7 +345,12 @@ async fn ask_each_time_spends_the_approval_on_one_run() {
     runner.answer(1, "fail");
     h.engine
         .store()
-        .goal_check_action(&a, GoalCheckAction::RunNow, now_ms())
+        .goal_check_action(
+            &a,
+            GoalCheckAction::RunNow,
+            Some(check(&h.engine, &a).await.revision),
+            now_ms(),
+        )
         .await
         .unwrap();
     h.engine.tick().await;
@@ -452,18 +467,15 @@ async fn runs_cut_by_a_restart_run_again_and_old_goals_load_without_a_check() {
     let a = tid("a");
     goal_with_check(&engine, &a, "cargo test", 5).await;
     complete_turn(&engine, &a).await;
+    let due = engine.store().due_goal_checks().await.unwrap();
+    let due = due.iter().find(|d| d.thread_id == a).unwrap();
     assert!(
         engine
             .store()
-            .move_goal_check(
-                &a,
-                "cargo test",
-                GoalCheckStatus::Pending,
-                GoalCheckStatus::Running,
-                now_ms()
-            )
+            .claim_goal_check(due, false, now_ms())
             .await
             .unwrap()
+            .is_some()
     );
     drop(engine);
     let engine = open_engine(&db).await;
@@ -516,7 +528,7 @@ async fn check_specs_are_validated_and_clearing_the_goal_drops_the_check() {
     // Editing the objective keeps the check; stop retrying sticks.
     store.set_goal(&a, Some("g2"), None, 4).await.unwrap();
     store
-        .goal_check_action(&a, GoalCheckAction::StopRetrying, 5)
+        .goal_check_action(&a, GoalCheckAction::StopRetrying, None, 5)
         .await
         .unwrap();
     assert!(!store.arm_goal_check(&a, 6).await.unwrap());

@@ -158,6 +158,7 @@ fn goal_records_without_a_check_still_deserialize_and_checks_round_trip() {
     );
     let checked = GoalRecord {
         check: Some(GoalCheckRecord {
+            revision: 3,
             command: "cargo test".into(),
             max_attempts: 5,
             timeout_secs: 120,
