@@ -26,6 +26,13 @@ const SENSITIVE_PATH_PATTERNS: &[&str] = &[
     "/etc/gshadow",
     "/.terraform.d/credentials.tfrc.json",
     "/.azure/",
+    // macOS keychains, password managers, and the CLI agents' login files:
+    // secrets with no prefix a leak scanner could recognize.
+    "/library/keychains/",
+    "/.password-store/",
+    "/.config/op/",
+    "/.claude/.credentials.json",
+    "/.codex/auth.json",
     // Shell history files
     "/.bash_history",
     "/.zsh_history",
@@ -103,6 +110,11 @@ pub fn is_sensitive_path_str(path: &str) -> bool {
         return true;
     }
 
+    // A repository's config can carry credentials in remote URLs.
+    if path_str.ends_with("/.git/config") {
+        return true;
+    }
+
     // Check sensitive path patterns.
     // Also check with a trailing slash so that directory paths (e.g. "/home/.ssh")
     // match patterns that require a trailing slash (e.g. "/.ssh/").
@@ -125,6 +137,33 @@ mod tests {
         assert!(is_sensitive_path_str("/workspace/server.key"));
         assert!(!is_sensitive_path_str("/workspace/.env.example"));
         assert!(!is_sensitive_path_str("/workspace/grid_rsa_data"));
+    }
+
+    #[test]
+    fn blocks_credential_stores_without_recognizable_token_formats() {
+        // Remote URLs with embedded credentials, macOS keychains, and the
+        // CLI agents' own login files hold secrets a leak scanner cannot
+        // recognize by prefix.
+        for path in [
+            "/repo/.git/config",
+            "/Users/me/Library/Keychains/login.keychain-db",
+            "/Users/me/.claude/.credentials.json",
+            "/Users/me/.codex/auth.json",
+            "/Users/me/.password-store/email/gmail.gpg",
+            "/Users/me/.config/op/config",
+        ] {
+            assert!(is_sensitive_path_str(path), "{path} should be sensitive");
+        }
+        // Near misses stay readable.
+        for path in [
+            "/repo/.git/config.md",
+            "/repo/docs/git/config.md",
+            "/repo/src/keychains.rs",
+            "/repo/.claude/settings.json",
+            "/repo/.codex/config.toml",
+        ] {
+            assert!(!is_sensitive_path_str(path), "{path} should stay readable");
+        }
     }
 
     #[test]

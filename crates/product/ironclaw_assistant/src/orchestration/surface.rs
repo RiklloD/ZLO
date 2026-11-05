@@ -80,11 +80,14 @@ fn to_json<T: serde::Serialize>(value: T) -> Result<Value, OrchestratorError> {
     Ok(serde_json::to_value(value)?)
 }
 
-/// Bytes @-mention context may add for IronClaw's loop: its message cap is
-/// 64 KiB, and the typed text and a handoff need room too.
-const MENTION_LOOP_BUDGET: usize = 56 * 1024;
-/// The same for CLI engines, under T3 Code's 120 000-character prompt cap.
-const MENTION_CLI_BUDGET: usize = 96 * 1024;
+/// Largest message, @-mention context included, sent to IronClaw's loop:
+/// its submit validation caps message content at 64 KiB.
+const MENTION_LOOP_LIMIT: usize = 64 * 1024;
+/// The same for CLI engines, under T3 Code's 120 000-character prompt cap
+/// with room for the attached-file lines added after it.
+const MENTION_CLI_LIMIT: usize = 100_000;
+/// Between a handoff context and the typed message.
+const HANDOFF_SEP: &str = "\n\n---\n\n";
 /// Messages of a mentioned thread read for its digest.
 const MENTION_THREAD_TIMELINE: u64 = 40;
 
@@ -249,6 +252,25 @@ async fn telemetry_view(
 
 impl OrchestratedProductSurface {
     /// The caller's thread, when it runs off IronClaw's loop.
+    /// Whether `caller` may read thread `id`: the same scoped timeline read
+    /// the thread view answers with, so a thread of anyone else's reads as
+    /// missing. Mentions expand only for a thread the sender owns.
+    async fn caller_reads_thread(&self, caller: &ProductSurfaceCaller, id: &ThreadId) -> bool {
+        let probe = ProductSurfaceQueryRequest {
+            view_id: TIMELINE_VIEW.id.to_string(),
+            input: serde_json::json!({"thread_id": id.as_str(), "limit": 1}),
+            cursor: None,
+            limit: None,
+        };
+        match self.query(caller.clone(), probe).await {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::debug!(?error, "mentions: sender cannot read the thread");
+                false
+            }
+        }
+    }
+
     async fn external(&self, id: &ThreadId, scope: &ThreadScope) -> Option<ThreadRecord> {
         let thread = self.engine.external_thread(id).await.ok().flatten()?;
         self.engine.owned_thread(id, scope).await.ok()?;
@@ -678,37 +700,50 @@ impl ProductSurface for OrchestratedProductSurface {
                     );
                     soft("user prompt", self.engine.on_user_prompt(&id).await);
                     let mut changed = false;
-                    // @-mentions expand before any handoff context is
-                    // prepended, so only the typed text's mentions count.
                     let roots = std::mem::take(&mut body.mention_roots);
-                    if let Some(typed) = body.content.as_deref().filter(|t| t.contains("[@")) {
+                    changed |= !roots.is_empty();
+                    let handoff = match self.engine.take_next_message_context(&id).await {
+                        Ok(context) => context,
+                        Err(error) => {
+                            soft("next-message context", Err::<(), _>(error));
+                            None
+                        }
+                    };
+                    // @-mentions in the typed text expand once the sender is
+                    // known to own the thread, inside what the final message
+                    // may hold once any handoff context is in front of it.
+                    if let Some(typed) = body.content.as_deref().filter(|t| t.contains("[@"))
+                        && self.caller_reads_thread(&caller, &id).await
+                    {
                         let cli = self.external(&id, &scope).await.is_some();
                         let (runtime, cap) = if cli {
-                            (super::mentions::MentionRuntime::Cli, MENTION_CLI_BUDGET)
+                            (super::mentions::MentionRuntime::Cli, MENTION_CLI_LIMIT)
                         } else {
-                            (super::mentions::MentionRuntime::Loop, MENTION_LOOP_BUDGET)
+                            (super::mentions::MentionRuntime::Loop, MENTION_LOOP_LIMIT)
                         };
                         let threads = CallerThreads {
                             surface: self,
                             caller: &caller,
                             scope: &scope,
                         };
-                        let budget = cap.saturating_sub(typed.len());
-                        let expanded =
-                            super::mentions::expand(typed, &roots, runtime, &threads, budget).await;
+                        let in_front = handoff.as_ref().map_or(0, |c| c.len() + HANDOFF_SEP.len());
+                        let home = std::env::home_dir();
+                        let expanded = super::mentions::expand(
+                            typed,
+                            &roots,
+                            home.as_deref(),
+                            runtime,
+                            &threads,
+                            cap.saturating_sub(in_front),
+                        )
+                        .await;
                         body.content = Some(expanded);
                         changed = true;
-                    } else if !roots.is_empty() {
-                        changed = true;
                     }
-                    match self.engine.take_next_message_context(&id).await {
-                        Ok(Some(context)) => {
-                            let typed = body.content.take().unwrap_or_default();
-                            body.content = Some(format!("{context}\n\n---\n\n{typed}"));
-                            changed = true;
-                        }
-                        Ok(None) => {}
-                        Err(error) => soft("next-message context", Err::<(), _>(error)),
+                    if let Some(context) = handoff {
+                        let typed = body.content.take().unwrap_or_default();
+                        body.content = Some(format!("{context}{HANDOFF_SEP}{typed}"));
+                        changed = true;
                     }
                     // A message without a model runs on the thread's pick
                     // (`/route`), else on its profile's default; the thread's

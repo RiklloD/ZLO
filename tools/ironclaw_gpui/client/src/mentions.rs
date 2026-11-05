@@ -118,11 +118,34 @@ impl IndexCache {
     }
 }
 
+/// Settings that would otherwise let a checkout run a command.
+const SAFE_GIT_CONFIG: &[&str] = &[
+    "core.fsmonitor=false",
+    "core.hooksPath=/dev/null",
+    "core.pager=cat",
+    "core.untrackedCache=false",
+    "submodule.recurse=false",
+];
+
 /// `git ls-files` of `root`: tracked plus untracked-but-not-ignored.
 fn git_files(root: &Path) -> Option<(Vec<String>, bool)> {
-    let mut child = Command::new("git")
+    // A checkout's config can name commands (`core.fsmonitor`, hooks, a
+    // pager) git would run: start from an empty environment with system and
+    // global config off, and force each of those off on the command line.
+    let mut cmd = Command::new("git");
+    cmd.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        cmd.env("PATH", path);
+    }
+    let mut child = cmd
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("--no-pager")
         .arg("-C")
         .arg(root)
+        .args(SAFE_GIT_CONFIG.iter().flat_map(|c| ["-c", c]))
         .args([
             "ls-files",
             "--cached",
@@ -130,8 +153,6 @@ fn git_files(root: &Path) -> Option<(Vec<String>, bool)> {
             "--exclude-standard",
             "-z",
         ])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -675,5 +696,28 @@ mod tests {
         let (cached, rebuild) = cache.get(&dir);
         assert_eq!(cached.as_deref(), Some(&walked));
         assert!(!rebuild);
+    }
+
+    #[test]
+    fn listing_a_hostile_checkout_runs_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&repo).args(args).output();
+        if !git(&["init", "-q"]).is_ok_and(|o| o.status.success()) {
+            return; // no git on this machine
+        }
+        std::fs::write(repo.join("a.txt"), "one").unwrap();
+        let marker = tmp.path().join("PWNED");
+        let script = tmp.path().join("evil.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        git(&["add", "."]).unwrap();
+        git(&["config", "core.fsmonitor", &script.to_string_lossy()]).unwrap();
+        let listed = FileIndex::build(&repo);
+        assert!(listed.git);
+        assert_eq!(listed.files, ["a.txt"]);
+        assert!(!marker.exists(), "a repository-configured command ran");
     }
 }

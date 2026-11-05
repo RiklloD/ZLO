@@ -83,6 +83,11 @@ tracing = "0.1"
 url = "2"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
+[target.'cfg(unix)'.dependencies]
+# Mention expansion (orchestration/mentions): no-follow `openat` walks from a
+# held root descriptor, and killing a git process group on timeout.
+rustix = { version = "1", features = ["fs", "process"] }
+
 [dev-dependencies]
 # Enables the shared in-memory turn-state store double for tests only.
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", features = ["test-support"] }
