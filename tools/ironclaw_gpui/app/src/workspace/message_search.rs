@@ -49,7 +49,9 @@ impl MessageSearch {
     pub(super) fn hit(&self, query: &str, thread_id: &str) -> Option<&HistoryHit> {
         self.results(query)
             .iter()
-            .find(|t| t.thread_id == thread_id || t.related_thread_ids.iter().any(|r| r == thread_id))
+            .find(|t| {
+                t.thread_id == thread_id || t.related_thread_ids.iter().any(|r| r == thread_id)
+            })
             .and_then(|t| t.hits.first())
     }
 }
@@ -165,7 +167,7 @@ pub(super) fn origin_label(origin: HistoryThreadOrigin) -> Option<&'static str> 
 
 #[cfg(test)]
 mod tests {
-    use ironclaw_gpui_client::history::HistoryRole;
+    use ironclaw_gpui_client::history::HistorySearchRole;
 
     use super::*;
 
@@ -181,7 +183,7 @@ mod tests {
                 thread_id: id.into(),
                 message_id: "m".into(),
                 sequence: 1,
-                role: HistoryRole::User,
+                role: HistorySearchRole::User,
                 created_at: None,
                 snippet: "deploy it".into(),
                 highlights: Vec::new(),
@@ -200,7 +202,10 @@ mod tests {
         assert_eq!(search.results(" Deploy ").len(), 1);
         assert!(search.results("deploys").is_empty());
         assert!(search.hit("deploy", "t").is_some());
-        assert!(search.hit("deploy", "fork").is_some(), "a collapsed fork finds its group");
+        assert!(
+            search.hit("deploy", "fork").is_some(),
+            "a collapsed fork finds its group"
+        );
         assert!(search.hit("deploy", "other").is_none());
     }
 }

@@ -18,8 +18,6 @@ pub use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 pub use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 // Scroll areas bounce at their ends on macOS (gpui-kit's `ScrollBounce`).
 pub use gpui_kit::Hsla;
-/// Highlighted runs in search snippets.
-pub use gpui_kit::{FontWeight, HighlightStyle, StyledText};
 /// Native charts for reply visuals (`chat::visual`).
 pub use gpui_kit::component::chart::{AreaChart, BarChart, LineChart, PieChart};
 pub use gpui_kit::component::scroll::ScrollableElement;
@@ -39,6 +37,8 @@ pub use gpui_kit::{
 };
 /// Drawing primitives for the computer-use viewer (frames, cursor, ripples).
 pub use gpui_kit::{Bounds, PathBuilder, Pixels, RenderImage, canvas, img, point, rgb, rgba};
+/// Highlighted runs in search snippets.
+pub use gpui_kit::{FontWeight, HighlightStyle, StyledText};
 
 use gpui_kit::component::text::{TextView, TextViewState};
 

@@ -68,7 +68,8 @@ impl Workspace {
             return;
         }
         let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search threads, messages, settings and actions")
+            InputState::new(window, cx)
+                .placeholder("Search threads, messages, settings and actions")
         });
         input.update(cx, |s, cx| s.focus(window, cx));
         let subs =
@@ -306,8 +307,8 @@ impl Workspace {
         let first_message = entries.iter().position(|e| e.hit.is_some());
         let header_above =
             |ix: usize| first_message.is_some_and(|first| ix >= first) as u8 as f32 * HEADER_H;
-        let pill_top = (!entries.is_empty())
-            .then_some(selected as f32 * ROW_H + header_above(selected));
+        let pill_top =
+            (!entries.is_empty()).then_some(selected as f32 * ROW_H + header_above(selected));
 
         let mut rows: Vec<AnyElement> = Vec::with_capacity(entries.len() + 1);
         for (ix, e) in entries.into_iter().enumerate() {
