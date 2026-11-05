@@ -187,3 +187,31 @@ is remembered.
 fake agent scripts. `tests/live_smoke.rs` holds ignored live canaries, one
 short real turn per agent host:
 `cargo test -p ironclaw_cli_providers --test live_smoke -- --ignored --nocapture`.
+
+## Terminal session import (`session_import`)
+
+Claude Code and Codex sessions the person ran in a terminal become ordinary
+threads on `claude-cli` / `codex`, keyed by the CLI's native session id
+(Goose's `session/import_formats/{claude_code,codex}.rs` in spirit).
+
+- **Claude Code** (`~/.claude/projects/<dir>/<session>.jsonl`,
+  `claude/import.rs`): only id, folder, title (`ai-title`/`custom-title`/
+  `summary`, else the first prompt), times and a message count are read; the
+  transcript stays the thread's history (`transcript::read`, now with each
+  row's original time). `session_dir` resumes a session whose transcript
+  lives in another project folder from the folder it recorded (`cwd`), so
+  `claude --resume <id>` finds it.
+- **Codex** (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`,
+  `codex/import.rs`): the rollout folds into the driver's journal like a live
+  turn (prompts; one reply per turn with `name()` tool labels; injected
+  context blocks kept hidden), with `threads/<id>.id` (for `thread/resume`)
+  and `threads/<id>.cwd` (the session's folder, read by `open`).
+- **Skipped:** native ids already on a thread, Codex `originator: ironclaw`,
+  subagent sessions, sessions without a prompt, anything under `~/.ironclaw`.
+- **Incremental:** the ledger keeps size, mtime and the offset after the last
+  complete line (`session_import/lines.rs`, 8 MiB line cap, torn tails left
+  for the next read). Unchanged files are not opened; grown ones are read
+  from the offset. Once a turn ran here, only the watermark moves.
+- **Runs:** `SessionImporter::request` applies settings and starts a single
+  background run when due (`Launch` once ever, `Background` every 15 min
+  with the setting on, `Manual` always); `debug!` logging only.
