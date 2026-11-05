@@ -252,7 +252,10 @@ fn scale(parts: &[u64], target: u64) -> Vec<u64> {
     }
     order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     let left = target.saturating_sub(out.iter().sum::<u128>());
-    for &(_, i) in order.iter().take(usize::try_from(left).unwrap_or(usize::MAX)) {
+    for &(_, i) in order
+        .iter()
+        .take(usize::try_from(left).unwrap_or(usize::MAX))
+    {
         out[i] += 1;
     }
     out.into_iter()
@@ -431,9 +434,18 @@ mod tests {
             ]
         );
         assert_eq!(r.tool_owners[0].tools, 2);
-        assert_eq!(tool_owner("orchestrator.t3_delegate"), ContextToolOwner::Builtin);
-        assert_eq!(tool_owner("mcp_linear.issue"), ContextToolOwner::Mcp("linear".into()));
-        assert_eq!(tool_owner("bare"), ContextToolOwner::Extension("bare".into()));
+        assert_eq!(
+            tool_owner("orchestrator.t3_delegate"),
+            ContextToolOwner::Builtin
+        );
+        assert_eq!(
+            tool_owner("mcp_linear.issue"),
+            ContextToolOwner::Mcp("linear".into())
+        );
+        assert_eq!(
+            tool_owner("bare"),
+            ContextToolOwner::Extension("bare".into())
+        );
     }
 
     #[test]
@@ -458,9 +470,18 @@ mod tests {
         let mut s = ContextSample::default();
         s.add_history(&history);
         assert!(s.tokens(ContextCategory::CompactionSummaries) >= 100);
-        assert_eq!(s.tokens(ContextCategory::UserMessages), estimate_tokens("next question"));
-        assert_eq!(s.tokens(ContextCategory::ToolResults), estimate_tokens("tool output here"));
-        assert_eq!(s.tokens(ContextCategory::AssistantMessages), estimate_tokens("an answer"));
+        assert_eq!(
+            s.tokens(ContextCategory::UserMessages),
+            estimate_tokens("next question")
+        );
+        assert_eq!(
+            s.tokens(ContextCategory::ToolResults),
+            estimate_tokens("tool output here")
+        );
+        assert_eq!(
+            s.tokens(ContextCategory::AssistantMessages),
+            estimate_tokens("an answer")
+        );
     }
 
     #[test]
@@ -473,11 +494,26 @@ mod tests {
 
     #[test]
     fn meter_levels_warn_at_eighty_percent_and_exceed_at_the_window() {
-        assert_eq!(ContextLevel::of(79_999, Some(100_000)), ContextLevel::Normal);
-        assert_eq!(ContextLevel::of(80_000, Some(100_000)), ContextLevel::Warning);
-        assert_eq!(ContextLevel::of(99_999, Some(100_000)), ContextLevel::Warning);
-        assert_eq!(ContextLevel::of(100_000, Some(100_000)), ContextLevel::Exceeded);
-        assert_eq!(ContextLevel::of(250_000, Some(100_000)), ContextLevel::Exceeded);
+        assert_eq!(
+            ContextLevel::of(79_999, Some(100_000)),
+            ContextLevel::Normal
+        );
+        assert_eq!(
+            ContextLevel::of(80_000, Some(100_000)),
+            ContextLevel::Warning
+        );
+        assert_eq!(
+            ContextLevel::of(99_999, Some(100_000)),
+            ContextLevel::Warning
+        );
+        assert_eq!(
+            ContextLevel::of(100_000, Some(100_000)),
+            ContextLevel::Exceeded
+        );
+        assert_eq!(
+            ContextLevel::of(250_000, Some(100_000)),
+            ContextLevel::Exceeded
+        );
         assert_eq!(ContextLevel::of(5_000_000, None), ContextLevel::Normal);
         assert_eq!(ContextLevel::of(1, Some(0)), ContextLevel::Normal);
     }

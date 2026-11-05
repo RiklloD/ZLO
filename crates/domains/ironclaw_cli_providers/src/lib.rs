@@ -317,7 +317,10 @@ mod tests {
             full.tokens(ContextCategory::Instructions) > bare.tokens(ContextCategory::Instructions)
         );
         assert_eq!(full.tools.len(), 1);
-        assert_eq!(full.tools[0].owner, ContextToolOwner::Mcp("ironclaw".into()));
+        assert_eq!(
+            full.tools[0].owner,
+            ContextToolOwner::Mcp("ironclaw".into())
+        );
         assert_eq!(
             full.tools[0].tools as usize,
             ironclaw_orchestrator::tools::TOOLS.len()

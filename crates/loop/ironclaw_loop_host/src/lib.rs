@@ -1816,8 +1816,7 @@ where
                         .map(|definition| definition.capability_id.clone())
                         .collect()
                 };
-            let visible: std::collections::HashSet<&CapabilityId> =
-                capability_ids.iter().collect();
+            let visible: std::collections::HashSet<&CapabilityId> = capability_ids.iter().collect();
             let tool_definition_sizes = definitions
                 .iter()
                 .filter(|definition| visible.contains(&definition.capability_id))
@@ -1836,8 +1835,7 @@ where
                         role: message.role,
                         content_ref: message.content_ref.clone(),
                         content: message.content.clone(),
-                        image_count: u32::try_from(message.image_parts.len())
-                            .unwrap_or(u32::MAX),
+                        image_count: u32::try_from(message.image_parts.len()).unwrap_or(u32::MAX),
                     })
                     .collect(),
                 identity_message_count: prompt_grant.diagnostic_metadata.identity_message_count,

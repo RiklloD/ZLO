@@ -144,8 +144,11 @@ pub(crate) fn context_sample(capture: &HostManagedPromptDiagnosticCapture) -> Co
         ..ContextSample::default()
     };
     for (index, message) in capture.messages.iter().enumerate() {
-        let kind =
-            crate::inspector_store::prompt_component_kind(index, capture.identity_message_count, message);
+        let kind = crate::inspector_store::prompt_component_kind(
+            index,
+            capture.identity_message_count,
+            message,
+        );
         let category = match kind {
             PromptComponentKind::Identity | PromptComponentKind::System => {
                 ContextCategory::SystemPrompt
@@ -232,9 +235,24 @@ mod tests {
             context,
             messages: vec![
                 message(System, "msg:identity.soul", "You are ZLO.", 0),
-                message(System, "msg:instruction.system.0.a", "Read AGENTS.md first.", 0),
-                message(System, "msg:snippet.skill.search.0.b", "Search before answering.", 0),
-                message(Assistant, "msg:summary-1", "Earlier we planned the meter.", 0),
+                message(
+                    System,
+                    "msg:instruction.system.0.a",
+                    "Read AGENTS.md first.",
+                    0,
+                ),
+                message(
+                    System,
+                    "msg:snippet.skill.search.0.b",
+                    "Search before answering.",
+                    0,
+                ),
+                message(
+                    Assistant,
+                    "msg:summary-1",
+                    "Earlier we planned the meter.",
+                    0,
+                ),
                 message(
                     User,
                     "msg:user-1",
@@ -278,11 +296,20 @@ mod tests {
             sample.tokens(ContextCategory::Attachments),
             estimate_tokens("\n\n<attachments>\n- shot.png\n</attachments>") + 2 * IMAGE_TOKENS
         );
-        assert_eq!(sample.tokens(ContextCategory::AssistantMessages), estimate_tokens("Looking."));
-        assert_eq!(sample.tokens(ContextCategory::ToolResults), estimate_tokens("file contents"));
+        assert_eq!(
+            sample.tokens(ContextCategory::AssistantMessages),
+            estimate_tokens("Looking.")
+        );
+        assert_eq!(
+            sample.tokens(ContextCategory::ToolResults),
+            estimate_tokens("file contents")
+        );
         assert_eq!(sample.tokens(ContextCategory::ToolDefinitions), 100 + 1_000);
         let fitted = reconcile(&sample, Some(9_000));
-        assert_eq!(fitted.categories.iter().map(|c| c.tokens).sum::<u64>(), 9_000);
+        assert_eq!(
+            fitted.categories.iter().map(|c| c.tokens).sum::<u64>(),
+            9_000
+        );
         assert_eq!(
             fitted.tool_owners[0].owner,
             ContextToolOwner::Mcp("notion".into())

@@ -128,7 +128,10 @@ impl TurnRuntime for FakeRuntime {
     ) -> crate::context_report::ContextSample {
         let mut sample = crate::context_report::ContextSample::default();
         if self.name.is_some() {
-            sample.add(ironclaw_product_contracts::orchestration::ContextCategory::Instructions, 300);
+            sample.add(
+                ironclaw_product_contracts::orchestration::ContextCategory::Instructions,
+                300,
+            );
             sample.add_tool("mcp-ironclaw.t3_delegate", 2_000);
         }
         sample
@@ -1530,7 +1533,10 @@ async fn cli_context_reports_sum_to_the_provider_count_and_reuse_the_turns_estim
             .iter()
             .any(|c| c.category == ContextCategory::Unattributed)
     );
-    assert_eq!(r.tool_owners[0].owner, ContextToolOwner::Mcp("ironclaw".into()));
+    assert_eq!(
+        r.tool_owners[0].owner,
+        ContextToolOwner::Mcp("ironclaw".into())
+    );
     let reads = *cli.history_reads.lock().unwrap();
 
     // The same turn: the stored estimate is reused, not recomputed.
@@ -1560,7 +1566,10 @@ async fn native_context_reports_use_the_recorded_prompt_sample() {
     sample.add(ContextCategory::SystemPrompt, 4_000);
     sample.add(ContextCategory::UserMessages, 1_000);
     sample.add_tool("builtin.shell", 8_000);
-    h.engine.record_context_sample(&a, &sample, 10).await.unwrap();
+    h.engine
+        .record_context_sample(&a, &sample, 10)
+        .await
+        .unwrap();
     h.engine
         .turn_telemetry(
             &a,
