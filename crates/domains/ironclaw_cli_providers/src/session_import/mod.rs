@@ -42,6 +42,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::claude::import as claude_import;
+use crate::codex::import as codex_import;
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::error::OrchestratorError;
@@ -55,8 +57,6 @@ use ironclaw_product_contracts::session_import::{
     BACKGROUND_RESCAN_MIN_MS, ImportTrigger, SessionImportCounts, SessionImportRequest,
     SessionImportSource, SessionImportStatus,
 };
-use crate::claude::import as claude_import;
-use crate::codex::import as codex_import;
 
 /// Source ids (persisted in the ledger and settings, and on inbox rows).
 pub const CLAUDE_CODE: &str = "claude_code";
@@ -148,6 +148,10 @@ struct SessionFacts {
     messages: u64,
     /// `messages` is the file's whole count (it was read from the start).
     recount: bool,
+    /// Reading stopped before the end of the file (a batch or the run's
+    /// budget): the file is noted as seen only up to `end`, so the next run
+    /// goes on even though the file itself did not change.
+    partial: bool,
 }
 
 /// How much one run may do. A run that reaches a limit stops; what is left
@@ -515,12 +519,7 @@ impl SessionImporter {
 
     /// What the ledger says about a file, its checkpoint checked against
     /// the bytes on disk. Settles every case but growth and rewrites.
-    async fn known(
-        &self,
-        pass: &mut Pass<'_>,
-        c: &Candidate,
-        budget: &mut Budget,
-    ) -> Result<Known, ImportError> {
+    async fn known(&self, pass: &mut Pass<'_>, c: &Candidate) -> Result<Known, ImportError> {
         let Some(entry) = pass.ledger.get(&c.native_id).cloned() else {
             return Ok(Known::New);
         };
@@ -559,7 +558,8 @@ impl SessionImporter {
         if wm.file_id != c.file.id || c.file.size < wm.offset {
             return Ok(Known::Rewritten(entry));
         }
-        budget.take(files::FINGERPRINT_WINDOW);
+        // A checkpoint check reads one small window; the byte budget is for
+        // reading sessions, so it is not charged (time still is).
         if self.fingerprint(c, wm.offset).await? != wm.fingerprint {
             return Ok(Known::Rewritten(entry));
         }
@@ -599,7 +599,11 @@ impl SessionImporter {
 
     fn watermark(&self, c: &Candidate, facts: &SessionFacts) -> ImportWatermark {
         ImportWatermark {
-            size: c.file.size,
+            size: if facts.partial {
+                facts.end
+            } else {
+                c.file.size
+            },
             mtime_ms: c.file.mtime_ms,
             offset: facts.end,
             file_id: c.file.id.clone(),
@@ -692,9 +696,11 @@ fn jsonl(path: &Path) -> bool {
 
 mod claude;
 mod codex;
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
-mod tests {
+mod due_tests {
     use super::*;
 
     #[test]

@@ -105,7 +105,10 @@ pub(crate) async fn open_regular(path: &Path, expect: &str) -> std::io::Result<t
 }
 
 /// Digest of the [`FINGERPRINT_WINDOW`] bytes ending at `offset`.
-pub(crate) async fn fingerprint(file: &mut tokio::fs::File, offset: u64) -> std::io::Result<String> {
+pub(crate) async fn fingerprint(
+    file: &mut tokio::fs::File,
+    offset: u64,
+) -> std::io::Result<String> {
     let start = offset.saturating_sub(FINGERPRINT_WINDOW);
     let mut buf = vec![0u8; usize::try_from(offset - start).unwrap_or(0)];
     file.seek(std::io::SeekFrom::Start(start)).await?;

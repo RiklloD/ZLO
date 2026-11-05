@@ -64,6 +64,8 @@ pub struct SessionImportCounts {
     pub skipped: u32,
     /// Unreadable.
     pub failed: u32,
+    /// Left for the next run: this run reached its time or size limit.
+    pub deferred: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -53,7 +53,11 @@ pub(crate) async fn resolve(file: &Path) -> Result<Option<PathBuf>, RuntimeError
     let doc: Value = serde_json::from_slice(&raw).map_err(|_| {
         RuntimeError::Unavailable("imported session folder record unreadable".into())
     })?;
-    let Some(cwd) = doc["cwd"].as_str().filter(|c| !c.is_empty()).map(PathBuf::from) else {
+    let Some(cwd) = doc["cwd"]
+        .as_str()
+        .filter(|c| !c.is_empty())
+        .map(PathBuf::from)
+    else {
         return Ok(None);
     };
     let recorded = doc["dir"].as_str().unwrap_or_default();
@@ -87,7 +91,10 @@ mod tests {
         std::fs::remove_dir(&app).unwrap();
         let gone = resolve(&file).await.unwrap_err();
         assert!(matches!(&gone, RuntimeError::Rejected(m) if m.contains("no longer exists")));
-        assert!(!format!("{gone}").contains(dir.path().to_str().unwrap()), "no host path");
+        assert!(
+            !format!("{gone}").contains(dir.path().to_str().unwrap()),
+            "no host path"
+        );
 
         std::fs::create_dir_all(&app).unwrap();
         let replaced = resolve(&file).await.unwrap_err();

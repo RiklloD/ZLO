@@ -392,7 +392,12 @@ mod tests {
             // A batch holds at most what it was asked for plus the turn it
             // was finishing.
             assert!(batch.messages.len() <= 4, "{}", batch.messages.len());
-            assert!(batch.messages.iter().all(|m| m.end > from && m.end <= batch.end));
+            assert!(
+                batch
+                    .messages
+                    .iter()
+                    .all(|m| m.end > from && m.end <= batch.end)
+            );
             batched.extend(batch.messages);
             from = batch.end;
             if batch.eof {

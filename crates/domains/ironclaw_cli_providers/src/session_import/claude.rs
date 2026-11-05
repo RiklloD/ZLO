@@ -47,7 +47,7 @@ impl SessionImporter {
         c: &Candidate,
         budget: &mut Budget,
     ) -> Result<(), ImportError> {
-        match self.known(pass, c, budget).await? {
+        match self.known(pass, c).await? {
             Known::Done => Ok(()),
             Known::Grew(entry) => {
                 let from = entry.watermark.offset;
@@ -108,7 +108,10 @@ impl SessionImporter {
                     return Ok(());
                 }
                 if let Some(cwd) = &scan.cwd {
-                    let file = self.paths.claude_imports.join(format!("{}.json", c.native_id));
+                    let file = self
+                        .paths
+                        .claude_imports
+                        .join(format!("{}.json", c.native_id));
                     crate::workspace::record(&file, cwd).await?;
                     self.step(Step::Workspace)?;
                 }

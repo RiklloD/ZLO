@@ -324,6 +324,9 @@ fn importer(home: &Home) -> Arc<SessionImporter> {
         claude_projects: home.root.join(".claude").join("projects"),
         codex_sessions: home.root.join(".codex").join("sessions"),
         codex_state: home.root.join(".ironclaw").join("codex"),
+        claude_imports: ironclaw_cli_providers::claude::imports_dir(
+            &home.root.join(".ironclaw").join("claude-cli"),
+        ),
         own_roots: vec![home.root.join(".ironclaw")],
     }))
 }
@@ -623,4 +626,275 @@ async fn settings_and_triggers_decide_what_runs() {
         )
         .await;
     assert!(bad.is_err());
+}
+
+fn history_texts(history: &[ironclaw_orchestrator::runtime::HistoryMessage]) -> Vec<String> {
+    history
+        .iter()
+        .filter(|m| !m.hidden)
+        .map(|m| m.text.clone())
+        .collect()
+}
+
+/// Replace `path` by a new file (new inode), as editors and log rotation do.
+fn rotate(path: &Path, lines: &[String], newline_at_end: bool) {
+    let tmp = path.with_extension("tmp");
+    let mut body = lines.join("\n");
+    if newline_at_end {
+        body.push('\n');
+    }
+    std::fs::write(&tmp, body).unwrap();
+    std::fs::rename(&tmp, path).unwrap();
+}
+
+fn rollout_lines(app: &Path, extra: &[String]) -> Vec<String> {
+    let mut lines = vec![
+        codex_meta(CODEX_SESSION, app, "codex_cli_rs", serde_json::json!("cli")),
+        codex_message("user", "2026-10-02T09:00:02.000Z", "Why is CI red?"),
+        codex_message(
+            "assistant",
+            "2026-10-02T09:00:09.000Z",
+            "A snapshot drifted.",
+        ),
+    ];
+    lines.extend(extra.iter().cloned());
+    lines
+}
+
+#[tokio::test]
+async fn rewritten_rotated_and_truncated_rollouts_keep_history_and_add_once() {
+    let home = home();
+    let engine = engine(&home).await;
+    let importer = importer(&home);
+    let caller = scope();
+    let run = || importer.run(&engine, &caller, ImportTrigger::Manual);
+    rotate(&home.codex_rollout, &rollout_lines(&home.app, &[]), true);
+    run().await.unwrap();
+    let codex = imported_thread(&engine, CODEX_SESSION).await;
+    let texts = || async { history_texts(&engine.external_history(&codex).await.unwrap()) };
+    assert_eq!(texts().await, ["Why is CI red?", "A snapshot drifted."]);
+
+    // Rewritten in place with the same size and mtime: still noticed.
+    let before = std::fs::metadata(&home.codex_rollout).unwrap();
+    let body = std::fs::read_to_string(&home.codex_rollout)
+        .unwrap()
+        .replace("A snapshot drifted.", "A snapshot DRIFTED.");
+    std::fs::write(&home.codex_rollout, body).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&home.codex_rollout)
+        .unwrap()
+        .set_modified(before.modified().unwrap())
+        .unwrap();
+    let after = std::fs::metadata(&home.codex_rollout).unwrap();
+    assert_eq!(
+        (before.len(), before.modified().unwrap()),
+        (after.len(), after.modified().unwrap())
+    );
+    assert_eq!(run().await.unwrap()[CODEX].updated, 1);
+    assert_eq!(
+        texts().await,
+        [
+            "Why is CI red?",
+            "A snapshot drifted.",
+            "A snapshot DRIFTED."
+        ],
+        "what was imported stays; the new text is added"
+    );
+    assert_eq!(run().await.unwrap()[CODEX].unchanged, 1);
+
+    // Rotated to a new file holding the old turns plus a new one: only
+    // the new turn is added.
+    let turn = [
+        codex_message("user", "2026-10-02T10:00:00.000Z", "Now the lint job"),
+        codex_message("assistant", "2026-10-02T10:00:05.000Z", "Fixed too."),
+    ];
+    let mut rotated = rollout_lines(&home.app, &turn);
+    rotated[2] = codex_message(
+        "assistant",
+        "2026-10-02T09:00:09.000Z",
+        "A snapshot DRIFTED.",
+    );
+    rotate(&home.codex_rollout, &rotated, true);
+    assert_eq!(run().await.unwrap()[CODEX].updated, 1);
+    assert_eq!(
+        texts().await,
+        [
+            "Why is CI red?",
+            "A snapshot drifted.",
+            "A snapshot DRIFTED.",
+            "Now the lint job",
+            "Fixed too."
+        ]
+    );
+
+    // Truncated to its first prompt: nothing is lost, nothing repeated, and
+    // the next growth is read from a line boundary.
+    std::fs::write(
+        &home.codex_rollout,
+        format!("{}\n", rollout_lines(&home.app, &[])[..2].join("\n")),
+    )
+    .unwrap();
+    run().await.unwrap();
+    assert_eq!(texts().await.len(), 5);
+    append_lines(
+        &home.codex_rollout,
+        &[codex_message(
+            "user",
+            "2026-10-02T11:00:00.000Z",
+            "And the docs",
+        )],
+    );
+    run().await.unwrap();
+    assert_eq!(texts().await.len(), 6);
+    assert_eq!(texts().await[5], "And the docs");
+
+    // A replacement whose last line is still being written: that line
+    // waits until it is complete, then comes in once.
+    let mut torn = rollout_lines(&home.app, &[]);
+    torn.push(codex_message(
+        "user",
+        "2026-10-02T11:00:00.000Z",
+        "And the docs",
+    ));
+    torn.push(codex_message("user", "2026-10-02T12:00:00.000Z", "Ship it"));
+    let last = torn.pop().unwrap();
+    let cut = last.len() / 2;
+    torn.push(last[..cut].to_string());
+    rotate(&home.codex_rollout, &torn, false);
+    run().await.unwrap();
+    assert_eq!(texts().await.len(), 6, "a torn line is not read");
+    let mut body = std::fs::read_to_string(&home.codex_rollout).unwrap();
+    body.push_str(&last[cut..]);
+    body.push('\n');
+    std::fs::write(&home.codex_rollout, body).unwrap();
+    run().await.unwrap();
+    let all = texts().await;
+    assert_eq!(all.len(), 7, "{all:?}");
+    assert_eq!(all[6], "Ship it");
+    assert_eq!(all.iter().filter(|t| *t == "And the docs").count(), 1);
+
+    // A rotated Claude transcript is counted again from its start.
+    let mut lines: Vec<String> = std::fs::read_to_string(&home.claude_transcript)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines.push(claude_row(
+        "user",
+        CLAUDE_SESSION,
+        &home.app,
+        "2026-10-01T12:00:00.000Z",
+        "More",
+    ));
+    rotate(&home.claude_transcript, &lines, true);
+    assert_eq!(run().await.unwrap()[CLAUDE_CODE].updated, 1);
+}
+
+#[tokio::test]
+async fn imported_sessions_refuse_a_missing_or_replaced_folder() {
+    let home = home();
+    let engine = engine(&home).await;
+    importer(&home)
+        .run(&engine, &scope(), ImportTrigger::Manual)
+        .await
+        .unwrap();
+    let claude = imported_thread(&engine, CLAUDE_SESSION).await;
+    let codex = imported_thread(&engine, CODEX_SESSION).await;
+
+    // The worktree is gone: the turn fails with a message the person can
+    // act on, and no CLI starts anywhere else.
+    std::fs::remove_dir_all(&home.app).unwrap();
+    for thread in [&claude, &codex] {
+        let error = engine.user_turn(thread, "continue").await.unwrap_err();
+        let shown = error.to_string();
+        assert!(shown.contains("no longer exists"), "{shown}");
+        assert!(error.is_correctable(), "{error:?}");
+        assert!(
+            !shown.contains(home.root.to_str().unwrap()),
+            "no host path: {shown}"
+        );
+    }
+    // Another folder at the same path is not the session's folder.
+    std::fs::create_dir_all(&home.app).unwrap();
+    for thread in [&claude, &codex] {
+        let error = engine.user_turn(thread, "continue").await.unwrap_err();
+        assert!(error.to_string().contains("replaced"), "{error}");
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(read(&home.claude_log).is_empty(), "claude never started");
+    assert!(
+        !read(&home.codex_log).contains("thread/"),
+        "codex never resumed"
+    );
+}
+
+#[tokio::test]
+async fn discovery_ignores_symlinks_and_special_files() {
+    let home = home();
+    let engine = engine(&home).await;
+    let projects = home.root.join(".claude").join("projects");
+    let app_dir = projects.join(claude_codes::transcript::encode_project_dir(&home.app));
+    // A transcript outside the session folders, reached through a linked
+    // project folder and a linked file.
+    let outside = home.root.join("outside").join("proj");
+    let stray = "9e9e9e9e-0000-4000-8000-000000000009";
+    write_lines(
+        &outside.join(format!("{stray}.jsonl")),
+        &[claude_row(
+            "user",
+            stray,
+            &home.app,
+            "2026-10-01T08:00:00.000Z",
+            "secret plans",
+        )],
+    );
+    std::os::unix::fs::symlink(&outside, projects.join("-linked")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.join(format!("{stray}.jsonl")),
+        app_dir.join(format!("{stray}.jsonl")),
+    )
+    .unwrap();
+    // A FIFO with a transcript's name: opening it for reading would block.
+    let fifo = app_dir.join("fifo-0000.jsonl");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    // A linked rollout.
+    let day = home.codex_rollout.parent().unwrap();
+    let linked = "01a19dc0-0000-7000-8000-00000000000a";
+    let target = home.root.join("outside").join("rollout.jsonl");
+    write_lines(
+        &target,
+        &[
+            codex_meta(linked, &home.app, "codex_cli_rs", serde_json::json!("cli")),
+            codex_message("user", "2026-10-02T07:00:00.000Z", "outside"),
+        ],
+    );
+    std::os::unix::fs::symlink(
+        &target,
+        day.join(format!("rollout-2026-10-02T07-00-00-{linked}.jsonl")),
+    )
+    .unwrap();
+
+    let counts = tokio::time::timeout(
+        Duration::from_secs(30),
+        importer(&home).run(&engine, &scope(), ImportTrigger::Manual),
+    )
+    .await
+    .expect("a FIFO never blocks the scan")
+    .unwrap();
+    // Only the three regular transcripts and the three regular rollouts.
+    assert_eq!(counts[CLAUDE_CODE].found, 3, "{counts:?}");
+    assert_eq!(counts[CODEX].found, 3, "{counts:?}");
+    let owner = ProfileOwner::from(&scope());
+    let claude = engine
+        .store()
+        .import_ledger(&owner, CLAUDE_CODE)
+        .await
+        .unwrap();
+    let codex = engine.store().import_ledger(&owner, CODEX).await.unwrap();
+    assert!(!claude.contains_key(stray) && !codex.contains_key(linked));
 }
