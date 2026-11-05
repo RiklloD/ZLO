@@ -231,6 +231,7 @@ mod tests {
             claude_projects: projects,
             codex_sessions: root.join(".codex").join("sessions"),
             codex_state: root.join(".ironclaw").join("codex"),
+            claude_imports: ironclaw_cli_providers::claude::imports_dir(&root.join("work")),
             own_roots: vec![root.join(".ironclaw")],
         })));
 

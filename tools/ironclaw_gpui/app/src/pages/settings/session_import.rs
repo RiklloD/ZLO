@@ -117,6 +117,7 @@ pub fn counts_line(c: &SessionImportCounts) -> String {
         (c.unchanged, "unchanged"),
         (c.skipped, "skipped"),
         (c.failed, "unreadable"),
+        (c.deferred, "left for the next run"),
     ]
     .into_iter()
     .filter(|(n, _)| *n > 0)

@@ -61,7 +61,7 @@ impl Dedupe {
 /// tool calls.
 fn message_key(m: &HistoryMessage) -> String {
     let mut h = Sha256::new();
-    h.update(serde_json::to_string(&m.role).unwrap_or_default());
+    h.update(serde_json::to_string(&m.role).unwrap_or_default()); // silent-ok: a unit enum always serializes
     h.update([0x1f]);
     h.update(m.at.map(|a| a.to_string()).unwrap_or_default());
     h.update([0x1f, u8::from(m.hidden), 0x1f]);
