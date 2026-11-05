@@ -19,6 +19,8 @@ use crate::pages::PageEvent;
 use crate::pages::automations::AutomationsView;
 use crate::pages::extensions::ExtensionsView;
 use crate::pages::files::FilesView;
+use crate::pages::hooks::HooksView;
+use crate::pages::memory::MemoryView;
 use crate::pages::notifications::NotificationsView;
 use crate::pages::operator::OperatorView;
 use crate::pages::profiles::ProfilesView;
@@ -79,6 +81,8 @@ enum Page {
     Providers,
     Operator,
     Usage,
+    Memory,
+    Hooks,
 }
 
 /// Pages are built on first visit and kept, so switching back is instant.
@@ -95,6 +99,8 @@ struct Pages {
     providers: Option<Entity<ProvidersView>>,
     operator: Option<Entity<OperatorView>>,
     usage: Option<Entity<UsageView>>,
+    memory: Option<Entity<MemoryView>>,
+    hooks: Option<Entity<HooksView>>,
 }
 
 /// A settings sidebar row: page, icon, label.
@@ -568,6 +574,8 @@ impl Workspace {
                 ))
             }
             Page::Operator => open!(operator, |cx| OperatorView::new(backend, cx)),
+            Page::Memory => open!(memory, |cx| MemoryView::new(backend, window, cx)),
+            Page::Hooks => open!(hooks, |cx| HooksView::new(backend, cx)),
             Page::Usage => {
                 let Some(model) = self.usage.clone() else {
                     return;
@@ -604,9 +612,11 @@ impl Workspace {
                 vec![
                     (Page::Providers, IconName::Bot, "Providers"),
                     (Page::Profiles, IconName::User, "Profiles"),
+                    (Page::Memory, IconName::FileText, "Memory"),
                     (Page::Skills, IconName::BookOpen, "Skills"),
                     (Page::Extensions, IconName::Frame, "Extensions"),
                     (Page::Permissions, IconName::CircleCheck, "Permissions"),
+                    (Page::Hooks, IconName::Replace, "Hooks"),
                 ],
             ),
             ("Work", work),
@@ -1304,6 +1314,8 @@ impl Render for Workspace {
                     Page::Providers => self.pages.providers.clone().map(|v| v.into_any_element()),
                     Page::Operator => self.pages.operator.clone().map(|v| v.into_any_element()),
                     Page::Usage => self.pages.usage.clone().map(|v| v.into_any_element()),
+                    Page::Memory => self.pages.memory.clone().map(|v| v.into_any_element()),
+                    Page::Hooks => self.pages.hooks.clone().map(|v| v.into_any_element()),
                 };
                 // Replays the entrance on every page or thread switch.
                 let key: SharedString = match (self.page, &self.active) {

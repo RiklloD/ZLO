@@ -6,10 +6,9 @@
 use ironclaw_product_contracts::hooks_catalog::HookCatalog;
 use ironclaw_product_contracts::memory_page::{
     MemoryArchiveRequest, MemoryArchiveResponse, MemoryDocument, MemorySearchResponse,
-    MemoryTreeResponse, MemoryWriteRequest, MemoryWriteResponse,
-    SupermemoryDeleteDocumentRequest, SupermemoryDeleteDocumentResponse, SupermemoryDocumentPage,
-    SupermemoryForgetRequest, SupermemoryForgetResponse, SupermemorySearchResponse,
-    SupermemoryStatus,
+    MemoryTreeResponse, MemoryWriteRequest, MemoryWriteResponse, SupermemoryDeleteDocumentRequest,
+    SupermemoryDeleteDocumentResponse, SupermemoryDocumentPage, SupermemoryForgetRequest,
+    SupermemoryForgetResponse, SupermemorySearchResponse, SupermemoryStatus,
 };
 
 use crate::api::{Client, V2, seg};
@@ -33,11 +32,8 @@ impl Client {
     }
 
     pub async fn memory_document(&self, path: &str) -> Result<MemoryDocument, ClientError> {
-        self.get(&format!(
-            "{V2}/memory/documents/content?path={}",
-            seg(path)
-        ))
-        .await
+        self.get(&format!("{V2}/memory/documents/content?path={}", seg(path)))
+            .await
     }
 
     pub async fn memory_search(
