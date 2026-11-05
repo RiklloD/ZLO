@@ -1007,12 +1007,16 @@ impl Workspace {
         });
         let any_imported = i.list.rows.iter().any(|r| r.imported.is_some());
         let imported = (any_imported || i.imported_only).then(|| {
-            chip(("f-origin", 0), "Imported".to_string(), i.imported_only, cx).on_click(
-                cx.listener(|this, _, _, cx| {
-                    this.inbox.imported_only = !this.inbox.imported_only;
-                    cx.notify();
-                }),
+            chip(
+                ("f-origin", 0usize),
+                "Imported".to_string(),
+                i.imported_only,
+                cx,
             )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.inbox.imported_only = !this.inbox.imported_only;
+                cx.notify();
+            }))
         });
         let pop = kit::popover("inbox-filters", cx);
         pop(v_flex()
