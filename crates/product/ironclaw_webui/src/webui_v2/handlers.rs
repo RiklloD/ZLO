@@ -22,6 +22,7 @@ pub use orchestrator::{
     orchestrator_thread_fork, orchestrator_thread_lineage, orchestrator_thread_merge_back,
     orchestrator_thread_queue, orchestrator_thread_route, orchestrator_thread_route_set,
     orchestrator_thread_runs, orchestrator_thread_tasks, orchestrator_thread_telemetry,
+    orchestrator_thread_worktree,
 };
 mod profiles;
 pub use computer_use::{

@@ -65,6 +65,7 @@ mod support;
 pub mod test_support;
 mod trigger_fire_access;
 mod trigger_poller_assembly;
+mod worktree_host;
 
 // The public re-export wall — a *documented* surface (PROPOSAL §6.10, CHECKLIST WS6
 // "`RebornRuntime` slimmed"). An entry earns its place only when the consumer cannot

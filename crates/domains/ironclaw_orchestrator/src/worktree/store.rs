@@ -161,4 +161,24 @@ impl Store {
         .await?;
         Ok(())
     }
+
+    /// Branch of every thread whose current worktree folder still exists,
+    /// by thread id (inbox chips).
+    pub async fn live_worktree_branches(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let rows = self
+            .rows(
+                "SELECT w.thread_id, w.branch FROM orch_worktrees w \
+                 WHERE w.state != 'removed' \
+                 AND w.id = (SELECT MAX(id) FROM orch_worktrees x WHERE x.thread_id = w.thread_id)",
+                vec![],
+                |r| {
+                    let mut c = Cols::new(r);
+                    Ok((c.text()?, c.text()?))
+                },
+            )
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
 }

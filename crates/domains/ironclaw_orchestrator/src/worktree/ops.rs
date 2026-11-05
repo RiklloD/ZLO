@@ -219,10 +219,7 @@ impl Engine {
 
     pub(crate) async fn require_worktree(&self, thread: &ThreadId) -> Result<WorktreeBinding> {
         self.store.worktree(thread).await?.ok_or_else(|| {
-            OrchestratorError::not_found(
-                "worktree_not_found",
-                format!("Thread {thread} has no worktree."),
-            )
+            OrchestratorError::request("no_worktree", format!("Thread {thread} has no worktree."))
         })
     }
 
@@ -407,7 +404,7 @@ impl Engine {
             .await?
         {
             return Err(OrchestratorError::request(
-                "worktree_not_found",
+                "no_worktree",
                 format!("Branch {} no longer exists.", binding.branch),
             ));
         }
@@ -638,6 +635,7 @@ impl Engine {
             ));
         }
         self.ensure_idle(thread).await?;
+        self.worktree_host()?;
         let runtime = self.runtime(&thread.runtime_id)?;
         let plan = self.worktree_preflight(thread, source, &runtime).await?;
         let label = thread.title.as_deref().unwrap_or("thread");

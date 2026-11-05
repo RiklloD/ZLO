@@ -66,6 +66,26 @@ pub struct OrchestratorForkRequest {
     pub model: Option<String>,
 }
 
+/// A thread's git worktree. `action`: `status` (the binding with branch,
+/// ahead/behind and dirty files), `create` (start the thread in a new
+/// worktree made from `source_dir`, default the thread's working folder;
+/// only committed work is in it), `merge` (bring its branch into the
+/// checkout it came from; `strategy` merge | squash | cherry_pick,
+/// `on_conflict` abort | leave) or `remove` (remove the folder; unmerged
+/// commits keep their branch). Nothing is ever forced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorWorktreeRequest {
+    pub thread_id: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_conflict: Option<String>,
+}
+
 /// Switch the provider/model of `thread_id`'s next turns. Model `default`
 /// clears the pick. The answer says whether the thread switched in place,
 /// moved runtime before its first turn, or continued in a fork.
@@ -191,3 +211,9 @@ pub const ORCHESTRATOR_MERGE_BACK_COMMAND: ProductSurfaceCommandDescriptor<
     OrchestratorMergeBackRequest,
     serde_json::Value,
 > = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_MERGE_BACK_COMMAND_ID);
+
+pub const ORCHESTRATOR_WORKTREE_COMMAND_ID: &str = "orchestrator.thread_worktree";
+pub const ORCHESTRATOR_WORKTREE_COMMAND: ProductSurfaceCommandDescriptor<
+    OrchestratorWorktreeRequest,
+    serde_json::Value,
+> = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_WORKTREE_COMMAND_ID);

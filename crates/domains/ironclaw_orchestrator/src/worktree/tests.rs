@@ -259,6 +259,8 @@ async fn a_child_works_in_its_own_worktree_and_a_clean_finish_removes_it() {
     assert!(binding.path.starts_with(&r.root));
     assert!(binding.branch.as_str().starts_with("zlo/fix-the-parser-"));
     assert_eq!(view["worktree"]["branch"], binding.branch.as_str());
+    let chips = r.engine.store().live_worktree_branches().await.unwrap();
+    assert_eq!(chips.get(child.as_str()), Some(&binding.branch.to_string()));
 
     let (brief, dir) = r.turn_of(&child);
     assert_eq!(dir.as_deref(), Some(binding.path.as_path()));
@@ -280,6 +282,8 @@ async fn a_child_works_in_its_own_worktree_and_a_clean_finish_removes_it() {
     assert!(task.result.unwrap().contains("no changes"));
     let after = r.engine.store().worktree(&child).await.unwrap().unwrap();
     assert_eq!(after.state, WorktreeState::Removed);
+    let chips = r.engine.store().live_worktree_branches().await.unwrap();
+    assert!(!chips.contains_key(child.as_str()));
     assert!(!binding.path.exists());
     assert_eq!(
         sh(&r.repo, &format!("git branch --list {}", binding.branch)),

@@ -479,6 +479,41 @@ impl OrchestratedProductSurface {
                     .await,
                 )
             }
+            ORCHESTRATOR_WORKTREE_COMMAND_ID => {
+                let req: OrchestratorWorktreeRequest = decode(input)?;
+                answer(
+                    async {
+                        use ironclaw_orchestrator::worktree::{MergeStrategy, OnConflict};
+                        let thread = self.owned(&req.thread_id, scope).await?;
+                        match req.action.as_str() {
+                            "status" => engine.worktree_status(&thread).await,
+                            "create" => {
+                                let source = req
+                                    .source_dir
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                                    .map(std::path::PathBuf::from);
+                                engine.start_worktree(&thread, source).await
+                            }
+                            "merge" => {
+                                engine
+                                    .merge_worktree(
+                                        &thread,
+                                        MergeStrategy::parse(req.strategy.as_deref())?,
+                                        OnConflict::parse(req.on_conflict.as_deref())?,
+                                    )
+                                    .await
+                            }
+                            "remove" => engine.remove_worktree(&thread).await,
+                            other => Err(OrchestratorError::invalid(format!(
+                                "unknown worktree action {other}"
+                            ))),
+                        }
+                    }
+                    .await,
+                )
+            }
             _ => return Ok(None),
         };
         result.map(Some)
