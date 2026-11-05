@@ -1,9 +1,9 @@
 //! Live detail a CLI reports beside its reply and tool rows: the tail of a
 //! running command's output, the turn's aggregated diff, and a finished
 //! review. Everything here is live-only and bounded; the durable record
-//! stays the CLI's transcript. Output and diff bodies are redacted for
-//! display before they leave the bridge (commands print tokens, diffs can
-//! carry them); a review is the turn's own answer (see [`CliBridge::review`]).
+//! stays the CLI's transcript. Every body is redacted for display before
+//! it leaves the bridge (commands print tokens, diffs and reviews can quote
+//! them).
 
 use std::time::{Duration, Instant};
 
@@ -193,13 +193,13 @@ impl CliBridge {
         }
     }
 
-    /// A finished review's findings text. Bounded but not display-redacted:
-    /// it is the turn's answer, which the person already gets verbatim as
-    /// the durable reply, and its `path:start-end` locations are what the
-    /// app anchors findings to (display redaction strips absolute paths).
+    /// A finished review's findings text, bounded and display-redacted
+    /// like every other live body. Drivers pass locations relative to the
+    /// workspace (`src/a.rs:3-4`), which redaction keeps; an absolute path
+    /// outside it is redacted with the rest.
     pub fn review(&self, thread: &ThreadId, run_id: &str, text: &str) {
         let (text, _) = bounded_prefix(text, REVIEW_MAX_BYTES);
-        let text = text.to_string();
+        let text = ironclaw_safety::sanitize_display_text(text);
         let stored = self.live.lock().ok().is_some_and(|mut live| {
             live.get_mut(thread)
                 .filter(|t| t.run_id == run_id)
@@ -299,6 +299,28 @@ mod tests {
         assert_eq!(bounded_prefix("ab\ncd\nef", 7), ("ab\ncd\n", true));
         // `é` is two bytes: a cut inside it backs off to the boundary.
         assert_eq!(bounded_prefix("éé", 3), ("é", true));
+    }
+
+    /// A finding quoting a hardcoded key reaches the stream redacted, its
+    /// workspace-relative location intact.
+    #[tokio::test]
+    async fn a_review_is_redacted_but_keeps_relative_locations() {
+        let bridge = CliBridge::new(super::super::DEFAULT_APPROVAL_TIMEOUT);
+        let thread = ThreadId::new("t").unwrap();
+        bridge.turn_started(&thread, "r");
+        let mut rx = bridge.subscribe();
+        bridge.review(
+            &thread,
+            "r",
+            "Review comment:\n\n- [P1] Hardcoded key — src/a.rs:3-4\n  \
+             let key = \"sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\";",
+        );
+        let LiveEvent::Review { text, .. } = rx.recv().await.unwrap() else {
+            panic!("not a review")
+        };
+        assert!(!text.contains("sk-proj-abcdefghijklmnop"), "{text}");
+        assert!(text.contains("src/a.rs:3-4"), "{text}");
+        assert_eq!(bridge.snapshot(&thread).unwrap().review, Some(text));
     }
 
     #[test]

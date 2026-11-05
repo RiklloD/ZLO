@@ -313,7 +313,13 @@ async fn cli_thread_stream_carries_command_output_diff_and_review() {
             .any(|d| d["kind"] == "turn_diff" && d["body"] == "diff --git a/x b/x\n")
     );
 
-    bridge.review(&thread, &run, "- [P1] Bug — /w/a.rs:1-2\n  body");
+    // A finding quoting a hardcoded key: the stream carries it redacted,
+    // the workspace-relative location intact.
+    bridge.review(
+        &thread,
+        &run,
+        "- [P1] Hardcoded key — src/a.rs:1-2\n  let k = \"sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\";",
+    );
     let subscription = stream.subscription.take().unwrap();
     let next = tokio::time::timeout(Duration::from_secs(5), subscription.next())
         .await
@@ -322,12 +328,9 @@ async fn cli_thread_stream_carries_command_output_diff_and_review() {
         .unwrap();
     let frame = &next.events[0]["payload"]["projection_update"]["state"]["items"][0];
     assert_eq!(frame["cli_detail"]["kind"], "review");
-    assert!(
-        frame["cli_detail"]["body"]
-            .as_str()
-            .unwrap()
-            .contains("/w/a.rs:1-2")
-    );
+    let body = frame["cli_detail"]["body"].as_str().unwrap();
+    assert!(body.contains("src/a.rs:1-2"), "{body}");
+    assert!(!body.contains("sk-proj-abcdefghijklmnop"), "{body}");
 }
 
 /// `orchestrator.thread_action` reaches the runtime of the caller's own

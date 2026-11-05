@@ -2,23 +2,31 @@
 //!
 //! - **Review** (`review/start`, inline delivery): runs as a turn of the
 //!   thread (see `TurnKind::Review`); this file only shapes its request.
-//! - **Revert** (`thread/revert` before the last turn of `thread/turns/list`):
-//!   Codex drops the turn from its own history. IronClaw's journal keeps the
-//!   turn and appends a hidden marker; [`apply_reverts`] hides the reverted
-//!   rows when the history is read. Nothing is deleted. Files are not
-//!   touched (Codex 0.166's revert is conversation-only); the app restores
-//!   them from its own per-turn checkpoint.
+//! - **Revert** of a run (`thread/revert` before that run's native turn,
+//!   read from the session record): refused unless the client's repo is the
+//!   session's workspace and the run is known and not reverted yet. The
+//!   intent is recorded before Codex is asked (and cancelled if Codex
+//!   refuses); the journal keeps every row, rows of reverted runs are hidden
+//!   when the history is read. Nothing is deleted. Files are not touched
+//!   (Codex 0.166's revert is conversation-only); the app restores them from
+//!   its own per-turn checkpoint after this succeeds.
 //! - **Compact** (`thread/compact/start`), now or when the thread idles
 //!   (`compact.rs`). One visible "Context compacted." row marks it.
 
+use std::collections::HashSet;
+use std::path::Path;
 use std::time::Duration;
 
 use ironclaw_orchestrator::model::ThreadRecord;
 use ironclaw_orchestrator::runtime::{HistoryMessage, HistoryRole, RuntimeError};
-use ironclaw_product_contracts::orchestration::{ReviewTarget, ThreadActionOutcome};
+use ironclaw_product_contracts::orchestration::{
+    ReviewTarget, ThreadActionOutcome, ThreadActionRefusal,
+};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
+use super::admission::Claim;
+use super::session;
 use super::{
     COMMAND_TIMEOUT, CodexConfig, CodexRuntime, connect, open_session, saved_thread,
     session_policy, spawn_app_server,
@@ -26,8 +34,6 @@ use super::{
 use crate::journal;
 use crate::rpc::{self, Inbound, RpcClient};
 
-/// The hidden journal row that reverts the turn before it.
-pub(super) const REVERT_MARKER: &str = "[codex: last turn reverted]";
 /// The visible journal row a compaction leaves.
 pub(super) const COMPACTED_NOTE: &str = "Context compacted.";
 /// A compaction that has not finished by then is abandoned.
@@ -73,24 +79,15 @@ fn marker(text: &str, hidden: bool) -> HistoryMessage {
     }
 }
 
-/// Hide every turn a later revert marker undid: for each marker, the
-/// rows from the last still-shown user message before it. The rows stay
-/// in the journal (and in the result), only marked hidden.
-pub(super) fn apply_reverts(mut rows: Vec<HistoryMessage>) -> Vec<HistoryMessage> {
-    for at in 0..rows.len() {
-        let is_marker = rows[at].hidden
-            && rows[at].role == HistoryRole::System
-            && rows[at].text == REVERT_MARKER;
-        if !is_marker {
-            continue;
-        }
-        let start = rows[..at]
-            .iter()
-            .rposition(|m| m.role == HistoryRole::User && !m.hidden);
-        if let Some(start) = start {
-            for row in &mut rows[start..at] {
-                row.hidden = true;
-            }
+/// Mark hidden every row of a reverted run. Rows stay in the result (and in
+/// the journal); rows without a run id predate run tagging and stay shown.
+pub(super) fn hide_reverted(
+    mut rows: Vec<HistoryMessage>,
+    reverted: &HashSet<String>,
+) -> Vec<HistoryMessage> {
+    for row in &mut rows {
+        if row.run_id.as_ref().is_some_and(|r| reverted.contains(r)) {
+            row.hidden = true;
         }
     }
     rows
@@ -200,17 +197,87 @@ impl CodexRuntime {
             .ok_or_else(|| RuntimeError::Rejected("thread has no codex session".into()))
     }
 
-    /// `thread/revert` before the last turn, then the journal marker.
-    pub(super) async fn revert_last_turn(
+    /// The root this thread's session works in: its latest turn's, else the
+    /// folder its next turn would run in.
+    async fn session_root(&self, thread: &ThreadRecord) -> Result<String, RuntimeError> {
+        let session = Self::session_of(thread)?;
+        let log = session::load(&self.config.state_dir, session).await?;
+        Ok(match log.root() {
+            Some(root) => root.to_string(),
+            None => session::workspace_root(&self.config.work_dir).await,
+        })
+    }
+
+    /// `Some(refusal)` unless `repo` is the session's workspace root.
+    pub(super) async fn workspace_refusal(
         &self,
         thread: &ThreadRecord,
+        repo: &str,
+    ) -> Result<Option<ThreadActionOutcome>, RuntimeError> {
+        let root = self.session_root(thread).await?;
+        if session::canonical(Path::new(repo)) == root {
+            return Ok(None);
+        }
+        tracing::debug!(thread = %thread.thread_id, "codex: action refused, other workspace");
+        Ok(Some(ThreadActionOutcome::Refused {
+            refusal: ThreadActionRefusal::WorkspaceMismatch { runtime_root: root },
+        }))
+    }
+
+    /// Revert run `run_id` and every later run, holding the session.
+    pub(super) async fn revert_turn(
+        &self,
+        thread: &ThreadRecord,
+        run_id: &str,
+        repo: &str,
+        _claim: Claim,
     ) -> Result<ThreadActionOutcome, RuntimeError> {
         let session = Self::session_of(thread)?;
+        if let Some(refused) = self.workspace_refusal(thread, repo).await? {
+            return Ok(refused);
+        }
+        let log = session::load(&self.config.state_dir, session).await?;
+        let refuse = |refusal| Ok(ThreadActionOutcome::Refused { refusal });
+        if log.reverted().contains(run_id) {
+            return refuse(ThreadActionRefusal::AlreadyReverted);
+        }
+        let Some(turn) = log.turn_of(run_id).map(|t| t.turn_id.clone()) else {
+            return refuse(ThreadActionRefusal::UnknownTurn);
+        };
         if saved_thread(&self.config, session).await.is_none() {
-            return Ok(ThreadActionOutcome::Done {
-                note: "Nothing to undo yet.".into(),
+            return refuse(ThreadActionRefusal::UnknownTurn);
+        }
+        let runs = log.runs_from(run_id);
+        // The intent first: a revert Codex performed is never unrecorded.
+        let state = &self.config.state_dir;
+        session::append(state, session, &session::revert_record(&turn, &runs)).await?;
+        let native = self.native_revert(thread, session, &turn).await;
+        if let Err(error) = native {
+            let cancelled =
+                session::append(state, session, &session::revert_cancelled_record(&turn)).await;
+            return Err(match cancelled {
+                Ok(()) => error,
+                Err(_) => RuntimeError::Unavailable(format!(
+                    "{error}; the transcript still marks these turns reverted"
+                )),
             });
         }
+        Ok(ThreadActionOutcome::Done {
+            note: format!(
+                "Reverted {} turn{} in Codex's conversation.",
+                runs.len(),
+                if runs.len() == 1 { "" } else { "s" }
+            ),
+        })
+    }
+
+    /// `thread/revert` before `turn` on a short-lived app-server.
+    async fn native_revert(
+        &self,
+        thread: &ThreadRecord,
+        session: &str,
+        turn: &str,
+    ) -> Result<(), RuntimeError> {
         let (mut child, pgid) = spawn_app_server(&self.config)?;
         let reverted = async {
             let (client, _inbound) = connect(&mut child, pgid)?;
@@ -223,48 +290,27 @@ impl CodexRuntime {
             )
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("codex resume: {}", e.label())))?;
-            let page = client
-                .request(
-                    "thread/turns/list",
-                    json!({"threadId": codex_thread, "limit": 1, "sortDirection": "desc"}),
-                    COMMAND_TIMEOUT,
-                )
-                .await
-                .map_err(|e| RuntimeError::Unavailable(format!("codex turns: {}", e.label())))?;
-            let Some(last) = page["data"][0]["id"].as_str() else {
-                return Ok(false);
-            };
             client
                 .request(
                     "thread/revert",
-                    json!({"threadId": codex_thread, "beforeTurnId": last}),
+                    json!({"threadId": codex_thread, "beforeTurnId": turn}),
                     COMMAND_TIMEOUT,
                 )
                 .await
                 .map_err(|e| RuntimeError::Rejected(format!("codex revert: {}", e.label())))?;
-            Ok::<_, RuntimeError>(true)
+            Ok::<_, RuntimeError>(())
         }
         .await;
         rpc::end_group(&mut child, pgid, rpc::KILL_GRACE).await;
-        if !reverted? {
-            return Ok(ThreadActionOutcome::Done {
-                note: "Nothing to undo yet.".into(),
-            });
-        }
-        journal::append(
-            &self.config.transcript(session),
-            &[marker(REVERT_MARKER, true)],
-        )
-        .await;
-        Ok(ThreadActionOutcome::Done {
-            note: "Reverted the last turn in Codex's conversation.".into(),
-        })
+        reverted
     }
 
-    /// Compact now, preemptible by a new turn like an idle compaction.
+    /// Compact now, holding the session; a new turn preempts it like an
+    /// idle compaction.
     pub(super) async fn compact_now(
         &self,
         thread: &ThreadRecord,
+        claim: Claim,
     ) -> Result<ThreadActionOutcome, RuntimeError> {
         let session = Self::session_of(thread)?.to_string();
         if saved_thread(&self.config, &session).await.is_none() {
@@ -281,6 +327,8 @@ impl CodexRuntime {
             cancelled,
         )
         .await;
+        // The process is gone: free the session, then wake a preempting turn.
+        drop(claim);
         self.compactor.finish(&thread.thread_id, id);
         let _ = done.send(true); // silent-ok: nobody waits on this slot
         match result {
@@ -314,35 +362,35 @@ mod tests {
         journal::message(role, text.into(), Vec::new())
     }
 
+    fn run_row(role: HistoryRole, text: &str, run: Option<&str>) -> HistoryMessage {
+        HistoryMessage {
+            run_id: run.map(str::to_string),
+            ..row(role, text)
+        }
+    }
+
+    /// The rows of the reverted runs are hidden, whatever their position:
+    /// a refused review's row (no admitted turn, a run never reverted) and
+    /// untagged older rows stay shown, and nothing is dropped.
     #[test]
-    fn a_revert_marker_hides_the_turn_before_it_and_keeps_every_row() {
+    fn reverted_runs_are_hidden_by_run_id_not_by_position() {
         let rows = vec![
-            row(HistoryRole::User, "one"),
-            row(HistoryRole::Assistant, "first answer"),
-            row(HistoryRole::User, "two"),
-            row(HistoryRole::Assistant, "second answer"),
-            marker(REVERT_MARKER, true),
-            row(HistoryRole::User, "three"),
+            row(HistoryRole::User, "old untagged"),
+            run_row(HistoryRole::User, "edit it", Some("r1")),
+            run_row(HistoryRole::Assistant, "edited", Some("r1")),
+            run_row(HistoryRole::User, "refused review", Some("r0")),
+            run_row(HistoryRole::User, "review", Some("r2")),
+            run_row(HistoryRole::Assistant, "findings", Some("r2")),
         ];
-        let out = apply_reverts(rows);
+        let reverted = HashSet::from(["r1".to_string(), "r2".to_string()]);
+        let out = hide_reverted(rows, &reverted);
         assert_eq!(out.len(), 6, "nothing is deleted");
         let shown: Vec<&str> = out
             .iter()
             .filter(|m| !m.hidden)
             .map(|m| m.text.as_str())
             .collect();
-        assert_eq!(shown, ["one", "first answer", "three"]);
-    }
-
-    #[test]
-    fn two_reverts_undo_two_turns() {
-        let rows = vec![
-            row(HistoryRole::User, "one"),
-            row(HistoryRole::User, "two"),
-            marker(REVERT_MARKER, true),
-            marker(REVERT_MARKER, true),
-        ];
-        assert!(apply_reverts(rows).iter().all(|m| m.hidden));
+        assert_eq!(shown, ["old untagged", "refused review"]);
     }
 
     #[test]

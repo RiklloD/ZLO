@@ -22,9 +22,11 @@
 //! (`compact.rs`).
 
 mod actions;
+mod admission;
 mod compact;
 mod fold;
 mod live;
+mod session;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -62,6 +64,8 @@ const CODEX_SUBAGENT_FEATURES: [&str; 2] = ["multi_agent", "multi_agent_v2"];
 const DRAIN: Duration = Duration::from_secs(10);
 /// How long a `model/list` answer is reused.
 const CATALOG_TTL: Duration = Duration::from_secs(600);
+/// Session holders a new turn or action stops instead of waiting for.
+const PREEMPTIBLE: [&str; 2] = ["idle compaction", "compact"];
 /// How often throttled live detail (output tails, the diff) is flushed.
 const LIVE_FLUSH_EVERY: Duration = Duration::from_millis(400);
 
@@ -107,6 +111,9 @@ struct LiveTurn {
     client: RpcClient,
     codex_thread: String,
     turn_id: String,
+    /// IronClaw's run id: steers journal under it, so a revert of the run
+    /// hides them with it.
+    run_id: String,
 }
 
 struct ActiveTurn {
@@ -133,6 +140,8 @@ pub struct CodexRuntime {
     primed: crate::Primed,
     /// Idle compaction timers, one per thread (see `compact.rs`).
     compactor: Arc<compact::IdleCompactor>,
+    /// One holder per session: turns, thread actions, idle compaction.
+    admission: Arc<admission::Admission>,
 }
 
 impl CodexRuntime {
@@ -150,14 +159,24 @@ impl CodexRuntime {
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
             compactor: Arc::default(),
+            admission: Arc::default(),
         })
     }
 
-    fn is_active(&self, thread: &ThreadId) -> bool {
-        self.active
-            .lock()
-            .map(|a| a.contains_key(thread))
-            .unwrap_or(false) // silent-ok: a poisoned map only happens after a panic elsewhere
+    /// Reserve `thread`'s session for `what`: a running compaction is
+    /// stopped first (and waited for), then the claim is taken or `None`
+    /// while a turn or another action holds it.
+    async fn admit(&self, thread: &ThreadId, what: &'static str) -> Option<admission::Claim> {
+        // Only a compaction yields; a turn, review or revert keeps the session.
+        if self
+            .admission
+            .holder(thread)
+            .is_some_and(|h| !PREEMPTIBLE.contains(&h))
+        {
+            return None;
+        }
+        self.compactor.preempt(thread).await;
+        self.admission.try_claim(thread, what)
     }
 
     fn spawn_server(&self) -> Result<(Child, i32), RuntimeError> {
@@ -171,6 +190,7 @@ impl CodexRuntime {
         context: Option<&str>,
         effort: Option<&str>,
         kind: TurnKind,
+        claim: admission::Claim,
     ) -> Result<String, RuntimeError> {
         let session = thread
             .native_session_id
@@ -233,6 +253,9 @@ impl CodexRuntime {
             if let Ok(mut map) = active.lock() {
                 map.remove(&thread_id);
             }
+            // The process is gone: the session is free before the engine
+            // hears the turn ended (it may start the next one at once).
+            drop(claim);
             let context_used = telemetry.as_ref().and_then(|t| t.context_used);
             let status = outcome.status;
             if let Some(sink) = sink.upgrade() {
@@ -448,15 +471,16 @@ impl Turn {
             return (TurnOutcome::ended(TurnEndStatus::Cancelled, None), None);
         }
         let transcript = self.config.transcript(&self.session);
-        journal::append(
-            &transcript,
-            &[journal::message(
-                HistoryRole::User,
-                self.text.clone(),
-                Vec::new(),
-            )],
-        )
-        .await;
+        let root = session::workspace_root(&self.config.work_dir).await;
+        let user_row = HistoryMessage {
+            run_id: Some(self.run_id.clone()),
+            ..journal::message(HistoryRole::User, self.text.clone(), Vec::new())
+        };
+        // What the person typed is kept even when Codex refuses it; a
+        // review's request only once Codex admitted it.
+        if matches!(self.kind, TurnKind::Prompt) {
+            journal::append(&transcript, std::slice::from_ref(&user_row)).await;
+        }
 
         let admitted = self.start(&client, &codex_thread).await;
         let turn_id = match admitted
@@ -480,11 +504,27 @@ impl Turn {
             }
         };
         fold.turn_id = Some(turn_id.clone());
+        // Which native turn this run is, and where it works: a revert of
+        // the run and the repo checks of later actions read it back. Lost,
+        // the run can only be refused later (`unknown_turn`), never misread.
+        if let Err(error) = session::append(
+            &self.config.state_dir,
+            &self.session,
+            &session::turn_record(&self.run_id, &turn_id, &root),
+        )
+        .await
+        {
+            tracing::debug!(%error, "codex: turn not recorded");
+        }
+        if !matches!(self.kind, TurnKind::Prompt) {
+            journal::append(&transcript, std::slice::from_ref(&user_row)).await;
+        }
         if let Ok(mut slot) = self.live.lock() {
             *slot = Some(LiveTurn {
                 client: client.clone(),
                 codex_thread: codex_thread.clone(),
                 turn_id,
+                run_id: self.run_id.clone(),
             });
         }
 
@@ -513,7 +553,13 @@ impl Turn {
                         continue;
                     }
                     let steps = live.push(&method, &params);
-                    live::apply(self.bridge.as_deref(), &self.thread_id, &self.run_id, steps);
+                    live::apply(
+                        self.bridge.as_deref(),
+                        &self.thread_id,
+                        &self.run_id,
+                        &root,
+                        steps,
+                    );
                     if fold.push(&method, &params) {
                         break;
                     }
@@ -526,6 +572,10 @@ impl Turn {
 
         let outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst));
         if let Some(entry) = fold.assistant_message() {
+            let entry = HistoryMessage {
+                run_id: Some(self.run_id.clone()),
+                ..entry
+            };
             journal::append(&transcript, &[entry]).await;
         }
         (outcome, fold.telemetry(&self.config.runtime_id))
@@ -805,11 +855,10 @@ impl TurnRuntime for CodexRuntime {
         thread: &ThreadRecord,
         input: TurnInput,
     ) -> Result<TurnAdmission, RuntimeError> {
-        if self.is_active(&thread.thread_id) {
+        // A new turn ends the idle period: a compaction is stopped first.
+        let Some(claim) = self.admit(&thread.thread_id, "turn").await else {
             return Ok(TurnAdmission::Busy);
-        }
-        // A new turn ends the idle period: no compaction may touch the session.
-        self.compactor.preempt(&thread.thread_id).await;
+        };
         let mut thread = thread.clone();
         if input.model.is_some() {
             thread.model = input.model;
@@ -825,6 +874,7 @@ impl TurnRuntime for CodexRuntime {
                 context.as_deref(),
                 input.effort.as_deref(),
                 TurnKind::Prompt,
+                claim,
             )
             .await?;
         Ok(TurnAdmission::Started {
@@ -853,15 +903,11 @@ impl TurnRuntime for CodexRuntime {
             {
                 Ok(_) => {
                     if let Some(session) = thread.native_session_id.as_deref() {
-                        journal::append(
-                            &self.config.transcript(session),
-                            &[journal::message(
-                                HistoryRole::User,
-                                text.to_string(),
-                                Vec::new(),
-                            )],
-                        )
-                        .await;
+                        let row = HistoryMessage {
+                            run_id: Some(live.run_id.clone()),
+                            ..journal::message(HistoryRole::User, text.to_string(), Vec::new())
+                        };
+                        journal::append(&self.config.transcript(session), &[row]).await;
                     }
                     return Ok(SteerOutcome::Steered);
                 }
@@ -877,8 +923,10 @@ impl TurnRuntime for CodexRuntime {
             return Ok(SteerOutcome::Rejected);
         }
         self.stop(&thread.thread_id).await;
-        self.compactor.preempt(&thread.thread_id).await;
-        self.spawn_turn(thread, text, None, None, TurnKind::Prompt)
+        let Some(claim) = self.admit(&thread.thread_id, "turn").await else {
+            return Ok(SteerOutcome::Rejected);
+        };
+        self.spawn_turn(thread, text, None, None, TurnKind::Prompt, claim)
             .await?;
         Ok(SteerOutcome::Restarted)
     }
@@ -897,9 +945,10 @@ impl TurnRuntime for CodexRuntime {
         let Some(session) = thread.native_session_id.as_deref() else {
             return Ok(Vec::new());
         };
-        // Whole journal: a revert marker hides rows written before it.
+        // Whole journal: rows of reverted runs are kept, marked hidden.
         let all = journal::read(&self.config.transcript(session), usize::MAX).await?;
-        let mut shown = actions::apply_reverts(all);
+        let log = session::load(&self.config.state_dir, session).await?;
+        let mut shown = actions::hide_reverted(all, &log.reverted());
         let skip = shown.len().saturating_sub(limit);
         Ok(shown.split_off(skip))
     }
@@ -930,22 +979,26 @@ impl TurnRuntime for CodexRuntime {
         thread: &ThreadRecord,
         action: ThreadAction,
     ) -> Result<ThreadActionOutcome, RuntimeError> {
-        if self.is_active(&thread.thread_id) {
+        let Some(claim) = self.admit(&thread.thread_id, action.label()).await else {
             return Ok(ThreadActionOutcome::Busy);
-        }
-        self.compactor.preempt(&thread.thread_id).await;
+        };
         match action {
-            ThreadAction::Review { target } => {
+            ThreadAction::Review { target, repo } => {
+                if let Some(refused) = self.workspace_refusal(thread, &repo).await? {
+                    return Ok(refused);
+                }
                 let label = actions::review_label(&target);
                 let run_id = self
-                    .spawn_turn(thread, &label, None, None, TurnKind::Review(target))
+                    .spawn_turn(thread, &label, None, None, TurnKind::Review(target), claim)
                     .await?;
                 Ok(ThreadActionOutcome::Started {
                     run_id: Some(run_id),
                 })
             }
-            ThreadAction::RevertLastTurn => self.revert_last_turn(thread).await,
-            ThreadAction::Compact => self.compact_now(thread).await,
+            ThreadAction::RevertTurn { run_id, repo } => {
+                self.revert_turn(thread, &run_id, &repo, claim).await
+            }
+            ThreadAction::Compact => self.compact_now(thread, claim).await,
         }
     }
 }

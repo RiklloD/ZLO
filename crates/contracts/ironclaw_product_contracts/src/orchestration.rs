@@ -211,15 +211,22 @@ pub enum ReviewTarget {
 }
 
 /// A runtime-native thread operation (`TurnRuntime::thread_action` in `ironclaw_orchestrator`).
+///
+/// Every action that reads or rewrites work names the repository the
+/// client is showing (`repo`, an absolute path): the runtime refuses with
+/// [`ThreadActionRefusal::WorkspaceMismatch`] unless it is the root the
+/// thread's session works in, so a review never inspects, and an undo never
+/// pairs with, another checkout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ThreadAction {
     /// Review code as a turn of the thread; findings are its reply.
-    Review { target: ReviewTarget },
-    /// Undo the thread's last turn in the runtime's own session. The
-    /// transcript keeps the turn, marked reverted (LLM data is never
-    /// deleted).
-    RevertLastTurn,
+    Review { target: ReviewTarget, repo: String },
+    /// Undo run `run_id` and every later turn in the runtime's own session
+    /// (the turn a client checkpoint was taken for). The transcript keeps
+    /// those turns, marked reverted (LLM data is never deleted). Refused
+    /// when the run is unknown to the session or already reverted.
+    RevertTurn { run_id: String, repo: String },
     /// Summarize the session's context now.
     Compact,
 }
@@ -228,10 +235,23 @@ impl ThreadAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Review { .. } => "review",
-            Self::RevertLastTurn => "revert_last_turn",
+            Self::RevertTurn { .. } => "revert_turn",
             Self::Compact => "compact",
         }
     }
+}
+
+/// Why a runtime refused a [`ThreadAction`] without doing anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum ThreadActionRefusal {
+    /// The session works in another repository than the client named.
+    WorkspaceMismatch { runtime_root: String },
+    /// The run has no native turn in the session (never admitted, or from
+    /// before turns were recorded).
+    UnknownTurn,
+    /// The run was already reverted.
+    AlreadyReverted,
 }
 
 /// How a [`ThreadAction`] went.
@@ -240,10 +260,12 @@ impl ThreadAction {
 pub enum ThreadActionOutcome {
     /// The action runs as a turn (`review`); it streams like one.
     Started { run_id: Option<String> },
-    /// A turn is running; nothing was done.
+    /// A turn or another action holds the session; nothing was done.
     Busy,
     /// Finished; `note` is a short line for the person.
     Done { note: String },
+    /// Refused before anything changed.
+    Refused { refusal: ThreadActionRefusal },
 }
 
 /// A runtime-native operation on one thread (`POST /threads/{id}/action`):
@@ -261,3 +283,40 @@ pub const ORCHESTRATOR_THREAD_ACTION_COMMAND: ProductSurfaceCommandDescriptor<
     OrchestratorThreadActionRequest,
     serde_json::Value,
 > = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_THREAD_ACTION_COMMAND_ID);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_actions_and_refusals_use_their_wire_names() {
+        let action: ThreadAction = serde_json::from_value(serde_json::json!({
+            "action": "revert_turn", "run_id": "r1", "repo": "/w"
+        }))
+        .unwrap();
+        assert_eq!(
+            action,
+            ThreadAction::RevertTurn {
+                run_id: "r1".into(),
+                repo: "/w".into()
+            }
+        );
+        // An action that rewrites work must name its repository.
+        assert!(
+            serde_json::from_value::<ThreadAction>(serde_json::json!({
+                "action": "revert_turn", "run_id": "r1"
+            }))
+            .is_err()
+        );
+        let refused = ThreadActionOutcome::Refused {
+            refusal: ThreadActionRefusal::WorkspaceMismatch {
+                runtime_root: "/codex".into(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&refused).unwrap(),
+            serde_json::json!({"status": "refused",
+                "refusal": {"reason": "workspace_mismatch", "runtime_root": "/codex"}})
+        );
+    }
+}

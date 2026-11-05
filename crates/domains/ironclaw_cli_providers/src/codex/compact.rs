@@ -20,7 +20,8 @@ use ironclaw_orchestrator::runtime::{TurnEndStatus, TurnEventSink};
 use tokio::sync::watch;
 
 use super::actions::{self, Compacted};
-use super::{ActiveTurn, CodexConfig, CodexRuntime};
+use super::admission::Admission;
+use super::{CodexConfig, CodexRuntime};
 
 /// Idle time before compacting: half a minute inside a 5-minute cache TTL.
 const IDLE_DELAY: Duration = Duration::from_secs(270);
@@ -48,15 +49,27 @@ struct Slot {
 impl IdleCompactor {
     /// Cancel the thread's timer and kill its running compaction, returning
     /// once the compaction's app-server has exited.
+    /// The slot stays registered until its work reports done, so a second
+    /// caller (or `has_slot`) still sees the compaction while it winds down
+    /// and waits on the same signal.
     pub(super) async fn preempt(&self, thread: &ThreadId) {
         // silent-ok: a poisoned map only follows a panic elsewhere; nothing to cancel then
-        let slot = self.slots.lock().ok().and_then(|mut s| s.remove(thread));
-        let Some(mut slot) = slot else {
+        let slot = self.slots.lock().ok().and_then(|slots| {
+            let slot = slots.get(thread)?;
+            let _ = slot.cancel.send(true); // silent-ok: the task already ended
+            Some((slot.id, slot.done.clone()))
+        });
+        let Some((id, mut done)) = slot else {
             return;
         };
-        let _ = slot.cancel.send(true); // silent-ok: the task already ended
-        let _ = slot.done.wait_for(|d| *d).await; // silent-ok: sender dropped means the task ended
+        let _ = done.wait_for(|d| *d).await; // silent-ok: sender dropped means the task ended
+        self.finish(thread, id);
         tracing::debug!(thread = %thread, "codex idle compaction: preempted");
+    }
+
+    #[cfg(test)]
+    fn has_slot(&self, thread: &ThreadId) -> bool {
+        self.slots.lock().is_ok_and(|s| s.contains_key(thread))
     }
 
     /// Register a slot for `thread` (replacing a timer): its id, the cancel
@@ -94,7 +107,7 @@ pub(super) struct IdleArm {
     config: Arc<CodexConfig>,
     sink: Weak<dyn TurnEventSink>,
     bridged: bool,
-    active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
+    admission: Arc<Admission>,
     compactor: Arc<IdleCompactor>,
     thread_id: ThreadId,
     session: Option<String>,
@@ -108,7 +121,7 @@ impl IdleArm {
             config: Arc::clone(&rt.config),
             sink: rt.sink.clone(),
             bridged: rt.bridge.is_some(),
-            active: Arc::clone(&rt.active),
+            admission: Arc::clone(&rt.admission),
             compactor: Arc::clone(&rt.compactor),
             thread_id: thread.thread_id.clone(),
             session: thread.native_session_id.clone(),
@@ -138,17 +151,14 @@ impl IdleArm {
     }
 
     async fn fire(self, cancelled: watch::Receiver<bool>) {
-        let busy = self
-            .active
-            .lock()
-            .map(|a| a.contains_key(&self.thread_id))
-            .unwrap_or(true); // silent-ok: a poisoned map only follows a panic elsewhere; skip
         let Some(session) = self.session.as_deref() else {
             return;
         };
-        if busy {
+        // The session is ours until the compaction's process is gone; a
+        // turn or action holding it means the thread is not idle.
+        let Some(_claim) = self.admission.try_claim(&self.thread_id, "idle compaction") else {
             return;
-        }
+        };
         let Some(sink) = self.sink.upgrade() else {
             return;
         };
@@ -173,6 +183,31 @@ impl IdleArm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn preempt_keeps_the_slot_until_the_compaction_has_shut_down() {
+        let compactor = Arc::new(IdleCompactor::default());
+        let thread = ThreadId::new("t").unwrap();
+        let (_id, mut cancelled, done) = compactor.begin(&thread);
+        let preempting = {
+            let (compactor, thread) = (Arc::clone(&compactor), thread.clone());
+            tokio::spawn(async move { compactor.preempt(&thread).await })
+        };
+        cancelled.wait_for(|c| *c).await.unwrap();
+        // Cancelled but still shutting down: the slot is still there, and a
+        // second preempt waits too.
+        assert!(compactor.has_slot(&thread));
+        let second = {
+            let (compactor, thread) = (Arc::clone(&compactor), thread.clone());
+            tokio::spawn(async move { compactor.preempt(&thread).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!preempting.is_finished() && !second.is_finished());
+        done.send(true).unwrap();
+        preempting.await.unwrap();
+        second.await.unwrap();
+        assert!(!compactor.has_slot(&thread));
+    }
 
     #[test]
     fn only_completed_turns_with_a_large_context_arm_the_timer() {

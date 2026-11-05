@@ -5,8 +5,10 @@
 //! - live turn detail on the bridge: reasoning summaries as thinking, reply
 //!   text, the command row with its streaming output tail, the turn diff;
 //! - `review/start` as a turn whose findings are the answer;
-//! - `thread/revert` before the last turn, with the journal keeping the
-//!   reverted rows (hidden, never deleted);
+//! - `thread/revert` before the native turn of the run a client names, in
+//!   the session's own workspace only, with the journal keeping the reverted
+//!   rows (hidden, never deleted) and the intent recorded first;
+//! - one holder per session: a prompt or action during a revert is `Busy`;
 //! - `thread/compact/start`.
 
 use std::os::unix::fs::PermissionsExt;
@@ -20,7 +22,9 @@ use ironclaw_cli_providers::codex::{CodexConfig, CodexRuntime};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
 use ironclaw_orchestrator::model::{Millis, RuntimeId, ThreadRecord, ThreadScope};
 use ironclaw_orchestrator::runtime::*;
-use ironclaw_product_contracts::orchestration::{ReviewTarget, ThreadAction, ThreadActionOutcome};
+use ironclaw_product_contracts::orchestration::{
+    ReviewTarget, ThreadAction, ThreadActionOutcome, ThreadActionRefusal,
+};
 use tokio::sync::broadcast;
 
 #[derive(Default)]
@@ -70,13 +74,16 @@ while IFS= read -r line; do
       emit item/agentMessage/delta '{"threadId":"cx-1","turnId":"tu-1","itemId":"m1","delta":"Fixed it."}'
       emit item/completed '{"threadId":"cx-1","turnId":"tu-1","item":{"type":"agentMessage","id":"m1","text":"Fixed it.","phase":null,"memoryCitation":null,"delivery":null,"questions":null}}'
       emit turn/completed '{"threadId":"cx-1","turn":{"id":"tu-1","status":"completed","error":null}}' ;;
+    *'"instructions":"refuse"'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32600,"message":"no"}}\n' "$id" ;;
     *'"method":"review/start"'*)
       reply "$id" '{"turn":{"id":"tu-r","status":"inProgress"},"reviewThreadId":"cx-1"}'
       emit item/completed '{"threadId":"cx-1","turnId":"tu-r","item":{"type":"enteredReviewMode","id":"e1","review":"current changes"}}'
       emit item/completed '{"threadId":"cx-1","turnId":"tu-r","item":{"type":"exitedReviewMode","id":"x1","review":"One issue.\n\nReview comment:\n\n- [P1] Off by one — /w/src/a.rs:3-4\n  The loop skips the last element."}}'
       emit turn/completed '{"threadId":"cx-1","turn":{"id":"tu-r","status":"completed","error":null}}' ;;
     *'"method":"thread/turns/list"'*) reply "$id" '{"data":[{"id":"tu-r","status":"completed"}],"nextCursor":null,"backwardsCursor":null}' ;;
-    *'"method":"thread/revert"'*) reply "$id" '{"thread":{"id":"cx-1"},"turnsBackwardsCursor":null,"itemsBackwardsCursor":null}' ;;
+    *'"method":"thread/revert"'*)
+      while [ -n "$GATE" ] && [ ! -f "$GATE" ]; do sleep 0.05; done
+      reply "$id" '{"thread":{"id":"cx-1"},"turnsBackwardsCursor":null,"itemsBackwardsCursor":null}' ;;
     *'"method":"thread/compact/start"'*)
       reply "$id" '{}'
       emit item/completed '{"threadId":"cx-1","turnId":"tu-c","item":{"type":"contextCompaction","id":"cc"}}' ;;
@@ -85,7 +92,24 @@ done
 "#;
 
 fn runtime(dir: &Path, recorder: &Arc<Recorder>, bridge: Arc<CliBridge>) -> CodexRuntime {
-    let body = CODEX.replace("__LOG__", &dir.join("codex.log").display().to_string());
+    gated_runtime(dir, recorder, bridge, None)
+}
+
+/// With `gate`, `thread/revert` answers only once that file exists.
+fn gated_runtime(
+    dir: &Path,
+    recorder: &Arc<Recorder>,
+    bridge: Arc<CliBridge>,
+    gate: Option<&Path>,
+) -> CodexRuntime {
+    let gate = gate
+        .map(|g| format!("GATE='{}'", g.display()))
+        .unwrap_or_default();
+    let body = CODEX
+        .replace("__LOG__", &dir.join("codex.log").display().to_string())
+        .replacen("LOG=", &format!("{gate}\nLOG="), 1);
+    // Codex works in its own repository (`work`).
+    git_repo(&dir.join("work"));
     let binary = dir.join("codex");
     std::fs::write(&binary, body).unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -221,87 +245,190 @@ async fn a_turn_streams_thinking_text_command_output_and_its_diff() {
     );
 }
 
+fn git_repo(dir: &Path) -> String {
+    std::fs::create_dir_all(dir).unwrap();
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["init", "-q"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "git init");
+    std::fs::canonicalize(dir).unwrap().display().to_string()
+}
+
+fn review(repo: &str, target: ReviewTarget) -> ThreadAction {
+    ThreadAction::Review {
+        target,
+        repo: repo.to_string(),
+    }
+}
+
+fn revert(run: &str, repo: &str) -> ThreadAction {
+    ThreadAction::RevertTurn {
+        run_id: run.to_string(),
+        repo: repo.to_string(),
+    }
+}
+
+fn started(admission: TurnAdmission) -> String {
+    match admission {
+        TurnAdmission::Started { run_id: Some(run) } => run,
+        other => panic!("not started: {other:?}"),
+    }
+}
+
+/// Codex works in repo A; the app shows repo B. Review and revert are
+/// refused before Codex is asked, naming the root Codex works in.
 #[tokio::test]
-async fn review_revert_and_compact_use_codex_natively() {
+async fn review_and_revert_are_refused_for_another_repository() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
     let rt = runtime(dir.path(), &recorder, Arc::clone(&bridge));
+    let repo_a = std::fs::canonicalize(dir.path().join("work"))
+        .unwrap()
+        .display()
+        .to_string();
+    let repo_b = git_repo(&dir.path().join("other"));
     let thread = thread(&rt).await;
-
-    // Nothing to revert or compact before the session exists.
-    let early = rt
-        .thread_action(&thread, ThreadAction::RevertLastTurn)
-        .await
-        .unwrap();
-    assert!(matches!(early, ThreadActionOutcome::Done { .. }));
-    assert!(
-        !dir.path().join("codex.log").exists(),
-        "no app-server spawned"
-    );
-
-    rt.start_turn(&thread, input()).await.unwrap();
+    let run = started(rt.start_turn(&thread, input()).await.unwrap());
     wait_finished(&recorder, 1).await;
 
-    // Review: a turn whose answer is the findings.
-    let mut rx = bridge.subscribe();
-    let started = rt
+    let mismatch = ThreadActionOutcome::Refused {
+        refusal: ThreadActionRefusal::WorkspaceMismatch {
+            runtime_root: repo_a.clone(),
+        },
+    };
+    let reviewed = rt
+        .thread_action(&thread, review(&repo_b, ReviewTarget::UncommittedChanges))
+        .await
+        .unwrap();
+    assert_eq!(reviewed, mismatch);
+    let reverted = rt
+        .thread_action(&thread, revert(&run, &repo_b))
+        .await
+        .unwrap();
+    assert_eq!(reverted, mismatch);
+    let l = log(dir.path());
+    assert!(
+        !l.contains(r#""method":"review/start""#) && !l.contains(r#""method":"thread/revert""#),
+        "{l}"
+    );
+    // The same calls naming repo A go through.
+    let ok = rt
+        .thread_action(&thread, revert(&run, &repo_a))
+        .await
+        .unwrap();
+    assert!(matches!(ok, ThreadActionOutcome::Done { .. }), "{ok:?}");
+}
+
+/// edit (run 1) -> review (run 2) -> undo of run 1's checkpoint: Codex is
+/// asked to revert before run 1's own turn, and both runs' rows are hidden
+/// (kept in the journal). A review Codex refused journals nothing; reverting
+/// again or an unknown run is refused.
+#[tokio::test]
+async fn revert_targets_the_named_runs_turn_and_hides_its_rows_by_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let rt = runtime(dir.path(), &recorder, Arc::clone(&bridge));
+    let repo = std::fs::canonicalize(dir.path().join("work"))
+        .unwrap()
+        .display()
+        .to_string();
+    let thread = thread(&rt).await;
+
+    // Nothing to revert before the session exists: no app-server spawned.
+    let early = rt
+        .thread_action(&thread, revert("r-none", &repo))
+        .await
+        .unwrap();
+    assert_eq!(
+        early,
+        ThreadActionOutcome::Refused {
+            refusal: ThreadActionRefusal::UnknownTurn
+        }
+    );
+    assert!(!dir.path().join("codex.log").exists());
+
+    let edit = started(rt.start_turn(&thread, input()).await.unwrap());
+    wait_finished(&recorder, 1).await;
+
+    // A review Codex refuses leaves no row behind.
+    let refused = rt
         .thread_action(
             &thread,
-            ThreadAction::Review {
-                target: ReviewTarget::UncommittedChanges,
-            },
+            review(
+                &repo,
+                ReviewTarget::Custom {
+                    instructions: "refuse".into(),
+                },
+            ),
         )
         .await
         .unwrap();
+    assert!(matches!(refused, ThreadActionOutcome::Started { .. }));
+    wait_finished(&recorder, 2).await;
+    assert_eq!(
+        recorder.finished.lock().unwrap()[1].status,
+        TurnEndStatus::Failed
+    );
+
+    let mut rx = bridge.subscribe();
+    let started_review = rt
+        .thread_action(&thread, review(&repo, ReviewTarget::UncommittedChanges))
+        .await
+        .unwrap();
     assert!(matches!(
-        started,
+        started_review,
         ThreadActionOutcome::Started { run_id: Some(_) }
     ));
     let events = events_until_end(&mut rx).await;
-    wait_finished(&recorder, 2).await;
-    let review = recorder.finished.lock().unwrap()[1].clone();
-    assert_eq!(review.status, TurnEndStatus::Completed);
-    assert!(review.final_text.unwrap().contains("[P1] Off by one"));
-    assert!(
-        events.iter().any(|e| matches!(e,
-        LiveEvent::Review { text, .. } if text.contains("/w/src/a.rs:3-4"))),
-        "{events:?}"
-    );
-    let l = log(dir.path());
-    assert!(
-        l.contains(r#""method":"review/start""#)
-            && l.contains(r#""target":{"type":"uncommittedChanges"}"#)
-            && l.contains(r#""delivery":"inline""#),
-        "{l}"
-    );
+    wait_finished(&recorder, 3).await;
+    let review_out = recorder.finished.lock().unwrap()[2].clone();
+    assert!(review_out.final_text.unwrap().contains("[P1] Off by one"));
+    assert!(events.iter().any(|e| matches!(e,
+        LiveEvent::Review { text, .. } if text.contains("Off by one"))));
 
-    // Revert: Codex drops its last turn; the journal hides, never deletes.
-    let reverted = rt
-        .thread_action(&thread, ThreadAction::RevertLastTurn)
+    let history = rt.history(&thread, 50).await.unwrap();
+    let texts: Vec<&str> = history.iter().map(|m| m.text.as_str()).collect();
+    assert!(!texts.iter().any(|t| t.contains("refuse")), "{texts:?}");
+
+    let done = rt
+        .thread_action(&thread, revert(&edit, &repo))
         .await
         .unwrap();
+    assert!(matches!(done, ThreadActionOutcome::Done { .. }), "{done:?}");
+    let l = log(dir.path());
+    assert!(l.contains(r#""beforeTurnId":"tu-1""#), "{l}");
     assert!(
-        matches!(reverted, ThreadActionOutcome::Done { .. }),
-        "{reverted:?}"
+        !l.contains("thread/turns/list"),
+        "the run names the turn: {l}"
     );
-    assert!(
-        log(dir.path()).contains(
-            r#""method":"thread/revert","params":{"beforeTurnId":"tu-r","threadId":"cx-1"}"#
-        ) || log(dir.path()).contains(r#""beforeTurnId":"tu-r""#)
-    );
+
     let history = rt.history(&thread, 50).await.unwrap();
-    let shown: Vec<&str> = history
-        .iter()
-        .filter(|m| !m.hidden)
-        .map(|m| m.text.as_str())
-        .collect();
-    assert_eq!(shown, ["fix the tests", "Fixed it."]);
+    assert!(history.iter().all(|m| m.hidden), "{history:?}");
     assert!(
-        history
-            .iter()
-            .any(|m| m.hidden && m.text.contains("[P1] Off by one")),
-        "the reverted review stays in the journal"
+        history.iter().any(|m| m.text.contains("[P1] Off by one")),
+        "reverted rows stay in the journal"
+    );
+    assert_eq!(
+        rt.thread_action(&thread, revert(&edit, &repo))
+            .await
+            .unwrap(),
+        ThreadActionOutcome::Refused {
+            refusal: ThreadActionRefusal::AlreadyReverted
+        }
+    );
+    assert_eq!(
+        rt.thread_action(&thread, revert("r-unknown", &repo))
+            .await
+            .unwrap(),
+        ThreadActionOutcome::Refused {
+            refusal: ThreadActionRefusal::UnknownTurn
+        }
     );
 
     // Compact: done once Codex reports the compaction item.
@@ -316,6 +443,94 @@ async fn review_revert_and_compact_use_codex_natively() {
     assert!(log(dir.path()).contains(r#""method":"thread/compact/start""#));
     let history = rt.history(&thread, 50).await.unwrap();
     assert_eq!(history.last().unwrap().text, "Context compacted.");
+}
+
+/// While a revert holds the session, a prompt and another action are Busy;
+/// once it is done, the prompt starts.
+#[tokio::test]
+async fn a_revert_holds_the_session_until_codex_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("gate");
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let rt = Arc::new(gated_runtime(
+        dir.path(),
+        &recorder,
+        Arc::clone(&bridge),
+        Some(&gate),
+    ));
+    let repo = std::fs::canonicalize(dir.path().join("work"))
+        .unwrap()
+        .display()
+        .to_string();
+    let thread = thread(&rt).await;
+    let run = started(rt.start_turn(&thread, input()).await.unwrap());
+    wait_finished(&recorder, 1).await;
+
+    let reverting = {
+        let (rt, thread, action) = (Arc::clone(&rt), thread.clone(), revert(&run, &repo));
+        tokio::spawn(async move { rt.thread_action(&thread, action).await })
+    };
+    for _ in 0..500 {
+        if dir.path().join("codex.log").exists()
+            && log(dir.path()).contains(r#""method":"thread/revert""#)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(log(dir.path()).contains(r#""method":"thread/revert""#));
+    assert_eq!(
+        rt.start_turn(&thread, input()).await.unwrap(),
+        TurnAdmission::Busy
+    );
+    assert_eq!(
+        rt.thread_action(&thread, ThreadAction::Compact)
+            .await
+            .unwrap(),
+        ThreadActionOutcome::Busy
+    );
+    std::fs::write(&gate, "").unwrap();
+    let done = reverting.await.unwrap().unwrap();
+    assert!(matches!(done, ThreadActionOutcome::Done { .. }), "{done:?}");
+    assert!(matches!(
+        rt.start_turn(&thread, input()).await.unwrap(),
+        TurnAdmission::Started { .. }
+    ));
+    wait_finished(&recorder, 2).await;
+}
+
+/// A revert whose intent cannot be recorded never reaches Codex.
+#[tokio::test]
+async fn a_revert_that_cannot_be_recorded_is_not_performed() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let rt = runtime(dir.path(), &recorder, Arc::clone(&bridge));
+    let repo = std::fs::canonicalize(dir.path().join("work"))
+        .unwrap()
+        .display()
+        .to_string();
+    let thread = thread(&rt).await;
+    let run = started(rt.start_turn(&thread, input()).await.unwrap());
+    wait_finished(&recorder, 1).await;
+
+    let record = dir.path().join("state").join("sessions").join(format!(
+        "{}.jsonl",
+        thread.native_session_id.as_deref().unwrap()
+    ));
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let result = rt.thread_action(&thread, revert(&run, &repo)).await;
+    assert!(result.is_err(), "{result:?}");
+    assert!(!log(dir.path()).contains(r#""method":"thread/revert""#));
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        rt.history(&thread, 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|m| !m.hidden)
+    );
 }
 
 async fn wait_finished(recorder: &Recorder, n: usize) {

@@ -205,6 +205,15 @@ fn tool_row(item: &Value) -> Option<LiveStep> {
     })
 }
 
+/// `text` with every `root/` prefix removed: Codex writes absolute paths.
+fn relative_locations(text: &str, root: &str) -> String {
+    let root = root.trim_end_matches('/');
+    if root.is_empty() {
+        return text.to_string();
+    }
+    text.replace(&format!("{root}/"), "")
+}
+
 /// File-change previews (`FileUpdateChange[]`) as one unified diff.
 fn preview_diff(changes: &Value) -> String {
     let mut out = String::new();
@@ -236,10 +245,13 @@ fn preview_diff(changes: &Value) -> String {
 }
 
 /// Hand the steps to the bridge (`None`: nobody watches live turns).
+/// `root` is the turn's workspace: review locations under it become
+/// relative, so they survive the bridge's display redaction.
 pub(crate) fn apply(
     bridge: Option<&CliBridge>,
     thread: &ThreadId,
     run: &str,
+    root: &str,
     steps: Vec<LiveStep>,
 ) {
     let Some(bridge) = bridge else {
@@ -265,7 +277,7 @@ pub(crate) fn apply(
                 bridge.tool_finished(thread, run, &call_id, failed)
             }
             LiveStep::Diff(diff) => bridge.turn_diff(thread, run, &diff),
-            LiveStep::Review(text) => bridge.review(thread, run, &text),
+            LiveStep::Review(text) => bridge.review(thread, run, &relative_locations(&text, root)),
         }
     }
 }
@@ -418,6 +430,15 @@ mod tests {
                 &json!({"turnId": "t1", "itemId": "p2", "changes": changes})
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn review_locations_under_the_workspace_become_relative() {
+        let text = "- [P1] Bug — /repo/src/a.rs:3-4\n- [P2] Other — /elsewhere/b.rs:1-1";
+        assert_eq!(
+            relative_locations(text, "/repo/"),
+            "- [P1] Bug — src/a.rs:3-4\n- [P2] Other — /elsewhere/b.rs:1-1"
         );
     }
 
