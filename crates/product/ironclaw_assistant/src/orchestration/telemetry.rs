@@ -149,7 +149,11 @@ pub(crate) fn context_sample(capture: &HostManagedPromptDiagnosticCapture) -> Co
             capture.identity_message_count,
             message,
         );
+        // Summaries reach the model with the System role, so the ref decides
+        // before the Inspector's kind does.
+        let summary = message.content_ref.as_str().starts_with("msg:summary-");
         let category = match kind {
+            _ if summary => ContextCategory::CompactionSummaries,
             PromptComponentKind::Identity | PromptComponentKind::System => {
                 ContextCategory::SystemPrompt
             }
@@ -157,11 +161,6 @@ pub(crate) fn context_sample(capture: &HostManagedPromptDiagnosticCapture) -> Co
             | PromptComponentKind::Skill
             | PromptComponentKind::Capability
             | PromptComponentKind::Other => ContextCategory::Instructions,
-            PromptComponentKind::Conversation
-                if message.content_ref.as_str().starts_with("msg:summary-") =>
-            {
-                ContextCategory::CompactionSummaries
-            }
             PromptComponentKind::Conversation => match message.role {
                 HostManagedModelMessageRole::User => ContextCategory::UserMessages,
                 HostManagedModelMessageRole::Assistant => ContextCategory::AssistantMessages,
@@ -213,8 +212,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn native_prompts_split_into_every_category_the_report_shows() {
+    /// A prompt as the loop host assembles it: a compaction summary is a
+    /// `MessageKind::Summary` row, which reaches the model with the System
+    /// role and a `msg:summary-<id>` ref.
+    fn capture() -> HostManagedPromptDiagnosticCapture {
         use HostManagedModelMessageRole::*;
         let context = LoopRunContext::new(
             TurnScope::new(
@@ -231,7 +232,7 @@ mod tests {
                 true,
             ),
         );
-        let capture = HostManagedPromptDiagnosticCapture {
+        HostManagedPromptDiagnosticCapture {
             context,
             messages: vec![
                 message(System, "msg:identity.soul", "You are ZLO.", 0),
@@ -248,7 +249,7 @@ mod tests {
                     0,
                 ),
                 message(
-                    Assistant,
+                    System,
                     "msg:summary-1",
                     "Earlier we planned the meter.",
                     0,
@@ -273,8 +274,12 @@ mod tests {
             requested_model: None,
             effective_model: None,
             context_limit: 200_000,
-        };
-        let sample = context_sample(&capture);
+        }
+    }
+
+    #[test]
+    fn native_prompts_split_into_every_category_the_report_shows() {
+        let sample = context_sample(&capture());
         assert_eq!(sample.window, Some(200_000));
         assert_eq!(
             sample.tokens(ContextCategory::SystemPrompt),
@@ -314,5 +319,43 @@ mod tests {
             fitted.tool_owners[0].owner,
             ContextToolOwner::Mcp("notion".into())
         );
+    }
+
+    #[tokio::test]
+    async fn the_sink_stores_native_summaries_as_compaction_summaries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Arc::new(
+            libsql::Builder::new_local(dir.path().join("o.db"))
+                .build()
+                .await
+                .expect("db"),
+        );
+        let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).expect("runtime"));
+        let engine = Engine::open_libsql(runtime, "ironclaw").await.expect("engine");
+        let sink = OrchestratorTelemetrySink::new(
+            Arc::new(crate::inspector_store::InMemoryDiagnosticStore::default()),
+            Arc::clone(&engine),
+        );
+        let capture = capture();
+        let thread = capture.context.thread_id.clone();
+        sink.record_prompt(capture);
+        let mut stored = None;
+        for _ in 0..200 {
+            stored = engine.store().context_sample(&thread).await.expect("read");
+            if stored.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let stored = stored.expect("the sink stored the prompt's sample");
+        assert_eq!(
+            stored.tokens(ContextCategory::CompactionSummaries),
+            estimate_tokens("Earlier we planned the meter.")
+        );
+        assert_eq!(
+            stored.tokens(ContextCategory::SystemPrompt),
+            estimate_tokens("You are ZLO.")
+        );
+        assert_eq!(stored.window, Some(200_000));
     }
 }
