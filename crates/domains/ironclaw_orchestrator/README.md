@@ -53,12 +53,18 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   `Engine::start_worktree` for a user thread) runs `git worktree add -b
   zlo/<slug>-<id>` from the thread folder's HEAD, records a
   `WorktreeBinding` in `orch_worktrees` and hands its path to every turn as
-  `TurnInput.work_dir` (runtimes opt in with `supports_work_dir`). A child's
-  task end settles it (clean → removed with its branch, else kept);
-  `t3_thread worktree_status | merge_worktree | remove_worktree` act on it.
-  Git and the project's `.zlo/worktree.toml` `on_create` / `on_settle`
-  commands run through the host's `HostCommandRunner`
-  (`Engine::set_worktree_host`; composition wires the host process port).
+  `TurnInput.work_dir` (runtimes opt in with `supports_work_dir`; admission
+  and route switches refuse runtimes that do not). A `shared` child of a
+  worktree thread works in that worktree (`orch_worktree_shares`) without
+  owning it. A child's task end settles it (clean and on its branch →
+  removed with its branch, else kept); `t3_thread worktree_status |
+  merge_worktree | remove_worktree` act on it. `.zlo/worktree.toml`
+  `on_create` / `on_settle` hooks are snapshotted from the source checkout
+  and run only once the person approved that exact content through the
+  `HookApprover` gate (`orch_worktree_hook_trust`). Git (with repository
+  hooks off) and the approved hooks run through the host's
+  `HostCommandRunner` (`Engine::set_worktree_host`; composition wires the
+  host process port and the CLI bridge as approver).
 
 ## Tables
 
@@ -69,7 +75,7 @@ route, turn state), `orch_tasks`, `orch_queue`, `orch_holds`,
 `archived_at`; last use and thread count derive from `orch_threads`),
 `orch_settings`, `orch_meta`, `orch_schedules`, `orch_inbox`, `orch_goals`,
 `orch_cli_approvals`, `orch_worktrees` (append-only; a thread's newest row is
-its binding). First open imports
+its binding), `orch_worktree_hook_trust`, `orch_worktree_shares`. First open imports
 the legacy `ironclaw_threads` thread records once (marker
 `legacy_threads_imported_v1`).
 
@@ -97,10 +103,13 @@ the legacy `ironclaw_threads` thread records once (marker
   orchestrated turns and carries the same prompt in the turn's SOUL.md
   context.
 
-- Worktree work is never lost: nothing runs with `--force`; a removal
-  commits uncommitted changes on the branch first and keeps a branch with
-  unmerged commits (plus `refs/zlo/archive/<branch>`); merge conflicts abort
-  by default and come back as model-visible `merge_conflict`.
+- Worktree work is never lost: nothing runs with `--force` and nothing is
+  committed for anyone; uncommitted changes block merge and removal, a HEAD
+  off its branch is archived, a branch with unmerged commits is kept (plus
+  `refs/zlo/archive/<branch>`), and a merge that does not finish is rolled
+  back and verified against the saved HEAD. Lifecycle steps hold a
+  reservation taken under the dispatch lock, so no turn starts in a
+  worktree being merged or removed.
 
 - A thread's profile is set once (`profile_id IS NULL` guard) and never
   changes; a thread without one runs as `default`. Delegated children inherit

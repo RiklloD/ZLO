@@ -9,19 +9,32 @@
 //! - **Bind** — the [`WorktreeBinding`] is recorded in `orch_worktrees`
 //!   (never deleted; state moves forward) and every turn of the thread gets
 //!   it as [`crate::runtime::TurnInput::work_dir`].
-//! - **Settle** — when the child's task ends: a clean tree with no commits
-//!   is removed with its branch; anything else is kept for the parent.
+//!   A `shared` child of a worktree thread works in that same worktree
+//!   (`orch_worktree_shares`), without owning its cleanup.
+//! - **Setup** — `.zlo/worktree.toml` hooks are read from the source
+//!   checkout once, snapshotted on the binding, and run only after the
+//!   person approved that exact content ([`HookApprover`]); `on_settle`
+//!   runs the approved snapshot, never the child-editable copy.
+//! - **Settle** — when the child's task ends: a clean tree with no commits,
+//!   still on its branch, is removed with its branch; anything else is kept.
 //! - **Merge / remove** — `t3_thread action=merge_worktree|remove_worktree`.
-//!   Nothing is ever forced: conflicts and refusals come back as
-//!   model-visible errors, uncommitted work is committed on the branch
-//!   before a removal, and unmerged commits keep their branch plus a
-//!   `refs/zlo/archive/<branch>` ref.
+//!   Nothing is ever forced and nothing is committed for anyone: a worktree
+//!   with uncommitted changes, or whose HEAD left its branch with work on
+//!   it, is refused; a failed merge is rolled back and verified; unmerged
+//!   commits keep their branch plus a `refs/zlo/archive/<branch>` ref.
+//! - **Exclusion** — every lifecycle step holds a reservation taken under
+//!   the engine's dispatch lock, so no turn starts in a worktree being
+//!   merged or removed; merges into one checkout run one at a time.
 //!
 //! Every git and setup command runs through [`HostCommandRunner`], the
 //! host's process runtime (composition wires it); the engine never spawns.
+//! Git runs with the repository's hooks switched off.
 
 mod config;
 mod git;
+mod hooks;
+mod integrate;
+mod lifecycle;
 mod ops;
 mod store;
 #[cfg(test)]
@@ -40,7 +53,7 @@ use crate::error::OrchestratorError;
 use crate::model::{Millis, TaskId};
 
 pub(crate) use config::WorktreeConfig;
-pub(crate) use ops::WorktreePlan;
+pub(crate) use ops::{WorktreePlan, runtime_refused};
 pub(crate) use store::WORKTREES_SCHEMA;
 
 /// One host command: a `sh -c` line run in `workdir`.
@@ -73,12 +86,54 @@ pub trait HostCommandRunner: Send + Sync {
     async fn run(&self, command: HostCommand) -> Result<HostCommandOutput, OrchestratorError>;
 }
 
+/// One request to run a project's worktree setup: exactly what would run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookApproval {
+    /// The thread whose person is asked (the delegating parent).
+    pub thread: ThreadId,
+    pub repo_root: PathBuf,
+    /// The commands of both hooks, one `$ line` each, as the gate shows them.
+    pub script: String,
+    /// SHA-256 of the exact hook content; an approval covers only it.
+    pub content_hash: String,
+}
+
+/// The person's answer to a [`HookApproval`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookDecision {
+    Approved,
+    Denied(String),
+    /// Nobody can be asked right now (no live turn to show the gate in).
+    Unavailable,
+}
+
+/// Asks the person before a repository's setup commands run, through the
+/// same approval gate as any shell command an agent runs. Implemented by
+/// the CLI bridge; approved content is remembered per repository and hash.
+#[async_trait]
+pub trait HookApprover: Send + Sync {
+    async fn approve(&self, request: &HookApproval) -> HookDecision;
+}
+
 /// Where worktrees live and how their commands run, plugged in by the host.
 #[derive(Clone)]
 pub struct WorktreeHost {
     pub runner: Arc<dyn HostCommandRunner>,
     /// `<app-data>/worktrees`; each repository gets a hashed subfolder.
     pub root: PathBuf,
+    pub approver: Arc<dyn HookApprover>,
+}
+
+/// A project's setup hooks as read from the source checkout when the
+/// worktree was made. Settle runs this snapshot, never a newer file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeHooks {
+    pub on_create: Vec<String>,
+    pub on_settle: Vec<String>,
+    pub timeout_s: u64,
+    /// SHA-256 over the repository and the content above.
+    pub hash: String,
 }
 
 /// `t3_delegate isolation`.
@@ -316,6 +371,8 @@ pub struct WorktreeBinding {
     pub archive_ref: Option<String>,
     /// Output of the project's setup commands (bounded tail).
     pub setup_log: Option<String>,
+    /// The setup hooks snapshot, when the project has any.
+    pub hooks: Option<WorktreeHooks>,
     pub created_at: Millis,
     pub updated_at: Millis,
 }

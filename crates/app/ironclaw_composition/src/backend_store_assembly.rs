@@ -110,7 +110,7 @@ pub(crate) async fn orchestrator_for_durable_backend(
         // Installed coding-agent CLIs become runtimes, tools behind approvals.
         ironclaw_cli_providers::register_cli_runtimes(&engine, &bridge);
         // Children can get their own git worktree (`isolation='worktree'`).
-        crate::worktree_host::wire_worktrees(&engine);
+        crate::worktree_host::wire_worktrees(&engine, bridge.clone());
         Some((engine, bridge))
     })
     .map_err(|error| RebornBuildError::InvalidConfig {

@@ -66,6 +66,10 @@ pub struct Engine {
     turn_listener: OnceLock<Arc<dyn TurnCompletedListener>>,
     /// Worktree isolation's command runner and folder, plugged in by the host.
     pub(crate) worktree_host: OnceLock<crate::worktree::WorktreeHost>,
+    /// Worktree owners a lifecycle step holds; turn admission skips them.
+    pub(crate) worktree_ops: StdMutex<std::collections::HashSet<ThreadId>>,
+    /// One merge at a time per target checkout.
+    pub(crate) checkout_locks: StdMutex<HashMap<std::path::PathBuf, Arc<Mutex<()>>>>,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -110,6 +114,8 @@ impl Engine {
             profile_context: OnceLock::new(),
             turn_listener: OnceLock::new(),
             worktree_host: OnceLock::new(),
+            worktree_ops: StdMutex::new(std::collections::HashSet::new()),
+            checkout_locks: StdMutex::new(HashMap::new()),
         }))
     }
 
@@ -394,7 +400,17 @@ impl Engine {
         if thread.is_running() {
             return Ok(false);
         }
+        // A worktree lifecycle step (merge, removal, settle) holds the
+        // folder: the turn waits, like for a hold.
+        if self.worktree_reserved(thread_id).await? {
+            return Ok(false);
+        }
         let runtime = self.runtime(&thread.runtime_id)?;
+        let work_dir = self.thread_work_dir(thread_id).await?;
+        // A runtime that ignores `work_dir` would edit the original checkout.
+        if work_dir.is_some() && !runtime.supports_work_dir() {
+            return Err(crate::worktree::runtime_refused(runtime.as_ref()));
+        }
         let goal = self
             .store
             .goal(thread_id)
@@ -412,7 +428,7 @@ impl Engine {
                     effort: self.store.thread_effort(thread_id).await?,
                     profile: self.turn_profile(thread_id).await,
                     files,
-                    work_dir: self.thread_work_dir(thread_id).await?,
+                    work_dir,
                 },
             )
             .await?;

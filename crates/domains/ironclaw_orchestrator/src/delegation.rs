@@ -34,6 +34,16 @@ pub struct DelegateRequest {
     pub isolation: Option<String>,
 }
 
+/// Where a delegated child works.
+enum ChildFolder {
+    /// A new worktree of its own (`isolation='worktree'`).
+    Own(crate::worktree::WorktreePlan),
+    /// The worktree of this thread (a `shared` child of a worktree thread).
+    Share(ThreadId),
+    /// The parent's ordinary folder.
+    Parent,
+}
+
 /// What a child starts with besides its task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChildContext {
@@ -362,9 +372,21 @@ impl Engine {
         // Checked before the task exists: a cwd outside git starts nothing.
         let worktree = match isolation {
             crate::worktree::Isolation::Worktree => {
-                Some(self.worktree_preflight(&parent, None, &runtime).await?)
+                ChildFolder::Own(self.worktree_preflight(&parent, None, &runtime).await?)
             }
-            crate::worktree::Isolation::Shared => None,
+            // A shared child of a worktree thread works in that worktree.
+            crate::worktree::Isolation::Shared
+                if self.thread_work_dir(&parent.thread_id).await?.is_some() =>
+            {
+                if !runtime.supports_work_dir() {
+                    return Err(crate::worktree::runtime_refused(runtime.as_ref()));
+                }
+                match self.worktree_owner(&parent.thread_id).await? {
+                    Some(owner) => ChildFolder::Share(owner),
+                    None => ChildFolder::Parent,
+                }
+            }
+            crate::worktree::Isolation::Shared => ChildFolder::Parent,
         };
         let title = clip_title(
             req.title
@@ -411,7 +433,7 @@ impl Engine {
                 &runtime,
                 &settings,
                 inherited.as_deref(),
-                worktree.as_ref(),
+                &worktree,
             )
             .await
         {
@@ -479,7 +501,7 @@ impl Engine {
         runtime: &std::sync::Arc<dyn TurnRuntime>,
         settings: &Settings,
         context: Option<&str>,
-        worktree: Option<&crate::worktree::WorktreePlan>,
+        worktree: &ChildFolder,
     ) -> Result<()> {
         let created = runtime
             .create_thread(CreateThread {
@@ -534,7 +556,7 @@ impl Engine {
             context,
         );
         let brief = match worktree {
-            Some(plan) => {
+            ChildFolder::Own(plan) => {
                 let binding = self
                     .create_worktree(
                         &child.thread_id,
@@ -546,7 +568,14 @@ impl Engine {
                     .await?;
                 format!("{}\n\n{brief}", Self::worktree_brief_note(&binding))
             }
-            None => brief,
+            ChildFolder::Share(owner) => {
+                // Recorded before its first turn; cleanup stays the owner's.
+                self.store
+                    .share_worktree(&child.thread_id, owner, now_ms())
+                    .await?;
+                brief
+            }
+            ChildFolder::Parent => brief,
         };
         {
             // Stop / cancel may have landed while the child was being created.

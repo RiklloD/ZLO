@@ -376,6 +376,66 @@ async fn profile_soul_skills_and_folder_reach_the_cli() {
     assert_eq!(rt.history(&fresh, 10).await.unwrap().len(), 1);
 }
 
+/// A session moved into its thread's worktree and back keeps one
+/// transcript: the old copy goes, and history and the next resume read
+/// every message written in either folder.
+#[tokio::test]
+async fn a_session_follows_its_worktree_and_back_with_every_message() {
+    let dir = tempfile::tempdir().unwrap();
+    // Writes neither the shared args log nor a transcript of its own (the
+    // other tests' process-wide variables must not reach this one).
+    let body = ANSWER
+        .replace(
+            "{ echo \"$@\" | tr '\\n' ' '; echo; } >> \"$ARGS_LOG\"",
+            "true",
+        )
+        .replace(
+            "mkdir -p \"$TRANSCRIPT_DIR\" && echo '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}' > \"$TRANSCRIPT_DIR/$SESSION.jsonl\"\n",
+            "",
+        );
+    assert!(!body.contains("ARGS_LOG") && !body.contains("TRANSCRIPT_DIR"));
+    let sink = Arc::new(Recorder::default());
+    let rt = runtime(dir.path(), script(dir.path(), "claude", &body), &sink);
+    let t = thread(&rt).await;
+    let session = t.native_session_id.clone().unwrap();
+    let file = format!("{session}.jsonl");
+    let project = |folder: &Path| {
+        dir.path()
+            .join("projects")
+            .join(claude_codes::transcript::encode_project_dir(folder))
+            .join(&file)
+    };
+    let line = |text: &str| {
+        format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n")
+    };
+    let shared = project(&dir.path().join("work"));
+    std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+    std::fs::write(&shared, line("before the worktree")).unwrap();
+
+    let worktree = dir.path().join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let mut turn = input();
+    turn.work_dir = Some(worktree.clone());
+    rt.start_turn(&t, turn).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let inside = project(&worktree);
+    assert!(inside.is_file());
+    assert!(!shared.exists(), "the old copy would shadow later turns");
+    // The CLI writes this turn into the worktree's transcript.
+    let mut text = std::fs::read_to_string(&inside).unwrap();
+    text.push_str(&line("in the worktree"));
+    std::fs::write(&inside, text).unwrap();
+    assert_eq!(rt.history(&t, 10).await.unwrap().len(), 2);
+
+    // The worktree is gone: the next turn runs back in the shared folder.
+    rt.start_turn(&t, input()).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 2).await;
+    assert!(!inside.exists());
+    let back = std::fs::read_to_string(&shared).unwrap();
+    assert!(back.contains("before the worktree") && back.contains("in the worktree"));
+    assert_eq!(rt.history(&t, 10).await.unwrap().len(), 2);
+}
+
 #[tokio::test]
 async fn stop_kills_the_process_group_and_reports_cancelled() {
     let dir = tempfile::tempdir().unwrap();

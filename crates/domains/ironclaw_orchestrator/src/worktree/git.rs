@@ -1,6 +1,9 @@
 //! The git commands worktree isolation needs, run through the host's
 //! [`HostCommandRunner`]. No command here forces anything: no `--force`,
-//! no `reset --hard`, no checkout over local changes.
+//! no `reset --hard`, no checkout over local changes. Every invocation runs
+//! with the repository's hooks and fsmonitor switched off: a cloned repo's
+//! `.git/hooks` (or a `core.hooksPath` it names) never runs as a side effect
+//! of orchestration.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,8 +29,13 @@ pub(crate) fn sh_quote(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', r"'\''"))
 }
 
+/// Config every orchestration git command runs with: no hooks of any kind
+/// (`post-checkout` on `worktree add`, `post-commit`, `post-merge`,
+/// `reference-transaction`, …) and no fsmonitor program.
+const SAFE_CONFIG: &str = "git -c core.hooksPath=/dev/null -c core.fsmonitor=false";
+
 fn line(args: &[&str]) -> String {
-    let mut out = String::from("git");
+    let mut out = String::from(SAFE_CONFIG);
     for arg in args {
         out.push(' ');
         out.push_str(&sh_quote(arg));
@@ -83,7 +91,7 @@ impl<'a> Git<'a> {
                 ),
             ));
         }
-        Ok(PathBuf::from(out.output.trim()))
+        Ok(PathBuf::from(last_line(&out.output)))
     }
 
     pub(crate) async fn head(&self, dir: &Path) -> Result<CommitId> {
@@ -94,11 +102,59 @@ impl<'a> Git<'a> {
                 "the repository has no commits yet; commit once before using a worktree",
             ));
         }
-        CommitId::new(out.output)
+        CommitId::new(last_line(&out.output))
     }
 
     pub(crate) async fn rev(&self, dir: &Path, rev: &str) -> Result<CommitId> {
-        CommitId::new(self.run(dir, &["rev-parse", "--verify", rev]).await?)
+        CommitId::new(last_line(
+            &self.run(dir, &["rev-parse", "--verify", rev]).await?,
+        ))
+    }
+
+    /// The ref `HEAD` points at (`refs/heads/<name>`), `None` when detached.
+    pub(crate) async fn symbolic_head(&self, dir: &Path) -> Result<Option<String>> {
+        let out = self.raw(dir, &["symbolic-ref", "-q", "HEAD"]).await?;
+        match out.exit_code {
+            0 => Ok(Some(last_line(&out.output).to_string())),
+            1 => Ok(None),
+            _ => Err(failed(&["symbolic-ref"], &out)),
+        }
+    }
+
+    /// Tracked files with staged or unstaged changes (untracked ignored).
+    pub(crate) async fn tracked_changes(&self, dir: &Path) -> Result<Vec<String>> {
+        let out = self
+            .run(dir, &["status", "--porcelain=v1", "--untracked-files=no"])
+            .await?;
+        Ok(porcelain_paths(&out))
+    }
+
+    /// A merge, cherry-pick, revert, rebase or bisect left in progress in
+    /// the checkout `dir`, by name.
+    pub(crate) async fn in_progress(&self, dir: &Path) -> Result<Option<&'static str>> {
+        for (name, what) in [
+            ("MERGE_HEAD", "merge"),
+            ("CHERRY_PICK_HEAD", "cherry-pick"),
+            ("REVERT_HEAD", "revert"),
+            ("sequencer", "cherry-pick/revert sequence"),
+            ("rebase-merge", "rebase"),
+            ("rebase-apply", "rebase or am"),
+            ("BISECT_LOG", "bisect"),
+        ] {
+            let out = self.run(dir, &["rev-parse", "--git-path", name]).await?;
+            let path = PathBuf::from(last_line(&out));
+            let path = if path.is_absolute() {
+                path
+            } else {
+                dir.join(path)
+            };
+            if tokio::fs::try_exists(&path).await.map_err(|e| {
+                OrchestratorError::request("git_failed", format!("could not read git state: {e}"))
+            })? {
+                return Ok(Some(what));
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) async fn worktree_add(
@@ -128,19 +184,18 @@ impl<'a> Git<'a> {
         let out = self
             .run(dir, &["status", "--porcelain=v1", "--untracked-files=all"])
             .await?;
-        Ok(out
-            .lines()
-            .filter(|l| l.len() > 3)
-            .map(|l| l.get(3..).unwrap_or(l).to_string())
-            .collect())
+        Ok(porcelain_paths(&out))
     }
 
     /// Commits reachable from `to` but not from `from`.
     pub(crate) async fn count(&self, dir: &Path, from: &str, to: &str) -> Result<u64> {
         let range = format!("{from}..{to}");
         let out = self.run(dir, &["rev-list", "--count", &range]).await?;
-        out.trim().parse().map_err(|_| {
-            OrchestratorError::request("git_failed", format!("unexpected rev-list output {out:?}"))
+        last_line(&out).parse().map_err(|e| {
+            OrchestratorError::request(
+                "git_failed",
+                format!("unexpected rev-list output {out:?}: {e}"),
+            )
         })
     }
 
@@ -156,7 +211,7 @@ impl<'a> Git<'a> {
     }
 
     pub(crate) async fn merge_base(&self, dir: &Path, a: &str, b: &str) -> Result<CommitId> {
-        CommitId::new(self.run(dir, &["merge-base", a, b]).await?)
+        CommitId::new(last_line(&self.run(dir, &["merge-base", a, b]).await?))
     }
 
     /// `-c user.*` for commits when the person has no git identity set.
@@ -167,19 +222,6 @@ impl<'a> Git<'a> {
         } else {
             vec!["-c", "user.name=ZLO", "-c", "user.email=zlo@localhost"]
         })
-    }
-
-    /// Commit everything in the worktree (tracked and untracked, ignored
-    /// files excepted) on its branch. `None` when there was nothing.
-    pub(crate) async fn commit_all(&self, dir: &Path, message: &str) -> Result<Option<CommitId>> {
-        if self.dirty_files(dir).await?.is_empty() {
-            return Ok(None);
-        }
-        self.run(dir, &["add", "-A"]).await?;
-        let mut args = self.identity(dir).await?;
-        args.extend(["commit", "--no-verify", "-q", "-m", message]);
-        self.run(dir, &args).await?;
-        self.head(dir).await.map(Some)
     }
 
     /// Run a merge-like command with the person's identity (or ZLO's).
@@ -228,6 +270,23 @@ impl<'a> Git<'a> {
             .await?
             .success())
     }
+}
+
+/// The last non-empty line: git's answer, after any warning it printed
+/// (stderr is folded into the output).
+fn last_line(out: &str) -> &str {
+    out.lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+}
+
+fn porcelain_paths(out: &str) -> Vec<String> {
+    out.lines()
+        .filter(|l| l.len() > 3)
+        .map(|l| l.get(3..).unwrap_or(l).to_string())
+        .collect()
 }
 
 fn failed(args: &[&str], out: &HostCommandOutput) -> OrchestratorError {

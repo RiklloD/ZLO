@@ -383,6 +383,13 @@ impl Engine {
             self.resolve_target(&probe, &ctx, &thread.runtime_id)
                 .await?
         };
+        // A thread in a worktree stays on runtimes that run turns there.
+        if self.thread_work_dir(&thread.thread_id).await?.is_some() {
+            let runtime = self.runtime(&runtime_id)?;
+            if !runtime.supports_work_dir() {
+                return Err(crate::worktree::runtime_refused(runtime.as_ref()));
+            }
+        }
         let id = &thread.thread_id;
         let done =
             |moved: &str, fork: Option<&str>, provider: Option<&str>, model: Option<&str>| {

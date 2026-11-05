@@ -177,9 +177,10 @@ impl ClaudeCliRuntime {
         }
     }
 
-    /// A session that moves to another folder (a thread that started in a
-    /// worktree after its first turns) takes its transcript along, so
-    /// `--resume` finds it there.
+    /// A session that moves to another folder (into its thread's worktree,
+    /// or back once that worktree is gone) takes its transcript along, so
+    /// `--resume` finds it there. It is moved, not copied: one file per
+    /// session, so history and the next resume always read every turn.
     async fn follow_session(&self, session_id: &str, dir: &Path) -> Result<(), RuntimeError> {
         let target = self.transcript_path(dir, session_id);
         if target.is_file() {
@@ -188,13 +189,15 @@ impl ClaudeCliRuntime {
         let Some(source) = self.find_transcript(session_id).await else {
             return Ok(());
         };
-        let copy = async {
+        let moved = async {
             if let Some(parent) = target.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            tokio::fs::copy(&source, &target).await.map(drop)
+            // Both live under the account's projects folder: one filesystem.
+            tokio::fs::rename(&source, &target).await
         };
-        copy.await
+        moved
+            .await
             .map_err(|e| RuntimeError::Unavailable(format!("session transcript: {}", e.kind())))
     }
 

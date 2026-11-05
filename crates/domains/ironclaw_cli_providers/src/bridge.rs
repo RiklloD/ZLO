@@ -844,7 +844,7 @@ impl CliBridge {
 /// tools, else the bounded JSON input.
 fn gate_body(tool_name: &str, input: &Value) -> Option<String> {
     let field = match tool_name {
-        "Bash" => input.get("command"),
+        "Bash" | crate::hook_approval::WORKTREE_SETUP_TOOL => input.get("command"),
         "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => input
             .get("file_path")
             .or_else(|| input.get("notebook_path")),

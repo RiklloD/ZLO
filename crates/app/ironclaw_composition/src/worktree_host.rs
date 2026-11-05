@@ -16,7 +16,7 @@ use ironclaw_host_runtime::{HostProcessPort, RuntimeProcessPort as _};
 use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::error::OrchestratorError;
 use ironclaw_orchestrator::worktree::{
-    HostCommand, HostCommandOutput, HostCommandRunner, WorktreeHost,
+    HookApprover, HostCommand, HostCommandOutput, HostCommandRunner, WorktreeHost,
 };
 
 pub(crate) struct HostProcessCommands {
@@ -60,9 +60,10 @@ impl HostCommandRunner for HostProcessCommands {
 }
 
 /// Turn on worktree isolation for `engine`: worktrees under
-/// `$HOME/.ironclaw/worktrees`. Without `HOME` the engine refuses
+/// `$HOME/.ironclaw/worktrees`, project setup hooks approved through
+/// `approver` (the CLI bridge's gate). Without `HOME` the engine refuses
 /// `isolation='worktree'` model-visibly.
-pub(crate) fn wire_worktrees(engine: &Engine) {
+pub(crate) fn wire_worktrees<A: HookApprover + 'static>(engine: &Engine, approver: Arc<A>) {
     let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) else {
         return; // silent-ok: no home folder means no worktree root; delegation reports it
     };
@@ -70,6 +71,7 @@ pub(crate) fn wire_worktrees(engine: &Engine) {
     engine.set_worktree_host(WorktreeHost {
         runner: Arc::new(HostProcessCommands::new(home.clone())),
         root: home.join(".ironclaw").join("worktrees"),
+        approver,
     });
 }
 
