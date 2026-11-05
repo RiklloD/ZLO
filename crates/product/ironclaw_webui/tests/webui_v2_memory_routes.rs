@@ -90,7 +90,12 @@ fn router(surface: Arc<Recording>) -> Router {
     .layer(axum::Extension(WebUiV2Capabilities::default()))
 }
 
-async fn send(router: &Router, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn send(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
     let body = match body {
         Some(body) => {
@@ -106,7 +111,10 @@ async fn send(router: &Router, method: Method, uri: &str, body: Option<Value>) -
         .unwrap();
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 #[tokio::test]
@@ -114,7 +122,11 @@ async fn memory_reads_forward_their_views_with_query_inputs() {
     let surface = Arc::new(Recording::default());
     let router = router(Arc::clone(&surface));
     let cases = [
-        ("/api/webchat/v2/memory/documents", "memory.documents.tree", json!({})),
+        (
+            "/api/webchat/v2/memory/documents",
+            "memory.documents.tree",
+            json!({}),
+        ),
         (
             "/api/webchat/v2/memory/documents/content?path=notes%2Fa.md",
             "memory.documents.read",

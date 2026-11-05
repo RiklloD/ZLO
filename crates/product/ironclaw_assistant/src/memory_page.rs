@@ -21,9 +21,7 @@ use ironclaw_product_contracts::surface::{
     ProductSurfaceQueryRequest, ProductSurfaceStreamRequest, ProductSurfaceStreamResponse,
     ProductSurfaceValidationCode,
 };
-use ironclaw_supermemory::{
-    Supermemory, SupermemoryBinding, SupermemoryCaller, SupermemoryError,
-};
+use ironclaw_supermemory::{Supermemory, SupermemoryBinding, SupermemoryCaller, SupermemoryError};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -319,7 +317,9 @@ impl MemoryPageSurface {
                 binding.as_ref(),
                 params.container.as_deref(),
                 params.page,
-                params.limit.map(|limit| limit.min(MAX_SUPERMEMORY_PAGE_LIMIT)),
+                params
+                    .limit
+                    .map(|limit| limit.min(MAX_SUPERMEMORY_PAGE_LIMIT)),
             )
             .await
             .map_err(map_supermemory_error)?;

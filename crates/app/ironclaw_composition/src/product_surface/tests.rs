@@ -1057,8 +1057,7 @@ async fn runtime_product_surface_serves_the_memory_page_and_hook_catalog() {
     use ironclaw_product_contracts::memory_page::{
         MEMORY_ARCHIVE_COMMAND, MEMORY_DOCUMENT_VIEW, MEMORY_TREE_VIEW, MEMORY_WRITE_COMMAND,
         MemoryArchiveOutcome, MemoryArchiveRequest, MemoryDocumentRequest, MemoryTreeRequest,
-        MemoryWriteOutcome, MemoryWriteRequest, SUPERMEMORY_STATUS_VIEW,
-        SupermemoryStatusRequest,
+        MemoryWriteOutcome, MemoryWriteRequest, SUPERMEMORY_STATUS_VIEW, SupermemoryStatusRequest,
     };
 
     let dir = tempfile::tempdir().expect("tempdir");

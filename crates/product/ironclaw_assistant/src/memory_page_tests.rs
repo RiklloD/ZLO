@@ -14,9 +14,7 @@ use ironclaw_product_contracts::profiles::{ProfileSettings, ProfileSupermemory};
 use ironclaw_product_contracts::surface::{
     BoundProductSurface, ProductSurfaceErrorKind, ProductSurfaceStreamResponse,
 };
-use ironclaw_supermemory::{
-    StaticSupermemoryBindingSource, SupermemoryClient, SupermemoryConfig,
-};
+use ironclaw_supermemory::{StaticSupermemoryBindingSource, SupermemoryClient, SupermemoryConfig};
 use secrecy::{ExposeSecret, SecretString};
 
 use super::*;
@@ -122,7 +120,10 @@ impl MemoryDocumentsSource for FakeDocuments {
         query: &str,
         limit: usize,
     ) -> Result<Vec<MemorySearchHit>, ProductSurfaceError> {
-        self.calls.lock().unwrap().push(format!("search {query} {limit}"));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("search {query} {limit}"));
         Ok(self
             .docs
             .lock()
@@ -334,7 +335,14 @@ async fn local_documents_round_trip_create_read_conflict_save_search_archive() {
 async fn unsafe_paths_and_oversized_bodies_never_reach_the_source() {
     let (surface, docs) = local_surface();
     let alice = bound(&surface, "alice");
-    for path in ["../secret.md", "/etc/passwd", "a//b.md", "a\\b.md", "a/\u{7}.md", ""] {
+    for path in [
+        "../secret.md",
+        "/etc/passwd",
+        "a//b.md",
+        "a\\b.md",
+        "a/\u{7}.md",
+        "",
+    ] {
         let error = MEMORY_DOCUMENT_VIEW
             .query_on(
                 &alice,

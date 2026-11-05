@@ -39,7 +39,10 @@ pub(crate) fn hook_catalog(
                 .to_string()
         }),
     }];
-    for projection in registry.into_iter().flat_map(HookProjectionRegistry::projections) {
+    for projection in registry
+        .into_iter()
+        .flat_map(HookProjectionRegistry::projections)
+    {
         let trusted = projection.source.allows_first_party();
         let enabled_by_flags = if trusted {
             config.is_enabled()

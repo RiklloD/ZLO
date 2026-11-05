@@ -80,7 +80,10 @@ async fn round_trip(filesystem: Arc<dyn RootFilesystem>) {
     assert_eq!(saved.provenance.version_count, 1);
 
     source
-        .write(&alice, write("notes/pets.md", "owns a cat named Dinah", None))
+        .write(
+            &alice,
+            write("notes/pets.md", "owns a cat named Dinah", None),
+        )
         .await
         .unwrap();
     let hits = source.search(&alice, "Dinah", 5).await.unwrap();
@@ -101,8 +104,10 @@ async fn round_trip(filesystem: Arc<dyn RootFilesystem>) {
     assert_eq!(archived.outcome, MemoryArchiveOutcome::Archived);
     let archived_path = archived.archived_path.unwrap();
     let tree = source.tree(&alice).await.unwrap();
-    assert!(tree.iter().any(|entry| entry.path == archived_path
-        && entry.kind == MemoryDocumentKind::Archived));
+    assert!(
+        tree.iter()
+            .any(|entry| entry.path == archived_path && entry.kind == MemoryDocumentKind::Archived)
+    );
     assert!(!tree.iter().any(|entry| entry.path == "notes/pets.md"));
     assert_eq!(
         source.read(&alice, &archived_path).await.unwrap().content,
@@ -115,7 +120,10 @@ async fn round_trip(filesystem: Arc<dyn RootFilesystem>) {
     // Bob sees none of alice's memory.
     let bob = caller("bob");
     assert!(source.tree(&bob).await.unwrap().is_empty());
-    assert_eq!(source.read(&bob, "USER.md").await.unwrap_err().status_code, 404);
+    assert_eq!(
+        source.read(&bob, "USER.md").await.unwrap_err().status_code,
+        404
+    );
 }
 
 #[tokio::test]
