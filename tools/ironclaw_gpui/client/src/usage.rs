@@ -136,7 +136,10 @@ mod tests {
         .expect("decode");
         assert_eq!(r.level, ContextLevel::Warning);
         assert_eq!(r.source, ContextSource::Provider);
-        assert_eq!(r.tool_owners[0].owner, ContextToolOwner::Mcp("ironclaw".into()));
+        assert_eq!(
+            r.tool_owners[0].owner,
+            ContextToolOwner::Mcp("ironclaw".into())
+        );
         assert_eq!(r.categories.iter().map(|c| c.tokens).sum::<u64>(), r.used);
     }
 

@@ -30,6 +30,7 @@ use crate::pages::usage::{UsageModel, UsageView};
 use crate::ui::*;
 
 mod command;
+mod context;
 mod draft;
 mod inbox;
 mod quick;
@@ -140,6 +141,8 @@ pub struct Workspace {
     /// telemetry (`None` until known, or when the gateway lacks the route).
     usage: Option<Entity<UsageModel>>,
     telemetry: Option<ThreadTelemetry>,
+    /// The context meter's popover, report and banner state.
+    context: context::ContextMeter,
     _usage_observe: Option<Subscription>,
     _status_poll: Option<Task<()>>,
     /// The Cmd+K menu while open.
@@ -203,6 +206,7 @@ impl Workspace {
             }),
             usage: None,
             telemetry: None,
+            context: Default::default(),
             _usage_observe: None,
             _status_poll: None,
         };
@@ -324,6 +328,7 @@ impl Workspace {
 
     fn open_thread(&mut self, thread_id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.page = Page::Chat;
+        self.context.close();
         self.visit(&thread_id, cx);
         if self.active.as_ref().is_some_and(|(id, _)| *id == thread_id) {
             cx.notify();
@@ -1007,6 +1012,7 @@ impl Workspace {
                 let telemetry = result.ok().flatten();
                 if this.telemetry != telemetry {
                     this.telemetry = telemetry;
+                    this.context_telemetry_changed(cx);
                     cx.notify();
                 }
             },
@@ -1054,7 +1060,7 @@ impl Workspace {
         });
         h_flex()
             .gap_3()
-            .child(metric("Context", context))
+            .child(self.render_context_meter(context, cx))
             .child(metric("Speed", tps))
             .child(metric("Cache", cache))
             .when_some(peak, |d, (provider, window, pct)| {
@@ -1345,6 +1351,10 @@ impl Render for Workspace {
                 let breadcrumb = self
                     .render_breadcrumb(sidebar_drawn, actions, cx)
                     .into_any_element();
+                let context_banner = match self.page {
+                    Page::Chat => self.render_context_banner(cx),
+                    _ => None,
+                };
                 let main: AnyElement = match (page, &self.active) {
                     // Appearance floats over the chat at 85 % so a pick
                     // previews live on the real thread or new-chat screen.
@@ -1368,7 +1378,14 @@ impl Render for Workspace {
                             .into_any_element()
                     }
                     (Some(page), _) => page,
-                    (None, Some((_, chat))) => embed(chat),
+                    (None, Some((_, chat))) => match context_banner {
+                        Some(banner) => v_flex()
+                            .size_full()
+                            .child(banner)
+                            .child(div().flex_1().min_h_0().child(embed(chat)))
+                            .into_any_element(),
+                        None => embed(chat),
+                    },
                     (None, None) => self.render_empty(cx).into_any_element(),
                 };
                 let over_main = [
