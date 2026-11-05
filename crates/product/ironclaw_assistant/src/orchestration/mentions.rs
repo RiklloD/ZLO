@@ -299,12 +299,16 @@ async fn dir_block(label: &str, opened: fs::Opened, runtime: MentionRuntime) -> 
     }
     // Listed through descriptors from the opened folder, off the runtime.
     let fd = opened.fd;
-    let walked =
-        tokio::task::spawn_blocking(move || fs::list(&fd, TREE_DEPTH, TREE_ENTRIES * 4)).await;
-    let Ok((files, walk_complete)) = walked else {
+    let walked = tokio::task::spawn_blocking(move || {
+        fs::list(&fd, fs::Limits::new(TREE_DEPTH, 20_000, TREE_ENTRIES * 4))
+    })
+    .await;
+    let Ok(listing) = walked else {
         return format!("@{label} ({shown}): unreadable.");
     };
-    let files: Vec<String> = files
+    let walk_complete = listing.complete;
+    let files: Vec<String> = listing
+        .files
         .into_iter()
         .map(|f| f.trim_end_matches('/').to_string())
         .collect();

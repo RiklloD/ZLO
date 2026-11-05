@@ -18,7 +18,9 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
 
 use ironclaw_safety::sensitive_paths::is_sensitive_path_str;
-use rustix::fs::{FileType, Mode, OFlags};
+use std::time::{Duration, Instant};
+
+use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 
 /// Roots one message may grant.
 const MAX_ROOTS: usize = 8;
@@ -54,6 +56,8 @@ pub(super) struct Root {
     sent: PathBuf,
     canonical: PathBuf,
     fd: OwnedFd,
+    /// `(device, inode)` of `fd`: what another spelling of the root must be.
+    id: (u64, u64),
 }
 
 /// The vetted roots of one message.
@@ -106,10 +110,14 @@ impl Roots {
                 tracing::debug!("mention root moved while vetted");
                 continue;
             };
+            let Some(id) = identity(&fd) else {
+                continue; // silent-ok: an unreadable root grants nothing
+            };
             out.push(Root {
                 sent,
                 canonical,
                 fd,
+                id,
             });
         }
         Self(out)
@@ -122,16 +130,7 @@ impl Roots {
             return Err("no project folder was shared with this message");
         }
         let raw = Path::new(raw);
-        let (root, rel) = self
-            .0
-            .iter()
-            .find_map(|root| {
-                raw.strip_prefix(&root.sent)
-                    .or_else(|_| raw.strip_prefix(&root.canonical))
-                    .ok()
-                    .map(|rel| (root, rel))
-            })
-            .ok_or("outside the project folder")?;
+        let (root, rel) = self.locate(raw).ok_or("outside the project folder")?;
         let parts: Vec<&std::ffi::OsStr> = rel
             .components()
             .map(|c| match c {
@@ -175,6 +174,41 @@ impl Roots {
     }
 }
 
+impl Roots {
+    /// The root `raw` lies in, and the rest of `raw` below it. The root's
+    /// own spellings match directly; any other spelling of the same folder
+    /// (case or Unicode-normalization variants on APFS) is recognized by
+    /// the identity of the folder it names. Locating only picks the root:
+    /// the rest is still opened no-follow from the root's descriptor.
+    fn locate<'a>(&self, raw: &'a Path) -> Option<(&Root, &'a Path)> {
+        if let Some(found) = self.0.iter().find_map(|root| {
+            raw.strip_prefix(&root.sent)
+                .or_else(|_| raw.strip_prefix(&root.canonical))
+                .ok()
+                .map(|rel| (root, rel))
+        }) {
+            return Some(found);
+        }
+        for ancestor in raw.ancestors() {
+            let Ok(meta) = std::fs::metadata(ancestor) else {
+                continue;
+            };
+            use std::os::unix::fs::MetadataExt as _;
+            let id = (meta.dev(), meta.ino());
+            if let Some(root) = self.0.iter().find(|root| root.id == id) {
+                return raw.strip_prefix(ancestor).ok().map(|rel| (root, rel));
+            }
+        }
+        None
+    }
+}
+
+/// `(device, inode)` of an open descriptor.
+fn identity(fd: &OwnedFd) -> Option<(u64, u64)> {
+    let stat = rustix::fs::fstat(fd).ok()?;
+    Some((stat.st_dev as u64, stat.st_ino as u64))
+}
+
 /// `path` (canonical) opened from `/`, one no-follow component at a time.
 fn from_anchor(path: &Path) -> Option<OwnedFd> {
     let mut fd = rustix::fs::open("/", DIR_FLAGS, Mode::empty()).ok()?;
@@ -190,61 +224,143 @@ fn from_anchor(path: &Path) -> Option<OwnedFd> {
     Some(fd)
 }
 
-/// Relative paths of the files below an opened folder, read through
-/// descriptors only: subfolders are opened no-follow from their parent, so
-/// nothing outside it is listed. Hidden and build folders are skipped;
-/// `limit` bounds the entries read. Returns whether the walk was complete.
-pub(super) fn list(dir: &OwnedFd, depth: usize, limit: usize) -> (Vec<String>, bool) {
-    let mut files = Vec::new();
-    let mut complete = true;
-    let Ok(first) = dir.try_clone() else {
-        return (files, false);
-    };
-    let mut stack: Vec<(OwnedFd, String, usize)> = vec![(first, String::new(), 0)];
-    while let Some((fd, prefix, level)) = stack.pop() {
-        let Ok(entries) = rustix::fs::Dir::read_from(&fd) else {
-            complete = false;
-            continue;
-        };
-        for entry in entries {
-            let Ok(entry) = entry else {
-                complete = false;
-                break;
-            };
-            if files.len() >= limit {
-                return (files, false);
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || HEAVY_DIRS.contains(&name.as_str()) {
-                continue;
-            }
-            let rel = format!("{prefix}{name}");
-            let kind = match entry.file_type() {
-                FileType::Unknown => rustix::fs::statat(
-                    &fd,
-                    entry.file_name(),
-                    rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-                )
-                .map(|st| FileType::from_raw_mode(st.st_mode))
-                .unwrap_or(FileType::Unknown),
-                kind => kind,
-            };
-            if kind == FileType::Directory {
-                if level + 1 >= depth {
-                    complete = false;
-                    files.push(format!("{rel}/"));
-                    continue;
-                }
-                match rustix::fs::openat(&fd, entry.file_name(), DIR_FLAGS, Mode::empty()) {
-                    Ok(sub) => stack.push((sub, format!("{rel}/"), level + 1)),
-                    Err(_) => complete = false,
-                }
-            } else {
-                files.push(rel);
-            }
+/// Bounds of one folder listing.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Limits {
+    /// Folder levels entered below the listed one.
+    pub(super) depth: usize,
+    /// Directory entries read in all, listed or not.
+    pub(super) max_visited: usize,
+    /// Names returned.
+    pub(super) max_files: usize,
+    /// The walk stops here.
+    pub(super) deadline: Instant,
+}
+
+impl Limits {
+    pub(super) fn new(depth: usize, max_visited: usize, max_files: usize) -> Self {
+        Self {
+            depth,
+            max_visited,
+            max_files,
+            deadline: Instant::now() + LIST_TIME,
         }
     }
-    (files, complete)
+}
+
+/// What a listing found.
+#[derive(Debug, Default)]
+pub(super) struct Listing {
+    /// Paths relative to the listed folder; folders end in `/` when the
+    /// walk stopped at them.
+    pub(super) files: Vec<String>,
+    /// No bound cut the walk.
+    pub(super) complete: bool,
+    /// Most descriptors the walk held at once.
+    pub(super) max_open: usize,
+}
+
+/// A listing stops after this long.
+const LIST_TIME: Duration = Duration::from_secs(2);
+
+/// The files below an opened folder, read through descriptors only: each
+/// subfolder is opened no-follow relative to its parent's descriptor, depth
+/// first, and closed when done, so a handful of descriptors are open at
+/// once and nothing outside the folder is reached. Hidden and build folders
+/// are skipped; symlinks and hard-linked files are not listed.
+pub(super) fn list(dir: &OwnedFd, limits: Limits) -> Listing {
+    let mut walk = Walk {
+        limits,
+        visited: 0,
+        open: 0,
+        out: Listing {
+            complete: true,
+            ..Listing::default()
+        },
+    };
+    walk.visit(dir, "", 0);
+    walk.out
+}
+
+struct Walk {
+    limits: Limits,
+    visited: usize,
+    open: usize,
+    out: Listing,
+}
+
+impl Walk {
+    fn opened(&mut self, n: usize) {
+        self.open += n;
+        self.out.max_open = self.out.max_open.max(self.open);
+    }
+
+    /// Whether a bound is hit; marks the listing cut when so.
+    fn spent(&mut self) -> bool {
+        let spent = self.visited >= self.limits.max_visited
+            || self.out.files.len() >= self.limits.max_files
+            || Instant::now() >= self.limits.deadline;
+        if spent {
+            self.out.complete = false;
+        }
+        spent
+    }
+
+    fn visit(&mut self, fd: &OwnedFd, prefix: &str, level: usize) {
+        // `Dir` reads through its own descriptor on the folder.
+        let Ok(entries) = rustix::fs::Dir::read_from(fd) else {
+            self.out.complete = false;
+            return;
+        };
+        self.opened(1);
+        for entry in entries {
+            if self.spent() {
+                break;
+            }
+            self.visited += 1;
+            let Ok(entry) = entry else {
+                self.out.complete = false;
+                break;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "." || name == ".." {
+                continue;
+            }
+            // The kind comes from `lstat` relative to the parent: symlinks
+            // are seen as symlinks, and the link count is known.
+            let Ok(stat) = rustix::fs::statat(fd, entry.file_name(), AtFlags::SYMLINK_NOFOLLOW)
+            else {
+                continue;
+            };
+            let rel = format!("{prefix}{name}");
+            match FileType::from_raw_mode(stat.st_mode) {
+                FileType::Directory => {
+                    if name.starts_with('.') || HEAVY_DIRS.contains(&name.as_str()) {
+                        continue;
+                    }
+                    if level + 1 >= self.limits.depth {
+                        self.out.complete = false;
+                        self.out.files.push(format!("{rel}/"));
+                        continue;
+                    }
+                    let Ok(sub) =
+                        rustix::fs::openat(fd, entry.file_name(), DIR_FLAGS, Mode::empty())
+                    else {
+                        self.out.complete = false;
+                        continue;
+                    };
+                    self.opened(1);
+                    self.visit(&sub, &format!("{rel}/"), level + 1);
+                    drop(sub);
+                    self.open -= 1;
+                }
+                FileType::RegularFile if stat.st_nlink == 1 => self.out.files.push(rel),
+                // Symlinks, hard-linked files, devices, FIFOs, sockets.
+                _ => {}
+            }
+        }
+        self.open -= 1;
+    }
 }
 
 /// Whether `root` (canonical) would grant far more than one project.
@@ -355,5 +471,88 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(text, "VETTED");
+    }
+
+    fn open_dir(path: &Path) -> OwnedFd {
+        rustix::fs::open(path, DIR_FLAGS, Mode::empty()).unwrap()
+    }
+
+    /// 500 sibling folders list completely while only a handful of
+    /// descriptors are open at once; visited entries, depth and time are
+    /// bounded, and `complete` says when a bound cut the walk.
+    #[test]
+    fn listings_are_bounded_and_keep_few_descriptors_open() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..500 {
+            let sub = dir.path().join(format!("d{i:03}"));
+            std::fs::create_dir(&sub).unwrap();
+            std::fs::write(sub.join("f.txt"), "").unwrap();
+        }
+        let fd = open_dir(dir.path());
+        let all = list(&fd, Limits::new(4, 10_000, 10_000));
+        assert_eq!(all.files.len(), 500, "{}", all.files.len());
+        assert!(all.complete);
+        assert!(
+            all.max_open <= 2 * 4 + 2,
+            "{} descriptors open at once",
+            all.max_open
+        );
+
+        let few = list(&fd, Limits::new(4, 10_000, 50));
+        assert!(!few.complete && few.files.len() <= 50);
+        let shallow = list(&fd, Limits::new(1, 10_000, 10_000));
+        // At the depth cut, folders are named but not entered.
+        assert!(!shallow.complete && shallow.files.iter().all(|f| f.ends_with('/')));
+        let late = list(
+            &fd,
+            Limits {
+                deadline: std::time::Instant::now(),
+                ..Limits::new(4, 10_000, 10_000)
+            },
+        );
+        assert!(!late.complete && late.files.len() < 500);
+    }
+
+    /// A listing names no symlink and no hard-linked file.
+    #[test]
+    fn listings_skip_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("p");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("plain.txt"), "").unwrap();
+        std::fs::write(dir.path().join(".env"), "S=1").unwrap();
+        std::fs::hard_link(dir.path().join(".env"), project.join("innocent.txt")).unwrap();
+        std::os::unix::fs::symlink(dir.path(), project.join("up")).unwrap();
+        let listed = list(&open_dir(&project), Limits::new(4, 100, 100));
+        assert_eq!(listed.files, ["plain.txt"]);
+    }
+
+    /// A mention whose path names the vetted root by another spelling of the
+    /// same folder (case, Unicode normalization) still resolves to it.
+    #[test]
+    fn aliases_of_the_root_resolve_by_identity() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("code/Café");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("notes.txt"), "N").unwrap();
+        let roots = vet(&[&project], home.path());
+        let lower = home.path().join("code/café");
+        let nfd = home.path().join("code/Cafe\u{301}");
+        for alias in [lower, nfd] {
+            if !alias.exists() {
+                continue; // a case- or normalization-sensitive file system
+            }
+            let opened = roots.open(&alias.join("notes.txt").to_string_lossy(), Want::File);
+            assert!(opened.is_ok(), "{alias:?}: {:?}", opened.err());
+        }
+        // A different folder that merely shares a prefix is still outside.
+        let sibling = home.path().join("code/Café2");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("x.txt"), "X").unwrap();
+        assert!(
+            roots
+                .open(&sibling.join("x.txt").to_string_lossy(), Want::File)
+                .is_err()
+        );
     }
 }
