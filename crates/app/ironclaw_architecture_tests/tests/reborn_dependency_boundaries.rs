@@ -1158,7 +1158,17 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // which the desktop client writes and ironclaw_assistant reads. The
         // placement itself lives in ironclaw_assistant. Count read from this
         // test's failure message.
-        ("ironclaw_product_contracts", 17_878),
+        // 17_878 -> 18_560 (2026-11-05, ZLO rich @-mentions): the `mention`
+        // module (`MentionUri` and its URI / `[@label](uri)` link codec,
+        // `mention_spans`/`mention_parts`, the expanded-context markers and
+        // their round-trip/traversal tests) plus `mention_roots` on
+        // `ProductSubmitTurnRequest`. Grammar and serde only; disk reads,
+        // containment and bounds live in ironclaw_assistant's
+        // `orchestration::mentions`. Count computed with this gate's own file
+        // rule (`production_rust_files`: whole files, `tests.rs`/`*_tests.rs`
+        // and `tests/` excluded, `test_support` counted); base tree measured
+        // 18_015.
+        ("ironclaw_product_contracts", 18_560),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
