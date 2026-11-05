@@ -7,6 +7,9 @@ use serde::Deserialize;
 use crate::api::{Client, V2, seg};
 use crate::error::ClientError;
 
+pub use ironclaw_product_contracts::orchestration::{
+    ContextCategory, ContextLevel, ContextSource, ContextToolOwner, ThreadContextReport,
+};
 pub use ironclaw_product_contracts::usage::{
     ProviderUsage, UsageBucket, UsageCompaction, UsageHistory, UsageHistorySource,
     UsagePricingStatus, UsageReport, UsageSourceStatus, UsageStatus, UsageWindow,
@@ -67,6 +70,22 @@ impl Client {
         }
     }
 
+    /// What fills the thread's context window; `None` when the gateway has
+    /// no context route (older build) or does not know the thread.
+    pub async fn thread_context(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ThreadContextReport>, ClientError> {
+        match self
+            .get(&format!("{V2}/threads/{}/context", seg(thread_id)))
+            .await
+        {
+            Ok(report) => Ok(Some(report)),
+            Err(e) if e.is_not_found() => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Whether idle Claude CLI threads compact themselves (engine setting,
     /// read from `GET /providers`).
     pub async fn idle_compact(&self) -> Result<bool, ClientError> {
@@ -102,6 +121,24 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_reports_decode_the_gateway_shape() {
+        let r: ThreadContextReport = serde_json::from_str(
+            r#"{"threadId":"t1","runtimeId":"claude-cli","used":170000,"max":200000,
+                "level":"warning","source":"provider",
+                "categories":[{"category":"system_prompt","tokens":20000},
+                              {"category":"tool_definitions","tokens":50000},
+                              {"category":"unattributed","tokens":100000}],
+                "toolOwners":[{"owner":{"kind":"mcp","name":"ironclaw"},"tokens":50000,"tools":6}],
+                "compactPrompt":"/compact","autoCompacts":true,"updatedAt":5}"#,
+        )
+        .expect("decode");
+        assert_eq!(r.level, ContextLevel::Warning);
+        assert_eq!(r.source, ContextSource::Provider);
+        assert_eq!(r.tool_owners[0].owner, ContextToolOwner::Mcp("ironclaw".into()));
+        assert_eq!(r.categories.iter().map(|c| c.tokens).sum::<u64>(), r.used);
+    }
 
     #[test]
     fn telemetry_tolerates_nulls_and_missing_fields() {

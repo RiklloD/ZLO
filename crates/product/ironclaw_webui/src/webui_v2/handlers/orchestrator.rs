@@ -58,6 +58,19 @@ pub async fn orchestrator_thread_telemetry(
     ))
 }
 
+/// `GET /api/webchat/v2/threads/{thread_id}/context`
+pub async fn orchestrator_thread_context(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    let params = serde_json::json!({ "thread_id": thread_id });
+    let descriptor = ORCHESTRATOR_THREAD_CONTEXT_VIEW.descriptor();
+    Ok(Json(
+        query_product_view(state.services(), caller, descriptor, params, None).await?,
+    ))
+}
+
 /// `GET /api/webchat/v2/threads/{thread_id}/route`
 pub async fn orchestrator_thread_route(
     State(state): State<WebUiV2State>,
@@ -242,6 +255,9 @@ pub struct OrchestratorForkBody {
     pub provider: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    /// Seed the fork with a digest instead of branching the session.
+    #[serde(default)]
+    pub summary: bool,
 }
 
 /// `POST /api/webchat/v2/threads/{thread_id}/fork`
@@ -257,6 +273,7 @@ pub async fn orchestrator_thread_fork(
         title: body.title,
         provider: body.provider,
         model: body.model,
+        summary: body.summary,
     };
     Ok(Json(
         invoke_product_command(state.services(), caller, ORCHESTRATOR_FORK_COMMAND, request)
