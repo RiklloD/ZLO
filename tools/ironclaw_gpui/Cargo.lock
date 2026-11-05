@@ -3295,6 +3295,7 @@ dependencies = [
  "gpui-kit",
  "image",
  "ironclaw_gpui_client",
+ "ironclaw_host_api",
  "objc2 0.6.5",
  "raw-window-handle",
  "serde",
