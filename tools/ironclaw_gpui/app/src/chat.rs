@@ -1194,6 +1194,8 @@ impl Render for ChatView {
         }
         let travel = (self.list_height.get() - 160.).max(0.);
         let toggles = self.toggles.clone();
+        // Streamed command output (Codex), by tool row key.
+        let outputs = self.transcript.tool_outputs();
         let since = self.run_started;
 
         // The run each row belongs to (1-based), for "fork from here".
@@ -1255,7 +1257,7 @@ impl Render for ChatView {
                 Item::Row(row) => render_row(row, &weak, cx),
                 Item::Activity { key, rows, live } => {
                     let open = flow::is_open(key, *live, &toggles);
-                    flow::render_activity(key, rows, *live, open, &toggles, &weak, cx)
+                    flow::render_activity(key, rows, *live, open, &toggles, &outputs, &weak, cx)
                 }
                 Item::Pending { stopping } => flow::render_pending(*stopping, since, seed, cx),
                 // Built by the view itself: its rows carry the view's listeners.

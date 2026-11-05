@@ -62,6 +62,12 @@ struct Snapshot {
 impl ChatView {
     /// Re-read tasks and queue (and lineage until loaded). Coalesces: a call
     /// during a refresh only marks it stale.
+    /// The runtime the thread runs on (`codex`, `claude-cli`, `ironclaw`),
+    /// once the orchestrator has seen it.
+    pub(super) fn thread_runtime(&self) -> Option<&str> {
+        self.orch.queue.runtime.as_deref()
+    }
+
     pub(super) fn refresh_orchestration(&mut self, cx: &mut Context<Self>) {
         self.load_goal(cx);
         let o = &mut self.orch;
