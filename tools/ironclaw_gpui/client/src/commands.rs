@@ -5,8 +5,8 @@
 //! Two triggers, like opencode and Claude Code:
 //! - `/` opens commands (only as the draft's first word) and skills
 //!   (anywhere). The backend force-activates a `/skill` mention.
-//! - `@` opens mentions: files, folders, threads, the git diff and a
-//!   Changes-tab selection (`crate::mentions`, sent as Markdown links the
+//! - `@` opens mentions: files, folders, threads and a Changes-tab
+//!   selection (`crate::mentions`, sent as Markdown links the
 //!   backend expands), then extensions (the backend pins a mentioned
 //!   extension's tools for that turn) and skills.
 

@@ -1,8 +1,8 @@
 //! The `/` and `@` composer menu, shared by a thread's composer and the
 //! new-thread screen: its inventory, highlight, keys and popover.
 //!
-//! `@` lists mentions first (the Changes selection and git diff, files,
-//! folders, recent threads; `ironclaw_gpui_client::mentions`), then tools
+//! `@` lists mentions first (the Changes selection, files, folders,
+//! recent threads; `ironclaw_gpui_client::mentions`), then tools
 //! and skills. A picked mention becomes an atomic chip in the composer.
 
 use std::path::{Path, PathBuf};
@@ -119,7 +119,8 @@ impl ComposerMenu {
         true
     }
 
-    /// Take a ranking that landed: only one of the listing shown now.
+    /// Take a ranking that landed: only one of the listing shown now, for
+    /// the query typed now (an older query's ranking may land later).
     fn accept_ranking(&mut self, ranked: RankedPaths) -> bool {
         let current = self.files.as_ref().map(|f| f.generation);
         if self.ranking.as_ref().map(|(g, q)| (*g, q.as_str()))
@@ -127,7 +128,9 @@ impl ComposerMenu {
         {
             self.ranking = None;
         }
-        if current != Some(ranked.generation) {
+        if current != Some(ranked.generation)
+            || self.want_query.as_deref() != Some(ranked.query.as_str())
+        {
             return false;
         }
         self.ranked = Some(Arc::new(ranked));
@@ -538,9 +541,25 @@ mod tests {
         assert!(!menu.accept_ranking(stale));
         assert!(menu.ranked.is_none());
         let shown = menu.files.clone().unwrap();
+        menu.want_query = Some("menu".into());
         assert!(menu.accept_ranking(mentions::rank_paths(&shown, "menu")));
         // Moving to another folder clears what was shown for the last one.
         menu.want_root(Some(PathBuf::from("/c")));
         assert!(menu.files.is_none() && menu.ranked.is_none());
+    }
+
+    /// Typing `@me` then `@men` ranks both; the `@me` ranking landing last
+    /// must not replace the `@men` one.
+    #[test]
+    fn an_older_querys_ranking_never_overwrites_a_newer_one() {
+        let mut menu = ComposerMenu::default();
+        menu.want_root(Some(PathBuf::from("/b")));
+        assert!(menu.accept_index(listing("/b")));
+        let shown = menu.files.clone().unwrap();
+        menu.want_query = Some("me".into());
+        menu.want_query = Some("men".into());
+        assert!(menu.accept_ranking(mentions::rank_paths(&shown, "men")));
+        assert!(!menu.accept_ranking(mentions::rank_paths(&shown, "me")));
+        assert_eq!(menu.ranked.as_ref().unwrap().query, "men");
     }
 }

@@ -1,5 +1,5 @@
-//! The `@` menu's mention sources (files, folders, threads, the git diff,
-//! a Changes-tab selection) and the composer's mention chips.
+//! The `@` menu's mention sources (files, folders, threads, a Changes-tab
+//! selection) and the composer's mention chips.
 //!
 //! Mentions travel as Markdown links (`ironclaw_product_contracts::mention`):
 //! the composer shows each as an atomic chip, sends it as `[@label](uri)`,
@@ -7,17 +7,23 @@
 //! The gateway expands them at send time inside the project folder the
 //! message names as its mention root.
 //!
-//! Files come from one listing per project folder: `git ls-files` (so
-//! `.gitignore` holds) or, outside a repository, a bounded walk that skips
-//! hidden and build folders. Listings are cached per folder and rebuilt in
-//! the background once stale ([`IndexCache`]).
+//! Files come from one listing per project folder: a bounded walk in this
+//! process that honors `.gitignore` files and `.git/info/exclude`, skips
+//! hidden and build folders, never follows symlinks and never starts `git`
+//! (a checkout's config can make git run its own programs). Ignore files are
+//! read only when they are small regular files, opened without blocking, so
+//! a FIFO cannot hang the walk, and the walk stops at a deadline. Listings
+//! are cached per folder and rebuilt in the background once stale
+//! ([`IndexCache`]).
 
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
+
+use ignore::Match;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::time::{Duration, Instant};
 
 pub use ironclaw_product_contracts::mention::{
@@ -27,8 +33,10 @@ pub use ironclaw_product_contracts::mention::{
 
 /// Paths one listing holds; a bigger tree is cut (and says so).
 const INDEX_LIMIT: usize = 100_000;
-/// Bytes of `git ls-files` output read.
-const GIT_OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
+/// A listing stops here and says it was cut.
+const WALK_DEADLINE: Duration = Duration::from_secs(5);
+/// Largest ignore file read.
+const IGNORE_FILE_LIMIT: u64 = 256 * 1024;
 /// A listing older than this is rebuilt on the next `@`.
 const INDEX_TTL: Duration = Duration::from_secs(20);
 /// Folders a walk never enters.
@@ -52,8 +60,6 @@ pub struct FileIndex {
     pub root: PathBuf,
     pub files: Vec<String>,
     pub dirs: Vec<String>,
-    /// The folder is a git work tree (the git diff mention applies).
-    pub git: bool,
     /// The listing stopped at [`INDEX_LIMIT`].
     pub truncated: bool,
     /// Unique per listing built, so a ranking names the listing it ranked.
@@ -63,17 +69,11 @@ pub struct FileIndex {
 impl FileIndex {
     /// List `root`. Blocking: run it off the UI thread.
     pub fn build(root: &Path) -> Self {
-        let (files, git, truncated) = match git_files(root) {
-            Some((files, truncated)) => (files, true, truncated),
-            None => {
-                let (files, truncated) = walk(root);
-                (files, false, truncated)
-            }
-        };
-        Self::from_files(root.to_path_buf(), files, git, truncated)
+        let (files, truncated) = walk(root, Instant::now() + WALK_DEADLINE);
+        Self::from_files(root.to_path_buf(), files, truncated)
     }
 
-    fn from_files(root: PathBuf, mut files: Vec<String>, git: bool, truncated: bool) -> Self {
+    fn from_files(root: PathBuf, mut files: Vec<String>, truncated: bool) -> Self {
         files.sort();
         files.dedup();
         let mut dirs: Vec<String> = files
@@ -87,7 +87,6 @@ impl FileIndex {
             root,
             files,
             dirs,
-            git,
             truncated,
             generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
@@ -122,95 +121,113 @@ impl IndexCache {
     }
 }
 
-/// Settings that would otherwise let a checkout run a command.
-const SAFE_GIT_CONFIG: &[&str] = &[
-    "core.fsmonitor=false",
-    "core.hooksPath=/dev/null",
-    "core.pager=cat",
-    "core.untrackedCache=false",
-    "submodule.recurse=false",
-];
-
-/// `git ls-files` of `root`: tracked plus untracked-but-not-ignored.
-fn git_files(root: &Path) -> Option<(Vec<String>, bool)> {
-    // A checkout's config can name commands (`core.fsmonitor`, hooks, a
-    // pager) git would run: start from an empty environment with system and
-    // global config off, and force each of those off on the command line.
-    let mut cmd = Command::new("git");
-    cmd.env_clear();
-    if let Some(path) = std::env::var_os("PATH") {
-        cmd.env("PATH", path);
-    }
-    let mut child = cmd
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .arg("--no-pager")
-        .arg("-C")
-        .arg(root)
-        .args(SAFE_GIT_CONFIG.iter().flat_map(|c| ["-c", c]))
-        .args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut out = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .map(|s| s.take(GIT_OUTPUT_LIMIT).read_to_end(&mut out));
-    let cut = out.len() as u64 >= GIT_OUTPUT_LIMIT;
-    if cut {
-        let _ = child.kill();
-    }
-    let status = child.wait().ok()?;
-    if read.is_none_or(|r| r.is_err()) || (!cut && !status.success()) {
-        return None;
-    }
-    let mut files: Vec<String> = out
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| String::from_utf8_lossy(p).into_owned())
-        .collect();
-    let truncated = cut || files.len() > INDEX_LIMIT;
-    files.truncate(INDEX_LIMIT);
-    Some((files, truncated))
-}
-
-/// A bounded walk outside git: hidden and build folders are skipped.
-fn walk(root: &Path) -> (Vec<String>, bool) {
+/// The listing of `root`: files not ignored, relative to it, and whether
+/// it was cut (by size or deadline).
+fn walk(root: &Path, deadline: Instant) -> (Vec<String>, bool) {
     let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut base = Vec::new();
+    if let Some(exclude) = ignore_file(root, &root.join(".git/info/exclude")) {
+        base.push(Arc::new(exclude));
+    }
+    let mut stack: Vec<(PathBuf, Vec<Arc<Gitignore>>)> = vec![(root.to_path_buf(), base)];
+    while let Some((dir, mut rules)) = stack.pop() {
+        if Instant::now() > deadline {
+            return (files, true);
+        }
+        if let Some(local) = ignore_file(&dir, &dir.join(".gitignore")) {
+            rules.push(Arc::new(local));
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
+            continue; // silent-ok: an unreadable folder is left out of the listing
         };
         for entry in entries.flatten() {
             if files.len() >= INDEX_LIMIT {
                 return (files, true);
             }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            // A symlink is neither kind: it is never followed.
+            let is_dir = kind.is_dir();
+            if !is_dir && !kind.is_file() {
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || HEAVY_DIRS.contains(&name.as_str()) {
+            if is_dir && (name.starts_with('.') || HEAVY_DIRS.contains(&name.as_str())) {
                 continue;
             }
             let path = entry.path();
-            let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+            if ignored(&rules, &path, is_dir) {
+                continue;
+            }
             if is_dir {
-                stack.push(path);
+                stack.push((path, rules.clone()));
             } else if let Ok(rel) = path.strip_prefix(root) {
                 files.push(rel.to_string_lossy().into_owned());
             }
         }
     }
     (files, false)
+}
+
+/// Whether the deepest rule that speaks about `path` ignores it.
+fn ignored(rules: &[Arc<Gitignore>], path: &Path, is_dir: bool) -> bool {
+    for rules in rules.iter().rev() {
+        match rules.matched(path, is_dir) {
+            Match::Ignore(_) => return true,
+            Match::Whitelist(_) => return false,
+            Match::None => {}
+        }
+    }
+    false
+}
+
+/// The rules of one ignore file, read only when it is a small regular file.
+fn ignore_file(base: &Path, file: &Path) -> Option<Gitignore> {
+    let text = read_small_regular(file)?;
+    let mut builder = GitignoreBuilder::new(base);
+    for line in text.lines() {
+        // A line that is not a valid pattern is skipped, as git does.
+        let _ = builder.add_line(Some(file.to_path_buf()), line);
+    }
+    builder.build().ok()
+}
+
+/// `path`'s text when it is a regular file of at most [`IGNORE_FILE_LIMIT`]
+/// bytes. Opened without following a symlink and without blocking, so a
+/// FIFO in its place fails instead of hanging.
+#[cfg(unix)]
+fn read_small_regular(path: &Path) -> Option<String> {
+    use rustix::fs::{FileType, Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let fd = rustix::fs::open(path, flags, Mode::empty()).ok()?;
+    let stat = rustix::fs::fstat(&fd).ok()?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || u64::try_from(stat.st_size).ok()? > IGNORE_FILE_LIMIT
+    {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::from(fd)
+        .take(IGNORE_FILE_LIMIT)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
+}
+
+#[cfg(not(unix))]
+fn read_small_regular(path: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > IGNORE_FILE_LIMIT {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(IGNORE_FILE_LIMIT)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
 }
 
 /// A thread the `@` menu can offer, from the inbox list.
@@ -303,18 +320,6 @@ pub fn mention_matches(query: &str, ctx: &MentionContext<'_>) -> Vec<MentionEntr
                     kind: MentionKind::Changes,
                 });
             }
-        }
-        if index.git
-            && (query.is_empty()
-                || fuzzy_score(query, "diff").is_some()
-                || fuzzy_score(query, "changes").is_some())
-        {
-            out.push(MentionEntry {
-                uri: MentionUri::GitDiff { cwd: root.clone() },
-                label: "diff".into(),
-                detail: "Uncommitted changes".into(),
-                kind: MentionKind::Changes,
-            });
         }
         let inline;
         let ranked = match ctx.ranking {
@@ -654,12 +659,12 @@ pub fn needs_root(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn index(files: &[&str]) -> FileIndex {
         FileIndex::from_files(
             PathBuf::from("/repo"),
             files.iter().map(|s| s.to_string()).collect(),
-            true,
             false,
         )
     }
@@ -742,7 +747,11 @@ mod tests {
             }
         );
         let all = mention_matches("", &ctx);
-        assert_eq!(all[0].kind, MentionKind::Changes);
+        // The git diff is not offered: producing it means running git.
+        assert!(
+            all.iter()
+                .all(|r| !matches!(r.uri, MentionUri::GitDiff { .. }))
+        );
         assert!(all.iter().any(|r| r.label == "src/"));
         assert!(!all.iter().any(|r| r.label == "Current"));
     }
@@ -780,18 +789,31 @@ mod tests {
         std::fs::write(dir.join("node_modules/x/i.js"), "").unwrap();
         std::fs::write(dir.join(".hidden"), "").unwrap();
         let walked = FileIndex::build(&dir);
-        assert!(!walked.git);
-        assert_eq!(walked.files, ["src/a.rs"]);
+        assert_eq!(walked.files, [".hidden", "src/a.rs"]);
         assert_eq!(walked.dirs, ["src"]);
 
-        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output();
-        if git(&["init", "-q"]).is_ok_and(|o| o.status.success()) {
-            std::fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
-            std::fs::write(dir.join("ignored.txt"), "").unwrap();
-            let listed = FileIndex::build(&dir);
-            assert!(listed.git);
-            assert!(listed.files.contains(&"src/a.rs".to_string()));
-            assert!(!listed.files.contains(&"ignored.txt".to_string()));
+        // `.gitignore` files and `.git/info/exclude` hold, nested ones too,
+        // with negation; no git process is involved.
+        std::fs::create_dir_all(dir.join(".git/info")).unwrap();
+        std::fs::write(dir.join(".git/info/exclude"), "local.txt\n").unwrap();
+        std::fs::write(dir.join(".gitignore"), "ignored.txt\n*.log\n").unwrap();
+        std::fs::write(dir.join("src/.gitignore"), "!keep.log\n").unwrap();
+        for f in ["ignored.txt", "local.txt", "x.log", "src/keep.log"] {
+            std::fs::write(dir.join(f), "").unwrap();
+        }
+        let listed = FileIndex::build(&dir);
+        assert!(listed.files.contains(&"src/a.rs".to_string()));
+        assert!(
+            listed.files.contains(&"src/keep.log".to_string()),
+            "{:?}",
+            listed.files
+        );
+        for gone in ["ignored.txt", "local.txt", "x.log"] {
+            assert!(
+                !listed.files.contains(&gone.to_string()),
+                "{gone}: {:?}",
+                listed.files
+            );
         }
 
         let mut cache = IndexCache::default();
@@ -822,7 +844,6 @@ mod tests {
         git(&["add", "."]).unwrap();
         git(&["config", "core.fsmonitor", &script.to_string_lossy()]).unwrap();
         let listed = FileIndex::build(&repo);
-        assert!(listed.git);
         assert_eq!(listed.files, ["a.txt"]);
         assert!(!marker.exists(), "a repository-configured command ran");
     }
@@ -861,5 +882,59 @@ mod tests {
         assert!(fuzzy_score("READ", "docs/Readme.md").is_some());
         assert!(fuzzy_score("über", "src/Über.rs").is_some());
         assert!(fuzzy_score("rdm", "README.md") > fuzzy_score("rdm", "src/r/d/m.txt"));
+    }
+
+    /// Ignore files a checkout swaps for FIFOs (or that never finish) cannot
+    /// hang the listing: it returns within its deadline, and starts no
+    /// process.
+    #[test]
+    fn listing_never_hangs_on_fifo_ignore_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&repo).args(args).output();
+        if !git(&["init", "-q"]).is_ok_and(|o| o.status.success()) {
+            return; // no git on this machine
+        }
+        // A config include that never finishes reading.
+        let include = tmp.path().join("include.fifo");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&include)
+                .status()
+                .unwrap()
+                .success()
+        );
+        git(&["config", "include.path", &include.to_string_lossy()]).unwrap();
+        std::fs::create_dir_all(repo.join(".git/info")).unwrap();
+        let _ = std::fs::remove_file(repo.join(".git/info/exclude"));
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "").unwrap();
+        for fifo in [
+            repo.join(".gitignore"),
+            repo.join(".git/info/exclude"),
+            repo.join("src/.gitignore"),
+        ] {
+            assert!(
+                Command::new("mkfifo")
+                    .arg(&fifo)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = repo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(FileIndex::build(&root));
+        });
+        let listed = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the listing hung on a FIFO ignore file");
+        assert!(
+            listed.files.contains(&"src/a.rs".to_string()),
+            "{:?}",
+            listed.files
+        );
     }
 }
