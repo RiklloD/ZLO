@@ -8,11 +8,12 @@
 //! Containment ([`fs`]): host paths are read only below the message's vetted
 //! `mention_roots`, opened component by component without following
 //! symlinks, never when the sensitivity policy flags them, and never through
-//! a hard link. Without roots nothing on disk is read. Git runs hardened
-//! ([`git`]): a repository's config cannot make it execute anything. A diff
-//! covers only the mentioned folder's subtree, file by file, and withholds
-//! sensitive files. Thread mentions resolve only against the caller's own
-//! threads ([`ThreadDigests`]).
+//! a hard link. Without roots nothing on disk is read, and nothing here
+//! runs `git` or any other program: a checkout's config can name commands
+//! (filters, fsmonitor, a lazy-fetch transport) that would run on its
+//! behalf. So git diff mentions are refused until the diff can be computed
+//! in-process, and folders are listed through descriptors. Thread mentions
+//! resolve only against the caller's own threads ([`ThreadDigests`]).
 //!
 //! Bounds: every block is size-capped, and the whole message, wrapper and
 //! markers included, stays within the limit the caller passes (the native
@@ -25,8 +26,6 @@
 
 #[cfg(unix)]
 mod fs;
-#[cfg(unix)]
-mod git;
 
 use std::path::Path;
 
@@ -36,8 +35,6 @@ use ironclaw_product_contracts::mention::{
     mention_parts, strip_mention_context,
 };
 use ironclaw_safety::LeakDetector;
-#[cfg(unix)]
-use ironclaw_safety::sensitive_paths::is_sensitive_path_str;
 #[cfg(unix)]
 use tokio::io::AsyncReadExt as _;
 
@@ -65,12 +62,6 @@ const TREE_ENTRIES: usize = 300;
 #[cfg(unix)]
 /// Folder levels a listing descends.
 const TREE_DEPTH: usize = 4;
-#[cfg(unix)]
-/// Largest git diff that is inlined.
-const DIFF_BYTES: usize = 32 * 1024;
-#[cfg(unix)]
-/// Changed files one diff mention considers.
-const DIFF_FILES: usize = 200;
 /// Exchanges (user + assistant messages) a thread mention carries.
 const THREAD_MESSAGES: usize = 8;
 /// Characters kept of each message of a mentioned thread.
@@ -80,11 +71,7 @@ const MAX_MENTIONS: usize = 24;
 /// Smallest room worth opening a context block for.
 const MIN_CONTEXT: usize = 256;
 /// The wrapper's source line.
-const CONTEXT_SOURCE: &str = "files, folders, threads and diffs the user @-mentioned";
-#[cfg(unix)]
-/// Folders a listing never descends into when git cannot say what's ignored.
-const HEAVY_DIRS: [&str; 6] = ["node_modules", "target", ".git", "dist", "build", ".venv"];
-
+const CONTEXT_SOURCE: &str = "files, folders and threads the user @-mentioned";
 /// Which runtime takes the message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MentionRuntime {
@@ -222,11 +209,18 @@ async fn expand_one(
 async fn path_block(span: &MentionSpan, roots: &Roots, runtime: MentionRuntime) -> String {
     let label = &span.label;
     let uri = &span.uri;
+    if let MentionUri::GitDiff { .. } = uri {
+        // Producing a diff means running git, which a checkout's config can
+        // turn into running its own programs.
+        return format!(
+            "@{label}: not expanded (git diff mentions are not available; mention the changed files instead)."
+        );
+    }
     let Some(raw) = uri.path() else {
         return format!("@{label}: nothing to expand.");
     };
     let want = match uri {
-        MentionUri::Directory { .. } | MentionUri::GitDiff { .. } => Want::Dir,
+        MentionUri::Directory { .. } => Want::Dir,
         _ => Want::File,
     };
     let opened = match roots.open(raw, want) {
@@ -241,8 +235,10 @@ async fn path_block(span: &MentionSpan, roots: &Roots, runtime: MentionRuntime) 
             file_block(label, opened, Some(*range), MentionRuntime::Loop).await
         }
         MentionUri::Directory { .. } => dir_block(label, opened, runtime).await,
-        MentionUri::GitDiff { .. } => diff_block(label, opened).await,
-        MentionUri::Thread { .. } | MentionUri::Skill { .. } | MentionUri::Extension { .. } => {
+        MentionUri::GitDiff { .. }
+        | MentionUri::Thread { .. }
+        | MentionUri::Skill { .. }
+        | MentionUri::Extension { .. } => {
             format!("@{label}: nothing to expand.")
         }
     }
@@ -301,25 +297,19 @@ async fn dir_block(label: &str, opened: fs::Opened, runtime: MentionRuntime) -> 
     if runtime == MentionRuntime::Cli {
         return format!("@{label}: folder {shown}. List or read it from disk as needed.");
     }
-    let listed = git::run(
-        &path,
-        &[
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ],
-        512 * 1024,
-    )
-    .await;
-    if swapped(&opened, &path) {
-        return format!("@{label} ({shown}): not expanded (folder changed while reading).");
-    }
-    let (entries, complete) = match listed {
-        Some(out) => tree_from_files(&nul_list(&out)),
-        None => walk(&path).await,
+    // Listed through descriptors from the opened folder, off the runtime.
+    let fd = opened.fd;
+    let walked =
+        tokio::task::spawn_blocking(move || fs::list(&fd, TREE_DEPTH, TREE_ENTRIES * 4)).await;
+    let Ok((files, walk_complete)) = walked else {
+        return format!("@{label} ({shown}): unreadable.");
     };
+    let files: Vec<String> = files
+        .into_iter()
+        .map(|f| f.trim_end_matches('/').to_string())
+        .collect();
+    let (entries, tree_complete) = tree_from_files(&files);
+    let complete = walk_complete && tree_complete;
     let more = if complete {
         String::new()
     } else {
@@ -329,111 +319,6 @@ async fn dir_block(label: &str, opened: fs::Opened, runtime: MentionRuntime) -> 
         "@{label}: folder {shown}\n{}{more}",
         fenced(&entries.join("\n"), "")
     )
-}
-
-/// The uncommitted changes below the mentioned folder: its subtree only
-/// (`--relative`), sensitive files withheld, a patch for the rest.
-#[cfg(unix)]
-async fn diff_block(label: &str, opened: fs::Opened) -> String {
-    let cwd = opened.path.clone();
-    let shown = cwd.display();
-    const DIFF_FLAGS: [&str; 6] = [
-        "--relative",
-        "--no-renames",
-        "--no-textconv",
-        "--no-ext-diff",
-        "--ignore-submodules=all",
-        "--no-color",
-    ];
-    let mut names_args = vec!["diff", "HEAD"];
-    names_args.extend(DIFF_FLAGS);
-    names_args.extend(["--name-only", "-z"]);
-    let Some(changed) = git::run(&cwd, &names_args, 256 * 1024).await else {
-        return format!("@{label}: {shown} is not a git repository with a commit.");
-    };
-    let untracked = git::run(
-        &cwd,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
-        64 * 1024,
-    )
-    .await
-    .unwrap_or_default(); // silent-ok: the untracked list only enriches the diff
-    let (allowed, withheld) = permitted(&cwd, nul_list(&changed));
-    let (untracked, untracked_withheld) = permitted(&cwd, nul_list(&untracked));
-    let mut patch = Vec::new();
-    if !allowed.is_empty() {
-        let specs: Vec<String> = allowed.iter().map(|p| format!(":(literal){p}")).collect();
-        let mut args = vec!["diff", "HEAD"];
-        args.extend(DIFF_FLAGS);
-        args.push("--");
-        args.extend(specs.iter().map(String::as_str));
-        patch = git::run(&cwd, &args, DIFF_BYTES + 1)
-            .await
-            .unwrap_or_default(); // silent-ok: a failed patch shows as no changes
-    }
-    if swapped(&opened, &cwd) {
-        return format!("@{label} ({shown}): not expanded (folder changed while reading).");
-    }
-    let diff = String::from_utf8_lossy(&patch);
-    let (diff, cut) = truncate(&diff, DIFF_BYTES);
-    let mut out = format!("@{label}: uncommitted changes in {shown}\n");
-    if diff.trim().is_empty() {
-        out.push_str("(no changes to tracked files)\n");
-    } else {
-        out.push_str(&fenced(&diff, "diff"));
-    }
-    if cut {
-        out.push_str(&format!("\n[Diff truncated at {DIFF_BYTES} bytes.]"));
-    }
-    let withheld: Vec<String> = withheld.into_iter().chain(untracked_withheld).collect();
-    if !withheld.is_empty() {
-        out.push_str(&format!(
-            "\n[{} sensitive file(s) withheld from the diff.]",
-            withheld.len()
-        ));
-    }
-    let untracked: Vec<&str> = untracked.iter().take(50).map(String::as_str).collect();
-    if !untracked.is_empty() {
-        out.push_str(&format!("\nUntracked files: {}", untracked.join(", ")));
-    }
-    out
-}
-
-/// `paths` (relative to `cwd`, as `--relative` git prints them) split into
-/// those a diff may show and the sensitive ones it withholds.
-#[cfg(unix)]
-fn permitted(cwd: &Path, paths: Vec<String>) -> (Vec<String>, Vec<String>) {
-    let mut allowed = Vec::new();
-    let mut withheld = Vec::new();
-    for rel in paths.into_iter().take(DIFF_FILES) {
-        let inside = Path::new(&rel)
-            .components()
-            .all(|c| matches!(c, std::path::Component::Normal(_)));
-        if !inside || is_sensitive_path_str(&cwd.join(&rel).to_string_lossy()) {
-            withheld.push(rel);
-        } else {
-            allowed.push(rel);
-        }
-    }
-    (allowed, withheld)
-}
-
-/// Whether the folder at `path` is no longer the one that was opened.
-#[cfg(unix)]
-fn swapped(opened: &fs::Opened, path: &Path) -> bool {
-    let now = std::fs::symlink_metadata(path).ok().map(|m| {
-        use std::os::unix::fs::MetadataExt as _;
-        (m.dev(), m.ino())
-    });
-    now.is_none() || now != fs::identity(&opened.fd)
-}
-
-#[cfg(unix)]
-fn nul_list(out: &[u8]) -> Vec<String> {
-    out.split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| String::from_utf8_lossy(p).into_owned())
-        .collect()
 }
 
 fn thread_block(label: &str, digest: &ThreadDigest) -> String {
@@ -529,52 +414,6 @@ fn tree_from_files(files: &[String]) -> (Vec<String>, bool) {
         }
     }
     (lines, complete)
-}
-
-/// A bounded walk for folders git doesn't know; hidden and build folders
-/// are skipped.
-#[cfg(unix)]
-async fn walk(root: &Path) -> (Vec<String>, bool) {
-    let mut files = Vec::new();
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    let mut complete = true;
-    while let Some((dir, depth)) = stack.pop() {
-        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
-            continue; // silent-ok: an unreadable subfolder is left out of the listing
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            if files.len() >= TREE_ENTRIES * 4 {
-                complete = false;
-                break;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || HEAVY_DIRS.contains(&name.as_str()) {
-                continue;
-            }
-            let path = entry.path();
-            let rel = path
-                .strip_prefix(root)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or(name);
-            let is_dir = entry.file_type().await.is_ok_and(|t| t.is_dir());
-            if is_dir {
-                if depth + 1 < TREE_DEPTH {
-                    stack.push((path, depth + 1));
-                } else {
-                    complete = false;
-                }
-                files.push(format!("{rel}/"));
-            } else {
-                files.push(rel);
-            }
-        }
-    }
-    let files: Vec<String> = files
-        .into_iter()
-        .map(|f| f.trim_end_matches('/').to_string())
-        .collect();
-    let (lines, tree_complete) = tree_from_files(&files);
-    (lines, complete && tree_complete)
 }
 
 #[cfg(all(test, unix))]
@@ -829,36 +668,6 @@ mod tests {
         assert_eq!(again.matches(MENTION_CONTEXT_OPEN).count(), 1, "{again}");
     }
 
-    #[tokio::test]
-    async fn git_diff_is_inlined_and_bounded() {
-        let dir = tempfile::tempdir().unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(dir.path())
-                .args(args)
-                .output()
-                .unwrap()
-        };
-        if !git(&["init", "-q"]).status.success() {
-            return; // no git on this machine
-        }
-        git(&["config", "user.email", "t@example.com"]);
-        git(&["config", "user.name", "t"]);
-        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-qm", "init"]);
-        std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
-        std::fs::write(dir.path().join("new.txt"), "n").unwrap();
-        let link = MentionUri::GitDiff {
-            cwd: dir.path().to_string_lossy().into(),
-        }
-        .to_link("diff");
-        let out = run(&link, &[dir.path()], MentionRuntime::Cli).await;
-        assert!(out.contains("+two"), "{out}");
-        assert!(out.contains("Untracked files: new.txt"), "{out}");
-    }
-
     /// `git` in `dir`, panicking on failure; `None` without git.
     fn git_in(dir: &Path) -> Option<impl Fn(&[&str]) + '_> {
         let git = move |args: &[&str]| {
@@ -890,54 +699,93 @@ mod tests {
         .to_link("diff")
     }
 
-    /// Sharing `/repo/public` shows public's changes only, never the rest
-    /// of the repository.
+    /// A checkout set up to run a marker script from every place git could
+    /// be made to run one: a filter driver hidden behind 64 KiB of benign
+    /// config, an include, a lazy fetch through an `ext::` remote for a
+    /// missing blob, fsmonitor and textconv. Mentioning its diff or its
+    /// folder runs nothing; the diff mention is not offered at all.
     #[tokio::test]
-    async fn subdirectory_diff_stays_inside_the_shared_folder() {
+    async fn hostile_checkouts_run_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
-        std::fs::create_dir_all(repo.join("public")).unwrap();
-        std::fs::create_dir_all(repo.join("private")).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
         let Some(git) = git_in(&repo) else { return };
-        std::fs::write(repo.join("public/a.txt"), "one\n").unwrap();
-        std::fs::write(repo.join("private/b.txt"), "one\n").unwrap();
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        std::fs::write(repo.join("b.txt"), "lazy\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "init"]);
-        std::fs::write(repo.join("public/a.txt"), "one\nPUBLIC-CHANGE\n").unwrap();
-        std::fs::write(repo.join("private/b.txt"), "one\nPRIVATE-CHANGE\n").unwrap();
-        std::fs::write(repo.join("private/new.txt"), "x").unwrap();
+        let marker = dir.path().join("PWNED");
+        let script = dir.path().join("evil.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch {}\ncat\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let s = script.to_string_lossy().to_string();
+        let mut config = String::from("[filter \"pad\"]\n");
+        for _ in 0..4_000 {
+            config.push_str("\tclean = cat\n");
+        }
+        config.push_str(&format!(
+            "[filter \"evil\"]\n\tclean = {s}\n\tprocess = {s}\n[core]\n\tfsmonitor = {s}\n\
+             [diff \"evil\"]\n\ttextconv = {s}\n[remote \"origin\"]\n\turl = ext::{s}\n\
+             \tpromisor = true\n[extensions]\n\tpartialClone = origin\n[protocol \"ext\"]\n\
+             \tallow = always\n"
+        ));
+        std::fs::write(dir.path().join("included.cfg"), config).unwrap();
+        git(&[
+            "config",
+            "include.path",
+            &dir.path().join("included.cfg").to_string_lossy(),
+        ]);
+        std::fs::write(repo.join(".gitattributes"), "*.txt filter=evil diff=evil\n").unwrap();
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        // The committed blob of b.txt goes missing: a fetch would follow.
+        let blob = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-parse", "HEAD:b.txt"])
+            .output()
+            .unwrap();
+        let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+        let _ = std::fs::remove_file(repo.join(".git/objects").join(&blob[..2]).join(&blob[2..]));
+        std::fs::write(repo.join("b.txt"), "changed\n").unwrap();
 
-        let public = repo.join("public");
-        let out = run(&diff_link(&public), &[&public], MentionRuntime::Loop).await;
-        assert!(out.contains("+PUBLIC-CHANGE"), "{out}");
-        assert!(!out.contains("PRIVATE-CHANGE"), "{out}");
-        assert!(!out.contains("b.txt"), "{out}");
-        assert!(!out.contains("new.txt"), "{out}");
+        let folder = MentionUri::Directory {
+            path: repo.to_string_lossy().into(),
+        }
+        .to_link("repo");
+        let content = format!("{} {folder}", diff_link(&repo));
+        let out = run(&content, &[&repo], MentionRuntime::Loop).await;
+        assert!(!marker.exists(), "a repository-controlled program ran");
+        assert!(out.contains("a.txt"), "the folder still lists: {out}");
+        assert!(!out.contains("+two"), "{out}");
+        assert!(out.contains("git diff mentions are not available"), "{out}");
     }
 
-    /// Changed or untracked sensitive files never reach the diff, by name
-    /// rule rather than by spotting a token in their content.
+    /// A tracked file swapped for a hard link to a secret elsewhere never
+    /// reaches the model: through a diff (gone) or as a file mention.
     #[tokio::test]
-    async fn sensitive_files_are_withheld_from_diffs() {
+    async fn hard_linked_secrets_never_reach_the_model() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
-        std::fs::create_dir_all(repo.join("keys")).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
         let Some(git) = git_in(&repo) else { return };
-        std::fs::write(repo.join(".env"), "DB_PASSWORD=old\n").unwrap();
-        std::fs::write(repo.join("keys/id_rsa"), "old key\n").unwrap();
-        std::fs::write(repo.join("app.txt"), "one\n").unwrap();
-        git(&["add", "-f", "."]);
+        std::fs::write(repo.join("notes.txt"), "notes\n").unwrap();
+        git(&["add", "."]);
         git(&["commit", "-qm", "init"]);
-        std::fs::write(repo.join(".env"), "DB_PASSWORD=hunter2\n").unwrap();
-        std::fs::write(repo.join("keys/id_rsa"), "new key material\n").unwrap();
-        std::fs::write(repo.join("app.txt"), "one\nAPP-CHANGE\n").unwrap();
-        std::fs::write(repo.join("server.pem"), "untracked cert\n").unwrap();
-
-        let out = run(&diff_link(&repo), &[&repo], MentionRuntime::Loop).await;
-        assert!(out.contains("+APP-CHANGE"), "{out}");
-        for secret in ["hunter2", "DB_PASSWORD", "new key material", "server.pem"] {
-            assert!(!out.contains(secret), "{secret} leaked: {out}");
-        }
-        assert!(out.contains("3 sensitive file(s) withheld"), "{out}");
+        let secret = dir.path().join(".env");
+        std::fs::write(&secret, "DB_PASSWORD=hunter2\n").unwrap();
+        std::fs::remove_file(repo.join("notes.txt")).unwrap();
+        std::fs::hard_link(&secret, repo.join("notes.txt")).unwrap();
+        let content = format!(
+            "{} {}",
+            diff_link(&repo),
+            file(&repo.join("notes.txt"), None)
+        );
+        let out = run(&content, &[&repo], MentionRuntime::Loop).await;
+        assert!(!out.contains("hunter2"), "{out}");
     }
 }

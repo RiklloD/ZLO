@@ -5,7 +5,8 @@
 //! of its ancestors, a top-level system folder, `~/Library`, or a path the
 //! sensitivity policy flags. The desktop sends the thread's project folder.
 //!
-//! Opening: a mentioned path is reached from a descriptor held on its root,
+//! Opening: a root is itself opened from `/` without following symlinks,
+//! and that descriptor is kept. A mentioned path is reached from it,
 //! one component at a time with `O_NOFOLLOW`. A symlink anywhere below the
 //! root, swapped in before or during the open, fails the open instead of
 //! being followed. The returned descriptor is the object that gets read, so
@@ -46,15 +47,17 @@ const BROAD_ROOTS: &[&str] = &[
     "/nix",
 ];
 
-/// One vetted root: the path as the client sent it, and its canonical form.
-#[derive(Debug, Clone)]
+/// One vetted root: the path as the client sent it, its canonical form,
+/// and a descriptor on it held from vetting on.
+#[derive(Debug)]
 pub(super) struct Root {
     sent: PathBuf,
     canonical: PathBuf,
+    fd: OwnedFd,
 }
 
 /// The vetted roots of one message.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub(super) struct Roots(Vec<Root>);
 
 /// An opened mention target: the descriptor to read and its real path.
@@ -71,9 +74,19 @@ pub(super) enum Want {
     Dir,
 }
 
+const DIR_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
+/// Folders a listing never enters.
+const HEAVY_DIRS: [&str; 6] = ["node_modules", "target", ".git", "dist", "build", ".venv"];
+
 impl Roots {
     /// Keep the roots that may grant reads. `home` is the user's home
-    /// folder (canonical), which no root may contain.
+    /// folder (canonical), which no root may contain. Each kept root is
+    /// opened from `/` one component at a time without following symlinks,
+    /// and that descriptor is what every later open starts from.
     pub(super) fn vet(raw: &[String], home: Option<&Path>) -> Self {
         let home = home.and_then(|h| std::fs::canonicalize(h).ok());
         let mut out = Vec::new();
@@ -84,17 +97,26 @@ impl Roots {
             let Ok(canonical) = std::fs::canonicalize(&sent) else {
                 continue; // silent-ok: an unreadable root grants nothing
             };
-            if !canonical.is_dir() || too_broad(&canonical, home.as_deref()) {
+            if too_broad(&canonical, home.as_deref()) {
                 tracing::debug!("mention root refused");
                 continue;
             }
-            out.push(Root { sent, canonical });
+            // A symlink swapped into the path since `canonicalize` fails here.
+            let Some(fd) = from_anchor(&canonical) else {
+                tracing::debug!("mention root moved while vetted");
+                continue;
+            };
+            out.push(Root {
+                sent,
+                canonical,
+                fd,
+            });
         }
         Self(out)
     }
 
-    /// Open `raw` (absolute, as the mention names it) inside a root without
-    /// following symlinks.
+    /// Open `raw` (absolute, as the mention names it) below a root's held
+    /// descriptor without following symlinks.
     pub(super) fn open(&self, raw: &str, want: Want) -> Result<Opened, &'static str> {
         if self.0.is_empty() {
             return Err("no project folder was shared with this message");
@@ -125,16 +147,14 @@ impl Roots {
         if is_sensitive_path_str(&path.to_string_lossy()) {
             return Err("sensitive file");
         }
-        let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let mut fd = rustix::fs::open(&root.canonical, dir_flags, Mode::empty())
-            .map_err(|_| "project folder moved")?;
+        let mut fd = root.fd.try_clone().map_err(|_| "unreadable")?;
         let last = parts.len().checked_sub(1);
         for (ix, name) in parts.iter().enumerate() {
             let flags = if Some(ix) == last && want == Want::File {
                 // Non-blocking, so a FIFO swapped in cannot hang the open.
                 OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK
             } else {
-                dir_flags
+                DIR_FLAGS
             };
             fd = rustix::fs::openat(fd.as_fd(), *name, flags, Mode::empty())
                 .map_err(|_| "not found, or reached through a symlink")?;
@@ -155,6 +175,78 @@ impl Roots {
     }
 }
 
+/// `path` (canonical) opened from `/`, one no-follow component at a time.
+fn from_anchor(path: &Path) -> Option<OwnedFd> {
+    let mut fd = rustix::fs::open("/", DIR_FLAGS, Mode::empty()).ok()?;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                fd = rustix::fs::openat(fd.as_fd(), name, DIR_FLAGS, Mode::empty()).ok()?;
+            }
+            _ => return None,
+        }
+    }
+    Some(fd)
+}
+
+/// Relative paths of the files below an opened folder, read through
+/// descriptors only: subfolders are opened no-follow from their parent, so
+/// nothing outside it is listed. Hidden and build folders are skipped;
+/// `limit` bounds the entries read. Returns whether the walk was complete.
+pub(super) fn list(dir: &OwnedFd, depth: usize, limit: usize) -> (Vec<String>, bool) {
+    let mut files = Vec::new();
+    let mut complete = true;
+    let Ok(first) = dir.try_clone() else {
+        return (files, false);
+    };
+    let mut stack: Vec<(OwnedFd, String, usize)> = vec![(first, String::new(), 0)];
+    while let Some((fd, prefix, level)) = stack.pop() {
+        let Ok(entries) = rustix::fs::Dir::read_from(&fd) else {
+            complete = false;
+            continue;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                complete = false;
+                break;
+            };
+            if files.len() >= limit {
+                return (files, false);
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || HEAVY_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            let rel = format!("{prefix}{name}");
+            let kind = match entry.file_type() {
+                FileType::Unknown => rustix::fs::statat(
+                    &fd,
+                    entry.file_name(),
+                    rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+                )
+                .map(|st| FileType::from_raw_mode(st.st_mode))
+                .unwrap_or(FileType::Unknown),
+                kind => kind,
+            };
+            if kind == FileType::Directory {
+                if level + 1 >= depth {
+                    complete = false;
+                    files.push(format!("{rel}/"));
+                    continue;
+                }
+                match rustix::fs::openat(&fd, entry.file_name(), DIR_FLAGS, Mode::empty()) {
+                    Ok(sub) => stack.push((sub, format!("{rel}/"), level + 1)),
+                    Err(_) => complete = false,
+                }
+            } else {
+                files.push(rel);
+            }
+        }
+    }
+    (files, complete)
+}
+
 /// Whether `root` (canonical) would grant far more than one project.
 fn too_broad(root: &Path, home: Option<&Path>) -> bool {
     let normal = root
@@ -165,13 +257,6 @@ fn too_broad(root: &Path, home: Option<&Path>) -> bool {
         || BROAD_ROOTS.iter().any(|b| root == Path::new(b))
         || home.is_some_and(|home| home.starts_with(root) || root.starts_with(home.join("Library")))
         || is_sensitive_path_str(&root.to_string_lossy())
-}
-
-/// The identity of an opened folder, to notice it being swapped while a
-/// git process reads it by path.
-pub(super) fn identity(fd: &OwnedFd) -> Option<(u64, u64)> {
-    let stat = rustix::fs::fstat(fd).ok()?;
-    Some((stat.st_dev as u64, stat.st_ino as u64))
 }
 
 #[cfg(test)]
@@ -244,5 +329,31 @@ mod tests {
             open(project.join(".env"), Want::File).unwrap_err(),
             "sensitive file"
         );
+    }
+
+    /// The root is held as a descriptor from vetting on: an ancestor
+    /// swapped for a symlink afterwards cannot redirect later opens, which
+    /// keep reading the folder that was vetted.
+    #[test]
+    fn a_swapped_ancestor_cannot_redirect_the_root() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("code/app");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("notes.txt"), "VETTED").unwrap();
+        let decoy = home.path().join("decoy/app");
+        std::fs::create_dir_all(&decoy).unwrap();
+        std::fs::write(decoy.join("notes.txt"), "DECOY").unwrap();
+        let roots = vet(&[&project], home.path());
+        std::fs::rename(home.path().join("code"), home.path().join("code-moved")).unwrap();
+        std::os::unix::fs::symlink(home.path().join("decoy"), home.path().join("code")).unwrap();
+        let opened = roots
+            .open(&project.join("notes.txt").to_string_lossy(), Want::File)
+            .unwrap();
+        let text = std::fs::read_to_string(format!("/dev/fd/{}", {
+            use std::os::fd::AsRawFd as _;
+            opened.fd.as_raw_fd()
+        }))
+        .unwrap();
+        assert_eq!(text, "VETTED");
     }
 }
