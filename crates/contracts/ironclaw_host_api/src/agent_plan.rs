@@ -30,6 +30,11 @@ pub const QUESTION_MAX_OPTIONS: usize = 32;
 pub const QUESTION_TEXT_MAX_CHARS: usize = 2_000;
 /// Bound on one free-text answer, in characters.
 pub const ANSWER_TEXT_MAX_CHARS: usize = 8_000;
+/// Bound on a whole form, serialized: every string has its own bound, and
+/// this caps what many bounded strings add up to.
+pub const QUESTION_FORM_MAX_BYTES: usize = 64 * 1024;
+/// Bound on a whole answer, serialized.
+pub const QUESTION_ANSWER_MAX_BYTES: usize = 64 * 1024;
 /// `output_kind` of a capability display preview whose `output_preview` is
 /// an [`AgentPlan`] (`builtin.plan_update`'s result).
 pub const AGENT_PLAN_OUTPUT_KIND: &str = "agent_plan";
@@ -224,12 +229,23 @@ pub enum QuestionFieldKind {
         multi: bool,
         #[serde(default)]
         allow_other: bool,
+        /// Fewest picks a multi-choice answer may have.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_items: Option<u32>,
+        /// Most picks a multi-choice answer may have.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_items: Option<u32>,
     },
     Text {
         #[serde(default)]
         multiline: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         default: Option<String>,
+        /// Length bounds of the answer, in characters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_length: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_length: Option<u32>,
     },
     Number {
         #[serde(default)]
@@ -306,6 +322,8 @@ pub enum QuestionFormError {
     InvalidAnswer(String, &'static str),
     #[error("`{0}` is not a question in this form")]
     UnknownField(String),
+    #[error("the form or answer is too large")]
+    TooLarge,
 }
 
 impl QuestionForm {
@@ -334,6 +352,9 @@ impl QuestionForm {
             }
             field.validate()?;
         }
+        if serialized_len(self) > QUESTION_FORM_MAX_BYTES {
+            return Err(QuestionFormError::TooLarge);
+        }
         Ok(())
     }
 
@@ -345,6 +366,9 @@ impl QuestionForm {
     /// of the question's kind, choices among the options unless "Other" is
     /// allowed, and nothing answered that was not asked.
     pub fn check_answer(&self, answer: &QuestionAnswer) -> Result<(), QuestionFormError> {
+        if serialized_len(answer) > QUESTION_ANSWER_MAX_BYTES {
+            return Err(QuestionFormError::TooLarge);
+        }
         for id in answer.values.keys() {
             if self.field(id).is_none() {
                 return Err(QuestionFormError::UnknownField(id.clone()));
@@ -404,29 +428,76 @@ impl QuestionField {
         {
             return Err(self.invalid("text too long"));
         }
-        if let QuestionFieldKind::Choice {
-            options,
-            allow_other,
-            ..
-        } = &self.kind
-        {
-            if options.len() > QUESTION_MAX_OPTIONS {
-                return Err(self.invalid("too many options"));
+        match &self.kind {
+            QuestionFieldKind::Choice {
+                options,
+                multi,
+                allow_other,
+                min_items,
+                max_items,
+            } => {
+                if options.len() > QUESTION_MAX_OPTIONS {
+                    return Err(self.invalid("too many options"));
+                }
+                if options.is_empty() && !allow_other {
+                    return Err(self.invalid("no options"));
+                }
+                let short = |t: &Option<String>| {
+                    t.as_deref()
+                        .is_none_or(|t| within(t, QUESTION_TEXT_MAX_CHARS))
+                };
+                if options.iter().any(|o| {
+                    o.label.trim().is_empty()
+                        || !within(&o.label, QUESTION_TEXT_MAX_CHARS)
+                        || !short(&o.description)
+                        || !short(&o.value)
+                }) {
+                    return Err(self.invalid("bad option"));
+                }
+                // The label is what the person picks: it names one option.
+                let mut labels = std::collections::BTreeSet::new();
+                if !options.iter().all(|o| labels.insert(o.label.as_str())) {
+                    return Err(self.invalid("two options share a label"));
+                }
+                let most = self.most_picks(options.len(), *multi, *allow_other);
+                if (min_items.is_some() || max_items.is_some()) && !multi {
+                    return Err(self.invalid("pick counts only apply to multiple choice"));
+                }
+                let (min, max) = (min_items.unwrap_or(0), max_items.unwrap_or(u32::MAX));
+                if min > max || usize::try_from(min).unwrap_or(usize::MAX) > most {
+                    return Err(self.invalid("no answer can meet the pick counts"));
+                }
             }
-            if options.is_empty() && !allow_other {
-                return Err(self.invalid("no options"));
+            QuestionFieldKind::Text {
+                default,
+                min_length,
+                max_length,
+                ..
+            } => {
+                if default
+                    .as_deref()
+                    .is_some_and(|d| !within(d, ANSWER_TEXT_MAX_CHARS))
+                {
+                    return Err(self.invalid("default too long"));
+                }
+                let max_allowed = u32::try_from(ANSWER_TEXT_MAX_CHARS).unwrap_or(u32::MAX);
+                let (min, max) = (min_length.unwrap_or(0), max_length.unwrap_or(max_allowed));
+                if min > max || min > max_allowed {
+                    return Err(self.invalid("no answer can meet the length bounds"));
+                }
             }
-            if options.iter().any(|o| {
-                o.label.trim().is_empty()
-                    || !within(&o.label, QUESTION_TEXT_MAX_CHARS)
-                    || o.description
-                        .as_deref()
-                        .is_some_and(|d| !within(d, QUESTION_TEXT_MAX_CHARS))
-            }) {
-                return Err(self.invalid("bad option"));
-            }
+            QuestionFieldKind::Number { .. } | QuestionFieldKind::Boolean { .. } => {}
         }
         Ok(())
+    }
+
+    /// Most picks an answer may hold: each option once, plus one "Other".
+    fn most_picks(&self, options: usize, multi: bool, allow_other: bool) -> usize {
+        if multi {
+            options + usize::from(allow_other)
+        } else {
+            1
+        }
     }
 
     fn check(&self, value: &QuestionValue) -> Result<(), QuestionFormError> {
@@ -437,6 +508,8 @@ impl QuestionField {
                     options,
                     multi,
                     allow_other,
+                    min_items,
+                    max_items,
                 },
                 QuestionValue::Choices(picked),
             ) => {
@@ -446,22 +519,54 @@ impl QuestionField {
                 if picked.len() > 1 && !multi {
                     return wrong("only one may be picked");
                 }
+                if picked.len() > self.most_picks(options.len(), *multi, *allow_other) {
+                    return wrong("too many picks");
+                }
+                let count = u32::try_from(picked.len()).unwrap_or(u32::MAX);
+                if min_items.is_some_and(|m| count < m) || max_items.is_some_and(|m| count > m) {
+                    return wrong("wrong number of picks");
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                let mut others = 0;
                 for choice in picked {
                     if !within(choice, ANSWER_TEXT_MAX_CHARS) {
                         return wrong("answer too long");
                     }
-                    if !allow_other && !options.iter().any(|o| &o.label == choice) {
-                        return wrong("not one of the options");
+                    if !seen.insert(choice.as_str()) {
+                        return wrong("picked twice");
+                    }
+                    if !options.iter().any(|o| &o.label == choice) {
+                        others += 1;
+                        if !allow_other {
+                            return wrong("not one of the options");
+                        }
+                        if others > 1 {
+                            return wrong("only one Other answer");
+                        }
                     }
                 }
                 Ok(())
             }
-            (QuestionFieldKind::Text { .. }, QuestionValue::Text(text)) => {
+            (
+                QuestionFieldKind::Text {
+                    min_length,
+                    max_length,
+                    ..
+                },
+                QuestionValue::Text(text),
+            ) => {
                 if self.required && text.trim().is_empty() {
                     return wrong("empty");
                 }
                 if !within(text, ANSWER_TEXT_MAX_CHARS) {
                     return wrong("answer too long");
+                }
+                let len = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
+                // An optional field left empty is not held to its bounds.
+                if !text.is_empty()
+                    && (min_length.is_some_and(|m| len < m) || max_length.is_some_and(|m| len > m))
+                {
+                    return wrong("wrong length");
                 }
                 Ok(())
             }
@@ -494,6 +599,11 @@ impl QuestionField {
             _ => wrong("wrong kind of answer"),
         }
     }
+}
+
+/// Serialized size; a value that cannot serialize counts as too large.
+fn serialized_len(value: &impl Serialize) -> usize {
+    serde_json::to_vec(value).map_or(usize::MAX, |v| v.len())
 }
 
 fn within(text: &str, max_chars: usize) -> bool {
@@ -529,6 +639,8 @@ mod tests {
                     ],
                     multi: false,
                     allow_other: true,
+                    min_items: None,
+                    max_items: None,
                 },
             }],
         }
@@ -631,6 +743,198 @@ mod tests {
             answer.values["d"],
             QuestionValue::Choices(vec!["Postgres".into()])
         );
+    }
+
+    fn one_choice(options: Vec<QuestionOption>, multi: bool, allow_other: bool) -> QuestionForm {
+        QuestionForm {
+            source: None,
+            message: None,
+            fields: vec![QuestionField {
+                id: "q".into(),
+                label: "Pick".into(),
+                header: None,
+                description: None,
+                required: true,
+                kind: QuestionFieldKind::Choice {
+                    options,
+                    multi,
+                    allow_other,
+                    min_items: None,
+                    max_items: None,
+                },
+            }],
+        }
+    }
+
+    // Review finding 4: untrusted forms must be bounded in every string and
+    // in total, and multi-choice answers in count.
+    #[test]
+    fn oversized_values_defaults_and_forms_are_refused() {
+        let mut option = QuestionOption::new("A");
+        option.value = Some("v".repeat(QUESTION_TEXT_MAX_CHARS + 1));
+        assert!(
+            one_choice(vec![option], false, false).validate().is_err(),
+            "option value"
+        );
+
+        let text = QuestionForm {
+            source: None,
+            message: None,
+            fields: vec![QuestionField {
+                id: "t".into(),
+                label: "Text".into(),
+                header: None,
+                description: None,
+                required: false,
+                kind: QuestionFieldKind::Text {
+                    multiline: false,
+                    default: Some("d".repeat(ANSWER_TEXT_MAX_CHARS + 1)),
+                    min_length: None,
+                    max_length: None,
+                },
+            }],
+        };
+        assert!(text.validate().is_err(), "text default");
+
+        // Every string within its own bound, the whole form over the total.
+        let field = |i: usize| QuestionField {
+            id: format!("f{i}"),
+            label: "l".repeat(QUESTION_TEXT_MAX_CHARS),
+            header: None,
+            description: Some("d".repeat(QUESTION_TEXT_MAX_CHARS)),
+            required: false,
+            kind: QuestionFieldKind::Choice {
+                options: (0..QUESTION_MAX_OPTIONS)
+                    .map(|o| QuestionOption {
+                        label: format!("{o}{}", "o".repeat(QUESTION_TEXT_MAX_CHARS - 3)),
+                        description: None,
+                        value: None,
+                    })
+                    .collect(),
+                multi: true,
+                allow_other: false,
+                min_items: None,
+                max_items: None,
+            },
+        };
+        let huge = QuestionForm {
+            source: None,
+            message: None,
+            fields: (0..QUESTION_MAX_FIELDS).map(field).collect(),
+        };
+        assert_eq!(
+            huge.validate(),
+            Err(QuestionFormError::TooLarge),
+            "aggregate size"
+        );
+    }
+
+    #[test]
+    fn multi_choice_answers_are_capped_and_unique() {
+        let form = one_choice(
+            vec![QuestionOption::new("A"), QuestionOption::new("B")],
+            true,
+            true,
+        );
+        let pick = |c: &[&str]| QuestionAnswer {
+            values: [(
+                "q".to_string(),
+                QuestionValue::Choices(c.iter().map(|s| s.to_string()).collect()),
+            )]
+            .into(),
+        };
+        form.check_answer(&pick(&["A", "B", "mine"])).unwrap();
+        assert!(
+            form.check_answer(&pick(&["A", "A"])).is_err(),
+            "duplicate pick"
+        );
+        assert!(
+            form.check_answer(&pick(&["A", "B", "x", "y"])).is_err(),
+            "more picks than options plus one Other"
+        );
+    }
+
+    // Review finding 5: a label is what the person picks, so two options
+    // with one label would return the wrong value.
+    #[test]
+    fn duplicate_option_labels_are_refused() {
+        let mut a = QuestionOption::new("Same");
+        a.value = Some("a".into());
+        let mut b = QuestionOption::new("Same");
+        b.value = Some("b".into());
+        assert!(one_choice(vec![a, b], false, false).validate().is_err());
+    }
+
+    // Review finding 6: length and cardinality constraints are enforced.
+    #[test]
+    fn text_length_and_choice_cardinality_are_enforced() {
+        let text = QuestionForm {
+            source: None,
+            message: None,
+            fields: vec![QuestionField {
+                id: "t".into(),
+                label: "Code".into(),
+                header: None,
+                description: None,
+                required: true,
+                kind: QuestionFieldKind::Text {
+                    multiline: false,
+                    default: None,
+                    min_length: Some(3),
+                    max_length: Some(5),
+                },
+            }],
+        };
+        let say = |t: &str| QuestionAnswer {
+            values: [("t".to_string(), QuestionValue::Text(t.into()))].into(),
+        };
+        assert!(text.check_answer(&say("x")).is_err(), "under min_length");
+        assert!(
+            text.check_answer(&say("abcdef")).is_err(),
+            "over max_length"
+        );
+        text.check_answer(&say("abcd")).unwrap();
+
+        let mut multi = one_choice(
+            vec![
+                QuestionOption::new("A"),
+                QuestionOption::new("B"),
+                QuestionOption::new("C"),
+            ],
+            true,
+            false,
+        );
+        if let QuestionFieldKind::Choice {
+            min_items,
+            max_items,
+            ..
+        } = &mut multi.fields[0].kind
+        {
+            *min_items = Some(2);
+            *max_items = Some(2);
+        }
+        multi.validate().unwrap();
+        let pick = |c: &[&str]| QuestionAnswer {
+            values: [(
+                "q".to_string(),
+                QuestionValue::Choices(c.iter().map(|s| s.to_string()).collect()),
+            )]
+            .into(),
+        };
+        assert!(
+            multi.check_answer(&pick(&["A"])).is_err(),
+            "under min_items"
+        );
+        assert!(
+            multi.check_answer(&pick(&["A", "B", "C"])).is_err(),
+            "over max_items"
+        );
+        multi.check_answer(&pick(&["A", "C"])).unwrap();
+        let mut bad = multi.clone();
+        if let QuestionFieldKind::Choice { min_items, .. } = &mut bad.fields[0].kind {
+            *min_items = Some(9);
+        }
+        assert!(bad.validate().is_err(), "min_items no answer can meet");
     }
 
     #[test]

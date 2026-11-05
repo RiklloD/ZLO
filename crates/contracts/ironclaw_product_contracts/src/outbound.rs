@@ -1068,6 +1068,10 @@ pub enum ProductProjectionItem {
         run_id: TurnRunId,
         gate_ref: String,
         form: QuestionForm,
+        /// This one form closed (answered, dismissed or cut short). Several
+        /// forms can wait in one run, so closing is per `gate_ref`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        closed: bool,
     },
 }
 
@@ -1292,6 +1296,8 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 run_id: TurnRunId,
                 gate_ref: String,
                 form: QuestionForm,
+                #[serde(default)]
+                closed: bool,
             },
         }
         let value = match Wire::deserialize(deserializer)? {
@@ -1378,10 +1384,12 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 run_id,
                 gate_ref,
                 form,
+                closed,
             } => ProductProjectionItem::Question {
                 run_id,
                 gate_ref,
                 form,
+                closed,
             },
         };
         value.validate().map_err(serde::de::Error::custom)?;
@@ -2006,6 +2014,8 @@ mod tests {
                 kind: QuestionFieldKind::Text {
                     multiline: false,
                     default: None,
+                    min_length: None,
+                    max_length: None,
                 },
             }],
         };
@@ -2025,6 +2035,7 @@ mod tests {
                     run_id,
                     gate_ref: "gate:question-1".into(),
                     form: form.clone(),
+                    closed: false,
                 },
             ],
         )

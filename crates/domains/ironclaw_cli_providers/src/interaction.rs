@@ -108,6 +108,8 @@ pub fn claude_question_form(input: &Value) -> Option<QuestionForm> {
                     options: options(q.get("options"), "label"),
                     multi: q.get("multiSelect").and_then(Value::as_bool) == Some(true),
                     allow_other: true,
+                    min_items: None,
+                    max_items: None,
                 },
             })
         })
@@ -148,12 +150,16 @@ pub fn codex_question_form(params: &Value) -> Option<QuestionForm> {
                 QuestionFieldKind::Text {
                     multiline: false,
                     default: None,
+                    min_length: None,
+                    max_length: None,
                 }
             } else {
                 QuestionFieldKind::Choice {
                     options,
                     multi: false,
                     allow_other,
+                    min_items: None,
+                    max_items: None,
                 }
             };
             Some(QuestionField {
@@ -272,7 +278,26 @@ fn enum_options(prop: &Value) -> Option<Vec<QuestionOption>> {
     )
 }
 
+/// A schema's count bound (`minLength`, `maxItems`, ...); `Err` when it is
+/// there but not a count we can hold (then the request is declined).
+fn count(prop: &Value, key: &str) -> Result<Option<u32>, ()> {
+    match prop.get(key) {
+        None => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Some)
+            .ok_or(()),
+    }
+}
+
+/// The field kind of one schema property. `None` — so the whole request is
+/// declined rather than half-checked — for anything the form cannot draw or
+/// enforce: nested objects, `pattern`, and `format` (email, uri, date, ...).
 fn elicitation_kind(prop: &Value) -> Option<QuestionFieldKind> {
+    if prop.get("pattern").is_some() || prop.get("format").is_some() {
+        return None;
+    }
     let number = |key| prop.get(key).and_then(Value::as_number).cloned();
     Some(match prop.get("type").and_then(Value::as_str)? {
         "string" => match enum_options(prop) {
@@ -280,16 +305,22 @@ fn elicitation_kind(prop: &Value) -> Option<QuestionFieldKind> {
                 options,
                 multi: false,
                 allow_other: false,
+                min_items: None,
+                max_items: None,
             },
             None => QuestionFieldKind::Text {
                 multiline: false,
                 default: text(prop, "default"),
+                min_length: count(prop, "minLength").ok()?,
+                max_length: count(prop, "maxLength").ok()?,
             },
         },
         "array" => QuestionFieldKind::Choice {
             options: enum_options(prop.get("items")?)?,
             multi: true,
             allow_other: false,
+            min_items: count(prop, "minItems").ok()?,
+            max_items: count(prop, "maxItems").ok()?,
         },
         kind @ ("number" | "integer") => QuestionFieldKind::Number {
             integer: kind == "integer",
@@ -336,10 +367,55 @@ pub fn elicitation_reply(form: &QuestionForm, answer: Option<&QuestionAnswer>) -
     json!({"action": "accept", "content": content})
 }
 
+/// ACP option kinds that grant or refuse for good; never offered on a form.
+const ACP_PERSISTENT_KINDS: [&str; 2] = ["allow_always", "reject_always"];
+
+/// Whether an ACP tool call looks like a question rather than an action: a
+/// question id, a kind that names no effect, and nothing to act on (no raw
+/// input, locations, diffs or terminals).
+fn acp_is_question(call: &Value) -> bool {
+    let id = call.get("toolCallId").and_then(Value::as_str);
+    let kind = call.get("kind").and_then(Value::as_str);
+    let empty = |key: &str| {
+        call.get(key)
+            .is_none_or(|v| v.is_null() || v.as_array().is_some_and(Vec::is_empty))
+    };
+    let acts = call
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|c| {
+            matches!(
+                c.get("type").and_then(Value::as_str),
+                Some("diff" | "terminal")
+            )
+        });
+    id.is_some_and(|id| id.starts_with("interaction_"))
+        && matches!(kind, None | Some("other" | "think"))
+        && empty("rawInput")
+        && empty("locations")
+        && !acts
+}
+
 /// Antigravity asks the person with a permission request whose call id is
 /// `interaction_*`: its options are the answers. One single-choice question.
+/// `None` unless the request passes [`acp_is_question`] and offers no
+/// persistent option: anything else is an approval, so a question card can
+/// never grant a call (let alone for good) that an approval would show.
 pub fn acp_interaction_form(params: &Value) -> Option<QuestionForm> {
     let call = params.get("toolCall")?;
+    if !acp_is_question(call) {
+        return None;
+    }
+    let options = params.get("options")?.as_array()?;
+    if options.iter().any(|o| {
+        o.get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|k| ACP_PERSISTENT_KINDS.contains(&k))
+    }) {
+        return None;
+    }
     let label = text(call, "title").unwrap_or_else(|| "Antigravity asks".to_string());
     let form = QuestionForm {
         source: Some("Antigravity".into()),
@@ -351,9 +427,7 @@ pub fn acp_interaction_form(params: &Value) -> Option<QuestionForm> {
             description: None,
             required: true,
             kind: QuestionFieldKind::Choice {
-                options: params
-                    .get("options")?
-                    .as_array()?
+                options: options
                     .iter()
                     .filter_map(|o| {
                         Some(QuestionOption {
@@ -365,6 +439,8 @@ pub fn acp_interaction_form(params: &Value) -> Option<QuestionForm> {
                     .collect(),
                 multi: false,
                 allow_other: false,
+                min_items: None,
+                max_items: None,
             },
         }],
     };
@@ -461,7 +537,7 @@ mod tests {
         assert_eq!(field.header.as_deref(), Some("Library"));
         assert!(matches!(
             &field.kind,
-            QuestionFieldKind::Choice { options, multi: false, allow_other: true } if options.len() == 2
+            QuestionFieldKind::Choice { options, multi: false, allow_other: true, .. } if options.len() == 2
         ));
         let a = answer(&[(
             "Which library should we use?",
@@ -515,6 +591,54 @@ mod tests {
         assert_eq!(elicitation_reply(&form, None), json!({"action": "decline"}));
         let nested = json!({"type": "object", "properties": {"o": {"type": "object"}}});
         assert!(elicitation_form(None, None, &nested).is_none());
+    }
+
+    // Review findings 4-6, through the provider parser: what the form cannot
+    // bound or enforce is declined, and what it can is enforced.
+    #[test]
+    fn elicitation_constraints_are_enforced_or_the_request_declined() {
+        let schema = json!({"type": "object", "required": ["code", "tags"], "properties": {
+            "code": {"type": "string", "minLength": 10, "maxLength": 12},
+            "tags": {"type": "array", "minItems": 1, "maxItems": 2,
+                     "items": {"enum": ["a", "b", "c"]}}
+        }});
+        let form = elicitation_form(None, None, &schema).unwrap();
+        let ask = |code: &str, tags: &[&str]| QuestionAnswer {
+            values: [
+                ("code".to_string(), QuestionValue::Text(code.into())),
+                (
+                    "tags".to_string(),
+                    QuestionValue::Choices(tags.iter().map(|t| t.to_string()).collect()),
+                ),
+            ]
+            .into(),
+        };
+        assert!(
+            form.check_answer(&ask("x", &["a"])).is_err(),
+            "minLength 10"
+        );
+        assert!(
+            form.check_answer(&ask("0123456789", &[])).is_err(),
+            "minItems 1"
+        );
+        assert!(
+            form.check_answer(&ask("0123456789", &["a", "b", "c"]))
+                .is_err(),
+            "maxItems 2"
+        );
+        form.check_answer(&ask("0123456789", &["a", "c"])).unwrap();
+
+        for prop in [
+            json!({"type": "string", "pattern": "^[0-9]+$"}),
+            json!({"type": "string", "format": "email"}),
+            json!({"type": "string", "minLength": -1}),
+            json!({"type": "string", "default": "d".repeat(9_000)}),
+            json!({"type": "string", "enum": ["a", "b"], "enumNames": ["Same", "Same"]}),
+            json!({"type": "string", "enum": ["a", "v".repeat(3_000)]}),
+        ] {
+            let schema = json!({"type": "object", "properties": {"f": prop.clone()}});
+            assert!(elicitation_form(None, None, &schema).is_none(), "{prop}");
+        }
     }
 
     #[test]

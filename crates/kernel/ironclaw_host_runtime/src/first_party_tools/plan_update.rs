@@ -9,13 +9,15 @@ use ironclaw_host_api::agent_plan::{
     AGENT_PLAN_OUTPUT_KIND, AgentPlan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
 };
 use ironclaw_host_api::capability::{EffectKind, PermissionMode};
-use ironclaw_host_api::dispatch::CapabilityDisplayOutputPreview;
+use ironclaw_host_api::dispatch::{
+    CapabilityDisplayOutputPreview, DispatchInputIssue, DispatchInputIssueCode,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::FirstPartyCapabilityError;
 
-use super::{first_party_capability_manifest, input_error, resource_profile};
+use super::{first_party_capability_manifest, resource_profile};
 
 pub const PLAN_UPDATE_CAPABILITY_ID: &str = "builtin.plan_update";
 /// The preview must fit the projection's preview bound whole, or the
@@ -57,7 +59,14 @@ struct InputEntry {
 pub(super) fn dispatch(
     input: &Value,
 ) -> Result<(Value, Option<CapabilityDisplayOutputPreview>), FirstPartyCapabilityError> {
-    let input: Input = serde_json::from_value(input.clone()).map_err(|_| input_error())?;
+    let input: Input = serde_json::from_value(input.clone()).map_err(|error| {
+        // The serde message can quote the model's input; it stays in the log.
+        tracing::debug!(%error, "builtin.plan_update: input refused");
+        refused(
+            "The plan did not match the schema: send `entries`, each with `content` and a `status` of pending, in_progress or completed.",
+            DispatchInputIssueCode::InvalidValue,
+        )
+    })?;
     let entries = input.entries.into_iter().map(|e| {
         PlanEntry::new(e.content, e.status)
             .with_priority(e.priority)
@@ -65,11 +74,23 @@ pub(super) fn dispatch(
     });
     let plan = AgentPlan::new(entries, input.explanation, chrono::Utc::now());
     if plan.entries.is_empty() {
-        return Err(input_error());
+        return Err(refused(
+            "The plan has no steps: send at least one entry with non-empty `content`.",
+            DispatchInputIssueCode::MissingRequired,
+        ));
     }
-    let encoded = serde_json::to_string(&plan).map_err(|_| input_error())?;
+    let encoded = serde_json::to_string(&plan).map_err(|error| {
+        tracing::debug!(%error, "builtin.plan_update: plan not encoded");
+        refused(
+            "The plan could not be encoded.",
+            DispatchInputIssueCode::InvalidValue,
+        )
+    })?;
     if encoded.len() > MAX_PLAN_JSON_BYTES {
-        return Err(input_error());
+        return Err(refused(
+            "The plan is too long: use fewer, shorter steps.",
+            DispatchInputIssueCode::InvalidValue,
+        ));
     }
     let (done, total) = plan.progress();
     let summary = format!("Plan {done}/{total}");
@@ -86,6 +107,14 @@ pub(super) fn dispatch(
         truncated: false,
     };
     Ok((output, Some(preview)))
+}
+
+/// A model-visible refusal, pointing at `entries`.
+fn refused(summary: &str, code: DispatchInputIssueCode) -> FirstPartyCapabilityError {
+    FirstPartyCapabilityError::invalid_input_issues(
+        summary,
+        vec![DispatchInputIssue::new("/entries", code)],
+    )
 }
 
 #[cfg(test)]
@@ -110,6 +139,40 @@ mod tests {
         let plan: AgentPlan = serde_json::from_str(&preview.output_preview).unwrap();
         assert_eq!(plan.entries[2].priority, Some(PlanEntryPriority::High));
         assert_eq!(plan.explanation.as_deref(), Some("Found the cause"));
+    }
+
+    // Review finding 7: a refused plan keeps its cause (logged) and tells
+    // the model what to fix, instead of a bare input error.
+    #[test]
+    fn a_refused_plan_says_what_to_fix() {
+        for (input, path) in [
+            (
+                json!({"entries": [{"content": "x", "status": "maybe"}]}),
+                "/entries",
+            ),
+            (json!({"entries": []}), "/entries"),
+            (json!({"entries": [], "extra": 1}), "/entries"),
+        ] {
+            let error = dispatch(&input).unwrap_err();
+            let summary = error.safe_summary().unwrap_or_default().to_string();
+            assert!(!summary.is_empty(), "{input}: a model-visible reason");
+            let issues = match &error {
+                FirstPartyCapabilityError::Dispatch {
+                    detail: Some(detail),
+                    ..
+                } => match detail.as_ref() {
+                    ironclaw_host_api::dispatch::DispatchFailureDetail::InvalidInput { issues } => {
+                        issues.clone()
+                    }
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            assert!(
+                issues.iter().any(|i| i.path == path),
+                "{input}: an issue at {path}, got {issues:?}"
+            );
+        }
     }
 
     #[test]

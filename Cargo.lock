@@ -4034,6 +4034,7 @@ dependencies = [
  "ironclaw_safety",
  "libsql",
  "nix",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

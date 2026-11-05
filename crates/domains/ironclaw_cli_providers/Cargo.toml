@@ -26,6 +26,8 @@ ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_orchestrator = { path = "../ironclaw_orchestrator" }
 # Stop kills the CLI's whole process group (tool subprocesses included).
 nix = { version = "0.31", default-features = false, features = ["signal"] }
+# Question records are stored as typed JSON.
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
 tracing = "0.1"

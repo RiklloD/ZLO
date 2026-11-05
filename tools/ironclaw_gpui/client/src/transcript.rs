@@ -17,7 +17,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ironclaw_host_api::agent_plan::{AGENT_PLAN_OUTPUT_KIND, AgentPlan, QuestionForm};
+use ironclaw_host_api::agent_plan::{
+    AGENT_PLAN_OUTPUT_KIND, AgentPlan, QUESTION_GATE_REF_PREFIX, QuestionForm,
+};
 use ironclaw_product_contracts::outbound::{
     CapabilityActivityStatusView, CapabilityActivityView, CapabilityDisplayPreviewView,
     ProductGateKind, ProductProjectionItem,
@@ -215,6 +217,8 @@ enum Live {
     Question {
         gate_ref: String,
         form: QuestionForm,
+        /// The stream closed this one form.
+        closed: bool,
     },
 }
 
@@ -870,13 +874,21 @@ impl Transcript {
                 run_id,
                 gate_ref,
                 form,
+                closed,
             } => {
+                let key = format!("question:{gate_ref}");
+                // A close never reopens: a late open frame keeps it closed.
+                let was_closed = matches!(
+                    self.live.get(&key).map(|e| &e.item),
+                    Some(Live::Question { closed: true, .. })
+                );
                 self.upsert(
-                    format!("question:{gate_ref}"),
+                    key,
                     Some(run_id.to_string()),
                     Live::Question {
                         gate_ref: gate_ref.clone(),
                         form: form.clone(),
+                        closed: *closed || was_closed,
                     },
                 );
             }
@@ -1374,12 +1386,16 @@ impl Transcript {
                     key: key.to_string(),
                     plan: plan.clone(),
                 },
-                Live::Question { gate_ref, form } => Row::Question {
+                Live::Question {
+                    gate_ref,
+                    form,
+                    closed,
+                } => Row::Question {
                     key: key.to_string(),
                     run_id: entry.run.clone().unwrap_or_default(),
                     gate_ref: gate_ref.clone(),
                     form: form.clone(),
-                    state: self.question_state(gate_ref, entry),
+                    state: self.question_state(gate_ref, *closed, entry),
                 },
                 Live::Gate {
                     gate_ref,
@@ -1427,15 +1443,19 @@ impl Transcript {
         replies.len() > 1 && (replies.contains(&body) || replies.join("\n\n") == body)
     }
 
-    /// Like [`Self::gate_state`]: a later run status (the bridge sends one
-    /// when the question closes) or the run's end closes the form.
-    fn question_state(&self, gate_ref: &str, entry: &LiveEntry) -> QuestionState {
+    /// Closed by its own close frame, or by the run's end. A CLI run asks
+    /// several questions at once (`gate:question-*`), so only that form's
+    /// close counts there; a native run parks on one gate at a time, so a
+    /// later non-blocked run status means its gate moved on.
+    fn question_state(&self, gate_ref: &str, closed: bool, entry: &LiveEntry) -> QuestionState {
         let sent = self.question_sends.get(gate_ref).copied();
-        let superseded = entry
-            .run
-            .as_deref()
-            .and_then(|r| self.runs.get(r))
-            .is_some_and(|s| s.tick > entry.tick && !s.status.starts_with("blocked"));
+        let superseded = closed
+            || (!gate_ref.starts_with(QUESTION_GATE_REF_PREFIX)
+                && entry
+                    .run
+                    .as_deref()
+                    .and_then(|r| self.runs.get(r))
+                    .is_some_and(|s| s.tick > entry.tick && !s.status.starts_with("blocked")));
         let settled = entry
             .run
             .as_deref()
@@ -1627,6 +1647,59 @@ mod tests {
         );
     }
 
+    fn question_item(gate: &str, closed: bool) -> serde_json::Value {
+        serde_json::json!({"question": {
+            "run_id": RUN, "gate_ref": gate, "closed": closed,
+            "form": {"fields": [{"id": "q", "label": "Go?", "required": true,
+                "kind": {"type": "choice", "options": [{"label": "Yes"}]}}]}
+        }})
+    }
+
+    fn question_states(t: &Transcript) -> Vec<(String, QuestionState)> {
+        t.rows()
+            .iter()
+            .filter_map(|r| match r {
+                Row::Question {
+                    gate_ref, state, ..
+                } => Some((gate_ref.clone(), *state)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Review finding 3: closing one form closes that form only.
+    #[test]
+    fn closing_one_question_leaves_the_others_and_an_approval_open() {
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&items(serde_json::json!([
+            question_item("gate:question-a", false),
+            question_item("gate:question-b", false),
+            {"gate": {"run_id": RUN, "gate_kind": "approval", "gate_ref": "gate:cli-1",
+                      "headline": "Allow Bash?"}}
+        ])));
+        t.mark_question_sending("gate:question-a", true);
+        t.apply(&items(serde_json::json!([question_item(
+            "gate:question-a",
+            true
+        )])));
+        assert_eq!(
+            question_states(&t),
+            vec![
+                (
+                    "gate:question-a".to_string(),
+                    QuestionState::Closed(Some(true))
+                ),
+                ("gate:question-b".to_string(), QuestionState::Open),
+            ]
+        );
+        let gate = t.rows().iter().find_map(|r| match r {
+            Row::Gate { state, .. } => Some(*state),
+            _ => None,
+        });
+        assert_eq!(gate, Some(GateState::Open), "the approval still asks");
+    }
+
     #[test]
     fn a_question_is_a_form_until_answered_and_the_run_moves_on() {
         let mut t = Transcript::default();
@@ -1649,6 +1722,17 @@ mod tests {
         t.mark_question_sending("gate:question-1", true);
         assert_eq!(state(&t), Some(QuestionState::Sending(true)));
         t.apply(&status("running"));
+        assert_eq!(
+            state(&t),
+            Some(QuestionState::Sending(true)),
+            "a run status names no form; only its own close does"
+        );
+        t.apply(&items(serde_json::json!([question_item(
+            "gate:question-1",
+            true
+        )])));
+        assert_eq!(state(&t), Some(QuestionState::Closed(Some(true))));
+        t.apply(&status("completed"));
         assert_eq!(state(&t), Some(QuestionState::Closed(Some(true))));
     }
 

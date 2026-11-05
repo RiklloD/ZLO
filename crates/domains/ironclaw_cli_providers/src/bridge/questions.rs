@@ -5,17 +5,25 @@
 //! an approval gate: it is recorded in `orch_cli_approvals` while open (the
 //! inbox's "Needs you"), broadcast as a form, and ends with the person's
 //! answer, a dismissal, the words of a steer, a timeout, or the turn's end.
+//!
+//! The record holds the whole question and how it ended, typed: the form as
+//! JSON in `body` ([`QuestionRecordBody`]) and the [`QuestionOutcome`] as JSON
+//! in `reason`. An answer whose record cannot be written is not handed to
+//! the agent ([`QuestionOutcome::NotRecorded`]), the same fail-closed rule as
+//! approvals.
 
 use ironclaw_host_api::agent_plan::{AgentPlan, QuestionAnswer, QuestionForm, QuestionFormError};
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::cli_approvals::{CliApprovalDecision, CliApprovalRecord};
 use ironclaw_orchestrator::model::now_ms;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 use super::{CallClaim, CliBridge, LiveEvent, QuestionView};
 
-/// How one question ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// How one question ended. Stored as the record's `reason`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", content = "detail", rename_all = "snake_case")]
 pub enum QuestionOutcome {
     Answered(QuestionAnswer),
     /// The person dismissed the form.
@@ -25,6 +33,27 @@ pub enum QuestionOutcome {
     TimedOut,
     /// The turn ended (or no live turn was there to ask in).
     TurnEnded,
+    /// The answer came but could not be recorded, so it was not passed on.
+    NotRecorded,
+}
+
+/// What a question's record keeps as its `body`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionRecordBody {
+    pub question_form: QuestionForm,
+}
+
+/// Read a question back from its record: the form, and how it ended once it
+/// has. `None` for an approval row (or one that is not a question record).
+pub fn question_record(
+    record: &CliApprovalRecord,
+) -> Option<(QuestionForm, Option<QuestionOutcome>)> {
+    let body: QuestionRecordBody = serde_json::from_str(record.body.as_deref()?).ok()?; // silent-ok: an approval row has a plain body
+    let outcome = record
+        .reason
+        .as_deref()
+        .and_then(|r| serde_json::from_str(r).ok()); // silent-ok: an interrupted row has no typed reason
+    Some((body.question_form, outcome))
 }
 
 impl QuestionOutcome {
@@ -47,6 +76,10 @@ impl QuestionOutcome {
             }
             Self::TimedOut => "Nobody answered the question in time.".to_string(),
             Self::TurnEnded => "The turn ended before the question was answered.".to_string(),
+            Self::NotRecorded => {
+                "The answer could not be saved, so it was not passed on. Ask again if you still need it."
+                    .to_string()
+            }
         }
     }
 
@@ -55,7 +88,7 @@ impl QuestionOutcome {
             Self::Answered(_) => CliApprovalDecision::Allowed,
             Self::Declined | Self::Replied(_) => CliApprovalDecision::Declined,
             Self::TimedOut => CliApprovalDecision::TimedOut,
-            Self::TurnEnded => CliApprovalDecision::TurnEnded,
+            Self::TurnEnded | Self::NotRecorded => CliApprovalDecision::TurnEnded,
         }
     }
 }
@@ -116,12 +149,22 @@ impl CliBridge {
             form,
         };
         if let Some(ledger) = self.ledger.get() {
+            let body = QuestionRecordBody {
+                question_form: view.form.clone(),
+            };
+            let body = match serde_json::to_string(&body) {
+                Ok(body) => body,
+                Err(error) => {
+                    tracing::debug!(%error, "cli bridge: question not encoded; not asked");
+                    return QuestionOutcome::TurnEnded;
+                }
+            };
             let record = CliApprovalRecord {
                 gate_ref: view.gate_ref.clone(),
                 thread_id: thread.clone(),
                 run_id: run_id.to_string(),
                 tool_name: tool.to_string(),
-                body: view.form.fields.first().map(|f| f.label.clone()),
+                body: Some(body),
                 requested_at: now_ms(),
                 decision: None,
                 reason: None,
@@ -142,7 +185,7 @@ impl CliBridge {
             Some(turn.flush())
         });
         let Some(unsent) = registered else {
-            self.record_close(&view.gate_ref, CliApprovalDecision::TurnEnded, None)
+            self.close_question(&view.gate_ref, &QuestionOutcome::TurnEnded)
                 .await;
             return QuestionOutcome::TurnEnded;
         };
@@ -156,10 +199,12 @@ impl CliBridge {
             Ok(Err(_)) => QuestionOutcome::TurnEnded,
             Err(_) => QuestionOutcome::TimedOut,
         };
-        let note = outcome.note();
-        let reason = (!note.is_empty()).then_some(note.as_str());
-        self.record_close(&view.gate_ref, outcome.recorded(), reason)
-            .await;
+        // The record holds the answer before the agent gets it.
+        let outcome = if self.close_question(&view.gate_ref, &outcome).await {
+            outcome
+        } else {
+            QuestionOutcome::NotRecorded
+        };
         if let Ok(mut live) = self.live.lock()
             && let Some(turn) = live.get_mut(thread)
         {
@@ -167,10 +212,35 @@ impl CliBridge {
         }
         self.emit(LiveEvent::QuestionClosed {
             thread: thread.clone(),
-            run_id: run_id.to_string(),
-            gate_ref: view.gate_ref,
+            question: view,
         });
         outcome
+    }
+
+    /// Close a question's record with its typed outcome. `false` when there
+    /// is a store and the write failed; with no store there is nothing to
+    /// keep (tests, a host without the gateway).
+    async fn close_question(&self, gate_ref: &str, outcome: &QuestionOutcome) -> bool {
+        let Some(ledger) = self.ledger.get() else {
+            return true;
+        };
+        let reason = match serde_json::to_string(outcome) {
+            Ok(reason) => reason,
+            Err(error) => {
+                tracing::debug!(%error, "cli bridge: question outcome not encoded");
+                return false;
+            }
+        };
+        match ledger
+            .cli_approval_closed(gate_ref, outcome.recorded(), Some(&reason), now_ms())
+            .await
+        {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::debug!(%error, "cli bridge: question outcome not recorded");
+                false
+            }
+        }
     }
 
     /// Answer (`Some`) or dismiss (`None`) a pending question on `thread`.
@@ -233,6 +303,8 @@ mod tests {
                     options: vec![QuestionOption::new("Yes"), QuestionOption::new("No")],
                     multi: false,
                     allow_other: false,
+                    min_items: None,
+                    max_items: None,
                 },
             }],
         }
@@ -327,6 +399,57 @@ mod tests {
             assert!(outcome.answer().is_none());
             assert!(!outcome.note().is_empty());
         }
+    }
+
+    // Review finding 2: the whole form and the typed answer are durable, so
+    // they survive the backend (LLM data is never deleted).
+    #[tokio::test]
+    async fn the_full_form_and_its_answer_survive_a_reopened_store() {
+        use ironclaw_orchestrator::engine::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let open = || async {
+            let db = Arc::new(
+                libsql::Builder::new_local(dir.path().join("q.db"))
+                    .build()
+                    .await
+                    .unwrap(),
+            );
+            let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+            Engine::open_libsql(runtime, "ironclaw").await.unwrap()
+        };
+        let engine = open().await;
+        let bridge = CliBridge::new(Duration::from_secs(5));
+        bridge.record_to(engine.store().clone());
+        bridge.turn_started(&tid(), "r1");
+        let mut rx = bridge.subscribe();
+        let asker = Arc::clone(&bridge);
+        let waiting = tokio::spawn(async move {
+            let claim = asker.claim_call(&tid(), "r1");
+            asker
+                .ask(&tid(), "r1", "AskUserQuestion", form(), claim)
+                .await
+        });
+        let view = opened(&mut rx).await;
+        let mut answer = QuestionAnswer::default();
+        answer
+            .values
+            .insert("q".into(), QuestionValue::Choices(vec!["No".into()]));
+        assert_eq!(
+            bridge.answer_question(&tid(), &view.gate_ref, Some(answer.clone())),
+            Ok(true)
+        );
+        assert_eq!(
+            waiting.await.unwrap(),
+            QuestionOutcome::Answered(answer.clone())
+        );
+        drop(engine);
+
+        let reopened = open().await;
+        let rows = reopened.store().cli_approvals(&tid()).await.unwrap();
+        let row = rows.iter().find(|r| r.gate_ref == view.gate_ref).unwrap();
+        let (asked, outcome) = question_record(row).expect("a question record");
+        assert_eq!(asked, form());
+        assert_eq!(outcome, Some(QuestionOutcome::Answered(answer)));
     }
 
     #[tokio::test]

@@ -324,15 +324,17 @@ fn snapshot_events(bridge: &CliBridge, thread: &ThreadId) -> Vec<Value> {
             .as_ref()
             .and_then(|(seq, plan)| plan_item(thread, &snap.run_id, *seq, plan)),
     );
-    items.extend(snap.questions.iter().filter_map(question_item));
+    items.extend(
+        snap.questions
+            .iter()
+            .filter_map(|q| question_item(q, false)),
+    );
     envelope(thread, items).into_iter().collect()
 }
 
 fn items_for(event: &LiveEvent) -> Option<Vec<ProductProjectionItem>> {
     Some(match event {
-        LiveEvent::Started { run_id, .. }
-        | LiveEvent::GateClosed { run_id, .. }
-        | LiveEvent::QuestionClosed { run_id, .. } => {
+        LiveEvent::Started { run_id, .. } | LiveEvent::GateClosed { run_id, .. } => {
             // A later status closes an answered gate in the client.
             vec![run_status(TurnRunId::parse(run_id).ok()?, "running")]
         }
@@ -356,7 +358,10 @@ fn items_for(event: &LiveEvent) -> Option<Vec<ProductProjectionItem>> {
             seq,
             plan,
         } => vec![plan_item(thread, run_id, *seq, plan)?],
-        LiveEvent::QuestionOpened { question, .. } => vec![question_item(question)?],
+        LiveEvent::QuestionOpened { question, .. } => vec![question_item(question, false)?],
+        // Closes this form only: no run status, which would read as every
+        // older gate of the run having moved on.
+        LiveEvent::QuestionClosed { question, .. } => vec![question_item(question, true)?],
         LiveEvent::Ended { run_id, status, .. } => {
             let status = match *status {
                 "completed" | "cancelled" => *status,
@@ -501,11 +506,12 @@ fn plan_item(
     })
 }
 
-fn question_item(question: &QuestionView) -> Option<ProductProjectionItem> {
+fn question_item(question: &QuestionView, closed: bool) -> Option<ProductProjectionItem> {
     Some(ProductProjectionItem::Question {
         run_id: TurnRunId::parse(&question.run_id).ok()?,
         gate_ref: question.gate_ref.clone(),
         form: question.form.clone(),
+        closed,
     })
 }
 
@@ -588,6 +594,8 @@ mod tests {
                     options: vec![QuestionOption::new("Yes")],
                     multi: false,
                     allow_other: false,
+                    min_items: None,
+                    max_items: None,
                 },
             }],
         };
@@ -650,6 +658,23 @@ mod tests {
             waiting.await.unwrap(),
             ironclaw_cli_providers::bridge::QuestionOutcome::Answered(answer)
         );
+        // Review finding 3: the close names its own form and nothing else.
+        let closed = loop {
+            let event = events.recv().await.unwrap();
+            if matches!(event, LiveEvent::QuestionClosed { .. }) {
+                break items_for(&event).unwrap();
+            }
+        };
+        assert_eq!(closed.len(), 1, "no run status rides along: {closed:?}");
+        let ProductProjectionItem::Question {
+            gate_ref: closed_ref,
+            closed: true,
+            ..
+        } = &closed[0]
+        else {
+            panic!("a closed question item: {closed:?}");
+        };
+        assert_eq!(closed_ref, gate_ref);
         bridge.turn_ended(&thread, &run, "completed");
         let after = items(&snapshot_events(&bridge, &thread));
         assert_eq!(after.len(), 1, "only the kept plan: {after:?}");

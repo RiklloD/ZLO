@@ -460,6 +460,8 @@ mod tests {
                         options: vec![QuestionOption::new("Postgres")],
                         multi: false,
                         allow_other: true,
+                        min_items: None,
+                        max_items: None,
                     },
                 },
                 QuestionField {

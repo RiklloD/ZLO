@@ -157,10 +157,11 @@ pub enum LiveEvent {
         thread: ThreadId,
         question: QuestionView,
     },
+    /// One question closed (answered, dismissed, or cut short): the same
+    /// view it opened with, so a client closes exactly that form.
     QuestionClosed {
         thread: ThreadId,
-        run_id: String,
-        gate_ref: String,
+        question: QuestionView,
     },
 }
 
