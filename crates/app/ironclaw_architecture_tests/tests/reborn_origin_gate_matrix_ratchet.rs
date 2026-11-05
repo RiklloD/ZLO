@@ -95,6 +95,9 @@ const EXPECTED_UNGATED_SEED: &[&str] = &[
     "builtin.echo",
     "builtin.time",
     "builtin.json",
+    // Reviewed addition (PLAN-FORMS): the native agent's checklist. Pure:
+    // it validates and echoes the plan as a display preview, no I/O.
+    "builtin.plan_update",
     "builtin.trace_commons.status",
     "builtin.trace_commons.credits",
     "builtin.trace_commons.onboard",

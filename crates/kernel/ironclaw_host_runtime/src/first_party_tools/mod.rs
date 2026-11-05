@@ -12,6 +12,7 @@ mod json;
 mod memory;
 mod model_visible_output;
 mod outbound_deliver;
+mod plan_update;
 mod reply_attachment;
 mod schemas;
 mod shell;
@@ -71,6 +72,7 @@ pub use memory::{
     register_native_memory_tools,
 };
 pub use outbound_deliver::OUTBOUND_DELIVER_CAPABILITY_ID;
+pub use plan_update::PLAN_UPDATE_CAPABILITY_ID;
 pub use reply_attachment::ATTACH_WORKSPACE_FILE_TO_REPLY_CAPABILITY_ID;
 pub use shell::SHELL_CAPABILITY_ID;
 pub use skill_management::{
@@ -243,6 +245,7 @@ pub fn builtin_first_party_package() -> Result<ExtensionPackage, ExtensionError>
                 let mut capabilities = vec![
                     echo::manifest()?,
                     time::manifest()?,
+                    plan_update::manifest()?,
                     json::manifest()?,
                     http::manifest()?,
                     http::save_manifest()?,
@@ -635,6 +638,10 @@ fn builtin_first_party_base_registry() -> Result<FirstPartyCapabilityRegistry, H
     let mut registry = FirstPartyCapabilityRegistry::new()
         .with_handler(CapabilityId::new(ECHO_CAPABILITY_ID)?, handler.clone())
         .with_handler(CapabilityId::new(TIME_CAPABILITY_ID)?, handler.clone())
+        .with_handler(
+            CapabilityId::new(PLAN_UPDATE_CAPABILITY_ID)?,
+            handler.clone(),
+        )
         .with_handler(CapabilityId::new(JSON_CAPABILITY_ID)?, handler.clone())
         .with_handler(CapabilityId::new(HTTP_CAPABILITY_ID)?, handler.clone())
         .with_handler(CapabilityId::new(HTTP_SAVE_CAPABILITY_ID)?, handler.clone())
@@ -808,6 +815,7 @@ impl FirstPartyCapabilityHandler for BuiltinFirstPartyTools {
         let (output, display_preview) = match request.capability_id.as_str() {
             ECHO_CAPABILITY_ID => (echo::dispatch(&request.input)?, None),
             TIME_CAPABILITY_ID => (time::dispatch(&request.input)?, None),
+            PLAN_UPDATE_CAPABILITY_ID => plan_update::dispatch(&request.input)?,
             JSON_CAPABILITY_ID => (json::dispatch(&request).await?, None),
             HTTP_CAPABILITY_ID | HTTP_SAVE_CAPABILITY_ID => {
                 let result = http::dispatch(&request).await?;

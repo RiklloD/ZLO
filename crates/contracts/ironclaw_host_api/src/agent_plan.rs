@@ -30,6 +30,9 @@ pub const QUESTION_MAX_OPTIONS: usize = 32;
 pub const QUESTION_TEXT_MAX_CHARS: usize = 2_000;
 /// Bound on one free-text answer, in characters.
 pub const ANSWER_TEXT_MAX_CHARS: usize = 8_000;
+/// `output_kind` of a capability display preview whose `output_preview` is
+/// an [`AgentPlan`] (`builtin.plan_update`'s result).
+pub const AGENT_PLAN_OUTPUT_KIND: &str = "agent_plan";
 /// Prefix of every question gate ref (`gate:question-<id>`): a gate
 /// resolution for one carries answers, not an approval.
 pub const QUESTION_GATE_REF_PREFIX: &str = "gate:question-";
