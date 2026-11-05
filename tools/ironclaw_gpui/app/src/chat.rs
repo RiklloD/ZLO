@@ -240,14 +240,12 @@ impl ChatView {
                     InputEvent::Change => {
                         this.menu.reset();
                         inline_files::prune(&this.composer, &mut this.staged, cx);
-                        if this.menu.at_open(&this.composer, cx) {
+                        if let Some(query) = this.menu.at_query(&this.composer, cx) {
                             let root = this.mention_root(cx);
-                            menu::sync_index(
-                                root.as_deref(),
-                                |v: &mut Self| Some(&mut v.menu),
-                                this,
-                                cx,
-                            );
+                            let menu_of: fn(&mut Self) -> Option<&mut menu::ComposerMenu> =
+                                |v| Some(&mut v.menu);
+                            menu::sync_index(root.as_deref(), menu_of, this, cx);
+                            menu::rank_in_background(query, menu_of, this, cx);
                         }
                         cx.notify();
                     }

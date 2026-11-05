@@ -56,6 +56,8 @@ pub struct FileIndex {
     pub git: bool,
     /// The listing stopped at [`INDEX_LIMIT`].
     pub truncated: bool,
+    /// Unique per listing built, so a ranking names the listing it ranked.
+    pub generation: u64,
 }
 
 impl FileIndex {
@@ -80,12 +82,14 @@ impl FileIndex {
             .collect();
         dirs.sort();
         dirs.dedup();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             root,
             files,
             dirs,
             git,
             truncated,
+            generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
 }
@@ -257,6 +261,21 @@ pub struct MentionContext<'a> {
     pub selection: Option<(&'a Path, LineRange)>,
     /// The thread the composer belongs to, left out of Threads.
     pub current_thread: Option<&'a str>,
+    /// How file and folder rows are found.
+    pub ranking: Ranking<'a>,
+}
+
+/// Where the file and folder rows of the `@` menu come from.
+#[derive(Default, Clone, Copy)]
+pub enum Ranking<'a> {
+    /// Rank here and now (tests, small listings).
+    #[default]
+    Inline,
+    /// A ranking made off the UI thread: the latest one for this listing,
+    /// possibly of an earlier query while the current one is ranked.
+    Ready(&'a RankedPaths),
+    /// No ranking for this listing yet: no file or folder rows.
+    Pending,
 }
 
 /// `@` rows for `query`, section by section.
@@ -297,7 +316,17 @@ pub fn mention_matches(query: &str, ctx: &MentionContext<'_>) -> Vec<MentionEntr
                 kind: MentionKind::Changes,
             });
         }
-        let files = rank(query, &index.files, FILE_ROWS);
+        let inline;
+        let ranked = match ctx.ranking {
+            Ranking::Inline => {
+                inline = rank_paths(index, query);
+                Some(&inline)
+            }
+            Ranking::Ready(ranked) if ranked.generation == index.generation => Some(ranked),
+            Ranking::Ready(_) | Ranking::Pending => None,
+        };
+        let files: Vec<&str> =
+            ranked.map_or(Vec::new(), |r| r.files.iter().map(String::as_str).collect());
         let labels = disambiguate(&files);
         for (rel, label) in files.iter().zip(labels) {
             out.push(MentionEntry {
@@ -310,7 +339,8 @@ pub fn mention_matches(query: &str, ctx: &MentionContext<'_>) -> Vec<MentionEntr
                 kind: MentionKind::File,
             });
         }
-        let dirs = rank(query, &index.dirs, FOLDER_ROWS);
+        let dirs: Vec<&str> =
+            ranked.map_or(Vec::new(), |r| r.dirs.iter().map(String::as_str).collect());
         let labels = disambiguate(&dirs);
         for (rel, label) in dirs.iter().zip(labels) {
             out.push(MentionEntry {
@@ -363,10 +393,31 @@ fn parent(rel: &str) -> &str {
     rel.rsplit_once('/').map_or("", |(p, _)| p)
 }
 
+/// A query prepared once for scoring many candidates: lowercase, no spaces.
+struct Prepared {
+    chars: Vec<char>,
+    text: String,
+    ascii: bool,
+}
+
+impl Prepared {
+    fn new(query: &str) -> Self {
+        let chars: Vec<char> = query
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect();
+        let text: String = chars.iter().collect();
+        let ascii = text.is_ascii();
+        Self { chars, text, ascii }
+    }
+}
+
 /// The best `limit` of `paths` for `query`. An empty query keeps the
 /// shallowest, shortest paths.
 pub fn rank<'a>(query: &str, paths: &'a [String], limit: usize) -> Vec<&'a str> {
-    let mut scored: Vec<(i32, &str)> = if query.is_empty() {
+    let prepared = Prepared::new(query);
+    let mut scored: Vec<(i32, &str)> = if prepared.chars.is_empty() {
         paths
             .iter()
             .map(|p| {
@@ -377,7 +428,7 @@ pub fn rank<'a>(query: &str, paths: &'a [String], limit: usize) -> Vec<&'a str> 
     } else {
         paths
             .iter()
-            .filter_map(|p| fuzzy_score(query, p).map(|s| (s, p.as_str())))
+            .filter_map(|p| score(&prepared, p).map(|s| (s, p.as_str())))
             .collect()
     };
     let cmp = |a: &(i32, &str), b: &(i32, &str)| b.0.cmp(&a.0).then(a.1.cmp(b.1));
@@ -389,48 +440,101 @@ pub fn rank<'a>(query: &str, paths: &'a [String], limit: usize) -> Vec<&'a str> 
     scored.into_iter().map(|(_, p)| p).collect()
 }
 
+/// The file and folder rows of one `@` query against one listing. Ranking
+/// a large listing is the menu's one costly step, so the app runs this off
+/// the UI thread and keeps the result for its `(generation, query)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedPaths {
+    pub generation: u64,
+    pub query: String,
+    pub files: Vec<String>,
+    pub dirs: Vec<String>,
+}
+
+impl RankedPaths {
+    /// Whether this is the ranking of `query` against `index`.
+    pub fn is_for(&self, index: &FileIndex, query: &str) -> bool {
+        self.generation == index.generation && self.query == query.trim()
+    }
+}
+
+/// Rank `index` for `query`. Blocking: run it off the UI thread.
+pub fn rank_paths(index: &FileIndex, query: &str) -> RankedPaths {
+    let query = query.trim();
+    let own = |v: Vec<&str>| v.into_iter().map(str::to_string).collect();
+    RankedPaths {
+        generation: index.generation,
+        query: query.to_string(),
+        files: own(rank(query, &index.files, FILE_ROWS)),
+        dirs: own(rank(query, &index.dirs, FOLDER_ROWS)),
+    }
+}
+
 /// Fuzzy score of `query` against a path (higher is better), `None` when its
 /// characters do not all appear in order. A match inside the file name beats
 /// one spread over folders; word starts and runs score extra.
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
-    let query: Vec<char> = query
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect();
-    if query.is_empty() {
+    score(&Prepared::new(query), candidate)
+}
+
+/// [`fuzzy_score`] for a prepared query; allocates nothing for ASCII names.
+fn score(query: &Prepared, candidate: &str) -> Option<i32> {
+    if query.chars.is_empty() {
         return Some(0);
     }
     let name_start = candidate.rfind('/').map_or(0, |i| i + 1);
     let name = &candidate[name_start..];
-    let lower_name: String = name.to_lowercase();
-    let query_text: String = query.iter().collect();
-    let mut bonus = 0;
-    if lower_name == query_text {
-        bonus += 1_000;
-    } else if lower_name.starts_with(&query_text) {
-        bonus += 400;
-    } else if lower_name.contains(&query_text) {
-        bonus += 200;
-    }
-    let in_name = subsequence(&query, name).map(|s| s + 300);
-    let anywhere = subsequence(&query, candidate);
+    let q = query.text.as_str();
+    let (equal, prefix, inside) = if query.ascii && name.is_ascii() {
+        (
+            name.eq_ignore_ascii_case(q),
+            name.get(..q.len())
+                .is_some_and(|p| p.eq_ignore_ascii_case(q)),
+            contains_ignore_ascii_case(name, q),
+        )
+    } else {
+        let lower = name.to_lowercase();
+        (lower == q, lower.starts_with(q), lower.contains(q))
+    };
+    let bonus = if equal {
+        1_000
+    } else if prefix {
+        400
+    } else if inside {
+        200
+    } else {
+        0
+    };
+    let in_name = subsequence(&query.chars, name).map(|s| s + 300);
+    let anywhere = subsequence(&query.chars, candidate);
     let best = in_name.max(anywhere)?;
     Some(best + bonus - (candidate.len() as i32) / 4)
 }
 
+fn contains_ignore_ascii_case(hay: &str, needle: &str) -> bool {
+    needle.is_empty()
+        || hay
+            .as_bytes()
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 /// Greedy in-order match of `query` (lowercase) in `text`.
 fn subsequence(query: &[char], text: &str) -> Option<i32> {
-    let chars: Vec<char> = text.chars().collect();
     let mut score = 0;
     let mut qi = 0;
     let mut last: Option<usize> = None;
-    for (i, c) in chars.iter().enumerate() {
+    let mut prev: Option<char> = None;
+    for (i, c) in text.chars().enumerate() {
         if qi == query.len() {
             break;
         }
-        if c.to_lowercase().eq(std::iter::once(query[qi])) {
-            let prev = i.checked_sub(1).map(|p| chars[p]);
+        let hit = if c.is_ascii() {
+            c.to_ascii_lowercase() == query[qi]
+        } else {
+            c.to_lowercase().eq(std::iter::once(query[qi]))
+        };
+        if hit {
             let boundary = prev.is_none_or(|p| {
                 matches!(p, '/' | '_' | '-' | '.' | ' ') || (p.is_lowercase() && c.is_uppercase())
             });
@@ -446,6 +550,7 @@ fn subsequence(query: &[char], text: &str) -> Option<i32> {
             last = Some(i);
             qi += 1;
         }
+        prev = Some(c);
     }
     (qi == query.len()).then_some(score)
 }
@@ -619,6 +724,7 @@ mod tests {
             threads: &threads,
             selection: None,
             current_thread: Some("t2"),
+            ranking: Ranking::Inline,
         };
         let rows = mention_matches("mod", &ctx);
         let kinds: Vec<MentionKind> = rows.iter().map(|r| r.kind).collect();
@@ -719,5 +825,41 @@ mod tests {
         assert!(listed.git);
         assert_eq!(listed.files, ["a.txt"]);
         assert!(!marker.exists(), "a repository-configured command ran");
+    }
+
+    #[test]
+    fn rankings_are_keyed_to_their_listing_and_query() {
+        let a = index(&["src/menu.rs", "src/main.rs"]);
+        let b = index(&["src/menu.rs", "src/main.rs"]);
+        assert_ne!(a.generation, b.generation);
+        let ranked = rank_paths(&a, " menu ");
+        assert!(ranked.is_for(&a, "menu"));
+        assert!(!ranked.is_for(&a, "main"));
+        assert!(!ranked.is_for(&b, "menu"));
+        assert_eq!(ranked.files[0], "src/menu.rs");
+        // A ranking of another listing contributes no rows.
+        let ctx = MentionContext {
+            index: Some(&b),
+            ranking: Ranking::Ready(&ranked),
+            ..MentionContext::default()
+        };
+        assert!(
+            mention_matches("menu", &ctx)
+                .iter()
+                .all(|r| r.kind != MentionKind::File)
+        );
+        let ctx = MentionContext {
+            index: Some(&a),
+            ranking: Ranking::Ready(&ranked),
+            ..MentionContext::default()
+        };
+        assert_eq!(mention_matches("menu", &ctx)[0].label, "menu.rs");
+    }
+
+    #[test]
+    fn scoring_matches_with_mixed_case_and_unicode() {
+        assert!(fuzzy_score("READ", "docs/Readme.md").is_some());
+        assert!(fuzzy_score("über", "src/Über.rs").is_some());
+        assert!(fuzzy_score("rdm", "README.md") > fuzzy_score("rdm", "src/r/d/m.txt"));
     }
 }

@@ -107,14 +107,12 @@ impl Workspace {
                         if let Some(draft) = this.draft.as_mut() {
                             draft.menu.reset();
                             inline_files::prune(&draft.input, &mut draft.staged, cx);
-                            if draft.menu.at_open(&draft.input, cx) {
+                            if let Some(query) = draft.menu.at_query(&draft.input, cx) {
                                 let root = crate::design::prefs::Prefs::of(cx).last_project.clone();
-                                menu::sync_index(
-                                    root.as_deref(),
-                                    |w: &mut Self| w.draft.as_mut().map(|d| &mut d.menu),
-                                    this,
-                                    cx,
-                                );
+                                let menu_of: fn(&mut Self) -> Option<&mut ComposerMenu> =
+                                    |w| w.draft.as_mut().map(|d| &mut d.menu);
+                                menu::sync_index(root.as_deref(), menu_of, this, cx);
+                                menu::rank_in_background(query, menu_of, this, cx);
                             }
                         }
                     }

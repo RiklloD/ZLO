@@ -364,3 +364,33 @@ async fn cli_thread_mentions_use_the_engines_caller_scoped_read() {
         content(1)
     );
 }
+
+/// Near the native 64 KiB message cap, what reaches the turn stays within
+/// it: the context shrinks to what fits, or is left out whole.
+#[tokio::test]
+async fn submit_near_the_message_cap_stays_within_it() {
+    const CAP: usize = 64 * 1024;
+    let dir = tempfile::tempdir().unwrap();
+    let inner = Arc::new(Recording::default());
+    let surface = OrchestratedProductSurface::new(inner.clone(), engine(dir.path()).await, None);
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("big.txt"), "data ".repeat(10_000)).unwrap();
+    let link = MentionUri::File {
+        path: project.join("big.txt").to_string_lossy().into_owned(),
+        line_range: None,
+    }
+    .to_link("big.txt");
+    let roots = vec![project.to_string_lossy().into_owned()];
+    for spare in [10, 500, 3_000, 30_000] {
+        let typed = format!("{}{link}", "x".repeat(CAP - spare - link.len()));
+        surface
+            .invoke(caller("owner"), submit("t-current", &typed, roots.clone()))
+            .await
+            .unwrap();
+    }
+    for (ix, sent) in inner.submits.lock().unwrap().iter().enumerate() {
+        let content = sent["content"].as_str().unwrap();
+        assert!(content.len() <= CAP, "send {ix}: {} > {CAP}", content.len());
+    }
+}

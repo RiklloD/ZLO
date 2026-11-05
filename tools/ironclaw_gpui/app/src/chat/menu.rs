@@ -13,7 +13,8 @@ use ironclaw_gpui_client::commands::{
     MenuItem, MenuSources, complete_mention, menu_matches_with, tab_complete, trigger_token,
 };
 use ironclaw_gpui_client::mentions::{
-    self, FileIndex, IndexCache, LineRange, MentionContext, MentionKind, ThreadEntry,
+    self, FileIndex, IndexCache, LineRange, MentionContext, MentionKind, RankedPaths, Ranking,
+    ThreadEntry,
 };
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::{Client, ClientError};
@@ -39,6 +40,15 @@ pub(crate) struct ComposerMenu {
     scroll: ScrollHandle,
     /// The project folder's listing, for `@` files and folders.
     files: Option<Arc<FileIndex>>,
+    /// The folder the listing was last asked for: a listing of another
+    /// folder that lands later is not applied.
+    files_root: Option<PathBuf>,
+    /// The latest ranking of `files`, made off the UI thread.
+    ranked: Option<Arc<RankedPaths>>,
+    /// The `(listing, query)` being ranked now, so it is not started twice.
+    ranking: Option<(u64, String)>,
+    /// The `@` query typed last, ranked once its listing lands.
+    want_query: Option<String>,
     /// Lines picked in the Changes tab, offered as an `@` selection.
     pub(crate) selection: Option<(PathBuf, LineRange)>,
     /// The thread this composer belongs to, left out of `@` threads.
@@ -69,14 +79,59 @@ impl ComposerMenu {
                 .as_ref()
                 .map(|(path, range)| (path.as_path(), *range)),
             current_thread: self.current_thread.as_deref(),
+            // Ranking a big listing never runs here, on the UI thread.
+            ranking: match &self.ranked {
+                Some(ranked) => Ranking::Ready(ranked),
+                None => Ranking::Pending,
+            },
         };
         menu_matches_with(&draft, &self.sources, &ctx)
     }
 
-    /// Whether an `@` word is being typed.
-    pub(crate) fn at_open(&self, composer: &Entity<TextareaState>, cx: &App) -> bool {
+    /// The `@` query being typed, lowercase as the menu matches it.
+    pub(crate) fn at_query(&self, composer: &Entity<TextareaState>, cx: &App) -> Option<String> {
         let draft = composer.read(cx).value();
-        trigger_token(&draft).is_some_and(|(_, token)| token.starts_with('@'))
+        let (_, token) = trigger_token(&draft)?;
+        token.strip_prefix('@').map(str::to_lowercase)
+    }
+
+    /// Point `@` files at `root`'s listing (or none).
+    fn want_root(&mut self, root: Option<PathBuf>) {
+        if self.files_root != root {
+            self.files = None;
+            self.ranked = None;
+            self.ranking = None;
+        }
+        self.files_root = root;
+    }
+
+    /// Take a listing that landed: only the one for the folder last asked
+    /// for. Returns whether it was taken.
+    fn accept_index(&mut self, index: Arc<FileIndex>) -> bool {
+        if self.files_root.as_deref() != Some(index.root.as_path()) {
+            return false;
+        }
+        if self.files.as_ref().map(|f| f.generation) != Some(index.generation) {
+            self.ranked = None;
+            self.ranking = None;
+        }
+        self.files = Some(index);
+        true
+    }
+
+    /// Take a ranking that landed: only one of the listing shown now.
+    fn accept_ranking(&mut self, ranked: RankedPaths) -> bool {
+        let current = self.files.as_ref().map(|f| f.generation);
+        if self.ranking.as_ref().map(|(g, q)| (*g, q.as_str()))
+            == Some((ranked.generation, ranked.query.as_str()))
+        {
+            self.ranking = None;
+        }
+        if current != Some(ranked.generation) {
+            return false;
+        }
+        self.ranked = Some(Arc::new(ranked));
+        true
     }
 
     /// The highlighted row, clamped to `len`.
@@ -182,22 +237,24 @@ fn insert_chip(
 
 /// Point `@` files at `root`'s listing: the cached one at once, rebuilt in
 /// the background when missing or stale. `menu_of` finds the menu again
-/// when the listing lands.
+/// when the listing lands; a listing of a folder no longer asked for is
+/// dropped.
 pub(crate) fn sync_index<V: 'static>(
     root: Option<&Path>,
     menu_of: fn(&mut V) -> Option<&mut ComposerMenu>,
     view: &mut V,
     cx: &mut Context<V>,
 ) {
-    let Some(root) = root.map(Path::to_path_buf) else {
-        if let Some(menu) = menu_of(view) {
-            menu.files = None;
-        }
+    let root = root.map(Path::to_path_buf);
+    if let Some(menu) = menu_of(view) {
+        menu.want_root(root.clone());
+    }
+    let Some(root) = root else {
         return;
     };
     let (cached, rebuild) = cx.default_global::<MentionIndexes>().0.get(&root);
-    if let Some(menu) = menu_of(view) {
-        menu.files = cached;
+    if let (Some(index), Some(menu)) = (cached, menu_of(view)) {
+        menu.accept_index(index);
     }
     if !rebuild {
         return;
@@ -211,14 +268,60 @@ pub(crate) fn sync_index<V: 'static>(
         let kept = this.update(cx, |view, cx| {
             cx.default_global::<MentionIndexes>().0.put(index);
             let (fresh, _) = cx.default_global::<MentionIndexes>().0.get(&index_root);
-            if let Some(menu) = menu_of(view) {
-                menu.files = fresh;
+            let query = menu_of(view).and_then(|menu| {
+                let taken = fresh.is_some_and(|index| menu.accept_index(index));
+                taken.then(|| menu.want_query.clone()).flatten()
+            });
+            if let Some(query) = query {
+                rank_in_background(query, menu_of, view, cx);
             }
             cx.notify();
         });
         if kept.is_err() {
             cx.update(|cx| cx.default_global::<MentionIndexes>().0.abandon(&root));
         }
+    })
+    .detach();
+}
+
+/// Rank the menu's listing for `query` off the UI thread; the menu shows
+/// its previous ranking until this one lands.
+pub(crate) fn rank_in_background<V: 'static>(
+    query: String,
+    menu_of: fn(&mut V) -> Option<&mut ComposerMenu>,
+    view: &mut V,
+    cx: &mut Context<V>,
+) {
+    let Some(menu) = menu_of(view) else {
+        return;
+    };
+    let query = query.trim().to_string();
+    menu.want_query = Some(query.clone());
+    let Some(index) = menu.files.clone() else {
+        return;
+    };
+    let key = (index.generation, query.clone());
+    if menu
+        .ranked
+        .as_ref()
+        .is_some_and(|r| r.is_for(&index, &query))
+        || menu.ranking.as_ref() == Some(&key)
+    {
+        return;
+    }
+    menu.ranking = Some(key);
+    cx.spawn(async move |this, cx| {
+        let ranked = cx
+            .background_spawn(async move { mentions::rank_paths(&index, &query) })
+            .await;
+        // silent-ok: the view closed while ranking
+        let _ = this.update(cx, |view, cx| {
+            if let Some(menu) = menu_of(view)
+                && menu.accept_ranking(ranked)
+            {
+                cx.notify();
+            }
+        });
     })
     .detach();
 }
@@ -406,5 +509,38 @@ pub(crate) fn uri_kind(uri: &mentions::MentionUri) -> MentionKind {
         U::GitDiff { .. } | U::Selection { .. } | U::Skill { .. } | U::Extension { .. } => {
             MentionKind::Changes
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listing(root: &str) -> Arc<FileIndex> {
+        Arc::new(FileIndex {
+            root: PathBuf::from(root),
+            files: vec!["menu.rs".into()],
+            generation: root.bytes().map(u64::from).sum(),
+            ..FileIndex::default()
+        })
+    }
+
+    /// A listing of folder A that lands after the menu moved to folder B is
+    /// dropped, and so is a ranking of a listing no longer shown.
+    #[test]
+    fn late_results_for_another_folder_are_dropped() {
+        let mut menu = ComposerMenu::default();
+        menu.want_root(Some(PathBuf::from("/b")));
+        assert!(!menu.accept_index(listing("/a")));
+        assert!(menu.files.is_none());
+        assert!(menu.accept_index(listing("/b")));
+        let stale = mentions::rank_paths(&listing("/a"), "menu");
+        assert!(!menu.accept_ranking(stale));
+        assert!(menu.ranked.is_none());
+        let shown = menu.files.clone().unwrap();
+        assert!(menu.accept_ranking(mentions::rank_paths(&shown, "menu")));
+        // Moving to another folder clears what was shown for the last one.
+        menu.want_root(Some(PathBuf::from("/c")));
+        assert!(menu.files.is_none() && menu.ranked.is_none());
     }
 }
