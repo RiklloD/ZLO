@@ -69,7 +69,7 @@ pub struct FileIndex {
 impl FileIndex {
     /// List `root`. Blocking: run it off the UI thread.
     pub fn build(root: &Path) -> Self {
-        let (files, truncated) = walk(root, Instant::now() + WALK_DEADLINE);
+        let (files, truncated) = walk(root, WalkLimits::new(), &mut |_| {});
         Self::from_files(root.to_path_buf(), files, truncated)
     }
 
@@ -121,48 +121,240 @@ impl IndexCache {
     }
 }
 
-/// The listing of `root`: files not ignored, relative to it, and whether
-/// it was cut (by size or deadline).
-fn walk(root: &Path, deadline: Instant) -> (Vec<String>, bool) {
-    let mut files = Vec::new();
-    let mut base = Vec::new();
-    if let Some(exclude) = ignore_file(root, &root.join(".git/info/exclude")) {
-        base.push(Arc::new(exclude));
-    }
-    let mut stack: Vec<(PathBuf, Vec<Arc<Gitignore>>)> = vec![(root.to_path_buf(), base)];
-    while let Some((dir, mut rules)) = stack.pop() {
-        if Instant::now() > deadline {
-            return (files, true);
+/// Bounds of one listing walk, checked at every entry.
+#[derive(Debug, Clone, Copy)]
+struct WalkLimits {
+    deadline: Instant,
+    /// Directory entries read in all, listed or not.
+    max_visited: usize,
+    /// Folder levels entered below the root.
+    max_depth: usize,
+}
+
+impl WalkLimits {
+    fn new() -> Self {
+        Self {
+            deadline: Instant::now() + WALK_DEADLINE,
+            max_visited: INDEX_LIMIT * 4,
+            max_depth: 32,
         }
-        if let Some(local) = ignore_file(&dir, &dir.join(".gitignore")) {
+    }
+}
+
+/// The listing of `root`: files not ignored, relative to it, and whether a
+/// bound cut it. Folders are walked depth first through descriptors: each
+/// subfolder is opened no-follow relative to its parent's descriptor and
+/// closed when done, ignore files are opened relative to their folder's
+/// descriptor, and a symlink or hard-linked file is never listed. Nothing
+/// is re-opened by path, so a folder swapped for a symlink mid-walk is not
+/// followed. `before_enter` runs just before a subfolder is opened.
+#[cfg(unix)]
+fn walk(
+    root: &Path,
+    limits: WalkLimits,
+    before_enter: &mut dyn FnMut(&Path),
+) -> (Vec<String>, bool) {
+    use rustix::fs::{Mode, OFlags};
+    // The root is the folder the person picked; below it nothing is followed.
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let Ok(fd) = rustix::fs::open(root, flags, Mode::empty()) else {
+        return (Vec::new(), false);
+    };
+    let mut walker = Walker {
+        root,
+        limits,
+        visited: 0,
+        files: Vec::new(),
+        truncated: false,
+        before_enter,
+    };
+    let mut rules = Vec::new();
+    if let Some(exclude) = exclude_rules(&fd, root, limits.deadline) {
+        rules.push(Arc::new(exclude));
+    }
+    walker.visit(&fd, root, rules, 0);
+    (walker.files, walker.truncated)
+}
+
+#[cfg(unix)]
+struct Walker<'a> {
+    root: &'a Path,
+    limits: WalkLimits,
+    visited: usize,
+    files: Vec<String>,
+    truncated: bool,
+    before_enter: &'a mut dyn FnMut(&Path),
+}
+
+#[cfg(unix)]
+impl Walker<'_> {
+    /// Whether a bound is hit; marks the walk cut when so.
+    fn spent(&mut self) -> bool {
+        if self.visited >= self.limits.max_visited
+            || self.files.len() >= INDEX_LIMIT
+            || Instant::now() >= self.limits.deadline
+        {
+            self.truncated = true;
+        }
+        self.truncated
+    }
+
+    fn visit(
+        &mut self,
+        fd: &std::os::fd::OwnedFd,
+        dir: &Path,
+        mut rules: Vec<Arc<Gitignore>>,
+        level: usize,
+    ) {
+        use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+        if self.spent() {
+            return;
+        }
+        if let Some(local) = ignore_rules_at(fd, ".gitignore", dir, self.limits.deadline) {
             rules.push(Arc::new(local));
         }
+        let Ok(entries) = rustix::fs::Dir::read_from(fd) else {
+            return; // silent-ok: an unreadable folder is left out of the listing
+        };
+        for entry in entries {
+            if self.spent() {
+                return;
+            }
+            self.visited += 1;
+            let Ok(entry) = entry else {
+                return;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let Ok(stat) = rustix::fs::statat(fd, entry.file_name(), AtFlags::SYMLINK_NOFOLLOW)
+            else {
+                continue;
+            };
+            let path = dir.join(&name);
+            match FileType::from_raw_mode(stat.st_mode) {
+                FileType::Directory => {
+                    if name.starts_with('.')
+                        || HEAVY_DIRS.contains(&name.as_str())
+                        || ignored(&rules, &path, true)
+                    {
+                        continue;
+                    }
+                    if level + 1 > self.limits.max_depth {
+                        self.truncated = true;
+                        continue;
+                    }
+                    (self.before_enter)(&path);
+                    let flags =
+                        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+                    // Swapped for a symlink since it was read: refused here.
+                    let Ok(sub) = rustix::fs::openat(fd, entry.file_name(), flags, Mode::empty())
+                    else {
+                        continue;
+                    };
+                    self.visit(&sub, &path, rules.clone(), level + 1);
+                }
+                FileType::RegularFile if stat.st_nlink == 1 => {
+                    if !ignored(&rules, &path, false)
+                        && let Ok(rel) = path.strip_prefix(self.root)
+                    {
+                        self.files.push(rel.to_string_lossy().into_owned());
+                    }
+                }
+                // Symlinks, hard-linked files, devices, FIFOs, sockets.
+                _ => {}
+            }
+        }
+    }
+}
+
+/// `.git/info/exclude` of the root, reached no-follow from its descriptor.
+#[cfg(unix)]
+fn exclude_rules(
+    root_fd: &std::os::fd::OwnedFd,
+    root: &Path,
+    deadline: Instant,
+) -> Option<Gitignore> {
+    use rustix::fs::{Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let git = rustix::fs::openat(root_fd, ".git", flags, Mode::empty()).ok()?;
+    let info = rustix::fs::openat(&git, "info", flags, Mode::empty()).ok()?;
+    ignore_rules_at(&info, "exclude", root, deadline)
+}
+
+/// The rules of ignore file `name` in the folder open as `dir_fd`, matched
+/// against paths below `base`. Read only when it is a small regular file,
+/// opened no-follow and non-blocking (a FIFO fails instead of hanging);
+/// parsing stops at the deadline.
+#[cfg(unix)]
+fn ignore_rules_at(
+    dir_fd: &std::os::fd::OwnedFd,
+    name: &str,
+    base: &Path,
+    deadline: Instant,
+) -> Option<Gitignore> {
+    use rustix::fs::{FileType, Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let fd = rustix::fs::openat(dir_fd, name, flags, Mode::empty()).ok()?;
+    let stat = rustix::fs::fstat(&fd).ok()?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || u64::try_from(stat.st_size).ok()? > IGNORE_FILE_LIMIT
+    {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::from(fd)
+        .take(IGNORE_FILE_LIMIT)
+        .read_to_string(&mut text)
+        .ok()?;
+    let mut builder = GitignoreBuilder::new(base);
+    for (n, line) in text.lines().enumerate() {
+        if n % 256 == 0 && Instant::now() >= deadline {
+            break;
+        }
+        // A line that is not a valid pattern is skipped, as git does.
+        let _ = builder.add_line(None, line);
+    }
+    builder.build().ok()
+}
+
+/// Elsewhere: a path walk with the same bounds, skipping symlinks.
+#[cfg(not(unix))]
+fn walk(
+    root: &Path,
+    limits: WalkLimits,
+    before_enter: &mut dyn FnMut(&Path),
+) -> (Vec<String>, bool) {
+    let mut files = Vec::new();
+    let mut visited = 0;
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, level)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue; // silent-ok: an unreadable folder is left out of the listing
+            continue;
         };
         for entry in entries.flatten() {
-            if files.len() >= INDEX_LIMIT {
+            visited += 1;
+            if visited > limits.max_visited
+                || files.len() >= INDEX_LIMIT
+                || Instant::now() >= limits.deadline
+            {
                 return (files, true);
             }
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
-            // A symlink is neither kind: it is never followed.
-            let is_dir = kind.is_dir();
-            if !is_dir && !kind.is_file() {
-                continue;
-            }
             let name = entry.file_name().to_string_lossy().into_owned();
-            if is_dir && (name.starts_with('.') || HEAVY_DIRS.contains(&name.as_str())) {
-                continue;
-            }
             let path = entry.path();
-            if ignored(&rules, &path, is_dir) {
-                continue;
-            }
-            if is_dir {
-                stack.push((path, rules.clone()));
-            } else if let Ok(rel) = path.strip_prefix(root) {
+            if kind.is_dir() && !name.starts_with('.') && !HEAVY_DIRS.contains(&name.as_str()) {
+                if level + 1 > limits.max_depth {
+                    return (files, true);
+                }
+                before_enter(&path);
+                stack.push((path, level + 1));
+            } else if kind.is_file()
+                && let Ok(rel) = path.strip_prefix(root)
+            {
                 files.push(rel.to_string_lossy().into_owned());
             }
         }
@@ -180,54 +372,6 @@ fn ignored(rules: &[Arc<Gitignore>], path: &Path, is_dir: bool) -> bool {
         }
     }
     false
-}
-
-/// The rules of one ignore file, read only when it is a small regular file.
-fn ignore_file(base: &Path, file: &Path) -> Option<Gitignore> {
-    let text = read_small_regular(file)?;
-    let mut builder = GitignoreBuilder::new(base);
-    for line in text.lines() {
-        // A line that is not a valid pattern is skipped, as git does.
-        let _ = builder.add_line(Some(file.to_path_buf()), line);
-    }
-    builder.build().ok()
-}
-
-/// `path`'s text when it is a regular file of at most [`IGNORE_FILE_LIMIT`]
-/// bytes. Opened without following a symlink and without blocking, so a
-/// FIFO in its place fails instead of hanging.
-#[cfg(unix)]
-fn read_small_regular(path: &Path) -> Option<String> {
-    use rustix::fs::{FileType, Mode, OFlags};
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    let fd = rustix::fs::open(path, flags, Mode::empty()).ok()?;
-    let stat = rustix::fs::fstat(&fd).ok()?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-        || u64::try_from(stat.st_size).ok()? > IGNORE_FILE_LIMIT
-    {
-        return None;
-    }
-    let mut text = String::new();
-    std::fs::File::from(fd)
-        .take(IGNORE_FILE_LIMIT)
-        .read_to_string(&mut text)
-        .ok()?;
-    Some(text)
-}
-
-#[cfg(not(unix))]
-fn read_small_regular(path: &Path) -> Option<String> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > IGNORE_FILE_LIMIT {
-        return None;
-    }
-    let mut text = String::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(IGNORE_FILE_LIMIT)
-        .read_to_string(&mut text)
-        .ok()?;
-    Some(text)
 }
 
 /// A thread the `@` menu can offer, from the inbox list.
@@ -936,5 +1080,81 @@ mod tests {
             "{:?}",
             listed.files
         );
+    }
+
+    /// A folder swapped for a symlink between being read and being entered
+    /// (made deterministic with the walk's hook) is never followed.
+    #[test]
+    #[cfg(unix)]
+    fn a_folder_swapped_for_a_symlink_is_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("child/inner.txt"), "").unwrap();
+        std::fs::write(outside.join("OUTSIDE_SENTINEL"), "").unwrap();
+        let (child, moved) = (root.join("child"), tmp.path().join("child-moved"));
+        let mut swap = |entering: &Path| {
+            if entering == child {
+                std::fs::rename(&child, &moved).unwrap();
+                std::os::unix::fs::symlink(&outside, &child).unwrap();
+            }
+        };
+        let (files, _) = walk(&root, WalkLimits::new(), &mut swap);
+        assert!(
+            files.iter().all(|f| !f.contains("OUTSIDE_SENTINEL")),
+            "{files:?}"
+        );
+    }
+
+    /// Visited entries, depth and time bound the walk, checked per entry,
+    /// and `truncated` reports a cut; hard-linked files are not listed.
+    #[test]
+    #[cfg(unix)]
+    fn walks_are_bounded_per_entry_and_skip_hard_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        for i in 0..10_000 {
+            std::fs::write(root.join(format!("f{i}")), "").unwrap();
+        }
+        let none = &mut |_: &Path| {};
+        let late = WalkLimits {
+            deadline: Instant::now(),
+            ..WalkLimits::new()
+        };
+        let (files, truncated) = walk(&root, late, none);
+        assert!(truncated && files.len() < 10_000, "{}", files.len());
+        let few = WalkLimits {
+            max_visited: 100,
+            ..WalkLimits::new()
+        };
+        let (files, truncated) = walk(&root, few, none);
+        assert!(truncated && files.len() <= 100);
+        let (files, truncated) = walk(&root, WalkLimits::new(), none);
+        assert!(!truncated && files.len() == 10_000);
+
+        let deep = tmp.path().join("deep");
+        let mut dir = deep.clone();
+        for _ in 0..5 {
+            dir = dir.join("d");
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("bottom.txt"), "").unwrap();
+        let shallow = WalkLimits {
+            max_depth: 2,
+            ..WalkLimits::new()
+        };
+        let (files, truncated) = walk(&deep, shallow, none);
+        assert!(truncated && files.is_empty());
+
+        let linked = tmp.path().join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(tmp.path().join("secret"), "").unwrap();
+        std::fs::hard_link(tmp.path().join("secret"), linked.join("innocent.txt")).unwrap();
+        std::fs::write(linked.join("plain.txt"), "").unwrap();
+        let (files, _) = walk(&linked, WalkLimits::new(), none);
+        assert_eq!(files, ["plain.txt"]);
     }
 }
