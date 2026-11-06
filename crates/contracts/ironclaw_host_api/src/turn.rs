@@ -1059,16 +1059,12 @@ impl BlockedReason {
     }
 }
 
-/// How a parked gate was answered when the run resumes without its effect.
-/// The wire value is the bare `"denied"` it has always been; a denial's
-/// feedback travels in a sibling key (see [`resume_disposition_fields`]) that
-/// readers built before it existed ignore, so rollback stays safe.
+/// How a parked gate was answered. Wire: the bare `"denied"`; feedback rides a
+/// sibling key ([`resume_disposition_fields`]) older readers ignore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateResumeDisposition {
-    /// The user explicitly declined the gate (auth OR approval). The executor
-    /// surfaces a model-visible gate-declined failure instead of re-dispatching,
-    /// carrying the user's `feedback` ("no, do X instead") when given. Feedback
-    /// never changes the decision.
+    /// The user declined the gate (auth OR approval): a model-visible failure,
+    /// never a re-dispatch. `feedback` ("no, do X instead") only explains it.
     Denied { feedback: Option<DenialFeedback> },
 }
 
@@ -1077,7 +1073,6 @@ impl GateResumeDisposition {
         Self::Denied { feedback: None }
     }
 
-    /// Stable snake_case value shared with the serde wire representation.
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Denied { .. } => "denied",
@@ -1091,9 +1086,7 @@ impl GateResumeDisposition {
     }
 }
 
-/// Alone, a disposition is only its kind. Feedback here is an error rather
-/// than silently dropped: a field that can carry feedback must use one of the
-/// `*_disposition_fields` helpers.
+/// Feedback here errors instead of vanishing: use a `*_disposition_fields` helper.
 impl Serialize for GateResumeDisposition {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if self.denial_feedback().is_some() {
@@ -1114,16 +1107,12 @@ impl<'de> Deserialize<'de> for GateResumeDisposition {
     }
 }
 
-/// `#[serde(flatten, with = ...)]` for an `Option<GateResumeDisposition>`
-/// field: writes the disposition key exactly as before, plus an additive
-/// feedback key that older readers ignore.
+/// `#[serde(flatten, with = ...)]` helpers: the old key plus an additive one.
 macro_rules! disposition_fields {
     ($module:ident, $key:literal, $feedback_key:literal) => {
-        #[doc = concat!("Keys `", $key, "` and `", $feedback_key, "`.")]
         pub mod $module {
             use super::{DenialFeedback, GateResumeDisposition};
             use serde::{Deserialize, ser::SerializeMap};
-
             pub fn serialize<S: serde::Serializer>(
                 value: &Option<GateResumeDisposition>,
                 serializer: S,
@@ -1137,7 +1126,6 @@ macro_rules! disposition_fields {
                 }
                 map.end()
             }
-
             pub fn deserialize<'de, D: serde::Deserializer<'de>>(
                 deserializer: D,
             ) -> Result<Option<GateResumeDisposition>, D::Error> {
@@ -1163,12 +1151,10 @@ disposition_fields!(
 );
 disposition_fields!(slot_disposition_fields, "disposition", "denial_feedback");
 
-/// Most characters of [`DenialFeedback`].
 pub const DENIAL_FEEDBACK_MAX_CHARS: usize = 2_000;
 
-/// What a person typed when rejecting a gated call ("no, do X instead"):
-/// trimmed, non-empty, at most [`DENIAL_FEEDBACK_MAX_CHARS`] characters, no
-/// control characters besides newline and tab. Validated on the wire too.
+/// "No, do X instead": trimmed, 1..=[`DENIAL_FEEDBACK_MAX_CHARS`] characters,
+/// no control characters but newline/tab. Validated on the wire too.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct DenialFeedback(String);

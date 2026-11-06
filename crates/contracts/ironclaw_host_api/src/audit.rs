@@ -114,8 +114,7 @@ impl AuditEnvelope {
         }
     }
 
-    /// Attach the person's feedback to a resolved denial. A no-op for any
-    /// other decision, so feedback can never ride an approval.
+    /// Attach a denial's feedback; a no-op on any other decision.
     pub fn with_denial_feedback(mut self, feedback: Option<DenialFeedback>) -> Self {
         if self.decision.kind == ApprovalDecisionKind::Denied.as_wire_str() {
             self.decision.feedback = feedback;
@@ -280,8 +279,7 @@ pub struct DecisionSummary {
     pub reason: Option<DenyReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<Principal>,
-    /// What the person said when denying an approval ("no, do X instead").
-    /// Absent on every other decision and on rows written before it existed.
+    /// A denial's "no, do X instead" (redacted at ingress); absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feedback: Option<DenialFeedback>,
 }
