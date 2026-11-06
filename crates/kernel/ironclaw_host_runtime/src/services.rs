@@ -529,6 +529,13 @@ where
         self.security_audit_sink.clone()
     }
 
+    /// The durable audit sink capability requests record into, when wired.
+    /// Composition hands it to host-coupled writers outside a capability
+    /// request (the Memory page) so their audit events land in the same log.
+    pub fn audit_sink(&self) -> Option<Arc<dyn AuditSink>> {
+        self.audit_sink.clone()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn wasm_runtime_credential_provider_captured_for_test(&self) -> bool {
         self.component_types

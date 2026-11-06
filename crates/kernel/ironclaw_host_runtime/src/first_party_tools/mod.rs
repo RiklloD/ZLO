@@ -65,7 +65,8 @@ pub use ironclaw_memory::{
 };
 pub use json::JSON_CAPABILITY_ID;
 pub use memory::{
-    MemoryToolProfile, NativeMemoryToolHandler, ensure_memory_mount, finish_memory_tool_result,
+    MemoryToolProfile, NativeMemoryToolHandler, audit_prompt_write_safety_sink,
+    ensure_memory_mount, finish_memory_tool_result,
     invocation_for_request as memory_invocation_for_request, map_memory_service_error,
     memory_tool_profiles, normalize_memory_tool_input, register_memory_tool_handler,
     register_native_memory_tools,

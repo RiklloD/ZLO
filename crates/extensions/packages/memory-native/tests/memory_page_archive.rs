@@ -414,3 +414,88 @@ async fn recreate_after_archive_keeps_new_index_on_libsql() {
     let (_storage, backend) = libsql_backend().await;
     recreate_after_archive_keeps_new_index(backend).await;
 }
+
+/// The page's save is literal (no `memory`/`daily_log` alias resolution) and a
+/// create is an atomic absent-CAS: it never overwrites an existing document,
+/// and of two racing creates exactly one wins.
+async fn owner_write_is_literal_and_creates_atomically(filesystem: Arc<dyn RootFilesystem>) {
+    use ironclaw_memory_native::OwnerWriteOutcome;
+    let service = Arc::new(NativeMemoryService::from_filesystem(filesystem, None));
+    service
+        .write(
+            invocation("alice"),
+            full_write("MEMORY.md", "standing facts", None),
+        )
+        .await
+        .unwrap();
+    // `memory` is the agent tool's alias for MEMORY.md; the page writes the
+    // literal path and leaves MEMORY.md alone.
+    let outcome = service
+        .owner_write(invocation("alice"), "memory", "a literal file", None)
+        .await
+        .unwrap();
+    assert_eq!(outcome, OwnerWriteOutcome::Written);
+    assert_eq!(
+        service
+            .owner_read(invocation("alice"), "MEMORY.md")
+            .await
+            .unwrap()
+            .content,
+        "standing facts"
+    );
+    // Creating over an existing document is a conflict.
+    assert_eq!(
+        service
+            .owner_write(invocation("alice"), "MEMORY.md", "clobber", None)
+            .await
+            .unwrap(),
+        OwnerWriteOutcome::Conflict
+    );
+    // Archive and thread scratch are refused.
+    assert!(
+        service
+            .owner_write(invocation("alice"), "archive/x.md", "x", None)
+            .await
+            .is_err()
+    );
+
+    // Two concurrent creates of one new path: exactly one is written.
+    let (a, b) = tokio::join!(
+        {
+            let service = Arc::clone(&service);
+            async move {
+                service
+                    .owner_write(invocation("alice"), "notes/race.md", "first", None)
+                    .await
+            }
+        },
+        {
+            let service = Arc::clone(&service);
+            async move {
+                service
+                    .owner_write(invocation("alice"), "notes/race.md", "second", None)
+                    .await
+            }
+        }
+    );
+    let outcomes = [a.unwrap(), b.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == OwnerWriteOutcome::Written)
+            .count(),
+        1,
+        "{outcomes:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_write_is_literal_and_creates_atomically_in_memory() {
+    owner_write_is_literal_and_creates_atomically(Arc::new(InMemoryBackend::new())).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_write_is_literal_and_creates_atomically_on_libsql() {
+    let (_storage, backend) = libsql_backend().await;
+    owner_write_is_literal_and_creates_atomically(backend).await;
+}

@@ -20,7 +20,8 @@ use ironclaw_filesystem::RootFilesystem;
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_memory::{
     DocumentMetadata, MemoryContext, MemoryDocumentPath, MemoryDocumentScope,
-    PromptSafetyAllowanceId, PromptWriteSafetyEventSink, content_bytes_sha256,
+    PromptSafetyAllowanceId, PromptSafetyReasonCode, PromptWriteSafetyEventSink,
+    content_bytes_sha256,
 };
 use ironclaw_memory::{
     MemoryInteractionMessage, MemoryInvocation, MemoryProfileSetStatus, MemoryService,
@@ -124,6 +125,18 @@ const CURATED_TRUNCATION_MARKER: &str = " (truncated)";
 /// run two facts together into one, so lines are joined with a visible
 /// separator instead.
 const CURATED_LINE_SEPARATOR: &str = "; ";
+
+/// Outcome of [`NativeMemoryService::owner_write`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerWriteOutcome {
+    Written,
+    /// The document exists (create) or changed since it was read (update);
+    /// nothing was written.
+    Conflict,
+    /// The content was refused by the prompt-write safety policy (protected
+    /// identity/system files); nothing was written.
+    RejectedBySafety,
+}
 
 pub struct NativeMemoryService {
     backend: Arc<dyn MemoryBackend>,
@@ -426,6 +439,59 @@ impl NativeMemoryService {
         path: &str,
     ) -> Result<MemoryServiceReadResponse, MemoryServiceError> {
         self.read_document_at(invocation, path).await
+    }
+
+    /// Save from the user's own Memory page: a whole document at the
+    /// **literal** path (the agent tool's `memory`/`daily_log`/… aliases are
+    /// not resolved here). `expected_content_hash: None` is a create that is
+    /// an atomic absent-CAS — it never overwrites an existing document; `Some`
+    /// replaces only that exact version. Prompt-write safety runs as for any
+    /// backend write. `archive/` and per-thread scratch are refused.
+    pub async fn owner_write(
+        &self,
+        invocation: MemoryInvocation,
+        path: &str,
+        content: &str,
+        expected_content_hash: Option<&str>,
+    ) -> Result<OwnerWriteOutcome, MemoryServiceError> {
+        reject_local_or_traversal_path(path)?;
+        let relative = path.trim_matches('/');
+        if relative.is_empty() || is_archive_path(relative) || is_thread_scoped_path(relative) {
+            return Err(MemoryServiceError::input());
+        }
+        if content.trim().is_empty() {
+            return Err(MemoryServiceError::input());
+        }
+        let (scope, context) = self.scoped_context(&invocation)?;
+        let path = document_path(&scope, relative)?;
+        let outcome = self
+            .backend
+            .compare_and_write_document_with_backend_options(
+                &context,
+                &path,
+                expected_content_hash,
+                content.as_bytes(),
+                &write_options(None),
+            )
+            .await;
+        Ok(match outcome {
+            Ok(MemoryWriteOutcome::Written) => OwnerWriteOutcome::Written,
+            Ok(MemoryWriteOutcome::Conflict) => OwnerWriteOutcome::Conflict,
+            // The content tripped this provider's prompt-write safety policy:
+            // a correctable outcome for the person editing, not a fault. The
+            // safety event itself was already recorded by the backend.
+            Err(error)
+                if [
+                    PromptSafetyReasonCode::HighRiskPromptInjection,
+                    PromptSafetyReasonCode::CriticalPromptInjection,
+                ]
+                .iter()
+                .any(|code| error.to_string().contains(code.as_str())) =>
+            {
+                OwnerWriteOutcome::RejectedBySafety
+            }
+            Err(error) => return Err(MemoryServiceError::operation_from(error)),
+        })
     }
 
     /// Every document path in the caller's scope, sorted. The flat listing

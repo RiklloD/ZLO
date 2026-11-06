@@ -21,10 +21,9 @@ use ironclaw_filesystem::RootFilesystem;
 use ironclaw_host_api::ids::{CorrelationId, InvocationId};
 use ironclaw_host_api::resource::ResourceScope;
 use ironclaw_memory::{
-    MemoryInvocation, MemoryServiceError, MemoryServiceErrorKind, MemoryServiceReadRequest,
-    MemoryServiceSearchRequest, MemoryServiceWriteRequest, MemoryWriteStatus,
+    MemoryInvocation, MemoryServiceError, MemoryServiceErrorKind, MemoryServiceSearchRequest,
 };
-use ironclaw_memory_native::NativeMemoryService;
+use ironclaw_memory_native::{NativeMemoryService, OwnerWriteOutcome};
 use ironclaw_product_contracts::hooks_catalog::{HookCatalog, HookCatalogSource};
 use ironclaw_product_contracts::memory_page::{
     MemoryArchiveOutcome, MemoryArchiveRequest, MemoryArchiveResponse, MemoryDocument,
@@ -50,9 +49,15 @@ pub(crate) struct NativeMemoryDocuments {
 }
 
 impl NativeMemoryDocuments {
-    pub(crate) fn new(filesystem: Arc<dyn RootFilesystem>) -> Self {
+    /// `prompt_safety_sink` is the redacted audit-backed sink the memory
+    /// tools use; with it, page writes to protected files record the same
+    /// safety events (and warned writes, which require one, go through).
+    pub(crate) fn new(
+        filesystem: Arc<dyn RootFilesystem>,
+        prompt_safety_sink: Option<Arc<dyn ironclaw_memory::PromptWriteSafetyEventSink>>,
+    ) -> Self {
         Self {
-            service: NativeMemoryService::from_filesystem(filesystem, None),
+            service: NativeMemoryService::from_filesystem(filesystem, prompt_safety_sink),
         }
     }
 
@@ -76,14 +81,10 @@ impl NativeMemoryDocuments {
         caller: &ProductSurfaceCaller,
         path: &str,
     ) -> Result<Option<MemoryDocument>, ProductSurfaceError> {
+        // The owner's read: archived documents are readable on the page.
         let read = match self
             .service
-            .read(
-                Self::invocation(caller),
-                MemoryServiceReadRequest {
-                    path: path.to_string(),
-                },
-            )
+            .owner_read(Self::invocation(caller), path)
             .await
         {
             Ok(read) => read,
@@ -187,43 +188,34 @@ impl MemoryDocumentsSource for NativeMemoryDocuments {
         caller: &ProductSurfaceCaller,
         request: MemoryWriteRequest,
     ) -> Result<MemoryWriteResponse, ProductSurfaceError> {
-        // A create must not overwrite: the native write is conditional only
-        // when given a hash, so check absence first and report a conflict.
-        if request.expected_content_hash.is_none()
-            && let Some(existing) = self.document(caller, &request.path).await?
-        {
-            return Ok(MemoryWriteResponse {
-                outcome: MemoryPageWriteOutcome::Conflict,
-                document: Some(existing),
-            });
-        }
-        let response = self
+        // Literal path, conditional on the hash the editor read: `None` is
+        // an atomic absent-CAS create that never overwrites, and the agent
+        // tool's `memory`/`daily_log` aliases are not resolved here.
+        let outcome = self
             .service
-            .write(
+            .owner_write(
                 Self::invocation(caller),
-                MemoryServiceWriteRequest {
-                    target: request.path.clone(),
-                    content: request.content,
-                    append: false,
-                    expected_content_hash: request.expected_content_hash,
-                    old_string: None,
-                    new_string: None,
-                    replace_all: false,
-                    metadata: None,
-                    timezone: None,
-                },
+                &request.path,
+                &request.content,
+                request.expected_content_hash.as_deref(),
             )
             .await
             .map_err(map_memory_error)?;
-        let outcome = match response.status {
-            MemoryWriteStatus::Conflict => MemoryPageWriteOutcome::Conflict,
-            _ => MemoryPageWriteOutcome::Written,
+        let outcome = match outcome {
+            OwnerWriteOutcome::Written => MemoryPageWriteOutcome::Written,
+            OwnerWriteOutcome::Conflict => MemoryPageWriteOutcome::Conflict,
+            OwnerWriteOutcome::RejectedBySafety => {
+                return Err(ProductSurfaceError::validation(
+                    "content",
+                    ProductSurfaceValidationCode::InvalidValue,
+                ));
+            }
         };
         // Read back: the saved document (or the current one on a conflict)
         // is the evidence the editor shows.
         Ok(MemoryWriteResponse {
             outcome,
-            document: self.document(caller, &response.path).await?,
+            document: self.document(caller, &request.path).await?,
         })
     }
 

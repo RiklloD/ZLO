@@ -340,6 +340,15 @@ struct AuditPromptWriteSafetyEventSink {
     audit_sink: Arc<dyn AuditSink>,
 }
 
+/// The redacted prompt-write-safety event sink the memory tools use, over
+/// `audit_sink`. Shared so a host-coupled writer outside a capability request
+/// (the Memory page) records the same durable, content-free events.
+pub fn audit_prompt_write_safety_sink(
+    audit_sink: Arc<dyn AuditSink>,
+) -> Arc<dyn PromptWriteSafetyEventSink> {
+    Arc::new(AuditPromptWriteSafetyEventSink { audit_sink })
+}
+
 #[async_trait]
 impl PromptWriteSafetyEventSink for AuditPromptWriteSafetyEventSink {
     async fn record_prompt_write_safety_event(

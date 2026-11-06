@@ -746,6 +746,11 @@ pub(super) async fn build_backend_production(
     );
     let services = apply_post_edit_check_from_env(services)?;
     let security_audit_sink = services.security_audit_sink();
+    // The memory tools' audit-backed prompt-safety sink, shared with the
+    // Memory page's writes.
+    let memory_prompt_safety_sink = services
+        .audit_sink()
+        .map(ironclaw_host_runtime::audit_prompt_write_safety_sink);
 
     // The prepared-context probe backs unbound-profile derivation at
     // admission; it reads the SAME durable thread store the accept door
@@ -1455,6 +1460,7 @@ pub(super) async fn build_backend_production(
         workspace_filesystem,
         extension_filesystem: Arc::clone(&stores.filesystem),
         memory_service_resolver: resolved_memory.resolver.clone(),
+        memory_prompt_safety_sink,
         memory_lifecycle: resolved_memory.lifecycle.clone(),
         memory_guidance: resolved_memory.guidance.clone(),
         memory_scheduled_pass_prompts: resolved_memory.scheduled_pass_prompts.clone(),

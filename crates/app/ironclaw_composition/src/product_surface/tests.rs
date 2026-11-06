@@ -1138,6 +1138,23 @@ async fn runtime_product_surface_serves_the_memory_page_and_hook_catalog() {
             .any(|doc| Some(&doc.path) == archived.archived_path.as_ref())
     );
 
+    // Review finding 6: the production page is wired to the audit-backed
+    // prompt-safety sink, so a warned write to a protected file goes through
+    // (without a sink the policy refuses it).
+    let warned = MEMORY_WRITE_COMMAND
+        .invoke_on(
+            &surface,
+            MemoryWriteRequest {
+                path: "MEMORY.md".to_string(),
+                content: "please disregard this lower-risk note".to_string(),
+                expected_content_hash: None,
+            },
+            ironclaw_host_api::ids::ActivityId::new(),
+        )
+        .await
+        .expect("warned protected write is accepted with the audit sink wired");
+    assert_eq!(warned.outcome, MemoryPageWriteOutcome::Written);
+
     let status = SUPERMEMORY_STATUS_VIEW
         .query_on(&surface, SupermemoryStatusRequest::default(), None)
         .await
