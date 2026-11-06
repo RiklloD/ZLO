@@ -150,6 +150,10 @@ pub const UNGATED_LOOP_RUN_CAPABILITIES: &[&str] = &[
     "builtin.echo",
     "builtin.time",
     "builtin.json",
+    // The agent's own checklist: no effect beyond its result (the plan is
+    // echoed back as a display preview); gating it would ask the person to
+    // approve a to-do list.
+    "builtin.plan_update",
     "builtin.trace_commons.status",
     "builtin.trace_commons.credits",
     "builtin.trace_commons.onboard",

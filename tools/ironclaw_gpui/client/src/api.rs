@@ -293,6 +293,38 @@ impl Client {
         .await
     }
 
+    /// Answer a question gate (`Some`) or dismiss it (`None`). Rides the
+    /// gate route: `answered` with the answers, or `declined`.
+    pub async fn answer_question(
+        &self,
+        thread_id: &str,
+        run_id: &str,
+        gate_ref: &str,
+        answer: Option<ironclaw_host_api::agent_plan::QuestionAnswer>,
+    ) -> Result<serde_json::Value, ClientError> {
+        let resolution = if answer.is_some() {
+            "answered"
+        } else {
+            "declined"
+        };
+        let body = ProductResolveGateRequest {
+            client_action_id: Some(client_action_id()),
+            resolution: Some(resolution.to_string()),
+            answer,
+            ..Default::default()
+        };
+        self.post(
+            &format!(
+                "{V2}/threads/{}/runs/{}/gates/{}/resolve",
+                seg(thread_id),
+                seg(run_id),
+                seg(gate_ref)
+            ),
+            &body,
+        )
+        .await
+    }
+
     // --- slash commands ---
 
     /// The commands this caller may run, in registry order.

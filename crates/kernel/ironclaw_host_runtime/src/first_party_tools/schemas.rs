@@ -206,6 +206,45 @@ pub(crate) fn resolve_builtin_input_schema_ref(reference: &str) -> Option<Value>
             "required": ["target_id", "content"],
             "additionalProperties": false
         }),
+        "schemas/builtin/plan_update.input.v1.json" => json!({
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "description": "The whole plan, in order. Replaces the previous plan.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": { "type": "string", "minLength": 1, "maxLength": 500, "description": "The step, short and concrete" },
+                            "status": { "type": "string", "enum": ["pending", "in_progress", "completed"] },
+                            "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+                            "active_form": { "type": "string", "maxLength": 500, "description": "The step as it reads while running, e.g. 'Running the tests'" }
+                        },
+                        "required": ["content", "status"],
+                        "additionalProperties": false
+                    }
+                },
+                "explanation": { "type": "string", "maxLength": 500, "description": "Why the plan changed, if it did" }
+            },
+            "required": ["entries"],
+            "additionalProperties": false
+        }),
+        "schemas/builtin/plan_update.output.v1.json" => json!({
+            "type": "object",
+            "properties": {
+                "updated": { "type": "boolean" },
+                "progress": {
+                    "type": "object",
+                    "properties": {
+                        "completed": { "type": "integer" },
+                        "total": { "type": "integer" }
+                    }
+                },
+                "current": { "type": ["string", "null"] }
+            }
+        }),
         "schemas/builtin/outbound_deliver.output.v1.json" => json!({
             "type": "object",
             "properties": {

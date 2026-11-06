@@ -1039,7 +1039,9 @@ fn response_status_from_projection_state(
         | ProductProjectionItem::RunStatus { .. }
         | ProductProjectionItem::Gate { .. }
         | ProductProjectionItem::SkillActivation { .. }
-        | ProductProjectionItem::CliDetail { .. } => None,
+        | ProductProjectionItem::CliDetail { .. }
+        | ProductProjectionItem::Plan { .. }
+        | ProductProjectionItem::Question { .. } => None,
     })
 }
 

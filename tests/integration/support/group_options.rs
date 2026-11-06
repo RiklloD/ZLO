@@ -71,6 +71,16 @@ impl RebornIntegrationGroupBuilder {
         self
     }
 
+    /// Share the client-tool catalog with the test, so it can read a parked
+    /// call and submit its output like the product surface does.
+    pub fn with_external_tool_catalog_for_test(
+        mut self,
+        catalog: std::sync::Arc<dyn ironclaw_turns::ExternalToolCatalog>,
+    ) -> Self {
+        self.external_tool_catalog = Some(catalog);
+        self
+    }
+
     /// E-MEMORY / #7276: register the periodic memory-curation hook at the
     /// group's `after_turn` point, firing a pass every `interval_turns`
     /// completed turns. Mirrors production's opt-in shape exactly — production

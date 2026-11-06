@@ -57,8 +57,8 @@ use ironclaw_host_runtime::{
     HostRuntime, HostRuntimeServices, JSON_CAPABILITY_ID, LIST_DIR_CAPABILITY_ID,
     MEMORY_READ_CAPABILITY_ID, MEMORY_SEARCH_CAPABILITY_ID, MEMORY_TREE_CAPABILITY_ID,
     MEMORY_WRITE_CAPABILITY_ID, NATIVE_MEMORY_FIRST_PARTY_PROVIDER, OUTBOUND_DELIVER_CAPABILITY_ID,
-    PROFILE_SET_CAPABILITY_ID, READ_FILE_CAPABILITY_ID, RuntimeCapabilityFailure,
-    RuntimeCapabilityOutcome, RuntimeProcessPort, SHELL_CAPABILITY_ID,
+    PLAN_UPDATE_CAPABILITY_ID, PROFILE_SET_CAPABILITY_ID, READ_FILE_CAPABILITY_ID,
+    RuntimeCapabilityFailure, RuntimeCapabilityOutcome, RuntimeProcessPort, SHELL_CAPABILITY_ID,
     SKILL_AUTO_ACTIVATE_SET_CAPABILITY_ID, SKILL_INSTALL_CAPABILITY_ID, SKILL_LIST_CAPABILITY_ID,
     SKILL_REMOVE_CAPABILITY_ID, SKILL_UPDATE_CAPABILITY_ID, SPAWN_SUBAGENT_CAPABILITY_ID,
     SurfaceKind, TIME_CAPABILITY_ID, TRACE_COMMONS_ACCOUNT_LOGIN_LINK_CAPABILITY_ID,
@@ -3813,6 +3813,43 @@ async fn builtin_echo_invokes_through_host_runtime() {
         .await
         .unwrap();
     assert_eq!(output, Value::String("hello reborn".to_string()));
+}
+
+/// The native agent's checklist runs ungated through the host and hands the
+/// plan back as an `agent_plan` display preview the projection can stream.
+#[tokio::test]
+async fn builtin_plan_update_runs_ungated_and_returns_the_plan_as_a_preview() {
+    let runtime = runtime();
+    let outcome = runtime
+        .invoke_capability((
+            execution_context([PLAN_UPDATE_CAPABILITY_ID]),
+            capability_id(PLAN_UPDATE_CAPABILITY_ID),
+            ResourceEstimate::default(),
+            json!({"entries": [
+                {"content": "Find the bug", "status": "completed"},
+                {"content": "Fix it", "status": "in_progress", "active_form": "Fixing it"}
+            ]}),
+        ))
+        .await
+        .unwrap();
+    let RuntimeCapabilityOutcome::Completed(completed) = outcome else {
+        panic!("plan update should complete without a gate, got {outcome:?}");
+    };
+    assert_eq!(
+        completed.output["progress"],
+        json!({"completed": 1, "total": 2})
+    );
+    let preview = completed.display_preview.expect("plan preview");
+    assert_eq!(
+        preview.output_kind,
+        ironclaw_host_api::agent_plan::AGENT_PLAN_OUTPUT_KIND
+    );
+    let plan: ironclaw_host_api::agent_plan::AgentPlan =
+        serde_json::from_str(&preview.output_preview).unwrap();
+    assert_eq!(plan.current().map(|e| e.content.as_str()), Some("Fix it"));
+
+    let refused = invoke(PLAN_UPDATE_CAPABILITY_ID, json!({"entries": []})).await;
+    assert!(refused.is_err(), "an empty plan is refused: {refused:?}");
 }
 
 #[tokio::test]
@@ -10658,6 +10695,7 @@ fn all_builtin_capability_ids() -> Vec<&'static str> {
     vec![
         ECHO_CAPABILITY_ID,
         TIME_CAPABILITY_ID,
+        PLAN_UPDATE_CAPABILITY_ID,
         JSON_CAPABILITY_ID,
         HTTP_CAPABILITY_ID,
         HTTP_SAVE_CAPABILITY_ID,

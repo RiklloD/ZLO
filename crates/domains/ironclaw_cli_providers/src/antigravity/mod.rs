@@ -39,6 +39,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
 use crate::bridge::{CallClaim, CliBridge};
+use crate::interaction;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
@@ -594,6 +595,12 @@ impl Turn {
                     && params.get("sessionId").and_then(Value::as_str) == Some(session_id)
                 {
                     fold.push_update(&params["update"], Instant::now());
+                    if let (Some(bridge), Some(plan)) = (
+                        self.bridge.as_deref(),
+                        interaction::acp_plan(&params["update"]),
+                    ) {
+                        bridge.plan_updated(&self.thread_id, &self.run_id, plan);
+                    }
                 }
             }
             Inbound::Request { id, method, params } => {
@@ -606,23 +613,10 @@ impl Turn {
                         (self.config.runtime_id.clone(), session_id.to_string());
                     // Claimed here, before any await, so the reason is what the
                     // model said up to this call and nothing later.
-                    let question = params["toolCall"]["toolCallId"]
-                        .as_str()
-                        .is_some_and(|id| id.starts_with("interaction_"));
-                    let claim = if question {
-                        CallClaim::default()
-                    } else {
-                        permissions::claim(bridge.as_deref(), &thread, &run)
-                    };
+                    let claim = permissions::claim(bridge.as_deref(), &thread, &run);
                     tokio::spawn(async move {
-                        let answer = permission_answer(
-                            bridge.as_deref(),
-                            &thread,
-                            &run,
-                            &runtime,
-                            &session,
-                            &params,
-                            claim,
+                        let answer = answer_permission(
+                            bridge, &thread, &run, &runtime, &session, &params, claim,
                         )
                         .await;
                         if let Err(error) = client.respond(&id, answer) {
@@ -642,9 +636,41 @@ impl Turn {
     }
 }
 
-/// The ACP answer to one `session/request_permission`, from the shared seam.
-/// Native questions (`interaction_*` ids) are not approvals and are
-/// cancelled; a decision without a matching option is cancelled too.
+/// The ACP answer to one `session/request_permission`. Antigravity's own
+/// questions (an `interaction_*` call that passes
+/// [`interaction::acp_interaction_form`]: no effect, no persistent option)
+/// become a question form; everything else, including an `interaction_*`
+/// request that fails that check, is an approval through the shared seam,
+/// which only ever picks a once-scoped option.
+async fn answer_permission(
+    bridge: Option<Arc<CliBridge>>,
+    thread: &ThreadId,
+    run_id: &str,
+    runtime: &str,
+    session_id: &str,
+    params: &Value,
+    claim: CallClaim,
+) -> Value {
+    if let (Some(bridge), Some(form)) = (&bridge, interaction::acp_interaction_form(params)) {
+        let outcome = bridge
+            .ask(thread, run_id, "antigravity_question", form.clone(), claim)
+            .await;
+        return interaction::acp_interaction_reply(&form, outcome.answer());
+    }
+    permission_answer(
+        bridge.as_deref(),
+        thread,
+        run_id,
+        runtime,
+        session_id,
+        params,
+        claim,
+    )
+    .await
+}
+
+/// The ACP answer to one approval through the shared seam: the once-scoped
+/// allow or reject option, or `cancelled` when the request offers neither.
 async fn permission_answer(
     bridge: Option<&CliBridge>,
     thread: &ThreadId,
@@ -655,14 +681,7 @@ async fn permission_answer(
     claim: CallClaim,
 ) -> Value {
     let call = &params["toolCall"];
-    let call_id = call
-        .get("toolCallId")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     let cancelled = json!({"outcome": {"outcome": "cancelled"}});
-    if call_id.starts_with("interaction_") {
-        return cancelled;
-    }
     let request = PermissionRequest {
         runtime: runtime.to_string(),
         session_id: session_id.to_string(),
@@ -1006,6 +1025,109 @@ mod tests {
         assert_eq!(
             waiter.await.unwrap(),
             json!({"outcome": {"outcome": "selected", "optionId": "yes"}})
+        );
+    }
+
+    /// Run one permission request through the same path `handle` takes and
+    /// report whether it opened a question form or an approval gate.
+    async fn route(
+        bridge: &Arc<CliBridge>,
+        thread: &ThreadId,
+        params: Value,
+    ) -> (Value, &'static str) {
+        let mut events = bridge.subscribe();
+        let claim = permissions::claim(Some(bridge), thread, "r1");
+        let waiter = {
+            let (bridge, thread) = (Arc::clone(bridge), thread.clone());
+            tokio::spawn(async move {
+                answer_permission(
+                    Some(bridge),
+                    &thread,
+                    "r1",
+                    "antigravity",
+                    "s",
+                    &params,
+                    claim,
+                )
+                .await
+            })
+        };
+        let opened = loop {
+            match events.recv().await.unwrap() {
+                crate::bridge::LiveEvent::GateOpened { gate, .. } => {
+                    assert!(bridge.resolve_gate(thread, &gate.gate_ref, true));
+                    break "approval";
+                }
+                crate::bridge::LiveEvent::QuestionOpened { question, .. } => {
+                    let mut answer = ironclaw_host_api::agent_plan::QuestionAnswer::default();
+                    answer.values.insert(
+                        "answer".into(),
+                        ironclaw_host_api::agent_plan::QuestionValue::Choices(vec![
+                            "Continue".into(),
+                        ]),
+                    );
+                    assert_eq!(
+                        bridge.answer_question(thread, &question.gate_ref, Some(answer)),
+                        Ok(true)
+                    );
+                    break "question";
+                }
+                _ => {}
+            }
+        };
+        (waiter.await.unwrap(), opened)
+    }
+
+    // Review finding 1: an `interaction_*` id alone must not turn a real
+    // permission request into a question card, and a card never grants a
+    // persistent permission.
+    #[tokio::test]
+    async fn spoofed_interaction_requests_go_through_approval_and_never_grant_always() {
+        let thread = ThreadId::new("t-spoof").unwrap();
+        let bridge = CliBridge::new(crate::bridge::DEFAULT_APPROVAL_TIMEOUT);
+        bridge.turn_started(&thread, "r1");
+
+        // A persistent grant offered as "Continue": approval, and the
+        // approval picks no "always" option (there is no once-allow here).
+        let persistent = json!({
+            "toolCall": {"toolCallId": "interaction_1", "title": "Continue?"},
+            "options": [
+                {"optionId": "always", "kind": "allow_always", "name": "Continue"},
+                {"optionId": "no", "kind": "reject_once", "name": "Stop"}
+            ]
+        });
+        let (reply, opened) = route(&bridge, &thread, persistent).await;
+        assert_eq!(opened, "approval");
+        assert_eq!(reply, json!({"outcome": {"outcome": "cancelled"}}));
+
+        // A side-effecting call under a question id: approval too.
+        let execute = json!({
+            "toolCall": {"toolCallId": "interaction_2", "kind": "execute", "title": "rm -rf /tmp/x"},
+            "options": [
+                {"optionId": "go", "kind": "allow_once", "name": "Continue"},
+                {"optionId": "no", "kind": "reject_once", "name": "Stop"}
+            ]
+        });
+        let (reply, opened) = route(&bridge, &thread, execute).await;
+        assert_eq!(opened, "approval");
+        assert_eq!(
+            reply,
+            json!({"outcome": {"outcome": "selected", "optionId": "go"}})
+        );
+
+        // A plain question (no effect, no persistent option) is a form.
+        let question = json!({
+            "toolCall": {"toolCallId": "interaction_3", "title": "Proceed with the refactor?"},
+            "options": [
+                {"optionId": "c", "kind": "allow_once", "name": "Continue"},
+                {"optionId": "s", "kind": "reject_once", "name": "Stop"}
+            ]
+        });
+        let (reply, opened) = route(&bridge, &thread, question).await;
+        assert_eq!(opened, "question");
+        assert_eq!(
+            reply,
+            json!({"outcome": {"outcome": "selected", "optionId": "c"}})
         );
     }
 }

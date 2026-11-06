@@ -1171,7 +1171,10 @@ mod tests {
             HostProcessEnvMode::Scrubbed,
         );
         let dropped = tokio::time::timeout(Duration::from_millis(300), run).await;
-        assert!(dropped.is_err(), "the command must still be running when dropped");
+        assert!(
+            dropped.is_err(),
+            "the command must still be running when dropped"
+        );
 
         tokio::time::sleep(Duration::from_millis(1500)).await;
         assert!(

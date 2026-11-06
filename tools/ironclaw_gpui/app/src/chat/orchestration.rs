@@ -457,7 +457,8 @@ impl ChatView {
             .flatten();
         let strip = self.render_strip(cx);
         let queue = self.orch.queue_open.then(|| self.render_queue(cx));
-        if goal.is_none() && strip.is_none() && queue.is_none() {
+        let plan = self.render_plan_strip(cx);
+        if goal.is_none() && strip.is_none() && queue.is_none() && plan.is_none() {
             return None;
         }
         Some(
@@ -470,6 +471,7 @@ impl ChatView {
                         .w_full()
                         .max_w(px(content_width(cx)))
                         .gap_2()
+                        .children(plan)
                         .children(goal)
                         .children(queue)
                         .children(strip),

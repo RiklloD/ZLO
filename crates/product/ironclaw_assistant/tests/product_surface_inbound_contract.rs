@@ -415,6 +415,7 @@ fn invalid_gate_resolution_returns_stable_validation_error() {
         resolution: Some("not_a_resolution".to_string()),
         always: None,
         credential_ref: None,
+        answer: None,
     };
 
     let err = request

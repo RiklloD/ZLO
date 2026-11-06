@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 ironclaw_gpui_client.workspace = true
+# Plan and question-form vocabulary (`agent_plan`), shared with the gateway.
+ironclaw_host_api.workspace = true
 # `syntect`: code colors in diffs and Markdown code blocks (the lighter
 # of gpui-component's two highlighters; tree-sitter would add ~30 grammars).
 gpui-kit = { workspace = true, features = ["syntect"] }

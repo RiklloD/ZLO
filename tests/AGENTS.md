@@ -287,6 +287,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 | Bridged disclosure never reintroduces host-runtime capability metadata excluded by any resolved host-API surface-policy dimension (ID, runtime, effect, approval, or maximum count) | `tool_disclosure.rs` |
 | A capability whose lease expires mid-dispatch does not wedge the run | `lease_wedge.rs` |
 | Denying a parked client tool resumes through the coordinator without re-dispatching it, persists a model-visible denial, and still allows an unrelated capability to run | `external_tool_gate_denied_resume.rs` |
+| Be asked a structured question by the native agent (`ask_user`): the run parks, the parked call reads back as the form the desktop draws, and the person's answer submitted as the call's output reaches the resumed run as its tool result | `external_tool_gate_denied_resume.rs::native_ask_user_answer_reaches_the_model_after_resume` |
 | A run whose lease expires while it is waiting on the model finishes normally instead of dying — it is resumed from its before-model checkpoint after a grace window, and the user never sees a failure | `lease_wedge.rs::run_parked_before_a_model_call_is_resumed_after_lease_expiry_not_failed` |
 | Attachments the user uploads are read back byte-for-byte by the model | `attach.rs` |
 | Uploaded DOCX files cannot be corrupted by raw text writes; structured DOCX/XLSX/PPTX edits produce new downloadable files without changing the originals; and HTML renders to a persisted PDF | `document_edit.rs` |

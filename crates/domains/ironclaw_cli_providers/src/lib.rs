@@ -15,6 +15,7 @@ pub mod claude;
 pub mod antigravity;
 pub mod codex;
 mod hook_approval;
+pub mod interaction;
 mod journal;
 pub mod muse;
 pub mod permissions;

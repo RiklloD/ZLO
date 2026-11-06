@@ -1454,3 +1454,127 @@ async fn product_event_stream_filters_turn_events_by_owner_user() {
         "turn event bridge must not emit another user's lifecycle event payload"
     );
 }
+
+/// A run parked on the native `ask_user` call streams as a question form on
+/// its gate, not the generic "external tool call pending" gate; without the
+/// call in the catalog it stays the generic gate.
+#[tokio::test]
+async fn product_event_stream_draws_a_parked_ask_user_call_as_a_question() {
+    use ironclaw_turns::{ExternalToolCatalog, InMemoryExternalToolCatalog, PendingExternalCall};
+
+    let tenant_id = TenantId::new("webui-events-question-tenant").unwrap();
+    let user_id = UserId::new("webui-events-question-user").unwrap();
+    let agent_id = AgentId::new("webui-events-question-agent").unwrap();
+    let thread_id = ThreadId::new("webui-events-question-thread").unwrap();
+    let turn_run = TurnRunId::new();
+    let scope = TurnScope::new(tenant_id, Some(agent_id), None, thread_id);
+    let gate_ref = TurnGateRef::new("gate:external_tool-ask").unwrap();
+    let catalog = Arc::new(InMemoryExternalToolCatalog::new());
+    let event = TurnLifecycleEvent {
+        cursor: TurnEventCursor(1),
+        scope: scope.clone(),
+        occurred_at: Some(chrono::Utc::now()),
+        owner_user_id: Some(user_id.clone()),
+        run_id: turn_run,
+        status: TurnStatus::BlockedExternalTool,
+        kind: TurnEventKind::Blocked,
+        blocked_gate: Some(TurnBlockedGateMetadata {
+            gate_ref: gate_ref.clone(),
+            gate_kind: TurnBlockedGateKind::ExternalTool,
+            activity_id: None,
+            credential_requirements: Vec::new(),
+        }),
+        sanitized_reason: None,
+        detail: None,
+        retryable: None,
+    };
+    let items = |catalog: Arc<InMemoryExternalToolCatalog>| {
+        let event = event.clone();
+        let (scope, user_id) = (scope.clone(), user_id.clone());
+        async move {
+            let event_log: Arc<dyn DurableEventLog> = Arc::new(InMemoryDurableEventLog::new());
+            let services = build_reborn_projection_services(
+                event_log,
+                ReplyTargetBindingRef::new("webui-events-question-reply").unwrap(),
+            )
+            .with_external_tool_catalog(catalog)
+            .with_turn_events(
+                Arc::new(FakeTurnEventSource {
+                    events: vec![event],
+                }),
+                Arc::new(FakeTurnCoordinator {
+                    state: TurnRunState {
+                        status: TurnStatus::BlockedExternalTool,
+                        gate_ref: Some(gate_ref_for_state()),
+                        ..turn_run_state(&scope, &user_id, turn_run, TurnEventCursor(1))
+                    },
+                }),
+            );
+            services
+                .product_event_stream()
+                .drain(ProjectionSubscriptionRequest {
+                    actor: TurnActor::new(user_id),
+                    scope,
+                    after_cursor: None,
+                })
+                .await
+                .unwrap()
+                .iter()
+                .filter_map(|event| match event.payload() {
+                    ProductOutboundPayload::ProjectionUpdate { state } => Some(state.items.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>()
+        }
+    };
+
+    let before = items(Arc::clone(&catalog)).await;
+    assert!(
+        before.iter().any(|i| matches!(
+            i,
+            ProductProjectionItem::Gate {
+                gate_kind: ProductGateKind::Generic,
+                ..
+            }
+        )),
+        "no parked call: the generic gate, {before:?}"
+    );
+
+    catalog
+        .record_pending_call(
+            turn_run,
+            PendingExternalCall::new(
+                "call_1",
+                crate::native_questions::ASK_USER_TOOL_NAME,
+                serde_json::json!({"questions": [{"question": "Ship it?",
+                    "options": [{"label": "Yes"}, {"label": "No"}]}]}),
+            ),
+        )
+        .await
+        .unwrap();
+    let after = items(catalog).await;
+    let question = after.iter().find_map(|i| match i {
+        ProductProjectionItem::Question {
+            gate_ref: g,
+            form,
+            closed: false,
+            ..
+        } => Some((g.clone(), form.fields[0].label.clone())),
+        _ => None,
+    });
+    assert_eq!(
+        question,
+        Some((gate_ref.as_str().to_string(), "Ship it?".to_string()))
+    );
+    assert!(
+        !after
+            .iter()
+            .any(|i| matches!(i, ProductProjectionItem::Gate { .. })),
+        "the question replaces the generic gate: {after:?}"
+    );
+}
+
+fn gate_ref_for_state() -> TurnGateRef {
+    TurnGateRef::new("gate:external_tool-ask").unwrap()
+}

@@ -434,12 +434,21 @@ impl RefreshingCapabilityPort {
         let port = wrap_surface_disclosure(port, &self.workspace_mounts);
         // Outermost: external (client-supplied) tools see the full resolved
         // surface (for shadow-rejection) and park instead of executing.
+        // A WebUI run is also offered the native `ask_user` question tool,
+        // which parks on the same external-tool gate.
+        let catalog = ironclaw_assistant::native_questions::offer_ask_user(
+            Arc::clone(&self.external_tool_catalog),
+            self.run_context
+                .product_context
+                .as_ref()
+                .map(|context| context.origin),
+        );
         Ok(wrap_external_tools(
             port,
             self.run_context.clone(),
             Arc::clone(&self.input_resolver),
             Arc::clone(&self.result_writer),
-            Arc::clone(&self.external_tool_catalog),
+            catalog,
         ))
     }
 

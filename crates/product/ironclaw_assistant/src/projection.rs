@@ -109,6 +109,8 @@ pub struct RebornProjectionServices {
     auth_challenges: Option<Arc<dyn AuthChallengeProvider>>,
     // arch-exempt: optional_arc, minimal projection-only test graphs have no transcript store
     thread_service: Option<Arc<dyn SessionThreadService>>,
+    // arch-exempt: optional_arc, native `ask_user` forms need the run's external-tool catalog; minimal projection graphs have none and draw the generic gate, plan #plan-forms
+    external_calls: Option<Arc<dyn ironclaw_turns::ExternalToolCatalog>>,
 }
 
 impl RebornProjectionServices {
@@ -117,11 +119,26 @@ impl RebornProjectionServices {
         turn_event_source: Arc<dyn TurnEventProjectionSource>,
         turn_coordinator: Arc<dyn TurnCoordinator>,
     ) -> Self {
-        self.turn_events = TurnEventBridge::enabled(
+        let mut bridge = TurnEventBridge::enabled(
             turn_event_source,
             turn_coordinator,
             self.approval_requests.clone(),
         );
+        if let Some(catalog) = &self.external_calls {
+            bridge = bridge.with_external_calls(Arc::clone(catalog));
+        }
+        self.turn_events = bridge;
+        self
+    }
+
+    /// Wire the run-scoped external-tool catalog, so a run parked on the
+    /// native `ask_user` call projects as a question form.
+    pub fn with_external_tool_catalog(
+        mut self,
+        catalog: Arc<dyn ironclaw_turns::ExternalToolCatalog>,
+    ) -> Self {
+        self.external_calls = Some(Arc::clone(&catalog));
+        self.turn_events = self.turn_events.with_external_calls(catalog);
         self
     }
 
@@ -256,6 +273,7 @@ pub fn build_reborn_projection_services(
         product_reply_target_binding_ref,
         auth_challenges: None,
         thread_service: None,
+        external_calls: None,
     }
 }
 

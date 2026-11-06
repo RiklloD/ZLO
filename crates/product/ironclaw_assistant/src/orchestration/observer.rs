@@ -30,6 +30,22 @@ fn millis(ts: &ironclaw_host_api::Timestamp) -> i64 {
     ts.timestamp_millis()
 }
 
+/// What a parked turn waits on the person for. An external-tool park on an
+/// orchestrator thread is the native `ask_user` question: only WebUI runs are
+/// offered a host-declared external tool, and a Responses API run's thread
+/// is not in the inbox.
+fn awaiting_kind(kind: ProcessSuspensionKind) -> Option<AwaitingKind> {
+    match kind {
+        ProcessSuspensionKind::Approval => Some(AwaitingKind::Approval),
+        ProcessSuspensionKind::Authorization => Some(AwaitingKind::Auth),
+        ProcessSuspensionKind::ExternalTool => Some(AwaitingKind::Question),
+        ProcessSuspensionKind::Resource
+        | ProcessSuspensionKind::AwaitingChildProcess
+        | ProcessSuspensionKind::ExternalProcess
+        | ProcessSuspensionKind::ExtensionDefined => None,
+    }
+}
+
 #[async_trait]
 impl ProcessJournalCommitObserver for OrchestratorProcessObserver {
     fn process_observer_id(&self) -> &'static str {
@@ -47,11 +63,10 @@ impl ProcessJournalCommitObserver for OrchestratorProcessObserver {
         let at = millis(&commit.occurred_at.unwrap_or(state.created_at));
         let run_id = Some(TurnRunId::from_uuid(state.process_id.as_uuid()).to_string());
         if state.status == ProcessLifecycleStatus::Suspended {
-            let kind = match state.suspension.as_ref().map(|s| s.kind) {
-                Some(ProcessSuspensionKind::Approval) => Some(AwaitingKind::Approval),
-                Some(ProcessSuspensionKind::Authorization) => Some(AwaitingKind::Auth),
-                _ => None,
-            };
+            let kind = state
+                .suspension
+                .as_ref()
+                .and_then(|s| awaiting_kind(s.kind));
             if let Some(kind) = kind
                 && let Err(error) = self
                     .engine
@@ -103,5 +118,27 @@ impl ProcessJournalCommitObserver for OrchestratorProcessObserver {
             .turn_finished(&thread_id, run_id, outcome, at)
             .await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approvals_sign_ins_and_questions_need_the_person() {
+        assert_eq!(
+            awaiting_kind(ProcessSuspensionKind::Approval),
+            Some(AwaitingKind::Approval)
+        );
+        assert_eq!(
+            awaiting_kind(ProcessSuspensionKind::Authorization),
+            Some(AwaitingKind::Auth)
+        );
+        assert_eq!(
+            awaiting_kind(ProcessSuspensionKind::ExternalTool),
+            Some(AwaitingKind::Question)
+        );
+        assert_eq!(awaiting_kind(ProcessSuspensionKind::Resource), None);
     }
 }

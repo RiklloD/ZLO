@@ -3676,7 +3676,9 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         Arc::clone(&event_log),
         validated_identity.reply_target_binding_ref.clone(),
     )
-    .with_thread_service(Arc::clone(&thread_service));
+    .with_thread_service(Arc::clone(&thread_service))
+    // A run parked on the native `ask_user` call projects as a form.
+    .with_external_tool_catalog(Arc::clone(&services.external_tool_catalog));
     if let Some(local_runtime) = local_runtime {
         let approval_requests = &local_runtime.approval_requests;
         projection_services = projection_services

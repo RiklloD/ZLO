@@ -38,6 +38,8 @@ pub mod model_picker;
 mod orchestration;
 mod outline;
 mod pace;
+mod plan_strip;
+mod question_form;
 mod side;
 mod snapshot;
 mod steer;
@@ -121,6 +123,10 @@ pub struct ChatView {
     files: Option<FilesPanel>,
     /// Delegated tasks, queue and lineage of this thread.
     orch: orchestration::Orchestration,
+    /// The agent's live checklist above the composer.
+    plan_strip: plan_strip::PlanStrip,
+    /// What the person has filled in on open question forms.
+    questions: question_form::Drafts,
     /// The computer-use screen share of this thread.
     computer: Entity<computer::ComputerShare>,
     _computer_stop: Subscription,
@@ -343,6 +349,8 @@ impl ChatView {
             approval,
             files: None,
             orch: Default::default(),
+            plan_strip: Default::default(),
+            questions: Default::default(),
             computer,
             _computer_stop: computer_stop,
             side: Default::default(),
@@ -1204,6 +1212,7 @@ impl Render for ChatView {
         let stopping = self.transcript.is_stopping();
         self.has_tail = self.render_tail(cx).is_some();
         self.sync_items(running, stopping, cx);
+        self.sync_question_drafts(window, cx);
         if self.pacing {
             crate::design::pulse::request(crate::design::pulse::Rate::Smooth, window, cx);
         }
@@ -1288,6 +1297,21 @@ impl Render for ChatView {
                     &weak,
                 )
                 .into_any_element(),
+                // Built by the view: the form's drafts and listeners live there.
+                Item::Row(Row::Question {
+                    key,
+                    run_id,
+                    gate_ref,
+                    form,
+                    state,
+                }) => weak
+                    .upgrade()
+                    .map(|view| {
+                        view.update(cx, |this, cx| {
+                            this.render_question(key, run_id, gate_ref, form, *state, cx)
+                        })
+                    })
+                    .unwrap_or_else(|| div().into_any_element()),
                 Item::Row(row) => render_row(row, &weak, cx),
                 Item::Activity { key, rows, live } => {
                     let open = flow::is_open(key, *live, &toggles);
@@ -1661,6 +1685,16 @@ fn render_row(row: &Row, weak: &WeakEntity<ChatView>, cx: &mut App) -> AnyElemen
         Row::WorkSummary { key, text, .. } => {
             activity_line(key, IconName::FileText, text.clone(), None, cx).into_any_element()
         }
+        Row::Plan { key, plan } => activity_line(
+            key,
+            IconName::CircleCheck,
+            format!("Updated plan · {}", plan_strip::plan_summary(plan)),
+            None,
+            cx,
+        )
+        .into_any_element(),
+        // Drawn by the view (see the transcript list); never reached.
+        Row::Question { .. } => div().into_any_element(),
         Row::Delegated { key, title, body } => {
             let head =
                 activity_line(key, IconName::Bot, title.clone(), None, cx).into_any_element();

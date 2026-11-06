@@ -975,7 +975,18 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // shallow paging, redaction, and continuation behavior remain in
         // `ironclaw_threads`; host API only names the provider-neutral controls
         // and refuses replay of an unredacted page. Count read from this gate.
-        ("ironclaw_host_api", 21_311),
+        // 21_311 -> 21_985 (2026-11-05, PLAN-FORMS): `agent_plan` — the one
+        // plan / question-form vocabulary every runtime folds into (Claude
+        // CLI, Codex, ACP, MCP elicitation, `builtin.plan_update`), with its
+        // shape bounds, answer-fit check and the model-visible answer line.
+        // Vendor parsing stays in ironclaw_cli_providers; the capability in
+        // ironclaw_host_runtime. Count read from this test's failure message.
+        // 21_985 -> 22_289 (2026-11-06, PLAN-FORMS review): the form bounds a
+        // review asked for — option values and text defaults bounded, a whole
+        // form/answer byte cap, unique labels and picks, and text length /
+        // pick-count constraints. Validation of the type's own shape only.
+        // Count read from this test's failure message.
+        ("ironclaw_host_api", 22_289),
         // 14_479 -> 13_949 (2026-08-07, #7157): downward re-capture after the
         // delivery-heuristic vocabulary (stored trigger delivery targets and
         // their run-profile plumbing) left this crate with the two-lane

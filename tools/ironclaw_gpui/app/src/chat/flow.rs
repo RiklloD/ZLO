@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use ironclaw_gpui_client::GateDecision;
-use ironclaw_gpui_client::transcript::{CliBody, GateState, Row, ToolStatus};
+use ironclaw_gpui_client::transcript::{CliBody, GateState, QuestionState, Row, ToolStatus};
 
 use crate::design::{Palette, kit, motion};
 use crate::ui::*;
@@ -79,6 +79,11 @@ fn is_activity(row: &Row) -> bool {
             | Row::WorkSummary { .. }
             | Row::Gate {
                 state: GateState::Closed(_),
+                ..
+            }
+            | Row::Plan { .. }
+            | Row::Question {
+                state: QuestionState::Closed(_),
                 ..
             }
     )
@@ -218,7 +223,7 @@ fn summary(rows: &[Row]) -> String {
                 counts[tool_kind(title) as usize] += 1;
                 failed += usize::from(*status == ToolStatus::Failed);
             }
-            Row::Gate { .. } => approvals += 1,
+            Row::Gate { .. } | Row::Question { .. } => approvals += 1,
             Row::Skills { .. } => skills += 1,
             // A run restates its status as it goes; only the latest counts.
             Row::WorkSummary { text, .. } => extra = vec![text.clone()],
@@ -396,6 +401,39 @@ fn leaf(row: &Row) -> Option<Leaf> {
                 running: *status == ToolStatus::Running,
             }
         }
+        Row::Plan { plan, .. } => Leaf {
+            icon: IconName::CircleCheck,
+            label: "Updated plan".into(),
+            detail: super::plan_strip::plan_summary(plan),
+            body: None,
+            failed: false,
+            running: false,
+        },
+        Row::Question {
+            form,
+            state: QuestionState::Closed(sent),
+            ..
+        } => Leaf {
+            icon: if *sent == Some(false) {
+                IconName::CircleX
+            } else {
+                IconName::Check
+            },
+            label: match sent {
+                Some(true) => "Answered",
+                Some(false) => "Dismissed",
+                None => "Asked",
+            }
+            .into(),
+            detail: form
+                .fields
+                .first()
+                .map(|f| one_line(&f.label))
+                .unwrap_or_default(),
+            body: None,
+            failed: false,
+            running: false,
+        },
         Row::Skills { names, .. } => Leaf {
             icon: IconName::BookOpen,
             label: "Loaded".into(),

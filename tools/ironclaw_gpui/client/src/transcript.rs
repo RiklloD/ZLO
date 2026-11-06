@@ -17,6 +17,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use ironclaw_host_api::agent_plan::{
+    AGENT_PLAN_OUTPUT_KIND, AgentPlan, QUESTION_GATE_REF_PREFIX, QuestionForm,
+};
 use ironclaw_product_contracts::outbound::{
     CapabilityActivityStatusView, CapabilityActivityView, CapabilityDisplayPreviewView,
     CliDetailKind, ProductGateKind, ProductProjectionItem,
@@ -47,6 +50,17 @@ pub enum GateState {
     /// The run moved on. The decision is known only when it was made in this
     /// view: the projection does not carry it, so a reloaded gate has `None`.
     Closed(Option<GateDecision>),
+}
+
+/// Where a question form stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestionState {
+    Open,
+    /// Sent from this view (`true`: answered, `false`: dismissed); waiting
+    /// for the stream to confirm.
+    Sending(bool),
+    /// The run moved on. How it ended is known only when it was sent here.
+    Closed(Option<bool>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,6 +142,20 @@ pub enum Row {
         lines: Vec<String>,
         failed: bool,
     },
+    /// The agent updated its plan here (one compact line; the live
+    /// checklist is [`Transcript::plan`]).
+    Plan {
+        key: String,
+        plan: AgentPlan,
+    },
+    /// A question the run waits on, drawn as a form.
+    Question {
+        key: String,
+        run_id: String,
+        gate_ref: String,
+        form: QuestionForm,
+        state: QuestionState,
+    },
 }
 
 /// A file on a user message. `message_id` is set once the gateway stored the
@@ -156,7 +184,9 @@ impl Row {
             | Row::Delegated { key, .. }
             | Row::Gate { key, .. }
             | Row::RunNotice { key, .. }
-            | Row::Command { key, .. } => key,
+            | Row::Command { key, .. }
+            | Row::Plan { key, .. }
+            | Row::Question { key, .. } => key,
         }
     }
 }
@@ -182,6 +212,13 @@ enum Live {
         body: Option<String>,
         allow_always: bool,
         reason: Option<String>,
+    },
+    Plan(AgentPlan),
+    Question {
+        gate_ref: String,
+        form: QuestionForm,
+        /// The stream closed this one form.
+        closed: bool,
     },
 }
 
@@ -239,6 +276,8 @@ pub struct Transcript {
     settled: HashSet<String>,
     /// Answers given in this view, kept after the gate closes for its label.
     decisions: HashMap<String, GateDecision>,
+    /// Question forms sent from this view: answered (`true`) or dismissed.
+    question_sends: HashMap<String, bool>,
     pending_user: Vec<PendingUser>,
     /// Command results, each placed after the last durable message it saw.
     notes: Vec<(u64, Row)>,
@@ -315,6 +354,17 @@ struct PendingUser {
     chips: Vec<AttachmentChip>,
     /// Newest durable sequence when it was sent; its server copy is newer.
     after: Option<u64>,
+}
+
+/// The native agent's checklist capability: its result is a plan, drawn as
+/// the plan strip and a compact line rather than a tool row.
+pub const PLAN_UPDATE_CAPABILITY: &str = "builtin.plan_update";
+
+/// The plan a `builtin.plan_update` preview carries, if it is one.
+fn preview_plan(capability: &str, kind: Option<&str>, preview: Option<&str>) -> Option<AgentPlan> {
+    (capability == PLAN_UPDATE_CAPABILITY && kind == Some(AGENT_PLAN_OUTPUT_KIND))
+        .then(|| serde_json::from_str(preview?).ok()) // silent-ok: a torn preview falls back to a tool row
+        .flatten()
 }
 
 /// Key prefix of the rows a fork shows from its source thread.
@@ -470,6 +520,24 @@ impl Transcript {
         let Some(invocation) = field("invocation_id") else {
             return;
         };
+        if let Some(plan) = preview_plan(
+            field("capability_id").as_deref().unwrap_or_default(),
+            field("output_kind").as_deref(),
+            field("output_preview").as_deref(),
+        ) {
+            self.upsert(
+                format!("plan:{invocation}"),
+                m.turn_run_id.clone(),
+                Live::Plan(plan),
+            );
+            if let (Some(entry), Some(at)) = (
+                self.live.get_mut(&format!("plan:{invocation}")),
+                m.created_at,
+            ) {
+                entry.at = at.timestamp_millis();
+            }
+            return;
+        }
         let key = format!("tool:{invocation}");
         let status = match field("status").as_deref() {
             Some("completed") => ToolStatus::Completed,
@@ -620,6 +688,27 @@ impl Transcript {
 
     pub fn clear_gate_resolving(&mut self, gate_ref: &str) {
         self.decisions.remove(gate_ref);
+    }
+
+    /// A question form was answered (`true`) or dismissed from this view.
+    pub fn mark_question_sending(&mut self, gate_ref: &str, answered: bool) {
+        self.question_sends.insert(gate_ref.to_string(), answered);
+    }
+
+    /// The send failed: the form opens again.
+    pub fn clear_question_sending(&mut self, gate_ref: &str) {
+        self.question_sends.remove(gate_ref);
+    }
+
+    /// The thread's current plan: the newest one any run reported.
+    pub fn plan(&self) -> Option<&AgentPlan> {
+        self.live
+            .values()
+            .filter_map(|e| match &e.item {
+                Live::Plan(plan) => Some(plan),
+                _ => None,
+            })
+            .max_by_key(|plan| plan.updated_at)
     }
 
     /// Unix ms of the newest durable prompt the person sent.
@@ -872,6 +961,35 @@ impl Transcript {
                     },
                 );
             }
+            ProductProjectionItem::Plan { id, run_id, plan } => {
+                self.upsert(
+                    id.clone(),
+                    run_id.map(|r| r.to_string()),
+                    Live::Plan(plan.clone()),
+                );
+            }
+            ProductProjectionItem::Question {
+                run_id,
+                gate_ref,
+                form,
+                closed,
+            } => {
+                let key = format!("question:{gate_ref}");
+                // A close never reopens: a late open frame keeps it closed.
+                let was_closed = matches!(
+                    self.live.get(&key).map(|e| &e.item),
+                    Some(Live::Question { closed: true, .. })
+                );
+                self.upsert(
+                    key,
+                    Some(run_id.to_string()),
+                    Live::Question {
+                        gate_ref: gate_ref.clone(),
+                        form: form.clone(),
+                        closed: *closed || was_closed,
+                    },
+                );
+            }
             ProductProjectionItem::RunStatus {
                 run_id,
                 status,
@@ -925,6 +1043,13 @@ impl Transcript {
     }
 
     fn upsert_activity(&mut self, a: &CapabilityActivityView) {
+        // A plan update shows as its plan once the preview lands; only a
+        // failed one keeps a tool row.
+        if a.capability_id.as_str() == PLAN_UPDATE_CAPABILITY
+            && a.status != CapabilityActivityStatusView::Failed
+        {
+            return;
+        }
         let title = a
             .subtitle
             .clone()
@@ -942,6 +1067,18 @@ impl Transcript {
     }
 
     fn upsert_preview(&mut self, p: &CapabilityDisplayPreviewView) {
+        if let Some(plan) = preview_plan(
+            p.capability_id.as_str(),
+            p.output_kind.as_deref(),
+            p.output_preview.as_deref(),
+        ) {
+            self.upsert(
+                format!("plan:{}", p.invocation_id),
+                p.turn_run_id.map(|r| r.to_string()),
+                Live::Plan(plan),
+            );
+            return;
+        }
         let detail = p.output_summary.clone().or_else(|| p.input_summary.clone());
         self.upsert_tool(
             p.invocation_id.to_string(),
@@ -1350,6 +1487,21 @@ impl Transcript {
                     key: key.to_string(),
                     text: text.clone(),
                 },
+                Live::Plan(plan) => Row::Plan {
+                    key: key.to_string(),
+                    plan: plan.clone(),
+                },
+                Live::Question {
+                    gate_ref,
+                    form,
+                    closed,
+                } => Row::Question {
+                    key: key.to_string(),
+                    run_id: entry.run.clone().unwrap_or_default(),
+                    gate_ref: gate_ref.clone(),
+                    form: form.clone(),
+                    state: self.question_state(gate_ref, *closed, entry),
+                },
                 Live::Gate {
                     gate_ref,
                     kind,
@@ -1394,6 +1546,30 @@ impl Transcript {
             .collect();
         let body = body.trim();
         replies.len() > 1 && (replies.contains(&body) || replies.join("\n\n") == body)
+    }
+
+    /// Closed by its own close frame, or by the run's end. A CLI run asks
+    /// several questions at once (`gate:question-*`), so only that form's
+    /// close counts there; a native run parks on one gate at a time, so a
+    /// later non-blocked run status means its gate moved on.
+    fn question_state(&self, gate_ref: &str, closed: bool, entry: &LiveEntry) -> QuestionState {
+        let sent = self.question_sends.get(gate_ref).copied();
+        let superseded = closed
+            || (!gate_ref.starts_with(QUESTION_GATE_REF_PREFIX)
+                && entry
+                    .run
+                    .as_deref()
+                    .and_then(|r| self.runs.get(r))
+                    .is_some_and(|s| s.tick > entry.tick && !s.status.starts_with("blocked")));
+        let settled = entry
+            .run
+            .as_deref()
+            .is_some_and(|r| self.settled.contains(r));
+        match sent {
+            _ if superseded || settled => QuestionState::Closed(sent),
+            Some(answered) => QuestionState::Sending(answered),
+            None => QuestionState::Open,
+        }
     }
 
     fn gate_state(&self, gate_ref: &str, entry: &LiveEntry) -> GateState {
@@ -1590,6 +1766,166 @@ mod tests {
             "thread": { "thread_id": "t1" }, "messages": messages
         }))
         .expect("timeline decodes")
+    }
+
+    fn items(items: serde_json::Value) -> StreamEvent {
+        frame(serde_json::json!({
+            "cursor": "c3", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": items }
+        }))
+    }
+
+    fn plan_item(id: &str, at: &str, statuses: &[&str]) -> serde_json::Value {
+        let entries: Vec<_> = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, s)| serde_json::json!({"content": format!("step {i}"), "status": s}))
+            .collect();
+        serde_json::json!({"plan": {"id": id, "run_id": RUN,
+            "plan": {"entries": entries, "updated_at": at}}})
+    }
+
+    #[test]
+    fn plan_updates_draw_a_line_each_and_the_newest_is_the_plan() {
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&items(serde_json::json!([plan_item(
+            "plan:1",
+            "2026-11-03T10:00:00Z",
+            &["in_progress", "pending"]
+        )])));
+        t.apply(&items(serde_json::json!([plan_item(
+            "plan:2",
+            "2026-11-03T10:05:00Z",
+            &["completed", "in_progress"]
+        )])));
+        let plan = t.plan().expect("a plan");
+        assert_eq!(plan.progress(), (1, 2));
+        assert_eq!(plan.current().map(|e| e.content.as_str()), Some("step 1"));
+        let lines = t
+            .rows()
+            .iter()
+            .filter(|r| matches!(r, Row::Plan { .. }))
+            .count();
+        assert_eq!(lines, 2, "one compact line per update");
+    }
+
+    #[test]
+    fn a_reopened_native_thread_reads_its_plan_from_the_stored_preview() {
+        let plan = serde_json::json!({"entries": [
+            {"content": "Look", "status": "completed"},
+            {"content": "Fix", "status": "in_progress"}
+        ], "updated_at": "2026-11-03T10:00:00Z"});
+        let preview = serde_json::json!({
+            "invocation_id": "i9", "capability_id": "builtin.plan_update",
+            "status": "completed", "title": "plan_update",
+            "output_kind": "agent_plan", "output_preview": plan.to_string()
+        })
+        .to_string();
+        let page = serde_json::json!({ "thread": { "thread_id": "t1" }, "messages": [
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "fix it" },
+            { "message_id": "p1", "sequence": 2, "kind": "capability_display_preview",
+              "status": "finalized", "turn_run_id": RUN, "content": preview },
+        ]});
+        let mut t = Transcript::default();
+        t.set_timeline(serde_json::from_value(page).unwrap());
+        assert_eq!(t.plan().map(AgentPlan::progress), Some((1, 2)));
+        let rows = t.rows();
+        assert!(rows.iter().any(|r| matches!(r, Row::Plan { .. })));
+        assert!(
+            !rows.iter().any(|r| matches!(r, Row::Tool { .. })),
+            "no raw tool row for a plan update"
+        );
+    }
+
+    fn question_item(gate: &str, closed: bool) -> serde_json::Value {
+        serde_json::json!({"question": {
+            "run_id": RUN, "gate_ref": gate, "closed": closed,
+            "form": {"fields": [{"id": "q", "label": "Go?", "required": true,
+                "kind": {"type": "choice", "options": [{"label": "Yes"}]}}]}
+        }})
+    }
+
+    fn question_states(t: &Transcript) -> Vec<(String, QuestionState)> {
+        t.rows()
+            .iter()
+            .filter_map(|r| match r {
+                Row::Question {
+                    gate_ref, state, ..
+                } => Some((gate_ref.clone(), *state)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Review finding 3: closing one form closes that form only.
+    #[test]
+    fn closing_one_question_leaves_the_others_and_an_approval_open() {
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&items(serde_json::json!([
+            question_item("gate:question-a", false),
+            question_item("gate:question-b", false),
+            {"gate": {"run_id": RUN, "gate_kind": "approval", "gate_ref": "gate:cli-1",
+                      "headline": "Allow Bash?"}}
+        ])));
+        t.mark_question_sending("gate:question-a", true);
+        t.apply(&items(serde_json::json!([question_item(
+            "gate:question-a",
+            true
+        )])));
+        assert_eq!(
+            question_states(&t),
+            vec![
+                (
+                    "gate:question-a".to_string(),
+                    QuestionState::Closed(Some(true))
+                ),
+                ("gate:question-b".to_string(), QuestionState::Open),
+            ]
+        );
+        let gate = t.rows().iter().find_map(|r| match r {
+            Row::Gate { state, .. } => Some(*state),
+            _ => None,
+        });
+        assert_eq!(gate, Some(GateState::Open), "the approval still asks");
+    }
+
+    #[test]
+    fn a_question_is_a_form_until_answered_and_the_run_moves_on() {
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&items(serde_json::json!([{"question": {
+            "run_id": RUN, "gate_ref": "gate:question-1",
+            "form": {"fields": [{"id": "q", "label": "Go?", "required": true,
+                "kind": {"type": "choice", "options": [{"label": "Yes"}]}}]}
+        }}])));
+        let state = |t: &Transcript| {
+            t.rows().iter().find_map(|r| match r {
+                Row::Question { state, form, .. } => {
+                    assert_eq!(form.fields[0].label, "Go?");
+                    Some(*state)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(state(&t), Some(QuestionState::Open));
+        t.mark_question_sending("gate:question-1", true);
+        assert_eq!(state(&t), Some(QuestionState::Sending(true)));
+        t.apply(&status("running"));
+        assert_eq!(
+            state(&t),
+            Some(QuestionState::Sending(true)),
+            "a run status names no form; only its own close does"
+        );
+        t.apply(&items(serde_json::json!([question_item(
+            "gate:question-1",
+            true
+        )])));
+        assert_eq!(state(&t), Some(QuestionState::Closed(Some(true))));
+        t.apply(&status("completed"));
+        assert_eq!(state(&t), Some(QuestionState::Closed(Some(true))));
     }
 
     #[test]
