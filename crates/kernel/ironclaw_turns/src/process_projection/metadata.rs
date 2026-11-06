@@ -48,11 +48,7 @@ pub struct AgentTurnProcessStateMetadata {
     pub spawn_tree_descendant_cap: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product_context: Option<ProductTurnContext>,
-    #[serde(
-        rename = "auth_resume_disposition",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(flatten, with = "ironclaw_host_api::turn::resume_disposition_fields")]
     pub resume_disposition: Option<GateResumeDisposition>,
     /// True when the run's thread owner is `Ownerless` (unbound runs). The
     /// `__system__` owner slot alone cannot distinguish ownerless runs from

@@ -214,8 +214,9 @@ pub struct PendingApprovalResume {
     pub provider_replay: Option<ProviderToolCallReplay>,
     /// Set when the user denied this approval gate. The loop surfaces a
     /// model-visible failure for the parked call instead of re-dispatching.
-    /// See the field-name note on `PendingAuthResume::disposition`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// See the field-name note on `PendingAuthResume::disposition`. The
+    /// denial's feedback rides the additive `denial_feedback` key.
+    #[serde(flatten, with = "ironclaw_host_api::turn::slot_disposition_fields")]
     pub disposition: Option<ironclaw_host_api::turn::GateResumeDisposition>,
 }
 

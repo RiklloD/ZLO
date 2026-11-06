@@ -20,30 +20,48 @@ fn legacy_denied_disposition_still_loads_and_serializes_unchanged() {
 }
 
 #[test]
-fn denied_disposition_with_feedback_round_trips() {
-    let disposition = GateResumeDisposition::Denied {
-        feedback: Some(DenialFeedback::new("use the staging bucket instead").unwrap()),
+fn feedback_rides_a_sibling_key_through_the_field_helpers() {
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Record {
+        #[serde(flatten, with = "ironclaw_host_api::turn::resume_disposition_fields")]
+        resume_disposition: Option<GateResumeDisposition>,
+    }
+    let feedback = DenialFeedback::new("use the staging bucket instead").unwrap();
+    let record = Record {
+        resume_disposition: Some(GateResumeDisposition::Denied {
+            feedback: Some(feedback.clone()),
+        }),
     };
-    let wire = serde_json::to_value(&disposition).unwrap();
+    let wire = serde_json::to_value(&record).unwrap();
     assert_eq!(
         wire,
-        json!({"denied": {"feedback": "use the staging bucket instead"}})
+        json!({"auth_resume_disposition": "denied", "resume_denial_feedback": "use the staging bucket instead"})
     );
-    let back: GateResumeDisposition = serde_json::from_value(wire).unwrap();
-    assert_eq!(back, disposition);
+    assert_eq!(serde_json::from_value::<Record>(wire).unwrap(), record);
+    // Absent stays absent; a feedback key without a disposition is no denial.
     assert_eq!(
-        back.denial_feedback().map(DenialFeedback::as_str),
-        Some("use the staging bucket instead")
+        serde_json::to_value(Record {
+            resume_disposition: None
+        })
+        .unwrap(),
+        json!({})
+    );
+    assert_eq!(
+        serde_json::from_value::<Record>(json!({"resume_denial_feedback": "x"})).unwrap(),
+        Record {
+            resume_disposition: None
+        }
     );
 }
 
 #[test]
-fn disposition_rejects_unknown_variants_and_invalid_feedback() {
-    assert!(serde_json::from_value::<GateResumeDisposition>(json!("approved")).is_err());
+fn a_bare_disposition_refuses_to_drop_feedback() {
+    let with_feedback = GateResumeDisposition::Denied {
+        feedback: Some(DenialFeedback::new("do Y").unwrap()),
+    };
     assert!(
-        serde_json::from_value::<GateResumeDisposition>(json!({"denied": {"feedback": "   "}}))
-            .is_err(),
-        "feedback is validated on the wire, not only at construction"
+        serde_json::to_value(&with_feedback).is_err(),
+        "feedback outside the field helpers fails loudly instead of vanishing"
     );
 }
 

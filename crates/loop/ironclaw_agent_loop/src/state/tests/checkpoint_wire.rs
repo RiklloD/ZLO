@@ -852,9 +852,25 @@ fn pending_approval_resume_denied_disposition_round_trips_through_checkpoint_pay
         input_ref: CapabilityInputRef::new("input:approval-denied").expect("valid input ref"),
         effective_capability_ids: vec![],
         provider_replay: None,
-        disposition: Some(GateResumeDisposition::Denied { feedback: None }),
+        disposition: Some(GateResumeDisposition::Denied {
+            feedback: Some(
+                ironclaw_host_api::turn::DenialFeedback::new("use the staging db instead")
+                    .expect("valid feedback"),
+            ),
+        }),
     });
     let payload = encode_payload(&state);
+    // Rollback safety: the slot keeps `"disposition": "denied"` byte-for-byte
+    // and adds `denial_feedback` beside it, which an older reader ignores.
+    let wire: serde_json::Value = serde_json::from_slice(&payload).expect("json payload");
+    let slot = wire
+        .pointer("/pending_approval_resume")
+        .expect("approval slot present");
+    assert_eq!(slot["disposition"], "denied", "{slot}");
+    assert_eq!(
+        slot["denial_feedback"], "use the staging db instead",
+        "{slot}"
+    );
     let restored =
         LoopExecutionState::from_checkpoint_payload(&payload, CheckpointKind::BeforeBlock)
             .expect("decode checkpoint payload");
@@ -862,8 +878,10 @@ fn pending_approval_resume_denied_disposition_round_trips_through_checkpoint_pay
         restored
             .pending_approval_resume
             .as_ref()
-            .and_then(|r| r.disposition.as_ref()),
-        Some(&GateResumeDisposition::Denied { feedback: None }),
+            .and_then(|r| r.disposition.as_ref())
+            .and_then(GateResumeDisposition::denial_feedback)
+            .map(ironclaw_host_api::turn::DenialFeedback::as_str),
+        Some("use the staging db instead"),
         "PendingApprovalResume with Denied disposition must survive checkpoint encode/decode"
     );
     assert_eq!(
