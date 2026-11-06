@@ -1,14 +1,24 @@
-//! The `t3_schedule` grammar on IronClaw's routines engine: interval and
-//! fixed-time specs are validated and stepped with `ironclaw_triggers`
+//! The `t3_schedule` grammar on IronClaw's routines engine: interval,
+//! fixed-time and raw cron (`{type:'cron', expression, timezone}`) specs are validated and stepped with `ironclaw_triggers`
 //! (cron + IANA timezone, one-minute floor), and scheduled prompts pass the
 //! routines' unattended-prompt scan. The orchestrator engine stores the rows
 //! and posts each fire into the bound thread's durable queue.
 
+use ironclaw_host_api::ids::ThreadId;
+use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::error::OrchestratorError;
-use ironclaw_orchestrator::model::Millis;
+use ironclaw_orchestrator::model::{Millis, ScheduleId, ThreadScope};
 use ironclaw_orchestrator::schedules::SchedulePlanner;
+use ironclaw_product_contracts::orchestration::{
+    ORCHESTRATOR_SCHEDULE_PREVIEW_VIEW, ORCHESTRATOR_SCHEDULE_SECRET_VIEW,
+    ORCHESTRATOR_SCHEDULES_VIEW, OrchestratorScheduleAction, OrchestratorScheduleMutationRequest,
+    OrchestratorSchedulePreviewRequest, OrchestratorScheduleRequest,
+};
+use ironclaw_product_contracts::surface::ProductSurfaceError;
 use ironclaw_triggers::{TriggerError, TriggerSchedule, validate_unattended_prompt};
 use serde_json::{Value, json};
+
+use super::surface::{answer, decode};
 
 const MIN_INTERVAL_MS: i64 = 60_000;
 const DAY_NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -58,6 +68,12 @@ fn fixed_time(spec: &Value) -> Result<TriggerSchedule, OrchestratorError> {
         .unwrap_or_default();
     let zone = spec["timezone"].as_str().unwrap_or("UTC");
     TriggerSchedule::time_of_day(h, m, &days, zone).map_err(trigger_error)
+}
+
+fn cron(spec: &Value) -> Result<TriggerSchedule, OrchestratorError> {
+    let expression = spec["expression"].as_str().unwrap_or_default();
+    let zone = spec["timezone"].as_str().unwrap_or("UTC");
+    TriggerSchedule::cron_with_timezone(expression, zone).map_err(trigger_error)
 }
 
 fn to_millis(at: chrono::DateTime<chrono::Utc>) -> Millis {
@@ -119,8 +135,19 @@ impl SchedulePlanner for RoutineSchedulePlanner {
                 fixed_time(&spec)?;
                 Ok(spec)
             }
+            Some("cron") => {
+                let expression = raw["expression"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|e| !e.is_empty())
+                    .ok_or_else(|| invalid("cron schedules need an expression"))?;
+                let zone = raw["timezone"].as_str().unwrap_or(&self.default_timezone);
+                let spec = json!({"type": "cron", "expression": expression, "timezone": zone});
+                cron(&spec)?;
+                Ok(spec)
+            }
             _ => Err(invalid(
-                "schedule.type must be 'interval', 'fixed_time' or 'webhook'",
+                "schedule.type must be 'interval', 'fixed_time', 'cron' or 'webhook'",
             )),
         }
     }
@@ -143,6 +170,10 @@ impl SchedulePlanner for RoutineSchedulePlanner {
                 Ok(Some(base + (behind + 1) * every))
             }
             Some("fixed_time") => Ok(fixed_time(spec)?
+                .next_slot_after(from_millis(now)?)
+                .map_err(trigger_error)?
+                .map(to_millis)),
+            Some("cron") => Ok(cron(spec)?
                 .next_slot_after(from_millis(now)?)
                 .map_err(trigger_error)?
                 .map(to_millis)),
@@ -182,6 +213,11 @@ impl SchedulePlanner for RoutineSchedulePlanner {
                     spec["timezone"].as_str().unwrap_or("UTC")
                 )
             }
+            Some("cron") => format!(
+                "cron {} ({})",
+                spec["expression"].as_str().unwrap_or("?"),
+                spec["timezone"].as_str().unwrap_or("UTC")
+            ),
             _ => "unknown".to_string(),
         }
     }
@@ -194,6 +230,109 @@ impl SchedulePlanner for RoutineSchedulePlanner {
             )
         })
     }
+}
+
+/// The desktop's `orchestrator.schedule*` views.
+pub(super) fn is_view(id: &str) -> bool {
+    [
+        ORCHESTRATOR_SCHEDULES_VIEW.id,
+        ORCHESTRATOR_SCHEDULE_PREVIEW_VIEW.id,
+        ORCHESTRATOR_SCHEDULE_SECRET_VIEW.id,
+    ]
+    .contains(&id)
+}
+
+pub(super) async fn view(
+    engine: &Engine,
+    id: &str,
+    input: Value,
+    scope: &ThreadScope,
+) -> Result<Value, ProductSurfaceError> {
+    match id {
+        v if v == ORCHESTRATOR_SCHEDULE_PREVIEW_VIEW.id => {
+            let req: OrchestratorSchedulePreviewRequest = decode(input)?;
+            answer(engine.schedule_preview(&req.schedule, req.prompt.as_deref()))
+        }
+        v if v == ORCHESTRATOR_SCHEDULE_SECRET_VIEW.id => {
+            let req: OrchestratorScheduleRequest = decode(input)?;
+            answer(
+                async {
+                    let id = ScheduleId::new(req.schedule_id)?;
+                    engine.schedule_reveal(scope, &id).await
+                }
+                .await,
+            )
+        }
+        _ => answer(engine.schedule_list_for(scope).await),
+    }
+}
+
+/// `orchestrator.schedule_mutate`: the `t3_schedule` actions plus secret
+/// rotation, on the caller's own threads and schedules.
+pub(super) async fn mutate(
+    engine: &Engine,
+    req: OrchestratorScheduleMutationRequest,
+    scope: &ThreadScope,
+) -> Result<Value, ProductSurfaceError> {
+    answer(
+        async {
+            let action = match req.action {
+                OrchestratorScheduleAction::Create => "create",
+                OrchestratorScheduleAction::Update => "update",
+                OrchestratorScheduleAction::Delete => "delete",
+                OrchestratorScheduleAction::RunNow => "run_now",
+                OrchestratorScheduleAction::RotateSecret => {
+                    let id = ScheduleId::new(req.schedule_id.clone().unwrap_or_default())?;
+                    return engine.schedule_rotate_secret(scope, &id).await;
+                }
+            };
+            // The thread whose context the action runs in: the new
+            // schedule's home, or the existing schedule's.
+            let thread = match (&req.action, &req.thread_id, &req.schedule_id) {
+                (OrchestratorScheduleAction::Create, Some(thread), _) => ThreadId::new(thread)?,
+                (OrchestratorScheduleAction::Create, None, _) => {
+                    return Err(OrchestratorError::invalid("thread_id is required"));
+                }
+                (_, _, Some(id)) => engine
+                    .schedule(&ScheduleId::new(id)?)
+                    .await?
+                    .filter(|r| r.tenant_id == scope.tenant_id && r.user_id == scope.user_id)
+                    .map(|r| r.thread_id)
+                    .ok_or_else(|| {
+                        OrchestratorError::not_found("schedule_not_found", "No such schedule.")
+                    })?,
+                (_, _, None) => return Err(OrchestratorError::invalid("schedule_id is required")),
+            };
+            let home = engine.owned_thread(&thread, scope).await?;
+            let ctx = CallContext {
+                thread_id: home.thread_id.clone(),
+                scope: scope.clone(),
+                provider: home.provider.clone(),
+                model: home.model.clone(),
+            };
+            let mut args = json!({
+                "action": action,
+                "id": req.schedule_id,
+                "title": req.title,
+                "prompt": req.prompt,
+                "schedule": req.schedule,
+                "bind_to_current_thread": req.bind_to_current_thread,
+                "enabled": req.enabled,
+                "client_request_id": req.client_request_id,
+            });
+            // Absent keeps the stored signature on update; null removes it.
+            if let Some(signature) = req.signature.clone() {
+                args["signature"] = signature.unwrap_or(Value::Null);
+            }
+            if let Some(map) = args.as_object_mut() {
+                map.retain(|key, value| key == "signature" || !value.is_null());
+            }
+            // `enabled` rides on the create itself: a paused schedule is
+            // never stored active, not even between two writes.
+            engine.schedule_action(&ctx, args).await
+        }
+        .await,
+    )
 }
 
 #[cfg(test)]
@@ -238,6 +377,28 @@ mod tests {
         assert!(
             p.normalize(&json!({"type": "fixed_time", "timeOfDay": "25:00"}))
                 .is_err()
+        );
+
+        // Raw cron on the routines grammar, in the spec's zone (or the local one).
+        let cron = p
+            .normalize(&json!({"type": "cron", "expression": "0 9 * * MON-FRI"}))
+            .unwrap();
+        assert_eq!(cron["timezone"], "Europe/Zurich");
+        assert_eq!(p.describe(&cron), "cron 0 9 * * MON-FRI (Europe/Zurich)");
+        let next = p
+            .next_after(&cron, None, sat.timestamp_millis())
+            .unwrap()
+            .unwrap();
+        assert_eq!(next, mon.timestamp_millis());
+        assert!(
+            p.normalize(&json!({"type": "cron", "expression": "not cron"}))
+                .is_err()
+        );
+        assert!(
+            p.normalize(
+                &json!({"type": "cron", "expression": "0 9 * * *", "timezone": "Mars/Base"})
+            )
+            .is_err()
         );
 
         assert!(

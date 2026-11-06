@@ -314,7 +314,7 @@ pub struct ForkOptions {
 }
 
 /// `ok: false` → [`ClientError::Refused`], anything else decodes as `T`.
-fn decode<T: DeserializeOwned>(value: Value) -> Result<T, ClientError> {
+pub(crate) fn decode<T: DeserializeOwned>(value: Value) -> Result<T, ClientError> {
     if value.get("ok").and_then(Value::as_bool) == Some(false) {
         let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
         let code = text("error").unwrap_or_else(|| "refused".to_string());

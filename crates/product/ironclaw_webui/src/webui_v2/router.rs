@@ -59,7 +59,9 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_READ_FS_FILE, WEBUI_V2_PATTERN_READ_PROJECT_FILE,
     WEBUI_V2_PATTERN_REGISTER_HOSTED_MCP_EXTENSION, WEBUI_V2_PATTERN_REMOVE_EXTENSION,
     WEBUI_V2_PATTERN_RESOLVE_GATE, WEBUI_V2_PATTERN_RESUME_AUTOMATION, WEBUI_V2_PATTERN_RETRY_RUN,
-    WEBUI_V2_PATTERN_RUN_AUTOMATION, WEBUI_V2_PATTERN_SEARCH_SKILLS,
+    WEBUI_V2_PATTERN_RUN_AUTOMATION, WEBUI_V2_PATTERN_SCHEDULE, WEBUI_V2_PATTERN_SCHEDULE_PREVIEW,
+    WEBUI_V2_PATTERN_SCHEDULE_ROTATE_SECRET, WEBUI_V2_PATTERN_SCHEDULE_RUN,
+    WEBUI_V2_PATTERN_SCHEDULE_SECRET, WEBUI_V2_PATTERN_SCHEDULES, WEBUI_V2_PATTERN_SEARCH_SKILLS,
     WEBUI_V2_PATTERN_SESSION_CHANNEL_MESSAGE, WEBUI_V2_PATTERN_SET_ACTIVE_LLM,
     WEBUI_V2_PATTERN_SET_AUTO_ACTIVATE_LEARNED, WEBUI_V2_PATTERN_SET_SKILL_AUTO_ACTIVATE,
     WEBUI_V2_PATTERN_SETTINGS_TOOL_PERMISSION, WEBUI_V2_PATTERN_SETTINGS_TOOLS,
@@ -502,6 +504,27 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         .route(
             WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL,
             post(handlers::orchestrator_task_cancel),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SCHEDULES,
+            get(handlers::schedules_list).post(handlers::schedule_create),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SCHEDULE_PREVIEW,
+            post(handlers::schedule_preview),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SCHEDULE,
+            post(handlers::schedule_update).delete(handlers::schedule_delete),
+        )
+        .route(WEBUI_V2_PATTERN_SCHEDULE_RUN, post(handlers::schedule_run))
+        .route(
+            WEBUI_V2_PATTERN_SCHEDULE_ROTATE_SECRET,
+            post(handlers::schedule_rotate_secret),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SCHEDULE_SECRET,
+            get(handlers::schedule_secret),
         )
         .route(
             WEBUI_V2_PATTERN_PROFILES,

@@ -17,6 +17,7 @@ pub mod operator;
 pub mod orchestration;
 mod pages;
 mod profile_calls;
+pub mod schedules;
 mod settings;
 mod stream;
 pub mod transcript;

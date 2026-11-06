@@ -12,6 +12,8 @@ mod observer;
 mod profile_context;
 mod profiles;
 mod runtime;
+#[cfg(test)]
+mod schedule_surface_tests;
 mod schedules;
 mod stitched;
 mod surface;

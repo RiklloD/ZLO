@@ -1460,3 +1460,5 @@ async fn an_effort_pick_rides_the_route_and_a_switch_keeps_only_its_own() {
         .unwrap();
     assert_eq!(store.thread_effort(&a).await.unwrap(), None);
 }
+
+mod schedule_desktop;

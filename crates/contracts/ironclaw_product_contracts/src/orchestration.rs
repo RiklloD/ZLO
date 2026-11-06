@@ -191,3 +191,103 @@ pub const ORCHESTRATOR_MERGE_BACK_COMMAND: ProductSurfaceCommandDescriptor<
     OrchestratorMergeBackRequest,
     serde_json::Value,
 > = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_MERGE_BACK_COMMAND_ID);
+
+/// What a schedule mutation does. `create` binds the schedule to
+/// `thread_id`: its runs post there (or, with `bind_to_current_thread:
+/// false`, into a fresh thread per run on that thread's profile and model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestratorScheduleAction {
+    Create,
+    Update,
+    Delete,
+    RunNow,
+    /// Webhook schedules: a new backend-made signing secret; the URL stays.
+    RotateSecret,
+}
+
+/// One schedule mutation from the desktop. `schedule` is the `t3_schedule`
+/// spec (`{type:'interval', everyMs}`, `{type:'fixed_time', timeOfDay,
+/// weekdays, timezone}`, `{type:'cron', expression, timezone}` or
+/// `{type:'webhook'}`); `signature` is `{header, prefix, encoding,
+/// generate: true}` — the desktop never sends a secret — or `null` to
+/// turn signing off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorScheduleMutationRequest {
+    pub action: OrchestratorScheduleAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<String>,
+    /// `create` only: the caller's thread the schedule belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_to_current_thread: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// `None` (key absent): keep the stored signature. `Some(None)`
+    /// (`"signature": null`): turn signing off. `Some(Some(v))`: set it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub signature: Option<Option<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
+}
+
+/// For `Option<Option<T>>` fields: a present key (even `null`) is `Some`,
+/// so "set to null" stays apart from "absent". Pair with `#[serde(default)]`.
+pub fn deserialize_present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(d)?))
+}
+
+/// Validate a schedule spec (and optionally its prompt) without storing it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorSchedulePreviewRequest {
+    pub schedule: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorScheduleRequest {
+    pub schedule_id: String,
+}
+
+/// Every schedule of the caller (`t3_schedule` rows, agent- or
+/// desktop-made): `{ok, schedules: [...]}`. Webhook URLs are masked.
+pub const ORCHESTRATOR_SCHEDULES_VIEW: ProductView<serde_json::Value, serde_json::Value> =
+    ProductView::unpaginated("orchestrator.schedules");
+
+/// `{ok, schedule, describe, nextRuns: [unix ms; ≤3]}` or the error document.
+pub const ORCHESTRATOR_SCHEDULE_PREVIEW_VIEW: ProductView<
+    OrchestratorSchedulePreviewRequest,
+    serde_json::Value,
+> = ProductView::unpaginated("orchestrator.schedule_preview");
+
+/// A webhook schedule's full URL and signing secret, for an explicit
+/// Reveal/Copy. Never logged; the list view carries neither.
+pub const ORCHESTRATOR_SCHEDULE_SECRET_VIEW: ProductView<
+    OrchestratorScheduleRequest,
+    serde_json::Value,
+> = ProductView::unpaginated("orchestrator.schedule_secret");
+
+pub const ORCHESTRATOR_SCHEDULE_MUTATE_COMMAND_ID: &str = "orchestrator.schedule_mutate";
+pub const ORCHESTRATOR_SCHEDULE_MUTATE_COMMAND: ProductSurfaceCommandDescriptor<
+    OrchestratorScheduleMutationRequest,
+    serde_json::Value,
+> = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_SCHEDULE_MUTATE_COMMAND_ID);

@@ -44,6 +44,15 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   the planner's unattended-prompt scan on the rendered text. A run posts
   into the schedule's thread, or into a fresh thread per run
   (`bind_to_current_thread=false`) on the same runtime, profile and model.
+  The desktop's Automations page reads the same rows through
+  `schedule_list_for` (webhook URLs masked), previews specs
+  (`schedule_preview`), and reveals or rotates a webhook's signing secret
+  (`schedule_reveal` / `schedule_rotate_secret`) only on explicit request;
+  each row records its last run's thread and the last webhook request's
+  outcome (only requests bearing the URL's token are recorded).
+  The model (`t3_schedule`) may add a signature to an unsigned webhook but
+  never replace, regenerate or remove an existing one (`ScheduleAuthority`);
+  `signature: null` removes it on the owner's path.
 - `cli_approvals` — `orch_cli_approvals`, the durable record of CLI tool
   approvals the `ironclaw_cli_providers` bridge asks; open rows are closed
   as `interrupted` when the engine opens.
