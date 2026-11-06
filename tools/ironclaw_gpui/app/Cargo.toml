@@ -30,4 +30,7 @@ dirs = "6"
 # Native PDF/Office/web previews (`native_view.rs`): plain runtime calls;
 # both crates are already in the tree through gpui.
 objc2 = "0.6"
+# Voice (`voice/apple.rs`): Speech and AVFoundation completion handlers.
+# Already in the tree through gpui.
+block2 = "0.6"
 raw-window-handle = "0.6"

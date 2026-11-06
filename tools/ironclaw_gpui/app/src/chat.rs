@@ -130,6 +130,9 @@ pub struct ChatView {
     embedded: bool,
     _stream: Option<EventStream>,
     _pump: Task<()>,
+    /// Talk mode's claim on the next send (the new-thread screen's first
+    /// message carries it here).
+    voice_send: Option<crate::voice::Submission>,
 }
 
 impl ChatView {
@@ -314,6 +317,7 @@ impl ChatView {
             thread_id,
             transcript: Transcript::default(),
             rows: Rc::new(Vec::new()),
+            voice_send: None,
             rows_gen: 0,
             folded: None,
             items: Rc::new(Vec::new()),
@@ -803,6 +807,13 @@ impl ChatView {
             if end == RunEnd::Failed {
                 tracing::warn!(thread_id = %self.thread_id, "run failed");
             }
+            crate::voice::run_ended(
+                &self.thread_id,
+                self.transcript.last_settled_run(),
+                end == RunEnd::Completed,
+                &self.rows,
+                cx,
+            );
             cx.emit(RunEnded {
                 thread_id: self.thread_id.clone(),
                 failed: end == RunEnd::Failed,
@@ -954,23 +965,36 @@ impl ChatView {
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Talk mode's claim on this send, if it pressed this Enter.
+        let voice = self
+            .voice_send
+            .take()
+            .or_else(|| crate::voice::take_submission(&self.composer, cx));
+        let refuse = |why: &str, cx: &mut Context<Self>| {
+            if let Some(sub) = voice {
+                crate::voice::submission_refused(sub, why, cx);
+            }
+        };
         let (text, files) = inline_files::outgoing(&self.composer, &self.staged, cx);
         if text.is_empty() && files.is_empty() {
-            return;
+            return refuse("There was nothing to send.", cx);
         }
         if files.is_empty()
             && let Some(command) = goals::goal_command(&text)
         {
+            refuse("That ran as a command, not a message.", cx);
             return self.goal_command(command, window, cx);
         }
         if files.is_empty() && match_command(&text, &self.menu.sources.commands).is_some() {
+            refuse("That ran as a command, not a message.", cx);
             self.run_command(text, window, cx);
             return;
         }
         if self.running_run().is_some() {
-            return self.steer(window, cx);
+            return self.steer(voice, window, cx);
         }
         let Some(channel) = self.channel.clone() else {
+            refuse("This gateway has no chat channel configured.", cx);
             self.set_error("This gateway has no chat channel configured.", cx);
             return;
         };
@@ -1010,6 +1034,9 @@ impl ChatView {
             let result = flatten(job.await);
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(ack) => {
+                    if let Some(sub) = voice {
+                        this.report_voice(sub, &ack, None, window, cx);
+                    }
                     this.transcript.ack_pending_user(pending);
                     if let Some(notice) = ack.notice.filter(|n| !n.trim().is_empty()) {
                         this.error = Some(notice.into());
@@ -1019,6 +1046,9 @@ impl ChatView {
                     this.refresh_orchestration(cx);
                 }
                 Err(e) => {
+                    if let Some(sub) = voice {
+                        crate::voice::submission_refused(sub, &e.to_string(), cx);
+                    }
                     this.transcript.drop_pending_user(pending);
                     if let Some(r) = this.reserve.as_mut() {
                         r.held = false;
@@ -1042,9 +1072,13 @@ impl ChatView {
         &mut self,
         draft: InputContent,
         files: Vec<StagedFile>,
+        voice: Option<crate::voice::Submission>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Talk mode's claim from the new-thread or quick composer: only
+        // this first message may answer it.
+        self.voice_send = voice;
         self.staged = files;
         self.arrive = true;
         crate::design::dock::take_off(cx.reduce_motion());
@@ -1811,7 +1845,15 @@ impl ChatView {
                         }),
                 ),
             self.picker.clone(),
-            h_flex().gap(px(6.)).child(attach).child(send),
+            h_flex()
+                .gap(px(6.))
+                .child(attach)
+                .child(crate::voice::ui::composer_controls(
+                    &self.composer,
+                    Some(&self.thread_id),
+                    cx,
+                ))
+                .child(send),
             cx,
         );
         // From the new-thread screen it glides down from the hero's spot,

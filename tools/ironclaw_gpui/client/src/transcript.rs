@@ -243,6 +243,8 @@ pub struct Transcript {
     /// Command results, each placed after the last durable message it saw.
     notes: Vec<(u64, Row)>,
     latest_run: Option<String>,
+    /// The run whose end was reported last (`Applied::run_ended`).
+    last_settled: Option<String>,
     /// Stop clicked in this view; shows "Stopping" before the server confirms.
     stop_requested: Option<String>,
     tick: u64,
@@ -944,9 +946,16 @@ impl Transcript {
 
     fn settle(&mut self, run: &str, end: RunEnd, out: &mut Applied) {
         if self.settled.insert(run.to_string()) {
+            self.last_settled = Some(run.to_string());
             out.reload_timeline = true;
             out.run_ended = Some(end);
         }
+    }
+
+    /// The run whose end `apply` reported last, so a caller can tell which
+    /// run a `run_ended` belongs to.
+    pub fn last_settled_run(&self) -> Option<&str> {
+        self.last_settled.as_deref()
     }
 
     pub fn rows(&self) -> Vec<Row> {
@@ -1668,6 +1677,16 @@ mod tests {
         assert_eq!(t.apply(&status("completed")).run_ended, None);
         let mut t = Transcript::default();
         assert_eq!(t.apply(&status("failed")).run_ended, Some(RunEnd::Failed));
+    }
+
+    #[test]
+    fn the_settled_run_is_named() {
+        let mut t = Transcript::default();
+        assert_eq!(t.last_settled_run(), None);
+        t.apply(&status("running"));
+        assert_eq!(t.last_settled_run(), None, "running is not settled");
+        t.apply(&status("completed"));
+        assert_eq!(t.last_settled_run(), Some(RUN));
     }
 
     #[test]

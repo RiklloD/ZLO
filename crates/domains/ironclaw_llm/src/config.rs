@@ -315,6 +315,11 @@ pub const AUXILIARY_REQUEST_TIMEOUT_SECS: u64 = 30;
 /// time to complete.
 pub const TRANSCRIPTION_REQUEST_TIMEOUT_SECS: u64 = 120;
 
+/// Request timeout for text-to-speech calls (`speech/`). A reply-length
+/// utterance comes back in a few seconds; the budget covers a slow provider
+/// without letting a stuck call hold a voice session open.
+pub const SPEECH_REQUEST_TIMEOUT_SECS: u64 = 60;
+
 /// Base reqwest builder carrying the transport hygiene every LLM HTTP client
 /// shares: a connect-handshake cap, TCP keepalive, and a bounded idle
 /// connection pool.

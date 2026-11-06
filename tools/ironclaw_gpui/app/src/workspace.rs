@@ -76,6 +76,7 @@ enum Page {
     Appearance,
     Permissions,
     Traces,
+    Voice,
     Providers,
     Operator,
     Usage,
@@ -209,6 +210,7 @@ impl Workspace {
         this.battery.start(|w: &mut Self| &mut w.battery, cx);
         this.start_quick_composer(cx);
         crate::snapshot::start(cx.entity().downgrade(), window.window_handle(), cx);
+        crate::voice::start(cx.entity().downgrade(), window.window_handle(), cx);
         design::apply_window(window, *Style::of(cx));
         // Clicking a system notification brings the window up on its thread.
         let weak = cx.entity().downgrade();
@@ -545,12 +547,13 @@ impl Workspace {
             Page::Profiles => open!(profiles, |cx| ProfilesView::new(backend, window, cx)),
             Page::Extensions => open!(extensions, |cx| ExtensionsView::new(backend, cx)),
             Page::Skills => open!(skills, |cx| SkillsView::new(backend, window, cx)),
-            Page::Settings | Page::Appearance | Page::Permissions | Page::Traces => {
+            Page::Settings | Page::Appearance | Page::Permissions | Page::Traces | Page::Voice => {
                 open!(settings, |cx| SettingsView::new(backend, window, cx));
                 let section = match page {
                     Page::Appearance => Section::Appearance,
                     Page::Permissions => Section::Permissions,
                     Page::Traces => Section::Traces,
+                    Page::Voice => Section::Voice,
                     _ => Section::General,
                 };
                 if let Some(view) = self.pages.settings.clone() {
@@ -596,6 +599,7 @@ impl Workspace {
                 vec![
                     (Page::Settings, IconName::Settings, "General"),
                     (Page::Appearance, IconName::Palette, "Appearance"),
+                    (Page::Voice, IconName::Mic, "Voice"),
                     (Page::Notifications, IconName::Bell, "Notifications"),
                 ],
             ),
@@ -650,6 +654,43 @@ impl Workspace {
         };
         composer.update(cx, |state, cx| state.focus(window, cx));
         true
+    }
+
+    /// The composer voice types into: the quick composer when it is open,
+    /// else the open chat's or new-thread screen's while this window is in
+    /// front. Otherwise `open_quick` opens the quick composer for it.
+    pub(crate) fn voice_composer(
+        &mut self,
+        open_quick: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(
+        Entity<TextareaState>,
+        gpui_kit::AnyWindowHandle,
+        Option<String>,
+    )> {
+        if let Some((input, handle)) = self.quick_input(cx) {
+            return Some((input, handle, None));
+        }
+        if window.is_window_active() {
+            let composer = match self.page {
+                Page::Chat => self
+                    .active
+                    .as_ref()
+                    .map(|(id, c)| (c.read(cx).composer(), Some(id.clone()))),
+                Page::Draft => self.draft.as_ref().map(|d| (d.input(), None)),
+                _ => None,
+            };
+            if let Some((composer, thread)) = composer {
+                return Some((composer, window.window_handle(), thread));
+            }
+        }
+        if !open_quick {
+            return None;
+        }
+        self.open_quick(cx);
+        self.quick_input(cx)
+            .map(|(input, handle)| (input, handle, None))
     }
 
     /// Leave settings for the open thread, or the new-thread screen.
@@ -1298,9 +1339,11 @@ impl Render for Workspace {
                     Page::Profiles => self.pages.profiles.clone().map(|v| v.into_any_element()),
                     Page::Extensions => self.pages.extensions.clone().map(|v| v.into_any_element()),
                     Page::Skills => self.pages.skills.clone().map(|v| v.into_any_element()),
-                    Page::Settings | Page::Appearance | Page::Permissions | Page::Traces => {
-                        self.pages.settings.clone().map(|v| v.into_any_element())
-                    }
+                    Page::Settings
+                    | Page::Appearance
+                    | Page::Permissions
+                    | Page::Traces
+                    | Page::Voice => self.pages.settings.clone().map(|v| v.into_any_element()),
                     Page::Providers => self.pages.providers.clone().map(|v| v.into_any_element()),
                     Page::Operator => self.pages.operator.clone().map(|v| v.into_any_element()),
                     Page::Usage => self.pages.usage.clone().map(|v| v.into_any_element()),

@@ -45,7 +45,11 @@ icon_assets!(
         Laptop,
         House,
         CircleDot,
-        Upload
+        Upload,
+        // Voice (composer mic, talk mode, read aloud).
+        AudioLines,
+        Volume2,
+        VolumeOff
     ]
 );
 
