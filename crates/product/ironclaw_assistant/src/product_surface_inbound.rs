@@ -423,14 +423,31 @@ pub(crate) fn parse_gate_resolution(
 }
 
 /// "No, do X instead" text on a decline. A blank field is a plain decline;
-/// anything else must pass `DenialFeedback`'s bounds.
+/// anything else must pass `DenialFeedback`'s bounds and is then redacted
+/// with the model-input redaction (credential values and host paths become
+/// markers; ordinary words such as "password" stay) — this is the only
+/// place feedback enters, so the audit record, the resume record, the loop
+/// checkpoint and the CLI ledger only ever hold the redacted form.
 fn parse_denial_feedback(
     feedback: Option<String>,
 ) -> Result<Option<DenialFeedback>, ProductSurfaceError> {
     let Some(raw) = feedback.filter(|raw| !raw.trim().is_empty()) else {
         return Ok(None);
     };
-    DenialFeedback::new(raw).map(Some).map_err(|error| {
+    let bounded = DenialFeedback::new(raw).map_err(denial_feedback_error)?;
+    let redacted = ironclaw_safety::redact_model_input_text(bounded.as_str()).into_text();
+    // Markers can be longer than what they replace; keep the bound.
+    let redacted: String = redacted
+        .chars()
+        .take(ironclaw_host_api::turn::DENIAL_FEEDBACK_MAX_CHARS)
+        .collect();
+    DenialFeedback::new(redacted)
+        .map(Some)
+        .map_err(denial_feedback_error)
+}
+
+fn denial_feedback_error(error: DenialFeedbackError) -> ProductSurfaceError {
+    {
         let code = match error {
             DenialFeedbackError::Empty => ProductSurfaceValidationCode::Blank,
             DenialFeedbackError::TooLong => ProductSurfaceValidationCode::TooLong,
@@ -439,7 +456,7 @@ fn parse_denial_feedback(
             }
         };
         validation_error("feedback", code)
-    })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

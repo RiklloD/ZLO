@@ -374,6 +374,12 @@ pub enum ObservationTrust {
     /// nothing else — the control-character and credential-VALUE guards still
     /// apply.
     HostAuthored,
+    /// The person's own words rejecting the call ("no, do X instead"),
+    /// credential-value-redacted at the product ingress. Set ONLY by the agent
+    /// loop's denied-resume renderer from the run's `DenialFeedback`, never
+    /// from capability output. Persistence keeps their vocabulary; the
+    /// control-character and API-key-token guards still apply.
+    UserFeedback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -762,14 +762,10 @@ fn validate_json_page_content(value: &serde_json::Value) -> Result<(), String> {
 /// is untrusted and gets the full scan. Fail closed: only the exact
 /// `host_authored` tag grants the exemption.
 fn observation_trust(value: &serde_json::Value) -> ObservationProvenance {
-    let host_authored = value
-        .get("trust")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|trust| trust == "host_authored");
-    if host_authored {
-        ObservationProvenance::HostAuthored
-    } else {
-        ObservationProvenance::Untrusted
+    match value.get("trust").and_then(serde_json::Value::as_str) {
+        Some("host_authored") => ObservationProvenance::HostAuthored,
+        Some("user_feedback") => ObservationProvenance::UserFeedback,
+        _ => ObservationProvenance::Untrusted,
     }
 }
 
@@ -779,6 +775,11 @@ fn observation_trust(value: &serde_json::Value) -> ObservationProvenance {
 enum ObservationProvenance {
     Untrusted,
     HostAuthored,
+    /// The person's own words rejecting a call ("no, do X instead"), redacted
+    /// for credential values at the product ingress. Their vocabulary is not
+    /// scanned ("use the password manager" is an instruction, not a leak);
+    /// the control-character and API-key-token guards still apply.
+    UserFeedback,
 }
 
 fn model_observation_content(value: &serde_json::Value) -> Result<String, String> {
@@ -835,14 +836,17 @@ fn validate_model_observation_text(
             }
         }
     }
-    // The prompt-injection and API-key-token scans apply to BOTH provenances:
-    // they guard against content no host-authored template ever contains, so
-    // exempting trusted text would buy nothing and lose defense in depth.
-    for forbidden in PROMPT_INJECTION_OBSERVATION_MARKERS {
-        if contains_marker_at_word_boundary(&lower, forbidden) {
-            return Err(format!(
-                "model observation must not contain instruction marker `{forbidden}`"
-            ));
+    // The prompt-injection scan guards against tool output steering the
+    // model; no host-authored template contains those phrases, so it applies
+    // there too. The user IS the principal, so their feedback may say
+    // "system prompt" — only the API-key-token scan below binds it.
+    if provenance != ObservationProvenance::UserFeedback {
+        for forbidden in PROMPT_INJECTION_OBSERVATION_MARKERS {
+            if contains_marker_at_word_boundary(&lower, forbidden) {
+                return Err(format!(
+                    "model observation must not contain instruction marker `{forbidden}`"
+                ));
+            }
         }
     }
     if lower
@@ -935,7 +939,7 @@ fn validate_model_visible_tool_observation_schema(value: &serde_json::Value) -> 
         // Must stay in lockstep with `ironclaw_turns`' `ObservationTrust`: an
         // unlisted tag here rejects the whole observation at persistence, which
         // is a SILENT drop of the model-visible result.
-        &["untrusted_tool_output", "host_authored"],
+        &["untrusted_tool_output", "host_authored", "user_feedback"],
         "model observation trust",
     )
 }
@@ -1590,6 +1594,59 @@ mod tests {
         assert!(
             error.contains("sensitive marker"),
             "rejection must come from the credential-vocabulary scan: {error}"
+        );
+    }
+
+    /// "No, do X instead": the user's own (already value-redacted) words in a
+    /// `user_feedback` observation survive persistence even when they use
+    /// credential or instruction vocabulary — the same text from a tool is
+    /// still scrubbed — while credential VALUES and control characters stay
+    /// banned, and the exemption still covers `generic_failure.detail` only.
+    #[test]
+    fn user_feedback_trust_keeps_ordinary_words_but_not_credential_values() {
+        let feedback = "The user rejected this call: Use the password manager instead, \
+                        and don't touch the system prompt file.";
+        let observation = |trust: &str, detail: &str| {
+            serde_json::json!({
+                "schema_version": super::MODEL_VISIBLE_TOOL_OBSERVATION_SCHEMA_VERSION,
+                "status": "error",
+                "summary": "Capability declined by user.",
+                "detail": {"kind": "generic_failure", "failure_kind": "gate_declined", "detail": detail},
+                "trust": trust,
+            })
+        };
+
+        let kept =
+            super::normalized_model_observation("ref", observation("user_feedback", feedback))
+                .expect("user feedback observation is stored");
+        assert_eq!(
+            kept["detail"]["detail"], feedback,
+            "the user's words survive intact"
+        );
+
+        let scrubbed = super::normalized_model_observation(
+            "ref",
+            observation("untrusted_tool_output", feedback),
+        )
+        .expect("observation kept");
+        assert!(
+            scrubbed["detail"].get("detail").is_none(),
+            "the same words from a tool are still scrubbed: {scrubbed}"
+        );
+
+        assert!(
+            super::validate_model_observation(&observation(
+                "user_feedback",
+                "The user rejected this call: use sk-live-abc123def456"
+            ))
+            .is_err(),
+            "credential values are still rejected"
+        );
+        let mut summary_widened = observation("user_feedback", "fine");
+        summary_widened["summary"] = serde_json::json!("use the password manager");
+        assert!(
+            super::validate_model_observation(&summary_widened).is_err(),
+            "the exemption does not reach `summary`"
         );
     }
 

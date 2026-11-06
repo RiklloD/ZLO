@@ -148,7 +148,7 @@ async fn capability_stage_denied_approval_resume_with_feedback_hands_feedback_to
     let denied_activity_id = CapabilityActivityId::new();
     calls[0].activity_id = denied_activity_id;
     let feedback = ironclaw_host_api::turn::DenialFeedback::new(
-        "Don't delete it. Move it to the archive folder instead.",
+        "Don't delete it. Use the password manager's archive instead.",
     )
     .expect("valid feedback");
 
@@ -216,9 +216,15 @@ async fn capability_stage_denied_approval_resume_with_feedback_hands_feedback_to
     assert_eq!(
         detail.as_deref(),
         Some(
-            "The user rejected this call: Don't delete it. Move it to the archive folder instead.\n\
+            "The user rejected this call: Don't delete it. Use the password manager's archive instead.\n\
              Do not retry the same call; follow the user's feedback."
         ),
+    );
+    // Attributed to the user, not to a tool or the host: persistence keeps
+    // the words ("password") instead of scrubbing them as tool output.
+    assert_eq!(
+        observation.trust,
+        ironclaw_loop_contracts::ObservationTrust::UserFeedback
     );
 }
 

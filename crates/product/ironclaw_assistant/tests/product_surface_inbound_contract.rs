@@ -475,6 +475,28 @@ fn gate_decline_feedback_is_validated_at_ingress() {
         ProductGateResolution::Declined { feedback: None }
     );
 
+    // Redacted once, here, before the text can reach the audit record, the
+    // resume record, a checkpoint or a CLI ledger: credential VALUES and host
+    // paths go, ordinary credential vocabulary stays.
+    let Some(redacted) = (match gate_resolution(gate_request(
+        "declined",
+        Some(
+            "Use the password manager, not password: hunter2 or AKIAIOSFODNN7EXAMPLE from /Users/lorik/.env"
+                .into(),
+        ),
+    )) {
+        ProductGateResolution::Declined { feedback } => feedback,
+        other => panic!("expected a decline, got {other:?}"),
+    }) else {
+        panic!("feedback kept");
+    };
+    let text = redacted.as_str();
+    assert!(text.contains("Use the password manager"), "{text}");
+    assert!(!text.contains("hunter2"), "{text}");
+    assert!(!text.contains("AKIAIOSFODNN7EXAMPLE"), "{text}");
+    assert!(!text.contains("/Users/lorik"), "{text}");
+    assert!(text.contains("[REDACTED"), "{text}");
+
     let too_long = gate_request("declined", Some("x".repeat(DENIAL_FEEDBACK_MAX_CHARS + 1)))
         .into_command(caller())
         .expect_err("feedback over the bound");

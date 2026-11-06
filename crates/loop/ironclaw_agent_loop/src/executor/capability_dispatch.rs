@@ -172,7 +172,14 @@ impl CapabilityStage {
             state
                 .recent_failure_kinds
                 .push(capability_error_to_failure_kind(failure.error_kind));
-            let model_observation = Some(model_visible_capability_failure_observation(&failure));
+            // The user's words are attributed to them, not dressed up as tool
+            // output (whose vocabulary scan would drop "use the password
+            // manager") nor as host-authored text.
+            let mut observation = model_visible_capability_failure_observation(&failure);
+            if denied.feedback.is_some() {
+                observation.trust = ObservationTrust::UserFeedback;
+            }
+            let model_observation = Some(observation);
             let summary = CapabilityErrorSummary {
                 kind: failure.error_kind,
                 safe_summary: SanitizedStrategySummary::from_trusted_static(denied.planner_summary),
