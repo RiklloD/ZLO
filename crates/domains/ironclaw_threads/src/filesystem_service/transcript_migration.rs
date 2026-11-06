@@ -25,7 +25,7 @@ use super::{
 const TRANSCRIPT_PAGE_CONFLICT_RETRIES: u32 = 5;
 
 /// Outcome of one transactional transcript-migration page.
-enum TranscriptPageOutcome {
+pub(super) enum TranscriptPageOutcome {
     Committed,
     /// The page lost a concurrency race and should be re-read and retried;
     /// carries the underlying error so retry exhaustion can fail loud with
@@ -144,87 +144,6 @@ where
         Ok(migrated)
     }
 
-    /// Advance the history-search backfill for `scope` by at most
-    /// `max_threads` threads and report whether it is complete.
-    ///
-    /// Messages written before the `search_text` projection existed carry no
-    /// searchable text. This re-projects them thread by thread (bodies are
-    /// never rewritten — LLM data is retained verbatim), in thread-id order,
-    /// persisting the last finished thread id so an interrupted backfill
-    /// resumes where it stopped. Concurrent callers may redo a thread; the
-    /// re-projection is idempotent and CAS-guarded per page. A completion
-    /// marker ends the work for good: messages written afterwards are
-    /// projected by the normal write path.
-    pub(super) async fn advance_history_search_backfill(
-        &self,
-        scope: &ThreadScope,
-        max_threads: usize,
-    ) -> Result<bool, SessionThreadError> {
-        let resource_scope = scope.to_resource_scope();
-        let marker = history_search_marker_path(scope)?;
-        if self
-            .filesystem
-            .get(&resource_scope, &marker)
-            .await?
-            .is_some()
-        {
-            return Ok(true);
-        }
-        let cursor_path = history_search_cursor_path(scope)?;
-        let cursor = match self.filesystem.get(&resource_scope, &cursor_path).await? {
-            Some(row) => Some(String::from_utf8(row.entry.body).map_err(|error| {
-                SessionThreadError::Deserialization(format!(
-                    "history search backfill cursor: {error}"
-                ))
-            })?),
-            None => None,
-        };
-        let root = scoped_path(&format!("{}/threads", scope_axes_string(scope)))?;
-        let entries = match self.filesystem.list_dir(&resource_scope, &root).await {
-            Ok(entries) => entries,
-            Err(error) if is_not_found(&error) => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
-        let mut thread_ids = entries
-            .into_iter()
-            .filter(|entry| entry.file_type == FileType::Directory)
-            .map(|entry| entry.name)
-            .filter(|name| cursor.as_deref().is_none_or(|done| name.as_str() > done))
-            .collect::<Vec<_>>();
-        thread_ids.sort();
-        let remaining = thread_ids.len();
-        let mut last_done = None;
-        for raw in thread_ids.into_iter().take(max_threads.max(1)) {
-            let thread_id = ThreadId::new(raw.as_str()).map_err(invalid_path)?;
-            self.reproject_prefix(scope, &messages_root(scope, &thread_id)?, true)
-                .await?;
-            last_done = Some(raw);
-        }
-        if remaining > max_threads.max(1) {
-            if let Some(done) = last_done {
-                self.filesystem
-                    .put(
-                        &resource_scope,
-                        &cursor_path,
-                        Entry::bytes(done.into_bytes()),
-                        CasExpectation::Any,
-                    )
-                    .await?;
-            }
-            return Ok(false);
-        }
-        self.filesystem
-            .put(
-                &resource_scope,
-                &marker,
-                Entry::bytes(b"history-search-v1".to_vec()),
-                CasExpectation::Any,
-            )
-            .await?;
-        tracing::debug!(threads = remaining, "history search backfill complete");
-        Ok(true)
-    }
-
     /// One transactional page of [`Self::migrate_transcript_indexes_for_scope`].
     ///
     /// Returns `Conflict` instead of an error when the transaction lost a CAS
@@ -232,7 +151,7 @@ where
     /// bounded — an escaped `VersionMismatch` here surfaced to WebUI timeline
     /// reads as a retryable 503 whenever the scope's first transcript read
     /// overlapped a running turn.
-    async fn migrate_transcript_page(
+    pub(super) async fn migrate_transcript_page(
         &self,
         scope: &ThreadScope,
         messages: bool,
@@ -351,20 +270,6 @@ where
         }
         Ok(())
     }
-}
-
-fn history_search_marker_path(scope: &ThreadScope) -> Result<ScopedPath, SessionThreadError> {
-    scoped_path(&format!(
-        "{}/index-migrations/history-search-v1.complete",
-        scope_axes_string(scope)
-    ))
-}
-
-fn history_search_cursor_path(scope: &ThreadScope) -> Result<ScopedPath, SessionThreadError> {
-    scoped_path(&format!(
-        "{}/index-migrations/history-search-v1.cursor",
-        scope_axes_string(scope)
-    ))
 }
 
 fn transcript_index_migration_marker_path(

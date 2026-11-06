@@ -50,6 +50,20 @@ struct InMemoryState {
     inbound_idempotency: HashMap<InboundIdempotencyKey, InboundIdempotencyRecord>,
     prepared_contexts: HashMap<ThreadId, crate::PreparedContextRecord>,
     structured_finalizations: HashMap<StructuredFinalizationKey, StructuredFinalizationRecord>,
+    /// External transcript search projections by (scope, thread, source key, ordinal).
+    external: HashMap<(ThreadScope, ThreadId), ExternalThreadProjections>,
+}
+
+#[derive(Debug, Default)]
+struct ExternalThreadProjections {
+    summary: Option<crate::ExternalThreadSummary>,
+    sources: HashMap<
+        String,
+        (
+            u64,
+            std::collections::BTreeMap<u64, crate::ExternalTranscriptMessage>,
+        ),
+    >,
 }
 
 #[derive(Debug, Clone)]
@@ -1715,8 +1729,9 @@ impl SessionThreadService for InMemorySessionThreadService {
             });
         }
         let state = self.state.lock().await;
-        // Reference implementation: a scan of the scope's transcripts, with
-        // the same eligibility and scoring as the indexed backends.
+        // Reference implementation: a scan of the scope's transcripts and
+        // external projections, with the same eligibility and scoring as the
+        // indexed backends.
         let mut threads = HashMap::new();
         let mut candidates = Vec::new();
         for stored in state
@@ -1735,24 +1750,82 @@ impl SessionThreadService for InMemorySessionThreadService {
                 stored
                     .messages
                     .iter()
-                    .filter(|message| crate::history_search::search_projection(message).is_some())
-                    .map(|message| crate::history_search::RankedCandidate {
-                        record: message.clone(),
-                        backend_rank: 0,
-                    }),
+                    .filter_map(|m| crate::history_search::RankedCandidate::from_record(m, 0)),
             );
         }
-        let groups = crate::history_search::group_ranked_candidates(
-            candidates,
-            &threads,
-            &terms,
-            crate::history_search::clamp_max_threads(request.max_threads),
-            crate::history_search::clamp_max_hits(request.max_hits_per_thread),
-        );
+        for ((scope, thread_id), projections) in &state.external {
+            if scope != &request.scope {
+                continue;
+            }
+            if !threads.contains_key(thread_id)
+                && let Some(summary) = &projections.summary
+            {
+                threads.insert(
+                    thread_id.clone(),
+                    crate::history_search::external_thread_record(scope, summary),
+                );
+            }
+            for (_, rows) in projections.sources.values() {
+                candidates.extend(rows.values().filter_map(|m| {
+                    crate::history_search::RankedCandidate::from_external(thread_id.clone(), m, 0)
+                }));
+            }
+        }
+        let groups =
+            crate::history_search::group_ranked_candidates(candidates, &threads, &terms, &request);
         Ok(crate::SearchThreadMessagesResponse {
             threads: groups,
             index_complete: true,
         })
+    }
+
+    async fn advance_message_search_index(
+        &self,
+        _scope: &ThreadScope,
+        _budget: usize,
+    ) -> Result<crate::MessageSearchIndexProgress, SessionThreadError> {
+        // The reference service scans on every search: always complete.
+        Ok(crate::MessageSearchIndexProgress {
+            complete: true,
+            ..Default::default()
+        })
+    }
+
+    async fn upsert_external_transcript(
+        &self,
+        request: crate::UpsertExternalTranscriptRequest,
+    ) -> Result<crate::ExternalTranscriptUpsert, SessionThreadError> {
+        let mut state = self.state.lock().await;
+        let entry = state
+            .external
+            .entry((request.scope.clone(), request.thread.thread_id.clone()))
+            .or_default();
+        entry.summary = Some(request.thread.clone());
+        let (cursor, rows) = entry.sources.entry(request.source.key()).or_default();
+        let mut outcome = crate::ExternalTranscriptUpsert::default();
+        for message in request.messages {
+            *cursor = (*cursor).max(message.ordinal.saturating_add(1));
+            if rows.get(&message.ordinal) == Some(&message) {
+                outcome.unchanged += 1;
+            } else {
+                rows.insert(message.ordinal, message);
+                outcome.written += 1;
+            }
+        }
+        outcome.ingested_through = *cursor;
+        Ok(outcome)
+    }
+
+    async fn external_transcript_cursor(
+        &self,
+        request: crate::ExternalTranscriptCursorRequest,
+    ) -> Result<u64, SessionThreadError> {
+        let state = self.state.lock().await;
+        Ok(state
+            .external
+            .get(&(request.scope, request.thread_id))
+            .and_then(|p| p.sources.get(&request.source.key()))
+            .map_or(0, |(cursor, _)| *cursor))
     }
 
     async fn read_thread_by_id(

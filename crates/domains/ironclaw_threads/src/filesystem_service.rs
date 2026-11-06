@@ -33,6 +33,7 @@
 //! `replay_accepted_inbound_message` recomputes that key from its scoped
 //! request and performs one exact read.
 
+mod history_search_index;
 mod history_search_query;
 mod message_lookup_index;
 mod message_read;
@@ -3887,6 +3888,28 @@ where
         request: crate::SearchThreadMessagesRequest,
     ) -> Result<crate::SearchThreadMessagesResponse, SessionThreadError> {
         self.search_history(request).await
+    }
+
+    async fn advance_message_search_index(
+        &self,
+        scope: &ThreadScope,
+        budget: usize,
+    ) -> Result<crate::MessageSearchIndexProgress, SessionThreadError> {
+        self.advance_search_index(scope, budget).await
+    }
+
+    async fn upsert_external_transcript(
+        &self,
+        request: crate::UpsertExternalTranscriptRequest,
+    ) -> Result<crate::ExternalTranscriptUpsert, SessionThreadError> {
+        self.upsert_projections(request).await
+    }
+
+    async fn external_transcript_cursor(
+        &self,
+        request: crate::ExternalTranscriptCursorRequest,
+    ) -> Result<u64, SessionThreadError> {
+        self.projection_cursor(request).await
     }
 
     async fn list_threads_for_scope(

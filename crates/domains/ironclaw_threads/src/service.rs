@@ -20,7 +20,10 @@ use crate::{
     ThreadMessageRecord, ThreadScope, ToolResultRecordRead, UpdateAssistantDraftRequest,
     UpdateThreadGoalRequest, UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
 };
-use crate::{SearchThreadMessagesRequest, SearchThreadMessagesResponse};
+use crate::{
+    ExternalTranscriptCursorRequest, ExternalTranscriptUpsert, MessageSearchIndexProgress,
+    SearchThreadMessagesRequest, SearchThreadMessagesResponse, UpsertExternalTranscriptRequest,
+};
 
 /// Canonical Reborn session thread and transcript boundary.
 #[async_trait]
@@ -512,6 +515,46 @@ pub trait SessionThreadService: Send + Sync {
                 .to_string(),
         ))
     }
+
+    /// One bounded indexing step for history search over the scope's own
+    /// transcripts: declares the index and re-projects at most `budget`
+    /// messages written before the projection existed, resuming from a
+    /// durable cursor. Never rewrites a message body. Run it off the request
+    /// path; `search_thread_messages` itself performs no writes.
+    async fn advance_message_search_index(
+        &self,
+        _scope: &ThreadScope,
+        _budget: usize,
+    ) -> Result<MessageSearchIndexProgress, SessionThreadError> {
+        Err(SessionThreadError::Backend(
+            "advance_message_search_index is not implemented by this SessionThreadService backend"
+                .to_string(),
+        ))
+    }
+
+    /// Upsert search projections of an external (CLI runtime) transcript.
+    /// Idempotent: an unchanged row is not rewritten, and the source cursor
+    /// only moves forward.
+    async fn upsert_external_transcript(
+        &self,
+        _request: UpsertExternalTranscriptRequest,
+    ) -> Result<ExternalTranscriptUpsert, SessionThreadError> {
+        Err(SessionThreadError::Backend(
+            "upsert_external_transcript is not implemented by this SessionThreadService backend"
+                .to_string(),
+        ))
+    }
+
+    /// One past the highest ordinal ingested for the source (0 when none).
+    async fn external_transcript_cursor(
+        &self,
+        _request: ExternalTranscriptCursorRequest,
+    ) -> Result<u64, SessionThreadError> {
+        Err(SessionThreadError::Backend(
+            "external_transcript_cursor is not implemented by this SessionThreadService backend"
+                .to_string(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -842,5 +885,29 @@ where
         request: SearchThreadMessagesRequest,
     ) -> Result<SearchThreadMessagesResponse, SessionThreadError> {
         self.as_ref().search_thread_messages(request).await
+    }
+
+    async fn advance_message_search_index(
+        &self,
+        scope: &ThreadScope,
+        budget: usize,
+    ) -> Result<MessageSearchIndexProgress, SessionThreadError> {
+        self.as_ref()
+            .advance_message_search_index(scope, budget)
+            .await
+    }
+
+    async fn upsert_external_transcript(
+        &self,
+        request: UpsertExternalTranscriptRequest,
+    ) -> Result<ExternalTranscriptUpsert, SessionThreadError> {
+        self.as_ref().upsert_external_transcript(request).await
+    }
+
+    async fn external_transcript_cursor(
+        &self,
+        request: ExternalTranscriptCursorRequest,
+    ) -> Result<u64, SessionThreadError> {
+        self.as_ref().external_transcript_cursor(request).await
     }
 }

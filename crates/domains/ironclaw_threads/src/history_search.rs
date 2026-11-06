@@ -20,7 +20,9 @@
 //! and each hit carries a snippet with highlighted byte ranges.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use ironclaw_host_api::ids::ThreadId;
@@ -38,8 +40,9 @@ pub(crate) const SEARCH_TEXT_INDEX_NAME: &str = "thread_message_search_v1";
 /// Longest stretch of one message's text that is indexed. Longer replies are
 /// indexed on their head; the transcript itself is untouched.
 pub const MESSAGE_SEARCH_TEXT_MAX_CHARS: usize = 32_000;
-/// Shortest word prefix projected for search-as-you-type.
-const PREFIX_MIN_CHARS: usize = 3;
+/// Shortest word prefix projected for search-as-you-type (two characters, so
+/// the desktop's two-character queries match partial words too).
+const PREFIX_MIN_CHARS: usize = 2;
 /// Longest word prefix projected; longer prefixes add little recall.
 const PREFIX_MAX_CHARS: usize = 12;
 /// Upper bound on distinct prefix tokens projected for one message.
@@ -52,19 +55,64 @@ pub const HISTORY_SEARCH_MAX_THREADS: usize = 50;
 pub const HISTORY_SEARCH_MAX_HITS_PER_THREAD: usize = 5;
 /// Ranked candidate messages fetched from the index before grouping.
 pub(crate) const HISTORY_SEARCH_CANDIDATES: u32 = 400;
+/// The wider fetch used when the first one was saturated and too few of the
+/// person's own threads made it into the answer.
+pub(crate) const HISTORY_SEARCH_WIDE_CANDIDATES: u32 = 1024;
 /// Default snippet width (characters) around the first match.
 pub const HISTORY_SNIPPET_CHARS: usize = 220;
 
+/// Ranks thread groups before the answer is cut to `max_threads`: lower
+/// tiers come first, relevance orders each tier. The product layer supplies
+/// it (automation runs and subagent threads rank below the person's own
+/// chats); without one every thread is tier 0.
+pub trait ThreadSearchTiering: Send + Sync {
+    fn tier(&self, thread: &SessionThreadRecord) -> u8;
+}
+
 /// Search request: the caller's scope plus plain user text. The query is
 /// plain text, never backend query syntax.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct SearchThreadMessagesRequest {
     pub scope: crate::ThreadScope,
     pub query: String,
+    /// Search only this thread: candidates are selected inside it, so a
+    /// match there is found however well other threads match.
+    pub thread_id: Option<ThreadId>,
     /// Thread groups to return; clamped to `1..=HISTORY_SEARCH_MAX_THREADS`.
     pub max_threads: usize,
     /// Hits per thread group; clamped to `1..=HISTORY_SEARCH_MAX_HITS_PER_THREAD`.
     pub max_hits_per_thread: usize,
+    pub tiering: Option<Arc<dyn ThreadSearchTiering>>,
+}
+
+impl SearchThreadMessagesRequest {
+    /// A request over the whole scope with default tiering.
+    pub fn new(scope: crate::ThreadScope, query: impl Into<String>) -> Self {
+        Self {
+            scope,
+            query: query.into(),
+            thread_id: None,
+            max_threads: HISTORY_SEARCH_MAX_THREADS,
+            max_hits_per_thread: HISTORY_SEARCH_MAX_HITS_PER_THREAD,
+            tiering: None,
+        }
+    }
+
+    pub(crate) fn tier_of(&self, thread: &SessionThreadRecord) -> u8 {
+        self.tiering.as_ref().map_or(0, |t| t.tier(thread))
+    }
+}
+
+impl fmt::Debug for SearchThreadMessagesRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SearchThreadMessagesRequest")
+            .field("scope", &self.scope)
+            .field("thread_id", &self.thread_id)
+            .field("max_threads", &self.max_threads)
+            .field("max_hits_per_thread", &self.max_hits_per_thread)
+            .field("tiering", &self.tiering.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Search answer, best thread first.
@@ -109,8 +157,18 @@ pub struct MessageSearchHit {
 /// Visible conversation text of a message, or `None` when the message is not
 /// searchable (tool output, system/hidden text, drafts, redacted rows).
 pub fn searchable_message_text(record: &ThreadMessageRecord) -> Option<&str> {
-    searchable_role(record)?;
-    let text = record.content.as_deref()?.trim();
+    let role = searchable_role(record)?;
+    visible_text(role, record.content.as_deref()?)
+}
+
+/// Visible text of a message of `role`: engine scaffolding in user-kind rows
+/// is dropped (see `crate::history_visibility`).
+pub(crate) fn visible_text(role: SearchHitRole, text: &str) -> Option<&str> {
+    let text = match role {
+        SearchHitRole::User => crate::history_visibility::visible_user_text(text)?,
+        SearchHitRole::Assistant => text,
+    }
+    .trim();
     (!text.is_empty()).then_some(text)
 }
 
@@ -136,7 +194,11 @@ fn searchable_role(record: &ThreadMessageRecord) -> Option<SearchHitRole> {
 /// The indexed projection: bounded visible text plus word prefixes. `None`
 /// when the message is not searchable.
 pub(crate) fn search_projection(record: &ThreadMessageRecord) -> Option<String> {
-    let text = searchable_message_text(record)?;
+    Some(search_projection_text(searchable_message_text(record)?))
+}
+
+/// The indexed projection of already-visible text.
+pub(crate) fn search_projection_text(text: &str) -> String {
     let head: String = text.chars().take(MESSAGE_SEARCH_TEXT_MAX_CHARS).collect();
     let mut seen = HashSet::new();
     let mut prefixes = Vec::new();
@@ -158,9 +220,9 @@ pub(crate) fn search_projection(record: &ThreadMessageRecord) -> Option<String> 
         }
     }
     if prefixes.is_empty() {
-        return Some(head);
+        return head;
     }
-    Some(format!("{head}\n{}", prefixes.join(" ")))
+    format!("{head}\n{}", prefixes.join(" "))
 }
 
 fn words(text: &str) -> impl Iterator<Item = &str> {
@@ -299,93 +361,142 @@ fn collapse_whitespace(text: &str) -> String {
     out
 }
 
-/// A candidate message the backend matched, in backend rank order.
+/// A candidate message the backend matched, in backend rank order: a
+/// canonical transcript row or an external transcript projection.
 pub(crate) struct RankedCandidate {
-    pub(crate) record: ThreadMessageRecord,
+    pub(crate) thread_id: ThreadId,
+    pub(crate) message_id: ThreadMessageId,
+    pub(crate) sequence: u64,
+    pub(crate) role: SearchHitRole,
+    pub(crate) created_at: Option<DateTime<Utc>>,
+    /// Visible text, already filtered.
+    pub(crate) text: String,
     pub(crate) backend_rank: usize,
 }
 
-/// Re-score candidates by term coverage, group by thread, and cut snippets.
-/// `threads` supplies the record for each candidate thread; candidates whose
-/// thread record is missing are dropped. Subagent threads are kept — ranking
-/// them below the person's own threads is the product layer's call.
+impl RankedCandidate {
+    /// A canonical row, when it is searchable.
+    pub(crate) fn from_record(record: &ThreadMessageRecord, backend_rank: usize) -> Option<Self> {
+        let role = searchable_role(record)?;
+        let text = visible_text(role, record.content.as_deref()?)?.to_string();
+        Some(Self {
+            thread_id: record.thread_id.clone(),
+            message_id: record.message_id,
+            sequence: record.sequence,
+            role,
+            created_at: record.created_at,
+            text,
+            backend_rank,
+        })
+    }
+
+    /// An external projection, re-checked against the visibility rule.
+    pub(crate) fn from_external(
+        thread_id: ThreadId,
+        message: &crate::ExternalTranscriptMessage,
+        backend_rank: usize,
+    ) -> Option<Self> {
+        let text = visible_text(message.role, &message.text)?.to_string();
+        Some(Self {
+            thread_id,
+            message_id: message.navigation_message_id,
+            sequence: message.ordinal.saturating_add(1),
+            role: message.role,
+            created_at: message.created_at,
+            text,
+            backend_rank,
+        })
+    }
+}
+
+/// Re-score candidates by term coverage, group by thread, rank groups by
+/// tier then relevance, and cut snippets. `threads` supplies the record for
+/// each candidate thread; candidates whose thread record is missing are
+/// dropped.
 pub(crate) fn group_ranked_candidates(
     candidates: Vec<RankedCandidate>,
     threads: &HashMap<ThreadId, SessionThreadRecord>,
     terms: &[String],
-    max_threads: usize,
-    max_hits_per_thread: usize,
+    request: &SearchThreadMessagesRequest,
 ) -> Vec<ThreadSearchResult> {
     struct Scored {
-        record: ThreadMessageRecord,
-        role: SearchHitRole,
+        candidate: RankedCandidate,
         coverage: usize,
-        backend_rank: usize,
     }
+    let max_threads = clamp_max_threads(request.max_threads);
+    let max_hits_per_thread = clamp_max_hits(request.max_hits_per_thread);
     let mut by_thread: HashMap<ThreadId, Vec<Scored>> = HashMap::new();
     for candidate in candidates {
-        let Some(role) = searchable_role(&candidate.record) else {
+        if request
+            .thread_id
+            .as_ref()
+            .is_some_and(|only| only != &candidate.thread_id)
+        {
             continue;
-        };
-        let Some(text) = searchable_message_text(&candidate.record) else {
-            continue;
-        };
-        let coverage = term_coverage(text, terms);
+        }
+        let coverage = term_coverage(&candidate.text, terms);
         if coverage == 0 {
             continue;
         }
         by_thread
-            .entry(candidate.record.thread_id.clone())
+            .entry(candidate.thread_id.clone())
             .or_default()
             .push(Scored {
-                record: candidate.record,
-                role,
+                candidate,
                 coverage,
-                backend_rank: candidate.backend_rank,
             });
     }
-    let mut groups: Vec<(ThreadSearchResult, usize)> = by_thread
+    let mut groups: Vec<(ThreadSearchResult, u8, usize)> = by_thread
         .into_iter()
         .filter_map(|(thread_id, mut hits)| {
             let thread = threads.get(&thread_id)?.clone();
             hits.sort_by(|a, b| {
                 b.coverage
                     .cmp(&a.coverage)
-                    .then(a.backend_rank.cmp(&b.backend_rank))
-                    .then(b.record.sequence.cmp(&a.record.sequence))
+                    .then(a.candidate.backend_rank.cmp(&b.candidate.backend_rank))
+                    .then(b.candidate.sequence.cmp(&a.candidate.sequence))
             });
+            // One message may appear twice (a canonical row and a projection
+            // of the same thread); keep the better-ranked copy.
+            let mut seen = HashSet::new();
+            hits.retain(|h| seen.insert(h.candidate.message_id));
             let best_coverage = hits.first().map_or(0, |h| h.coverage);
-            let best_rank = hits.first().map_or(usize::MAX, |h| h.backend_rank);
+            let best_rank = hits
+                .first()
+                .map_or(usize::MAX, |h| h.candidate.backend_rank);
             let hits = hits
                 .into_iter()
                 .take(max_hits_per_thread)
                 .map(|scored| {
-                    let text = searchable_message_text(&scored.record).unwrap_or_default();
+                    let c = scored.candidate;
                     let (snippet, highlights) =
-                        snippet_with_highlights(text, terms, HISTORY_SNIPPET_CHARS);
+                        snippet_with_highlights(&c.text, terms, HISTORY_SNIPPET_CHARS);
                     MessageSearchHit {
-                        message_id: scored.record.message_id,
-                        sequence: scored.record.sequence,
-                        role: scored.role,
-                        created_at: scored.record.created_at,
+                        message_id: c.message_id,
+                        sequence: c.sequence,
+                        role: c.role,
+                        created_at: c.created_at,
                         snippet,
                         highlights,
                     }
                 })
                 .collect();
+            let tier = request.tier_of(&thread);
             Some((
                 ThreadSearchResult {
                     thread,
                     hits,
                     matched_terms: best_coverage,
                 },
+                tier,
                 best_rank,
             ))
         })
         .collect();
-    groups.sort_by(|(a, a_rank), (b, b_rank)| {
-        b.matched_terms
-            .cmp(&a.matched_terms)
+    groups.sort_by(|(a, a_tier, a_rank), (b, b_tier, b_rank)| {
+        a_tier
+            .cmp(b_tier)
+            .then(b.matched_terms.cmp(&a.matched_terms))
             .then(a_rank.cmp(b_rank))
             .then(b.thread.updated_at.cmp(&a.thread.updated_at))
             .then(a.thread.thread_id.as_str().cmp(b.thread.thread_id.as_str()))
@@ -393,8 +504,42 @@ pub(crate) fn group_ranked_candidates(
     groups
         .into_iter()
         .take(max_threads)
-        .map(|(group, _)| group)
+        .map(|(group, _, _)| group)
         .collect()
+}
+
+/// Groups of tier 0 in an answer: whether a saturated fetch crowded out the
+/// person's own threads.
+pub(crate) fn tier_zero_groups(
+    groups: &[ThreadSearchResult],
+    request: &SearchThreadMessagesRequest,
+) -> usize {
+    groups
+        .iter()
+        .filter(|g| request.tier_of(&g.thread) == 0)
+        .count()
+}
+
+/// The record a hit in an external-only thread groups under: the caller's
+/// scope (the projection was stored under it) plus the ingested summary.
+pub(crate) fn external_thread_record(
+    scope: &crate::ThreadScope,
+    summary: &crate::ExternalThreadSummary,
+) -> SessionThreadRecord {
+    SessionThreadRecord {
+        scope: scope.clone(),
+        thread_id: summary.thread_id.clone(),
+        created_by_actor_id: scope
+            .owner_user_id
+            .as_ref()
+            .map(|u| u.as_str().to_string())
+            .unwrap_or_default(),
+        title: summary.title.clone(),
+        metadata_json: None,
+        goal: None,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
+    }
 }
 
 pub(crate) fn clamp_max_threads(requested: usize) -> usize {
