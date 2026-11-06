@@ -687,6 +687,9 @@ impl Turn {
             let Some(choice) = choice_for(&approval, &decision) else {
                 return;
             };
+            // `abort` ends Muse's turn by design: a steer could only reach a
+            // finished turn, so the feedback goes straight to the next one.
+            let ends_turn = choice_decision(&approval, &choice) == Some("abort");
             let params = json!({
                 "sessionId": session_id,
                 "commandId": command_id(),
@@ -695,15 +698,21 @@ impl Turn {
                 "choiceId": choice,
             });
             // Muse may already have settled it (its own rules decide many).
-            if let Err(error) = client
+            let admitted = match client
                 .request("approval/decide", params, COMMAND_TIMEOUT)
                 .await
             {
-                tracing::debug!(error = %error.label(), "muse: approval decision not admitted");
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::debug!(error = %error.label(), "muse: approval decision not admitted");
+                    false
+                }
+            };
+            let Some(feedback) = feedback else {
                 return;
-            }
-            if let Some(feedback) = feedback {
-                steer_rejection_feedback(&live, &feedback).await;
+            };
+            if !admitted || ends_turn || !steer_rejection_feedback(&live, &feedback).await {
+                deliver_later(bridge.as_deref(), &thread, &feedback).await;
             }
         });
     }
@@ -711,15 +720,15 @@ impl Turn {
 
 /// Muse's approval choice carries no message, so a rejection's feedback
 /// ("no, do X instead") follows the denial as a `turn/steer` into the same
-/// turn. The denial itself was already decided; a failed steer leaves it a
-/// plain denial.
+/// turn. `true` once the turn acknowledged it; otherwise the caller queues
+/// the feedback for the next turn.
 async fn steer_rejection_feedback(
     live: &Mutex<Option<LiveTurn>>,
     feedback: &ironclaw_host_api::turn::DenialFeedback,
-) {
+) -> bool {
     let Some(live) = live.lock().ok().and_then(|l| l.clone()) else {
         tracing::debug!("muse: rejection feedback not steered (no live turn)");
-        return;
+        return false;
     };
     let params = json!({
         "sessionId": live.session_id,
@@ -727,13 +736,43 @@ async fn steer_rejection_feedback(
         "expectedTurnId": live.turn_id,
         "input": [{"type": "text", "text": crate::bridge::rejection_message(feedback)}],
     });
-    if let Err(error) = live
+    match live
         .client
         .request("turn/steer", params, COMMAND_TIMEOUT)
         .await
     {
-        tracing::debug!(error = %error.label(), "muse: rejection feedback not steered");
+        Ok(_) => true,
+        Err(error) => {
+            tracing::debug!(error = %error.label(), "muse: rejection feedback not steered");
+            false
+        }
     }
+}
+
+/// Feedback the turn could not take waits for the next turn instead of
+/// vanishing (see `CliBridge::queue_undelivered_feedback`).
+async fn deliver_later(
+    bridge: Option<&CliBridge>,
+    thread: &ThreadId,
+    feedback: &ironclaw_host_api::turn::DenialFeedback,
+) {
+    let queued = match bridge {
+        Some(bridge) => bridge.queue_undelivered_feedback(thread, feedback).await,
+        None => false,
+    };
+    if !queued {
+        tracing::debug!("muse: rejection feedback could not be delivered or queued");
+    }
+}
+
+/// The `decision` of `choice_id` among the approval's choices.
+fn choice_decision<'a>(approval: &'a Value, choice_id: &str) -> Option<&'a str> {
+    approval["availableChoices"]
+        .as_array()?
+        .iter()
+        .find(|c| c.get("choiceId").and_then(Value::as_str) == Some(choice_id))?
+        .get("decision")
+        .and_then(Value::as_str)
 }
 
 /// The native choice for a decision. A denial takes the once-scoped

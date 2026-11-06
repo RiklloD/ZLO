@@ -639,8 +639,10 @@ impl Turn {
                 tracing::debug!(error = %error.label(), "codex: approval reply not sent");
                 return;
             }
-            if let Some(feedback) = feedback {
-                steer_rejection_feedback(&live, &feedback).await;
+            if let Some(feedback) = feedback
+                && !steer_rejection_feedback(&live, &feedback).await
+            {
+                deliver_later(bridge.as_deref(), &thread, &feedback).await;
             }
         });
     }
@@ -649,15 +651,15 @@ impl Turn {
 /// Codex's approval reply has no message field, so a rejection's feedback
 /// ("no, do X instead") follows the decline as a `turn/steer` into the same
 /// turn: the agent reads why the call was declined and what to do instead.
-/// The decline itself was already sent; a steer that fails leaves it a plain
-/// decline.
+/// `true` once the turn acknowledged the steer; otherwise the caller queues
+/// the feedback for the next turn.
 async fn steer_rejection_feedback(
     live: &Mutex<Option<LiveTurn>>,
     feedback: &ironclaw_host_api::turn::DenialFeedback,
-) {
+) -> bool {
     let Some(live) = live.lock().ok().and_then(|l| l.clone()) else {
         tracing::debug!("codex: rejection feedback not steered (no live turn)");
-        return;
+        return false;
     };
     let params = json!({
         "threadId": live.codex_thread,
@@ -668,12 +670,32 @@ async fn steer_rejection_feedback(
             "text_elements": [],
         }],
     });
-    if let Err(error) = live
+    match live
         .client
         .request("turn/steer", params, COMMAND_TIMEOUT)
         .await
     {
-        tracing::debug!(error = %error.label(), "codex: rejection feedback not steered");
+        Ok(_) => true,
+        Err(error) => {
+            tracing::debug!(error = %error.label(), "codex: rejection feedback not steered");
+            false
+        }
+    }
+}
+
+/// Feedback the turn could not take waits for the next turn instead of
+/// vanishing (see `CliBridge::queue_undelivered_feedback`).
+async fn deliver_later(
+    bridge: Option<&CliBridge>,
+    thread: &ThreadId,
+    feedback: &ironclaw_host_api::turn::DenialFeedback,
+) {
+    let queued = match bridge {
+        Some(bridge) => bridge.queue_undelivered_feedback(thread, feedback).await,
+        None => false,
+    };
+    if !queued {
+        tracing::debug!("codex: rejection feedback could not be delivered or queued");
     }
 }
 

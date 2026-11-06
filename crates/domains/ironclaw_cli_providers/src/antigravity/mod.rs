@@ -682,10 +682,17 @@ async fn permission_answer(
     };
     let kind = match permissions::decide(bridge, thread, run_id, &request, claim).await {
         PermissionDecision::AllowOnce => "allow_once",
-        // ACP's permission outcome is an option id with no message, and this
-        // runtime has no in-turn steer, so a rejection's feedback cannot
-        // reach the agent mid-turn; the bridge still records it.
-        PermissionDecision::Deny { .. } => "reject_once",
+        // ACP's permission outcome is an option id with no message and this
+        // runtime cannot be steered mid-turn, so a rejection's feedback waits
+        // in the thread's queue and runs as the next turn's input.
+        PermissionDecision::Deny { feedback } => {
+            if let (Some(bridge), Some(feedback)) = (bridge, feedback)
+                && !bridge.queue_undelivered_feedback(thread, &feedback).await
+            {
+                tracing::debug!("antigravity: rejection feedback could not be queued");
+            }
+            "reject_once"
+        }
     };
     params["options"]
         .as_array()

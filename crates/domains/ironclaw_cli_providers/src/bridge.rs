@@ -28,7 +28,7 @@ use ironclaw_host_api::ids::ThreadId;
 use ironclaw_host_api::turn::DenialFeedback;
 use ironclaw_orchestrator::cli_approvals::{CliApprovalDecision, CliApprovalRecord};
 use ironclaw_orchestrator::engine::{CallContext, Engine};
-use ironclaw_orchestrator::model::now_ms;
+use ironclaw_orchestrator::model::{Author, now_ms};
 use ironclaw_orchestrator::store::Store;
 use ironclaw_orchestrator::tools::TOOLS;
 use serde_json::{Value, json};
@@ -827,6 +827,31 @@ impl CliBridge {
             )); // silent-ok: the waiter already gave up
         }
         declined
+    }
+
+    /// Keep rejection feedback the running turn could not take — the decline
+    /// ended it, or it refused the steer — as the thread's next turn input:
+    /// it waits in the durable queue (visible in the thread's queue) and the
+    /// engine runs it once the thread is idle. `false` when nothing could
+    /// keep it (no store), so the caller can say so.
+    pub async fn queue_undelivered_feedback(
+        &self,
+        thread: &ThreadId,
+        feedback: &DenialFeedback,
+    ) -> bool {
+        let Some(store) = self.ledger.get() else {
+            return false;
+        };
+        match store
+            .queue_add(thread, &rejection_message(feedback), Author::User)
+            .await
+        {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::debug!(%error, "cli bridge: rejection feedback not queued");
+                false
+            }
+        }
     }
 
     /// Answer a pending gate on `thread`. `false` when there is none.
