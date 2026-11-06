@@ -21,8 +21,9 @@ use crate::{
     UpdateThreadGoalRequest, UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
 };
 use crate::{
-    ExternalTranscriptCursorRequest, ExternalTranscriptUpsert, MessageSearchIndexProgress,
-    SearchThreadMessagesRequest, SearchThreadMessagesResponse, UpsertExternalTranscriptRequest,
+    ExternalTranscriptCursor, ExternalTranscriptCursorRequest, ExternalTranscriptUpsert,
+    MessageSearchIndexProgress, SearchThreadMessagesRequest, SearchThreadMessagesResponse,
+    UpsertExternalTranscriptRequest,
 };
 
 /// Canonical Reborn session thread and transcript boundary.
@@ -553,11 +554,11 @@ pub trait SessionThreadService: Send + Sync {
         ))
     }
 
-    /// One past the highest ordinal ingested for the source (0 when none).
+    /// Where ingestion of the source stands (all zero when it never ran).
     async fn external_transcript_cursor(
         &self,
         _request: ExternalTranscriptCursorRequest,
-    ) -> Result<u64, SessionThreadError> {
+    ) -> Result<ExternalTranscriptCursor, SessionThreadError> {
         Err(SessionThreadError::Backend(
             "external_transcript_cursor is not implemented by this SessionThreadService backend"
                 .to_string(),
@@ -919,7 +920,7 @@ where
     async fn external_transcript_cursor(
         &self,
         request: ExternalTranscriptCursorRequest,
-    ) -> Result<u64, SessionThreadError> {
+    ) -> Result<ExternalTranscriptCursor, SessionThreadError> {
         self.as_ref().external_transcript_cursor(request).await
     }
 }

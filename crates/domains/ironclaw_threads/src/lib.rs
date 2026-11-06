@@ -63,9 +63,9 @@ pub use contract::{
 };
 pub use error::SessionThreadError;
 pub use external_transcript::{
-    ExternalThreadSummary, ExternalTranscriptCursorRequest, ExternalTranscriptMessage,
-    ExternalTranscriptSource, ExternalTranscriptUpsert, MessageSearchIndexProgress,
-    UpsertExternalTranscriptRequest,
+    ExternalThreadSummary, ExternalTranscriptCursor, ExternalTranscriptCursorRequest,
+    ExternalTranscriptMessage, ExternalTranscriptSource, ExternalTranscriptUpsert,
+    MessageSearchIndexProgress, UpsertExternalTranscriptRequest,
 };
 pub use history_search::{
     HISTORY_SEARCH_MAX_HITS_PER_THREAD, HISTORY_SEARCH_MAX_THREADS, HISTORY_SEARCH_QUERY_MAX_CHARS,

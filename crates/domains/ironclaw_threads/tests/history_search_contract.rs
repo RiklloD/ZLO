@@ -227,6 +227,32 @@ async fn upsert_cli(
             },
             source: source(0),
             messages: rows,
+            replace: false,
+            anchor: None,
+        })
+        .await
+        .unwrap()
+}
+
+async fn replace_cli(
+    service: &dyn SessionThreadService,
+    scope: &ThreadScope,
+    thread: &str,
+    rows: Vec<ExternalTranscriptMessage>,
+) -> ironclaw_threads::ExternalTranscriptUpsert {
+    service
+        .upsert_external_transcript(UpsertExternalTranscriptRequest {
+            scope: scope.clone(),
+            thread: ExternalThreadSummary {
+                thread_id: ThreadId::new(thread).unwrap(),
+                title: Some("Rewritten".into()),
+                created_at: None,
+                updated_at: None,
+            },
+            source: source(0),
+            messages: rows,
+            replace: true,
+            anchor: Some("anchor-2".into()),
         })
         .await
         .unwrap()
@@ -474,7 +500,7 @@ async fn external_contract(service: &dyn SessionThreadService) {
         })
         .await
         .unwrap();
-    assert_eq!(cursor, 3);
+    assert_eq!(cursor.ingested_through, 3);
     let row = cli_row(5, SearchHitRole::Assistant, "pelican deploy notes");
     upsert_cli(
         service,
@@ -510,6 +536,59 @@ async fn external_contract(service: &dyn SessionThreadService) {
             .await
             .threads
             .is_empty()
+    );
+
+    // A rewritten source: 1,000 rows become 100 different ones. The new
+    // generation's rows are searchable at once, rows past its end are kept
+    // but unsearchable, and appends after it index immediately (the cursor
+    // is not stuck at the old end).
+    let old_rows: Vec<_> = (0..1_000)
+        .map(|n| cli_row(n, SearchHitRole::User, &format!("obsolete zephyr row {n}")))
+        .collect();
+    for chunk in old_rows.chunks(250) {
+        upsert_cli(service, &mine, "cli-rewrite", "Rewrite", chunk.to_vec()).await;
+    }
+    let new_rows: Vec<_> = (0..100)
+        .map(|n| cli_row(n, SearchHitRole::User, &format!("fresh quasar row {n}")))
+        .collect();
+    let replaced = replace_cli(service, &mine, "cli-rewrite", new_rows).await;
+    assert_eq!(replaced.ingested_through, 100);
+    assert_eq!(replaced.generation, 1);
+    assert_eq!(replaced.superseded, 900);
+    let appended = upsert_cli(
+        service,
+        &mine,
+        "cli-rewrite",
+        "Rewrite",
+        vec![cli_row(
+            100,
+            SearchHitRole::Assistant,
+            "the nebula follow-up",
+        )],
+    )
+    .await;
+    assert_eq!(appended.ingested_through, 101);
+    let cursor = service
+        .external_transcript_cursor(ExternalTranscriptCursorRequest {
+            scope: mine.clone(),
+            thread_id: ThreadId::new("cli-rewrite").unwrap(),
+            source: source(0),
+        })
+        .await
+        .unwrap();
+    assert_eq!((cursor.ingested_through, cursor.generation), (101, 1));
+    index_all(service, &mine).await;
+    assert_eq!(
+        thread_ids(&search(service, &mine, "quasar").await),
+        ["cli-rewrite"]
+    );
+    assert_eq!(
+        thread_ids(&search(service, &mine, "nebula").await),
+        ["cli-rewrite"]
+    );
+    assert!(
+        search(service, &mine, "zephyr").await.threads.is_empty(),
+        "rows past a rewritten source's end are not results"
     );
 }
 

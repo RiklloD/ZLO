@@ -3937,7 +3937,7 @@ where
     async fn external_transcript_cursor(
         &self,
         request: crate::ExternalTranscriptCursorRequest,
-    ) -> Result<u64, SessionThreadError> {
+    ) -> Result<crate::ExternalTranscriptCursor, SessionThreadError> {
         self.projection_cursor(request).await
     }
 

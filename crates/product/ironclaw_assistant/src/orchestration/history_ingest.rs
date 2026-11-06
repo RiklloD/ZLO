@@ -80,6 +80,20 @@ fn projection(
     })
 }
 
+/// Digest of the last settled row before `through` (the row at
+/// `through - 2`; the newest row may still grow). Stable across processes.
+fn anchor_of(rows: &[TimelineRow], through: u64) -> Option<String> {
+    let at = usize::try_from(through).ok()?.checked_sub(2)?;
+    let row = rows.get(at)?;
+    Some(
+        uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_OID,
+            format!("{}\u{0}{}", row.kind, row.text).as_bytes(),
+        )
+        .to_string(),
+    )
+}
+
 /// Ingest `thread`'s external transcripts. Returns rows written.
 pub(crate) async fn ingest_thread(
     engine: &Engine,
@@ -120,10 +134,21 @@ pub(crate) async fn ingest_thread(
             })
             .await
             .map_err(|e| e.to_string())?;
-        // The last ingested row may have grown since (a run's later
-        // assistant steps join it), so it is re-checked.
-        let from = cursor.saturating_sub(1);
         let rows = timeline_rows(&thread.thread_id, &source.messages);
+        // A source that shrank, or whose last settled row is no longer the
+        // one ingested, was rewritten: re-ingest it whole as a new generation.
+        let rewritten = cursor.ingested_through > rows.len() as u64
+            || cursor
+                .anchor
+                .as_deref()
+                .is_some_and(|a| anchor_of(&rows, cursor.ingested_through).as_deref() != Some(a));
+        // Otherwise only new rows, plus the last ingested one, which may
+        // have grown since (a run's later assistant steps join it).
+        let from = if rewritten {
+            0
+        } else {
+            cursor.ingested_through.saturating_sub(1)
+        };
         let messages: Vec<ExternalTranscriptMessage> = rows
             .iter()
             .enumerate()
@@ -137,13 +162,27 @@ pub(crate) async fn ingest_thread(
                 projection(row, ordinal as u64, id)
             })
             .collect();
-        for chunk in messages.chunks(UPSERT_CHUNK) {
+        let chunks: Vec<&[ExternalTranscriptMessage]> = if messages.is_empty() {
+            if rewritten { vec![&[][..]] } else { Vec::new() }
+        } else {
+            messages.chunks(UPSERT_CHUNK).collect()
+        };
+        let last = chunks.len().saturating_sub(1);
+        for (n, chunk) in chunks.into_iter().enumerate() {
+            let through = chunk
+                .iter()
+                .map(|m| m.ordinal.saturating_add(1))
+                .max()
+                .unwrap_or(0);
             let outcome = threads
                 .upsert_external_transcript(UpsertExternalTranscriptRequest {
                     scope: scope.clone(),
                     thread: summary.clone(),
                     source: key.clone(),
                     messages: chunk.to_vec(),
+                    // The new generation starts with the batch that ends it.
+                    replace: rewritten && n == last,
+                    anchor: anchor_of(&rows, through),
                 })
                 .await
                 .map_err(|e| e.to_string())?;

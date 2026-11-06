@@ -10,10 +10,15 @@
 //! transcript: it is not read back as conversation history, the original
 //! transcript is never touched, and re-ingesting the same rows is a no-op.
 //!
-//! Each `(thread, source)` keeps a monotonic cursor (`ingested_through`) so an
+//! Each `(thread, source)` keeps a cursor (`ingested_through`) so an
 //! interrupted ingestion resumes, and a per-thread summary so a thread that
 //! has no canonical session record (a CLI-only fork or delegated child) still
-//! groups and titles its hits.
+//! groups and titles its hits. The cursor only moves forward within a source
+//! *generation*; it also keeps an anchor (a digest of the last settled row the
+//! ingester saw) so a rewritten or truncated source is noticed. Re-ingesting
+//! such a source (`replace`) starts a new generation: rows are rewritten from
+//! 0, and projections past the new end are marked superseded — kept, but no
+//! longer searchable.
 
 use chrono::{DateTime, Utc};
 use ironclaw_host_api::ids::ThreadId;
@@ -83,16 +88,37 @@ pub struct UpsertExternalTranscriptRequest {
     pub thread: ExternalThreadSummary,
     pub source: ExternalTranscriptSource,
     /// Rows at or after the source's cursor (earlier rows are re-checked and
-    /// left alone when unchanged). Order does not matter.
+    /// left alone when unchanged). Order does not matter. With `replace`,
+    /// the whole source from ordinal 0.
     pub messages: Vec<ExternalTranscriptMessage>,
+    /// The source was rewritten or truncated: `messages` is all of it. Starts
+    /// a new generation, sets the cursor to its end (even backwards) and
+    /// supersedes stored rows past that end.
+    pub replace: bool,
+    /// The ingester's digest of the source's last settled row after this
+    /// batch, stored with the cursor to detect a later rewrite.
+    pub anchor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ExternalTranscriptUpsert {
     pub written: usize,
     pub unchanged: usize,
+    /// Stored rows past the end of a replaced source, now unsearchable.
+    pub superseded: usize,
     /// The source's cursor after the upsert: one past the highest ordinal.
     pub ingested_through: u64,
+    pub generation: u64,
+}
+
+/// Where ingestion of one source stands.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ExternalTranscriptCursor {
+    pub ingested_through: u64,
+    #[serde(default)]
+    pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,9 +146,7 @@ pub(crate) struct StoredExternalProjection {
     pub(crate) segment: u32,
     #[serde(flatten)]
     pub(crate) message: ExternalTranscriptMessage,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct StoredExternalCursor {
-    pub(crate) ingested_through: u64,
+    /// Past the end of a rewritten source: kept, never a search result.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) superseded: bool,
 }

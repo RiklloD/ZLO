@@ -669,3 +669,54 @@ async fn long_cli_thread_hits_open_their_own_timeline_rows() {
         "paging reaches an old hit"
     );
 }
+
+/// A CLI session rewritten shorter (1,000 rows become 100 different ones):
+/// the next ingestion notices, re-indexes it as a new generation, and the
+/// old rows stop matching while the new ones and later appends match.
+#[tokio::test]
+async fn rewritten_cli_transcripts_are_reindexed() {
+    let (_dir, engine) = engine().await;
+    let cli = Arc::new(ScriptedCli::default());
+    engine.register_runtime(cli.clone());
+    let threads: Arc<dyn SessionThreadService> = Arc::new(InMemorySessionThreadService::default());
+    let thread = cli_thread(&engine, "cli-rw", "Rewritten").await;
+    cli.set(
+        &thread,
+        (0..1_000)
+            .map(|n| msg(HistoryRole::User, &format!("obsolete zephyr {n}")))
+            .collect(),
+    );
+    let surface = wrap_surface(
+        Arc::new(Inner),
+        Some(Arc::clone(&engine)),
+        Arc::clone(&threads),
+    );
+    search_until(surface.as_ref(), "zephyr", "cli-rw").await;
+
+    cli.set(
+        &thread,
+        (0..100)
+            .map(|n| msg(HistoryRole::User, &format!("fresh quasar {n}")))
+            .collect(),
+    );
+    let record = engine.store().thread(&thread).await.unwrap().unwrap();
+    super::history_ingest::ingest_thread(&engine, threads.as_ref(), &record)
+        .await
+        .unwrap();
+    search_until(surface.as_ref(), "quasar", "cli-rw").await;
+    assert!(
+        history(surface.as_ref(), json!({"query": "zephyr"}))
+            .await
+            .threads
+            .is_empty(),
+        "rows the rewrite removed no longer match"
+    );
+
+    let mut grown = cli.history.lock().unwrap().get(&thread).cloned().unwrap();
+    grown.push(msg(HistoryRole::Assistant, "the nebula follow-up"));
+    cli.set(&thread, grown);
+    super::history_ingest::ingest_thread(&engine, threads.as_ref(), &record)
+        .await
+        .unwrap();
+    search_until(surface.as_ref(), "nebula", "cli-rw").await;
+}

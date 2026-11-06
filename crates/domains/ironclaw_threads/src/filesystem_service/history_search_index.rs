@@ -19,12 +19,12 @@ use ironclaw_filesystem::{
 use ironclaw_host_api::path::ScopedPath;
 use serde::{Deserialize, Serialize};
 
-use crate::external_transcript::{StoredExternalCursor, StoredExternalProjection};
+use crate::external_transcript::StoredExternalProjection;
 use crate::history_search::{SEARCH_TEXT_INDEX_KEY, search_projection, search_projection_text};
 use crate::{
-    ExternalTranscriptCursorRequest, ExternalTranscriptUpsert, FilesystemSessionThreadService,
-    MessageSearchIndexProgress, SessionThreadError, ThreadMessageRecord, ThreadScope,
-    UpsertExternalTranscriptRequest,
+    ExternalTranscriptCursor, ExternalTranscriptCursorRequest, ExternalTranscriptUpsert,
+    FilesystemSessionThreadService, MessageSearchIndexProgress, SessionThreadError,
+    ThreadMessageRecord, ThreadScope, UpsertExternalTranscriptRequest,
 };
 
 use super::history_search_query::{
@@ -250,32 +250,43 @@ where
             "{}/{source_key}",
             projections_root(scope, Some(thread_id))?.as_str()
         );
+        let cursor_path = scoped_path(&format!("{dir}/cursor.json"))?;
+        let before = self
+            .read_projection_cursor(&resource_scope, &cursor_path)
+            .await?;
         let mut outcome = ExternalTranscriptUpsert::default();
         let mut highest = 0u64;
         for message in request.messages {
             highest = highest.max(message.ordinal.saturating_add(1));
-            let path = scoped_path(&format!("{dir}/m-{:010}.json", message.ordinal))?;
-            let search_text = crate::history_search::visible_text(message.role, &message.text)
-                .map(search_projection_text);
+            let path = projection_path(&dir, message.ordinal)?;
             let stored = StoredExternalProjection {
                 thread_id: thread_id.clone(),
                 source_key: source_key.clone(),
                 segment: request.source.segment,
                 message,
+                superseded: false,
             };
-            let body = serialize(&stored)?;
-            let mut entry = json_entry(EXTERNAL_PROJECTION_KIND, body.clone())?.with_indexed(
-                fs_index_key("thread_id")?,
-                IndexValue::Text(thread_id.as_str().to_string()),
-            );
-            if let Some(text) = search_text {
-                entry = entry
-                    .with_indexed(fs_index_key(SEARCH_TEXT_INDEX_KEY)?, IndexValue::Text(text));
-            }
-            if self.put_if_changed(scope, &path, entry, &body).await? {
+            if self.put_projection(scope, &path, &stored).await? {
                 outcome.written += 1;
             } else {
                 outcome.unchanged += 1;
+            }
+        }
+        if request.replace {
+            // Rows the rewritten source no longer has: kept, unsearchable.
+            for ordinal in highest..before.ingested_through {
+                let path = projection_path(&dir, ordinal)?;
+                let Some(row) = self.filesystem.get(&resource_scope, &path).await? else {
+                    continue;
+                };
+                let mut stored = deserialize::<StoredExternalProjection>(&row.entry.body)?;
+                if stored.superseded {
+                    continue;
+                }
+                stored.superseded = true;
+                if self.put_projection(scope, &path, &stored).await? {
+                    outcome.superseded += 1;
+                }
             }
         }
         let summary_body = serialize(&request.thread)?;
@@ -287,35 +298,66 @@ where
             &summary_body,
         )
         .await?;
-        outcome.ingested_through = self
-            .advance_projection_cursor(
+        let after = self
+            .move_projection_cursor(
                 &resource_scope,
-                &scoped_path(&format!("{dir}/cursor.json"))?,
+                &cursor_path,
                 highest,
+                request.replace,
+                request.anchor,
             )
             .await?;
+        outcome.ingested_through = after.ingested_through;
+        outcome.generation = after.generation;
         Ok(outcome)
+    }
+
+    /// Store one projection: searchable text indexed unless superseded.
+    async fn put_projection(
+        &self,
+        scope: &ThreadScope,
+        path: &ScopedPath,
+        stored: &StoredExternalProjection,
+    ) -> Result<bool, SessionThreadError> {
+        let body = serialize(stored)?;
+        let mut entry = json_entry(EXTERNAL_PROJECTION_KIND, body.clone())?.with_indexed(
+            fs_index_key("thread_id")?,
+            IndexValue::Text(stored.thread_id.as_str().to_string()),
+        );
+        if !stored.superseded
+            && let Some(text) =
+                crate::history_search::visible_text(stored.message.role, &stored.message.text)
+        {
+            entry = entry.with_indexed(
+                fs_index_key(SEARCH_TEXT_INDEX_KEY)?,
+                IndexValue::Text(search_projection_text(text)),
+            );
+        }
+        self.put_if_changed(scope, path, entry, &body).await
+    }
+
+    async fn read_projection_cursor(
+        &self,
+        resource_scope: &ironclaw_host_api::resource::ResourceScope,
+        path: &ScopedPath,
+    ) -> Result<ExternalTranscriptCursor, SessionThreadError> {
+        Ok(match self.filesystem.get(resource_scope, path).await? {
+            Some(row) => deserialize::<ExternalTranscriptCursor>(&row.entry.body)?,
+            None => ExternalTranscriptCursor::default(),
+        })
     }
 
     pub(super) async fn projection_cursor(
         &self,
         request: ExternalTranscriptCursorRequest,
-    ) -> Result<u64, SessionThreadError> {
+    ) -> Result<ExternalTranscriptCursor, SessionThreadError> {
         let path = scoped_path(&format!(
             "{}/{}/cursor.json",
             projections_root(&request.scope, Some(&request.thread_id))?.as_str(),
             request.source.key()
         ))?;
-        Ok(
-            match self
-                .filesystem
-                .get(&request.scope.to_resource_scope(), &path)
-                .await?
-            {
-                Some(row) => deserialize::<StoredExternalCursor>(&row.entry.body)?.ingested_through,
-                None => 0,
-            },
-        )
+        self.read_projection_cursor(&request.scope.to_resource_scope(), &path)
+            .await
     }
 
     /// Write `entry` unless the stored body already equals `body`. CAS on the
@@ -350,34 +392,52 @@ where
         ))
     }
 
-    /// Move the cursor to `max(current, through)`; never backwards.
-    async fn advance_projection_cursor(
+    /// Move the cursor: forward only within a generation; a `replace`
+    /// starts the next generation at exactly `through` (possibly backwards).
+    /// The anchor follows the cursor. CAS on the version read, retried.
+    async fn move_projection_cursor(
         &self,
         resource_scope: &ironclaw_host_api::resource::ResourceScope,
         path: &ScopedPath,
         through: u64,
-    ) -> Result<u64, SessionThreadError> {
+        replace: bool,
+        anchor: Option<String>,
+    ) -> Result<ExternalTranscriptCursor, SessionThreadError> {
         for _ in 0..CAS_RETRIES {
             let current = self.filesystem.get(resource_scope, path).await?;
             let (existing, expectation) = match &current {
                 Some(row) => (
-                    deserialize::<StoredExternalCursor>(&row.entry.body)?.ingested_through,
+                    deserialize::<ExternalTranscriptCursor>(&row.entry.body)?,
                     CasExpectation::Version(row.version),
                 ),
-                None => (0, CasExpectation::Absent),
+                None => (ExternalTranscriptCursor::default(), CasExpectation::Absent),
             };
-            if existing >= through {
+            let next = if replace {
+                ExternalTranscriptCursor {
+                    ingested_through: through,
+                    generation: existing.generation.saturating_add(1),
+                    anchor: anchor.clone(),
+                }
+            } else if through > existing.ingested_through {
+                ExternalTranscriptCursor {
+                    ingested_through: through,
+                    generation: existing.generation,
+                    anchor: anchor.clone(),
+                }
+            } else {
                 return Ok(existing);
-            }
-            let body = serialize(&StoredExternalCursor {
-                ingested_through: through,
-            })?;
+            };
             match self
                 .filesystem
-                .put(resource_scope, path, Entry::bytes(body), expectation)
+                .put(
+                    resource_scope,
+                    path,
+                    Entry::bytes(serialize(&next)?),
+                    expectation,
+                )
                 .await
             {
-                Ok(_) => return Ok(through),
+                Ok(_) => return Ok(next),
                 Err(error) if is_cas_conflict(&error) => continue,
                 Err(error) => return Err(error.into()),
             }
@@ -386,6 +446,10 @@ where
             "search projection cursor kept losing to concurrent writers".to_string(),
         ))
     }
+}
+
+fn projection_path(dir: &str, ordinal: u64) -> Result<ScopedPath, SessionThreadError> {
+    scoped_path(&format!("{dir}/m-{ordinal:010}.json"))
 }
 
 /// The `(thread_id, sequence)` keyset position of a message row.

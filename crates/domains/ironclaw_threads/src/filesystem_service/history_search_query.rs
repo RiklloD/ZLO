@@ -150,6 +150,9 @@ where
                 continue;
             }
             let stored = deserialize::<StoredExternalProjection>(&row.entry.body)?;
+            if stored.superseded {
+                continue;
+            }
             let expected = format!("/search-projections/{}/", stored.thread_id.as_str());
             if !row.path.as_str().contains(&expected) {
                 continue;

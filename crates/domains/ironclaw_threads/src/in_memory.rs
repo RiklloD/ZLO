@@ -57,13 +57,14 @@ struct InMemoryState {
 #[derive(Debug, Default)]
 struct ExternalThreadProjections {
     summary: Option<crate::ExternalThreadSummary>,
-    sources: HashMap<
-        String,
-        (
-            u64,
-            std::collections::BTreeMap<u64, crate::ExternalTranscriptMessage>,
-        ),
-    >,
+    sources: HashMap<String, ExternalSourceProjections>,
+}
+
+#[derive(Debug, Default)]
+struct ExternalSourceProjections {
+    cursor: crate::ExternalTranscriptCursor,
+    /// Rows by ordinal, with their superseded flag (kept, not searchable).
+    rows: std::collections::BTreeMap<u64, (crate::ExternalTranscriptMessage, bool)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1765,10 +1766,20 @@ impl SessionThreadService for InMemorySessionThreadService {
                     crate::history_search::external_thread_record(scope, summary),
                 );
             }
-            for (_, rows) in projections.sources.values() {
-                candidates.extend(rows.values().filter_map(|m| {
-                    crate::history_search::RankedCandidate::from_external(thread_id.clone(), m, 0)
-                }));
+            for source in projections.sources.values() {
+                candidates.extend(
+                    source
+                        .rows
+                        .values()
+                        .filter(|(_, superseded)| !superseded)
+                        .filter_map(|(m, _)| {
+                            crate::history_search::RankedCandidate::from_external(
+                                thread_id.clone(),
+                                m,
+                                0,
+                            )
+                        }),
+                );
             }
         }
         let groups =
@@ -1805,31 +1816,51 @@ impl SessionThreadService for InMemorySessionThreadService {
             .entry((request.scope.clone(), request.thread.thread_id.clone()))
             .or_default();
         entry.summary = Some(request.thread.clone());
-        let (cursor, rows) = entry.sources.entry(request.source.key()).or_default();
+        let source = entry.sources.entry(request.source.key()).or_default();
         let mut outcome = crate::ExternalTranscriptUpsert::default();
+        let mut highest = 0u64;
         for message in request.messages {
-            *cursor = (*cursor).max(message.ordinal.saturating_add(1));
-            if rows.get(&message.ordinal) == Some(&message) {
+            highest = highest.max(message.ordinal.saturating_add(1));
+            if source.rows.get(&message.ordinal) == Some(&(message.clone(), false)) {
                 outcome.unchanged += 1;
             } else {
-                rows.insert(message.ordinal, message);
+                source.rows.insert(message.ordinal, (message, false));
                 outcome.written += 1;
             }
         }
-        outcome.ingested_through = *cursor;
+        if request.replace {
+            let end = source.cursor.ingested_through.max(highest);
+            for (_, (_, superseded)) in source.rows.range_mut(highest..end) {
+                if !*superseded {
+                    *superseded = true;
+                    outcome.superseded += 1;
+                }
+            }
+            source.cursor = crate::ExternalTranscriptCursor {
+                ingested_through: highest,
+                generation: source.cursor.generation.saturating_add(1),
+                anchor: request.anchor,
+            };
+        } else if highest > source.cursor.ingested_through {
+            source.cursor.ingested_through = highest;
+            source.cursor.anchor = request.anchor;
+        }
+        outcome.ingested_through = source.cursor.ingested_through;
+        outcome.generation = source.cursor.generation;
         Ok(outcome)
     }
 
     async fn external_transcript_cursor(
         &self,
         request: crate::ExternalTranscriptCursorRequest,
-    ) -> Result<u64, SessionThreadError> {
+    ) -> Result<crate::ExternalTranscriptCursor, SessionThreadError> {
         let state = self.state.lock().await;
         Ok(state
             .external
             .get(&(request.scope, request.thread_id))
             .and_then(|p| p.sources.get(&request.source.key()))
-            .map_or(0, |(cursor, _)| *cursor))
+            .map(|source| source.cursor.clone())
+            .unwrap_or_default())
     }
 
     async fn read_thread_by_id(
