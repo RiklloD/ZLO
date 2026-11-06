@@ -56,6 +56,12 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
 - `cli_approvals` — `orch_cli_approvals`, the durable record of CLI tool
   approvals the `ironclaw_cli_providers` bridge asks; open rows are closed
   as `interrupted` when the engine opens.
+- `session_imports` — the terminal-session import ledger: `record_imported_thread`
+  writes the thread, its ledger row and a settled, seen inbox record in one
+  transaction (`INSERT OR IGNORE`, so reruns change nothing and a deleted
+  thread is never recreated); `advance_import` moves the watermark and keeps
+  a still-settled, never-continued thread settled. Session parsing lives in
+  `ironclaw_cli_providers::session_import`.
 - `goals` — `orch_goals`; the active goal rides every turn
   (`TurnInput.goal`, and the profile SOUL context on IronClaw's loop). A goal
   may carry a check (`check_*` columns, added in place on open; older goals
@@ -84,7 +90,7 @@ route, turn state), `orch_tasks`, `orch_queue`, `orch_holds`,
 (per-turn status and usage), `orch_profiles` (per user: settings JSON,
 `archived_at`; last use and thread count derive from `orch_threads`),
 `orch_settings`, `orch_meta`, `orch_schedules`, `orch_inbox`, `orch_goals`,
-`orch_cli_approvals`. First open imports
+`orch_cli_approvals`, `orch_session_imports` (imported terminal sessions: caller, source, native session id → thread, file watermark) and `orch_session_import_state` (per-user import settings and last run). First open imports
 the legacy `ironclaw_threads` thread records once (marker
 `legacy_threads_imported_v1`).
 

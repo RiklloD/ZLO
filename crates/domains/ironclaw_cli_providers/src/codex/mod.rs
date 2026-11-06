@@ -16,6 +16,7 @@
 //! are disabled: subagents are orchestrator threads (`t3_delegate`).
 
 mod fold;
+pub(crate) mod import;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -71,14 +72,35 @@ pub struct CodexConfig {
 
 impl CodexConfig {
     fn transcript(&self, session: &str) -> PathBuf {
-        self.state_dir
-            .join("transcripts")
-            .join(format!("{session}.jsonl"))
+        transcript_in(&self.state_dir, session)
     }
 
     fn thread_file(&self, session: &str) -> PathBuf {
-        self.state_dir.join("threads").join(format!("{session}.id"))
+        thread_file_in(&self.state_dir, session)
     }
+}
+
+/// IronClaw's transcript of a session (`HistoryMessage` per line).
+pub(crate) fn transcript_in(state_dir: &Path, session: &str) -> PathBuf {
+    state_dir
+        .join("transcripts")
+        .join(format!("{session}.jsonl"))
+}
+
+/// The Codex thread id a session resumes (`thread/resume`).
+pub(crate) fn thread_file_in(state_dir: &Path, session: &str) -> PathBuf {
+    state_dir.join("threads").join(format!("{session}.id"))
+}
+
+/// Where a session runs when it is not the shared work dir: an imported
+/// terminal session's folder and its identity (`crate::workspace`).
+pub(crate) fn cwd_file_in(state_dir: &Path, session: &str) -> PathBuf {
+    state_dir.join("threads").join(format!("{session}.cwd"))
+}
+
+/// The driver's state folder (`~/.ironclaw/codex`).
+pub fn state_dir(home: &Path) -> PathBuf {
+    home.join(".ironclaw").join("codex")
 }
 
 /// What a steer or Stop needs from the running turn.
@@ -177,6 +199,10 @@ impl CodexRuntime {
         tokio::fs::create_dir_all(&self.config.work_dir)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("work dir: {}", e.kind())))?;
+        // An imported session resumes in its own folder, or not at all.
+        let cwd = crate::workspace::resolve(&cwd_file_in(&self.config.state_dir, &session))
+            .await?
+            .unwrap_or_else(|| self.config.work_dir.clone());
         let (mut child, pgid) = self.spawn_server()?;
         let (client, inbound) = connect(&mut child, pgid)?;
 
@@ -198,6 +224,7 @@ impl CodexRuntime {
         let turn = Turn {
             config: Arc::clone(&self.config),
             session,
+            cwd,
             model: thread.model.clone(),
             text: text.to_string(),
             context: context.map(str::to_string),
@@ -365,6 +392,9 @@ struct Turn {
     config: Arc<CodexConfig>,
     /// IronClaw's session key (`native_session_id`).
     session: String,
+    /// The thread's working directory: the shared work dir, or an imported
+    /// session's own folder (checked before the turn started).
+    cwd: PathBuf,
     model: Option<String>,
     text: String,
     /// Profile preamble and thread goal, sent ahead of `text` but never journaled.
@@ -504,7 +534,7 @@ impl Turn {
     async fn open(&self, client: &RpcClient, fold: &mut TurnFold) -> Result<String, RpcError> {
         handshake(client).await?;
         let (approval, sandbox) = self.policy();
-        let cwd = canonical(&self.config.work_dir);
+        let cwd = canonical(&self.cwd);
         let file = self.config.thread_file(&self.session);
         let saved = tokio::fs::read_to_string(&file)
             .await
@@ -825,7 +855,7 @@ pub fn find_binary(home: &Path) -> Option<PathBuf> {
 }
 
 pub fn default_config(home: &Path, binary: &Path) -> CodexConfig {
-    let state = home.join(".ironclaw").join("codex");
+    let state = state_dir(home);
     let codex_home = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex"));

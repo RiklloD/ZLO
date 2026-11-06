@@ -187,3 +187,52 @@ is remembered.
 fake agent scripts. `tests/live_smoke.rs` holds ignored live canaries, one
 short real turn per agent host:
 `cargo test -p ironclaw_cli_providers --test live_smoke -- --ignored --nocapture`.
+
+## Terminal session import (`session_import`)
+
+Claude Code and Codex sessions the person ran in a terminal become ordinary
+threads on `claude-cli` / `codex`, keyed by the CLI's native session id
+(Goose's `session/import_formats/{claude_code,codex}.rs` in spirit).
+
+- **Claude Code** (`~/.claude/projects/<dir>/<session>.jsonl`,
+  `claude/import.rs`): only id, folder, title (`ai-title`/`custom-title`/
+  `summary`, else the first prompt), times and a message count are read; the
+  transcript stays the thread's history (`transcript::read`, now with each
+  row's original time). `session_dir` resumes a session whose transcript
+  lives in another project folder from the folder it recorded (`cwd`), so
+  `claude --resume <id>` finds it.
+- **Codex** (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`,
+  `codex/import.rs`): the rollout folds into the driver's journal like a live
+  turn (prompts; one reply per turn with `name()` tool labels; injected
+  context blocks kept hidden), with `threads/<id>.id` (for `thread/resume`)
+  and `threads/<id>.cwd` (the session's folder, read by `open`).
+- **Skipped:** native ids already on a thread, Codex `originator: ironclaw`,
+  subagent sessions, sessions without a prompt, anything under `~/.ironclaw`.
+- **Incremental and crash-safe:** the ledger keeps a checkpoint per file:
+  the offset after the last complete line, the file's identity (device and
+  inode) and a digest of the 4 KiB before the offset. The same file with the
+  same bytes up to the checkpoint is read from there; a replaced, truncated
+  or in-place-rewritten file is read again from the start into a new
+  generation and reconciled by message identity (role, time, visibility,
+  text, tools) without dropping what was imported. Codex copies are written
+  in bounded batches (256 messages, ending on a turn boundary); each line the
+  import writes carries `"import": {"g", "e"}` (generation, source offset), so
+  a batch written but not yet recorded is recognized on retry, and a torn
+  last line is closed off before the next append. A new Codex import keys its
+  session by the Codex thread id, so its saved id file is never mistaken for
+  a session the app started, and an interrupted first import is retried.
+  Once a turn ran here, the file is only noted as seen.
+- **Files:** folders are walked without following symlinks; only regular
+  files are opened (`O_NOFOLLOW | O_NONBLOCK`, then checked to be the listed
+  file) and read up to their listed size (`session_import/files.rs`, 8 MiB
+  line cap). Copies, saved ids and folder records are private (0700 folders,
+  0600 files). A run stops at its limits (512 MiB read, 2 minutes, 50 000
+  files per source) and counts the rest `deferred` for the next run.
+- **Folder:** an imported session records its folder and that folder's
+  identity (`workspace.rs`; Claude under `<work dir>-imports/`, Codex as
+  `threads/<id>.cwd`). Both drivers check it before a turn: a missing or
+  replaced folder fails the turn with a correctable error naming the folder,
+  instead of resuming elsewhere.
+- **Runs:** `SessionImporter::request` applies settings and starts a single
+  background run when due (`Launch` once ever, `Background` every 15 min
+  with the setting on, `Manual` always); `debug!` logging only.

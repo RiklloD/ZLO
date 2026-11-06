@@ -15,6 +15,7 @@ use ironclaw_product_contracts::surface::{
 };
 use serde::Serialize;
 
+use crate::webui_v2::descriptors::WEBUI_V2_PATTERN_SESSION_IMPORT;
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_ARTIFACT,
     WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_RUN_ARTIFACT,
@@ -441,6 +442,10 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         .route(WEBUI_V2_PATTERN_USAGE_HISTORY, get(handlers::usage_history))
         .route(WEBUI_V2_PATTERN_INBOX, get(handlers::inbox_list))
         .route(WEBUI_V2_PATTERN_INBOX_THREAD, post(handlers::inbox_mutate))
+        .route(
+            WEBUI_V2_PATTERN_SESSION_IMPORT,
+            get(handlers::session_import_status).post(handlers::session_import_run),
+        )
         .route(
             WEBUI_V2_PATTERN_TASK_MODELS,
             get(handlers::task_models_get).post(handlers::task_models_set),

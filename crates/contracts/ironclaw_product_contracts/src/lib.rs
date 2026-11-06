@@ -66,6 +66,7 @@ pub mod profiles;
 pub mod project_service;
 pub mod projection;
 pub mod prompt_source;
+pub mod session_import;
 pub mod session_ingress;
 pub mod shared_admission;
 pub mod suggestions;

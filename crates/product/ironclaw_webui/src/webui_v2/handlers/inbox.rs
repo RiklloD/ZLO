@@ -3,11 +3,15 @@
 //! goal. Each handler forwards to one `ironclaw_product_contracts::inbox`
 //! descriptor; the rows are always the authenticated caller's own. Also the
 //! generated thread title and the operator-wide background-task models
-//! (`ironclaw_product_contracts::task_models`).
+//! (`ironclaw_product_contracts::task_models`), and terminal session import
+//! (`ironclaw_product_contracts::session_import`), the caller's own.
 
 use axum::Json;
 use axum::extract::{Extension, Path, State};
 use ironclaw_product_contracts::inbox::*;
+use ironclaw_product_contracts::session_import::{
+    SESSION_IMPORT_COMMAND, SESSION_IMPORT_VIEW, SessionImportRequest,
+};
 use ironclaw_product_contracts::surface::ProductSurfaceCaller;
 use ironclaw_product_contracts::task_models::{
     TASK_MODELS_GET_COMMAND, TASK_MODELS_SET_COMMAND, TaskModels,
@@ -129,5 +133,28 @@ pub async fn task_models_set(
     require_operator_webui_config(capabilities)?;
     Ok(Json(
         invoke_product_command(state.services(), caller, TASK_MODELS_SET_COMMAND, body).await?,
+    ))
+}
+
+/// `GET /api/webchat/v2/session-imports` — settings, last run, `running`.
+pub async fn session_import_status(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    let view = SESSION_IMPORT_VIEW.descriptor();
+    Ok(Json(
+        query_product_view(state.services(), caller, view, serde_json::json!({}), None).await?,
+    ))
+}
+
+/// `POST /api/webchat/v2/session-imports` — change settings and/or start a
+/// run; answers the status.
+pub async fn session_import_run(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Json(body): Json<SessionImportRequest>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    Ok(Json(
+        invoke_product_command(state.services(), caller, SESSION_IMPORT_COMMAND, body).await?,
     ))
 }

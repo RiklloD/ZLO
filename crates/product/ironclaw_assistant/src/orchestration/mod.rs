@@ -15,6 +15,7 @@ mod runtime;
 #[cfg(test)]
 mod schedule_surface_tests;
 mod schedules;
+mod session_import;
 mod stitched;
 mod surface;
 mod telemetry;

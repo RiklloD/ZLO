@@ -473,6 +473,7 @@ mod tests {
             parent_thread_id: parent.map(str::to_string),
             automation: false,
             title_pending: false,
+            imported: None,
         }
     }
 

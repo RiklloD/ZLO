@@ -38,5 +38,5 @@ pub use ironclaw_extension_contracts::state as extension_state;
 pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{
     inbound_requests, inbox, notification_inbox, operator_llm, package_lifecycle, product_wire,
-    profiles, task_models, workspace_views,
+    profiles, session_import, task_models, workspace_views,
 };

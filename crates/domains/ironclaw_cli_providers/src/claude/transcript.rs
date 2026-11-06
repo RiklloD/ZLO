@@ -28,10 +28,12 @@ pub(super) async fn read(path: &Path, limit: usize) -> Result<Vec<HistoryMessage
             // A steer sent mid-turn: the person's row, inside the run.
             if let Some(mut m) = steer(&v) {
                 m.run_id = run.clone();
+                m.at = timestamp(&v);
                 return Some(m);
             }
             let mut m = message(&v)?;
             m.hidden = compact_scaffolding(&v, &m);
+            m.at = timestamp(&v);
             // Hidden rows (a compaction's summary) stay in the current run.
             if m.role == HistoryRole::User && !m.hidden {
                 run = v["uuid"].as_str().map(str::to_string);
@@ -66,7 +68,7 @@ fn steer(v: &Value) -> Option<HistoryMessage> {
     (!text.trim().is_empty()).then(|| entry(HistoryRole::User, text, Vec::new()))
 }
 
-fn message(v: &Value) -> Option<HistoryMessage> {
+pub(super) fn message(v: &Value) -> Option<HistoryMessage> {
     // A compaction (idle or the CLI's own) leaves one marker row.
     if v.get("type").and_then(Value::as_str) == Some("system")
         && v.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
@@ -119,7 +121,7 @@ fn message(v: &Value) -> Option<HistoryMessage> {
 
 /// User rows nobody typed: the `/compact` prompt, the CLI's echo of the
 /// command and its output, and the summary that replaces the history.
-fn compact_scaffolding(v: &Value, m: &HistoryMessage) -> bool {
+pub(super) fn compact_scaffolding(v: &Value, m: &HistoryMessage) -> bool {
     if m.role != HistoryRole::User {
         return false;
     }
@@ -131,6 +133,39 @@ fn compact_scaffolding(v: &Value, m: &HistoryMessage) -> bool {
         || text.contains("<command-name>/compact</command-name>")
         || text.starts_with("<local-command-stdout>")
         || text.starts_with("<local-command-stderr>")
+}
+
+/// A row's `timestamp` (RFC 3339) as unix ms.
+pub(super) fn timestamp(v: &Value) -> Option<ironclaw_orchestrator::model::Millis> {
+    let raw = v.get("timestamp")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok() // silent-ok: a row without a readable time just has none
+        .map(|t| t.timestamp_millis())
+}
+
+/// Rows read for a session's working directory before giving up.
+const CWD_ROWS: usize = 200;
+
+/// The working directory a session ran in, from its first rows that name
+/// one. `--resume` finds a session only from that directory.
+pub(super) async fn cwd(path: &Path) -> Option<std::path::PathBuf> {
+    let mut lines = crate::session_import::lines::Lines::open(path, 0)
+        .await
+        .ok()?; // silent-ok: an unreadable transcript resumes from the default folder
+    for _ in 0..CWD_ROWS {
+        let line = lines.next_line().await.ok()??; // silent-ok: as above
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        if let Some(cwd) = v
+            .get("cwd")
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty())
+        {
+            return Some(std::path::PathBuf::from(cwd));
+        }
+    }
+    None
 }
 
 fn entry(role: HistoryRole, text: String, tool_calls: Vec<String>) -> HistoryMessage {
@@ -177,6 +212,25 @@ mod tests {
         );
         assert_eq!(rows[3].role, HistoryRole::User);
         assert_eq!(rows[3].text, "steer");
+    }
+
+    #[tokio::test]
+    async fn rows_keep_their_original_time_and_the_session_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let lines = [
+            r#"{"type":"queue-operation","operation":"enqueue"}"#,
+            r#"{"type":"user","uuid":"r","cwd":"/work/app","timestamp":"2026-10-01T10:00:00.000Z","message":{"role":"user","content":"hi"}}"#,
+        ];
+        tokio::fs::write(&path, format!("{}\n", lines.join("\n")))
+            .await
+            .unwrap();
+        let rows = read(&path, 10).await.unwrap();
+        assert_eq!(rows[0].at, Some(1_790_848_800_000));
+        assert_eq!(
+            cwd(&path).await.as_deref(),
+            Some(std::path::Path::new("/work/app"))
+        );
     }
 
     #[tokio::test]

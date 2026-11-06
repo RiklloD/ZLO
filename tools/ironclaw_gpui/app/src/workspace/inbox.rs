@@ -50,6 +50,8 @@ pub(super) struct Inbox {
     profile: Option<String>,
     model: Option<String>,
     state: Option<InboxState>,
+    /// Only threads imported from terminal sessions.
+    imported_only: bool,
     /// Folded state of the Working shelf; open by default, as in t3code.
     show_working: bool,
     show_snoozed: bool,
@@ -162,6 +164,7 @@ impl Inbox {
     fn matches(&self, row: &InboxRow, query: &str) -> bool {
         if self.profile.as_ref().is_some_and(|p| *p != row.profile_id)
             || self.state.is_some_and(|s| s != row.state)
+            || (self.imported_only && row.imported.is_none())
             || self
                 .model
                 .as_ref()
@@ -886,7 +889,8 @@ impl Workspace {
     fn render_inbox_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let filtered = self.inbox.profile.is_some()
             || self.inbox.model.is_some()
-            || self.inbox.state.is_some();
+            || self.inbox.state.is_some()
+            || self.inbox.imported_only;
         h_flex()
             .h(px(design::SIDEBAR_SEARCH_HEIGHT))
             .flex_none()
@@ -1001,6 +1005,19 @@ impl Workspace {
                 }))
                 .into_any_element()
         });
+        let any_imported = i.list.rows.iter().any(|r| r.imported.is_some());
+        let imported = (any_imported || i.imported_only).then(|| {
+            chip(
+                ("f-origin", 0usize),
+                "Imported".to_string(),
+                i.imported_only,
+                cx,
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.inbox.imported_only = !this.inbox.imported_only;
+                cx.notify();
+            }))
+        });
         let pop = kit::popover("inbox-filters", cx);
         pop(v_flex()
             .mx_2()
@@ -1029,7 +1046,11 @@ impl Workspace {
                     .child(h_flex().flex_wrap().gap_1().children(models))
             })
             .child(group("State"))
-            .child(h_flex().flex_wrap().gap_1().children(states)))
+            .child(h_flex().flex_wrap().gap_1().children(states))
+            .when_some(imported, |d, chip| {
+                d.child(group("Origin"))
+                    .child(h_flex().flex_wrap().gap_1().child(chip))
+            }))
     }
 
     /// The new-thread screen's profile menu; the current pick is highlighted.
@@ -1859,6 +1880,7 @@ mod tests {
             parent_thread_id: None,
             automation: false,
             title_pending: false,
+            imported: None,
         }
     }
 
@@ -1893,6 +1915,12 @@ mod tests {
         inbox.state = Some(InboxState::Settled);
         assert!(!inbox.matches(&a, ""));
         assert!(inbox.matches(&b, ""));
+        // Imported: only rows that came from a terminal session.
+        inbox.state = None;
+        inbox.imported_only = true;
+        let mut c = row("c", InboxState::Settled, None);
+        c.imported = Some("claude_code".into());
+        assert!(!inbox.matches(&b, "") && inbox.matches(&c, ""));
     }
 
     #[test]

@@ -8,6 +8,9 @@ use ironclaw_product_contracts::inbox::{
     InboxRow, InboxState, ThreadGoalResponse,
 };
 use ironclaw_product_contracts::profiles::DEFAULT_PROFILE_ID;
+use ironclaw_product_contracts::session_import::{
+    ImportTrigger, SessionImportRequest, SessionImportStatus,
+};
 use ironclaw_product_contracts::task_models::TaskModels;
 use serde_json::json;
 
@@ -54,6 +57,7 @@ impl Client {
                 parent_thread_id: None,
                 automation: false,
                 title_pending: false,
+                imported: None,
             })
             .collect();
         Ok(InboxListResponse {
@@ -72,6 +76,35 @@ impl Client {
         let body = json!({ "action": action, "until": until });
         let path = format!("{V2}/inbox/{}", seg(thread_id));
         document(self.post(&path, &body).await?)
+    }
+
+    /// Terminal session import: settings, last run, and whether one runs.
+    pub async fn session_import_status(&self) -> Result<SessionImportStatus, ClientError> {
+        document(self.get(&format!("{V2}/session-imports")).await?)
+    }
+
+    /// Change import settings and/or start a run (`run`). Answers the
+    /// status the backend stored; `running` is set while a run goes on.
+    pub async fn session_import(
+        &self,
+        request: &SessionImportRequest,
+    ) -> Result<SessionImportStatus, ClientError> {
+        let body = serde_json::to_value(request).map_err(|e| ClientError::Decode(e.to_string()))?;
+        document(self.post(&format!("{V2}/session-imports"), &body).await?)
+    }
+
+    /// Start an import run for `trigger` (the backend skips it when not due).
+    /// An older gateway without the route answers 404: nothing to do.
+    pub async fn session_import_tick(&self, trigger: ImportTrigger) -> Result<(), ClientError> {
+        let request = SessionImportRequest {
+            run: Some(trigger),
+            ..SessionImportRequest::default()
+        };
+        match self.session_import(&request).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.is_not_found() => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     pub async fn task_models(&self) -> Result<TaskModels, ClientError> {

@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironclaw_cli_providers::bridge::CliBridge;
+use ironclaw_cli_providers::session_import::SessionImporter;
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::error::OrchestratorError;
@@ -59,6 +60,10 @@ pub struct OrchestratedProductSurface {
     /// Live turns and pending tool calls of CLI threads.
     // arch-exempt: optional_arc, deployments without CLI runtimes have no bridge, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
+    /// Terminal session import; `None` when the process has no home folder
+    /// (its routes then answer a correctable error).
+    // arch-exempt: optional_arc, no HOME means nothing to import from, plan #session-import
+    importer: Option<Arc<SessionImporter>>,
 }
 
 impl OrchestratedProductSurface {
@@ -72,7 +77,16 @@ impl OrchestratedProductSurface {
             engine,
             home: ProfileHome::from_env(),
             bridge,
+            importer: SessionImporter::from_env().map(Arc::new),
         }
+    }
+}
+
+impl OrchestratedProductSurface {
+    /// Import from these folders instead of the process's home (tests).
+    #[cfg(test)]
+    pub(crate) fn set_importer(&mut self, importer: Arc<SessionImporter>) {
+        self.importer = Some(importer);
     }
 }
 
@@ -502,6 +516,11 @@ impl OrchestratedProductSurface {
         input: Value,
     ) -> Result<Option<Value>, ProductSurfaceError> {
         let engine = &self.engine;
+        if let Some(result) =
+            super::session_import::view(self.importer.as_ref(), engine, caller, view).await
+        {
+            return answer(result).map(Some);
+        }
         Ok(Some(match view {
             v if v == INBOX_VIEW.id => {
                 to_json(inbox::list(engine, self.home.as_ref(), &self.inner, caller).await?)
@@ -526,6 +545,17 @@ impl OrchestratedProductSurface {
         input: Value,
     ) -> Result<Option<Value>, ProductSurfaceError> {
         let engine = &self.engine;
+        if let Some(result) = super::session_import::command(
+            self.importer.as_ref(),
+            engine,
+            caller,
+            operation,
+            input.clone(),
+        )
+        .await
+        {
+            return answer(result).map(Some);
+        }
         Ok(Some(match operation {
             INBOX_MUTATE_COMMAND_ID => {
                 let req: InboxMutationRequest = decode(input)?;

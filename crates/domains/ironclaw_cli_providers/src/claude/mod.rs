@@ -19,6 +19,7 @@
 
 mod compact;
 mod control;
+pub(crate) mod import;
 mod stream;
 mod transcript;
 
@@ -150,13 +151,35 @@ impl ClaudeCliRuntime {
     }
 
     /// Where a session runs: the shared work dir when it already started
-    /// there, else the profile's folder, else the shared work dir.
-    fn session_dir(&self, session_id: &str, profile: Option<&TurnProfile>) -> PathBuf {
-        let shared = &self.config.work_dir;
-        match profile.and_then(|p| p.folder.as_ref()) {
-            Some(folder) if !self.transcript_path(shared, session_id).is_file() => folder.clone(),
-            _ => shared.clone(),
+    /// there; the folder it was started in when its transcript is elsewhere
+    /// (a profile's folder, or a terminal session imported from
+    /// `~/.claude/projects`), as `--resume` finds it only from there; else
+    /// the profile's folder, else the shared work dir.
+    async fn session_dir(
+        &self,
+        session_id: &str,
+        profile: Option<&TurnProfile>,
+    ) -> Result<PathBuf, RuntimeError> {
+        // An imported session resumes in its own folder, or not at all.
+        let record = imports_dir(&self.config.work_dir).join(format!("{session_id}.json"));
+        if let Some(dir) = crate::workspace::resolve(&record).await? {
+            return Ok(dir);
         }
+        let shared = &self.config.work_dir;
+        if self.transcript_path(shared, session_id).is_file() {
+            return Ok(shared.clone());
+        }
+        if let Some(path) = self.find_transcript(session_id).await
+            && let Some(dir) = transcript::cwd(&path).await
+            && dir.is_dir()
+            && self.transcript_path(&dir, session_id) == path
+        {
+            return Ok(dir);
+        }
+        Ok(match profile.and_then(|p| p.folder.as_ref()) {
+            Some(folder) => folder.clone(),
+            None => shared.clone(),
+        })
     }
 
     /// The session's transcript wherever it ran (session ids are unique
@@ -309,7 +332,7 @@ impl ClaudeCliRuntime {
         // A new turn ends the idle period: no compaction may touch the session.
         self.compactor.preempt(&thread.thread_id).await;
         let plan = TurnPlan {
-            dir: self.session_dir(&session_id, profile),
+            dir: self.session_dir(&session_id, profile).await?,
             goal,
             effort,
             profile,
@@ -676,6 +699,17 @@ impl TurnRuntime for ClaudeCliRuntime {
             brand: None,
         }])
     }
+}
+
+/// Where imported terminal sessions' folder records live, beside the
+/// shared work dir (`<work dir>-imports/<session>.json`).
+pub fn imports_dir(work_dir: &Path) -> PathBuf {
+    let mut name = work_dir
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push("-imports");
+    work_dir.with_file_name(name)
 }
 
 /// The `claude` binary: `PATH` first, then the installer's usual homes (a

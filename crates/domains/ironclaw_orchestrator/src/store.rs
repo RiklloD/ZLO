@@ -266,6 +266,38 @@ fn thread_row(row: &libsql::Row) -> Result<ThreadRecord> {
     })
 }
 
+/// The `INSERT OR IGNORE` of one thread row, for callers that batch it in a `tx`.
+pub(crate) fn insert_thread_sql(record: &ThreadRecord) -> (String, Vec<Value>) {
+    let r = record;
+    (
+        format!(
+            "INSERT OR IGNORE INTO orch_threads ({THREAD_COLS}) VALUES \
+             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"
+        ),
+        vec![
+            s(r.thread_id.as_str()),
+            s(r.scope.tenant_id.as_str()),
+            s(r.scope.user_id.as_str()),
+            opt(r.scope.agent_id.as_ref().map(|v| v.as_str().to_string())),
+            opt(r.scope.project_id.as_ref().map(|v| v.as_str().to_string())),
+            opt(r.profile_id.as_ref().map(|v| v.as_str().to_string())),
+            s(r.runtime_id.as_str()),
+            opt(r.provider.clone()),
+            opt(r.model.clone()),
+            opt(r.title.clone()),
+            opt(r.native_session_id.clone()),
+            s(r.turn_state.as_str()),
+            opt(r.active_run_id.clone()),
+            opt(r.turn_started_at),
+            opt(r.turn_ended_at),
+            opt(r.last_user_at),
+            opt(r.last_error.clone()),
+            r.created_at.into(),
+            r.updated_at.into(),
+        ],
+    )
+}
+
 const TASK_COLS: &str = "id, parent_thread, child_thread, root_thread, depth, profile_id, parent_profile_id, \
     title, role, runtime_id, provider, model, prompt, status, result, error, progress, usage, created_at, \
     started_at, finished_at, client_request_id, delivery, delivered_at, cancel_requested, limit_reset_at";
@@ -466,6 +498,8 @@ impl Store {
             conn.execute_batch(crate::segments::SEGMENTS_SCHEMA).await?;
             conn.execute_batch(crate::cli_approvals::CLI_APPROVALS_SCHEMA)
                 .await?;
+            conn.execute_batch(crate::session_imports::SESSION_IMPORTS_SCHEMA)
+                .await?;
         }
         crate::schedules::upgrade_schema(self).await?;
         self.upgrade_inbox_schema().await?;
@@ -569,36 +603,8 @@ impl Store {
 
     /// Insert the thread if unknown; never overwrites an existing row.
     pub async fn ensure_thread(&self, record: &ThreadRecord) -> Result<bool> {
-        let r = record;
-        let n = self
-            .exec(
-                &format!(
-                    "INSERT OR IGNORE INTO orch_threads ({THREAD_COLS}) VALUES \
-                     (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"
-                ),
-                vec![
-                    s(r.thread_id.as_str()),
-                    s(r.scope.tenant_id.as_str()),
-                    s(r.scope.user_id.as_str()),
-                    opt(r.scope.agent_id.as_ref().map(|v| v.as_str().to_string())),
-                    opt(r.scope.project_id.as_ref().map(|v| v.as_str().to_string())),
-                    opt(r.profile_id.as_ref().map(|v| v.as_str().to_string())),
-                    s(r.runtime_id.as_str()),
-                    opt(r.provider.clone()),
-                    opt(r.model.clone()),
-                    opt(r.title.clone()),
-                    opt(r.native_session_id.clone()),
-                    s(r.turn_state.as_str()),
-                    opt(r.active_run_id.clone()),
-                    opt(r.turn_started_at),
-                    opt(r.turn_ended_at),
-                    opt(r.last_user_at),
-                    opt(r.last_error.clone()),
-                    r.created_at.into(),
-                    r.updated_at.into(),
-                ],
-            )
-            .await?;
+        let (sql, params) = insert_thread_sql(record);
+        let n = self.exec(&sql, params).await?;
         Ok(n > 0)
     }
 

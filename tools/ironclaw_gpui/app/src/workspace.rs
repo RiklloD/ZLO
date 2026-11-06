@@ -124,6 +124,8 @@ pub struct Workspace {
     _chat_events: Vec<Subscription>,
     _page_events: Vec<Subscription>,
     _poll: Option<Task<()>>,
+    /// First-launch session import, then the periodic rescan request.
+    _session_import: Option<Task<()>>,
     connect_attempt: usize,
     _retry: Option<Task<()>>,
     alerts: Alerts,
@@ -180,6 +182,7 @@ impl Workspace {
             main_entered: (SharedString::default(), std::time::Instant::now()),
             _page_events: Vec::new(),
             _poll: None,
+            _session_import: None,
             connect_attempt: 0,
             _retry: None,
             alerts: Alerts::default(),
@@ -421,6 +424,11 @@ impl Workspace {
 
     fn start_polling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refresh_unread(window, cx);
+        if let Some(backend) = self.backend.clone() {
+            self._session_import = Some(crate::pages::settings::session_import::schedule(
+                backend, cx,
+            ));
+        }
         self._poll = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(UNREAD_POLL).await;
