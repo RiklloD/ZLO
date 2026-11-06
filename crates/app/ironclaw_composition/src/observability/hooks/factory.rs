@@ -106,8 +106,8 @@ pub(super) struct ProjectedExtensionHooks {
 pub(super) fn project_extension_hook_sets(
     projections: impl Iterator<Item = impl std::ops::Deref<Target = HookProjection>>,
     registrar: &HookRegistrar,
-    tenant_id: &ironclaw_host_api::ids::TenantId,
     tenant_root: Option<&ironclaw_host_api::path::VirtualPath>,
+    on_quarantine: &mut dyn FnMut(&str, &str, usize),
 ) -> Result<Vec<ProjectedExtensionHooks>, RebornBuildError> {
     let mut survivors: Vec<ProjectedExtensionHooks> = Vec::new();
     let mut considered = 0usize;
@@ -129,8 +129,7 @@ pub(super) fn project_extension_hook_sets(
         if !trusted {
             considered += 1;
             if considered > MAX_INSTALLED_EXTENSIONS_CONSIDERED {
-                emit_hook_quarantined(
-                    tenant_id,
+                on_quarantine(
                     &extension_id_str,
                     "exceeded MAX_INSTALLED_EXTENSIONS_CONSIDERED",
                     hook_count,
@@ -138,8 +137,7 @@ pub(super) fn project_extension_hook_sets(
                 continue;
             }
             if third_party_hook_total + hook_count > MAX_TOTAL_HOOKS_PER_TENANT {
-                emit_hook_quarantined(
-                    tenant_id,
+                on_quarantine(
                     &extension_id_str,
                     "exceeded MAX_TOTAL_HOOKS_PER_TENANT",
                     hook_count,
@@ -151,7 +149,7 @@ pub(super) fn project_extension_hook_sets(
             if let Some(root) = tenant_root
                 && let Err(reason) = enforce_root_containment(root, &projection.root)
             {
-                emit_hook_quarantined(tenant_id, &extension_id_str, &reason, hook_count);
+                on_quarantine(&extension_id_str, &reason, hook_count);
                 continue;
             }
         }
@@ -163,7 +161,7 @@ pub(super) fn project_extension_hook_sets(
                 if trusted {
                     return Err(RebornBuildError::InvalidConfig { reason });
                 }
-                emit_hook_quarantined(tenant_id, &extension_id_str, &reason, hook_count);
+                on_quarantine(&extension_id_str, &reason, hook_count);
                 continue;
             }
         };
@@ -192,7 +190,7 @@ pub(super) fn project_extension_hook_sets(
                 if trusted {
                     return Err(RebornBuildError::InvalidConfig { reason });
                 }
-                emit_hook_quarantined(tenant_id, &extension_id_str, &reason, hook_count);
+                on_quarantine(&extension_id_str, &reason, hook_count);
             }
         }
     }
@@ -355,8 +353,14 @@ where
         Some((tenant, root)) => (tenant, Some(root)),
         None => (&fallback_tenant, None),
     };
-    let extension_install_sets =
-        project_extension_hook_sets(registry.projections(), &registrar, audit_tenant, audit_root)?;
+    let extension_install_sets = project_extension_hook_sets(
+        registry.projections(),
+        &registrar,
+        audit_root,
+        &mut |extension_id, reason, hooks| {
+            emit_hook_quarantined(audit_tenant, extension_id, reason, hooks)
+        },
+    )?;
 
     let evaluator_for_factory = Arc::clone(&evaluator);
     let factory: HookDispatcherBuilderFactory = Arc::new(move || {

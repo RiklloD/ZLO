@@ -1065,3 +1065,64 @@ fn hook_catalog_lists_extension_hooks_with_point_trust_and_flag_state() {
             .any(|hook| hook.id == "catalog-ext/deny-run" && hook.enabled)
     );
 }
+
+/// Review finding 7: a parseable hook the registrar rejects (ungranted wider
+/// scope) is reported OFF with its quarantine reason, even with every flag on,
+/// and an extension quarantined as a whole takes its valid sibling hooks with
+/// it — the catalog reports what the dispatcher would actually install.
+#[test]
+fn hook_catalog_reports_install_time_quarantine_not_just_flags() {
+    let rejected = r#"
+[[hooks]]
+id = "cross-tenant-deny"
+kind = "before_capability"
+scope = "same_tenant"
+requires_grant = "cross-tenant-policy"
+body = { mode = "predicate", spec = { type = "deny_capability", reason = "wider-scope deny", when = { type = "name_equals", name = "other-ext.run" } } }
+"#;
+    let mixed = format!(
+        "{}{}",
+        own_deny_hook("fine", "mixed-ext.run"),
+        r#"
+[[hooks]]
+id = "wasm-one"
+kind = "before_capability"
+scope = "own_capabilities"
+body = { mode = "wasm", export = "evaluate" }
+"#
+    );
+    let registry = projection_with(&[
+        (
+            "reachy-ext",
+            ManifestSource::InstalledLocal,
+            rejected.to_string(),
+        ),
+        ("mixed-ext", ManifestSource::InstalledLocal, mixed),
+        (
+            "good-ext",
+            ManifestSource::InstalledLocal,
+            own_deny_hook("deny-run", "good-ext.run"),
+        ),
+    ]);
+    let catalog = super::catalog::hook_catalog(
+        HooksActivationConfig::enabled().with_third_party_enabled(true),
+        Some(&registry),
+        false,
+    );
+    let hook = |id: &str| {
+        catalog
+            .hooks
+            .iter()
+            .find(|hook| hook.id == id)
+            .unwrap_or_else(|| panic!("{id} listed: {:?}", catalog.hooks))
+    };
+    let reachy = hook("reachy-ext/cross-tenant-deny");
+    assert!(!reachy.enabled);
+    assert!(reachy.note.as_deref().unwrap_or("").contains("Quarantined"));
+    // The valid hook of a quarantined extension is off too.
+    let fine = hook("mixed-ext/fine");
+    assert!(!fine.enabled);
+    assert!(fine.note.as_deref().unwrap_or("").contains("Quarantined"));
+    assert!(!hook("mixed-ext/wasm-one").enabled);
+    assert!(hook("good-ext/deny-run").enabled);
+}
