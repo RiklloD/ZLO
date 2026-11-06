@@ -2547,6 +2547,8 @@ pub struct RebornServices<
     diagnostic_store: Arc<dyn crate::inspector_store::DiagnosticStorePort>,
     pub(crate) suggestions: Option<SuggestionsServices>,
     thread_operation_locks: Arc<ThreadOperationLocks>,
+    // arch-exempt: optional_arc, native `ask_user` answers go to the run's external-tool catalog; graphs without a loop runtime (product-only tests) have none and refuse "answered", plan #plan-forms
+    external_tool_catalog: Option<Arc<dyn ironclaw_turns::ExternalToolCatalog>>,
 }
 
 /// The suggestion surface needs both durable state and the canonical unbound
@@ -2643,6 +2645,7 @@ where
             llm_config: None,
             ironhub_link: None,
             active_model_reader: None,
+            external_tool_catalog: None,
             operator_approval_config: None,
             diagnostic_store: Arc::new(crate::inspector_store::InMemoryDiagnosticStore::default()),
             suggestions: None,
@@ -2766,6 +2769,16 @@ where
         active_model_reader: Arc<dyn ActiveModelReader>,
     ) -> Self {
         self.active_model_reader = Some(active_model_reader);
+        self
+    }
+
+    /// Wire the run-scoped external-tool catalog the loop parks native
+    /// `ask_user` calls in, so a question gate can be answered.
+    pub fn with_external_tool_catalog(
+        mut self,
+        catalog: Arc<dyn ironclaw_turns::ExternalToolCatalog>,
+    ) -> Self {
+        self.external_tool_catalog = Some(catalog);
         self
     }
 
@@ -5213,6 +5226,14 @@ where
         caller: ProductSurfaceCaller,
         request: ProductResolveGateRequest,
     ) -> Result<RebornResolveGateResponse, ProductSurfaceError> {
+        // A native `ask_user` gate takes answers, not an approval.
+        let answering = request.resolution.as_deref() == Some("answered");
+        let mut request = request;
+        let answer = request.answer.take();
+        if answering {
+            // Parse (and validate) the rest as a dismissal would be.
+            request.resolution = Some("declined".to_string());
+        }
         let caller_for_fallback = caller.clone();
         let command = request.into_command(caller)?;
         let ProductInboundCommand::ResolveGate {
@@ -5234,6 +5255,26 @@ where
         let access = self
             .resolve_thread_access_for_caller(caller_for_fallback, scope, &actor)
             .await?;
+        if let Some(response) = self
+            .resolve_native_question(
+                &access.scope,
+                &access.run_actor,
+                run_id,
+                &gate_ref,
+                &client_action_id,
+                answering.then_some(answer).flatten(),
+            )
+            .await?
+        {
+            return Ok(response);
+        }
+        if answering {
+            // An answer for something that is not a waiting question.
+            return Err(ProductSurfaceError::validation(
+                "resolution",
+                ProductSurfaceValidationCode::InvalidValue,
+            ));
+        }
         match self
             .gate_resolution_route(
                 &access.scope,
@@ -6864,6 +6905,74 @@ where
                 RebornResolveGateResponse::Cancelled(types::reborn_cancel_run_response(response)),
             ),
         }
+    }
+
+    /// Answer (`Some`) or dismiss (`None`) the native `ask_user` question
+    /// `run_id` is parked on at `gate_ref`: submit it as the call's output and
+    /// resume the run. `None` when the run is not parked on a question there
+    /// (the caller routes the resolution as a gate). An answer that does not
+    /// fit the form is refused and the run stays parked.
+    async fn resolve_native_question(
+        &self,
+        scope: &TurnScope,
+        actor: &TurnActor,
+        run_id: TurnRunId,
+        gate_ref: &TurnGateRef,
+        client_action_id: &IdempotencyKey,
+        answer: Option<ironclaw_host_api::agent_plan::QuestionAnswer>,
+    ) -> Result<Option<RebornResolveGateResponse>, ProductSurfaceError> {
+        let Some(catalog) = &self.external_tool_catalog else {
+            return Ok(None);
+        };
+        let state = self
+            .turn_coordinator
+            .get_run_state(GetRunStateRequest {
+                scope: scope.clone(),
+                run_id,
+            })
+            .await
+            .map_err(map_turn_error)?;
+        if state.status != TurnStatus::BlockedExternalTool
+            || state.gate_ref.as_ref() != Some(gate_ref)
+        {
+            return Ok(None);
+        }
+        let pending = crate::native_questions::pending_question(catalog.as_ref(), run_id)
+            .await
+            .map_err(ProductSurfaceError::internal_from)?;
+        let Some((call_id, form)) = pending else {
+            return Ok(None);
+        };
+        if let Some(answer) = &answer {
+            form.check_answer(answer).map_err(|error| {
+                tracing::debug!(%error, "native question answer refused");
+                ProductSurfaceError::validation(
+                    "answer",
+                    ProductSurfaceValidationCode::InvalidValue,
+                )
+            })?;
+        }
+        let output = crate::native_questions::tool_output(&form, answer.as_ref());
+        catalog
+            .submit_output_for_pending_call(run_id, call_id, output)
+            .await
+            .map_err(ProductSurfaceError::internal_from)?;
+        let response = self
+            .turn_coordinator
+            .resume_turn(ResumeTurnRequest {
+                scope: scope.clone(),
+                actor: actor.clone(),
+                run_id,
+                gate_resolution_ref: gate_ref.clone(),
+                precondition: ResumeTurnPrecondition::BlockedExternalToolGate,
+                idempotency_key: client_action_id.clone(),
+                resume_disposition: None,
+            })
+            .await
+            .map_err(map_turn_error)?;
+        Ok(Some(RebornResolveGateResponse::Resumed(
+            types::reborn_resume_gate_response(response),
+        )))
     }
 
     async fn resolve_generic_gate(

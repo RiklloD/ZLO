@@ -681,10 +681,6 @@ async fn permission_answer(
     claim: CallClaim,
 ) -> Value {
     let call = &params["toolCall"];
-    let call_id = call
-        .get("toolCallId")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     let cancelled = json!({"outcome": {"outcome": "cancelled"}});
     let request = PermissionRequest {
         runtime: runtime.to_string(),

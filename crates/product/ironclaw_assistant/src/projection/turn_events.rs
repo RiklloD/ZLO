@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use futures::{StreamExt, stream};
 use ironclaw_approvals::ApprovalRequestStorePort;
 use ironclaw_extension_contracts::auth_prompt::AuthPromptContextView;
+use ironclaw_host_api::agent_plan::QuestionForm;
 use ironclaw_host_api::ids::{InvocationId, UserId};
 use ironclaw_host_api::product_adapter::{
     ProductAdapterError, ProductSurfaceRejectionKind, RedactedString,
@@ -31,8 +32,8 @@ use ironclaw_product_contracts::outbound::{
 };
 use ironclaw_threads::{FinalizedAssistantMessageByRunRequest, SessionThreadService, ThreadScope};
 use ironclaw_turns::{
-    GetRunStateRequest, TurnBlockedGateKind, TurnCoordinator, TurnError, TurnEventKind,
-    TurnEventProjectionCursor, TurnEventProjectionError, TurnEventProjectionRequest,
+    ExternalToolCatalog, GetRunStateRequest, TurnBlockedGateKind, TurnCoordinator, TurnError,
+    TurnEventKind, TurnEventProjectionCursor, TurnEventProjectionError, TurnEventProjectionRequest,
     TurnEventProjectionSource, TurnEventReducerService, TurnLifecycleEvent,
 };
 use tokio::sync::{Mutex, OnceCell, Semaphore};
@@ -91,6 +92,8 @@ pub(super) enum TurnEventBridge {
         coordinator: Arc<dyn TurnCoordinator>,
         // arch-exempt: optional_arc, approval prompt enrichment is absent in minimal projection graphs, plan #4539
         approval_requests: Option<Arc<dyn ApprovalRequestStorePort>>,
+        // arch-exempt: optional_arc, native `ask_user` forms need the run's external-tool catalog; minimal projection graphs have none and draw the generic gate, plan #plan-forms
+        external_calls: Option<Arc<dyn ExternalToolCatalog>>,
         failure_explainer: Arc<dyn FailureExplanationProvider>,
         failure_explanation_cache: Arc<Mutex<FailureExplanationCache>>,
     },
@@ -134,6 +137,7 @@ impl TurnEventBridge {
             service: Arc::new(TurnEventReducerService::new(source)),
             coordinator,
             approval_requests,
+            external_calls: None,
             failure_explainer: Arc::new(NoopFailureExplanationProvider),
             failure_explanation_cache: Arc::new(Mutex::new(FailureExplanationCache::new(
                 FAILURE_EXPLANATION_CACHE_CAPACITY,
@@ -150,6 +154,13 @@ impl TurnEventBridge {
         } = &mut self
         {
             *approval_requests = requests;
+        }
+        self
+    }
+
+    pub(super) fn with_external_calls(mut self, catalog: Arc<dyn ExternalToolCatalog>) -> Self {
+        if let Self::Enabled { external_calls, .. } = &mut self {
+            *external_calls = Some(catalog);
         }
         self
     }
@@ -179,6 +190,7 @@ impl TurnEventBridge {
             service,
             coordinator,
             approval_requests,
+            external_calls,
             failure_explainer,
             failure_explanation_cache,
         } = self
@@ -236,6 +248,7 @@ impl TurnEventBridge {
                 failure_explanation_cache,
                 auth_challenges,
                 approval_requests: approval_requests.as_deref(),
+                external_calls: external_calls.as_deref(),
                 thread_service,
             };
             payloads.extend(turn_event_payloads_for_page(context, page.entries).await?);
@@ -259,6 +272,7 @@ struct TurnEventPayloadContext<'a> {
     failure_explanation_cache: &'a Arc<Mutex<FailureExplanationCache>>,
     auth_challenges: Option<&'a dyn AuthChallengeProvider>,
     approval_requests: Option<&'a dyn ApprovalRequestStorePort>,
+    external_calls: Option<&'a dyn ExternalToolCatalog>,
     thread_service: Option<&'a dyn SessionThreadService>,
 }
 
@@ -306,6 +320,7 @@ async fn turn_event_payloads(
     } else {
         None
     };
+    let question = native_question(context.external_calls, event).await?;
     if projects_run_status(&event.kind) {
         let failure_details = failure_details_for_turn_event(
             context.failure_explainer,
@@ -321,6 +336,7 @@ async fn turn_event_payloads(
                 event,
                 failure_details,
                 blocked_prompt.as_ref(),
+                question,
                 finalized_reply,
             )?,
         });
@@ -658,10 +674,34 @@ fn projects_run_status(kind: &TurnEventKind) -> bool {
     )
 }
 
+/// A run parked on the native `ask_user` call: its form, read from the
+/// run's external-tool catalog. `None` for every other blocked event (and
+/// once the call is answered, the catalog no longer holds it).
+async fn native_question(
+    external_calls: Option<&dyn ExternalToolCatalog>,
+    event: &TurnLifecycleEvent,
+) -> Result<Option<QuestionForm>, ProductAdapterError> {
+    let (Some(catalog), TurnEventKind::Blocked, TurnStatus::BlockedExternalTool) =
+        (external_calls, &event.kind, event.status)
+    else {
+        return Ok(None);
+    };
+    match crate::native_questions::pending_question(catalog, event.run_id).await {
+        Ok(found) => Ok(found.map(|(_, form)| form)),
+        Err(error) => {
+            tracing::debug!(%error, run_id = %event.run_id, "ask_user lookup failed during projection");
+            Err(ProductAdapterError::SurfaceTransient {
+                reason: RedactedString::new("question lookup failed"),
+            })
+        }
+    }
+}
+
 fn turn_event_projection_state(
     event: &TurnLifecycleEvent,
     failure_details: FailureProjectionDetails,
     blocked_prompt: Option<&ProductOutboundPayload>,
+    question: Option<QuestionForm>,
     finalized_reply: Option<ProductProjectionItem>,
 ) -> Result<ProductProjectionState, ProductAdapterError> {
     let mut items = vec![ProductProjectionItem::RunStatus {
@@ -671,7 +711,17 @@ fn turn_event_projection_state(
         failure_summary: failure_details.summary,
         retryable: event.retryable,
     }];
-    if let Some(item) = gate_projection_item(event, blocked_prompt)? {
+    // A parked `ask_user` call is a question form on its gate, not the
+    // generic external-tool gate.
+    let question = question.zip(event.blocked_gate.as_ref());
+    if let Some((form, gate)) = question {
+        items.push(ProductProjectionItem::Question {
+            run_id: event.run_id,
+            gate_ref: gate.gate_ref.as_str().to_string(),
+            form,
+            closed: false,
+        });
+    } else if let Some(item) = gate_projection_item(event, blocked_prompt)? {
         items.push(item);
     }
     if let Some(item) = finalized_reply {

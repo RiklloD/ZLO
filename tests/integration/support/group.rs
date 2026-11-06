@@ -524,6 +524,7 @@ impl RebornIntegrationGroup {
             channel_connection: None,
             bound_memory: None,
             external_tool_specs: None,
+            external_tool_catalog: None,
         }
     }
 
@@ -959,6 +960,9 @@ pub struct RebornIntegrationGroupBuilder {
     /// Test-only client-tool specs installed at run-port construction. `None`
     /// preserves the normal group capability factory exactly.
     external_tool_specs: Option<Vec<ironclaw_turns::ExternalToolSpec>>,
+    /// Test-only shared catalog for those client tools, so a test can read a
+    /// parked call and submit its output. `None` makes a private one.
+    external_tool_catalog: Option<Arc<dyn ironclaw_turns::ExternalToolCatalog>>,
 }
 
 impl RebornIntegrationGroupBuilder {
@@ -1126,7 +1130,9 @@ impl RebornIntegrationGroupBuilder {
             match external_tool_specs {
                 Some(specs) => Arc::new(ExternalToolCapabilityPortFactory {
                     inner: capability_factory,
-                    catalog: Arc::new(ironclaw_turns::InMemoryExternalToolCatalog::new()),
+                    catalog: self.external_tool_catalog.clone().unwrap_or_else(|| {
+                        Arc::new(ironclaw_turns::InMemoryExternalToolCatalog::new())
+                    }),
                     specs,
                     input_resolver: Arc::clone(&capability_input_resolver),
                     result_writer: Arc::clone(&capability_result_writer),

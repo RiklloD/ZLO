@@ -236,6 +236,8 @@ fn mark_statement(
 pub enum AwaitingKind {
     Approval,
     Auth,
+    /// The agent asked a structured question (native `ask_user`).
+    Question,
 }
 
 impl AwaitingKind {
@@ -243,6 +245,7 @@ impl AwaitingKind {
         match self {
             Self::Approval => "approval",
             Self::Auth => "auth",
+            Self::Question => "question",
         }
     }
 }
@@ -864,6 +867,13 @@ mod tests {
         assert!(awaiting(&store.inbox_threads(&owner).await.unwrap()));
         store.clear_awaiting(&child).await.unwrap();
         assert!(!awaiting(&store.inbox_threads(&owner).await.unwrap()));
+        // A question the agent asked waits on the person like a gate.
+        store
+            .set_awaiting(&child, Some("r3"), AwaitingKind::Question, 3)
+            .await
+            .unwrap();
+        assert!(awaiting(&store.inbox_threads(&owner).await.unwrap()));
+        store.clear_awaiting(&child).await.unwrap();
 
         let now = now_ms();
         store

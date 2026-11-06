@@ -95,7 +95,8 @@ pub struct ToolView {
 
 mod questions;
 
-pub use questions::QuestionOutcome;
+/// Read back by whoever shows a thread's past questions.
+pub use questions::{QuestionOutcome, QuestionRecordBody, question_record};
 
 /// A structured question the turn waits on, as the person sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -2142,6 +2142,25 @@ impl RebornIntegrationHarness {
         .await
     }
 
+    /// Resume a blocked client-tool gate after its output was submitted to
+    /// the catalog: the parked call re-dispatches and consumes the output.
+    pub async fn resume_external_tool_gate(
+        &self,
+        run_id: TurnRunId,
+        gate_ref: &TurnGateRef,
+    ) -> HarnessResult<()> {
+        if !gate_ref.as_str().starts_with("gate:external_tool-") {
+            return Err(format!("expected an external-tool gate ref, got {gate_ref:?}").into());
+        }
+        self.resume_run(
+            run_id,
+            gate_ref.clone(),
+            None,
+            ResumeTurnPrecondition::BlockedExternalToolGate,
+        )
+        .await
+    }
+
     /// Resolve a blocked AUTH gate the "user submitted credentials" way
     /// (C-JOURNEY convergence seam): seed a real GitHub credential account
     /// (`seed_github_credential_account`) so the parked capability's next

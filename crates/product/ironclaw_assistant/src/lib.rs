@@ -56,6 +56,7 @@ mod ledger;
 mod lifecycle;
 pub mod memory_scheduled_ops;
 mod model_channel_delivery;
+pub mod native_questions;
 mod notification_channel_resolution;
 pub mod orchestration;
 mod outbound_delivery;

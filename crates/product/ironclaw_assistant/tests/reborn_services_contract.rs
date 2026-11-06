@@ -5819,6 +5819,151 @@ async fn approved_gate_resolution_resumes_turn() {
     );
 }
 
+/// A WebUI run parked on the native `ask_user` call, for the gate tests.
+async fn parked_native_question(
+    allow_free_text: bool,
+) -> (
+    RebornServices,
+    Arc<FakeTurnCoordinator>,
+    Arc<ironclaw_turns::InMemoryExternalToolCatalog>,
+    TurnRunId,
+) {
+    let coordinator = Arc::new(FakeTurnCoordinator::default());
+    let catalog = Arc::new(ironclaw_turns::InMemoryExternalToolCatalog::new());
+    let services = session_services(
+        Arc::new(InMemorySessionThreadService::default()),
+        coordinator.clone(),
+    )
+    .with_external_tool_catalog(catalog.clone());
+    create_thread_for(&services, caller(), "thread-alpha").await;
+    coordinator.set_parked_gate(TurnGateRef::new("gate:external_tool-q1").expect("gate"));
+    coordinator.set_run_state_status(TurnStatus::BlockedExternalTool);
+    let run = TurnRunId::parse(&run_id_string()).expect("run id");
+    let arguments = json!({"questions": [{
+        "question": "Which database?",
+        "options": [{"label": "Postgres"}, {"label": "SQLite"}],
+        "allow_free_text": allow_free_text
+    }]});
+    ironclaw_turns::ExternalToolCatalog::record_pending_call(
+        catalog.as_ref(),
+        run,
+        ironclaw_turns::PendingExternalCall::new(
+            "call_1",
+            ironclaw_assistant::native_questions::ASK_USER_TOOL_NAME,
+            arguments,
+        ),
+    )
+    .await
+    .expect("pending call");
+    (services, coordinator, catalog, run)
+}
+
+fn question_resolution(
+    gate: &str,
+    resolution: &str,
+    answer: serde_json::Value,
+) -> ProductResolveGateRequest {
+    serde_json::from_value(json!({
+        "client_action_id": format!("q-{resolution}"),
+        "thread_id": "thread-alpha",
+        "run_id": run_id_string(),
+        "gate_ref": gate,
+        "resolution": resolution,
+        "answer": answer
+    }))
+    .expect("request")
+}
+
+#[tokio::test]
+async fn native_ask_user_answer_is_submitted_to_the_parked_call_and_resumes() {
+    let (services, coordinator, catalog, run) = parked_native_question(false).await;
+    let output = |catalog: Arc<ironclaw_turns::InMemoryExternalToolCatalog>| async move {
+        ironclaw_turns::ExternalToolCatalog::output(catalog.as_ref(), run, "call_1")
+            .await
+            .expect("catalog read")
+    };
+
+    // An answer outside the options (no free text allowed) is refused and
+    // the run stays parked with nothing submitted.
+    let err = services
+        .resolve_gate(
+            caller(),
+            question_resolution(
+                "gate:external_tool-q1",
+                "answered",
+                json!({"values": {"q1": ["MySQL"]}}),
+            ),
+        )
+        .await
+        .expect_err("a misfit answer is refused");
+    assert_eq!(err.status_code, 400);
+    assert_eq!(coordinator.resumption_count(), 0);
+    assert!(output(catalog.clone()).await.is_none());
+
+    let response = services
+        .resolve_gate(
+            caller(),
+            question_resolution(
+                "gate:external_tool-q1",
+                "answered",
+                json!({"values": {"q1": ["SQLite"]}}),
+            ),
+        )
+        .await
+        .expect("the answer resumes the run");
+    assert!(matches!(response, RebornResolveGateResponse::Resumed(_)));
+    assert_eq!(
+        coordinator.last_resumption_precondition(),
+        Some(ResumeTurnPrecondition::BlockedExternalToolGate)
+    );
+    let submitted = output(catalog.clone())
+        .await
+        .expect("the answer is the call's output");
+    assert_eq!(submitted["answered"], true);
+    assert_eq!(submitted["answers"]["Which database?"], json!(["SQLite"]));
+}
+
+#[tokio::test]
+async fn native_ask_user_dismissal_resumes_with_a_decline_and_answers_need_a_question() {
+    let (services, coordinator, catalog, run) = parked_native_question(true).await;
+    let response = services
+        .resolve_gate(
+            caller(),
+            question_resolution("gate:external_tool-q1", "declined", json!(null)),
+        )
+        .await
+        .expect("a dismissal resumes the run");
+    assert!(matches!(response, RebornResolveGateResponse::Resumed(_)));
+    assert_eq!(
+        coordinator.cancellation_count(),
+        0,
+        "dismissing is not cancelling"
+    );
+    let submitted = ironclaw_turns::ExternalToolCatalog::output(catalog.as_ref(), run, "call_1")
+        .await
+        .expect("catalog read")
+        .expect("the decline is the call's output");
+    assert_eq!(submitted["answered"], false);
+
+    // "answered" for a gate that is not a waiting question is refused.
+    let (services, coordinator, _catalog, _run) = parked_native_question(true).await;
+    coordinator.set_parked_approval_gate(TurnGateRef::new("gate:approval-x").expect("gate"));
+    coordinator.set_run_state_status(TurnStatus::BlockedApproval);
+    let err = services
+        .resolve_gate(
+            caller(),
+            question_resolution(
+                "gate:approval-x",
+                "answered",
+                json!({"values": {"q1": ["SQLite"]}}),
+            ),
+        )
+        .await
+        .expect_err("an answer cannot resolve an approval");
+    assert_eq!(err.status_code, 400);
+    assert_eq!(coordinator.resumption_count(), 0);
+}
+
 #[tokio::test]
 async fn resolve_gate_rejects_missing_run_state_actor() {
     let coordinator = Arc::new(FakeTurnCoordinator::default());
