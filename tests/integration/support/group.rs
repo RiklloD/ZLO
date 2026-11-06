@@ -1941,6 +1941,7 @@ impl<'g> RebornThreadBuilder<'g> {
         // locator can never see this group's real runs. Only when the builder
         // opted in (`with_real_gate_dispatch_services`); every other group's
         // workflow keeps the default Rejecting stubs.
+        let mut approval_interactions = None;
         if shared.real_gate_dispatch_services {
             let harness = match &shared.capability {
                 GroupCapability::HostRuntime(arc) => arc,
@@ -1972,6 +1973,7 @@ impl<'g> RebornThreadBuilder<'g> {
                 .ok_or(
                     "local-dev auth interaction service unavailable (harness has no local runtime)",
                 )?;
+            approval_interactions = Some(Arc::clone(&approval_interaction_service));
             workflow = workflow
                 .with_approval_interaction_service(approval_interaction_service)
                 .with_auth_interaction_service(auth_interaction_service);
@@ -1988,6 +1990,7 @@ impl<'g> RebornThreadBuilder<'g> {
         Ok(RebornIntegrationHarness {
             ingress,
             workflow: Arc::new(workflow),
+            approval_interactions,
             conversation_id: self.conversation_id,
             actor_id: actor_id.to_owned(),
             binding,

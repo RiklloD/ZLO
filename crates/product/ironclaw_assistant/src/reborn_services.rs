@@ -6753,20 +6753,8 @@ where
         client_action_id: IdempotencyKey,
         resolution: ProductGateResolution,
     ) -> Result<RebornResolveGateResponse, ProductSurfaceError> {
-        let decision = match resolution {
-            ProductGateResolution::Approved { always } => {
-                if always {
-                    ApprovalInteractionDecision::AlwaysAllow
-                } else {
-                    ApprovalInteractionDecision::ApproveOnce
-                }
-            }
-            ProductGateResolution::Declined { feedback } => {
-                ApprovalInteractionDecision::Deny { feedback }
-            }
-            ProductGateResolution::CredentialProvided { .. } => {
-                return Err(blocked_authentication_unavailable());
-            }
+        let Some(decision) = ApprovalInteractionDecision::from_gate_resolution(resolution) else {
+            return Err(blocked_authentication_unavailable());
         };
         let response = self
             .approval_interactions

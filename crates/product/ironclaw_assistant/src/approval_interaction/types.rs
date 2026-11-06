@@ -280,6 +280,22 @@ pub enum ApprovalInteractionDecision {
     },
 }
 
+impl ApprovalInteractionDecision {
+    /// What a product gate resolution asks of an approval gate. `None` for a
+    /// credential resolution, which approval gates do not take.
+    pub fn from_gate_resolution(
+        resolution: ironclaw_product_contracts::inbound_requests::ProductGateResolution,
+    ) -> Option<Self> {
+        use ironclaw_product_contracts::inbound_requests::ProductGateResolution;
+        match resolution {
+            ProductGateResolution::Approved { always: true } => Some(Self::AlwaysAllow),
+            ProductGateResolution::Approved { always: false } => Some(Self::ApproveOnce),
+            ProductGateResolution::Declined { feedback } => Some(Self::Deny { feedback }),
+            ProductGateResolution::CredentialProvided { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolveApprovalInteractionRequest {
     pub scope: TurnScope,

@@ -146,6 +146,10 @@ async fn approvals_group_real_gate_dispatch_e2e() {
         "submit_inbound_approval_resolution_deny",
         scenario_submit_inbound_approval_resolution::deny(&g).await,
     );
+    report.record(
+        "reject_with_feedback_via_product_request",
+        scenario_gate_then_reject_with_feedback::via_product_request(&g).await,
+    );
     report.assert_all_passed();
 }
 
