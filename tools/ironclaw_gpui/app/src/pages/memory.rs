@@ -11,7 +11,7 @@
 use ironclaw_gpui_client::Backend;
 use ironclaw_gpui_client::memory_page::{
     MemoryArchiveOutcome, MemoryDocument, MemoryDocumentEntry, MemoryDocumentKind, MemorySearchHit,
-    MemoryWriteOutcome, SupermemoryBindingOrigin, SupermemoryDocumentPage, SupermemoryMemoryHit,
+    MemoryPageWriteOutcome, SupermemoryBindingOrigin, SupermemoryDocumentPage, SupermemoryMemoryHit,
     SupermemoryStatus,
 };
 
@@ -237,7 +237,7 @@ impl MemoryView {
                 this.busy = false;
                 match result {
                     Ok(response) => match (response.outcome, response.document) {
-                        (MemoryWriteOutcome::Written, Some(document)) => {
+                        (MemoryPageWriteOutcome::Written, Some(document)) => {
                             this.notice = Some(format!("Saved {}.", document.path).into());
                             this.error = None;
                             this.open = Some(Open {
@@ -247,7 +247,7 @@ impl MemoryView {
                             });
                             this.load_tree(cx);
                         }
-                        (MemoryWriteOutcome::Conflict, current) => {
+                        (MemoryPageWriteOutcome::Conflict, current) => {
                             // Keep the user's text; show that the stored one moved.
                             if let Some(open) = this.open.as_mut() {
                                 if let Some(current) = current {
@@ -256,7 +256,7 @@ impl MemoryView {
                                 open.conflict = true;
                             }
                         }
-                        (MemoryWriteOutcome::Written, None) => {
+                        (MemoryPageWriteOutcome::Written, None) => {
                             this.error = Some("Saved, but the read-back failed.".into());
                         }
                     },

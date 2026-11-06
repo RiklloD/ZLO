@@ -155,13 +155,13 @@ impl MemoryDocumentsSource for FakeDocuments {
         };
         if !matches {
             return Ok(MemoryWriteResponse {
-                outcome: MemoryWriteOutcome::Conflict,
+                outcome: MemoryPageWriteOutcome::Conflict,
                 document: current.map(|content| Self::document(&request.path, &content)),
             });
         }
         docs.insert(key, request.content.clone());
         Ok(MemoryWriteResponse {
-            outcome: MemoryWriteOutcome::Written,
+            outcome: MemoryPageWriteOutcome::Written,
             document: Some(Self::document(&request.path, &request.content)),
         })
     }
@@ -232,7 +232,7 @@ async fn local_documents_round_trip_create_read_conflict_save_search_archive() {
         )
         .await
         .unwrap();
-    assert_eq!(created.outcome, MemoryWriteOutcome::Written);
+    assert_eq!(created.outcome, MemoryPageWriteOutcome::Written);
 
     let tree = MEMORY_TREE_VIEW
         .query_on(&alice, MemoryTreeRequest {}, None)
@@ -267,7 +267,7 @@ async fn local_documents_round_trip_create_read_conflict_save_search_archive() {
         )
         .await
         .unwrap();
-    assert_eq!(stale.outcome, MemoryWriteOutcome::Conflict);
+    assert_eq!(stale.outcome, MemoryPageWriteOutcome::Conflict);
     assert_eq!(stale.document.unwrap().content, "likes green tea");
 
     let saved = MEMORY_WRITE_COMMAND
@@ -282,12 +282,12 @@ async fn local_documents_round_trip_create_read_conflict_save_search_archive() {
         )
         .await
         .unwrap();
-    assert_eq!(saved.outcome, MemoryWriteOutcome::Written);
+    assert_eq!(saved.outcome, MemoryPageWriteOutcome::Written);
 
     let found = MEMORY_SEARCH_VIEW
         .query_on(
             &alice,
-            MemorySearchRequest {
+            MemoryPageSearchRequest {
                 query: "black".to_string(),
                 limit: Some(500),
             },

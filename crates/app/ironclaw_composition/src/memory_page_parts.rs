@@ -28,8 +28,8 @@ use ironclaw_memory_native::NativeMemoryService;
 use ironclaw_product_contracts::hooks_catalog::{HookCatalog, HookCatalogSource};
 use ironclaw_product_contracts::memory_page::{
     MemoryArchiveOutcome, MemoryArchiveRequest, MemoryArchiveResponse, MemoryDocument,
-    MemoryDocumentEntry, MemoryDocumentsSource, MemoryProvenance, MemorySearchHit,
-    MemoryWriteOutcome, MemoryWriteRequest, MemoryWriteResponse, memory_document_kind,
+    MemoryDocumentEntry, MemoryDocumentsSource, MemoryPageWriteOutcome, MemoryProvenance,
+    MemorySearchHit, MemoryWriteRequest, MemoryWriteResponse, memory_document_kind,
 };
 use ironclaw_product_contracts::surface::{
     ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceValidationCode,
@@ -193,7 +193,7 @@ impl MemoryDocumentsSource for NativeMemoryDocuments {
             && let Some(existing) = self.document(caller, &request.path).await?
         {
             return Ok(MemoryWriteResponse {
-                outcome: MemoryWriteOutcome::Conflict,
+                outcome: MemoryPageWriteOutcome::Conflict,
                 document: Some(existing),
             });
         }
@@ -216,8 +216,8 @@ impl MemoryDocumentsSource for NativeMemoryDocuments {
             .await
             .map_err(map_memory_error)?;
         let outcome = match response.status {
-            MemoryWriteStatus::Conflict => MemoryWriteOutcome::Conflict,
-            _ => MemoryWriteOutcome::Written,
+            MemoryWriteStatus::Conflict => MemoryPageWriteOutcome::Conflict,
+            _ => MemoryPageWriteOutcome::Written,
         };
         // Read back: the saved document (or the current one on a conflict)
         // is the evidence the editor shows.

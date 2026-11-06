@@ -37,7 +37,7 @@ async fn round_trip(filesystem: Arc<dyn RootFilesystem>) {
         .write(&alice, write("USER.md", "Name: Alice", None))
         .await
         .unwrap();
-    assert_eq!(created.outcome, MemoryWriteOutcome::Written);
+    assert_eq!(created.outcome, MemoryPageWriteOutcome::Written);
     let document = created.document.unwrap();
     assert_eq!(document.kind, MemoryDocumentKind::Identity);
     assert_eq!(document.provenance.version_count, 0);
@@ -47,7 +47,7 @@ async fn round_trip(filesystem: Arc<dyn RootFilesystem>) {
         .write(&alice, write("USER.md", "Name: Mallory", None))
         .await
         .unwrap();
-    assert_eq!(again.outcome, MemoryWriteOutcome::Conflict);
+    assert_eq!(again.outcome, MemoryPageWriteOutcome::Conflict);
     assert_eq!(again.document.unwrap().content, "Name: Alice");
 
     // A stale hash is a conflict; the current hash saves and keeps a version.
@@ -62,7 +62,7 @@ async fn round_trip(filesystem: Arc<dyn RootFilesystem>) {
         )
         .await
         .unwrap();
-    assert_eq!(stale.outcome, MemoryWriteOutcome::Conflict);
+    assert_eq!(stale.outcome, MemoryPageWriteOutcome::Conflict);
     let saved = source
         .write(
             &alice,
@@ -74,7 +74,7 @@ async fn round_trip(filesystem: Arc<dyn RootFilesystem>) {
         )
         .await
         .unwrap();
-    assert_eq!(saved.outcome, MemoryWriteOutcome::Written);
+    assert_eq!(saved.outcome, MemoryPageWriteOutcome::Written);
     let saved = saved.document.unwrap();
     assert_eq!(saved.content, "Name: Alice Liddell");
     assert_eq!(saved.provenance.version_count, 1);

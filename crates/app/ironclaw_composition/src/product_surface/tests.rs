@@ -1056,8 +1056,8 @@ async fn runtime_product_surface_serves_the_memory_page_and_hook_catalog() {
     use ironclaw_product_contracts::hooks_catalog::{HOOK_CATALOG_VIEW, HookCatalogRequest};
     use ironclaw_product_contracts::memory_page::{
         MEMORY_ARCHIVE_COMMAND, MEMORY_DOCUMENT_VIEW, MEMORY_TREE_VIEW, MEMORY_WRITE_COMMAND,
-        MemoryArchiveOutcome, MemoryArchiveRequest, MemoryDocumentRequest, MemoryTreeRequest,
-        MemoryWriteOutcome, MemoryWriteRequest, SUPERMEMORY_STATUS_VIEW, SupermemoryStatusRequest,
+        MemoryArchiveOutcome, MemoryArchiveRequest, MemoryDocumentRequest, MemoryPageWriteOutcome,
+        MemoryTreeRequest, MemoryWriteRequest, SUPERMEMORY_STATUS_VIEW, SupermemoryStatusRequest,
     };
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1103,7 +1103,7 @@ async fn runtime_product_surface_serves_the_memory_page_and_hook_catalog() {
         )
         .await
         .expect("write");
-    assert_eq!(written.outcome, MemoryWriteOutcome::Written);
+    assert_eq!(written.outcome, MemoryPageWriteOutcome::Written);
     let read = MEMORY_DOCUMENT_VIEW
         .query_on(
             &surface,

@@ -116,7 +116,7 @@ impl MemoryPageSurface {
                 Err(error) => Err(error),
             }
         } else if id == MEMORY_SEARCH_VIEW.id {
-            match parse::<MemorySearchRequest>(input) {
+            match parse::<MemoryPageSearchRequest>(input) {
                 Ok(params) => self.search(caller, params).await.and_then(to_value),
                 Err(error) => Err(error),
             }
@@ -204,7 +204,7 @@ impl MemoryPageSurface {
     async fn search(
         &self,
         caller: &ProductSurfaceCaller,
-        params: MemorySearchRequest,
+        params: MemoryPageSearchRequest,
     ) -> Result<MemorySearchResponse, ProductSurfaceError> {
         let query = validate_query(&params.query)?;
         let limit = params.limit.unwrap_or(10).clamp(1, MAX_MEMORY_SEARCH_LIMIT);

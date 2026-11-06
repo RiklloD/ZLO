@@ -110,14 +110,14 @@ pub struct MemoryDocument {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MemorySearchRequest {
+pub struct MemoryPageSearchRequest {
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
 
 /// `GET /api/webchat/v2/memory/search?q=…`.
-pub const MEMORY_SEARCH_VIEW: ProductView<MemorySearchRequest, MemorySearchResponse> =
+pub const MEMORY_SEARCH_VIEW: ProductView<MemoryPageSearchRequest, MemorySearchResponse> =
     ProductView::unpaginated("memory.documents.search");
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,7 +146,7 @@ pub struct MemoryWriteRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MemoryWriteOutcome {
+pub enum MemoryPageWriteOutcome {
     /// Saved; `document` is the read-back.
     Written,
     /// The document changed since it was read (or exists, for a create);
@@ -157,7 +157,7 @@ pub enum MemoryWriteOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryWriteResponse {
-    pub outcome: MemoryWriteOutcome,
+    pub outcome: MemoryPageWriteOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document: Option<MemoryDocument>,
 }

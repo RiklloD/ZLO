@@ -1158,7 +1158,16 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // which the desktop client writes and ironclaw_assistant reads. The
         // placement itself lives in ironclaw_assistant. Count read from this
         // test's failure message.
-        ("ironclaw_product_contracts", 17_878),
+        // 17_878 -> 18_601 (2026-11-05, Memory page + hooks view): the
+        // `memory_page` module (local-document and Supermemory view/command
+        // descriptors, their request/response DTOs, the bounds the decorator
+        // enforces, and the `MemoryDocumentsSource` port composition
+        // implements) and the `hooks_catalog` module (the read-only hook
+        // inventory DTOs and its `HookCatalogSource` port). Behavior lives in
+        // ironclaw_assistant::{memory_page, hooks_page}, ironclaw_supermemory
+        // and ironclaw_memory_native. Count read from this test's failure
+        // message.
+        ("ironclaw_product_contracts", 18_601),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
