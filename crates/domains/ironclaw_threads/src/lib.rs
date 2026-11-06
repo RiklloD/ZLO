@@ -68,15 +68,13 @@ pub use external_transcript::{
     MessageSearchIndexProgress, UpsertExternalTranscriptRequest,
 };
 pub use history_search::{
-    HISTORY_SEARCH_MAX_HITS_PER_THREAD, HISTORY_SEARCH_MAX_THREADS, HISTORY_SEARCH_QUERY_MAX_CHARS,
-    HISTORY_SNIPPET_CHARS, MESSAGE_SEARCH_TEXT_MAX_CHARS, MessageSearchHit, SearchHitRole,
-    SearchThreadMessagesRequest, SearchThreadMessagesResponse, ThreadSearchResult,
-    ThreadSearchTiering, history_query_terms, searchable_message_text, snippet_with_highlights,
-    term_coverage,
+    ExcludedRuns, HISTORY_SEARCH_MAX_HITS_PER_THREAD, HISTORY_SEARCH_MAX_THREADS,
+    HISTORY_SEARCH_QUERY_MAX_CHARS, HISTORY_SNIPPET_CHARS, MESSAGE_SEARCH_TEXT_MAX_CHARS,
+    MessageSearchHit, SearchHitRole, SearchThreadMessagesRequest, SearchThreadMessagesResponse,
+    ThreadSearchResult, ThreadSearchTiering, history_query_terms, searchable_message_text,
+    snippet_with_highlights, term_coverage,
 };
-pub use history_visibility::{
-    CARRIED_CONTEXT_ENDS, CARRIED_CONTEXT_PREFIXES, ENGINE_SCAFFOLDING_PREFIXES, visible_user_text,
-};
+pub use history_visibility::{CARRIED_CONTEXT_ENDS, CARRIED_CONTEXT_PREFIXES, visible_user_text};
 pub use identifiers::{SummaryArtifactId, ThreadMessageId};
 pub use in_memory::InMemorySessionThreadService;
 pub use prepared_context::{

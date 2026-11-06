@@ -1558,3 +1558,45 @@ async fn history_sources_read_external_transcripts_whole_and_listeners_fan_out()
     finish(&h.engine, &loop_thread, TurnOutcome::completed(None)).await;
     assert_eq!(*count.0.lock().unwrap(), vec![loop_thread]);
 }
+
+#[tokio::test]
+async fn scaffolding_runs_are_recorded_by_provenance_not_text() {
+    use crate::profiles::ProfileOwner;
+    let h = harness().await;
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    // The engine's own continue prompt: recorded as scaffolding.
+    assert!(
+        h.engine
+            .deliver(&a, CONTINUE_PROMPT.into(), TurnOrigin::AutoContinue, false)
+            .await
+            .unwrap()
+    );
+    let engine_run = h
+        .engine
+        .store()
+        .thread(&a)
+        .await
+        .unwrap()
+        .unwrap()
+        .active_run_id
+        .unwrap();
+    finish(&h.engine, &a, TurnOutcome::completed(None)).await;
+    // The person typing the very same words: not scaffolding.
+    let b = tid("b");
+    h.engine.ensure_thread(&b, &scope(), None).await.unwrap();
+    assert!(
+        h.engine
+            .deliver(&b, CONTINUE_PROMPT.into(), TurnOrigin::UserPrompt, false)
+            .await
+            .unwrap()
+    );
+    let runs = h
+        .engine
+        .store()
+        .scaffolding_runs(&ProfileOwner::from(&scope()))
+        .await
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+    assert!(runs.contains(&("a".to_string(), engine_run)));
+}

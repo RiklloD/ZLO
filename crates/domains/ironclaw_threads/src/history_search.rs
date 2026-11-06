@@ -69,6 +69,13 @@ pub trait ThreadSearchTiering: Send + Sync {
     fn tier(&self, thread: &SessionThreadRecord) -> u8;
 }
 
+/// User turns whose text the person never typed: runs the engine started
+/// with its own text, by provenance (the orchestrator records them). Their
+/// user rows are left out of results; assistant replies stay.
+pub trait ExcludedRuns: Send + Sync {
+    fn is_excluded(&self, thread: &ThreadId, run_id: &str) -> bool;
+}
+
 /// Search request: the caller's scope plus plain user text. The query is
 /// plain text, never backend query syntax.
 #[derive(Clone)]
@@ -83,6 +90,7 @@ pub struct SearchThreadMessagesRequest {
     /// Hits per thread group; clamped to `1..=HISTORY_SEARCH_MAX_HITS_PER_THREAD`.
     pub max_hits_per_thread: usize,
     pub tiering: Option<Arc<dyn ThreadSearchTiering>>,
+    pub excluded_runs: Option<Arc<dyn ExcludedRuns>>,
 }
 
 impl SearchThreadMessagesRequest {
@@ -95,6 +103,17 @@ impl SearchThreadMessagesRequest {
             max_threads: HISTORY_SEARCH_MAX_THREADS,
             max_hits_per_thread: HISTORY_SEARCH_MAX_HITS_PER_THREAD,
             tiering: None,
+            excluded_runs: None,
+        }
+    }
+
+    /// A user row of an excluded (engine-originated) run.
+    pub(crate) fn excludes(&self, candidate: &RankedCandidate) -> bool {
+        match (&self.excluded_runs, &candidate.run_id) {
+            (Some(excluded), Some(run)) if candidate.role == SearchHitRole::User => {
+                excluded.is_excluded(&candidate.thread_id, run)
+            }
+            _ => false,
         }
     }
 
@@ -371,6 +390,7 @@ pub(crate) struct RankedCandidate {
     pub(crate) created_at: Option<DateTime<Utc>>,
     /// Visible text, already filtered.
     pub(crate) text: String,
+    pub(crate) run_id: Option<String>,
     pub(crate) backend_rank: usize,
 }
 
@@ -386,6 +406,7 @@ impl RankedCandidate {
             role,
             created_at: record.created_at,
             text,
+            run_id: record.turn_run_id.clone(),
             backend_rank,
         })
     }
@@ -404,6 +425,7 @@ impl RankedCandidate {
             role: message.role,
             created_at: message.created_at,
             text,
+            run_id: message.run_id.clone(),
             backend_rank,
         })
     }
@@ -432,6 +454,9 @@ pub(crate) fn group_ranked_candidates(
             .as_ref()
             .is_some_and(|only| only != &candidate.thread_id)
         {
+            continue;
+        }
+        if request.excludes(&candidate) {
             continue;
         }
         let coverage = term_coverage(&candidate.text, terms);

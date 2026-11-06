@@ -122,6 +122,38 @@ async fn say(
         .unwrap();
 }
 
+/// A user message submitted in `run`.
+async fn say_in_run(
+    service: &dyn SessionThreadService,
+    scope: &ThreadScope,
+    thread: &ThreadId,
+    text: &str,
+    run: &str,
+) {
+    let accepted = service
+        .accept_inbound_message(AcceptInboundMessageRequest {
+            scope: scope.clone(),
+            thread_id: thread.clone(),
+            actor_id: "person".into(),
+            source_binding_id: None,
+            reply_target_binding_id: None,
+            external_event_id: None,
+            content: MessageContent::text(text),
+        })
+        .await
+        .unwrap();
+    service
+        .mark_message_submitted(
+            scope,
+            thread,
+            accepted.message_id,
+            format!("turn-{run}"),
+            run.to_string(),
+        )
+        .await
+        .unwrap();
+}
+
 async fn reply(
     service: &dyn SessionThreadService,
     scope: &ThreadScope,
@@ -155,9 +187,21 @@ async fn index_all(service: &dyn SessionThreadService, scope: &ThreadScope) {
     panic!("indexing did not complete");
 }
 
+/// The run the "engine" started with its own text in these scenarios.
+const ENGINE_RUN: &str = "engine-run";
+
+struct EngineRuns;
+
+impl ironclaw_threads::ExcludedRuns for EngineRuns {
+    fn is_excluded(&self, _thread: &ThreadId, run_id: &str) -> bool {
+        run_id == ENGINE_RUN
+    }
+}
+
 fn request(scope: &ThreadScope, query: &str) -> SearchThreadMessagesRequest {
     SearchThreadMessagesRequest {
         max_threads: 20,
+        excluded_runs: Some(Arc::new(EngineRuns)),
         ..SearchThreadMessagesRequest::new(scope.clone(), query)
     }
 }
@@ -319,9 +363,10 @@ async fn search_contract(service: &dyn SessionThreadService, other: &dyn Session
         })
         .await
         .unwrap();
-    // Engine scaffolding the person never typed (finding: handoffs, merged
-    // forks, delegation completions, restart prompts) is never searchable;
-    // text typed after carried context is.
+    // Engine scaffolding is left out by provenance (its run is one the
+    // orchestrator started with its own text), never by how text begins:
+    // the person typing the same words is searchable. Closed carried
+    // context is stripped to the typed tail.
     let scaffold = new_thread(service, &mine, "thread-scaffold").await;
     say(
         service,
@@ -338,14 +383,29 @@ async fn search_contract(service: &dyn SessionThreadService, other: &dyn Session
         "Merged context from fork \"f\" (id). okapi findings\n\n[End of merged fork context]",
     )
     .await;
-    say(
+    say_in_run(
         service,
         &mine,
         &scaffold,
         "Delegated work finished. Use these results to continue.\n\nwombat result",
+        ENGINE_RUN,
     )
     .await;
-    say(service, &mine, &scaffold, "Continue where you left off.").await;
+    say_in_run(
+        service,
+        &mine,
+        &scaffold,
+        "Continue where you left off. Then explain the failure.",
+        "person-run",
+    )
+    .await;
+    say(
+        service,
+        &mine,
+        &scaffold,
+        "Context handoff (my notes) about the kiwi",
+    )
+    .await;
 
     // Another user's transcript is invisible.
     let theirs = scope("bob");
@@ -390,18 +450,19 @@ async fn search_contract(service: &dyn SessionThreadService, other: &dyn Session
     assert!(search(service, &mine, "quokka").await.threads.is_empty());
     assert!(search(service, &mine, "bob").await.threads.is_empty());
 
-    // Scaffolding is not indexed; the typed tail of a handoff is.
-    for hidden in [
-        "narwhal",
-        "okapi",
-        "wombat",
-        "handoff",
-        "delegated",
-        "continue",
-    ] {
+    // Engine-run text and closed carried context are not results; what the
+    // person typed is, however it begins.
+    for hidden in ["narwhal", "okapi", "wombat"] {
         assert!(
             search(service, &mine, hidden).await.threads.is_empty(),
             "engine scaffolding matched {hidden}"
+        );
+    }
+    for typed in ["failure", "kiwi"] {
+        assert_eq!(
+            thread_ids(&search(service, &mine, typed).await),
+            ["thread-scaffold"],
+            "the person's text {typed} was hidden"
         );
     }
     let typed = search(service, &mine, "axolotl").await;
@@ -470,11 +531,14 @@ async fn external_contract(service: &dyn SessionThreadService) {
                 SearchHitRole::Assistant,
                 "the flamingo parser now streams",
             ),
-            cli_row(
-                2,
-                SearchHitRole::User,
-                "Delegated work finished. Use these results to continue.\n\nmarmoset",
-            ),
+            ExternalTranscriptMessage {
+                run_id: Some(ENGINE_RUN.into()),
+                ..cli_row(
+                    2,
+                    SearchHitRole::User,
+                    "Delegated work finished. Use these results to continue.\n\nmarmoset",
+                )
+            },
         ],
     )
     .await;

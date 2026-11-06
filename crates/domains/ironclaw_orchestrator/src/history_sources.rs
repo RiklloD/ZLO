@@ -3,11 +3,94 @@
 //! (not capped at the timeline's `HISTORY_LIMIT`), carried context stripped.
 //! Read-only: the runtimes' own transcripts are never touched.
 
+use std::collections::HashSet;
+
 use crate::engine::{Engine, Result};
 use crate::handoff;
+use ironclaw_host_api::ids::ThreadId;
+
 use crate::model::{RuntimeId, ThreadRecord};
 use crate::profiles::ProfileOwner;
-use crate::runtime::HistoryMessage;
+use crate::runtime::{HistoryMessage, TurnOrigin};
+use crate::store::{Cols, Store, s};
+
+/// Runs the engine started with its own text (not the person's): the
+/// provenance history search uses to leave that text out.
+pub(crate) const RUN_ORIGINS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS orch_run_origins (
+  thread_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (thread_id, run_id)
+);
+"#;
+
+impl TurnOrigin {
+    /// Text the engine writes on its own as a user turn: a delegation
+    /// result, a context handoff, the restart continue prompt.
+    pub fn is_engine_scaffolding(self) -> bool {
+        matches!(
+            self,
+            TurnOrigin::ResultDelivery | TurnOrigin::ContextHandoff | TurnOrigin::AutoContinue
+        )
+    }
+
+    fn tag(self) -> &'static str {
+        match self {
+            TurnOrigin::DelegatedBrief => "delegated_brief",
+            TurnOrigin::QueueDrain => "queue_drain",
+            TurnOrigin::ResultDelivery => "result_delivery",
+            TurnOrigin::ContextHandoff => "context_handoff",
+            TurnOrigin::AutoContinue => "auto_continue",
+            TurnOrigin::AgentSend => "agent_send",
+            TurnOrigin::UserPrompt => "user_prompt",
+        }
+    }
+}
+
+impl Store {
+    /// Remember that `run` in `thread` was started with engine scaffolding.
+    pub async fn record_scaffolding_run(
+        &self,
+        thread: &ThreadId,
+        run: &str,
+        origin: TurnOrigin,
+    ) -> Result<()> {
+        self.exec(
+            "INSERT OR IGNORE INTO orch_run_origins (thread_id, run_id, origin, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            vec![
+                s(thread.as_str()),
+                s(run),
+                s(origin.tag()),
+                crate::model::now_ms().into(),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// `(thread_id, run_id)` of every scaffolding run in the owner's threads.
+    pub async fn scaffolding_runs(
+        &self,
+        owner: &ProfileOwner,
+    ) -> Result<HashSet<(String, String)>> {
+        let rows = self
+            .rows(
+                "SELECT o.thread_id, o.run_id FROM orch_run_origins o \
+                 JOIN orch_threads t ON t.thread_id = o.thread_id \
+                 WHERE t.tenant_id = ?1 AND t.user_id = ?2",
+                vec![s(owner.tenant_id.as_str()), s(owner.user_id.as_str())],
+                |row| {
+                    let mut c = Cols::new(row);
+                    Ok((c.text()?, c.text()?))
+                },
+            )
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+}
 
 /// One runtime transcript feeding a thread.
 #[derive(Debug, Clone)]

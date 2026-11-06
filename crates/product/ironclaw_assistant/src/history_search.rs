@@ -20,10 +20,11 @@ use ironclaw_product_contracts::history::{
     HistorySearchResponse, HistorySearchRole, HistoryThreadOrigin, HistoryThreadResult,
 };
 use ironclaw_threads::{
-    HISTORY_SEARCH_MAX_HITS_PER_THREAD, ListThreadsForScopeRequest, MessageKind, SearchHitRole,
-    SearchThreadMessagesRequest, SessionThreadError, SessionThreadRecord, SessionThreadService,
-    ThreadHistoryRequest, ThreadMessageId, ThreadMessageRangeRequest, ThreadMessageRecord,
-    ThreadScope, ThreadSearchTiering, record_is_prepared_context_hidden, searchable_message_text,
+    ExcludedRuns, HISTORY_SEARCH_MAX_HITS_PER_THREAD, ListThreadsForScopeRequest, MessageKind,
+    SearchHitRole, SearchThreadMessagesRequest, SessionThreadError, SessionThreadRecord,
+    SessionThreadService, ThreadHistoryRequest, ThreadMessageId, ThreadMessageRangeRequest,
+    ThreadMessageRecord, ThreadScope, ThreadSearchTiering, record_is_prepared_context_hidden,
+    searchable_message_text,
 };
 use thiserror::Error;
 
@@ -94,18 +95,47 @@ pub fn caller_thread_scope(
 /// an orchestrator.
 pub type DelegatedThreads = Arc<HashSet<String>>;
 
+/// What the orchestrator knows about the caller's threads, by provenance:
+/// its delegated children, and the `(thread, run)` pairs whose user turn it
+/// started with its own text (left out of every answer). Empty without an
+/// orchestrator.
+#[derive(Clone, Default)]
+pub struct EngineKnowledge {
+    pub delegated: DelegatedThreads,
+    pub scaffolding: Arc<HashSet<(String, String)>>,
+}
+
+impl EngineKnowledge {
+    /// A user row of a run the engine started with its own text.
+    pub fn is_scaffolding(&self, thread: &str, run_id: Option<&str>) -> bool {
+        run_id.is_some_and(|run| {
+            self.scaffolding
+                .contains(&(thread.to_string(), run.to_string()))
+        })
+    }
+}
+
+struct ScaffoldingRuns(Arc<HashSet<(String, String)>>);
+
+impl ExcludedRuns for ScaffoldingRuns {
+    fn is_excluded(&self, thread: &ThreadId, run_id: &str) -> bool {
+        self.0
+            .contains(&(thread.as_str().to_string(), run_id.to_string()))
+    }
+}
+
 /// Answer one history request for `scope` (the caller's own thread cell).
 /// A pure read: it never writes, and starts no indexing.
 pub async fn run_history_search(
     threads: &dyn SessionThreadService,
     scope: &ThreadScope,
     request: &HistorySearchRequest,
-    delegated: &DelegatedThreads,
+    knowledge: &EngineKnowledge,
 ) -> Result<HistorySearchResponse, HistorySearchError> {
     match request.mode() {
-        HistorySearchMode::Discover => discover(threads, scope, request, delegated).await,
-        HistorySearchMode::Scroll => scroll(threads, scope, request).await,
-        HistorySearchMode::Read => read(threads, scope, request).await,
+        HistorySearchMode::Discover => discover(threads, scope, request, knowledge).await,
+        HistorySearchMode::Scroll => scroll(threads, scope, request, knowledge).await,
+        HistorySearchMode::Read => read(threads, scope, request, knowledge).await,
         HistorySearchMode::Browse => browse(threads, scope, request).await,
     }
 }
@@ -205,8 +235,9 @@ async fn discover(
     threads: &dyn SessionThreadService,
     scope: &ThreadScope,
     request: &HistorySearchRequest,
-    delegated: &DelegatedThreads,
+    knowledge: &EngineKnowledge,
 ) -> Result<HistorySearchResponse, HistorySearchError> {
+    let delegated = &knowledge.delegated;
     let query = request.query.clone().unwrap_or_default();
     let only = request
         .thread_id
@@ -221,6 +252,9 @@ async fn discover(
             max_threads: thread_limit(request),
             max_hits_per_thread: HISTORY_SEARCH_MAX_HITS_PER_THREAD,
             tiering: Some(Arc::new(OriginTiers(Arc::clone(delegated)))),
+            excluded_runs: Some(Arc::new(ScaffoldingRuns(Arc::clone(
+                &knowledge.scaffolding,
+            )))),
             ..SearchThreadMessagesRequest::new(scope.clone(), query.clone())
         })
         .await
@@ -290,7 +324,15 @@ async fn browse(
     })
 }
 
-fn history_message(record: &ThreadMessageRecord) -> Option<HistorySearchMessage> {
+fn history_message(
+    record: &ThreadMessageRecord,
+    knowledge: &EngineKnowledge,
+) -> Option<HistorySearchMessage> {
+    if record.kind == MessageKind::User
+        && knowledge.is_scaffolding(record.thread_id.as_str(), record.turn_run_id.as_deref())
+    {
+        return None;
+    }
     let text = searchable_message_text(record)?;
     let role = match record.kind {
         MessageKind::User => HistorySearchRole::User,
@@ -319,6 +361,7 @@ async fn scroll(
     threads: &dyn SessionThreadService,
     scope: &ThreadScope,
     request: &HistorySearchRequest,
+    knowledge: &EngineKnowledge,
 ) -> Result<HistorySearchResponse, HistorySearchError> {
     let thread_id = parse_thread_id(request.thread_id.as_deref().unwrap_or_default())?;
     let anchor = match (&request.around_message_id, request.around_sequence) {
@@ -363,8 +406,11 @@ async fn scroll(
         })
         .await
         .map_err(HistorySearchError::from_thread)?;
-    let visible: Vec<HistorySearchMessage> =
-        range.messages.iter().filter_map(history_message).collect();
+    let visible: Vec<HistorySearchMessage> = range
+        .messages
+        .iter()
+        .filter_map(|m| history_message(m, knowledge))
+        .collect();
     let center = visible
         .iter()
         .position(|m| m.sequence >= anchor)
@@ -386,6 +432,7 @@ async fn read(
     threads: &dyn SessionThreadService,
     scope: &ThreadScope,
     request: &HistorySearchRequest,
+    knowledge: &EngineKnowledge,
 ) -> Result<HistorySearchResponse, HistorySearchError> {
     let thread_id = parse_thread_id(request.thread_id.as_deref().unwrap_or_default())?;
     let limit = request
@@ -404,7 +451,7 @@ async fn read(
         .messages
         .iter()
         .filter(|m| m.sequence >= from)
-        .filter_map(history_message);
+        .filter_map(|m| history_message(m, knowledge));
     let messages: Vec<HistorySearchMessage> = visible.by_ref().take(limit).collect();
     let next_from_sequence = visible.next().map(|m| m.sequence);
     Ok(HistorySearchResponse {
@@ -440,7 +487,7 @@ pub async fn run_ready_history_search(
             index_complete: false,
         });
     }
-    run_history_search(threads, scope, request, &DelegatedThreads::default()).await
+    run_history_search(threads, scope, request, &EngineKnowledge::default()).await
 }
 
 /// Messages re-projected per indexing step.
@@ -553,7 +600,7 @@ mod tests {
         service: &InMemorySessionThreadService,
         request: HistorySearchRequest,
     ) -> Result<HistorySearchResponse, HistorySearchError> {
-        run_history_search(service, &scope(), &request, &DelegatedThreads::default()).await
+        run_history_search(service, &scope(), &request, &EngineKnowledge::default()).await
     }
 
     #[tokio::test]

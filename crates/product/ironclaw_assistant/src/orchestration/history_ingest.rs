@@ -120,6 +120,13 @@ pub(crate) async fn ingest_thread(
         updated_at: at(Some(thread.updated_at)),
         source_version: Some(Engine::thread_activity_version(thread)),
     };
+    // Runs the engine started with its own text: their user rows are not
+    // the person's and are not indexed (provenance, not text).
+    let scaffolding = engine
+        .store()
+        .scaffolding_runs(&ProfileOwner::from(&thread.scope))
+        .await
+        .map_err(|e| e.to_string())?;
     let mut written = 0;
     for plan in plans {
         let key = ExternalTranscriptSource {
@@ -163,6 +170,12 @@ pub(crate) async fn ingest_thread(
             .iter()
             .enumerate()
             .filter(|(ordinal, _)| *ordinal as u64 >= from)
+            .filter(|(_, row)| {
+                !(row.kind == "user"
+                    && row.run_id.as_ref().is_some_and(|run| {
+                        scaffolding.contains(&(thread.thread_id.as_str().to_string(), run.clone()))
+                    }))
+            })
             .filter_map(|(ordinal, row)| {
                 let id = if segmented {
                     segment_message_id(&thread.thread_id, plan.segment as usize, row.message_id)

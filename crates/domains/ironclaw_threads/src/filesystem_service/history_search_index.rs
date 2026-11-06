@@ -38,7 +38,7 @@ use super::{
 };
 
 /// Bump to re-project every message when the visibility rule changes.
-const SEARCH_INDEX_GENERATION: &str = "history-search-v2";
+const SEARCH_INDEX_GENERATION: &str = "history-search-v3";
 /// Compare-and-swap retries for one projection or cursor write.
 const CAS_RETRIES: usize = 4;
 

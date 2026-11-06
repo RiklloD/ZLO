@@ -427,6 +427,17 @@ impl Engine {
             TurnAdmission::Started { run_id } => {
                 self.mark_running(&thread, run_id.as_deref(), now_ms())
                     .await?;
+                // Provenance for history search: this run's prompt is the
+                // engine's text, not the person's.
+                if origin.is_engine_scaffolding()
+                    && let Some(run) = run_id.as_deref()
+                    && let Err(error) = self
+                        .store
+                        .record_scaffolding_run(thread_id, run, origin)
+                        .await
+                {
+                    tracing::debug!(%error, "scaffolding run origin not recorded");
+                }
                 Ok(true)
             }
             TurnAdmission::Steered { .. } => Ok(true),

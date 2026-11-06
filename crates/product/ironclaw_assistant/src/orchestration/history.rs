@@ -53,8 +53,8 @@ use ironclaw_threads::{
 use super::external::{segment_message_id, timeline_rows};
 use super::history_ingest::{IngestOnCompletion, owner_swept, spawn_owner_sweep};
 use crate::history_search::{
-    DelegatedThreads, HistorySearchError, caller_thread_scope, demote_non_own, run_history_search,
-    spawn_index_catch_up,
+    DelegatedThreads, EngineKnowledge, HistorySearchError, caller_thread_scope, demote_non_own,
+    run_history_search, spawn_index_catch_up,
 };
 
 /// Capability id and provider tool name of the history tool.
@@ -174,6 +174,23 @@ async fn delegated_threads(engine: &Engine, owner: &ProfileOwner) -> DelegatedTh
     }
 }
 
+/// The engine's provenance for the owner: delegated children and the runs
+/// it started with its own text. A read failure leaves it empty (search
+/// still answers; ranking and exclusion are refinements).
+pub(crate) async fn engine_knowledge(engine: &Engine, owner: &ProfileOwner) -> EngineKnowledge {
+    let scaffolding = match engine.store().scaffolding_runs(owner).await {
+        Ok(runs) => Arc::new(runs),
+        Err(error) => {
+            tracing::debug!(%error, "history search skips scaffolding provenance");
+            Arc::default()
+        }
+    };
+    EngineKnowledge {
+        delegated: delegated_threads(engine, owner).await,
+        scaffolding,
+    }
+}
+
 /// Answer one history request. A pure read, shared by the view and the
 /// model tool. `orch_scope` is the caller as the engine sees it (thread
 /// ownership); `scope` is the caller's own transcript cell.
@@ -195,10 +212,10 @@ pub(crate) async fn answer_history(
         return Err(HistorySearchError::NotReady);
     }
     let Some(engine) = engine else {
-        return run_history_search(threads, scope, request, &DelegatedThreads::default()).await;
+        return run_history_search(threads, scope, request, &EngineKnowledge::default()).await;
     };
     let owner = ProfileOwner::from(orch_scope);
-    let delegated = delegated_threads(engine, &owner).await;
+    let knowledge = engine_knowledge(engine, &owner).await;
     if matches!(
         request.mode(),
         HistorySearchMode::Scroll | HistorySearchMode::Read
@@ -207,11 +224,11 @@ pub(crate) async fn answer_history(
         && let Ok(Some(thread)) = engine.external_thread(&id).await
         && engine.owned_thread(&id, orch_scope).await.is_ok()
     {
-        let mut response = external_window(engine, &thread, request, &delegated).await?;
+        let mut response = external_window(engine, &thread, request, &knowledge).await?;
         apply_lineage(engine, &owner, &mut response).await;
         return Ok(response);
     }
-    let mut response = run_history_search(threads, scope, request, &delegated).await?;
+    let mut response = run_history_search(threads, scope, request, &knowledge).await?;
     apply_lineage(engine, &owner, &mut response).await;
     Ok(response)
 }
@@ -222,8 +239,9 @@ async fn external_window(
     engine: &Engine,
     thread: &ThreadRecord,
     request: &HistorySearchRequest,
-    delegated: &HashSet<String>,
+    knowledge: &EngineKnowledge,
 ) -> Result<HistorySearchResponse, HistorySearchError> {
+    let delegated = &knowledge.delegated;
     let unavailable = |error: ironclaw_orchestrator::error::OrchestratorError| {
         tracing::debug!(%error, "history search could not read a CLI transcript");
         HistorySearchError::Unavailable(ironclaw_threads::SessionThreadError::Backend(
@@ -242,6 +260,11 @@ async fn external_window(
         .map_err(unavailable)?
     {
         for row in timeline_rows(&thread.thread_id, &source.messages) {
+            if row.kind == "user"
+                && knowledge.is_scaffolding(thread.thread_id.as_str(), row.run_id.as_deref())
+            {
+                continue;
+            }
             let role = match row.kind {
                 "user" if visible_user_text(&row.text).is_some() => HistorySearchRole::User,
                 "assistant" => HistorySearchRole::Assistant,

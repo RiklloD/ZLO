@@ -229,12 +229,25 @@ async fn cli_threads_become_searchable_and_navigable() {
         vec![
             msg(HistoryRole::User, "rename the heron module"),
             msg(HistoryRole::Assistant, "renamed heron to egret"),
-            msg(
-                HistoryRole::User,
-                "Delegated work finished. Use these results to continue.\n\nkestrel",
-            ),
+            HistoryMessage {
+                run_id: Some("r-result".into()),
+                ..msg(
+                    HistoryRole::User,
+                    "Delegated work finished. Use these results to continue.\n\nkestrel",
+                )
+            },
         ],
     );
+    // The engine delivered that result itself: provenance, not text.
+    engine
+        .store()
+        .record_scaffolding_run(
+            &short,
+            "r-result",
+            ironclaw_orchestrator::runtime::TurnOrigin::ResultDelivery,
+        )
+        .await
+        .unwrap();
 
     let orchestrated: Arc<dyn ProductSurface> = Arc::new(OrchestratedProductSurface::new(
         Arc::new(Inner),
@@ -286,7 +299,7 @@ async fn cli_threads_become_searchable_and_navigable() {
         "hit opens a rendered row"
     );
 
-    // Scaffolding never matches.
+    // Engine scaffolding (by provenance) never matches.
     assert!(
         history(surface.as_ref(), json!({"query": "kestrel"}))
             .await
@@ -425,10 +438,12 @@ async fn forks_collapse_into_their_lineage_root() {
     assert_eq!(forked.related_thread_ids.len(), 1);
 }
 
-/// The scaffolding rule in `ironclaw_threads` must recognize exactly what the
-/// orchestrator generates (it cannot name that crate, so this pins it).
+/// The carried-context rule in `ironclaw_threads` strips exactly the
+/// context the orchestrator prepends (it cannot name that crate, so this
+/// pins it). Whole engine turns are not text-matched at all: they are left
+/// out by provenance (`scaffolding_runs`), so these read as typed text.
 #[test]
-fn visibility_rule_recognizes_every_orchestrator_scaffolding_form() {
+fn carried_context_rule_matches_the_orchestrator_format() {
     use ironclaw_orchestrator::handoff::{delta_context, portable_context};
     use ironclaw_threads::visible_user_text;
 
@@ -441,13 +456,85 @@ fn visibility_rule_recognizes_every_orchestrator_scaffolding_form() {
     );
     let delta = delta_context(&messages, "Fork", "f", 0, 10_000);
     assert_eq!(visible_user_text(&delta), None);
-    assert_eq!(
-        visible_user_text(ironclaw_orchestrator::restart::CONTINUE_PROMPT),
-        None
+    let continue_prompt = ironclaw_orchestrator::restart::CONTINUE_PROMPT;
+    assert_eq!(visible_user_text(continue_prompt), Some(continue_prompt));
+}
+
+/// Engine turns are left out by provenance: the engine's continue prompt
+/// (a recorded scaffolding run) is not a result nor a read row, while the
+/// person typing the same opening words is both.
+#[tokio::test]
+async fn engine_turns_are_excluded_by_provenance_not_text() {
+    let (_dir, engine) = engine().await;
+    let cli = Arc::new(ScriptedCli::default());
+    engine.register_runtime(cli.clone());
+    let threads: Arc<dyn SessionThreadService> = Arc::new(InMemorySessionThreadService::default());
+    let thread = cli_thread(&engine, "cli-prov", "Provenance").await;
+    let in_run = |role, text: &str, run: &str| HistoryMessage {
+        run_id: Some(run.into()),
+        ..msg(role, text)
+    };
+    cli.set(
+        &thread,
+        vec![
+            in_run(
+                HistoryRole::User,
+                "Continue where you left off.",
+                "r-engine",
+            ),
+            in_run(
+                HistoryRole::Assistant,
+                "resuming the quokka count",
+                "r-engine",
+            ),
+            in_run(
+                HistoryRole::User,
+                "Continue where you left off. Then explain the failure.",
+                "r-person",
+            ),
+            in_run(
+                HistoryRole::Assistant,
+                "the failure was a timeout",
+                "r-person",
+            ),
+        ],
     );
+    engine
+        .store()
+        .record_scaffolding_run(
+            &thread,
+            "r-engine",
+            ironclaw_orchestrator::runtime::TurnOrigin::AutoContinue,
+        )
+        .await
+        .unwrap();
+    let surface = wrap_surface(
+        Arc::new(Inner),
+        Some(Arc::clone(&engine)),
+        Arc::clone(&threads),
+    );
+    let found = search_until(surface.as_ref(), "continue", "cli-prov").await;
+    let snippets: Vec<&str> = found.threads[0]
+        .hits
+        .iter()
+        .map(|h| h.snippet.as_str())
+        .collect();
     assert_eq!(
-        visible_user_text("Delegated work finished. Use these results to continue.\n\nresults"),
-        None
+        snippets,
+        ["Continue where you left off. Then explain the failure."],
+        "only the person's turn matches"
+    );
+    // The engine run's reply is still the assistant's text, and searchable.
+    search_until(surface.as_ref(), "quokka", "cli-prov").await;
+    let read = history(surface.as_ref(), json!({"thread_id": "cli-prov"})).await;
+    let texts: Vec<&str> = read.messages.iter().map(|m| m.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "resuming the quokka count",
+            "Continue where you left off. Then explain the failure.",
+            "the failure was a timeout"
+        ]
     );
 }
 
