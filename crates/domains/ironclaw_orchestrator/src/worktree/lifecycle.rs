@@ -32,6 +32,28 @@ impl Drop for WorktreeOp<'_> {
     }
 }
 
+/// Holds a checkout against turn admission during a merge into it.
+pub(crate) struct CheckoutOp<'a> {
+    reserved: &'a StdMutex<HashSet<PathBuf>>,
+    dir: PathBuf,
+}
+
+impl Drop for CheckoutOp<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.reserved.lock() {
+            set.remove(&self.dir);
+        }
+    }
+}
+
+/// `path` with symlinks resolved (`/var` vs `/private/var` on macOS), or
+/// as given when it cannot be resolved.
+async fn canonical(path: &Path) -> PathBuf {
+    tokio::fs::canonicalize(path)
+        .await
+        .unwrap_or_else(|_| path.to_path_buf()) // silent-ok: a missing folder compares as written
+}
+
 fn busy(message: &str) -> OrchestratorError {
     OrchestratorError::request("thread_busy", message.to_string())
 }
@@ -62,19 +84,39 @@ impl Engine {
         {
             return Ok(Some(own.path));
         }
-        let Some(owner) = self.store.worktree_share(thread).await? else {
+        let Some(binding) = self.store.worktree_share(thread).await? else {
             return Ok(None);
         };
-        match self.store.worktree(&owner).await? {
+        // The exact worktree it was given, never the owner's later one.
+        match self.store.worktree_by_id(binding).await? {
             Some(b) if b.state.has_folder() => Ok(Some(b.path)),
             _ => Err(OrchestratorError::request(
                 "worktree_removed",
-                format!(
-                    "This thread worked in the worktree of thread {owner}, which was removed. \
-                     Start a new delegation for further work."
-                ),
+                "The worktree this thread shared with its parent was removed. Start a new \
+                 delegation for further work.",
             )),
         }
+    }
+
+    /// The worktree instance `thread` works in (its own or the one it
+    /// shares), while its folder exists.
+    pub(crate) async fn worktree_of(
+        &self,
+        thread: &ThreadId,
+    ) -> Result<Option<super::WorktreeBinding>> {
+        if let Some(own) = self.store.worktree(thread).await?
+            && own.state.has_folder()
+        {
+            return Ok(Some(own));
+        }
+        let Some(binding) = self.store.worktree_share(thread).await? else {
+            return Ok(None);
+        };
+        Ok(self
+            .store
+            .worktree_by_id(binding)
+            .await?
+            .filter(|b| b.state.has_folder()))
     }
 
     /// The thread whose worktree `thread` works in (itself or the one it
@@ -85,7 +127,15 @@ impl Engine {
         {
             return Ok(Some(thread.clone()));
         }
-        self.store.worktree_share(thread).await
+        let Some(binding) = self.store.worktree_share(thread).await? else {
+            return Ok(None);
+        };
+        Ok(self
+            .store
+            .worktree_by_id(binding)
+            .await?
+            .filter(|b| b.state.has_folder())
+            .map(|b| b.thread_id))
     }
 
     /// A lifecycle step holds `thread`'s worktree (turn admission refuses).
@@ -104,7 +154,9 @@ impl Engine {
     pub(crate) async fn reserve_worktree(&self, owner: &ThreadId) -> Result<WorktreeOp<'_>> {
         let _admission = self.dispatch.lock().await;
         let mut threads = vec![owner.clone()];
-        threads.extend(self.store.worktree_sharers(owner).await?);
+        if let Some(binding) = self.store.worktree(owner).await? {
+            threads.extend(self.store.worktree_sharers(binding.id).await?);
+        }
         for id in &threads {
             if self.store.thread(id).await?.is_some_and(|t| t.is_running()) {
                 return Err(busy(&format!(
@@ -125,6 +177,64 @@ impl Engine {
             reserved: &self.worktree_ops,
             owner: owner.clone(),
         })
+    }
+
+    /// Hold the checkout at `target` (a merge into it): no turn starts in a
+    /// folder inside it until the guard drops, and the threads known to
+    /// work there — the worktree's owner and its sharers when `target` is a
+    /// worktree — must not be running, `caller` (the thread asking for the
+    /// merge, already mid-turn) excepted.
+    pub(crate) async fn reserve_checkout(
+        &self,
+        target: &Path,
+        caller: Option<&ThreadId>,
+    ) -> Result<CheckoutOp<'_>> {
+        let target = canonical(target).await;
+        let _admission = self.dispatch.lock().await;
+        for binding in self.store.live_worktrees().await? {
+            if canonical(&binding.path).await != target {
+                continue;
+            }
+            let mut threads = vec![binding.thread_id.clone()];
+            threads.extend(self.store.worktree_sharers(binding.id).await?);
+            for id in threads.iter().filter(|id| Some(*id) != caller) {
+                if self.store.thread(id).await?.is_some_and(|t| t.is_running()) {
+                    return Err(busy(&format!(
+                        "Thread {id} is running in {}; wait for it to finish before merging into it.",
+                        target.display()
+                    )));
+                }
+            }
+        }
+        let mut dirs = self
+            .reserved_dirs
+            .lock()
+            .map_err(|e| OrchestratorError::Store(format!("checkout reservations: {e}")))?;
+        if !dirs.insert(target.clone()) {
+            return Err(busy(
+                "Another merge into this checkout is running; try again when it ends.",
+            ));
+        }
+        Ok(CheckoutOp {
+            reserved: &self.reserved_dirs,
+            dir: target,
+        })
+    }
+
+    /// A merge holds the checkout `cwd` is in (turn admission waits).
+    pub(crate) async fn checkout_reserved(&self, cwd: &Path) -> Result<bool> {
+        let dirs: Vec<PathBuf> = {
+            let set = self
+                .reserved_dirs
+                .lock()
+                .map_err(|e| OrchestratorError::Store(format!("checkout reservations: {e}")))?;
+            if set.is_empty() {
+                return Ok(false);
+            }
+            set.iter().cloned().collect()
+        };
+        let cwd = canonical(cwd).await;
+        Ok(dirs.iter().any(|d| cwd.starts_with(d)))
     }
 
     /// One merge at a time into the checkout at `target`.

@@ -1,9 +1,18 @@
 //! The git commands worktree isolation needs, run through the host's
 //! [`HostCommandRunner`]. No command here forces anything: no `--force`,
-//! no `reset --hard`, no checkout over local changes. Every invocation runs
-//! with the repository's hooks and fsmonitor switched off: a cloned repo's
-//! `.git/hooks` (or a `core.hooksPath` it names) never runs as a side effect
-//! of orchestration.
+//! no `reset --hard`, no checkout over local changes.
+//!
+//! Every invocation runs with the repository's hooks and fsmonitor off and
+//! with every network path closed: no lazy fetch of missing objects from a
+//! promisor remote, no transport of any protocol, no ssh, askpass or
+//! credential helper. None of these commands needs the network, so a
+//! missing object fails the command instead of reaching out.
+//!
+//! Trusted: the repository's own local config (`.git/config`). Filters
+//! (smudge/clean, e.g. git-lfs) and merge drivers named by
+//! `.gitattributes` run as configured, because they can only be defined in
+//! that local config, which a clone never brings — the same trust the
+//! person already gives their own git.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,10 +38,14 @@ pub(crate) fn sh_quote(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', r"'\''"))
 }
 
-/// Config every orchestration git command runs with: no hooks of any kind
-/// (`post-checkout` on `worktree add`, `post-commit`, `post-merge`,
-/// `reference-transaction`, …) and no fsmonitor program.
-const SAFE_CONFIG: &str = "git -c core.hooksPath=/dev/null -c core.fsmonitor=false";
+/// Environment and config every orchestration git command runs with: no
+/// hooks of any kind (`post-checkout` on `worktree add`, `post-commit`,
+/// `post-merge`, `reference-transaction`, …), no fsmonitor program, and no
+/// network: lazy fetch off, every transport protocol refused, ssh, askpass
+/// and credential helpers neutralized.
+const SAFE_CONFIG: &str = "GIT_NO_LAZY_FETCH=1 GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=false \
+SSH_ASKPASS=false GIT_SSH_COMMAND=false git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+-c protocol.allow=never -c core.sshCommand=false -c credential.helper=";
 
 fn line(args: &[&str]) -> String {
     let mut out = String::from(SAFE_CONFIG);
@@ -119,6 +132,67 @@ impl<'a> Git<'a> {
             1 => Ok(None),
             _ => Err(failed(&["symbolic-ref"], &out)),
         }
+    }
+
+    /// Paths staged in the index of the checkout `dir`.
+    pub(crate) async fn staged(&self, dir: &Path) -> Result<Vec<String>> {
+        let out = self.run(dir, &["diff", "--cached", "--name-only"]).await?;
+        Ok(out.lines().map(str::to_string).collect())
+    }
+
+    /// Paths that differ between two commits.
+    pub(crate) async fn changed_between(
+        &self,
+        dir: &Path,
+        a: &str,
+        b: &str,
+    ) -> Result<Vec<String>> {
+        let out = self.run(dir, &["diff", "--name-only", a, b]).await?;
+        Ok(out.lines().map(str::to_string).collect())
+    }
+
+    /// The repository's identity, as opposed to its path: the device and
+    /// inode of its common git dir plus its root commits. Another repository
+    /// put at the same path has another identity.
+    pub(crate) async fn repo_identity(&self, dir: &Path) -> Result<String> {
+        let common = self.run(dir, &["rev-parse", "--git-common-dir"]).await?;
+        let common = PathBuf::from(last_line(&common));
+        let common = if common.is_absolute() {
+            common
+        } else {
+            dir.join(common)
+        };
+        let meta = tokio::fs::metadata(&common).await.map_err(|e| {
+            OrchestratorError::request("git_failed", format!("could not read the git dir: {e}"))
+        })?;
+        #[cfg(unix)]
+        let place = {
+            use std::os::unix::fs::MetadataExt;
+            format!("{}:{}", meta.dev(), meta.ino())
+        };
+        #[cfg(not(unix))]
+        let place = {
+            let _ = &meta;
+            tokio::fs::canonicalize(&common)
+                .await
+                .map(|p| p.to_string_lossy().into_owned())
+                .map_err(|e| {
+                    OrchestratorError::request(
+                        "git_failed",
+                        format!("could not read the git dir: {e}"),
+                    )
+                })?
+        };
+        let roots = self
+            .run(dir, &["rev-list", "--max-parents=0", "HEAD"])
+            .await?;
+        let mut roots: Vec<&str> = roots
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        roots.sort_unstable();
+        Ok(format!("{place}:{}", roots.join(",")))
     }
 
     /// Tracked files with staged or unstaged changes (untracked ignored).

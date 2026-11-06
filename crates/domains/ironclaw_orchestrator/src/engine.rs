@@ -68,6 +68,8 @@ pub struct Engine {
     pub(crate) worktree_host: OnceLock<crate::worktree::WorktreeHost>,
     /// Worktree owners a lifecycle step holds; turn admission skips them.
     pub(crate) worktree_ops: StdMutex<std::collections::HashSet<ThreadId>>,
+    /// Checkouts a merge is writing into; turn admission skips their folders.
+    pub(crate) reserved_dirs: StdMutex<std::collections::HashSet<std::path::PathBuf>>,
     /// One merge at a time per target checkout.
     pub(crate) checkout_locks: StdMutex<HashMap<std::path::PathBuf, Arc<Mutex<()>>>>,
 }
@@ -115,6 +117,7 @@ impl Engine {
             turn_listener: OnceLock::new(),
             worktree_host: OnceLock::new(),
             worktree_ops: StdMutex::new(std::collections::HashSet::new()),
+            reserved_dirs: StdMutex::new(std::collections::HashSet::new()),
             checkout_locks: StdMutex::new(HashMap::new()),
         }))
     }
@@ -411,6 +414,17 @@ impl Engine {
         if work_dir.is_some() && !runtime.supports_work_dir() {
             return Err(crate::worktree::runtime_refused(runtime.as_ref()));
         }
+        let profile = self.turn_profile(thread_id).await;
+        // A merge is writing into the checkout this turn would work in.
+        let cwd = work_dir
+            .clone()
+            .or_else(|| profile.as_ref().and_then(|p| p.folder.clone()))
+            .or_else(|| runtime.default_work_dir());
+        if let Some(cwd) = &cwd
+            && self.checkout_reserved(cwd).await?
+        {
+            return Ok(false);
+        }
         let goal = self
             .store
             .goal(thread_id)
@@ -426,7 +440,7 @@ impl Engine {
                     model: thread.model.clone(),
                     goal,
                     effort: self.store.thread_effort(thread_id).await?,
-                    profile: self.turn_profile(thread_id).await,
+                    profile,
                     files,
                     work_dir,
                 },

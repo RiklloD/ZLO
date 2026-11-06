@@ -123,7 +123,8 @@ impl Engine {
             })?;
         }
         // Read from the source checkout before the child can touch anything.
-        let (hooks, unreadable) = match read_hooks(&plan.repo_root).await {
+        let repo_id = git.repo_identity(&plan.repo_root).await?;
+        let (hooks, unreadable) = match read_hooks(&plan.repo_root, &repo_id).await {
             Ok(hooks) => (hooks, None),
             Err(error) => (None, Some(error)),
         };
@@ -143,6 +144,7 @@ impl Engine {
             archive_ref: None,
             setup_log: None,
             hooks,
+            id: 0,
             created_at: now,
             updated_at: now,
         };
@@ -222,11 +224,7 @@ impl Engine {
         if let Some(hooks) = &binding.hooks
             && !hooks.on_settle.is_empty()
         {
-            if self
-                .store
-                .hooks_trusted(&binding.repo_root, &hooks.hash)
-                .await?
-            {
+            if self.hooks_still_trusted(&binding, hooks).await? {
                 self.run_hook(&binding, "on_settle", hooks).await?;
             } else {
                 self.store

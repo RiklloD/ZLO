@@ -98,6 +98,10 @@ pub struct HookApproval {
     pub content_hash: String,
 }
 
+/// The longest setup script offered for approval: the gate shows it in
+/// full (it never truncates what the person approves).
+pub const HOOK_SCRIPT_MAX_CHARS: usize = 2_000;
+
 /// The person's answer to a [`HookApproval`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookDecision {
@@ -134,6 +138,10 @@ pub struct WorktreeHooks {
     pub timeout_s: u64,
     /// SHA-256 over the repository and the content above.
     pub hash: String,
+    /// The repository's identity when the snapshot was taken (git dir
+    /// device and inode, root commits): approvals are bound to it.
+    #[serde(default)]
+    pub repo_id: String,
 }
 
 /// `t3_delegate isolation`.
@@ -373,6 +381,8 @@ pub struct WorktreeBinding {
     pub setup_log: Option<String>,
     /// The setup hooks snapshot, when the project has any.
     pub hooks: Option<WorktreeHooks>,
+    /// Row id in `orch_worktrees`: this worktree instance (0 before insert).
+    pub id: i64,
     pub created_at: Millis,
     pub updated_at: Millis,
 }

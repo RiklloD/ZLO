@@ -16,6 +16,7 @@
 
 use std::path::Path;
 
+use ironclaw_host_api::ids::ThreadId;
 use serde_json::{Value, json};
 
 use super::git::Git;
@@ -46,12 +47,14 @@ fn strategy_name(strategy: MergeStrategy) -> &'static str {
 
 impl Engine {
     /// `t3_thread action=merge_worktree`: bring the worktree's branch into
-    /// the checkout it was made from.
+    /// the checkout it was made from. `caller` is the thread asking (its own
+    /// running turn may be in that checkout); `None` for a person's request.
     pub async fn merge_worktree(
         &self,
         thread: &ThreadRecord,
         strategy: MergeStrategy,
         on_conflict: OnConflict,
+        caller: Option<&ThreadId>,
     ) -> Result<Value> {
         let binding = self.require_worktree(&thread.thread_id).await?;
         let _op = self.reserve_worktree(&thread.thread_id).await?;
@@ -76,6 +79,8 @@ impl Engine {
             ));
         }
         let _checkout = self.checkout_lock(&target).await?;
+        // No new turn starts in the target until the merge is done.
+        let _target = self.reserve_checkout(&target, caller).await?;
         check_target(&git, &target).await?;
         let branch = binding.branch.as_str();
         let before = git.head(&target).await?;
@@ -87,41 +92,24 @@ impl Engine {
                 "branch": branch, "target": target, "head": before.as_str(),
             }));
         }
-        let message = format!("Merge {branch} (ZLO worktree)");
         let label = thread.title.as_deref().unwrap_or(branch);
-        let squash_message = format!(
-            "{} (squashed from {branch})",
-            label.trim_start_matches("↳ ")
-        );
-        let attempt = match strategy {
-            MergeStrategy::Merge => {
-                git.integrate(
-                    &target,
-                    &["merge", "--no-ff", "--no-edit", "-m", &message, branch],
-                )
-                .await
-            }
-            MergeStrategy::Squash => git.integrate(&target, &["merge", "--squash", branch]).await,
-            MergeStrategy::CherryPick => {
-                let base = git.merge_base(&target, before.as_str(), branch).await?;
-                let range = format!("{}..{branch}", base.as_str());
-                git.integrate(&target, &["cherry-pick", &range]).await
-            }
+        let plan = Integration {
+            git: &git,
+            target: &target,
+            branch,
+            before: &before,
+            strategy,
+            on_conflict,
+            squash_message: format!(
+                "{} (squashed from {branch})",
+                label.trim_start_matches("↳ ")
+            ),
         };
-        let out = match attempt {
-            Ok(out) => out,
-            Err(error) => {
-                let restored = rollback(&git, &target, &before).await;
-                return Err(refused(
-                    &target,
-                    &format!("git did not finish: {error}"),
-                    restored,
-                ));
-            }
-        };
-        if !out.success() {
-            let conflicts = git.conflicts(&target).await?;
-            if !conflicts.is_empty() && on_conflict == OnConflict::Leave {
+        // From here on the checkout is being changed: every way out but a
+        // finished merge (or a conflict kept on request) is rolled back.
+        let after = match plan.run().await {
+            Ok(after) => after,
+            Err(Stop::Kept(conflicts)) => {
                 return Err(OrchestratorError::request(
                     "merge_conflict",
                     format!(
@@ -132,56 +120,30 @@ impl Engine {
                     ),
                 ));
             }
-            let restored = rollback(&git, &target, &before).await;
-            if !conflicts.is_empty() {
-                return Err(OrchestratorError::request(
-                    "merge_conflict",
-                    format!(
-                        "Merging {branch} into {} stopped on conflicts in: {}. {} Resolve in the \
-                         worktree (merge the checkout's branch into it) and merge again, or retry \
-                         with on_conflict='leave'.",
-                        target.display(),
-                        listed(&conflicts),
-                        restored_text(&restored),
-                    ),
-                ));
-            }
-            return Err(refused(&target, out.output.trim(), restored));
-        }
-        if strategy == MergeStrategy::Squash {
-            let commit = git
-                .integrate(
-                    &target,
-                    &["commit", "--no-verify", "-q", "-m", &squash_message],
-                )
-                .await;
-            let failed = match commit {
-                Ok(out) if out.success() => None,
-                Ok(out) => Some(out.output),
-                Err(error) => Some(error.to_string()),
-            };
-            if let Some(why) = failed {
+            Err(stop) => {
                 let restored = rollback(&git, &target, &before).await;
-                return Err(refused(
-                    &target,
-                    &format!(
-                        "the squashed changes could not be committed: {}",
-                        why.trim()
+                return Err(match (stop, restored) {
+                    (Stop::Conflict(conflicts), Ok(())) => OrchestratorError::request(
+                        "merge_conflict",
+                        format!(
+                            "Merging {branch} into {} stopped on conflicts in: {}. {} Resolve in \
+                             the worktree (merge the checkout's branch into it) and merge again, \
+                             or retry with on_conflict='leave'.",
+                            target.display(),
+                            listed(&conflicts),
+                            restored_text(&Ok(())),
+                        ),
                     ),
-                    restored,
-                ));
+                    (Stop::Conflict(conflicts), Err(state)) => refused(
+                        &target,
+                        &format!("it stopped on conflicts in {}", listed(&conflicts)),
+                        Err(state),
+                    ),
+                    (Stop::Failed(why), restored) => refused(&target, &why, restored),
+                    (Stop::Kept(_), _) => OrchestratorError::invalid("unreachable merge state"),
+                });
             }
-        }
-        // A "successful" run that left an operation behind is not a merge.
-        if let Some(op) = git.in_progress(&target).await? {
-            let restored = rollback(&git, &target, &before).await;
-            return Err(refused(
-                &target,
-                &format!("git left a {op} in progress"),
-                restored,
-            ));
-        }
-        let after = git.head(&target).await?;
+        };
         self.store
             .set_worktree_state(
                 &thread.thread_id,
@@ -304,6 +266,96 @@ impl Engine {
                 .to_string(),
         });
         Ok(view)
+    }
+}
+
+/// Why an integration stopped before finishing.
+enum Stop {
+    /// Conflicts, to be rolled back.
+    Conflict(Vec<String>),
+    /// Conflicts, left in the checkout on request.
+    Kept(Vec<String>),
+    /// Anything else, including errors reading git state mid-way.
+    Failed(String),
+}
+
+impl From<OrchestratorError> for Stop {
+    fn from(error: OrchestratorError) -> Self {
+        Self::Failed(error.to_string())
+    }
+}
+
+/// One integration of `branch` into the clean checkout `target`.
+struct Integration<'a> {
+    git: &'a Git<'a>,
+    target: &'a Path,
+    branch: &'a str,
+    before: &'a CommitId,
+    strategy: MergeStrategy,
+    on_conflict: OnConflict,
+    squash_message: String,
+}
+
+impl Integration<'_> {
+    /// Run it to the end; the new HEAD, or why it stopped. Every step after
+    /// the first mutation reports through `Stop`, never `?` past a rollback.
+    async fn run(&self) -> std::result::Result<CommitId, Stop> {
+        let (git, target, branch) = (self.git, self.target, self.branch);
+        let base = git.merge_base(target, self.before.as_str(), branch).await?;
+        let message = format!("Merge {branch} (ZLO worktree)");
+        let range = format!("{}..{branch}", base.as_str());
+        let args: Vec<&str> = match self.strategy {
+            MergeStrategy::Merge => vec!["merge", "--no-ff", "--no-edit", "-m", &message, branch],
+            MergeStrategy::Squash => vec!["merge", "--squash", branch],
+            MergeStrategy::CherryPick => vec!["cherry-pick", &range],
+        };
+        let out = git
+            .integrate(target, &args)
+            .await
+            .map_err(|e| Stop::Failed(format!("git did not finish: {e}")))?;
+        if !out.success() {
+            let conflicts = git.conflicts(target).await?;
+            return Err(match (conflicts.is_empty(), self.on_conflict) {
+                (true, _) => Stop::Failed(out.output.trim().to_string()),
+                (false, OnConflict::Leave) => Stop::Kept(conflicts),
+                (false, OnConflict::Abort) => Stop::Conflict(conflicts),
+            });
+        }
+        if self.strategy == MergeStrategy::Squash {
+            // Only the branch's own changes may be committed: anything else
+            // staged meanwhile is not this merge's to commit.
+            let own = git.changed_between(target, base.as_str(), branch).await?;
+            let extra: Vec<String> = git
+                .staged(target)
+                .await?
+                .into_iter()
+                .filter(|p| !own.contains(p))
+                .collect();
+            if !extra.is_empty() {
+                return Err(Stop::Failed(format!(
+                    "the checkout's index gained other changes during the merge: {}",
+                    listed(&extra)
+                )));
+            }
+            let commit = git
+                .integrate(
+                    target,
+                    &["commit", "--no-verify", "-q", "-m", &self.squash_message],
+                )
+                .await
+                .map_err(|e| Stop::Failed(format!("the squash commit did not finish: {e}")))?;
+            if !commit.success() {
+                return Err(Stop::Failed(format!(
+                    "the squashed changes could not be committed: {}",
+                    commit.output.trim()
+                )));
+            }
+        }
+        // A "successful" run that left an operation behind is not a merge.
+        if let Some(op) = git.in_progress(target).await? {
+            return Err(Stop::Failed(format!("git left a {op} in progress")));
+        }
+        Ok(git.head(target).await?)
     }
 }
 

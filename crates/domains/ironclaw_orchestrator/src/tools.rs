@@ -293,7 +293,8 @@ impl Engine {
                         let thread = self.owned_thread(&thread_id, &ctx.scope).await?;
                         let strategy = MergeStrategy::parse(a.strategy.as_deref())?;
                         let on_conflict = OnConflict::parse(a.on_conflict.as_deref())?;
-                        self.merge_worktree(&thread, strategy, on_conflict).await
+                        self.merge_worktree(&thread, strategy, on_conflict, Some(&ctx.thread_id))
+                            .await
                     }
                     "remove_worktree" => {
                         let thread = self.owned_thread(&thread_id, &ctx.scope).await?;

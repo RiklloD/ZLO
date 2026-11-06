@@ -61,10 +61,24 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   merge_worktree | remove_worktree` act on it. `.zlo/worktree.toml`
   `on_create` / `on_settle` hooks are snapshotted from the source checkout
   and run only once the person approved that exact content through the
-  `HookApprover` gate (`orch_worktree_hook_trust`). Git (with repository
-  hooks off) and the approved hooks run through the host's
-  `HostCommandRunner` (`Engine::set_worktree_host`; composition wires the
-  host process port and the CLI bridge as approver).
+  `HookApprover` gate; a script longer than the gate shows in full
+  (`HOOK_SCRIPT_MAX_CHARS`) is never offered. Approvals are keyed by the
+  repository's identity (git dir device+inode and root commits) and the
+  content hash (`orch_worktree_hook_approvals`), never by path. Git and the
+  approved hooks run through the host's `HostCommandRunner`
+  (`Engine::set_worktree_host`; composition wires the host process port and
+  the CLI bridge as approver). Shared children bind to the binding row
+  (`orch_worktree_shares.owner_binding`), so a recreated worktree never
+  becomes theirs.
+- **Git trust boundary.** Orchestration git runs with the repository's hooks
+  and fsmonitor off and with every network path closed
+  (`GIT_NO_LAZY_FETCH=1`, `protocol.allow=never`, ssh/askpass/credential
+  helpers neutralized): a missing object fails the command. The
+  repository's own local config (`.git/config`) is trusted: filters
+  (smudge/clean, e.g. git-lfs) and merge drivers named in `.gitattributes`
+  run as configured, because they can only be defined in that local config,
+  which a clone never brings — the same trust the person gives their own
+  git.
 
 ## Tables
 
@@ -75,7 +89,9 @@ route, turn state), `orch_tasks`, `orch_queue`, `orch_holds`,
 `archived_at`; last use and thread count derive from `orch_threads`),
 `orch_settings`, `orch_meta`, `orch_schedules`, `orch_inbox`, `orch_goals`,
 `orch_cli_approvals`, `orch_worktrees` (append-only; a thread's newest row is
-its binding), `orch_worktree_hook_trust`, `orch_worktree_shares`. First open imports
+its binding), `orch_worktree_hook_approvals`, `orch_worktree_shares`
+(`Store::upgrade_worktree_schema` brings older databases up in place; the
+path-keyed `orch_worktree_hook_trust` of an earlier build is left unread). First open imports
 the legacy `ironclaw_threads` thread records once (marker
 `legacy_threads_imported_v1`).
 
@@ -107,9 +123,10 @@ the legacy `ironclaw_threads` thread records once (marker
   committed for anyone; uncommitted changes block merge and removal, a HEAD
   off its branch is archived, a branch with unmerged commits is kept (plus
   `refs/zlo/archive/<branch>`), and a merge that does not finish is rolled
-  back and verified against the saved HEAD. Lifecycle steps hold a
-  reservation taken under the dispatch lock, so no turn starts in a
-  worktree being merged or removed.
+  back and verified against the saved HEAD (`merge_rollback_failed` when it
+  cannot be). Lifecycle steps hold a reservation taken under the dispatch
+  lock, so no turn starts in a worktree being merged or removed, nor in the
+  checkout a merge is writing into.
 
 - A thread's profile is set once (`profile_id IS NULL` guard) and never
   changes; a thread without one runs as `default`. Delegated children inherit

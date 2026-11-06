@@ -436,6 +436,70 @@ async fn a_session_follows_its_worktree_and_back_with_every_message() {
     assert_eq!(rt.history(&t, 10).await.unwrap().len(), 2);
 }
 
+/// An earlier build copied a moving session: the shared folder kept an
+/// older copy while the worktree copy grew. The longer copy is the
+/// session; the older one is set aside (kept, not deleted) and never
+/// shadows history or the next resume.
+#[tokio::test]
+async fn an_older_duplicate_transcript_never_shadows_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = ANSWER
+        .replace(
+            "{ echo \"$@\" | tr '\\n' ' '; echo; } >> \"$ARGS_LOG\"",
+            "true",
+        )
+        .replace(
+            "mkdir -p \"$TRANSCRIPT_DIR\" && echo '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}' > \"$TRANSCRIPT_DIR/$SESSION.jsonl\"\n",
+            "",
+        );
+    assert!(!body.contains("ARGS_LOG") && !body.contains("TRANSCRIPT_DIR"));
+    let sink = Arc::new(Recorder::default());
+    let rt = runtime(dir.path(), script(dir.path(), "claude", &body), &sink);
+    let t = thread(&rt).await;
+    let session = t.native_session_id.clone().unwrap();
+    let file = format!("{session}.jsonl");
+    let project = |folder: &Path| {
+        dir.path()
+            .join("projects")
+            .join(claude_codes::transcript::encode_project_dir(folder))
+    };
+    let line = |text: &str| {
+        format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n")
+    };
+    let shared = project(&dir.path().join("work"));
+    let worktree = dir.path().join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let inside = project(&worktree);
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::write(shared.join(&file), line("one")).unwrap();
+    std::fs::write(
+        inside.join(&file),
+        format!("{}{}", line("one"), line("two")),
+    )
+    .unwrap();
+
+    assert_eq!(rt.history(&t, 10).await.unwrap().len(), 2);
+    assert!(!shared.join(&file).exists());
+    let aside: Vec<_> = std::fs::read_dir(&shared)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        aside
+            .iter()
+            .any(|n| n.starts_with(&format!("{file}.superseded-"))),
+        "{aside:?}"
+    );
+
+    // The next turn, back in the shared folder, resumes the whole session.
+    rt.start_turn(&t, input()).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let back = std::fs::read_to_string(shared.join(&file)).unwrap();
+    assert!(back.contains("one") && back.contains("two"), "{back}");
+    assert!(!inside.join(&file).exists());
+}
+
 #[tokio::test]
 async fn stop_kills_the_process_group_and_reports_cancelled() {
     let dir = tempfile::tempdir().unwrap();

@@ -19,12 +19,22 @@ use crate::model::*;
 use crate::runtime::*;
 use crate::store::Store;
 
-/// Runs commands with `sh -c` like the host process port does.
-struct ShellRunner;
+/// Runs commands with `sh -c` like the host process port does. A command
+/// containing one of `fail` cannot run (injected faults).
+#[derive(Default)]
+struct ShellRunner {
+    fail: Mutex<Vec<&'static str>>,
+}
 
 #[async_trait]
 impl HostCommandRunner for ShellRunner {
     async fn run(&self, c: HostCommand) -> Result<HostCommandOutput, OrchestratorError> {
+        if self.fail.lock().unwrap().iter().any(|f| c.line.contains(f)) {
+            return Err(OrchestratorError::request(
+                "command_failed",
+                "injected failure",
+            ));
+        }
         let out = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(format!("({}) 2>&1", c.line))
@@ -184,6 +194,7 @@ struct Repo {
     engine: Arc<Engine>,
     rt: Arc<DirRuntime>,
     approver: Arc<Approver>,
+    runner: Arc<ShellRunner>,
     repo: PathBuf,
     root: PathBuf,
 }
@@ -264,8 +275,9 @@ async fn repo(git: bool) -> Repo {
         answer: Mutex::new(HookDecision::Unavailable),
         asked: Mutex::new(Vec::new()),
     });
+    let runner = Arc::new(ShellRunner::default());
     engine.set_worktree_host(WorktreeHost {
-        runner: Arc::new(ShellRunner),
+        runner: runner.clone(),
         root: root.clone(),
         approver: approver.clone(),
     });
@@ -278,6 +290,7 @@ async fn repo(git: bool) -> Repo {
         engine,
         rt,
         approver,
+        runner,
         repo,
         root,
     }
@@ -975,4 +988,309 @@ async fn a_user_thread_can_start_in_a_new_worktree() {
         dir.as_deref().map(|d| d.to_string_lossy().into_owned()),
         view["path"].as_str().map(str::to_string)
     );
+}
+
+/// Orchestration git never reaches the network: a blobless clone whose
+/// promisor remote would run a transport program (here a repo-local
+/// `core.sshCommand` leaving a marker) fails closed on the missing objects.
+#[tokio::test]
+async fn orchestration_git_never_reaches_the_network() {
+    let r = repo(true).await;
+    std::fs::write(r.repo.join("b.txt"), "blob\n").unwrap();
+    commit_all(&r.repo, "second");
+    sh(
+        &r.repo,
+        "git config uploadpack.allowFilter true && git config uploadpack.allowAnySHA1InWant true",
+    );
+    let clone = r.dir.path().join("clone");
+    sh(
+        r.dir.path(),
+        &format!(
+            "git clone -q --no-checkout --filter=blob:none 'file://{}' '{}'",
+            r.repo.display(),
+            clone.display()
+        ),
+    );
+    let missing = sh(
+        &clone,
+        "git rev-list --objects --missing=print HEAD | grep -c '^?'",
+    );
+    assert!(
+        missing.parse::<u32>().unwrap() > 0,
+        "the clone must lack blobs"
+    );
+    let marker = r.marker("transport-ran");
+    sh(
+        &clone,
+        &format!(
+            "git config core.sshCommand \"touch '{}'; false\" && git remote set-url origin ssh://example.invalid/repo",
+            marker.display()
+        ),
+    );
+    let parent = ThreadId::new("parent").unwrap();
+    let thread = r.engine.store().thread(&parent).await.unwrap().unwrap();
+    let error = r
+        .engine
+        .start_worktree(&thread, Some(clone.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "git_failed", "{error}");
+    assert!(!marker.exists(), "a transport program ran");
+    assert_eq!(
+        sh(
+            &clone,
+            "git rev-list --objects --missing=print HEAD | grep -c '^?'"
+        ),
+        missing,
+        "nothing was fetched"
+    );
+}
+
+/// Item 2: a setup script longer than the gate shows in full is never
+/// offered for approval and never runs.
+#[tokio::test]
+async fn a_setup_script_too_long_to_show_is_never_offered() {
+    let r = repo(true).await;
+    *r.approver.answer.lock().unwrap() = HookDecision::Approved;
+    let marker = r.marker("hidden-ran");
+    let padding: Vec<String> = (0..14)
+        .map(|n| format!("\"echo {n} {}\"", "harmless ".repeat(20)))
+        .collect();
+    setup_file(
+        &r.repo,
+        &format!(
+            "on_create = [{}, \"touch '{}'\"]\n",
+            padding.join(", "),
+            marker.display()
+        ),
+    );
+    commit_all(&r.repo, "long setup");
+    let child = child_of(&r.delegate("long").await);
+    assert!(r.approver.asked.lock().unwrap().is_empty());
+    assert!(!marker.exists());
+    assert!(r.log_of(&child).await.contains("too long to show in full"));
+}
+
+/// Item 8: an approval belongs to the repository, not its path: another
+/// repository put at the same path with the same hooks is asked again.
+#[tokio::test]
+async fn hook_approval_is_bound_to_the_repository_not_its_path() {
+    let r = repo(true).await;
+    let setup = "on_create = \"echo setup-ok\"\n";
+    setup_file(&r.repo, setup);
+    commit_all(&r.repo, "setup");
+    *r.approver.answer.lock().unwrap() = HookDecision::Approved;
+    let child = child_of(&r.delegate("first").await);
+    assert!(
+        r.log_of(&child)
+            .await
+            .contains("[on_create] $ echo setup-ok")
+    );
+    assert_eq!(r.approver.asked.lock().unwrap().len(), 1);
+    r.finish(&child).await;
+
+    std::fs::rename(&r.repo, r.dir.path().join("project-old")).unwrap();
+    std::fs::create_dir_all(&r.repo).unwrap();
+    sh(&r.repo, "git init -q -b main");
+    std::fs::write(r.repo.join("a.txt"), "one\n").unwrap();
+    setup_file(&r.repo, setup);
+    commit_all(&r.repo, "a different repository");
+    *r.approver.answer.lock().unwrap() = HookDecision::Unavailable;
+    let child = child_of(&r.delegate("second").await);
+    assert_eq!(r.approver.asked.lock().unwrap().len(), 2, "asked again");
+    let log = r.log_of(&child).await;
+    assert!(
+        log.contains("not run") && !log.contains("[on_create] $"),
+        "{log}"
+    );
+}
+
+/// Item 5: a merge holds its target checkout against turn admission, and
+/// refuses while another thread runs in it.
+#[tokio::test]
+async fn a_merge_holds_its_target_checkout() {
+    let r = repo(true).await;
+    let parent = ThreadId::new("parent").unwrap();
+    let op = r.engine.reserve_checkout(&r.repo, None).await.unwrap();
+    assert!(
+        !r.engine
+            .deliver(&parent, "wait".into(), TurnOrigin::UserPrompt, false)
+            .await
+            .unwrap(),
+        "no turn starts in a checkout being merged into"
+    );
+    drop(op);
+    assert!(
+        r.engine
+            .deliver(&parent, "go".into(), TurnOrigin::UserPrompt, false)
+            .await
+            .unwrap()
+    );
+    r.finish(&parent).await;
+
+    // The parent works in its own worktree W; a shared child runs there
+    // while a worktree child made from W is merged back into W.
+    let thread = r.engine.store().thread(&parent).await.unwrap().unwrap();
+    r.engine
+        .start_worktree(&thread, Some(r.repo.clone()))
+        .await
+        .unwrap();
+    let busy = child_of(
+        &r.delegate_from("parent", json!({"task": "stay busy in W"}))
+            .await,
+    );
+    let child = child_of(&r.delegate("into W").await);
+    let path = r.path_of(&child).await;
+    std::fs::write(path.join("b.txt"), "b\n").unwrap();
+    commit_all(&path, "b");
+    r.finish(&child).await;
+    let refused = r
+        .thread_tool(json!({"action": "merge_worktree", "thread": child.as_str()}))
+        .await;
+    assert_eq!(refused["error"], "thread_busy", "{refused}");
+    r.finish(&busy).await;
+    let merged = r
+        .thread_tool(json!({"action": "merge_worktree", "thread": child.as_str()}))
+        .await;
+    assert_eq!(merged["ok"], true, "{merged}");
+}
+
+/// Item 6: a failure reading git state after the merge started is rolled
+/// back like any other stop; a rollback that cannot be verified says so.
+#[tokio::test]
+async fn every_stop_after_mutation_is_rolled_back_or_reported() {
+    let r = repo(true).await;
+    let child = child_of(&r.delegate("edit a").await);
+    let path = r.path_of(&child).await;
+    std::fs::write(path.join("a.txt"), "child\n").unwrap();
+    commit_all(&path, "child edits a");
+    std::fs::write(r.repo.join("a.txt"), "parent\n").unwrap();
+    commit_all(&r.repo, "parent edits a");
+    let head = sh(&r.repo, "git rev-parse HEAD");
+    r.finish(&child).await;
+    let merge = json!({"action": "merge_worktree", "thread": child.as_str()});
+
+    // Reading the conflicts fails mid-merge: still rolled back and verified.
+    *r.runner.fail.lock().unwrap() = vec!["--diff-filter=U"];
+    let out = r.thread_tool(merge.clone()).await;
+    assert_eq!(out["error"], "merge_refused", "{out}");
+    assert!(
+        out["message"].as_str().unwrap().contains("rolled back"),
+        "{out}"
+    );
+    assert_eq!(sh(&r.repo, "git rev-parse HEAD"), head);
+    assert!(!in_progress(&r.repo));
+
+    // A conflict whose rollback cannot run is never reported as restored.
+    *r.runner.fail.lock().unwrap() = vec!["merge --abort", "reset --merge"];
+    let out = r.thread_tool(merge.clone()).await;
+    assert_eq!(out["error"], "merge_rollback_failed", "{out}");
+    assert!(in_progress(&r.repo), "the report matches the checkout");
+    r.runner.fail.lock().unwrap().clear();
+    sh(&r.repo, "git merge --abort");
+}
+
+/// Item 7: a shared child keeps the worktree instance it was given: after
+/// its owner's worktree is removed and a new one made, the child gets
+/// `worktree_removed`, never the new folder.
+#[tokio::test]
+async fn a_shared_child_keeps_the_worktree_it_was_given() {
+    let r = repo(true).await;
+    let parent = ThreadId::new("parent").unwrap();
+    let thread = r.engine.store().thread(&parent).await.unwrap().unwrap();
+    let first = r
+        .engine
+        .start_worktree(&thread, Some(r.repo.clone()))
+        .await
+        .unwrap();
+    let shared = child_of(&r.delegate_from("parent", json!({"task": "help"})).await);
+    assert_eq!(
+        r.turn_of(&shared)
+            .1
+            .map(|p| p.to_string_lossy().into_owned()),
+        first["path"].as_str().map(str::to_string)
+    );
+    r.finish(&shared).await;
+    let removed = r.thread_tool(json!({"action": "remove_worktree"})).await;
+    assert_eq!(removed["state"], "removed", "{removed}");
+    r.engine
+        .start_worktree(&thread, Some(r.repo.clone()))
+        .await
+        .unwrap();
+    let error = r
+        .engine
+        .deliver(&shared, "more".into(), TurnOrigin::UserPrompt, false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "worktree_removed");
+}
+
+/// Item 3: a database made by an earlier build (no `hooks` column, shares
+/// without a binding) upgrades in place; turn admission works and an old
+/// share keeps the worktree it was made against.
+#[tokio::test]
+async fn an_older_database_upgrades_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("wt");
+    std::fs::create_dir_all(&folder).unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    {
+        let conn = db.connect().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE orch_worktrees (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, \
+             path TEXT NOT NULL, branch TEXT NOT NULL, base_commit TEXT NOT NULL, repo_root TEXT NOT NULL, \
+             source_dir TEXT NOT NULL, parent_thread TEXT, task_id TEXT, state TEXT NOT NULL, \
+             archive_ref TEXT, setup_log TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE orch_worktree_shares (thread_id TEXT PRIMARY KEY, owner_thread TEXT NOT NULL, \
+             created_at INTEGER NOT NULL);
+             INSERT INTO orch_worktrees (thread_id, path, branch, base_commit, repo_root, source_dir, state, \
+             created_at, updated_at) VALUES ('owner', '{p}', 'zlo/old-1', 'abcdef1234', '{p}', '{p}', \
+             'active', 10, 10);
+             INSERT INTO orch_worktree_shares (thread_id, owner_thread, created_at) VALUES ('helper', 'owner', 20);",
+            p = folder.display()
+        ))
+        .await
+        .unwrap();
+    }
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    let engine = Engine::open(Store::new(runtime), RuntimeId::new("fake").unwrap())
+        .await
+        .unwrap();
+    let rt = Arc::new(DirRuntime {
+        home: dir.path().to_path_buf(),
+        turns: Mutex::new(Vec::new()),
+        created: Mutex::new(0),
+    });
+    engine.register_runtime(rt.clone());
+    for id in ["owner", "helper"] {
+        let id = ThreadId::new(id).unwrap();
+        engine.ensure_thread(&id, &scope(), None).await.unwrap();
+        assert!(
+            engine
+                .deliver(&id, "hello".into(), TurnOrigin::UserPrompt, false)
+                .await
+                .unwrap()
+        );
+    }
+    let turns = rt.turns.lock().unwrap().clone();
+    assert!(
+        turns
+            .iter()
+            .all(|(_, _, dir)| dir.as_deref() == Some(folder.as_path())),
+        "{turns:?}"
+    );
+    // Opening again is a no-op.
+    let binding = engine
+        .store()
+        .worktree(&ThreadId::new("owner").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(binding.hooks.is_none());
+    engine.store().upgrade_worktree_schema().await.unwrap();
 }

@@ -183,12 +183,12 @@ impl ClaudeCliRuntime {
     /// session, so history and the next resume always read every turn.
     async fn follow_session(&self, session_id: &str, dir: &Path) -> Result<(), RuntimeError> {
         let target = self.transcript_path(dir, session_id);
-        if target.is_file() {
-            return Ok(());
-        }
         let Some(source) = self.find_transcript(session_id).await else {
             return Ok(());
         };
+        if source == target {
+            return Ok(());
+        }
         let moved = async {
             if let Some(parent) = target.parent() {
                 tokio::fs::create_dir_all(parent).await?;
@@ -201,22 +201,55 @@ impl ClaudeCliRuntime {
             .map_err(|e| RuntimeError::Unavailable(format!("session transcript: {}", e.kind())))
     }
 
-    /// The session's transcript wherever it ran (session ids are unique
-    /// across project folders).
+    /// The session's one authoritative transcript, wherever it ran
+    /// (session ids are unique across project folders). An earlier build
+    /// copied a moving session instead of moving it, which can leave
+    /// several copies: the one with the most entries wins (an older copy is
+    /// a prefix of the newer one), the newest on a tie, and every other is
+    /// renamed `<session>.jsonl.superseded-<ms>` beside it — kept, never
+    /// deleted, just no longer read.
     async fn find_transcript(&self, session_id: &str) -> Option<PathBuf> {
-        let shared = self.transcript_path(&self.config.work_dir, session_id);
-        if shared.is_file() {
-            return Some(shared);
-        }
         let file = format!("{session_id}.jsonl");
+        let mut copies = Vec::new();
         let mut dirs = tokio::fs::read_dir(&self.config.projects_dir).await.ok()?; // silent-ok: no projects folder means no transcript yet
         while let Ok(Some(entry)) = dirs.next_entry().await {
             let path = entry.path().join(&file);
             if path.is_file() {
-                return Some(path);
+                copies.push(path);
             }
         }
-        None
+        if copies.len() <= 1 {
+            return copies.pop();
+        }
+        let mut ranked = Vec::with_capacity(copies.len());
+        for path in copies {
+            let entries = match tokio::fs::read_to_string(&path).await {
+                Ok(text) => text.lines().filter(|l| !l.trim().is_empty()).count(),
+                Err(error) => {
+                    tracing::debug!(%error, "claude cli: transcript copy unreadable; ranked last");
+                    0
+                }
+            };
+            let modified = tokio::fs::metadata(&path)
+                .await
+                .and_then(|m| m.modified())
+                .ok(); // silent-ok: an unknown time only loses the tie-break
+            ranked.push((entries, modified, path));
+        }
+        ranked.sort_by_key(|a| std::cmp::Reverse((a.0, a.1)));
+        let mut ranked = ranked.into_iter();
+        let (_, _, keep) = ranked.next()?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0); // silent-ok: a clock before 1970 only changes the suffix
+        for (_, _, stale) in ranked {
+            let aside = stale.with_extension(format!("jsonl.superseded-{stamp}"));
+            if let Err(error) = tokio::fs::rename(&stale, &aside).await {
+                tracing::debug!(%error, "claude cli: stale transcript copy left in place");
+            }
+        }
+        Some(keep)
     }
 
     fn command(

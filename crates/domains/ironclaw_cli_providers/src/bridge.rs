@@ -48,7 +48,7 @@ pub const MCP_SERVER_NAME: &str = "ironclaw";
 /// long reply from being copied once per token.
 const TEXT_EMIT_EVERY: Duration = Duration::from_millis(50);
 /// Bound on the tool-input preview shown with an approval.
-const GATE_BODY_MAX_CHARS: usize = 2_000;
+pub(crate) const GATE_BODY_MAX_CHARS: usize = 2_000;
 /// Bound on a tool row's subject (the wire allows 2 KiB).
 const TOOL_SUBJECT_MAX_CHARS: usize = 400;
 const EVENT_BUFFER: usize = 256;

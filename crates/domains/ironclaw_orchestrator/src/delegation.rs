@@ -38,8 +38,8 @@ pub struct DelegateRequest {
 enum ChildFolder {
     /// A new worktree of its own (`isolation='worktree'`).
     Own(crate::worktree::WorktreePlan),
-    /// The worktree of this thread (a `shared` child of a worktree thread).
-    Share(ThreadId),
+    /// This worktree instance (a `shared` child of a worktree thread).
+    Share(Box<crate::worktree::WorktreeBinding>),
     /// The parent's ordinary folder.
     Parent,
 }
@@ -381,8 +381,8 @@ impl Engine {
                 if !runtime.supports_work_dir() {
                     return Err(crate::worktree::runtime_refused(runtime.as_ref()));
                 }
-                match self.worktree_owner(&parent.thread_id).await? {
-                    Some(owner) => ChildFolder::Share(owner),
+                match self.worktree_of(&parent.thread_id).await? {
+                    Some(binding) => ChildFolder::Share(Box::new(binding)),
                     None => ChildFolder::Parent,
                 }
             }

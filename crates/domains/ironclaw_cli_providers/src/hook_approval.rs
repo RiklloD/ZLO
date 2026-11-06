@@ -5,10 +5,12 @@
 //! Without a live turn there is nobody to ask, and the hooks do not run.
 
 use async_trait::async_trait;
-use ironclaw_orchestrator::worktree::{HookApproval, HookApprover, HookDecision};
+use ironclaw_orchestrator::worktree::{
+    HOOK_SCRIPT_MAX_CHARS, HookApproval, HookApprover, HookDecision,
+};
 use serde_json::json;
 
-use crate::bridge::{CliBridge, ToolDecision};
+use crate::bridge::{CliBridge, GATE_BODY_MAX_CHARS, ToolDecision};
 
 /// The tool name the gate shows for a worktree setup approval.
 pub(crate) const WORKTREE_SETUP_TOOL: &str = "WorktreeSetup";
@@ -16,6 +18,13 @@ pub(crate) const WORKTREE_SETUP_TOOL: &str = "WorktreeSetup";
 #[async_trait]
 impl HookApprover for CliBridge {
     async fn approve(&self, request: &HookApproval) -> HookDecision {
+        // The gate shows what it is asked about in full, or not at all.
+        let length = request.script.chars().count();
+        if length > HOOK_SCRIPT_MAX_CHARS.min(GATE_BODY_MAX_CHARS) {
+            return HookDecision::Denied(format!(
+                "The setup script is too long to show in full ({length} characters)."
+            ));
+        }
         let Some(run) = self.snapshot(&request.thread).map(|s| s.run_id) else {
             return HookDecision::Unavailable;
         };
@@ -73,6 +82,16 @@ mod tests {
     async fn setup_hooks_ask_through_the_live_turns_gate() {
         let bridge = CliBridge::new(Duration::from_secs(5));
         let thread = ThreadId::new("parent").unwrap();
+        bridge.turn_started(&thread, "run-0");
+        // Longer than the gate shows: refused without a gate.
+        let mut long = request(&thread);
+        long.script = format!("{}\n$ touch hidden", "$ true\n".repeat(400));
+        assert!(matches!(
+            bridge.approve(&long).await,
+            HookDecision::Denied(_)
+        ));
+        assert!(bridge.snapshot(&thread).unwrap().gates.is_empty());
+        bridge.turn_ended(&thread, "run-0", "completed");
         // No live turn: nobody to ask, nothing runs.
         assert_eq!(
             bridge.approve(&request(&thread)).await,

@@ -32,22 +32,33 @@ CREATE TABLE IF NOT EXISTS orch_worktrees (
   hooks TEXT
 );
 CREATE INDEX IF NOT EXISTS orch_worktrees_thread ON orch_worktrees(thread_id, id);
-CREATE TABLE IF NOT EXISTS orch_worktree_hook_trust (
-  repo_root TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS orch_worktree_hook_approvals (
+  repo_id TEXT NOT NULL,
   content_hash TEXT NOT NULL,
+  repo_root TEXT NOT NULL,
   approved_at INTEGER NOT NULL,
-  PRIMARY KEY (repo_root, content_hash)
+  PRIMARY KEY (repo_id, content_hash)
 );
 CREATE TABLE IF NOT EXISTS orch_worktree_shares (
   thread_id TEXT PRIMARY KEY,
   owner_thread TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  owner_binding INTEGER
 );
 CREATE INDEX IF NOT EXISTS orch_worktree_shares_owner ON orch_worktree_shares(owner_thread);
 "#;
 
+// `orch_worktree_hook_trust` (approvals keyed by repo path only, an earlier
+// build of this branch) is left in place and never read: a path is not a
+// repository identity, so those approvals are asked again.
+
 const COLUMNS: &str = "thread_id, path, branch, base_commit, repo_root, source_dir, parent_thread, \
                        task_id, state, archive_ref, setup_log, created_at, updated_at, hooks";
+
+/// Read order: the insert columns, then the row id.
+const SELECT_COLUMNS: &str = "thread_id, path, branch, base_commit, repo_root, source_dir, \
+                              parent_thread, task_id, state, archive_ref, setup_log, created_at, \
+                              updated_at, hooks, id";
 
 /// Setup output kept per worktree.
 const SETUP_LOG_MAX: usize = 8_000;
@@ -78,6 +89,7 @@ fn read(row: &libsql::Row) -> Result<WorktreeBinding> {
             .otext()?
             .map(|raw| serde_json::from_str(&raw))
             .transpose()?,
+        id: c.int()?,
     })
 }
 
@@ -116,7 +128,7 @@ impl Store {
     pub async fn worktree(&self, thread: &ThreadId) -> Result<Option<WorktreeBinding>> {
         self.row(
             &format!(
-                "SELECT {COLUMNS} FROM orch_worktrees WHERE thread_id = ?1 ORDER BY id DESC LIMIT 1"
+                "SELECT {SELECT_COLUMNS} FROM orch_worktrees WHERE thread_id = ?1 ORDER BY id DESC LIMIT 1"
             ),
             vec![s(thread.as_str())],
             read,
@@ -203,12 +215,83 @@ impl Store {
         Ok(rows.into_iter().collect())
     }
 
-    /// The person approved running this exact hook content for this repo.
-    pub(crate) async fn hooks_trusted(&self, repo_root: &Path, hash: &str) -> Result<bool> {
+    /// Every thread's current worktree whose folder still exists.
+    pub(crate) async fn live_worktrees(&self) -> Result<Vec<WorktreeBinding>> {
+        self.rows(
+            &format!(
+                "SELECT {SELECT_COLUMNS} FROM orch_worktrees w WHERE w.state != 'removed' \
+                 AND w.id = (SELECT MAX(id) FROM orch_worktrees x WHERE x.thread_id = w.thread_id)"
+            ),
+            vec![],
+            read,
+        )
+        .await
+    }
+
+    /// One binding by its row id (a share names its worktree this way).
+    pub(crate) async fn worktree_by_id(&self, id: i64) -> Result<Option<WorktreeBinding>> {
+        self.row(
+            &format!("SELECT {SELECT_COLUMNS} FROM orch_worktrees WHERE id = ?1"),
+            vec![Value::Integer(id)],
+            read,
+        )
+        .await
+    }
+
+    /// Bring a database made by an earlier build up to this schema:
+    /// columns added since, and shares bound to the binding row they were
+    /// made against. Idempotent.
+    pub(crate) async fn upgrade_worktree_schema(&self) -> Result<()> {
+        if !self.has_column("orch_worktrees", "hooks").await? {
+            self.exec("ALTER TABLE orch_worktrees ADD COLUMN hooks TEXT", vec![])
+                .await?;
+        }
+        if !self
+            .has_column("orch_worktree_shares", "owner_binding")
+            .await?
+        {
+            self.exec(
+                "ALTER TABLE orch_worktree_shares ADD COLUMN owner_binding INTEGER",
+                vec![],
+            )
+            .await?;
+        }
+        // A share made before bindings were named: the owner's binding that
+        // existed when the share was recorded, never a later one.
+        self.exec(
+            "UPDATE orch_worktree_shares SET owner_binding = (SELECT MAX(w.id) FROM orch_worktrees w \
+             WHERE w.thread_id = orch_worktree_shares.owner_thread \
+             AND w.created_at <= orch_worktree_shares.created_at) WHERE owner_binding IS NULL",
+            vec![],
+        )
+        .await?;
+        self.exec(
+            "CREATE INDEX IF NOT EXISTS orch_worktree_shares_binding \
+             ON orch_worktree_shares(owner_binding)",
+            vec![],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn has_column(&self, table: &str, column: &str) -> Result<bool> {
+        let present = self
+            .rows(&format!("PRAGMA table_info({table})"), vec![], |r| {
+                let mut c = Cols::new(r);
+                c.int()?;
+                c.text()
+            })
+            .await?;
+        Ok(present.iter().any(|p| p == column))
+    }
+
+    /// The person approved running this exact hook content in this
+    /// repository (identity, not path: see `hooks::repo_identity`).
+    pub(crate) async fn hooks_trusted(&self, repo_id: &str, hash: &str) -> Result<bool> {
         Ok(self
             .row(
-                "SELECT 1 FROM orch_worktree_hook_trust WHERE repo_root = ?1 AND content_hash = ?2",
-                vec![s(repo_root.to_string_lossy()), s(hash)],
+                "SELECT 1 FROM orch_worktree_hook_approvals WHERE repo_id = ?1 AND content_hash = ?2",
+                vec![s(repo_id), s(hash)],
                 |r| Cols::new(r).int(),
             )
             .await?
@@ -217,51 +300,65 @@ impl Store {
 
     pub(crate) async fn trust_hooks(
         &self,
+        repo_id: &str,
         repo_root: &Path,
         hash: &str,
         now: Millis,
     ) -> Result<()> {
         self.exec(
-            "INSERT OR IGNORE INTO orch_worktree_hook_trust (repo_root, content_hash, approved_at) \
-             VALUES (?1, ?2, ?3)",
-            vec![s(repo_root.to_string_lossy()), s(hash), Value::Integer(now)],
+            "INSERT OR IGNORE INTO orch_worktree_hook_approvals \
+             (repo_id, content_hash, repo_root, approved_at) VALUES (?1, ?2, ?3, ?4)",
+            vec![
+                s(repo_id),
+                s(hash),
+                s(repo_root.to_string_lossy()),
+                Value::Integer(now),
+            ],
         )
         .await?;
         Ok(())
     }
 
-    /// `thread` works in `owner`'s worktree (a shared child of a worktree
-    /// thread). First record wins: a thread's folder never changes owner.
+    /// `thread` works in the worktree `owner` (a shared child of a
+    /// worktree thread), that binding row and no later one. First record
+    /// wins: a thread's folder never changes.
     pub(crate) async fn share_worktree(
         &self,
         thread: &ThreadId,
-        owner: &ThreadId,
+        owner: &WorktreeBinding,
         now: Millis,
     ) -> Result<()> {
         self.exec(
-            "INSERT OR IGNORE INTO orch_worktree_shares (thread_id, owner_thread, created_at) \
-             VALUES (?1, ?2, ?3)",
-            vec![s(thread.as_str()), s(owner.as_str()), Value::Integer(now)],
+            "INSERT OR IGNORE INTO orch_worktree_shares \
+             (thread_id, owner_thread, created_at, owner_binding) VALUES (?1, ?2, ?3, ?4)",
+            vec![
+                s(thread.as_str()),
+                s(owner.thread_id.as_str()),
+                Value::Integer(now),
+                Value::Integer(owner.id),
+            ],
         )
         .await?;
         Ok(())
     }
 
-    /// The thread whose worktree `thread` shares, if any.
-    pub(crate) async fn worktree_share(&self, thread: &ThreadId) -> Result<Option<ThreadId>> {
-        self.row(
-            "SELECT owner_thread FROM orch_worktree_shares WHERE thread_id = ?1",
-            vec![s(thread.as_str())],
-            read_thread,
-        )
-        .await
+    /// The binding row of the worktree `thread` shares, if any.
+    pub(crate) async fn worktree_share(&self, thread: &ThreadId) -> Result<Option<i64>> {
+        Ok(self
+            .row(
+                "SELECT owner_binding FROM orch_worktree_shares WHERE thread_id = ?1",
+                vec![s(thread.as_str())],
+                |r| Cols::new(r).oint(),
+            )
+            .await?
+            .flatten())
     }
 
-    /// Threads working in `owner`'s worktree besides `owner` itself.
-    pub(crate) async fn worktree_sharers(&self, owner: &ThreadId) -> Result<Vec<ThreadId>> {
+    /// Threads sharing the worktree of binding row `binding`.
+    pub(crate) async fn worktree_sharers(&self, binding: i64) -> Result<Vec<ThreadId>> {
         self.rows(
-            "SELECT thread_id FROM orch_worktree_shares WHERE owner_thread = ?1",
-            vec![s(owner.as_str())],
+            "SELECT thread_id FROM orch_worktree_shares WHERE owner_binding = ?1",
+            vec![Value::Integer(binding)],
             read_thread,
         )
         .await

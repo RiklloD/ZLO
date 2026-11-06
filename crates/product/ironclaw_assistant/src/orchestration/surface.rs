@@ -502,6 +502,8 @@ impl OrchestratedProductSurface {
                                         &thread,
                                         MergeStrategy::parse(req.strategy.as_deref())?,
                                         OnConflict::parse(req.on_conflict.as_deref())?,
+                                        // A person's merge: no thread is mid-turn.
+                                        None,
                                     )
                                     .await
                             }
