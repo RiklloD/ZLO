@@ -170,6 +170,8 @@ pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ROUTE_SET: &str =
     "webui.v2.orchestrator.thread_route_set";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
     "webui.v2.orchestrator.thread_merge_back";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_WORKTREE: &str =
+    "webui.v2.orchestrator.thread_worktree";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS: &str = "webui.v2.orchestrator.providers";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK: &str = "webui.v2.orchestrator.task";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK_CANCEL: &str = "webui.v2.orchestrator.task_cancel";
@@ -195,6 +197,8 @@ pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_FORK: &str =
     "/api/webchat/v2/threads/{thread_id}/fork";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
     "/api/webchat/v2/threads/{thread_id}/merge-back";
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_WORKTREE: &str =
+    "/api/webchat/v2/threads/{thread_id}/worktree";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS: &str = "/api/webchat/v2/providers";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK: &str = "/api/webchat/v2/tasks/{task_id}";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL: &str =
@@ -459,6 +463,7 @@ pub fn webui_v2_routes_with_artifact_flags(
         orchestrator_thread_route_set_descriptor(),
         orchestrator_providers_descriptor(),
         orchestrator_thread_merge_back_descriptor(),
+        orchestrator_thread_worktree_descriptor(),
         orchestrator_task_descriptor(),
         orchestrator_task_cancel_descriptor(),
         schedule_route_descriptor(
@@ -1796,6 +1801,20 @@ fn orchestrator_thread_merge_back_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK,
         mutation_policy(
             body_limit_kib(64),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
+fn orchestrator_thread_worktree_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_WORKTREE,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_WORKTREE,
+        mutation_policy(
+            body_limit_kib(16),
             mutation_rate_limit(),
             AuditTraceClass::UserAction,
             AllowedEffectPath::ProductSurface,

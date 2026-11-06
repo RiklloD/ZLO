@@ -34,3 +34,24 @@ Either way:
   objections, and a new `client_request_id`.
 - Check `status`, `provider`, `model` and `profile` in the result before you
   rely on which engine or profile ran.
+
+Where children edit code:
+- `isolation: "shared"` (default) runs the child in this thread's folder
+  (in this thread's worktree, when it works in one). Fine for research,
+  review and one editor at a time.
+- `isolation: "worktree"` gives the child its own git worktree on a new
+  `zlo/<slug>` branch, made from the committed HEAD of this thread's folder
+  (your uncommitted edits are not in it; commit first if the child needs
+  them). Use it whenever two or more children edit code in parallel, or a
+  child edits code while you keep working here. It fails if this folder is
+  not a git repository. A project's `.zlo/worktree.toml` setup commands run
+  only after the person approves them.
+- A worktree child must commit the work it wants merged on its branch:
+  nothing is committed for it. When it finishes, a clean worktree is
+  removed; one with changes is kept and the result says so. Review it with
+  `t3_thread` `action: "worktree_status"`, bring it in with
+  `action: "merge_worktree"` (`strategy` merge, squash or cherry_pick; your
+  checkout must have no uncommitted tracked changes; conflicts come back as
+  an error listing the files, with your checkout left as it was), then
+  `action: "remove_worktree"`. Unmerged work is never deleted: uncommitted
+  changes block removal, and unmerged commits stay on an archived branch.

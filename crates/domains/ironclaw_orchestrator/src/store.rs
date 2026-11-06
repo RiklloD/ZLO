@@ -502,10 +502,13 @@ impl Store {
                 .await?;
             conn.execute_batch(crate::context_report::CONTEXT_SCHEMA)
                 .await?;
+            conn.execute_batch(crate::worktree::WORKTREES_SCHEMA)
+                .await?;
         }
         crate::schedules::upgrade_schema(self).await?;
         self.upgrade_inbox_schema().await?;
         self.upgrade_goals_schema().await?;
+        self.upgrade_worktree_schema().await?;
         self.close_interrupted_cli_approvals(crate::model::now_ms())
             .await?;
         self.import_legacy_threads(legacy_runtime).await

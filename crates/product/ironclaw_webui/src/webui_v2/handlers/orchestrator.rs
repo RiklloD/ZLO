@@ -313,3 +313,42 @@ pub async fn orchestrator_thread_merge_back(
         .await?,
     ))
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorWorktreeBody {
+    pub action: String,
+    #[serde(default)]
+    pub source_dir: Option<String>,
+    #[serde(default)]
+    pub strategy: Option<String>,
+    #[serde(default)]
+    pub on_conflict: Option<String>,
+}
+
+/// `POST /api/webchat/v2/threads/{thread_id}/worktree` — the thread's git
+/// worktree: `status`, `create` (start it in a new worktree), `merge`,
+/// `remove`.
+pub async fn orchestrator_thread_worktree(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(thread_id): Path<String>,
+    Json(body): Json<OrchestratorWorktreeBody>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    let request = OrchestratorWorktreeRequest {
+        thread_id,
+        action: body.action,
+        source_dir: body.source_dir,
+        strategy: body.strategy,
+        on_conflict: body.on_conflict,
+    };
+    Ok(Json(
+        invoke_product_command(
+            state.services(),
+            caller,
+            ORCHESTRATOR_WORKTREE_COMMAND,
+            request,
+        )
+        .await?,
+    ))
+}

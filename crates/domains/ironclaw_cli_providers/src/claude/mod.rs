@@ -106,6 +106,9 @@ pub struct ClaudeCliRuntime {
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     /// Each thread's last profile context, reused when Stop restarts a turn.
     profiles: Mutex<HashMap<ThreadId, TurnProfile>>,
+    /// Threads bound to their own git worktree (`TurnInput::work_dir`):
+    /// their sessions run there, over the profile folder.
+    work_dirs: Mutex<HashMap<ThreadId, PathBuf>>,
     /// Idle `/compact` timers, one per thread (see `compact.rs`).
     compactor: Arc<compact::IdleCompactor>,
 }
@@ -139,6 +142,7 @@ impl ClaudeCliRuntime {
             bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
             profiles: Mutex::new(HashMap::new()),
+            work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::default(),
         })
     }
@@ -150,16 +154,26 @@ impl ClaudeCliRuntime {
             .join(format!("{session_id}.jsonl"))
     }
 
-    /// Where a session runs: the shared work dir when it already started
-    /// there; the folder it was started in when its transcript is elsewhere
-    /// (a profile's folder, or a terminal session imported from
-    /// `~/.claude/projects`), as `--resume` finds it only from there; else
-    /// the profile's folder, else the shared work dir.
+    /// Where a session runs: the thread's worktree; else, for a terminal
+    /// session imported from `~/.claude/projects`, its own folder (or not at
+    /// all); else the shared work dir when it already started there; the
+    /// folder it was started in when its transcript is elsewhere, as
+    /// `--resume` finds it only from there; else the profile's folder, else
+    /// the shared work dir.
     async fn session_dir(
         &self,
+        thread: &ThreadId,
         session_id: &str,
         profile: Option<&TurnProfile>,
     ) -> Result<PathBuf, RuntimeError> {
+        let bound = self
+            .work_dirs
+            .lock()
+            .ok() // silent-ok: a poisoned map only follows a panic elsewhere
+            .and_then(|m| m.get(thread).cloned());
+        if let Some(dir) = bound {
+            return Ok(dir);
+        }
         // An imported session resumes in its own folder, or not at all.
         let record = imports_dir(&self.config.work_dir).join(format!("{session_id}.json"));
         if let Some(dir) = crate::workspace::resolve(&record).await? {
@@ -182,22 +196,79 @@ impl ClaudeCliRuntime {
         })
     }
 
-    /// The session's transcript wherever it ran (session ids are unique
-    /// across project folders).
-    async fn find_transcript(&self, session_id: &str) -> Option<PathBuf> {
-        let shared = self.transcript_path(&self.config.work_dir, session_id);
-        if shared.is_file() {
-            return Some(shared);
+    /// A session that moves to another folder (into its thread's worktree,
+    /// or back once that worktree is gone) takes its transcript along, so
+    /// `--resume` finds it there. It is moved, not copied: one file per
+    /// session, so history and the next resume always read every turn.
+    async fn follow_session(&self, session_id: &str, dir: &Path) -> Result<(), RuntimeError> {
+        let target = self.transcript_path(dir, session_id);
+        let Some(source) = self.find_transcript(session_id).await else {
+            return Ok(());
+        };
+        if source == target {
+            return Ok(());
         }
+        let moved = async {
+            if let Some(parent) = target.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            // Both live under the account's projects folder: one filesystem.
+            tokio::fs::rename(&source, &target).await
+        };
+        moved
+            .await
+            .map_err(|e| RuntimeError::Unavailable(format!("session transcript: {}", e.kind())))
+    }
+
+    /// The session's one authoritative transcript, wherever it ran
+    /// (session ids are unique across project folders). An earlier build
+    /// copied a moving session instead of moving it, which can leave
+    /// several copies: the one with the most entries wins (an older copy is
+    /// a prefix of the newer one), the newest on a tie, and every other is
+    /// renamed `<session>.jsonl.superseded-<ms>` beside it — kept, never
+    /// deleted, just no longer read.
+    async fn find_transcript(&self, session_id: &str) -> Option<PathBuf> {
         let file = format!("{session_id}.jsonl");
+        let mut copies = Vec::new();
         let mut dirs = tokio::fs::read_dir(&self.config.projects_dir).await.ok()?; // silent-ok: no projects folder means no transcript yet
         while let Ok(Some(entry)) = dirs.next_entry().await {
             let path = entry.path().join(&file);
             if path.is_file() {
-                return Some(path);
+                copies.push(path);
             }
         }
-        None
+        if copies.len() <= 1 {
+            return copies.pop();
+        }
+        let mut ranked = Vec::with_capacity(copies.len());
+        for path in copies {
+            let entries = match tokio::fs::read_to_string(&path).await {
+                Ok(text) => text.lines().filter(|l| !l.trim().is_empty()).count(),
+                Err(error) => {
+                    tracing::debug!(%error, "claude cli: transcript copy unreadable; ranked last");
+                    0
+                }
+            };
+            let modified = tokio::fs::metadata(&path)
+                .await
+                .and_then(|m| m.modified())
+                .ok(); // silent-ok: an unknown time only loses the tie-break
+            ranked.push((entries, modified, path));
+        }
+        ranked.sort_by_key(|a| std::cmp::Reverse((a.0, a.1)));
+        let mut ranked = ranked.into_iter();
+        let (_, _, keep) = ranked.next()?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0); // silent-ok: a clock before 1970 only changes the suffix
+        for (_, _, stale) in ranked {
+            let aside = stale.with_extension(format!("jsonl.superseded-{stamp}"));
+            if let Err(error) = tokio::fs::rename(&stale, &aside).await {
+                tracing::debug!(%error, "claude cli: stale transcript copy left in place");
+            }
+        }
+        Some(keep)
     }
 
     fn command(
@@ -332,7 +403,7 @@ impl ClaudeCliRuntime {
         // A new turn ends the idle period: no compaction may touch the session.
         self.compactor.preempt(&thread.thread_id).await;
         let plan = TurnPlan {
-            dir: self.session_dir(&session_id, profile).await?,
+            dir: self.session_dir(&thread.thread_id, &session_id, profile).await?,
             goal,
             effort,
             profile,
@@ -340,6 +411,7 @@ impl ClaudeCliRuntime {
         tokio::fs::create_dir_all(&plan.dir)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("work dir: {}", e.kind())))?;
+        self.follow_session(&session_id, &plan.dir).await?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let mcp = self.mcp_session(&thread.thread_id, &run_id).await;
         let end_mcp = {
@@ -620,6 +692,14 @@ impl TurnRuntime for ClaudeCliRuntime {
         }
     }
 
+    fn supports_work_dir(&self) -> bool {
+        true
+    }
+
+    fn default_work_dir(&self) -> Option<PathBuf> {
+        Some(self.config.work_dir.clone())
+    }
+
     async fn create_thread(&self, request: CreateThread) -> Result<CreatedThread, RuntimeError> {
         let thread_id = ThreadId::new(uuid::Uuid::new_v4().to_string())
             .map_err(|e| RuntimeError::Rejected(e.to_string()))?;
@@ -645,6 +725,12 @@ impl TurnRuntime for ClaudeCliRuntime {
         }
         if let (Some(profile), Ok(mut profiles)) = (&input.profile, self.profiles.lock()) {
             profiles.insert(thread.thread_id.clone(), profile.clone());
+        }
+        if let Ok(mut dirs) = self.work_dirs.lock() {
+            match &input.work_dir {
+                Some(dir) => dirs.insert(thread.thread_id.clone(), dir.clone()),
+                None => dirs.remove(&thread.thread_id),
+            };
         }
         let run_id = self
             .spawn_turn(

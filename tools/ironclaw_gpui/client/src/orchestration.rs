@@ -304,6 +304,41 @@ pub struct MergedBack {
     pub note: Option<String>,
 }
 
+/// A thread's git worktree (`POST /threads/{id}/worktree`). The live
+/// fields are present only while the folder exists.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeView {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub base_commit: String,
+    #[serde(default)]
+    pub source_dir: String,
+    /// `active`, `kept`, `merged` or `removed`.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub exists: bool,
+    #[serde(default)]
+    pub ahead: Option<u64>,
+    #[serde(default)]
+    pub behind: Option<u64>,
+    #[serde(default)]
+    pub dirty_count: Option<u64>,
+    #[serde(default)]
+    pub setup_log: Option<String>,
+}
+
+impl WorktreeView {
+    /// The thread works in it now.
+    pub fn bound(&self) -> bool {
+        self.exists && self.state != "removed"
+    }
+}
+
 /// Fork options; all default to the engine's choice.
 #[derive(Debug, Clone, Default)]
 pub struct ForkOptions {
@@ -488,6 +523,39 @@ impl Client {
             .await
     }
 
+    /// The thread's worktree; `Ok(None)` when it has none.
+    pub async fn thread_worktree(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<WorktreeView>, ClientError> {
+        match self
+            .orch_post(
+                format!("{V2}/threads/{}/worktree", seg(thread_id)),
+                json!({"action": "status"}),
+            )
+            .await
+        {
+            Ok(view) => Ok(Some(view)),
+            Err(ClientError::Refused { code, .. }) if code == "no_worktree" => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Start the thread in a new git worktree made from `source_dir`
+    /// (default: the thread's working folder). Only committed work is in it.
+    pub async fn start_thread_worktree(
+        &self,
+        thread_id: &str,
+        source_dir: Option<&str>,
+    ) -> Result<WorktreeView, ClientError> {
+        let mut body = json!({"action": "create"});
+        if let Some(dir) = source_dir {
+            body["source_dir"] = json!(dir);
+        }
+        self.orch_post(format!("{V2}/threads/{}/worktree", seg(thread_id)), body)
+            .await
+    }
+
     /// Merge a fork back; the target defaults to the thread it came from.
     pub async fn merge_back(
         &self,
@@ -509,6 +577,24 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worktree_reads_the_engine_document_and_a_missing_one_is_refused() {
+        let view: WorktreeView = decode(json!({
+            "threadId": "t", "path": "/w/fix-1", "branch": "zlo/fix-1", "baseCommit": "abc1234",
+            "state": "kept", "exists": true, "ahead": 2, "behind": 0, "dirtyCount": 1,
+            "repoRoot": "/r", "sourceDir": "/r", "createdAt": 1
+        }))
+        .unwrap();
+        assert!(view.bound());
+        assert_eq!(view.branch, "zlo/fix-1");
+        assert_eq!(view.ahead, Some(2));
+        let removed: WorktreeView = decode(json!({"state": "removed", "exists": false})).unwrap();
+        assert!(!removed.bound());
+        let missing =
+            decode::<WorktreeView>(json!({"ok": false, "error": "no_worktree", "message": "none"}));
+        assert!(matches!(missing, Err(ClientError::Refused { code, .. }) if code == "no_worktree"));
+    }
 
     #[test]
     fn a_model_takes_its_own_efforts_or_the_providers() {

@@ -302,6 +302,7 @@ pub(super) async fn list(
         f.failed |= run.status == RebornAutomationRecentRunStatus::Error;
     }
 
+    let worktree_branches = store.live_worktree_branches().await.map_err(internal)?;
     let now = now_ms();
     let mut rows: Vec<InboxRow> = drafts
         .into_iter()
@@ -329,6 +330,7 @@ pub(super) async fn list(
                 title_pending: ThreadId::new(thread_id.as_str())
                     .is_ok_and(|id| engine.after_turn_busy(&id)),
                 imported: imported.get(&thread_id).cloned(),
+                worktree_branch: worktree_branches.get(&thread_id).cloned(),
                 thread_id,
             }
         })
@@ -1006,6 +1008,7 @@ mod tests {
             working_since: None,
             parent_thread_id: parent.map(str::to_string),
             automation: false,
+            worktree_branch: None,
             title_pending: false,
             imported: None,
         }
@@ -1134,6 +1137,37 @@ mod tests {
         )
         .await;
         assert!(refused.is_err(), "unknown thread is a 404");
+
+        // The worktree route: a thread without one, and a backend without
+        // worktree isolation, answer model-visibly; a foreign thread is a 404.
+        assert!(chat.worktree_branch.is_none());
+        let wt = ironclaw_product_contracts::orchestration::ORCHESTRATOR_WORKTREE_COMMAND_ID;
+        let status = invoke(
+            &surface,
+            wt,
+            json!({"thread_id": "chat", "action": "status"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status["error"], "no_worktree", "{status}");
+        let create = invoke(
+            &surface,
+            wt,
+            json!({"thread_id": "chat", "action": "create"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(create["error"], "worktree_unavailable", "{create}");
+        let foreign = invoke(
+            &surface,
+            wt,
+            json!({"thread_id": "someone-else", "action": "status"}),
+        )
+        .await;
+        assert!(
+            foreign.is_err(),
+            "a thread the caller does not own is a 404"
+        );
 
         // Goals live on engine threads.
         let out = invoke(

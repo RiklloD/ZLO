@@ -94,6 +94,9 @@ pub struct InboxRow {
     /// (`crate::session_import`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported: Option<String>,
+    /// The git branch of the thread's own worktree, while its folder exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
 }
 
 /// A profile as the inbox shows it: badge, branch, picker order.

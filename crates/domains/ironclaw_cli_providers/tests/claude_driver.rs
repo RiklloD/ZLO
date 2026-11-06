@@ -143,6 +143,7 @@ fn input() -> TurnInput {
         effort: None,
         profile: None,
         files: Vec::new(),
+        work_dir: None,
     }
 }
 
@@ -264,7 +265,8 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
 /// The profile reaches the CLI: the session runs in the profile folder with
 /// SOUL.md and the goal in its system prompt and the skills as a plugin; a
 /// Stop restart keeps it; a session that began in the shared folder stays
-/// there; history finds a transcript in either folder.
+/// there; a worktree-bound thread runs in its worktree; history finds a
+/// transcript in either folder.
 #[tokio::test]
 async fn a_compact_turn_reports_the_context_it_left() {
     let dir = tempfile::tempdir().unwrap();
@@ -332,13 +334,39 @@ async fn profile_soul_skills_and_folder_reach_the_cli() {
         ));
     std::fs::create_dir_all(&shared).unwrap();
     std::fs::write(shared.join(format!("{session}.jsonl")), "").unwrap();
+    let profile_for_worktree = profile.clone();
     let mut turn = input();
     turn.profile = Some(profile);
     rt.start_turn(&legacy, turn).await.unwrap();
     wait_for(|| sink.finished.lock().unwrap().len() == 3).await;
 
+    // A thread bound to a worktree runs there (over the profile folder),
+    // resuming its session, whose transcript follows it; a Stop restart
+    // stays there too.
+    let worktree = dir.path().join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let mut turn = input();
+    turn.profile = Some(profile_for_worktree);
+    turn.work_dir = Some(worktree.clone());
+    rt.start_turn(&legacy, turn).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 4).await;
+    rt.steer(&legacy, "again", SteerHow::Restart).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 5).await;
+    assert!(
+        dir.path()
+            .join("projects")
+            .join(claude_codes::transcript::encode_project_dir(&worktree))
+            .join(format!("{session}.jsonl"))
+            .is_file()
+    );
+
     let args = std::fs::read_to_string(&log).unwrap();
     let lines: Vec<&str> = args.lines().collect();
+    let in_worktree = format!("PWD={} ", worktree.canonicalize().unwrap().display());
+    for line in &lines[3..5] {
+        assert!(line.starts_with(&in_worktree), "{line}");
+        assert!(line.contains(&format!("--resume {session}")), "{line}");
+    }
     let in_folder = format!("PWD={} ", folder.canonicalize().unwrap().display());
     let plugin_arg = format!("--plugin-dir {}", plugin.display());
     for line in &lines[..2] {
@@ -374,6 +402,130 @@ async fn profile_soul_skills_and_folder_reach_the_cli() {
     )
     .unwrap();
     assert_eq!(rt.history(&fresh, 10).await.unwrap().len(), 1);
+}
+
+/// A session moved into its thread's worktree and back keeps one
+/// transcript: the old copy goes, and history and the next resume read
+/// every message written in either folder.
+#[tokio::test]
+async fn a_session_follows_its_worktree_and_back_with_every_message() {
+    let dir = tempfile::tempdir().unwrap();
+    // Writes neither the shared args log nor a transcript of its own (the
+    // other tests' process-wide variables must not reach this one).
+    let body = ANSWER
+        .replace(
+            "{ echo \"$@\" | tr '\\n' ' '; echo; } >> \"$ARGS_LOG\"",
+            "true",
+        )
+        .replace(
+            "mkdir -p \"$TRANSCRIPT_DIR\" && echo '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}' > \"$TRANSCRIPT_DIR/$SESSION.jsonl\"\n",
+            "",
+        );
+    assert!(!body.contains("ARGS_LOG") && !body.contains("TRANSCRIPT_DIR"));
+    let sink = Arc::new(Recorder::default());
+    let rt = runtime(dir.path(), script(dir.path(), "claude", &body), &sink);
+    let t = thread(&rt).await;
+    let session = t.native_session_id.clone().unwrap();
+    let file = format!("{session}.jsonl");
+    let project = |folder: &Path| {
+        dir.path()
+            .join("projects")
+            .join(claude_codes::transcript::encode_project_dir(folder))
+            .join(&file)
+    };
+    let line = |text: &str| {
+        format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n")
+    };
+    let shared = project(&dir.path().join("work"));
+    std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+    std::fs::write(&shared, line("before the worktree")).unwrap();
+
+    let worktree = dir.path().join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let mut turn = input();
+    turn.work_dir = Some(worktree.clone());
+    rt.start_turn(&t, turn).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let inside = project(&worktree);
+    assert!(inside.is_file());
+    assert!(!shared.exists(), "the old copy would shadow later turns");
+    // The CLI writes this turn into the worktree's transcript.
+    let mut text = std::fs::read_to_string(&inside).unwrap();
+    text.push_str(&line("in the worktree"));
+    std::fs::write(&inside, text).unwrap();
+    assert_eq!(rt.history(&t, 10).await.unwrap().len(), 2);
+
+    // The worktree is gone: the next turn runs back in the shared folder.
+    rt.start_turn(&t, input()).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 2).await;
+    assert!(!inside.exists());
+    let back = std::fs::read_to_string(&shared).unwrap();
+    assert!(back.contains("before the worktree") && back.contains("in the worktree"));
+    assert_eq!(rt.history(&t, 10).await.unwrap().len(), 2);
+}
+
+/// An earlier build copied a moving session: the shared folder kept an
+/// older copy while the worktree copy grew. The longer copy is the
+/// session; the older one is set aside (kept, not deleted) and never
+/// shadows history or the next resume.
+#[tokio::test]
+async fn an_older_duplicate_transcript_never_shadows_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = ANSWER
+        .replace(
+            "{ echo \"$@\" | tr '\\n' ' '; echo; } >> \"$ARGS_LOG\"",
+            "true",
+        )
+        .replace(
+            "mkdir -p \"$TRANSCRIPT_DIR\" && echo '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}' > \"$TRANSCRIPT_DIR/$SESSION.jsonl\"\n",
+            "",
+        );
+    assert!(!body.contains("ARGS_LOG") && !body.contains("TRANSCRIPT_DIR"));
+    let sink = Arc::new(Recorder::default());
+    let rt = runtime(dir.path(), script(dir.path(), "claude", &body), &sink);
+    let t = thread(&rt).await;
+    let session = t.native_session_id.clone().unwrap();
+    let file = format!("{session}.jsonl");
+    let project = |folder: &Path| {
+        dir.path()
+            .join("projects")
+            .join(claude_codes::transcript::encode_project_dir(folder))
+    };
+    let line = |text: &str| {
+        format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n")
+    };
+    let shared = project(&dir.path().join("work"));
+    let worktree = dir.path().join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let inside = project(&worktree);
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::write(shared.join(&file), line("one")).unwrap();
+    std::fs::write(
+        inside.join(&file),
+        format!("{}{}", line("one"), line("two")),
+    )
+    .unwrap();
+
+    assert_eq!(rt.history(&t, 10).await.unwrap().len(), 2);
+    assert!(!shared.join(&file).exists());
+    let aside: Vec<_> = std::fs::read_dir(&shared)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        aside
+            .iter()
+            .any(|n| n.starts_with(&format!("{file}.superseded-"))),
+        "{aside:?}"
+    );
+
+    // The next turn, back in the shared folder, resumes the whole session.
+    rt.start_turn(&t, input()).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let back = std::fs::read_to_string(shared.join(&file)).unwrap();
+    assert!(back.contains("one") && back.contains("two"), "{back}");
+    assert!(!inside.join(&file).exists());
 }
 
 #[tokio::test]

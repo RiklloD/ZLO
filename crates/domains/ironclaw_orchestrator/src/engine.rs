@@ -70,6 +70,14 @@ pub struct Engine {
     pub(crate) goal_check_tasks: StdMutex<crate::goal_checks::GoalCheckTasks>,
     /// This engine, for work spawned off the tick (goal check runs).
     pub(crate) me: Weak<Self>,
+    /// Worktree isolation's command runner and folder, plugged in by the host.
+    pub(crate) worktree_host: OnceLock<crate::worktree::WorktreeHost>,
+    /// Worktree owners a lifecycle step holds; turn admission skips them.
+    pub(crate) worktree_ops: StdMutex<std::collections::HashSet<ThreadId>>,
+    /// Checkouts a merge is writing into; turn admission skips their folders.
+    pub(crate) reserved_dirs: StdMutex<std::collections::HashSet<std::path::PathBuf>>,
+    /// One merge at a time per target checkout.
+    pub(crate) checkout_locks: StdMutex<HashMap<std::path::PathBuf, Arc<Mutex<()>>>>,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -116,6 +124,10 @@ impl Engine {
             goal_check_runner: OnceLock::new(),
             goal_check_tasks: StdMutex::new(HashMap::new()),
             me: me.clone(),
+            worktree_host: OnceLock::new(),
+            worktree_ops: StdMutex::new(std::collections::HashSet::new()),
+            reserved_dirs: StdMutex::new(std::collections::HashSet::new()),
+            checkout_locks: StdMutex::new(HashMap::new()),
         }))
     }
 
@@ -408,7 +420,28 @@ impl Engine {
         if thread.is_running() || self.goal_check_running(thread_id) {
             return Ok(false);
         }
+        // A worktree lifecycle step (merge, removal, settle) holds the
+        // folder: the turn waits, like for a hold.
+        if self.worktree_reserved(thread_id).await? {
+            return Ok(false);
+        }
         let runtime = self.runtime(&thread.runtime_id)?;
+        let work_dir = self.thread_work_dir(thread_id).await?;
+        // A runtime that ignores `work_dir` would edit the original checkout.
+        if work_dir.is_some() && !runtime.supports_work_dir() {
+            return Err(crate::worktree::runtime_refused(runtime.as_ref()));
+        }
+        let profile = self.turn_profile(thread_id).await;
+        // A merge is writing into the checkout this turn would work in.
+        let cwd = work_dir
+            .clone()
+            .or_else(|| profile.as_ref().and_then(|p| p.folder.clone()))
+            .or_else(|| runtime.default_work_dir());
+        if let Some(cwd) = &cwd
+            && self.checkout_reserved(cwd).await?
+        {
+            return Ok(false);
+        }
         let goal = self
             .store
             .goal(thread_id)
@@ -424,8 +457,9 @@ impl Engine {
                     model: thread.model.clone(),
                     goal,
                     effort: self.store.thread_effort(thread_id).await?,
-                    profile: self.turn_profile(thread_id).await,
+                    profile,
                     files,
+                    work_dir,
                 },
             )
             .await?;
@@ -625,6 +659,17 @@ impl Engine {
             Delivery::Pending
         } else {
             task.delivery
+        };
+        // A child in its own worktree settles it first, so the parent's
+        // result says whether its branch is waiting to be merged.
+        let worktree_note = match &task.child_thread {
+            Some(child) if !task.status.is_terminal() => self.settle_worktree(child).await,
+            _ => None,
+        };
+        let result = match (result, worktree_note) {
+            (Some(r), Some(note)) => Some(format!("{r}\n\n{note}")),
+            (None, Some(note)) if status == TaskStatus::Completed => Some(note),
+            (result, _) => result,
         };
         let patch = TaskPatch {
             result: Some(result.map(|r| clip(&r, 60_000))),

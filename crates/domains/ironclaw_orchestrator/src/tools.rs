@@ -14,6 +14,7 @@ use crate::engine::{CallContext, Engine, Result};
 use crate::error::OrchestratorError;
 use crate::model::*;
 use crate::runtime::SteerHow;
+use crate::worktree::{MergeStrategy, OnConflict};
 
 /// How agents in orchestrated threads start subagents: only through these
 /// tools. Runtimes whose agent has its own subagent tools add it to the
@@ -47,13 +48,14 @@ pub const TOOLS: [ToolSpec; 6] = [
     },
     ToolSpec {
         name: "t3_delegate",
-        description: "T3 orchestrator: start a subagent, the ONLY way to start one (never a built-in subagent/agent/task tool). It runs in a new thread the user can see and steer. context='inherit': a subagent on this task (another model, a reviewer, a parallel slice): it gets this conversation so far and keeps this thread's profile. context='brief' (default): a side task, optionally as another target.profile: the child gets ONLY the task text, so include every fact, path and constraint it needs. mode='async' (default) returns a taskId immediately; the result is delivered back to this thread as a new turn when it finishes, so end your turn instead of polling. mode='wait' blocks until done or timeout_s (the child keeps running on timeout). For each review round, call t3_delegate again with the full brief, prior findings and objections, and a new client_request_id.",
+        description: "T3 orchestrator: start a subagent, the ONLY way to start one (never a built-in subagent/agent/task tool). It runs in a new thread the user can see and steer. context='inherit': a subagent on this task (another model, a reviewer, a parallel slice): it gets this conversation so far and keeps this thread's profile. context='brief' (default): a side task, optionally as another target.profile: the child gets ONLY the task text, so include every fact, path and constraint it needs. mode='async' (default) returns a taskId immediately; the result is delivered back to this thread as a new turn when it finishes, so end your turn instead of polling. mode='wait' blocks until done or timeout_s (the child keeps running on timeout). For each review round, call t3_delegate again with the full brief, prior findings and objections, and a new client_request_id. isolation='worktree' gives the child its own git worktree and zlo/<slug> branch made from the HEAD of this thread's folder (uncommitted edits here stay out of it; fails if the folder is not a git repo): use it for children that edit code in parallel. A shared child of a thread that works in a worktree works in that same worktree. The project's .zlo/worktree.toml setup commands run only after the person approves them. When the child ends, a clean worktree is removed; one with changes is kept for t3_thread action=merge_worktree. Nothing is committed for the child: it commits what should be merged on its branch.",
         schema: || {
             json!({
                 "type": "object",
                 "properties": {
                     "task": {"type": "string", "description": "The child's task. With context='brief' it is all the child knows, so make it self-contained."},
                     "context": {"type": "string", "enum": ["inherit", "brief"], "description": "inherit: the child also gets this conversation so far (same profile). brief (default): only the task."},
+                    "isolation": {"type": "string", "enum": ["shared", "worktree"], "description": "shared (default): the child works in this thread's folder. worktree: its own git worktree and branch from this folder's committed HEAD; uncommitted edits here are not in it."},
                     "title": {"type": "string", "description": "Short label shown in the UI."},
                     "role": {"type": "string", "enum": ["implementation", "research", "review", "design", "test", "general"]},
                     "target": target_schema(),
@@ -82,19 +84,21 @@ pub const TOOLS: [ToolSpec; 6] = [
     },
     ToolSpec {
         name: "t3_thread",
-        description: "T3 orchestrator thread operations. action=runs lists a thread's runs (turns) with status and token usage. action=fork branches a thread from a run (default: latest) into a new thread that receives a portable context handoff; target may pick a different provider/model. action=merge_back brings a fork's work since the fork point back into its source thread (or target_thread). action=lineage shows forks and merges. action=send messages another thread: mode auto (start idle / steer active), queue (durable follow-up), steer (inject into the active turn) or restart (redirect the active turn). Omit thread to act on this thread.",
+        description: "T3 orchestrator thread operations. action=runs lists a thread's runs (turns) with status and token usage. action=fork branches a thread from a run (default: latest) into a new thread that receives a portable context handoff; target may pick a different provider/model. action=merge_back brings a fork's work since the fork point back into its source thread (or target_thread). action=lineage shows forks and merges. action=send messages another thread: mode auto (start idle / steer active), queue (durable follow-up), steer (inject into the active turn) or restart (redirect the active turn). action=worktree_status shows a thread's git worktree (branch, path, ahead/behind this checkout, dirty files). action=merge_worktree brings a finished child's worktree branch into the checkout it was made from (strategy merge|squash|cherry_pick). It refuses a worktree with uncommitted changes (nothing is committed for anyone) or whose HEAD left its branch with work on it, and a checkout with uncommitted tracked changes or a merge/rebase in progress; a merge that does not finish is rolled back (conflicts too, unless on_conflict='leave') and comes back as an error listing the files. action=remove_worktree removes the folder: refused while it has uncommitted changes; a branch with unmerged commits is kept and archived. Omit thread to act on this thread.",
         schema: || {
             json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["runs", "fork", "merge_back", "lineage", "send"]},
+                    "action": {"type": "string", "enum": ["runs", "fork", "merge_back", "lineage", "send", "worktree_status", "merge_worktree", "remove_worktree"]},
                     "thread": {"type": "string", "description": "Thread id; defaults to this thread."},
                     "run": {"type": "integer", "description": "Run ordinal (1-based) for fork/merge_back; default latest."},
                     "title": {"type": "string"},
                     "target": target_schema(),
                     "target_thread": {"type": "string", "description": "merge_back destination; default the fork's source."},
                     "message": {"type": "string"},
-                    "mode": {"type": "string", "enum": ["auto", "queue", "steer", "restart"]}
+                    "mode": {"type": "string", "enum": ["auto", "queue", "steer", "restart"]},
+                    "strategy": {"type": "string", "enum": ["merge", "squash", "cherry_pick"], "description": "merge_worktree: how the branch lands (default merge, a --no-ff merge commit)."},
+                    "on_conflict": {"type": "string", "enum": ["abort", "leave"], "description": "merge_worktree: abort (default) restores the checkout; leave keeps the conflicted merge there."}
                 },
                 "required": ["action"]
             })
@@ -160,6 +164,8 @@ struct ThreadArgs {
     target_thread: Option<String>,
     message: Option<String>,
     mode: Option<String>,
+    strategy: Option<String>,
+    on_conflict: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -279,8 +285,23 @@ impl Engine {
                         self.send(ctx, &thread_id, a.message.as_deref().unwrap_or(""), mode)
                             .await
                     }
+                    "worktree_status" => {
+                        let thread = self.owned_thread(&thread_id, &ctx.scope).await?;
+                        self.worktree_status(&thread).await
+                    }
+                    "merge_worktree" => {
+                        let thread = self.owned_thread(&thread_id, &ctx.scope).await?;
+                        let strategy = MergeStrategy::parse(a.strategy.as_deref())?;
+                        let on_conflict = OnConflict::parse(a.on_conflict.as_deref())?;
+                        self.merge_worktree(&thread, strategy, on_conflict, Some(&ctx.thread_id))
+                            .await
+                    }
+                    "remove_worktree" => {
+                        let thread = self.owned_thread(&thread_id, &ctx.scope).await?;
+                        self.remove_worktree(&thread).await
+                    }
                     _ => Err(OrchestratorError::invalid(
-                        "action must be runs, fork, merge_back, lineage or send",
+                        "action must be runs, fork, merge_back, lineage, send, worktree_status, merge_worktree or remove_worktree",
                     )),
                 }
             }

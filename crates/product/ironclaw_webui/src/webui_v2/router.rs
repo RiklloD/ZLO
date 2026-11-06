@@ -82,6 +82,7 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_SCHEDULES,
     WEBUI_V2_PATTERN_SEARCH_SKILLS,
     WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_CONTEXT,
+    WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_WORKTREE,
     WEBUI_V2_PATTERN_SESSION_CHANNEL_MESSAGE, WEBUI_V2_PATTERN_SET_ACTIVE_LLM,
     WEBUI_V2_PATTERN_SET_AUTO_ACTIVATE_LEARNED, WEBUI_V2_PATTERN_SET_SKILL_AUTO_ACTIVATE,
     WEBUI_V2_PATTERN_SETTINGS_TOOL_PERMISSION, WEBUI_V2_PATTERN_SETTINGS_TOOLS,
@@ -524,6 +525,10 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         .route(
             WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK,
             post(handlers::orchestrator_thread_merge_back),
+        )
+        .route(
+            WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_WORKTREE,
+            post(handlers::orchestrator_thread_worktree),
         )
         .route(
             WEBUI_V2_PATTERN_ORCHESTRATOR_TASK,

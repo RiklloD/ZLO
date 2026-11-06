@@ -87,6 +87,7 @@ fn input() -> TurnInput {
         effort: None,
         profile: None,
         files: Vec::new(),
+        work_dir: None,
     }
 }
 
