@@ -794,6 +794,14 @@ where
         expected_previous_hash: &str,
     ) -> Result<MemoryWriteOutcome, FilesystemError> {
         let virtual_path = Self::document_virtual_path(path, FilesystemOperation::Delete)?;
+        let meta_path = Self::metadata_virtual_path(path, FilesystemOperation::Delete)?;
+        // The sidecar's generation, observed before the body goes: only THAT
+        // sidecar may be removed afterwards, never one a later write created.
+        let meta_version = self
+            .filesystem
+            .get(&meta_path)
+            .await?
+            .map(|versioned| versioned.version);
         let Some((bytes, version)) = self
             .read_document_with_version(path, FilesystemOperation::Delete)
             .await?
@@ -806,8 +814,9 @@ where
         if content_bytes_sha256(&bytes) != expected_previous_hash {
             return Ok(MemoryWriteOutcome::Conflict);
         }
-        // Version-checked: a write that lands between the read above and this
-        // delete wins, and the removal reports a conflict instead.
+        // The single state change, version-checked: a write that lands
+        // between the read above and this delete wins, and the removal
+        // reports a conflict instead.
         match self
             .filesystem
             .delete_if_version(&virtual_path, version)
@@ -819,14 +828,27 @@ where
             }
             Err(error) => return Err(error),
         }
-        // Derived state only: the metadata sidecar and search chunks. The
-        // `.versions/` trail stays, so every earlier body is still retained.
-        let meta = Self::metadata_virtual_path(path, FilesystemOperation::Delete)?;
-        match self.filesystem.delete(&meta).await {
-            Ok(()) | Err(FilesystemError::NotFound { .. }) => {}
-            Err(error) => return Err(error),
+        // Best-effort tidy of the removed generation's metadata sidecar. A
+        // recreate in between changed its version, so it is left alone; an
+        // interruption here leaves a harmless sidecar. Search chunks are not
+        // touched at all: they are derived state, retrieval serves only
+        // chunks whose live body exists, and the next write to this path
+        // replaces them — so a recreate's fresh index is never wiped. The
+        // `.versions/` trail stays too, so every earlier body is retained.
+        if let Some(meta_version) = meta_version {
+            match self
+                .filesystem
+                .delete_if_version(&meta_path, meta_version)
+                .await
+            {
+                Ok(())
+                | Err(FilesystemError::NotFound { .. })
+                | Err(FilesystemError::VersionMismatch { .. }) => {}
+                Err(error) => {
+                    tracing::debug!(%error, "memory removal left the metadata sidecar in place");
+                }
+            }
         }
-        self.delete_chunks_kind_aware(path).await?;
         Ok(MemoryWriteOutcome::Written)
     }
 

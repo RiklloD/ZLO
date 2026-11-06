@@ -11,6 +11,7 @@ use crate::{
     ChunkingMemoryDocumentIndexer, FilesystemMemoryDocumentRepository, MemoryAppendOutcome,
     MemoryBackend, MemoryBackendCapabilities, MemoryBackendWriteOptions, MemoryDocumentHistory,
     MemorySearchRequest, MemorySearchResult, MemoryWriteOutcome, RepositoryMemoryBackend,
+    backend::{ARCHIVE_ROOT, is_archive_path},
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -86,8 +87,6 @@ const MEMORY_PATH: &str = "MEMORY.md";
 const HEARTBEAT_PATH: &str = "HEARTBEAT.md";
 const BOOTSTRAP_PATH: &str = "BOOTSTRAP.md";
 const PROFILE_DOCUMENT_PATH: &str = "context/profile.json";
-/// Where documents the user removes from the Memory page are kept.
-const ARCHIVE_ROOT: &str = "archive/";
 const MAX_MEMORY_PATCH_RETRIES: usize = 8;
 
 /// Snippets of the standing [`MEMORY_PATH`] document this provider prepends to
@@ -221,6 +220,11 @@ impl NativeMemoryService {
         // active thread — a silent retrieval black hole. Fail loud instead of
         // persisting it. (CR review / audit L1.)
         if is_thread_scoped_path(&resolved_path) {
+            return Err(MemoryServiceError::operation());
+        }
+        // `archive/` is written only by [`Self::archive`]; its copies are
+        // frozen (the backend refuses every mutation there too).
+        if is_archive_path(&resolved_path) {
             return Err(MemoryServiceError::operation());
         }
         let path = document_path(&scope, &resolved_path)?;
@@ -377,6 +381,22 @@ impl NativeMemoryService {
         invocation: MemoryInvocation,
         request: MemoryServiceReadRequest,
     ) -> Result<MemoryServiceReadResponse, MemoryServiceError> {
+        // The agent's read tool: archived documents are the user's, not
+        // memory the model should see or quote.
+        if is_archive_path(&request.path) {
+            return Err(MemoryServiceError::input());
+        }
+        self.read_document_at(invocation, &request.path).await
+    }
+
+    async fn read_document_at(
+        &self,
+        invocation: MemoryInvocation,
+        relative: &str,
+    ) -> Result<MemoryServiceReadResponse, MemoryServiceError> {
+        let request = MemoryServiceReadRequest {
+            path: relative.to_string(),
+        };
         reject_local_or_traversal_path(&request.path)?;
         let (scope, context) = self.scoped_context(&invocation)?;
         let path = document_path(&scope, &request.path)?;
@@ -395,6 +415,17 @@ impl NativeMemoryService {
             content_hash: content_bytes_sha256(content.as_bytes()),
             content,
         })
+    }
+
+    /// Read for the user's own Memory page: like [`Self::read`], but archived
+    /// documents (`archive/…`) are readable here. The agent's read tool never
+    /// reaches them.
+    pub async fn owner_read(
+        &self,
+        invocation: MemoryInvocation,
+        path: &str,
+    ) -> Result<MemoryServiceReadResponse, MemoryServiceError> {
+        self.read_document_at(invocation, path).await
     }
 
     /// Every document path in the caller's scope, sorted. The flat listing
@@ -484,6 +515,7 @@ impl NativeMemoryService {
             .map_err(MemoryServiceError::operation_from)?
             .into_iter()
             .map(|path| path.relative_path().to_string())
+            .filter(|path| !is_archive_path(path))
             .collect::<Vec<_>>();
         paths.sort();
         Ok(MemoryServiceTreeResponse {

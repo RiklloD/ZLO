@@ -109,9 +109,15 @@ async fn archive_round_trip(filesystem: Arc<dyn RootFilesystem>) {
     // The live path is gone, the body is kept under archive/, and it is no
     // longer searchable.
     assert_eq!(read(&service, user, "notes/wrong.md").await, None);
+    // Only the owner's page reads archives; the agent's read tool does not.
+    assert_eq!(read(&service, user, &archived).await, None);
     assert_eq!(
-        read(&service, user, &archived).await.as_deref(),
-        Some("zebra sightings are still wrong")
+        service
+            .owner_read(invocation(user), &archived)
+            .await
+            .unwrap()
+            .content,
+        "zebra sightings are still wrong"
     );
     let paths = service.list_paths(invocation(user)).await.unwrap();
     assert!(paths.contains(&archived));
@@ -166,4 +172,245 @@ async fn archive_keeps_the_body_and_removes_the_live_path_on_libsql() {
     let backend = LibSqlRootFilesystem::new(database).unwrap();
     backend.run_migrations().await.unwrap();
     archive_round_trip(Arc::new(backend)).await;
+}
+
+// --- Review findings: archive is not reachable or reversible through the
+// agent's tool surface, and retrieval never serves a removed document. ---
+
+use ironclaw_memory::{
+    MemoryContextProfileId, MemoryService, MemoryServiceContextRequest, MemoryServiceTreeRequest,
+};
+
+async fn archived_fixture(filesystem: Arc<dyn RootFilesystem>) -> (NativeMemoryService, String) {
+    let service = NativeMemoryService::from_filesystem(filesystem, None);
+    service
+        .write(
+            invocation("alice"),
+            full_write("notes/old.md", "quokka habits are wrong", None),
+        )
+        .await
+        .unwrap();
+    let archived = service
+        .archive(
+            invocation("alice"),
+            "notes/old.md",
+            &content_bytes_sha256(b"quokka habits are wrong"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    (service, archived)
+}
+
+async fn agent_cannot_reach_or_revive_archives(filesystem: Arc<dyn RootFilesystem>) {
+    let (service, archived) = archived_fixture(filesystem).await;
+
+    // The agent's read and tree tools do not see archive/.
+    assert!(
+        service
+            .read(
+                invocation("alice"),
+                MemoryServiceReadRequest {
+                    path: archived.clone(),
+                },
+            )
+            .await
+            .is_err()
+    );
+    let tree = service
+        .tree(
+            invocation("alice"),
+            MemoryServiceTreeRequest {
+                path: String::new(),
+                depth: 10,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&tree.entries)
+            .unwrap()
+            .contains("archive"),
+        "tree hides archive/: {:?}",
+        tree.entries
+    );
+
+    // Archive bodies are immutable: no rewrite, append, patch, or metadata
+    // change (re-enabling indexing) is accepted.
+    let mut revive = full_write(&archived, "quokka habits are wrong", None);
+    revive.metadata = Some(ironclaw_memory::DocumentMetadata {
+        skip_indexing: Some(false),
+        ..Default::default()
+    });
+    assert!(service.write(invocation("alice"), revive).await.is_err());
+    let mut append = full_write(&archived, "more", None);
+    append.append = true;
+    assert!(service.write(invocation("alice"), append).await.is_err());
+    let mut patch = full_write(&archived, "", None);
+    patch.old_string = Some("wrong".to_string());
+    patch.new_string = Some("right".to_string());
+    assert!(service.write(invocation("alice"), patch).await.is_err());
+    assert!(
+        service
+            .write(invocation("alice"), full_write("archive/new.md", "x", None))
+            .await
+            .is_err(),
+        "nothing new can be written under archive/"
+    );
+
+    // Recall and search never serve archived text.
+    let lane = service
+        .read_long_term(
+            invocation("alice"),
+            MemoryServiceContextRequest {
+                query: "quokka habits".to_string(),
+                max_snippets: 10,
+                context_profile_id: MemoryContextProfileId::new("default").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(lane.iter().all(|snippet| !snippet.text.contains("quokka")));
+
+    // The user's own page still reads it.
+    assert_eq!(
+        service
+            .owner_read(invocation("alice"), &archived)
+            .await
+            .unwrap()
+            .content,
+        "quokka habits are wrong"
+    );
+}
+
+#[tokio::test]
+async fn agent_cannot_reach_or_revive_archives_in_memory() {
+    agent_cannot_reach_or_revive_archives(Arc::new(InMemoryBackend::new())).await;
+}
+
+#[tokio::test]
+async fn agent_cannot_reach_or_revive_archives_on_libsql() {
+    let (_storage, backend) = libsql_backend().await;
+    agent_cannot_reach_or_revive_archives(backend).await;
+}
+
+async fn libsql_backend() -> (tempfile::TempDir, Arc<dyn RootFilesystem>) {
+    let storage = tempfile::tempdir().unwrap();
+    let database = Arc::new(
+        libsql::Builder::new_local(storage.path().join("memory.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let backend = LibSqlRootFilesystem::new(database).unwrap();
+    backend.run_migrations().await.unwrap();
+    (storage, Arc::new(backend))
+}
+
+/// A removal interrupted after the body went (search chunks still on disk)
+/// must not surface the removed text: retrieval only serves chunks whose live
+/// document still exists.
+async fn interrupted_removal_leaves_nothing_searchable(filesystem: Arc<dyn RootFilesystem>) {
+    let service = NativeMemoryService::from_filesystem(Arc::clone(&filesystem), None);
+    service
+        .write(
+            invocation("alice"),
+            full_write("notes/gone.md", "wombat burrows deep", None),
+        )
+        .await
+        .unwrap();
+    let path = ironclaw_memory::MemoryDocumentPath::new_with_agent(
+        "tenant-memory-page",
+        "alice",
+        None,
+        None,
+        "notes/gone.md",
+    )
+    .unwrap();
+    // Simulate a crash after the body delete: only the body record goes.
+    filesystem
+        .delete(&path.virtual_path().unwrap())
+        .await
+        .unwrap();
+    let hits = service
+        .search(
+            invocation("alice"),
+            MemoryServiceSearchRequest {
+                query: "wombat".to_string(),
+                limit: 5,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(hits.results.is_empty(), "{:?}", hits.results);
+
+    // Recreating the path serves only the new body.
+    service
+        .write(
+            invocation("alice"),
+            full_write("notes/gone.md", "wombat tunnels are new", None),
+        )
+        .await
+        .unwrap();
+    let hits = service
+        .search(
+            invocation("alice"),
+            MemoryServiceSearchRequest {
+                query: "wombat".to_string(),
+                limit: 5,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(hits.results.len(), 1);
+    assert!(hits.results[0].content.contains("new"));
+}
+
+#[tokio::test]
+async fn interrupted_removal_leaves_nothing_searchable_in_memory() {
+    interrupted_removal_leaves_nothing_searchable(Arc::new(InMemoryBackend::new())).await;
+}
+
+#[tokio::test]
+async fn interrupted_removal_leaves_nothing_searchable_on_libsql() {
+    let (_storage, backend) = libsql_backend().await;
+    interrupted_removal_leaves_nothing_searchable(backend).await;
+}
+
+/// A document recreated right after an archive keeps its own metadata and
+/// search entries: the removal is one version-checked delete of the body and
+/// never touches what a later write created.
+async fn recreate_after_archive_keeps_new_index(filesystem: Arc<dyn RootFilesystem>) {
+    let (service, _) = archived_fixture(filesystem).await;
+    service
+        .write(
+            invocation("alice"),
+            full_write("notes/old.md", "quokka facts, corrected", None),
+        )
+        .await
+        .unwrap();
+    let hits = service
+        .search(
+            invocation("alice"),
+            MemoryServiceSearchRequest {
+                query: "quokka".to_string(),
+                limit: 5,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(hits.results.len(), 1, "{:?}", hits.results);
+    assert_eq!(hits.results[0].path, "notes/old.md");
+    assert!(hits.results[0].content.contains("corrected"));
+}
+
+#[tokio::test]
+async fn recreate_after_archive_keeps_new_index_in_memory() {
+    recreate_after_archive_keeps_new_index(Arc::new(InMemoryBackend::new())).await;
+}
+
+#[tokio::test]
+async fn recreate_after_archive_keeps_new_index_on_libsql() {
+    let (_storage, backend) = libsql_backend().await;
+    recreate_after_archive_keeps_new_index(backend).await;
 }
