@@ -27,6 +27,7 @@ pub mod engine;
 pub mod error;
 pub mod goals;
 pub mod handoff;
+pub mod history_sources;
 pub mod inbox;
 mod migrate;
 pub mod model;

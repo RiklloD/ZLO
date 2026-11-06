@@ -64,6 +64,8 @@ pub struct Engine {
     profile_context: OnceLock<Arc<dyn ProfileContextSource>>,
     /// Told after every completed turn (thread titles), plugged in by the host.
     turn_listener: OnceLock<Arc<dyn TurnCompletedListener>>,
+    /// More listeners told after every completed turn (history indexing).
+    extra_turn_listeners: StdMutex<Vec<Arc<dyn TurnCompletedListener>>>,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -107,6 +109,7 @@ impl Engine {
             webhook_base: OnceLock::new(),
             profile_context: OnceLock::new(),
             turn_listener: OnceLock::new(),
+            extra_turn_listeners: StdMutex::new(Vec::new()),
         }))
     }
 
@@ -123,6 +126,14 @@ impl Engine {
     /// Hear about every completed turn (first call wins).
     pub fn set_turn_listener(&self, listener: Arc<dyn TurnCompletedListener>) {
         let _ = self.turn_listener.set(listener); // silent-ok: already set by an earlier wiring
+    }
+
+    /// Add a listener told after every completed turn, beside the one
+    /// `set_turn_listener` installs.
+    pub fn add_turn_listener(&self, listener: Arc<dyn TurnCompletedListener>) {
+        if let Ok(mut listeners) = self.extra_turn_listeners.lock() {
+            listeners.push(listener);
+        }
     }
 
     /// The turn listener is still working on `thread`.
@@ -1038,6 +1049,14 @@ impl TurnEventSink for Engine {
         match result {
             Ok(Some(thread)) if completed => {
                 if let Some(listener) = self.turn_listener.get() {
+                    listener.turn_completed(&thread);
+                }
+                let extra = self
+                    .extra_turn_listeners
+                    .lock()
+                    .map(|l| l.clone())
+                    .unwrap_or_default(); // silent-ok: a poisoned list only follows a panic elsewhere
+                for listener in extra {
                     listener.turn_completed(&thread);
                 }
             }
