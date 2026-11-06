@@ -14,7 +14,7 @@ use crate::runtime::*;
 use crate::store::Store;
 
 #[derive(Default)]
-struct FakeRuntime {
+pub(crate) struct FakeRuntime {
     started: Mutex<Vec<(ThreadId, String)>>,
     cancelled: Mutex<Vec<ThreadId>>,
     history: Mutex<HashMap<ThreadId, Vec<HistoryMessage>>>,
@@ -25,7 +25,7 @@ struct FakeRuntime {
 }
 
 impl FakeRuntime {
-    fn starts_on(&self, thread: &ThreadId) -> Vec<String> {
+    pub(crate) fn starts_on(&self, thread: &ThreadId) -> Vec<String> {
         self.started
             .lock()
             .unwrap()
@@ -129,14 +129,14 @@ impl TurnRuntime for FakeRuntime {
     }
 }
 
-struct Harness {
+pub(crate) struct Harness {
     _dir: tempfile::TempDir,
-    db: Arc<libsql::Database>,
-    engine: Arc<Engine>,
-    rt: Arc<FakeRuntime>,
+    pub(crate) db: Arc<libsql::Database>,
+    pub(crate) engine: Arc<Engine>,
+    pub(crate) rt: Arc<FakeRuntime>,
 }
 
-fn scope() -> ThreadScope {
+pub(crate) fn scope() -> ThreadScope {
     ThreadScope {
         tenant_id: TenantId::new("t1").unwrap(),
         user_id: UserId::new("u1").unwrap(),
@@ -145,7 +145,7 @@ fn scope() -> ThreadScope {
     }
 }
 
-fn tid(raw: &str) -> ThreadId {
+pub(crate) fn tid(raw: &str) -> ThreadId {
     ThreadId::new(raw).unwrap()
 }
 
@@ -158,14 +158,14 @@ fn ctx(thread: &str) -> CallContext {
     }
 }
 
-async fn open_engine(db: &Arc<libsql::Database>) -> Arc<Engine> {
+pub(crate) async fn open_engine(db: &Arc<libsql::Database>) -> Arc<Engine> {
     let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(db)).unwrap());
     Engine::open(Store::new(runtime), RuntimeId::new("fake").unwrap())
         .await
         .unwrap()
 }
 
-async fn harness() -> Harness {
+pub(crate) async fn harness() -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(
         libsql::Builder::new_local(dir.path().join("o.db"))
@@ -184,7 +184,7 @@ async fn harness() -> Harness {
     }
 }
 
-async fn finish(engine: &Engine, thread: &ThreadId, outcome: TurnOutcome) {
+pub(crate) async fn finish(engine: &Engine, thread: &ThreadId, outcome: TurnOutcome) {
     let t = engine.store().thread(thread).await.unwrap().unwrap();
     engine
         .turn_finished(thread, t.active_run_id.clone(), outcome, now_ms())

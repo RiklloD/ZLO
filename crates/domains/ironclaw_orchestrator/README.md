@@ -48,7 +48,24 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   approvals the `ironclaw_cli_providers` bridge asks; open rows are closed
   as `interrupted` when the engine opens.
 - `goals` — `orch_goals`; the active goal rides every turn
-  (`TurnInput.goal`, and the profile SOUL context on IronClaw's loop).
+  (`TurnInput.goal`, and the profile SOUL context on IronClaw's loop). A goal
+  may carry a check (`check_*` columns, added in place on open; older goals
+  read with none).
+- `goal_checks` — goals that are verified: a completed turn on any runtime
+  arms the goal's check; the tick runs it on an idle, unheld thread through
+  the host's `GoalCheckRunner` (`Engine::set_goal_check_runner`; composition
+  wires the shell's process port and approval settings). Ask first asks once
+  per command (or every run under a per-tool `ask_each_time`), a disabled
+  shell refuses. Exit 0 marks the goal done; non-zero queues a bounded
+  follow-up (`Author::System`) on the thread's queue until `max_attempts`,
+  then the check needs the person. Each change to a check is a new
+  revision: "Run check now" must name the revision it approves, and only the
+  execution in flight (its run id) may record a result; a failure and its
+  follow-up commit in one transaction. Launches happen under `dispatch`;
+  Stop and a starting turn cancel a run (back to `pending`), automatic turns
+  wait for it, shutdown cancels it and boot runs it again. A folder that
+  cannot be resolved blocks the check instead of falling back. At most four
+  run at once.
 
 ## Tables
 

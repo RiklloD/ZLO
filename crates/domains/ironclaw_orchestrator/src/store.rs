@@ -221,7 +221,7 @@ impl<'a> Cols<'a> {
             _ => Ok(None),
         }
     }
-    fn thread(&mut self) -> Result<ThreadId> {
+    pub(crate) fn thread(&mut self) -> Result<ThreadId> {
         Ok(ThreadId::new(self.text()?)?)
     }
     fn othread(&mut self) -> Result<Option<ThreadId>> {
@@ -469,6 +469,7 @@ impl Store {
         }
         crate::schedules::upgrade_schema(self).await?;
         self.upgrade_inbox_schema().await?;
+        self.upgrade_goals_schema().await?;
         self.close_interrupted_cli_approvals(crate::model::now_ms())
             .await?;
         self.import_legacy_threads(legacy_runtime).await

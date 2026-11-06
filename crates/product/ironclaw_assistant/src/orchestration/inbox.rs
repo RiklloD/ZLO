@@ -755,15 +755,32 @@ pub(super) async fn set_goal(
 ) -> Result<ThreadGoalResponse, OrchestratorError> {
     let thread = ThreadId::new(request.thread_id.as_str())?;
     engine.owned_thread(&thread, &scope_of(caller)).await?;
-    let goal = engine
-        .store()
-        .set_goal(
-            &thread,
-            request.objective.as_deref(),
-            request.status,
-            now_ms(),
-        )
-        .await?;
+    let store = engine.store();
+    let now = now_ms();
+    // Objective/status first (that creates the goal), then its check, then
+    // the action; an empty request clears the goal.
+    if request.is_clear() {
+        // A cleared goal's check must not keep running.
+        engine.stop_goal_check(&thread).await?;
+    }
+    let mut goal = if request.objective.is_some() || request.status.is_some() || request.is_clear()
+    {
+        store
+            .set_goal(&thread, request.objective.as_deref(), request.status, now)
+            .await?
+    } else {
+        store.goal(&thread).await?
+    };
+    if let Some(check) = &request.check {
+        goal = engine.set_goal_check(&thread, Some(check), now).await?;
+    } else if request.clear_check {
+        goal = engine.set_goal_check(&thread, None, now).await?;
+    }
+    if let Some(action) = request.check_action {
+        goal = store
+            .goal_check_action(&thread, action, request.check_revision, now)
+            .await?;
+    }
     Ok(ThreadGoalResponse {
         thread_id: thread.to_string(),
         goal,
@@ -922,6 +939,28 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_value(page.items[0].clone()).unwrap()
+    }
+
+    async fn surface_goal(
+        surface: &OrchestratedProductSurface,
+        thread: &str,
+    ) -> ironclaw_product_contracts::inbox::GoalRecord {
+        let page = surface
+            .query(
+                caller("u1"),
+                ProductSurfaceQueryRequest {
+                    view_id: THREAD_GOAL_VIEW.id.into(),
+                    input: json!({"thread_id": thread}),
+                    cursor: None,
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap();
+        serde_json::from_value::<ThreadGoalResponse>(page.items[0].clone())
+            .unwrap()
+            .goal
+            .unwrap()
     }
 
     async fn invoke(
@@ -1100,6 +1139,86 @@ mod tests {
         .unwrap();
         let goal: ThreadGoalResponse = serde_json::from_value(out).unwrap();
         assert_eq!(goal.goal.unwrap().objective, "Ship stage 5");
+        // `/goal <text> --check "<cmd>"`: objective and check in one request.
+        let out = invoke(
+            &surface,
+            THREAD_GOAL_SET_COMMAND_ID,
+            json!({"thread_id": "chat", "objective": "Tests pass",
+                   "check": {"command": "cargo test -p foo", "max_attempts": 3}}),
+        )
+        .await
+        .unwrap();
+        let goal = serde_json::from_value::<ThreadGoalResponse>(out)
+            .unwrap()
+            .goal
+            .unwrap();
+        let check = goal.check.unwrap();
+        assert_eq!(
+            (
+                goal.objective.as_str(),
+                check.command.as_str(),
+                check.max_attempts
+            ),
+            ("Tests pass", "cargo test -p foo", 3)
+        );
+        // "Run check now" names the revision it was shown; a stale one is
+        // refused through the surface too.
+        let shown = check.revision;
+        invoke(
+            &surface,
+            THREAD_GOAL_SET_COMMAND_ID,
+            json!({"thread_id": "chat", "check": {"command": "cargo test -p bar"}}),
+        )
+        .await
+        .unwrap();
+        let stale = invoke(
+            &surface,
+            THREAD_GOAL_SET_COMMAND_ID,
+            json!({"thread_id": "chat", "check_action": "run_now", "check_revision": shown}),
+        )
+        .await;
+        assert!(
+            stale.as_ref().map_or(true, |out| out["ok"] == json!(false)),
+            "a run_now for a revision the person never saw was accepted: {stale:?}"
+        );
+        let after = surface_goal(&surface, "chat").await.check.unwrap();
+        assert_eq!(
+            (after.command.as_str(), after.status),
+            (
+                "cargo test -p bar",
+                ironclaw_product_contracts::inbox::GoalCheckStatus::NotRun
+            ),
+            "the replaced check was queued under the old approval"
+        );
+        // The strip's buttons act on it without touching the objective.
+        let out = invoke(
+            &surface,
+            THREAD_GOAL_SET_COMMAND_ID,
+            json!({"thread_id": "chat", "check_action": "stop_retrying"}),
+        )
+        .await
+        .unwrap();
+        let goal = serde_json::from_value::<ThreadGoalResponse>(out)
+            .unwrap()
+            .goal
+            .unwrap();
+        assert_eq!(goal.objective, "Tests pass");
+        assert_eq!(
+            goal.check.unwrap().status,
+            ironclaw_product_contracts::inbox::GoalCheckStatus::Stopped
+        );
+        let out = invoke(
+            &surface,
+            THREAD_GOAL_SET_COMMAND_ID,
+            json!({"thread_id": "chat", "clear_check": true}),
+        )
+        .await
+        .unwrap();
+        let goal = serde_json::from_value::<ThreadGoalResponse>(out)
+            .unwrap()
+            .goal
+            .unwrap();
+        assert_eq!((goal.objective.as_str(), goal.check), ("Tests pass", None));
         let page = surface
             .query(
                 caller("u2"),
