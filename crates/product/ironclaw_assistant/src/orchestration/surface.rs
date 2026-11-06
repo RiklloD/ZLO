@@ -94,6 +94,110 @@ fn to_json<T: serde::Serialize>(value: T) -> Result<Value, OrchestratorError> {
     Ok(serde_json::to_value(value)?)
 }
 
+/// Largest message, @-mention context included, sent to IronClaw's loop:
+/// its submit validation caps message content at 64 KiB.
+const MENTION_LOOP_LIMIT: usize = 64 * 1024;
+/// The same for CLI engines, under T3 Code's 120 000-character prompt cap
+/// with room for the attached-file lines added after it.
+const MENTION_CLI_LIMIT: usize = 100_000;
+/// Between a handoff context and the typed message.
+const HANDOFF_SEP: &str = "\n\n---\n\n";
+/// Messages of a mentioned thread read for its digest.
+const MENTION_THREAD_TIMELINE: u64 = 40;
+
+/// Mentioned threads, read as the sender: the orchestrator's record for the
+/// title and the scoped timeline view for its messages, so a thread the
+/// caller does not own reads as missing.
+struct CallerThreads<'a> {
+    surface: &'a OrchestratedProductSurface,
+    caller: &'a ProductSurfaceCaller,
+    scope: &'a ThreadScope,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct DigestPage {
+    messages: Vec<DigestMessage>,
+    summary_artifacts: Vec<DigestSummary>,
+}
+
+/// Timeline message kinds a digest keeps; CLI histories may carry others.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DigestKind {
+    User,
+    Assistant,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(serde::Deserialize)]
+struct DigestMessage {
+    kind: DigestKind,
+    #[serde(default)]
+    content: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct DigestSummary {
+    content: String,
+}
+
+#[async_trait]
+impl super::mentions::ThreadDigests for CallerThreads<'_> {
+    async fn digest(&self, thread_id: &str) -> Option<super::mentions::ThreadDigest> {
+        let id = ThreadId::new(thread_id).ok()?;
+        let title = match self.surface.engine.owned_thread(&id, self.scope).await {
+            Ok(thread) => thread.title,
+            Err(error) => {
+                tracing::debug!(%error, "mentioned thread has no orchestrator record");
+                None
+            }
+        };
+        let request = ProductSurfaceQueryRequest {
+            view_id: TIMELINE_VIEW.id.to_string(),
+            input: serde_json::json!({
+                "thread_id": id.as_str(),
+                "limit": MENTION_THREAD_TIMELINE,
+            }),
+            cursor: None,
+            limit: None,
+        };
+        let page = match self.surface.query(self.caller.clone(), request).await {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::debug!(?error, "mentioned thread is not readable by the caller");
+                return None;
+            }
+        };
+        let item = page.items.into_iter().next()?;
+        let page: DigestPage = match serde_json::from_value(item) {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::debug!(%error, "mentioned thread timeline did not decode");
+                return None;
+            }
+        };
+        let messages = page
+            .messages
+            .into_iter()
+            .filter_map(|m| {
+                let who = match m.kind {
+                    DigestKind::User => "User",
+                    DigestKind::Assistant => "Assistant",
+                    DigestKind::Other => return None,
+                };
+                m.content.filter(|c| !c.trim().is_empty()).map(|c| (who, c))
+            })
+            .collect();
+        Some(super::mentions::ThreadDigest {
+            title,
+            summary: page.summary_artifacts.into_iter().last().map(|s| s.content),
+            messages,
+        })
+    }
+}
+
 pub(crate) fn scope_of(caller: &ProductSurfaceCaller) -> ThreadScope {
     ThreadScope {
         tenant_id: caller.tenant_id.clone(),
@@ -164,6 +268,25 @@ async fn telemetry_view(
 
 impl OrchestratedProductSurface {
     /// The caller's thread, when it runs off IronClaw's loop.
+    /// Whether `caller` may read thread `id`: the same scoped timeline read
+    /// the thread view answers with, so a thread of anyone else's reads as
+    /// missing. Mentions expand only for a thread the sender owns.
+    async fn caller_reads_thread(&self, caller: &ProductSurfaceCaller, id: &ThreadId) -> bool {
+        let probe = ProductSurfaceQueryRequest {
+            view_id: TIMELINE_VIEW.id.to_string(),
+            input: serde_json::json!({"thread_id": id.as_str(), "limit": 1}),
+            cursor: None,
+            limit: None,
+        };
+        match self.query(caller.clone(), probe).await {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::debug!(?error, "mentions: sender cannot read the thread");
+                false
+            }
+        }
+    }
+
     async fn external(&self, id: &ThreadId, scope: &ThreadScope) -> Option<ThreadRecord> {
         let thread = self.engine.external_thread(id).await.ok().flatten()?;
         self.engine.owned_thread(id, scope).await.ok()?;
@@ -682,14 +805,50 @@ impl ProductSurface for OrchestratedProductSurface {
                     );
                     soft("user prompt", self.engine.on_user_prompt(&id).await);
                     let mut changed = false;
-                    match self.engine.take_next_message_context(&id).await {
-                        Ok(Some(context)) => {
-                            let typed = body.content.take().unwrap_or_default();
-                            body.content = Some(format!("{context}\n\n---\n\n{typed}"));
-                            changed = true;
+                    let roots = std::mem::take(&mut body.mention_roots);
+                    changed |= !roots.is_empty();
+                    let handoff = match self.engine.take_next_message_context(&id).await {
+                        Ok(context) => context,
+                        Err(error) => {
+                            soft("next-message context", Err::<(), _>(error));
+                            None
                         }
-                        Ok(None) => {}
-                        Err(error) => soft("next-message context", Err::<(), _>(error)),
+                    };
+                    // @-mentions in the typed text expand once the sender is
+                    // known to own the thread, inside what the final message
+                    // may hold once any handoff context is in front of it.
+                    if let Some(typed) = body.content.as_deref().filter(|t| t.contains("[@"))
+                        && self.caller_reads_thread(&caller, &id).await
+                    {
+                        let cli = self.external(&id, &scope).await.is_some();
+                        let (runtime, cap) = if cli {
+                            (super::mentions::MentionRuntime::Cli, MENTION_CLI_LIMIT)
+                        } else {
+                            (super::mentions::MentionRuntime::Loop, MENTION_LOOP_LIMIT)
+                        };
+                        let threads = CallerThreads {
+                            surface: self,
+                            caller: &caller,
+                            scope: &scope,
+                        };
+                        let in_front = handoff.as_ref().map_or(0, |c| c.len() + HANDOFF_SEP.len());
+                        let home = std::env::home_dir();
+                        let expanded = super::mentions::expand(
+                            typed,
+                            &roots,
+                            home.as_deref(),
+                            runtime,
+                            &threads,
+                            cap.saturating_sub(in_front),
+                        )
+                        .await;
+                        body.content = Some(expanded);
+                        changed = true;
+                    }
+                    if let Some(context) = handoff {
+                        let typed = body.content.take().unwrap_or_default();
+                        body.content = Some(format!("{context}{HANDOFF_SEP}{typed}"));
+                        changed = true;
                     }
                     // A message without a model runs on the thread's pick
                     // (`/route`), else on its profile's default; the thread's

@@ -82,6 +82,11 @@ tracing = "0.1"
 url = "2"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 
+[target.'cfg(unix)'.dependencies]
+# Mention expansion (orchestration/mentions): no-follow `openat` walks from a
+# root descriptor held from vetting on.
+rustix = { version = "1", features = ["fs"] }
+
 [dev-dependencies]
 # Enables the shared in-memory turn-state store double for tests only.
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", features = ["test-support"] }

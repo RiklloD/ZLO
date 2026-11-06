@@ -5,12 +5,16 @@
 //! anchor (`{{attachment:N}}`), so the backend puts the file's reference
 //! where the person put it. Both composers (thread and new-thread draft)
 //! share these helpers.
+//!
+//! `@` mentions are inline tokens too: their id names the mention
+//! (`mentions::token_id`), and on send each becomes its Markdown link.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use ironclaw_gpui_client::attachments::{self, StagedFile};
 use ironclaw_gpui_client::inbound_requests::attachment_anchor;
+use ironclaw_gpui_client::mentions;
 
 use crate::design::Palette;
 use crate::snapshot;
@@ -90,6 +94,10 @@ pub(crate) fn outgoing(
         out.push_str(&text[last..range.start]);
         last = range.end;
         let id = span.token().id();
+        if let Some(uri) = mentions::token_mention(id) {
+            out.push_str(&mentions::outgoing(&uri, span.token().text()));
+            continue;
+        }
         let Some(file) = staged.iter().find(|f| f.key.to_string() == id.as_ref()) else {
             out.push_str(span.token().text());
             continue;
@@ -166,7 +174,13 @@ pub(crate) fn token_renderer(
             .iter()
             .find(|(key, _)| key == token.token().id().as_ref())
             .map(|(_, f)| f);
-        let icon = file.and_then(|f| snapshot::icon(f, cx));
+        let icon = file.and_then(|f| snapshot::icon(f, cx)).or_else(|| {
+            mentions::token_mention(token.token().id()).map(|uri| {
+                crate::chat::menu::kind_icon(crate::chat::menu::uri_kind(&uri))
+                    .xsmall()
+                    .into_any_element()
+            })
+        });
         inline_card(
             SharedString::from(format!("token-{}", token.token().id())),
             icon,
@@ -177,6 +191,24 @@ pub(crate) fn token_renderer(
         )
         .into_any_element()
     }
+}
+
+/// Composer content for a sent message's text: each mention link folded
+/// back into its chip, for edit and resend.
+pub(crate) fn restored(text: &str) -> InputContent {
+    let (plain, chips) = mentions::restore(text);
+    let mut content = InputContent::new(plain.clone());
+    for chip in chips {
+        let token = InlineToken::new(chip.id, chip.text.clone()).with_label(chip.text);
+        content = match content.clone().with_token(chip.range, token) {
+            Ok(next) => next,
+            Err(error) => {
+                tracing::debug!(%error, "composer: mention chip not restored");
+                content
+            }
+        };
+    }
+    content
 }
 
 /// Token text may hold no control characters.

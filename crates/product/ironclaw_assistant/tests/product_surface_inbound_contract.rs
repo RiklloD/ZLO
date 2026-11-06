@@ -109,6 +109,7 @@ fn send_message_carries_requested_model_and_drops_default_alias() {
         content: Some("hi".to_string()),
         attachments: Vec::new(),
         model: Some("gpt-4o".to_string()),
+        mention_roots: Vec::new(),
     };
     let ProductInboundCommand::SendMessage {
         requested_model, ..
@@ -128,6 +129,7 @@ fn send_message_carries_requested_model_and_drops_default_alias() {
             content: Some("hi".to_string()),
             attachments: Vec::new(),
             model: Some(alias.to_string()),
+            mention_roots: Vec::new(),
         };
         let ProductInboundCommand::SendMessage {
             requested_model, ..
@@ -362,6 +364,7 @@ fn command_serializes_with_stable_command_tag() {
         content: Some("hello".to_string()),
         attachments: Vec::new(),
         model: None,
+        mention_roots: Vec::new(),
     };
     let command = request.into_command(caller()).expect("valid command");
 
@@ -381,6 +384,7 @@ fn token_fields_reject_control_characters() {
         content: Some("hello".to_string()),
         attachments: Vec::new(),
         model: None,
+        mention_roots: Vec::new(),
     };
 
     let err = request.into_command(caller()).expect_err("control char");
@@ -561,6 +565,7 @@ fn send_with_attachments(attachments: Vec<ProductInboundAttachment>) -> ProductS
         content: Some("see attached".to_string()),
         attachments,
         model: None,
+        mention_roots: Vec::new(),
     }
 }
 

@@ -220,6 +220,20 @@ impl Client {
         content: &str,
         attachments: Vec<ProductInboundAttachment>,
     ) -> Result<SubmitAck, ClientError> {
+        self.send_message_with_roots(channel, thread_id, content, attachments, Vec::new())
+            .await
+    }
+
+    /// [`send_message`](Self::send_message) granting `mention_roots`: the
+    /// project folders the backend may read the message's @-mentions from.
+    pub async fn send_message_with_roots(
+        &self,
+        channel: &str,
+        thread_id: &str,
+        content: &str,
+        attachments: Vec<ProductInboundAttachment>,
+        mention_roots: Vec<String>,
+    ) -> Result<SubmitAck, ClientError> {
         // The gateway wants content; an attachments-only send uses the same
         // placeholder as the web UI, which both clients hide again.
         let content = if content.trim().is_empty() && !attachments.is_empty() {
@@ -232,6 +246,7 @@ impl Client {
             thread_id: Some(thread_id.to_string()),
             content: Some(content.to_string()),
             attachments,
+            mention_roots,
             ..Default::default()
         };
         self.post(&format!("{V2}/channels/{}/messages", seg(channel)), &body)

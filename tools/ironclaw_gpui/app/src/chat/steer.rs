@@ -57,9 +57,11 @@ impl ChatView {
         let thread_id = self.thread_id.clone();
         let body = text.clone();
         let wire = files.iter().map(StagedFile::to_wire).collect();
-        let job = self
-            .backend
-            .spawn(move |c| async move { c.send_message(&channel, &thread_id, &body, wire).await });
+        let roots = self.mention_roots(&text, cx);
+        let job = self.backend.spawn(move |c| async move {
+            c.send_message_with_roots(&channel, &thread_id, &body, wire, roots)
+                .await
+        });
         let task = cx.spawn_in(window, async move |this, cx| {
             let result = flatten(job.await);
             let _ = this.update_in(cx, |this, window, cx| {

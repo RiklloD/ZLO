@@ -100,6 +100,13 @@ pub struct ProductSubmitTurnRequest {
     /// selection". `None` for clients that don't pick a model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Absolute host folders the sender grants for this message's
+    /// [`crate::mention`] links (the thread's project folder). The backend
+    /// expands a file, folder, selection or git-diff mention only when its
+    /// resolved path lies inside one of these; with none, such mentions stay
+    /// links. Thread mentions are checked against the caller's own threads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mention_roots: Vec<String>,
 }
 
 /// Maximum UTF-8 bytes accepted for the client-owned generation action key.

@@ -305,6 +305,32 @@ impl ChatView {
         cx.notify();
     }
 
+    /// The lines picked for a comment (or the latest comment's), new side
+    /// only, for the composer's `@` selection mention.
+    pub(crate) fn changes_selection(
+        &self,
+    ) -> Option<(
+        std::path::PathBuf,
+        ironclaw_gpui_client::mentions::LineRange,
+    )> {
+        let state = &self.side.changes;
+        let range = state
+            .draft
+            .as_ref()
+            .map(|d| &d.range)
+            .or_else(|| state.comments.last().map(|c| &c.range))?;
+        if range.side() != DiffSide::Modified || range.end_side() != DiffSide::Modified {
+            return None;
+        }
+        let (a, b) = (range.start(), range.end());
+        let lines = ironclaw_gpui_client::mentions::LineRange::new(
+            u32::try_from(a.min(b)).ok()?,
+            u32::try_from(a.max(b)).ok()?,
+        )?;
+        let repo = self.side.repo.as_ref()?;
+        Some((repo.join(range.path().as_ref()), lines))
+    }
+
     fn start_draft(&mut self, range: DiffLineRange, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Comment for the agent"));
         let sub = cx.subscribe_in(&input, window, |this, _, event, _, cx| {

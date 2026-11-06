@@ -406,7 +406,7 @@ fn delegated_result(text: &str) -> Option<(String, String)> {
 }
 
 /// A message's text as a person reads it: without the attachments-only
-/// marker, and without the context handoff the engine prepends to the first
+/// marker, the expanded @-mention context, and the context handoff the engine prepends to the first
 /// message sent after a fork or provider switch (`{context}\n\n---\n\n{typed}`).
 fn shown_text(message: &TimelineMessage) -> String {
     let text = message
@@ -414,6 +414,12 @@ fn shown_text(message: &TimelineMessage) -> String {
         .as_deref()
         .filter(|c| *c != ATTACHMENTS_ONLY_CONTENT)
         .unwrap_or_default();
+    // The context the backend expanded from @-mentions is for the agent.
+    let text = if message.kind == MessageKind::User {
+        crate::mentions::strip_mention_context(text)
+    } else {
+        text
+    };
     if message.kind != MessageKind::User
         || !(text.starts_with("Context handoff (") || text.starts_with("Merged context from fork"))
     {

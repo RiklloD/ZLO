@@ -5,17 +5,29 @@
 //! Two triggers, like opencode and Claude Code:
 //! - `/` opens commands (only as the draft's first word) and skills
 //!   (anywhere). The backend force-activates a `/skill` mention.
-//! - `@` opens extensions; the backend pins a mentioned extension's tools
-//!   for that turn.
+//! - `@` opens mentions: files, folders, threads and a Changes-tab
+//!   selection (`crate::mentions`, sent as Markdown links the
+//!   backend expands), then extensions (the backend pins a mentioned
+//!   extension's tools for that turn) and skills.
 
 use ironclaw_product_contracts::product_wire::RebornProductCommandInfo;
+
+use crate::mentions::{MentionContext, MentionEntry, ThreadEntry, mention_matches};
 
 /// One entry in the composer menu.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuItem {
     Command(RebornProductCommandInfo),
-    Skill { name: String, description: String },
-    Extension { name: String, description: String },
+    Skill {
+        name: String,
+        description: String,
+    },
+    Extension {
+        name: String,
+        description: String,
+    },
+    /// A file, folder, thread, diff or selection: inserted as a chip.
+    Mention(MentionEntry),
 }
 
 impl MenuItem {
@@ -23,6 +35,7 @@ impl MenuItem {
         match self {
             Self::Command(c) => &c.name,
             Self::Skill { name, .. } | Self::Extension { name, .. } => name,
+            Self::Mention(m) => &m.label,
         }
     }
 
@@ -32,6 +45,7 @@ impl MenuItem {
             Self::Command(c) => c.usage.clone(),
             Self::Skill { name, .. } => format!("/{name}"),
             Self::Extension { name, .. } => format!("@{name}"),
+            Self::Mention(m) => format!("@{}", m.label),
         }
     }
 
@@ -39,6 +53,7 @@ impl MenuItem {
         match self {
             Self::Command(c) => &c.description,
             Self::Skill { description, .. } | Self::Extension { description, .. } => description,
+            Self::Mention(m) => &m.detail,
         }
     }
 
@@ -48,6 +63,7 @@ impl MenuItem {
             Self::Command(_) => "Commands",
             Self::Skill { .. } => "Skills",
             Self::Extension { .. } => "Tools",
+            Self::Mention(m) => m.kind.section(),
         }
     }
 }
@@ -58,6 +74,8 @@ pub struct MenuSources {
     pub commands: Vec<RebornProductCommandInfo>,
     pub skills: Vec<MenuItem>,
     pub extensions: Vec<MenuItem>,
+    /// Recent threads for `@`, from the inbox list.
+    pub threads: Vec<ThreadEntry>,
 }
 
 /// The inventory entry the draft's first word names, or `None` when the text
@@ -87,13 +105,45 @@ pub fn trigger_token(text: &str) -> Option<(usize, &str)> {
 
 /// Menu entries for the draft, empty when nothing is being typed.
 pub fn menu_matches(text: &str, sources: &MenuSources) -> Vec<MenuItem> {
+    menu_matches_with(text, sources, &MentionContext::default())
+}
+
+/// Tools and skills a bare `@` lists before anything is typed.
+const AT_EXTRAS: usize = 5;
+
+/// [`menu_matches`] with the composer's mention sources: `@` lists
+/// mentions first, then tools and skills.
+pub fn menu_matches_with(
+    text: &str,
+    sources: &MenuSources,
+    mentions: &MentionContext<'_>,
+) -> Vec<MenuItem> {
     let Some((start, token)) = trigger_token(text) else {
         return Vec::new();
     };
     let query = token[1..].to_lowercase();
     let hit = |item: &&MenuItem| item.name().to_lowercase().starts_with(&query);
     if token.starts_with('@') {
-        return sources.extensions.iter().filter(hit).cloned().collect();
+        let threads = if mentions.threads.is_empty() {
+            &sources.threads[..]
+        } else {
+            mentions.threads
+        };
+        let ctx = MentionContext {
+            threads,
+            ..*mentions
+        };
+        let extras = if query.is_empty() {
+            AT_EXTRAS
+        } else {
+            usize::MAX
+        };
+        return mention_matches(&query, &ctx)
+            .into_iter()
+            .map(MenuItem::Mention)
+            .chain(sources.extensions.iter().filter(hit).take(extras).cloned())
+            .chain(sources.skills.iter().filter(hit).take(extras).cloned())
+            .collect();
     }
     // Commands only run as the first word of the draft.
     let at_start = text[..start].trim().is_empty();
@@ -164,6 +214,7 @@ mod tests {
                 name: "github".into(),
                 description: String::new(),
             }],
+            threads: Vec::new(),
         };
         let names = |v: Vec<MenuItem>| v.iter().map(|i| i.label()).collect::<Vec<_>>();
         assert_eq!(

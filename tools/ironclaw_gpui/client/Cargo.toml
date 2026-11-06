@@ -22,3 +22,12 @@ uuid.workspace = true
 base64.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+# `@` file listings honor .gitignore in-process, without running git.
+ignore = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+# Ignore files are opened no-follow and non-blocking (a FIFO cannot hang).
+rustix = { version = "1", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3"

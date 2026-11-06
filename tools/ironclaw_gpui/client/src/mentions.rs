@@ -1,0 +1,1160 @@
+//! The `@` menu's mention sources (files, folders, threads, a Changes-tab
+//! selection) and the composer's mention chips.
+//!
+//! Mentions travel as Markdown links (`ironclaw_product_contracts::mention`):
+//! the composer shows each as an atomic chip, sends it as `[@label](uri)`,
+//! and turns a sent message's links back into chips for edit and resend.
+//! The gateway expands them at send time inside the project folder the
+//! message names as its mention root.
+//!
+//! Files come from one listing per project folder: a bounded walk in this
+//! process that honors `.gitignore` files and `.git/info/exclude`, skips
+//! hidden and build folders, never follows symlinks and never starts `git`
+//! (a checkout's config can make git run its own programs). Ignore files are
+//! read only when they are small regular files, opened without blocking, so
+//! a FIFO cannot hang the walk, and the walk stops at a deadline. Listings
+//! are cached per folder and rebuilt in the background once stale
+//! ([`IndexCache`]).
+
+use std::collections::HashMap;
+use std::io::Read as _;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use ignore::Match;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::time::{Duration, Instant};
+
+pub use ironclaw_product_contracts::mention::{
+    LineRange, MentionPart, MentionSpan, MentionUri, mention_parts, mention_spans,
+    strip_mention_context,
+};
+
+/// Paths one listing holds; a bigger tree is cut (and says so).
+const INDEX_LIMIT: usize = 100_000;
+/// A listing stops here and says it was cut.
+const WALK_DEADLINE: Duration = Duration::from_secs(5);
+/// Largest ignore file read.
+const IGNORE_FILE_LIMIT: u64 = 256 * 1024;
+/// A listing older than this is rebuilt on the next `@`.
+const INDEX_TTL: Duration = Duration::from_secs(20);
+/// Folders a walk never enters.
+const HEAVY_DIRS: [&str; 7] = [
+    "node_modules",
+    "target",
+    ".git",
+    "dist",
+    "build",
+    ".venv",
+    "__pycache__",
+];
+/// Rows per section.
+const FILE_ROWS: usize = 8;
+const FOLDER_ROWS: usize = 4;
+const THREAD_ROWS: usize = 5;
+
+/// The files and folders under a project folder, relative to it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FileIndex {
+    pub root: PathBuf,
+    pub files: Vec<String>,
+    pub dirs: Vec<String>,
+    /// The listing stopped at [`INDEX_LIMIT`].
+    pub truncated: bool,
+    /// Unique per listing built, so a ranking names the listing it ranked.
+    pub generation: u64,
+}
+
+impl FileIndex {
+    /// List `root`. Blocking: run it off the UI thread.
+    pub fn build(root: &Path) -> Self {
+        let (files, truncated) = walk(root, WalkLimits::new(), &mut |_| {});
+        Self::from_files(root.to_path_buf(), files, truncated)
+    }
+
+    fn from_files(root: PathBuf, mut files: Vec<String>, truncated: bool) -> Self {
+        files.sort();
+        files.dedup();
+        let mut dirs: Vec<String> = files
+            .iter()
+            .flat_map(|f| f.match_indices('/').map(move |(i, _)| f[..i].to_string()))
+            .collect();
+        dirs.sort();
+        dirs.dedup();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            root,
+            files,
+            dirs,
+            truncated,
+            generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+/// Listings by folder, with their age.
+#[derive(Default)]
+pub struct IndexCache {
+    entries: HashMap<PathBuf, (Instant, Arc<FileIndex>)>,
+    building: std::collections::HashSet<PathBuf>,
+}
+
+impl IndexCache {
+    /// The cached listing (possibly stale) and whether a rebuild should start.
+    pub fn get(&mut self, root: &Path) -> (Option<Arc<FileIndex>>, bool) {
+        let entry = self.entries.get(root);
+        let stale = entry.is_none_or(|(at, _)| at.elapsed() > INDEX_TTL);
+        let start = stale && self.building.insert(root.to_path_buf());
+        (entry.map(|(_, index)| Arc::clone(index)), start)
+    }
+
+    pub fn put(&mut self, index: FileIndex) {
+        let root = index.root.clone();
+        self.building.remove(&root);
+        self.entries.insert(root, (Instant::now(), Arc::new(index)));
+    }
+
+    /// A rebuild failed or was dropped: allow the next one.
+    pub fn abandon(&mut self, root: &Path) {
+        self.building.remove(root);
+    }
+}
+
+/// Bounds of one listing walk, checked at every entry.
+#[derive(Debug, Clone, Copy)]
+struct WalkLimits {
+    deadline: Instant,
+    /// Directory entries read in all, listed or not.
+    max_visited: usize,
+    /// Folder levels entered below the root.
+    max_depth: usize,
+}
+
+impl WalkLimits {
+    fn new() -> Self {
+        Self {
+            deadline: Instant::now() + WALK_DEADLINE,
+            max_visited: INDEX_LIMIT * 4,
+            max_depth: 32,
+        }
+    }
+}
+
+/// The listing of `root`: files not ignored, relative to it, and whether a
+/// bound cut it. Folders are walked depth first through descriptors: each
+/// subfolder is opened no-follow relative to its parent's descriptor and
+/// closed when done, ignore files are opened relative to their folder's
+/// descriptor, and a symlink or hard-linked file is never listed. Nothing
+/// is re-opened by path, so a folder swapped for a symlink mid-walk is not
+/// followed. `before_enter` runs just before a subfolder is opened.
+#[cfg(unix)]
+fn walk(
+    root: &Path,
+    limits: WalkLimits,
+    before_enter: &mut dyn FnMut(&Path),
+) -> (Vec<String>, bool) {
+    use rustix::fs::{Mode, OFlags};
+    // The root is the folder the person picked; below it nothing is followed.
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let Ok(fd) = rustix::fs::open(root, flags, Mode::empty()) else {
+        return (Vec::new(), false);
+    };
+    let mut walker = Walker {
+        root,
+        limits,
+        visited: 0,
+        files: Vec::new(),
+        truncated: false,
+        before_enter,
+    };
+    let mut rules = Vec::new();
+    if let Some(exclude) = exclude_rules(&fd, root, limits.deadline) {
+        rules.push(Arc::new(exclude));
+    }
+    walker.visit(&fd, root, rules, 0);
+    (walker.files, walker.truncated)
+}
+
+#[cfg(unix)]
+struct Walker<'a> {
+    root: &'a Path,
+    limits: WalkLimits,
+    visited: usize,
+    files: Vec<String>,
+    truncated: bool,
+    before_enter: &'a mut dyn FnMut(&Path),
+}
+
+#[cfg(unix)]
+impl Walker<'_> {
+    /// Whether a bound is hit; marks the walk cut when so.
+    fn spent(&mut self) -> bool {
+        if self.visited >= self.limits.max_visited
+            || self.files.len() >= INDEX_LIMIT
+            || Instant::now() >= self.limits.deadline
+        {
+            self.truncated = true;
+        }
+        self.truncated
+    }
+
+    fn visit(
+        &mut self,
+        fd: &std::os::fd::OwnedFd,
+        dir: &Path,
+        mut rules: Vec<Arc<Gitignore>>,
+        level: usize,
+    ) {
+        use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+        if self.spent() {
+            return;
+        }
+        if let Some(local) = ignore_rules_at(fd, ".gitignore", dir, self.limits.deadline) {
+            rules.push(Arc::new(local));
+        }
+        let Ok(entries) = rustix::fs::Dir::read_from(fd) else {
+            return; // silent-ok: an unreadable folder is left out of the listing
+        };
+        for entry in entries {
+            if self.spent() {
+                return;
+            }
+            self.visited += 1;
+            let Ok(entry) = entry else {
+                return;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let Ok(stat) = rustix::fs::statat(fd, entry.file_name(), AtFlags::SYMLINK_NOFOLLOW)
+            else {
+                continue;
+            };
+            let path = dir.join(&name);
+            match FileType::from_raw_mode(stat.st_mode) {
+                FileType::Directory => {
+                    if name.starts_with('.')
+                        || HEAVY_DIRS.contains(&name.as_str())
+                        || ignored(&rules, &path, true)
+                    {
+                        continue;
+                    }
+                    if level + 1 > self.limits.max_depth {
+                        self.truncated = true;
+                        continue;
+                    }
+                    (self.before_enter)(&path);
+                    let flags =
+                        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+                    // Swapped for a symlink since it was read: refused here.
+                    let Ok(sub) = rustix::fs::openat(fd, entry.file_name(), flags, Mode::empty())
+                    else {
+                        continue;
+                    };
+                    self.visit(&sub, &path, rules.clone(), level + 1);
+                }
+                FileType::RegularFile if stat.st_nlink == 1 => {
+                    if !ignored(&rules, &path, false)
+                        && let Ok(rel) = path.strip_prefix(self.root)
+                    {
+                        self.files.push(rel.to_string_lossy().into_owned());
+                    }
+                }
+                // Symlinks, hard-linked files, devices, FIFOs, sockets.
+                _ => {}
+            }
+        }
+    }
+}
+
+/// `.git/info/exclude` of the root, reached no-follow from its descriptor.
+#[cfg(unix)]
+fn exclude_rules(
+    root_fd: &std::os::fd::OwnedFd,
+    root: &Path,
+    deadline: Instant,
+) -> Option<Gitignore> {
+    use rustix::fs::{Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let git = rustix::fs::openat(root_fd, ".git", flags, Mode::empty()).ok()?;
+    let info = rustix::fs::openat(&git, "info", flags, Mode::empty()).ok()?;
+    ignore_rules_at(&info, "exclude", root, deadline)
+}
+
+/// The rules of ignore file `name` in the folder open as `dir_fd`, matched
+/// against paths below `base`. Read only when it is a small regular file,
+/// opened no-follow and non-blocking (a FIFO fails instead of hanging);
+/// parsing stops at the deadline.
+#[cfg(unix)]
+fn ignore_rules_at(
+    dir_fd: &std::os::fd::OwnedFd,
+    name: &str,
+    base: &Path,
+    deadline: Instant,
+) -> Option<Gitignore> {
+    use rustix::fs::{FileType, Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let fd = rustix::fs::openat(dir_fd, name, flags, Mode::empty()).ok()?;
+    let stat = rustix::fs::fstat(&fd).ok()?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || u64::try_from(stat.st_size).ok()? > IGNORE_FILE_LIMIT
+    {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::from(fd)
+        .take(IGNORE_FILE_LIMIT)
+        .read_to_string(&mut text)
+        .ok()?;
+    let mut builder = GitignoreBuilder::new(base);
+    for (n, line) in text.lines().enumerate() {
+        if n % 256 == 0 && Instant::now() >= deadline {
+            break;
+        }
+        // A line that is not a valid pattern is skipped, as git does.
+        let _ = builder.add_line(None, line);
+    }
+    builder.build().ok()
+}
+
+/// Elsewhere: a path walk with the same bounds, skipping symlinks.
+#[cfg(not(unix))]
+fn walk(
+    root: &Path,
+    limits: WalkLimits,
+    before_enter: &mut dyn FnMut(&Path),
+) -> (Vec<String>, bool) {
+    let mut files = Vec::new();
+    let mut visited = 0;
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, level)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > limits.max_visited
+                || files.len() >= INDEX_LIMIT
+                || Instant::now() >= limits.deadline
+            {
+                return (files, true);
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if kind.is_dir() && !name.starts_with('.') && !HEAVY_DIRS.contains(&name.as_str()) {
+                if level + 1 > limits.max_depth {
+                    return (files, true);
+                }
+                before_enter(&path);
+                stack.push((path, level + 1));
+            } else if kind.is_file()
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                files.push(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
+    (files, false)
+}
+
+/// Whether the deepest rule that speaks about `path` ignores it.
+fn ignored(rules: &[Arc<Gitignore>], path: &Path, is_dir: bool) -> bool {
+    for rules in rules.iter().rev() {
+        match rules.matched(path, is_dir) {
+            Match::Ignore(_) => return true,
+            Match::Whitelist(_) => return false,
+            Match::None => {}
+        }
+    }
+    false
+}
+
+/// A thread the `@` menu can offer, from the inbox list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadEntry {
+    pub thread_id: String,
+    pub title: String,
+    /// Unix ms of the latest activity.
+    pub last_activity_at: i64,
+}
+
+/// Which `@` section an entry sits in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MentionKind {
+    Changes,
+    File,
+    Folder,
+    Thread,
+}
+
+impl MentionKind {
+    pub fn section(self) -> &'static str {
+        match self {
+            Self::Changes => "Changes",
+            Self::File => "Files",
+            Self::Folder => "Folders",
+            Self::Thread => "Threads",
+        }
+    }
+}
+
+/// One `@` row: the mention it inserts, its chip label, and the muted
+/// column (parent folder, thread age, …).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionEntry {
+    pub uri: MentionUri,
+    pub label: String,
+    pub detail: String,
+    pub kind: MentionKind,
+}
+
+/// What the `@` menu can see for this composer.
+#[derive(Default, Clone, Copy)]
+pub struct MentionContext<'a> {
+    pub index: Option<&'a FileIndex>,
+    pub threads: &'a [ThreadEntry],
+    /// Lines picked in the Changes tab: absolute path and range.
+    pub selection: Option<(&'a Path, LineRange)>,
+    /// The thread the composer belongs to, left out of Threads.
+    pub current_thread: Option<&'a str>,
+    /// How file and folder rows are found.
+    pub ranking: Ranking<'a>,
+}
+
+/// Where the file and folder rows of the `@` menu come from.
+#[derive(Default, Clone, Copy)]
+pub enum Ranking<'a> {
+    /// Rank here and now (tests, small listings).
+    #[default]
+    Inline,
+    /// A ranking made off the UI thread: the latest one for this listing,
+    /// possibly of an earlier query while the current one is ranked.
+    Ready(&'a RankedPaths),
+    /// No ranking for this listing yet: no file or folder rows.
+    Pending,
+}
+
+/// `@` rows for `query`, section by section.
+pub fn mention_matches(query: &str, ctx: &MentionContext<'_>) -> Vec<MentionEntry> {
+    let mut out = Vec::new();
+    let query = query.trim();
+    if let Some(index) = ctx.index {
+        let root = index.root.to_string_lossy().into_owned();
+        if let Some((path, range)) = ctx.selection {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if query.is_empty()
+                || fuzzy_score(query, "selection").is_some()
+                || fuzzy_score(query, &name).is_some()
+            {
+                out.push(MentionEntry {
+                    uri: MentionUri::Selection {
+                        path: path.to_string_lossy().into_owned(),
+                        range,
+                    },
+                    label: format!("{name}:{}-{}", range.start, range.end),
+                    detail: "Selected lines in Changes".into(),
+                    kind: MentionKind::Changes,
+                });
+            }
+        }
+        let inline;
+        let ranked = match ctx.ranking {
+            Ranking::Inline => {
+                inline = rank_paths(index, query);
+                Some(&inline)
+            }
+            Ranking::Ready(ranked) if ranked.generation == index.generation => Some(ranked),
+            Ranking::Ready(_) | Ranking::Pending => None,
+        };
+        let files: Vec<&str> =
+            ranked.map_or(Vec::new(), |r| r.files.iter().map(String::as_str).collect());
+        let labels = disambiguate(&files);
+        for (rel, label) in files.iter().zip(labels) {
+            out.push(MentionEntry {
+                uri: MentionUri::File {
+                    path: join(&root, rel),
+                    line_range: None,
+                },
+                label,
+                detail: parent(rel).to_string(),
+                kind: MentionKind::File,
+            });
+        }
+        let dirs: Vec<&str> =
+            ranked.map_or(Vec::new(), |r| r.dirs.iter().map(String::as_str).collect());
+        let labels = disambiguate(&dirs);
+        for (rel, label) in dirs.iter().zip(labels) {
+            out.push(MentionEntry {
+                uri: MentionUri::Directory {
+                    path: join(&root, rel),
+                },
+                label: format!("{label}/"),
+                detail: parent(rel).to_string(),
+                kind: MentionKind::Folder,
+            });
+        }
+    }
+    let mut threads: Vec<(i32, &ThreadEntry)> = ctx
+        .threads
+        .iter()
+        .filter(|t| Some(t.thread_id.as_str()) != ctx.current_thread)
+        .filter_map(|t| {
+            if query.is_empty() {
+                Some((0, t))
+            } else {
+                fuzzy_score(query, &t.title).map(|s| (s, t))
+            }
+        })
+        .collect();
+    threads.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.last_activity_at.cmp(&a.1.last_activity_at))
+    });
+    out.extend(
+        threads
+            .into_iter()
+            .take(THREAD_ROWS)
+            .map(|(_, t)| MentionEntry {
+                uri: MentionUri::Thread {
+                    id: t.thread_id.clone(),
+                },
+                label: t.title.clone(),
+                detail: "Thread".into(),
+                kind: MentionKind::Thread,
+            }),
+    );
+    out
+}
+
+fn join(root: &str, rel: &str) -> String {
+    format!("{}/{rel}", root.trim_end_matches('/'))
+}
+
+fn parent(rel: &str) -> &str {
+    rel.rsplit_once('/').map_or("", |(p, _)| p)
+}
+
+/// A query prepared once for scoring many candidates: lowercase, no spaces.
+struct Prepared {
+    chars: Vec<char>,
+    text: String,
+    ascii: bool,
+}
+
+impl Prepared {
+    fn new(query: &str) -> Self {
+        let chars: Vec<char> = query
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect();
+        let text: String = chars.iter().collect();
+        let ascii = text.is_ascii();
+        Self { chars, text, ascii }
+    }
+}
+
+/// The best `limit` of `paths` for `query`. An empty query keeps the
+/// shallowest, shortest paths.
+pub fn rank<'a>(query: &str, paths: &'a [String], limit: usize) -> Vec<&'a str> {
+    let prepared = Prepared::new(query);
+    let mut scored: Vec<(i32, &str)> = if prepared.chars.is_empty() {
+        paths
+            .iter()
+            .map(|p| {
+                let depth = p.matches('/').count() as i32;
+                (-(depth * 100) - p.len() as i32, p.as_str())
+            })
+            .collect()
+    } else {
+        paths
+            .iter()
+            .filter_map(|p| score(&prepared, p).map(|s| (s, p.as_str())))
+            .collect()
+    };
+    let cmp = |a: &(i32, &str), b: &(i32, &str)| b.0.cmp(&a.0).then(a.1.cmp(b.1));
+    if scored.len() > limit {
+        scored.select_nth_unstable_by(limit, cmp);
+        scored.truncate(limit);
+    }
+    scored.sort_by(cmp);
+    scored.into_iter().map(|(_, p)| p).collect()
+}
+
+/// The file and folder rows of one `@` query against one listing. Ranking
+/// a large listing is the menu's one costly step, so the app runs this off
+/// the UI thread and keeps the result for its `(generation, query)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedPaths {
+    pub generation: u64,
+    pub query: String,
+    pub files: Vec<String>,
+    pub dirs: Vec<String>,
+}
+
+impl RankedPaths {
+    /// Whether this is the ranking of `query` against `index`.
+    pub fn is_for(&self, index: &FileIndex, query: &str) -> bool {
+        self.generation == index.generation && self.query == query.trim()
+    }
+}
+
+/// Rank `index` for `query`. Blocking: run it off the UI thread.
+pub fn rank_paths(index: &FileIndex, query: &str) -> RankedPaths {
+    let query = query.trim();
+    let own = |v: Vec<&str>| v.into_iter().map(str::to_string).collect();
+    RankedPaths {
+        generation: index.generation,
+        query: query.to_string(),
+        files: own(rank(query, &index.files, FILE_ROWS)),
+        dirs: own(rank(query, &index.dirs, FOLDER_ROWS)),
+    }
+}
+
+/// Fuzzy score of `query` against a path (higher is better), `None` when its
+/// characters do not all appear in order. A match inside the file name beats
+/// one spread over folders; word starts and runs score extra.
+pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
+    score(&Prepared::new(query), candidate)
+}
+
+/// [`fuzzy_score`] for a prepared query; allocates nothing for ASCII names.
+fn score(query: &Prepared, candidate: &str) -> Option<i32> {
+    if query.chars.is_empty() {
+        return Some(0);
+    }
+    let name_start = candidate.rfind('/').map_or(0, |i| i + 1);
+    let name = &candidate[name_start..];
+    let q = query.text.as_str();
+    let (equal, prefix, inside) = if query.ascii && name.is_ascii() {
+        (
+            name.eq_ignore_ascii_case(q),
+            name.get(..q.len())
+                .is_some_and(|p| p.eq_ignore_ascii_case(q)),
+            contains_ignore_ascii_case(name, q),
+        )
+    } else {
+        let lower = name.to_lowercase();
+        (lower == q, lower.starts_with(q), lower.contains(q))
+    };
+    let bonus = if equal {
+        1_000
+    } else if prefix {
+        400
+    } else if inside {
+        200
+    } else {
+        0
+    };
+    let in_name = subsequence(&query.chars, name).map(|s| s + 300);
+    let anywhere = subsequence(&query.chars, candidate);
+    let best = in_name.max(anywhere)?;
+    Some(best + bonus - (candidate.len() as i32) / 4)
+}
+
+fn contains_ignore_ascii_case(hay: &str, needle: &str) -> bool {
+    needle.is_empty()
+        || hay
+            .as_bytes()
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// Greedy in-order match of `query` (lowercase) in `text`.
+fn subsequence(query: &[char], text: &str) -> Option<i32> {
+    let mut score = 0;
+    let mut qi = 0;
+    let mut last: Option<usize> = None;
+    let mut prev: Option<char> = None;
+    for (i, c) in text.chars().enumerate() {
+        if qi == query.len() {
+            break;
+        }
+        let hit = if c.is_ascii() {
+            c.to_ascii_lowercase() == query[qi]
+        } else {
+            c.to_lowercase().eq(std::iter::once(query[qi]))
+        };
+        if hit {
+            let boundary = prev.is_none_or(|p| {
+                matches!(p, '/' | '_' | '-' | '.' | ' ') || (p.is_lowercase() && c.is_uppercase())
+            });
+            score += 10;
+            if boundary {
+                score += 15;
+            }
+            match last {
+                Some(l) if l + 1 == i => score += 20,
+                Some(l) => score -= ((i - l - 1) as i32).min(10),
+                None => {}
+            }
+            last = Some(i);
+            qi += 1;
+        }
+        prev = Some(c);
+    }
+    (qi == query.len()).then_some(score)
+}
+
+/// Short labels for `paths`: the last component, plus as many parent
+/// components as it takes to tell same-named paths apart.
+pub fn disambiguate(paths: &[&str]) -> Vec<String> {
+    let parts: Vec<Vec<&str>> = paths.iter().map(|p| p.split('/').collect()).collect();
+    let mut depth = vec![1usize; paths.len()];
+    loop {
+        let labels: Vec<String> = parts
+            .iter()
+            .zip(&depth)
+            .map(|(p, d)| p[p.len().saturating_sub(*d)..].join("/"))
+            .collect();
+        let mut grow = false;
+        for i in 0..paths.len() {
+            let clash = (0..paths.len()).any(|j| j != i && labels[j] == labels[i]);
+            if clash && depth[i] < parts[i].len() {
+                depth[i] += 1;
+                grow = true;
+            }
+        }
+        if !grow {
+            return labels;
+        }
+    }
+}
+
+/// Prefix of a composer token that stands for a mention.
+const TOKEN_PREFIX: &str = "mention:";
+
+/// The composer token id for `uri`.
+pub fn token_id(uri: &MentionUri) -> String {
+    format!("{TOKEN_PREFIX}{}", uri.to_uri())
+}
+
+/// The mention a composer token stands for, if it is one.
+pub fn token_mention(id: &str) -> Option<MentionUri> {
+    MentionUri::parse(id.strip_prefix(TOKEN_PREFIX)?).ok()
+}
+
+/// The chip text for a label: `@label`, one line.
+pub fn chip_text(label: &str) -> String {
+    let label: String = label
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    format!("@{}", label.trim())
+}
+
+/// What a chip sends: the Markdown link, or the `/skill` and `@tool` words
+/// the backend already understands.
+pub fn outgoing(uri: &MentionUri, chip: &str) -> String {
+    match uri {
+        MentionUri::Skill { name } => format!("/{name}"),
+        MentionUri::Extension { name } => format!("@{name}"),
+        _ => uri.to_link(chip.strip_prefix('@').unwrap_or(chip)),
+    }
+}
+
+/// A chip to restore into the composer: its byte range in the plain text,
+/// token id and chip text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredChip {
+    pub range: Range<usize>,
+    pub id: String,
+    pub text: String,
+}
+
+/// A sent message's text with each mention link folded back to its chip,
+/// for edit and resend.
+pub fn restore(text: &str) -> (String, Vec<RestoredChip>) {
+    let text = strip_mention_context(text);
+    let mut out = String::with_capacity(text.len());
+    let mut chips = Vec::new();
+    for part in mention_parts(text) {
+        match part {
+            MentionPart::Text(t) => out.push_str(t),
+            MentionPart::Mention(span) => {
+                let chip = chip_text(&span.label);
+                let start = out.len();
+                out.push_str(&chip);
+                chips.push(RestoredChip {
+                    range: start..out.len(),
+                    id: token_id(&span.uri),
+                    text: chip,
+                });
+            }
+        }
+    }
+    (out, chips)
+}
+
+/// Whether `text` holds a mention that reads the disk (and so needs the
+/// project folder as its mention root).
+pub fn needs_root(text: &str) -> bool {
+    mention_spans(text).iter().any(|s| s.uri.path().is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn index(files: &[&str]) -> FileIndex {
+        FileIndex::from_files(
+            PathBuf::from("/repo"),
+            files.iter().map(|s| s.to_string()).collect(),
+            false,
+        )
+    }
+
+    #[test]
+    fn fuzzy_ranking_prefers_file_names_word_starts_and_runs() {
+        let paths: Vec<String> = [
+            "src/chat/menu.rs",
+            "src/main.rs",
+            "docs/menus/overview.md",
+            "src/workspace/draft.rs",
+            "app/src/chat/model_picker.rs",
+            "Cargo.toml",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(rank("menu", &paths, 3)[0], "src/chat/menu.rs");
+        assert_eq!(rank("main", &paths, 1), ["src/main.rs"]);
+        assert_eq!(rank("mp", &paths, 1), ["app/src/chat/model_picker.rs"]);
+        assert_eq!(rank("cargo", &paths, 1), ["Cargo.toml"]);
+        assert_eq!(rank("wsdraft", &paths, 1), ["src/workspace/draft.rs"]);
+        assert!(rank("zzz", &paths, 5).is_empty());
+        // No query: shallow, short paths first.
+        assert_eq!(rank("", &paths, 1), ["Cargo.toml"]);
+        assert!(fuzzy_score("menu", "menu.rs") > fuzzy_score("menu", "src/m/e/n/u.rs"));
+    }
+
+    #[test]
+    fn same_named_paths_are_told_apart_by_their_parents() {
+        assert_eq!(
+            disambiguate(&["app/chat/mod.rs", "app/side/mod.rs", "app/main.rs"]),
+            ["chat/mod.rs", "side/mod.rs", "main.rs"]
+        );
+        assert_eq!(
+            disambiguate(&["a/x/lib.rs", "b/x/lib.rs"]),
+            ["a/x/lib.rs", "b/x/lib.rs"]
+        );
+        assert_eq!(
+            disambiguate(&["lib.rs", "src/lib.rs"]),
+            ["lib.rs", "src/lib.rs"]
+        );
+    }
+
+    #[test]
+    fn at_menu_offers_sections_in_order() {
+        let index = index(&["src/chat/mod.rs", "src/side/mod.rs", "README.md"]);
+        let threads = vec![
+            ThreadEntry {
+                thread_id: "t1".into(),
+                title: "Fix the mod loader".into(),
+                last_activity_at: 1,
+            },
+            ThreadEntry {
+                thread_id: "t2".into(),
+                title: "Current".into(),
+                last_activity_at: 2,
+            },
+        ];
+        let ctx = MentionContext {
+            index: Some(&index),
+            threads: &threads,
+            selection: None,
+            current_thread: Some("t2"),
+            ranking: Ranking::Inline,
+        };
+        let rows = mention_matches("mod", &ctx);
+        let kinds: Vec<MentionKind> = rows.iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds,
+            [MentionKind::File, MentionKind::File, MentionKind::Thread]
+        );
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["chat/mod.rs", "side/mod.rs", "Fix the mod loader"]);
+        assert_eq!(
+            rows[0].uri,
+            MentionUri::File {
+                path: "/repo/src/chat/mod.rs".into(),
+                line_range: None
+            }
+        );
+        let all = mention_matches("", &ctx);
+        // The git diff is not offered: producing it means running git.
+        assert!(
+            all.iter()
+                .all(|r| !matches!(r.uri, MentionUri::GitDiff { .. }))
+        );
+        assert!(all.iter().any(|r| r.label == "src/"));
+        assert!(!all.iter().any(|r| r.label == "Current"));
+    }
+
+    #[test]
+    fn chips_round_trip_through_the_sent_text() {
+        let uri = MentionUri::File {
+            path: "/repo/src/a b.rs".into(),
+            line_range: LineRange::new(3, 4),
+        };
+        let id = token_id(&uri);
+        assert_eq!(token_mention(&id), Some(uri.clone()));
+        let sent = format!("look at {} now", outgoing(&uri, &chip_text("a b.rs")));
+        assert!(needs_root(&sent));
+        let stored = format!(
+            "{sent}\n\n---\nMentioned context (expanded by ZLO from the @-mentions above):\nX\n[End of mentioned context]"
+        );
+        let (text, chips) = restore(&stored);
+        assert_eq!(text, "look at @a b.rs now");
+        assert_eq!(chips.len(), 1);
+        assert_eq!(&text[chips[0].range.clone()], "@a b.rs");
+        assert_eq!(token_mention(&chips[0].id), Some(uri));
+        let skill = MentionUri::Skill { name: "rev".into() };
+        assert_eq!(outgoing(&skill, "@rev"), "/rev");
+        assert!(!needs_root("see [@t](zlo://thread/t1)"));
+    }
+
+    #[test]
+    fn listings_follow_gitignore_and_the_cache_rebuilds_when_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/x")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "").unwrap();
+        std::fs::write(dir.join("node_modules/x/i.js"), "").unwrap();
+        std::fs::write(dir.join(".hidden"), "").unwrap();
+        let walked = FileIndex::build(&dir);
+        assert_eq!(walked.files, [".hidden", "src/a.rs"]);
+        assert_eq!(walked.dirs, ["src"]);
+
+        // `.gitignore` files and `.git/info/exclude` hold, nested ones too,
+        // with negation; no git process is involved.
+        std::fs::create_dir_all(dir.join(".git/info")).unwrap();
+        std::fs::write(dir.join(".git/info/exclude"), "local.txt\n").unwrap();
+        std::fs::write(dir.join(".gitignore"), "ignored.txt\n*.log\n").unwrap();
+        std::fs::write(dir.join("src/.gitignore"), "!keep.log\n").unwrap();
+        for f in ["ignored.txt", "local.txt", "x.log", "src/keep.log"] {
+            std::fs::write(dir.join(f), "").unwrap();
+        }
+        let listed = FileIndex::build(&dir);
+        assert!(listed.files.contains(&"src/a.rs".to_string()));
+        assert!(
+            listed.files.contains(&"src/keep.log".to_string()),
+            "{:?}",
+            listed.files
+        );
+        for gone in ["ignored.txt", "local.txt", "x.log"] {
+            assert!(
+                !listed.files.contains(&gone.to_string()),
+                "{gone}: {:?}",
+                listed.files
+            );
+        }
+
+        let mut cache = IndexCache::default();
+        assert_eq!(cache.get(&dir), (None, true));
+        // One rebuild at a time.
+        assert_eq!(cache.get(&dir), (None, false));
+        cache.put(walked.clone());
+        let (cached, rebuild) = cache.get(&dir);
+        assert_eq!(cached.as_deref(), Some(&walked));
+        assert!(!rebuild);
+    }
+
+    #[test]
+    fn listing_a_hostile_checkout_runs_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&repo).args(args).output();
+        if !git(&["init", "-q"]).is_ok_and(|o| o.status.success()) {
+            return; // no git on this machine
+        }
+        std::fs::write(repo.join("a.txt"), "one").unwrap();
+        let marker = tmp.path().join("PWNED");
+        let script = tmp.path().join("evil.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        git(&["add", "."]).unwrap();
+        git(&["config", "core.fsmonitor", &script.to_string_lossy()]).unwrap();
+        let listed = FileIndex::build(&repo);
+        assert_eq!(listed.files, ["a.txt"]);
+        assert!(!marker.exists(), "a repository-configured command ran");
+    }
+
+    #[test]
+    fn rankings_are_keyed_to_their_listing_and_query() {
+        let a = index(&["src/menu.rs", "src/main.rs"]);
+        let b = index(&["src/menu.rs", "src/main.rs"]);
+        assert_ne!(a.generation, b.generation);
+        let ranked = rank_paths(&a, " menu ");
+        assert!(ranked.is_for(&a, "menu"));
+        assert!(!ranked.is_for(&a, "main"));
+        assert!(!ranked.is_for(&b, "menu"));
+        assert_eq!(ranked.files[0], "src/menu.rs");
+        // A ranking of another listing contributes no rows.
+        let ctx = MentionContext {
+            index: Some(&b),
+            ranking: Ranking::Ready(&ranked),
+            ..MentionContext::default()
+        };
+        assert!(
+            mention_matches("menu", &ctx)
+                .iter()
+                .all(|r| r.kind != MentionKind::File)
+        );
+        let ctx = MentionContext {
+            index: Some(&a),
+            ranking: Ranking::Ready(&ranked),
+            ..MentionContext::default()
+        };
+        assert_eq!(mention_matches("menu", &ctx)[0].label, "menu.rs");
+    }
+
+    #[test]
+    fn scoring_matches_with_mixed_case_and_unicode() {
+        assert!(fuzzy_score("READ", "docs/Readme.md").is_some());
+        assert!(fuzzy_score("über", "src/Über.rs").is_some());
+        assert!(fuzzy_score("rdm", "README.md") > fuzzy_score("rdm", "src/r/d/m.txt"));
+    }
+
+    /// Ignore files a checkout swaps for FIFOs (or that never finish) cannot
+    /// hang the listing: it returns within its deadline, and starts no
+    /// process.
+    #[test]
+    fn listing_never_hangs_on_fifo_ignore_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&repo).args(args).output();
+        if !git(&["init", "-q"]).is_ok_and(|o| o.status.success()) {
+            return; // no git on this machine
+        }
+        // A config include that never finishes reading.
+        let include = tmp.path().join("include.fifo");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&include)
+                .status()
+                .unwrap()
+                .success()
+        );
+        git(&["config", "include.path", &include.to_string_lossy()]).unwrap();
+        std::fs::create_dir_all(repo.join(".git/info")).unwrap();
+        let _ = std::fs::remove_file(repo.join(".git/info/exclude"));
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "").unwrap();
+        for fifo in [
+            repo.join(".gitignore"),
+            repo.join(".git/info/exclude"),
+            repo.join("src/.gitignore"),
+        ] {
+            assert!(
+                Command::new("mkfifo")
+                    .arg(&fifo)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = repo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(FileIndex::build(&root));
+        });
+        let listed = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the listing hung on a FIFO ignore file");
+        assert!(
+            listed.files.contains(&"src/a.rs".to_string()),
+            "{:?}",
+            listed.files
+        );
+    }
+
+    /// A folder swapped for a symlink between being read and being entered
+    /// (made deterministic with the walk's hook) is never followed.
+    #[test]
+    #[cfg(unix)]
+    fn a_folder_swapped_for_a_symlink_is_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("child/inner.txt"), "").unwrap();
+        std::fs::write(outside.join("OUTSIDE_SENTINEL"), "").unwrap();
+        let (child, moved) = (root.join("child"), tmp.path().join("child-moved"));
+        let mut swap = |entering: &Path| {
+            if entering == child {
+                std::fs::rename(&child, &moved).unwrap();
+                std::os::unix::fs::symlink(&outside, &child).unwrap();
+            }
+        };
+        let (files, _) = walk(&root, WalkLimits::new(), &mut swap);
+        assert!(
+            files.iter().all(|f| !f.contains("OUTSIDE_SENTINEL")),
+            "{files:?}"
+        );
+    }
+
+    /// Visited entries, depth and time bound the walk, checked per entry,
+    /// and `truncated` reports a cut; hard-linked files are not listed.
+    #[test]
+    #[cfg(unix)]
+    fn walks_are_bounded_per_entry_and_skip_hard_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        for i in 0..10_000 {
+            std::fs::write(root.join(format!("f{i}")), "").unwrap();
+        }
+        let none = &mut |_: &Path| {};
+        let late = WalkLimits {
+            deadline: Instant::now(),
+            ..WalkLimits::new()
+        };
+        let (files, truncated) = walk(&root, late, none);
+        assert!(truncated && files.len() < 10_000, "{}", files.len());
+        let few = WalkLimits {
+            max_visited: 100,
+            ..WalkLimits::new()
+        };
+        let (files, truncated) = walk(&root, few, none);
+        assert!(truncated && files.len() <= 100);
+        let (files, truncated) = walk(&root, WalkLimits::new(), none);
+        assert!(!truncated && files.len() == 10_000);
+
+        let deep = tmp.path().join("deep");
+        let mut dir = deep.clone();
+        for _ in 0..5 {
+            dir = dir.join("d");
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("bottom.txt"), "").unwrap();
+        let shallow = WalkLimits {
+            max_depth: 2,
+            ..WalkLimits::new()
+        };
+        let (files, truncated) = walk(&deep, shallow, none);
+        assert!(truncated && files.is_empty());
+
+        let linked = tmp.path().join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(tmp.path().join("secret"), "").unwrap();
+        std::fs::hard_link(tmp.path().join("secret"), linked.join("innocent.txt")).unwrap();
+        std::fs::write(linked.join("plain.txt"), "").unwrap();
+        let (files, _) = walk(&linked, WalkLimits::new(), none);
+        assert_eq!(files, ["plain.txt"]);
+    }
+}
