@@ -463,3 +463,112 @@ fn segment_ids_match_the_stitched_timeline() {
         stitched
     );
 }
+
+/// Every mode of the model tool's answer (`answer_history`) is a pure read:
+/// before the scope is ready it refuses without touching storage writes,
+/// and once ready it answers from a fresh service over a backend that
+/// rejects every write.
+#[tokio::test]
+async fn tool_answers_are_pure_reads_ready_or_not() {
+    use ironclaw_filesystem::{
+        Fault, FaultInjecting, FilesystemOperation as Op, InMemoryBackend, ScopedFilesystem,
+    };
+    use ironclaw_host_api::mount::{MountGrant, MountPermissions, MountView};
+    use ironclaw_host_api::path::{MountAlias, VirtualPath};
+    use ironclaw_threads::FilesystemSessionThreadService;
+
+    const WRITES: [Op; 7] = [
+        Op::WriteFile,
+        Op::Delete,
+        Op::EnsureIndex,
+        Op::BeginTxn,
+        Op::Append,
+        Op::ReserveSeq,
+        Op::CreateSubtreeAtomic,
+    ];
+    let guarded = Arc::new(FaultInjecting::new(InMemoryBackend::new()));
+    let service = || {
+        let mounts = MountView::new(vec![MountGrant::new(
+            MountAlias::new("/threads").unwrap(),
+            VirtualPath::new("/tenants/t/users/owner/threads").unwrap(),
+            MountPermissions::read_write_list_delete(),
+        )])
+        .unwrap();
+        Arc::new(FilesystemSessionThreadService::new(Arc::new(
+            ScopedFilesystem::with_fixed_view(Arc::clone(&guarded), mounts),
+        )))
+    };
+    let writes = || WRITES.iter().map(|op| guarded.count(*op)).sum::<usize>();
+    let scope = transcript_scope();
+    let orch_scope = scope_of(&owner());
+    let writer = service();
+    let thread = ThreadId::new("thread-tool").unwrap();
+    writer
+        .ensure_thread(EnsureThreadRequest {
+            scope: scope.clone(),
+            thread_id: Some(thread.clone()),
+            created_by_actor_id: "owner".into(),
+            title: None,
+            metadata_json: None,
+        })
+        .await
+        .unwrap();
+    let accepted = writer
+        .accept_inbound_message(AcceptInboundMessageRequest {
+            scope: scope.clone(),
+            thread_id: thread.clone(),
+            actor_id: "owner".into(),
+            source_binding_id: None,
+            reply_target_binding_id: None,
+            external_event_id: None,
+            content: MessageContent::text("the albatross route"),
+        })
+        .await
+        .unwrap();
+    let modes = [
+        json!({"query": "albatross"}),
+        json!({"thread_id": "thread-tool"}),
+        json!({"thread_id": "thread-tool", "around_message_id": accepted.message_id.to_string()}),
+        json!({}),
+    ];
+    let ask = |svc: Arc<FilesystemSessionThreadService<_>>, input: Value| {
+        let (scope, orch_scope) = (scope.clone(), orch_scope.clone());
+        async move {
+            let request = serde_json::from_value(input).unwrap();
+            super::history::answer_history(None, svc.as_ref(), &scope, &orch_scope, &request).await
+        }
+    };
+
+    // Not ready: every mode refuses, and nothing is written.
+    let before = writes();
+    for input in &modes {
+        let answer = ask(service(), input.clone()).await;
+        assert!(
+            matches!(
+                answer,
+                Err(crate::history_search::HistorySearchError::NotReady)
+            ),
+            "{input}"
+        );
+    }
+    assert_eq!(writes(), before, "an unready answer wrote");
+
+    // The background step makes the scope ready (writes allowed here).
+    while !writer
+        .advance_message_search_index(&scope, 100)
+        .await
+        .unwrap()
+        .complete
+    {}
+    for op in WRITES {
+        guarded.add_fault(Fault::on(op));
+    }
+    let before = writes();
+    for input in &modes {
+        let answer = ask(service(), input.clone()).await;
+        assert!(answer.is_ok(), "{input}: {answer:?}");
+    }
+    let found = ask(service(), modes[0].clone()).await.unwrap();
+    assert_eq!(found.threads[0].thread_id, "thread-tool");
+    assert_eq!(writes(), before, "a ready answer wrote");
+}

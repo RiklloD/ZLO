@@ -516,6 +516,14 @@ pub trait SessionThreadService: Send + Sync {
         ))
     }
 
+    /// Whether history search over the scope is fully indexed and every
+    /// one-time migration its read paths depend on has run. A pure read:
+    /// callers that must never write (the model tool) answer only when this
+    /// is `true`. Defaults to `false` (fail closed).
+    async fn message_search_ready(&self, _scope: &ThreadScope) -> Result<bool, SessionThreadError> {
+        Ok(false)
+    }
+
     /// One bounded indexing step for history search over the scope's own
     /// transcripts: declares the index and re-projects at most `budget`
     /// messages written before the projection existed, resuming from a
@@ -895,6 +903,10 @@ where
         self.as_ref()
             .advance_message_search_index(scope, budget)
             .await
+    }
+
+    async fn message_search_ready(&self, scope: &ThreadScope) -> Result<bool, SessionThreadError> {
+        self.as_ref().message_search_ready(scope).await
     }
 
     async fn upsert_external_transcript(

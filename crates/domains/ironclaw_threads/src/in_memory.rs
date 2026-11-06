@@ -1779,6 +1779,10 @@ impl SessionThreadService for InMemorySessionThreadService {
         })
     }
 
+    async fn message_search_ready(&self, _scope: &ThreadScope) -> Result<bool, SessionThreadError> {
+        Ok(true)
+    }
+
     async fn advance_message_search_index(
         &self,
         _scope: &ThreadScope,

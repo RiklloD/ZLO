@@ -4581,11 +4581,10 @@ where
                     })?;
                 // Indexing runs off the request path; this answer is a read.
                 crate::history_search::spawn_index_catch_up(&self.thread_service, &scope);
-                let response = crate::history_search::run_history_search(
+                let response = crate::history_search::run_ready_history_search(
                     self.thread_service.as_ref(),
                     &scope,
                     &request,
-                    &Default::default(),
                 )
                 .await?;
                 views::view_page(response)

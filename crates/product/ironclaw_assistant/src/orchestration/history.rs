@@ -184,6 +184,16 @@ pub(crate) async fn answer_history(
     orch_scope: &ironclaw_orchestrator::model::ThreadScope,
     request: &HistorySearchRequest,
 ) -> Result<HistorySearchResponse, HistorySearchError> {
+    // Every read below is write-free only once the scope is ready (its
+    // migrations and index done by the background step); before that,
+    // refuse rather than let a read path migrate.
+    if !threads
+        .message_search_ready(scope)
+        .await
+        .map_err(HistorySearchError::Unavailable)?
+    {
+        return Err(HistorySearchError::NotReady);
+    }
     let Some(engine) = engine else {
         return run_history_search(threads, scope, request, &DelegatedThreads::default()).await;
     };
@@ -379,14 +389,29 @@ impl ProductSurface for HistorySearchSurface {
         let owner = ProfileOwner::from(&orch_scope);
         spawn_index_catch_up(&self.threads, &scope);
         spawn_owner_sweep(&self.engine, &self.threads, owner.clone());
-        let mut response = answer_history(
+        let mut response = match answer_history(
             Some(&self.engine),
             self.threads.as_ref(),
             &scope,
             &orch_scope,
             &history,
         )
-        .await?;
+        .await
+        {
+            Ok(response) => response,
+            // Indexing just started: an empty, incomplete answer; the
+            // desktop asks again.
+            Err(HistorySearchError::NotReady) => HistorySearchResponse {
+                mode: history.mode(),
+                query: history.query.clone(),
+                threads: Vec::new(),
+                thread: None,
+                messages: Vec::new(),
+                next_from_sequence: None,
+                index_complete: false,
+            },
+            Err(error) => return Err(error.into()),
+        };
         // Until this process has swept the owner's CLI threads, their older
         // messages may be missing: say so, and the desktop asks again.
         response.index_complete &= owner_swept(&self.engine, &owner);
@@ -474,6 +499,10 @@ impl ironclaw_cli_providers::bridge_tools::BridgeToolProvider for HistoryBridgeT
             Err(HistorySearchError::NotFound) => {
                 bridge_result("history_search: no such thread or message".into(), true)
             }
+            Err(HistorySearchError::NotReady) => bridge_result(
+                "history_search: chat history is still being indexed; try again in a moment".into(),
+                true,
+            ),
             Err(HistorySearchError::Unavailable(error)) => {
                 tracing::debug!(%error, "history_search bridge storage unavailable");
                 bridge_result(
@@ -630,6 +659,12 @@ impl SyntheticCapabilityHandler for HistorySearchToolHandler {
                 return Ok(model_failure(
                     FailureKind::OperationFailed,
                     "history_search: no such thread or message in your history",
+                ));
+            }
+            Err(HistorySearchError::NotReady) => {
+                return Ok(model_failure(
+                    FailureKind::OperationFailed,
+                    "history_search: chat history is still being indexed; try again in a moment",
                 ));
             }
             Err(HistorySearchError::Unavailable(error)) => {

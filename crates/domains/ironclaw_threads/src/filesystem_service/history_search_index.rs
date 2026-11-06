@@ -126,10 +126,17 @@ where
                 ..Default::default()
             });
         }
-        // The scope's one-time transcript projection rebuild (pre-existing;
-        // every transcript read path runs it too). Its marker makes it a
-        // no-op after the first run.
+        // Every one-time migration a read path would otherwise run on first
+        // use happens here, off the request path, so that once the scope is
+        // ready (`message_search_ready`) search and history reads need no
+        // write: the transcript projection rebuild, the prepared-context
+        // markers, the root index declarations and the thread-listing
+        // projection. Each is marker-gated and a no-op after its first run.
         self.ensure_transcript_indexes_migrated(scope).await?;
+        self.ensure_prepared_markers_migrated(scope).await?;
+        self.declare_root_indexes(scope, super::IndexDeclarationPolicy::Required)
+            .await?;
+        self.ensure_thread_index_query(scope, true).await?;
 
         let path = cursor_path(scope)?;
         let current = self.filesystem.get(&resource_scope, &path).await?;

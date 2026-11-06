@@ -40,6 +40,10 @@ pub enum HistorySearchError {
     },
     #[error("thread not found")]
     NotFound,
+    /// The scope's index or its one-time migrations are not done yet;
+    /// answering now would need a write. Retry shortly.
+    #[error("history is still being indexed")]
+    NotReady,
     #[error("history storage unavailable: {0}")]
     Unavailable(#[source] SessionThreadError),
 }
@@ -64,6 +68,7 @@ impl From<HistorySearchError> for ironclaw_product_contracts::surface::ProductSu
                 ProductSurfaceError::validation(field, ProductSurfaceValidationCode::InvalidValue)
             }
             HistorySearchError::NotFound => ProductSurfaceError::not_found(),
+            HistorySearchError::NotReady => ProductSurfaceError::service_unavailable(true),
             HistorySearchError::Unavailable(source) => {
                 tracing::debug!(error = %source, "history search storage unavailable");
                 ProductSurfaceError::service_unavailable(true)
@@ -411,6 +416,31 @@ async fn read(
         next_from_sequence,
         index_complete: true,
     })
+}
+
+/// The view's answer without an orchestrator: a pure read once the scope is
+/// ready, an empty incomplete answer before (indexing was just started).
+pub async fn run_ready_history_search(
+    threads: &dyn SessionThreadService,
+    scope: &ThreadScope,
+    request: &HistorySearchRequest,
+) -> Result<HistorySearchResponse, HistorySearchError> {
+    if !threads
+        .message_search_ready(scope)
+        .await
+        .map_err(HistorySearchError::Unavailable)?
+    {
+        return Ok(HistorySearchResponse {
+            mode: request.mode(),
+            query: request.query.clone(),
+            threads: Vec::new(),
+            thread: None,
+            messages: Vec::new(),
+            next_from_sequence: None,
+            index_complete: false,
+        });
+    }
+    run_history_search(threads, scope, request, &DelegatedThreads::default()).await
 }
 
 /// Messages re-projected per indexing step.

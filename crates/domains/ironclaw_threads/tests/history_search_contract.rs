@@ -518,7 +518,7 @@ async fn all_contracts(make: impl Fn(&str) -> Arc<dyn SessionThreadService>) {
 }
 
 #[tokio::test]
-async fn in_memory_reference_satisfies_the_search_contract() {
+async fn history_search_in_memory_reference_satisfies_the_search_contract() {
     let service = InMemorySessionThreadService::default();
     search_contract(&service, &service).await;
     let ranking = InMemorySessionThreadService::default();
@@ -538,7 +538,7 @@ fn filesystem_service<F: RootFilesystem + 'static>(
 }
 
 #[tokio::test]
-async fn filesystem_in_memory_backend_satisfies_the_search_contract() {
+async fn history_search_filesystem_in_memory_backend_satisfies_the_search_contract() {
     let backend = Arc::new(InMemoryBackend::new());
     all_contracts(|user| filesystem_service(&backend, user)).await;
     let ranking = Arc::new(InMemoryBackend::new());
@@ -548,7 +548,7 @@ async fn filesystem_in_memory_backend_satisfies_the_search_contract() {
 }
 
 #[tokio::test]
-async fn filesystem_libsql_backend_satisfies_the_search_contract() {
+async fn history_search_filesystem_libsql_backend_satisfies_the_search_contract() {
     let (_dir, backend) = libsql_backend().await;
     all_contracts(|user| filesystem_service(&backend, user)).await;
     let (_ranking_dir, ranking) = libsql_backend().await;
@@ -558,7 +558,7 @@ async fn filesystem_libsql_backend_satisfies_the_search_contract() {
 }
 
 #[tokio::test]
-async fn filesystem_postgres_backend_satisfies_the_search_contract() {
+async fn history_search_filesystem_postgres_backend_satisfies_the_search_contract() {
     let Some((db, backend)) = postgres_backend().await else {
         return;
     };
@@ -697,22 +697,108 @@ async fn backfill_contract<F: RootFilesystem + 'static>(backend: Arc<F>) {
 }
 
 #[tokio::test]
-async fn backfill_is_bounded_resumable_and_race_safe_in_memory() {
+async fn history_search_backfill_is_bounded_resumable_and_race_safe_in_memory() {
     backfill_contract(Arc::new(InMemoryBackend::new())).await;
 }
 
 #[tokio::test]
-async fn backfill_is_bounded_resumable_and_race_safe_libsql() {
+async fn history_search_backfill_is_bounded_resumable_and_race_safe_libsql() {
     let (_dir, backend) = libsql_backend().await;
     backfill_contract(backend).await;
 }
 
 #[tokio::test]
-async fn backfill_is_bounded_resumable_and_race_safe_postgres() {
+async fn history_search_backfill_is_bounded_resumable_and_race_safe_postgres() {
     let Some((db, backend)) = postgres_backend().await else {
         return;
     };
     backfill_contract(Arc::clone(&backend)).await;
     drop(backend);
     db.cleanup().await;
+}
+
+const WRITE_OPS: [ironclaw_filesystem::FilesystemOperation; 7] = [
+    ironclaw_filesystem::FilesystemOperation::WriteFile,
+    ironclaw_filesystem::FilesystemOperation::Delete,
+    ironclaw_filesystem::FilesystemOperation::EnsureIndex,
+    ironclaw_filesystem::FilesystemOperation::BeginTxn,
+    ironclaw_filesystem::FilesystemOperation::Append,
+    ironclaw_filesystem::FilesystemOperation::ReserveSeq,
+    ironclaw_filesystem::FilesystemOperation::CreateSubtreeAtomic,
+];
+
+/// Once a scope is ready, every read history search uses is a pure read: a
+/// fresh service (empty in-process caches, as after a restart) over a
+/// backend that rejects every write still answers all of them. Before the
+/// scope is ready, `message_search_ready` itself is a pure read that says no.
+async fn ready_reads_never_write<F: RootFilesystem + 'static>(inner: F) {
+    // Every write fails once the faults are armed; until then the same
+    // backend takes the setup and the indexing.
+    let guarded = Arc::new(ironclaw_filesystem::FaultInjecting::new(inner));
+    let writer = FilesystemSessionThreadService::new(scoped_fs(Arc::clone(&guarded), "alice"));
+    let mine = scope("alice");
+    let thread = new_thread(&writer, &mine, "thread-read").await;
+    say(&writer, &mine, &thread, "the gannet colony survey").await;
+    let answer = reply(&writer, &mine, &thread, "run-1", "gannets nest on cliffs").await;
+
+    let arm = || {
+        for op in WRITE_OPS {
+            guarded.add_fault(ironclaw_filesystem::Fault::on(op));
+        }
+    };
+    let writes = || WRITE_OPS.iter().map(|op| guarded.count(*op)).sum::<usize>();
+    let fresh = || FilesystemSessionThreadService::new(scoped_fs(Arc::clone(&guarded), "alice"));
+
+    let before = writes();
+    assert!(!fresh().message_search_ready(&mine).await.unwrap());
+    assert_eq!(writes(), before, "readiness is a pure read");
+
+    index_all(&writer, &mine).await;
+    arm();
+    let before = writes();
+    let reader = fresh();
+    assert!(reader.message_search_ready(&mine).await.unwrap());
+    let found = search(&reader, &mine, "gannet").await;
+    assert_eq!(thread_ids(&found), ["thread-read"]);
+    reader
+        .list_thread_history(ironclaw_threads::ThreadHistoryRequest {
+            scope: mine.clone(),
+            thread_id: thread.clone(),
+        })
+        .await
+        .unwrap();
+    reader
+        .read_thread_message(&mine, &thread, answer.message_id)
+        .await
+        .unwrap();
+    reader
+        .list_thread_messages_range(ironclaw_threads::ThreadMessageRangeRequest {
+            scope: mine.clone(),
+            thread_id: thread.clone(),
+            after_sequence: 0,
+            through_sequence: 10,
+        })
+        .await
+        .unwrap();
+    reader
+        .list_threads_for_scope(ironclaw_threads::ListThreadsForScopeRequest {
+            scope: mine.clone(),
+            limit: Some(10),
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(writes(), before, "a ready read attempted a write");
+}
+
+#[tokio::test]
+async fn history_search_ready_reads_never_write_in_memory() {
+    ready_reads_never_write(InMemoryBackend::new()).await;
+}
+
+#[tokio::test]
+async fn history_search_ready_reads_never_write_libsql() {
+    let (_dir, backend) = libsql_backend().await;
+    let backend = Arc::try_unwrap(backend).unwrap_or_else(|_| panic!("sole owner"));
+    ready_reads_never_write(backend).await;
 }
