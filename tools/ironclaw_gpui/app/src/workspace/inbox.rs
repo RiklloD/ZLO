@@ -691,6 +691,18 @@ impl Workspace {
         let now = Utc::now().timestamp_millis();
 
         let mut list: Vec<AnyElement> = Vec::new();
+        // Message text is searched too; say so while older chats are indexed.
+        if !query.is_empty() && self.message_search.indexing(&query) {
+            list.push(
+                div()
+                    .px(px(12.))
+                    .py_1()
+                    .text_size(px(design::SIDEBAR_META_SIZE))
+                    .text_color(p.text_faint)
+                    .child("Searching older chats…")
+                    .into_any_element(),
+            );
+        }
         let enter = Style::of(cx).enter;
         let reduced = cx.reduce_motion();
         let seeding = !self.inbox.seeded && !self.inbox.list.rows.is_empty();

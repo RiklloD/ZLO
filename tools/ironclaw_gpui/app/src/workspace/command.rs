@@ -303,6 +303,8 @@ impl Workspace {
         let input = menu.input.clone();
         let scroll = menu.scroll.clone();
         let entries = self.matches(cx);
+        let typed = input.read(cx).value().to_string();
+        let indexing = !typed.trim().is_empty() && self.message_search.indexing(&typed);
         let selected = selected.min(entries.len().saturating_sub(1));
         let first_message = entries.iter().position(|e| e.hit.is_some());
         let header_above =
@@ -323,7 +325,11 @@ impl Workspace {
                         .pb_1()
                         .text_xs()
                         .text_color(p.text_faint)
-                        .child("In messages")
+                        .child(if indexing {
+                            "In messages · indexing older chats…"
+                        } else {
+                            "In messages"
+                        })
                         .into_any_element(),
                 );
             }
@@ -430,7 +436,10 @@ impl Workspace {
                         .text_color(p.text_faint)
                         .child("↑↓ move")
                         .child("↵ open")
-                        .child("esc close"),
+                        .child("esc close")
+                        .when(indexing, |d| {
+                            d.child(div().flex_1()).child("Searching older chats…")
+                        }),
                 ),
         );
 
