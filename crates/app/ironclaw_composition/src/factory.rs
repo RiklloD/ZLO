@@ -340,6 +340,12 @@ pub(crate) struct RebornRuntimeStores {
     /// profile reads and tools agree on the bound provider (native, or
     /// degrade-to-empty for disabled/third-party).
     pub(crate) memory_service_resolver: MemoryServiceResolver,
+    /// The redacted prompt-write-safety sink over the host runtime's durable
+    /// audit sink — the one the memory tools record into. The Memory page's
+    /// writes use it too, so their safety events land in the same log and
+    /// warned writes (which require a recorded event) are not refused.
+    pub(crate) memory_prompt_safety_sink:
+        Option<Arc<dyn ironclaw_memory::PromptWriteSafetyEventSink>>,
     /// Lifecycle hooks declared by the bound memory provider. Host-initiated
     /// retrieval, recording, and profile reads are wired only when declared.
     pub(crate) memory_lifecycle: ironclaw_extension_contracts::memory::MemoryDescriptor,

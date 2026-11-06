@@ -609,3 +609,213 @@ fn relative_time_matches_hermes_buckets() {
     );
     assert_eq!(recall::relative_time("garbage", now), None);
 }
+
+// --- Memory page (admin) operations ---
+
+fn profile_binding() -> SupermemoryBinding {
+    SupermemoryBinding {
+        primary_container: "work".to_string(),
+        read_containers: vec!["career".to_string()],
+        instructions: None,
+    }
+}
+
+#[tokio::test]
+async fn admin_status_reports_key_and_explicit_binding_without_calling_the_api() {
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "career");
+    let status = supermemory
+        .admin_status(&caller(), Some(&profile_binding()))
+        .await
+        .unwrap();
+    assert!(status.key_configured);
+    assert!(status.active());
+    let binding = status.binding.unwrap();
+    assert_eq!(binding.primary.as_str(), "work");
+    assert_eq!(binding.readable[0].as_str(), "career");
+
+    let (no_key, _) = build(Arc::new(MemoryKeys::default()), "");
+    let status = no_key.admin_status(&caller(), None).await.unwrap();
+    assert!(!status.key_configured);
+    assert!(!status.active());
+    assert_eq!(status.binding.unwrap().primary.as_str(), "ironclaw");
+    assert!(egress.requests().is_empty());
+}
+
+#[tokio::test]
+async fn list_documents_pages_one_bound_container_and_tolerates_drift() {
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "career");
+    egress.respond(
+        "/v3/documents/list",
+        200,
+        json!({
+            "memories": [
+                {"id": "d1", "customId": "thread_2026", "title": "Chat", "summary": "likes tea",
+                 "status": "done", "containerTags": ["work"], "updatedAt": "2026-11-03T10:00:00Z"},
+                {"title": "no id, skipped"}
+            ],
+            "pagination": {"currentPage": 2, "totalPages": 3, "totalItems": "51"}
+        }),
+    );
+    let page = supermemory
+        .list_documents(
+            &caller(),
+            Some(&profile_binding()),
+            None,
+            Some(2),
+            Some(500),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.container.as_str(), "work");
+    assert_eq!(page.documents.len(), 1);
+    assert_eq!(page.documents[0].id, "d1");
+    assert_eq!(page.documents[0].preview.as_deref(), Some("likes tea"));
+    assert_eq!(page.documents[0].custom_id.as_deref(), Some("thread_2026"));
+    assert_eq!(page.page, 2);
+    assert_eq!(page.total_pages, Some(3));
+    assert_eq!(page.total_items, Some(51));
+    let body = &egress.requests_to("/v3/documents/list")[0].body;
+    assert_eq!(body["containerTags"], json!(["work"]));
+    assert_eq!(body["limit"], 100, "limit is clamped");
+    assert_eq!(body["page"], 2);
+
+    let denied = supermemory
+        .list_documents(
+            &caller(),
+            Some(&profile_binding()),
+            Some("finance"),
+            None,
+            None,
+        )
+        .await;
+    assert!(matches!(
+        denied,
+        Err(SupermemoryError::InvalidContainer { .. })
+    ));
+}
+
+#[tokio::test]
+async fn delete_document_checks_container_then_reads_back_a_404() {
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "");
+    egress.respond(
+        "/v3/documents/d1",
+        200,
+        json!({"id": "d1", "containerTags": ["work"]}),
+    );
+    // The DELETE answers with no document; the read-back is unscripted (404).
+    egress.respond("/v3/documents/d1", 200, json!({}));
+    let deleted = supermemory
+        .delete_document(&caller(), Some(&profile_binding()), "d1")
+        .await
+        .unwrap();
+    assert_eq!(deleted.id, "d1");
+    assert!(deleted.verified);
+    let calls = egress.requests_to("/v3/documents/d1");
+    assert_eq!(
+        calls.iter().map(|call| call.method).collect::<Vec<_>>(),
+        vec![
+            NetworkMethod::Get,
+            NetworkMethod::Delete,
+            NetworkMethod::Get
+        ]
+    );
+    assert!(
+        calls[1]
+            .headers
+            .iter()
+            .any(|(name, value)| name == "authorization" && value.contains(FAKE_KEY)),
+        "the key rides only in the authorization header"
+    );
+}
+
+#[tokio::test]
+async fn delete_document_refuses_a_document_outside_the_primary_container() {
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "");
+    egress.respond(
+        "/v3/documents/d2",
+        200,
+        json!({"id": "d2", "containerTags": ["career"]}),
+    );
+    let refused = supermemory
+        .delete_document(&caller(), Some(&profile_binding()), "d2")
+        .await;
+    assert!(matches!(
+        refused,
+        Err(SupermemoryError::InvalidContainer { .. })
+    ));
+    assert!(
+        egress
+            .requests()
+            .iter()
+            .all(|call| call.method != NetworkMethod::Delete),
+        "nothing is deleted"
+    );
+    let unsafe_id = supermemory
+        .delete_document(&caller(), Some(&profile_binding()), "../v3/x")
+        .await;
+    assert!(matches!(
+        unsafe_id,
+        Err(SupermemoryError::InvalidInput { .. })
+    ));
+}
+
+#[tokio::test]
+async fn forget_memory_targets_the_primary_only_and_reports_the_api_flag() {
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "");
+    let refused = supermemory
+        .forget_memory(&caller(), Some(&profile_binding()), "career", "m1")
+        .await;
+    assert!(matches!(
+        refused,
+        Err(SupermemoryError::InvalidContainer { .. })
+    ));
+    assert!(egress.requests().is_empty());
+
+    egress.respond("/v4/memories", 200, json!({"id": "m1", "forgotten": true}));
+    let forgotten = supermemory
+        .forget_memory(&caller(), Some(&profile_binding()), "work", "m1")
+        .await
+        .unwrap();
+    assert!(forgotten.forgotten);
+    let call = &egress.requests_to("/v4/memories")[0];
+    assert_eq!(call.method, NetworkMethod::Delete);
+    assert_eq!(call.body["containerTag"], "work");
+    assert_eq!(call.body["id"], "m1");
+}
+
+#[tokio::test]
+async fn admin_operations_are_off_without_a_key() {
+    let (supermemory, egress) = build(Arc::new(MemoryKeys::default()), "");
+    let listed = supermemory
+        .list_documents(&caller(), Some(&profile_binding()), None, None, None)
+        .await;
+    assert!(matches!(listed, Err(SupermemoryError::Disabled)));
+    assert!(egress.requests().is_empty());
+}
+
+/// Review finding 5: delete-by-id removes the document from EVERY container,
+/// so a document shared with another container is refused even when it also
+/// carries the main container's tag.
+#[tokio::test]
+async fn delete_document_refuses_a_document_shared_with_another_container() {
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "");
+    egress.respond(
+        "/v3/documents/d3",
+        200,
+        json!({"id": "d3", "containerTags": ["work", "career"]}),
+    );
+    let refused = supermemory
+        .delete_document(&caller(), Some(&profile_binding()), "d3")
+        .await;
+    assert!(matches!(
+        refused,
+        Err(SupermemoryError::InvalidContainer { .. })
+    ));
+    assert!(
+        egress
+            .requests()
+            .iter()
+            .all(|call| call.method != NetworkMethod::Delete),
+        "nothing is deleted"
+    );
+}

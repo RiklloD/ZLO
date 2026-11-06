@@ -41,6 +41,7 @@ mod input;
 mod ironhub_link_serve;
 mod llm_admin;
 mod memory_binding;
+mod memory_page_parts;
 mod memory_provider_factory;
 mod model_gateway_assembly;
 mod notification_store_assembly;

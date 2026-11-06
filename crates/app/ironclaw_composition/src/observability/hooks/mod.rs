@@ -66,6 +66,7 @@
 //! without touching this module's wiring.
 
 pub(crate) mod audit;
+pub(crate) mod catalog;
 pub(crate) mod factory;
 pub(crate) mod projection;
 

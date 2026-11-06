@@ -9,8 +9,9 @@ use std::{cmp::Ordering, collections::BTreeMap, sync::Arc};
 
 use crate::{
     ChunkingMemoryDocumentIndexer, FilesystemMemoryDocumentRepository, MemoryAppendOutcome,
-    MemoryBackend, MemoryBackendCapabilities, MemoryBackendWriteOptions, MemorySearchRequest,
-    MemorySearchResult, MemoryWriteOutcome, RepositoryMemoryBackend,
+    MemoryBackend, MemoryBackendCapabilities, MemoryBackendWriteOptions, MemoryDocumentHistory,
+    MemorySearchRequest, MemorySearchResult, MemoryWriteOutcome, RepositoryMemoryBackend,
+    backend::{ARCHIVE_ROOT, is_archive_path},
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -19,7 +20,8 @@ use ironclaw_filesystem::RootFilesystem;
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_memory::{
     DocumentMetadata, MemoryContext, MemoryDocumentPath, MemoryDocumentScope,
-    PromptSafetyAllowanceId, PromptWriteSafetyEventSink, content_bytes_sha256,
+    PromptSafetyAllowanceId, PromptSafetyReasonCode, PromptWriteSafetyEventSink,
+    content_bytes_sha256,
 };
 use ironclaw_memory::{
     MemoryInteractionMessage, MemoryInvocation, MemoryProfileSetStatus, MemoryService,
@@ -124,6 +126,18 @@ const CURATED_TRUNCATION_MARKER: &str = " (truncated)";
 /// separator instead.
 const CURATED_LINE_SEPARATOR: &str = "; ";
 
+/// Outcome of [`NativeMemoryService::owner_write`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerWriteOutcome {
+    Written,
+    /// The document exists (create) or changed since it was read (update);
+    /// nothing was written.
+    Conflict,
+    /// The content was refused by the prompt-write safety policy (protected
+    /// identity/system files); nothing was written.
+    RejectedBySafety,
+}
+
 pub struct NativeMemoryService {
     backend: Arc<dyn MemoryBackend>,
 }
@@ -219,6 +233,11 @@ impl NativeMemoryService {
         // active thread — a silent retrieval black hole. Fail loud instead of
         // persisting it. (CR review / audit L1.)
         if is_thread_scoped_path(&resolved_path) {
+            return Err(MemoryServiceError::operation());
+        }
+        // `archive/` is written only by [`Self::archive`]; its copies are
+        // frozen (the backend refuses every mutation there too).
+        if is_archive_path(&resolved_path) {
             return Err(MemoryServiceError::operation());
         }
         let path = document_path(&scope, &resolved_path)?;
@@ -375,6 +394,22 @@ impl NativeMemoryService {
         invocation: MemoryInvocation,
         request: MemoryServiceReadRequest,
     ) -> Result<MemoryServiceReadResponse, MemoryServiceError> {
+        // The agent's read tool: archived documents are the user's, not
+        // memory the model should see or quote.
+        if is_archive_path(&request.path) {
+            return Err(MemoryServiceError::input());
+        }
+        self.read_document_at(invocation, &request.path).await
+    }
+
+    async fn read_document_at(
+        &self,
+        invocation: MemoryInvocation,
+        relative: &str,
+    ) -> Result<MemoryServiceReadResponse, MemoryServiceError> {
+        let request = MemoryServiceReadRequest {
+            path: relative.to_string(),
+        };
         reject_local_or_traversal_path(&request.path)?;
         let (scope, context) = self.scoped_context(&invocation)?;
         let path = document_path(&scope, &request.path)?;
@@ -395,6 +430,141 @@ impl NativeMemoryService {
         })
     }
 
+    /// Read for the user's own Memory page: like [`Self::read`], but archived
+    /// documents (`archive/…`) are readable here. The agent's read tool never
+    /// reaches them.
+    pub async fn owner_read(
+        &self,
+        invocation: MemoryInvocation,
+        path: &str,
+    ) -> Result<MemoryServiceReadResponse, MemoryServiceError> {
+        self.read_document_at(invocation, path).await
+    }
+
+    /// Save from the user's own Memory page: a whole document at the
+    /// **literal** path (the agent tool's `memory`/`daily_log`/… aliases are
+    /// not resolved here). `expected_content_hash: None` is a create that is
+    /// an atomic absent-CAS — it never overwrites an existing document; `Some`
+    /// replaces only that exact version. Prompt-write safety runs as for any
+    /// backend write. `archive/` and per-thread scratch are refused.
+    pub async fn owner_write(
+        &self,
+        invocation: MemoryInvocation,
+        path: &str,
+        content: &str,
+        expected_content_hash: Option<&str>,
+    ) -> Result<OwnerWriteOutcome, MemoryServiceError> {
+        reject_local_or_traversal_path(path)?;
+        let relative = path.trim_matches('/');
+        if relative.is_empty() || is_archive_path(relative) || is_thread_scoped_path(relative) {
+            return Err(MemoryServiceError::input());
+        }
+        if content.trim().is_empty() {
+            return Err(MemoryServiceError::input());
+        }
+        let (scope, context) = self.scoped_context(&invocation)?;
+        let path = document_path(&scope, relative)?;
+        let outcome = self
+            .backend
+            .compare_and_write_document_with_backend_options(
+                &context,
+                &path,
+                expected_content_hash,
+                content.as_bytes(),
+                &write_options(None),
+            )
+            .await;
+        Ok(match outcome {
+            Ok(MemoryWriteOutcome::Written) => OwnerWriteOutcome::Written,
+            Ok(MemoryWriteOutcome::Conflict) => OwnerWriteOutcome::Conflict,
+            // The content tripped this provider's prompt-write safety policy:
+            // a correctable outcome for the person editing, not a fault. The
+            // safety event itself was already recorded by the backend.
+            Err(error)
+                if [
+                    PromptSafetyReasonCode::HighRiskPromptInjection,
+                    PromptSafetyReasonCode::CriticalPromptInjection,
+                ]
+                .iter()
+                .any(|code| error.to_string().contains(code.as_str())) =>
+            {
+                OwnerWriteOutcome::RejectedBySafety
+            }
+            Err(error) => return Err(MemoryServiceError::operation_from(error)),
+        })
+    }
+
+    /// Every document path in the caller's scope, sorted. The flat listing
+    /// the tree tool folds; the Memory page shows it as is.
+    pub async fn list_paths(
+        &self,
+        invocation: MemoryInvocation,
+    ) -> Result<Vec<String>, MemoryServiceError> {
+        let (scope, context) = self.scoped_context(&invocation)?;
+        let mut paths = self
+            .backend
+            .list_documents(&context, &scope)
+            .await
+            .map_err(MemoryServiceError::operation_from)?
+            .into_iter()
+            .map(|path| path.relative_path().to_string())
+            .collect::<Vec<_>>();
+        paths.sort();
+        Ok(paths)
+    }
+
+    /// Saved-version summary for one document (the page's provenance line).
+    pub async fn history(
+        &self,
+        invocation: MemoryInvocation,
+        path: &str,
+    ) -> Result<MemoryDocumentHistory, MemoryServiceError> {
+        reject_local_or_traversal_path(path)?;
+        let (scope, context) = self.scoped_context(&invocation)?;
+        let path = document_path(&scope, path)?;
+        self.backend
+            .document_history(&context, &path)
+            .await
+            .map_err(MemoryServiceError::operation_from)
+    }
+
+    /// Archive one document the user removes from the Memory page: its body
+    /// moves to `archive/<UTC timestamp>/<path>` (kept, browsable, never
+    /// searched or recalled) and the live path goes away, only while the
+    /// document still hashes to `expected_content_hash`. Nothing is deleted:
+    /// the body lives on under `archive/` and the version trail stays.
+    ///
+    /// Returns the archive path, or `None` on a conflict (the document changed
+    /// since the user read it; nothing moved).
+    pub async fn archive(
+        &self,
+        invocation: MemoryInvocation,
+        path: &str,
+        expected_content_hash: &str,
+    ) -> Result<Option<String>, MemoryServiceError> {
+        reject_local_or_traversal_path(path)?;
+        let relative = path.trim_matches('/');
+        if relative.is_empty()
+            || relative.starts_with(ARCHIVE_ROOT)
+            || is_thread_scoped_path(relative)
+        {
+            return Err(MemoryServiceError::input());
+        }
+        let (scope, context) = self.scoped_context(&invocation)?;
+        let live = document_path(&scope, relative)?;
+        let archived_relative = format!(
+            "{ARCHIVE_ROOT}{}/{relative}",
+            Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
+        );
+        let archived = document_path(&scope, &archived_relative)?;
+        let outcome = self
+            .backend
+            .archive_document(&context, &live, &archived, expected_content_hash)
+            .await
+            .map_err(MemoryServiceError::operation_from)?;
+        Ok((outcome == MemoryWriteOutcome::Written).then_some(archived_relative))
+    }
+
     pub async fn tree(
         &self,
         invocation: MemoryInvocation,
@@ -411,6 +581,7 @@ impl NativeMemoryService {
             .map_err(MemoryServiceError::operation_from)?
             .into_iter()
             .map(|path| path.relative_path().to_string())
+            .filter(|path| !is_archive_path(path))
             .collect::<Vec<_>>();
         paths.sort();
         Ok(MemoryServiceTreeResponse {

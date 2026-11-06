@@ -46,6 +46,12 @@ pub use schedules::{
     schedule_secret, schedule_update, schedules_list,
 };
 pub use usage::{usage_history, usage_report};
+mod memory;
+pub use memory::{
+    hooks_catalog, memory_archive, memory_document, memory_search, memory_tree, memory_write,
+    supermemory_delete_document, supermemory_documents, supermemory_forget, supermemory_search,
+    supermemory_status,
+};
 mod inbox;
 pub use inbox::{
     inbox_list, inbox_mutate, task_models_get, task_models_set, thread_goal, thread_goal_set,

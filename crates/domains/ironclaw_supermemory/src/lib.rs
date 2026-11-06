@@ -18,6 +18,7 @@
 //! before capture, writes to the primary container only.
 
 mod adapters;
+mod admin;
 mod binding;
 mod capture;
 mod client;
@@ -29,6 +30,9 @@ mod tools;
 mod wire;
 
 pub use adapters::{SupermemoryInteractionRecorder, SupermemoryPromptContext};
+pub use admin::{
+    AdminBinding, AdminStatus, DeleteEvidence, DocumentPage, DocumentSummary, ForgetEvidence,
+};
 pub use binding::{
     ContainerTag, StaticSupermemoryBindingSource, SupermemoryBinding, SupermemoryBindingSource,
     SupermemoryCaller,

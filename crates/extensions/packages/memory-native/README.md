@@ -21,3 +21,14 @@ installed by default so memory is always available. Extension id:
 Exactly one `[memory]` provider is active per deployment; the alternative is
 [`../mem0`](../mem0). Working rules: [`AGENTS.md`](./AGENTS.md). Family model:
 `crates/extensions/AGENTS.md`.
+
+## Memory page operations
+
+`NativeMemoryService::{list_paths, history, archive}` serve the desktop
+Memory page (wired in `ironclaw_composition::memory_page_parts`). `archive`
+is the page's "remove": the body is copied to `archive/<UTC>/<path>` with
+`skip_indexing` (browsable, never searched or recalled), then the live path is
+removed version-checked against the hash the user read. The `.versions/` trail
+stays, so nothing is deleted. Covered on the in-memory and libSQL backends by
+`tests/memory_page_archive.rs`.
+

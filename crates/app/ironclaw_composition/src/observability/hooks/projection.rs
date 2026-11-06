@@ -100,14 +100,20 @@ impl HookProjection {
 /// enforced by the DATA SHAPE, not by withholding a conversion. A developer
 /// cannot feed this to `HostRuntimeServices::new` because it simply is not, and
 /// cannot become, an `ExtensionRegistry`.
-pub struct HookProjectionRegistry(Vec<HookProjection>);
+pub struct HookProjectionRegistry(Vec<HookProjection>, Vec<(String, String)>);
 
 impl HookProjectionRegistry {
     /// Build the hook-only registry from the per-package projections that
     /// survived discovery + admission. The full packages are consumed here and
     /// only their hook metadata is retained.
     pub(super) fn from_projections(projections: Vec<HookProjection>) -> Self {
-        Self(projections)
+        Self(projections, Vec::new())
+    }
+
+    /// Packages dropped at discovery/admission, as `(extension id, reason)`,
+    /// for the read-only hook inventory. They never reach the dispatcher.
+    pub(super) fn admission_quarantines(&self) -> &[(String, String)] {
+        &self.1
     }
 
     /// Crate-private read-only view of the projected hook metadata, for the
@@ -249,6 +255,7 @@ where
         .extensions()
         .filter_map(HookProjection::from_package)
         .collect();
+    let mut quarantined: Vec<(String, String)> = Vec::new();
     let mut seen_ids: std::collections::HashSet<String> = projections
         .iter()
         .map(|projection| projection.extension_id.as_str().to_string())
@@ -307,6 +314,7 @@ where
         // own package; valid siblings are unaffected.
         for quarantine in &discovered.quarantined {
             emit_hook_quarantined(tenant_id, &quarantine.extension_id, &quarantine.reason, 0);
+            quarantined.push((quarantine.extension_id.clone(), quarantine.reason.clone()));
         }
 
         let mut hook_total = 0usize;
@@ -329,10 +337,15 @@ where
                     "exceeded MAX_TOTAL_HOOKS_PER_TENANT",
                     hook_count,
                 );
+                quarantined.push((
+                    extension_id_str,
+                    "exceeded MAX_TOTAL_HOOKS_PER_TENANT".to_string(),
+                ));
                 continue;
             }
             if let Err(reason) = enforce_root_containment(&root, &projection.root) {
                 emit_hook_quarantined(tenant_id, &extension_id_str, &reason, hook_count);
+                quarantined.push((extension_id_str, reason));
                 continue;
             }
             // Dedup by extension id: a duplicate of a builtin/already-merged id
@@ -346,6 +359,10 @@ where
                     "duplicate extension id collides with an already-projected package",
                     hook_count,
                 );
+                quarantined.push((
+                    extension_id_str,
+                    "duplicate extension id collides with an already-projected package".to_string(),
+                ));
                 continue;
             }
 
@@ -354,5 +371,5 @@ where
         }
     }
 
-    Ok(HookProjectionRegistry::from_projections(projections))
+    Ok(HookProjectionRegistry(projections, quarantined))
 }

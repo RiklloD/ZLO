@@ -14,6 +14,7 @@ mod connection;
 mod error;
 mod inbox_calls;
 pub mod mentions;
+mod memory_calls;
 pub mod operator;
 pub mod orchestration;
 mod pages;
@@ -43,6 +44,16 @@ pub use ironclaw_product_contracts::orchestration::{
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{
-    inbound_requests, inbox, notification_inbox, operator_llm, package_lifecycle, product_wire,
-    profiles, session_import, task_models, workspace_views,
+    inbound_requests,
+    inbox,
+    notification_inbox,
+    operator_llm,
+    package_lifecycle,
+    product_wire,
+    profiles,
+    session_import,
+    task_models,
+    workspace_views,
+    hooks_catalog,
+    memory_page,
 };

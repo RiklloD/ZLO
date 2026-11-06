@@ -4,6 +4,9 @@
 pub mod automations;
 pub mod extensions;
 pub mod files;
+pub mod hooks;
+pub mod memory;
+mod memory_draft;
 pub mod notifications;
 pub mod operator;
 pub mod profiles;

@@ -50,6 +50,9 @@ ironclaw_memory_native = { path = ".", features = ["test-support"] }
 # tests/memory_service_contract.rs.
 ironclaw_memory = { path = "../../../domains/ironclaw_memory", features = ["test-support"] }
 tempfile = "3"
+# The Memory-page archive test runs on the libSQL filesystem backend as well
+# as the in-memory one (version-checked delete is backend behavior).
+libsql = { version = "0.9", default-features = false, features = ["core", "replication", "remote", "tls"] }
 # `rt-multi-thread` is required by the race-safety test's
 # `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` —
 # without it, the macro silently falls back to current-thread and

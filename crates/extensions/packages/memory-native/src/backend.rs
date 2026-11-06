@@ -10,7 +10,8 @@ use crate::indexer::MemoryDocumentIndexer;
 use crate::metadata::{MemoryBackendWriteOptions, MemoryWriteOptions};
 use crate::path::{memory_backend_unsupported, memory_error, valid_memory_path};
 use crate::repo::{
-    MemoryAppendOutcome, MemoryDocumentRepository, MemoryWriteOutcome, scoped_memory_changed_by_key,
+    MemoryAppendOutcome, MemoryDocumentHistory, MemoryDocumentRepository, MemoryWriteOutcome,
+    scoped_memory_changed_by_key,
 };
 use crate::safety::{
     DefaultPromptWriteSafetyPolicy, PromptWriteSafetyCheck, enforce_prompt_write_safety,
@@ -19,15 +20,42 @@ use crate::safety::{
 use crate::schema::validate_content_against_schema;
 use crate::search::{MemorySearchRequest, MemorySearchResult};
 use crate::write_metadata::resolve_write_metadata;
-use ironclaw_memory::{MemoryContext, MemoryDocumentPath, MemoryDocumentScope};
 use ironclaw_memory::{
-    MemorySignificantEvent, MemorySignificantEventSink, MemorySignificantEventSource,
+    DocumentMetadata, MemorySignificantEvent, MemorySignificantEventKind,
+    MemorySignificantEventSink, MemorySignificantEventSource, MemorySignificantEventStatus,
 };
+use ironclaw_memory::{MemoryContext, MemoryDocumentPath, MemoryDocumentScope};
 use ironclaw_memory::{
     PromptProtectedPathRegistry, PromptWriteOperation, PromptWriteSafetyEventSink,
     PromptWriteSafetyPolicy, PromptWriteSource,
 };
 use ironclaw_memory::{content_bytes_sha256, content_sha256};
+
+/// Root of the documents the user removed from the Memory page. They are kept
+/// (nothing is deleted) but frozen: no write, append, patch, or metadata change
+/// reaches them through the backend, and no search or recall serves them —
+/// enforced here, independently of their `skip_indexing` metadata.
+pub(crate) const ARCHIVE_ROOT: &str = "archive/";
+
+pub(crate) fn is_archive_path(relative_path: &str) -> bool {
+    relative_path
+        .trim_start_matches('/')
+        .starts_with(ARCHIVE_ROOT)
+}
+
+fn reject_archive_mutation(
+    path: &MemoryDocumentPath,
+    operation: FilesystemOperation,
+) -> Result<(), FilesystemError> {
+    if is_archive_path(path.relative_path()) {
+        return Err(memory_error(
+            path.virtual_path().unwrap_or_else(|_| valid_memory_path()),
+            operation,
+            "archived memory documents are read-only",
+        ));
+    }
+    Ok(())
+}
 
 /// Declared behavior supported by a memory backend.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -180,6 +208,36 @@ pub trait MemoryBackend: Send + Sync {
             FilesystemOperation::ReadFile,
             "memory backend does not support search",
         ))
+    }
+
+    /// Move `path` to `archive_path` while it still hashes to
+    /// `expected_previous_hash`. The archive copy is written first, unindexed,
+    /// so the body is never without a home; the live path is then removed
+    /// version-checked. `Conflict` when the document changed (the live path is
+    /// untouched). Default: unsupported, fail closed.
+    async fn archive_document(
+        &self,
+        context: &MemoryContext,
+        path: &MemoryDocumentPath,
+        archive_path: &MemoryDocumentPath,
+        expected_previous_hash: &str,
+    ) -> Result<MemoryWriteOutcome, FilesystemError> {
+        let _ = (path, archive_path, expected_previous_hash);
+        Err(memory_backend_unsupported(
+            context.scope(),
+            FilesystemOperation::Delete,
+            "memory backend does not support archiving documents",
+        ))
+    }
+
+    /// Saved-version summary for `path`. Default: none recorded.
+    async fn document_history(
+        &self,
+        context: &MemoryContext,
+        path: &MemoryDocumentPath,
+    ) -> Result<MemoryDocumentHistory, FilesystemError> {
+        let _ = (context, path);
+        Ok(MemoryDocumentHistory::default())
     }
 
     async fn compare_and_append_document(
@@ -450,6 +508,7 @@ where
             self.capabilities.file_documents,
         )?;
         ensure_path_matches_context(context, path, FilesystemOperation::WriteFile)?;
+        reject_archive_mutation(path, FilesystemOperation::WriteFile)?;
         let content = std::str::from_utf8(bytes).map_err(|_| {
             memory_error(
                 path.virtual_path().unwrap_or_else(|_| valid_memory_path()),
@@ -527,6 +586,93 @@ where
         Ok(())
     }
 
+    async fn archive_document(
+        &self,
+        context: &MemoryContext,
+        path: &MemoryDocumentPath,
+        archive_path: &MemoryDocumentPath,
+        expected_previous_hash: &str,
+    ) -> Result<MemoryWriteOutcome, FilesystemError> {
+        ensure_file_documents_supported(
+            context,
+            FilesystemOperation::Delete,
+            self.capabilities.file_documents,
+        )?;
+        ensure_path_matches_context(context, path, FilesystemOperation::Delete)?;
+        ensure_path_matches_context(context, archive_path, FilesystemOperation::WriteFile)?;
+        let Some(bytes) = self.repository.read_document(path).await? else {
+            return Err(FilesystemError::NotFound {
+                path: path.virtual_path().unwrap_or_else(|_| valid_memory_path()),
+                operation: FilesystemOperation::Delete,
+            });
+        };
+        if content_bytes_sha256(&bytes) != expected_previous_hash {
+            return Ok(MemoryWriteOutcome::Conflict);
+        }
+        if self.repository.read_document(archive_path).await?.is_some() {
+            return Ok(MemoryWriteOutcome::Conflict);
+        }
+        if !is_archive_path(archive_path.relative_path()) {
+            return Err(memory_error(
+                archive_path
+                    .virtual_path()
+                    .unwrap_or_else(|_| valid_memory_path()),
+                FilesystemOperation::WriteFile,
+                "archive copies live under archive/",
+            ));
+        }
+        // The one writer of archive/: straight to the repository, never
+        // indexed (no indexer run), marked `skip_indexing` for good measure.
+        // Search and recall exclude archive/ regardless of that marker.
+        let metadata = DocumentMetadata {
+            skip_indexing: Some(true),
+            ..DocumentMetadata::default()
+        };
+        let options = MemoryWriteOptions {
+            metadata,
+            changed_by: Some(scoped_memory_changed_by_key(archive_path.scope())),
+        };
+        self.repository
+            .write_document_with_options(archive_path, &bytes, &options)
+            .await?;
+        self.repository
+            .write_document_metadata(archive_path, &serde_json::json!({ "skip_indexing": true }))
+            .await?;
+        let outcome = self
+            .repository
+            .remove_document_if_unchanged(path, expected_previous_hash)
+            .await?;
+        if outcome == MemoryWriteOutcome::Written {
+            record_memory_significant_event(
+                self.memory_event_sink.as_ref(),
+                MemorySignificantEvent {
+                    kind: MemorySignificantEventKind::DocumentDeleted,
+                    source: MemorySignificantEventSource::RepositoryMemoryBackend,
+                    status: MemorySignificantEventStatus::Deleted,
+                    scope: path.scope().clone(),
+                    relative_path_hash: Some(content_sha256(path.relative_path())),
+                    byte_count: Some(bytes.len() as u64),
+                    chunk_count: None,
+                    result_count: None,
+                    full_text: None,
+                    vector: None,
+                    audit_context: context.audit_context().cloned(),
+                },
+            )
+            .await;
+        }
+        Ok(outcome)
+    }
+
+    async fn document_history(
+        &self,
+        context: &MemoryContext,
+        path: &MemoryDocumentPath,
+    ) -> Result<MemoryDocumentHistory, FilesystemError> {
+        ensure_path_matches_context(context, path, FilesystemOperation::ReadFile)?;
+        self.repository.document_history(path).await
+    }
+
     async fn compare_and_append_document(
         &self,
         context: &MemoryContext,
@@ -558,6 +704,7 @@ where
             self.capabilities.file_documents,
         )?;
         ensure_path_matches_context(context, path, FilesystemOperation::AppendFile)?;
+        reject_archive_mutation(path, FilesystemOperation::AppendFile)?;
         let current = self.repository.read_document(path).await?;
         if current.as_deref().map(content_bytes_sha256).as_deref() != expected_previous_hash {
             return Ok(MemoryAppendOutcome::Conflict);
@@ -658,6 +805,7 @@ where
                 self.capabilities.file_documents,
             )?;
             ensure_path_matches_context(context, path, FilesystemOperation::AppendFile)?;
+            reject_archive_mutation(path, FilesystemOperation::AppendFile)?;
             let current = self.repository.read_document(path).await?;
             let expected_previous_hash = current.as_deref().map(content_bytes_sha256);
             let previous_bytes = current.unwrap_or_default();
@@ -768,6 +916,7 @@ where
             self.capabilities.file_documents,
         )?;
         ensure_path_matches_context(context, path, FilesystemOperation::WriteFile)?;
+        reject_archive_mutation(path, FilesystemOperation::WriteFile)?;
         let content = std::str::from_utf8(bytes).map_err(|_| {
             memory_error(
                 path.virtual_path().unwrap_or_else(|_| valid_memory_path()),
@@ -923,10 +1072,23 @@ where
             ));
         }
 
-        let results = self
+        let mut results = self
             .repository
             .search_documents(context.scope(), &request)
             .await?;
+        // Serve only live, non-archived documents. Search indexes are derived
+        // state: a chunk whose body is gone (an interrupted removal) or that
+        // belongs to an archived copy is never evidence of current memory.
+        let mut live = Vec::with_capacity(results.len());
+        for result in results.drain(..) {
+            if is_archive_path(result.path.relative_path()) {
+                continue;
+            }
+            if self.repository.read_document(&result.path).await?.is_some() {
+                live.push(result);
+            }
+        }
+        let results = live;
         record_memory_significant_event(
             self.memory_event_sink.as_ref(),
             MemorySignificantEvent::search_performed(

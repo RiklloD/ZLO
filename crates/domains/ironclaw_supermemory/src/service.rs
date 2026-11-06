@@ -12,7 +12,8 @@ use secrecy::SecretString;
 use serde_json::{Map, Value, json};
 
 use crate::binding::{
-    ContainerTag, StaticSupermemoryBindingSource, SupermemoryBindingSource, SupermemoryCaller,
+    ContainerTag, StaticSupermemoryBindingSource, SupermemoryBinding, SupermemoryBindingSource,
+    SupermemoryCaller,
 };
 use crate::capture::{self, CapturedTurn};
 use crate::client::{SOURCE_TAG, SupermemoryClient};
@@ -26,11 +27,33 @@ const MAX_SEARCH_LIMIT: usize = 20;
 const MAX_WRITE_CHARS: usize = 20_000;
 
 /// The binding plus key for a caller Supermemory is on for.
-struct Active {
-    key: SecretString,
-    primary: ContainerTag,
-    readable: Vec<ContainerTag>,
+pub(crate) struct Active {
+    pub(crate) key: SecretString,
+    pub(crate) primary: ContainerTag,
+    pub(crate) readable: Vec<ContainerTag>,
     instructions: Option<String>,
+}
+
+impl Active {
+    /// `raw` when it is the primary or a read container, else an error naming
+    /// the allowed containers; the primary when `raw` is absent or blank.
+    pub(crate) fn container(&self, raw: Option<&str>) -> Result<ContainerTag, SupermemoryError> {
+        match raw.map(str::trim).filter(|tag| !tag.is_empty()) {
+            None => Ok(self.primary.clone()),
+            Some(raw) => {
+                let tag = ContainerTag::new(raw)?;
+                if tag != self.primary && !self.readable.contains(&tag) {
+                    return Err(SupermemoryError::InvalidContainer {
+                        reason: format!(
+                            "'{tag}' is not readable here; allowed: {}",
+                            allowed_list(&self.primary, &self.readable)
+                        ),
+                    });
+                }
+                Ok(tag)
+            }
+        }
+    }
 }
 
 /// What recall produced for one turn.
@@ -123,12 +146,38 @@ impl Supermemory {
         &self.config
     }
 
+    pub(crate) fn client(&self) -> &SupermemoryClient {
+        &self.client
+    }
+
+    /// The caller's resolved binding (profile of its thread, else the default).
+    pub async fn resolve_binding(
+        &self,
+        caller: &SupermemoryCaller,
+    ) -> Result<Option<SupermemoryBinding>, SupermemoryError> {
+        self.bindings.binding_for(caller).await
+    }
+
     async fn active(&self, caller: &SupermemoryCaller) -> Result<Option<Active>, SupermemoryError> {
+        self.active_with(caller, None).await
+    }
+
+    /// [`Self::active`] with an explicit binding in place of the caller's
+    /// resolved one (the Memory page names a profile, not a thread).
+    pub(crate) async fn active_with(
+        &self,
+        caller: &SupermemoryCaller,
+        binding: Option<&SupermemoryBinding>,
+    ) -> Result<Option<Active>, SupermemoryError> {
         let Some(key) = self.client.api_key().await? else {
             return Ok(None);
         };
-        let Some(binding) = self.bindings.binding_for(caller).await? else {
-            return Ok(None);
+        let binding = match binding {
+            Some(binding) => binding.clone(),
+            None => match self.resolve_binding(caller).await? {
+                Some(binding) => binding,
+                None => return Ok(None),
+            },
         };
         Ok(Some(Active {
             key,
@@ -293,8 +342,22 @@ impl Supermemory {
         container: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<SearchHit>, SupermemoryError> {
+        self.search_with(caller, None, query, container, limit)
+            .await
+    }
+
+    /// [`Self::search`] against an explicit binding (`None` resolves the
+    /// caller's own).
+    pub async fn search_with(
+        &self,
+        caller: &SupermemoryCaller,
+        binding: Option<&SupermemoryBinding>,
+        query: &str,
+        container: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<SearchHit>, SupermemoryError> {
         let active = self
-            .active(caller)
+            .active_with(caller, binding)
             .await?
             .ok_or(SupermemoryError::Disabled)?;
         let query = query.trim();
@@ -303,21 +366,7 @@ impl Supermemory {
                 reason: "query is required".to_string(),
             });
         }
-        let container = match container.map(str::trim).filter(|tag| !tag.is_empty()) {
-            None => active.primary.clone(),
-            Some(raw) => {
-                let tag = ContainerTag::new(raw)?;
-                if tag != active.primary && !active.readable.contains(&tag) {
-                    return Err(SupermemoryError::InvalidContainer {
-                        reason: format!(
-                            "'{tag}' is not readable here; allowed: {}",
-                            allowed_list(&active.primary, &active.readable)
-                        ),
-                    });
-                }
-                tag
-            }
-        };
+        let container = active.container(container)?;
         let limit = limit
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
             .clamp(1, MAX_SEARCH_LIMIT);

@@ -27,6 +27,12 @@ local `ironclaw_memory` works as before.
   over the `MemoryPromptContextService` and after-turn `MemoryService` seams;
   pass-throughs to local memory when Supermemory is off for the caller.
 - `run_search` / `run_write`, schemas and ids for the tools.
+- Memory-page operations (`admin.rs`): `admin_status`, `list_documents`
+  (`POST /v3/documents/list`), `search_memories`, `delete_document`
+  (`DELETE /v3/documents/{id}`, container-checked first, read back as a 404)
+  and `forget_memory` (`DELETE /v4/memories`, Supermemory's soft forget).
+  Each takes an explicit profile binding or resolves the caller's; deletes
+  and forgets are limited to the primary container.
 - `SupermemoryConfig` — `SUPERMEMORY_BASE_URL`, `SUPERMEMORY_AUTO_RECALL`,
   `SUPERMEMORY_AUTO_CAPTURE`, `SUPERMEMORY_MAX_RECALL_RESULTS`.
 
