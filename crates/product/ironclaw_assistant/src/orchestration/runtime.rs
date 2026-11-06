@@ -31,14 +31,6 @@ use crate::{CANCEL_RUN_COMMAND, CREATE_THREAD_COMMAND, SUBMIT_TURN_COMMAND, TIME
 pub const IRONCLAW_RUNTIME_ID: &str = "ironclaw";
 const TIMELINE_PAGE: u32 = 200;
 
-/// Scaffolding the engine sends on its own; runs and handoffs skip it.
-const ENGINE_PREFIXES: [&str; 4] = [
-    "Context handoff (",
-    "Merged context from fork",
-    "Delegated work finished.",
-    ironclaw_orchestrator::restart::CONTINUE_PROMPT,
-];
-
 pub struct AgentLoopRuntime {
     id: RuntimeId,
     surface: Arc<dyn ProductSurface>,
@@ -415,8 +407,12 @@ impl TurnRuntime for AgentLoopRuntime {
                     }
                     MessageKind::CheckpointReference => return None,
                 };
+                // Scaffolding the engine sends on its own (one rule, shared
+                // with history search): runs and handoffs skip it. Typed
+                // text after carried context stays visible and is
+                // stripped to that text by the engine.
                 let hidden = role == HistoryRole::User
-                    && ENGINE_PREFIXES.iter().any(|p| text.starts_with(p));
+                    && ironclaw_threads::visible_user_text(&text).is_none();
                 let tool_calls = if m.kind == MessageKind::CapabilityDisplayPreview {
                     preview_tool_call(&text).into_iter().collect()
                 } else {

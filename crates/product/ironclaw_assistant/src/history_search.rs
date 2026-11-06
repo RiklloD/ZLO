@@ -9,6 +9,9 @@
 //! parents and forks) is layered on by `orchestration::history`.
 //! No model calls happen here.
 
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock, Mutex};
+
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_product_contracts::history::{
     HISTORY_DEFAULT_READ_MESSAGES, HISTORY_DEFAULT_THREADS, HISTORY_DEFAULT_WINDOW,
@@ -20,7 +23,7 @@ use ironclaw_threads::{
     HISTORY_SEARCH_MAX_HITS_PER_THREAD, ListThreadsForScopeRequest, MessageKind, SearchHitRole,
     SearchThreadMessagesRequest, SessionThreadError, SessionThreadRecord, SessionThreadService,
     ThreadHistoryRequest, ThreadMessageId, ThreadMessageRangeRequest, ThreadMessageRecord,
-    ThreadScope, record_is_prepared_context_hidden, searchable_message_text,
+    ThreadScope, ThreadSearchTiering, record_is_prepared_context_hidden, searchable_message_text,
 };
 use thiserror::Error;
 
@@ -82,14 +85,20 @@ pub fn caller_thread_scope(
     })
 }
 
+/// Thread ids the orchestrator knows as delegated children; empty without
+/// an orchestrator.
+pub type DelegatedThreads = Arc<HashSet<String>>;
+
 /// Answer one history request for `scope` (the caller's own thread cell).
+/// A pure read: it never writes, and starts no indexing.
 pub async fn run_history_search(
     threads: &dyn SessionThreadService,
     scope: &ThreadScope,
     request: &HistorySearchRequest,
+    delegated: &DelegatedThreads,
 ) -> Result<HistorySearchResponse, HistorySearchError> {
     match request.mode() {
-        HistorySearchMode::Discover => discover(threads, scope, request).await,
+        HistorySearchMode::Discover => discover(threads, scope, request, delegated).await,
         HistorySearchMode::Scroll => scroll(threads, scope, request).await,
         HistorySearchMode::Read => read(threads, scope, request).await,
         HistorySearchMode::Browse => browse(threads, scope, request).await,
@@ -113,6 +122,30 @@ fn thread_limit(request: &HistorySearchRequest) -> usize {
         .clamp(1, HISTORY_MAX_THREADS) as usize
 }
 
+/// Where a thread came from: its own metadata, or the orchestrator's
+/// delegation record.
+pub fn thread_origin_with(
+    record: &SessionThreadRecord,
+    delegated: &HashSet<String>,
+) -> HistoryThreadOrigin {
+    match thread_origin(record) {
+        HistoryThreadOrigin::Own if delegated.contains(record.thread_id.as_str()) => {
+            HistoryThreadOrigin::Subagent
+        }
+        origin => origin,
+    }
+}
+
+/// Ranks the person's own chats above automation runs and subagent threads
+/// before the answer is cut (see `ThreadSearchTiering`).
+struct OriginTiers(DelegatedThreads);
+
+impl ThreadSearchTiering for OriginTiers {
+    fn tier(&self, thread: &SessionThreadRecord) -> u8 {
+        u8::from(thread_origin_with(thread, &self.0) != HistoryThreadOrigin::Own)
+    }
+}
+
 /// Where a thread came from, judged from its own metadata.
 pub fn thread_origin(record: &SessionThreadRecord) -> HistoryThreadOrigin {
     let automation = record
@@ -127,6 +160,15 @@ pub fn thread_origin(record: &SessionThreadRecord) -> HistoryThreadOrigin {
     } else {
         HistoryThreadOrigin::Own
     }
+}
+
+fn thread_result_with(
+    record: &SessionThreadRecord,
+    delegated: &HashSet<String>,
+) -> HistoryThreadResult {
+    let mut result = thread_result(record);
+    result.origin = thread_origin_with(record, delegated);
+    result
 }
 
 fn thread_result(record: &SessionThreadRecord) -> HistoryThreadResult {
@@ -158,6 +200,7 @@ async fn discover(
     threads: &dyn SessionThreadService,
     scope: &ThreadScope,
     request: &HistorySearchRequest,
+    delegated: &DelegatedThreads,
 ) -> Result<HistorySearchResponse, HistorySearchError> {
     let query = request.query.clone().unwrap_or_default();
     let only = request
@@ -165,29 +208,23 @@ async fn discover(
         .as_deref()
         .map(parse_thread_id)
         .transpose()?;
-    let limit = thread_limit(request);
-    // Narrowing to one thread searches wider and filters, so that thread's
-    // hits are not crowded out by better-ranked threads.
-    let max_threads = if only.is_some() {
-        ironclaw_threads::HISTORY_SEARCH_MAX_THREADS
-    } else {
-        limit
-    };
+    // The thread restriction and the origin tiers apply inside the index
+    // query, before any candidate or group cut.
     let found = threads
         .search_thread_messages(SearchThreadMessagesRequest {
-            scope: scope.clone(),
-            query: query.clone(),
-            max_threads,
+            thread_id: only,
+            max_threads: thread_limit(request),
             max_hits_per_thread: HISTORY_SEARCH_MAX_HITS_PER_THREAD,
+            tiering: Some(Arc::new(OriginTiers(Arc::clone(delegated)))),
+            ..SearchThreadMessagesRequest::new(scope.clone(), query.clone())
         })
         .await
         .map_err(HistorySearchError::from_thread)?;
-    let mut results: Vec<HistoryThreadResult> = found
+    let results: Vec<HistoryThreadResult> = found
         .threads
         .into_iter()
-        .filter(|group| only.as_ref().is_none_or(|id| &group.thread.thread_id == id))
         .map(|group| {
-            let mut result = thread_result(&group.thread);
+            let mut result = thread_result_with(&group.thread, delegated);
             result.hits = group
                 .hits
                 .into_iter()
@@ -211,8 +248,6 @@ async fn discover(
             result
         })
         .collect();
-    demote_non_own(&mut results);
-    results.truncate(limit);
     Ok(HistorySearchResponse {
         mode: HistorySearchMode::Discover,
         query: Some(query),
@@ -378,6 +413,49 @@ async fn read(
     })
 }
 
+/// Messages re-projected per indexing step.
+const INDEX_STEP_BUDGET: usize = 500;
+/// Steps one catch-up runs before yielding the slot to a later search.
+const INDEX_STEPS_PER_CATCH_UP: usize = 400;
+
+/// Scopes with a catch-up running: single-flight bookkeeping only.
+static INDEXING: LazyLock<Mutex<HashSet<ThreadScope>>> = LazyLock::new(Default::default);
+
+/// Bring the scope's search index up to date in the background, one
+/// bounded step at a time, unless a catch-up for it is already running.
+/// Called by the history view, never by the model tool; logs at `debug!`.
+pub fn spawn_index_catch_up(threads: &Arc<dyn SessionThreadService>, scope: &ThreadScope) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let Ok(mut running) = INDEXING.lock() else {
+        return;
+    };
+    if !running.insert(scope.clone()) {
+        return;
+    }
+    drop(running);
+    let (threads, scope) = (Arc::clone(threads), scope.clone());
+    runtime.spawn(async move {
+        for _ in 0..INDEX_STEPS_PER_CATCH_UP {
+            match threads
+                .advance_message_search_index(&scope, INDEX_STEP_BUDGET)
+                .await
+            {
+                Ok(progress) if progress.complete => break,
+                Ok(_) => tokio::task::yield_now().await,
+                Err(error) => {
+                    tracing::debug!(%error, "history search indexing step failed");
+                    break;
+                }
+            }
+        }
+        if let Ok(mut running) = INDEXING.lock() {
+            running.remove(&scope);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use ironclaw_host_api::ids::{AgentId, TenantId, UserId};
@@ -445,7 +523,7 @@ mod tests {
         service: &InMemorySessionThreadService,
         request: HistorySearchRequest,
     ) -> Result<HistorySearchResponse, HistorySearchError> {
-        run_history_search(service, &scope(), &request).await
+        run_history_search(service, &scope(), &request, &DelegatedThreads::default()).await
     }
 
     #[tokio::test]

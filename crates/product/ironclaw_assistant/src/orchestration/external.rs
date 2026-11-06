@@ -152,12 +152,37 @@ pub(super) fn bare_timeline(thread: &ThreadRecord) -> Option<ProductSurfaceQuery
     })
 }
 
-pub(super) fn timeline_messages(
-    thread: &ThreadId,
-    history: &[HistoryMessage],
-    limit: usize,
-) -> Vec<Value> {
-    let mut rows: Vec<Value> = Vec::new();
+/// One row a CLI thread's timeline renders: consecutive assistant steps of
+/// a run are joined, tool-call-only steps and hidden rows dropped. History
+/// search ingests exactly these rows, so a hit navigates to the row's id.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TimelineRow {
+    pub(crate) message_id: Uuid,
+    /// Position of the first message of the row in `history`.
+    pub(crate) index: usize,
+    pub(crate) kind: &'static str,
+    pub(crate) text: String,
+    pub(crate) run_id: Option<String>,
+    pub(crate) at: Option<i64>,
+}
+
+/// The id a timeline row gets: stable for its position in the history.
+pub(crate) fn timeline_message_id(thread: &ThreadId, index: usize) -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, format!("{thread}:{index}").as_bytes())
+}
+
+/// A stitched timeline re-keys a segment's row ids so they stay unique
+/// across segments (`stitched::timeline`).
+pub(crate) fn segment_message_id(thread: &ThreadId, segment: usize, base: Uuid) -> Uuid {
+    // The base id is keyed in its JSON form, quotes included.
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_OID,
+        format!("{thread}:{segment}:\"{base}\"").as_bytes(),
+    )
+}
+
+pub(crate) fn timeline_rows(thread: &ThreadId, history: &[HistoryMessage]) -> Vec<TimelineRow> {
+    let mut rows: Vec<TimelineRow> = Vec::new();
     for (i, m) in history.iter().enumerate().filter(|(_, m)| !m.hidden) {
         let kind = match m.role {
             HistoryRole::User => "user",
@@ -168,37 +193,57 @@ pub(super) fn timeline_messages(
         if kind == "assistant"
             && m.run_id.is_some()
             && let Some(last) = rows.last_mut()
-            && last["kind"] == "assistant"
-            && last["turn_run_id"].as_str() == m.run_id.as_deref()
+            && last.kind == "assistant"
+            && last.run_id.as_deref() == m.run_id.as_deref()
         {
             if !m.text.is_empty() {
-                let joined = match last["content"].as_str() {
-                    Some(prev) if !prev.is_empty() => format!("{prev}\n\n{}", m.text),
-                    _ => m.text.clone(),
+                last.text = if last.text.is_empty() {
+                    m.text.clone()
+                } else {
+                    format!("{}\n\n{}", last.text, m.text)
                 };
-                last["content"] = Value::String(joined);
             }
             continue;
         }
         if kind == "assistant" && m.text.is_empty() {
             continue; // a tool-call-only step; its text, if any, follows
         }
-        let id = Uuid::new_v5(&Uuid::NAMESPACE_OID, format!("{thread}:{i}").as_bytes());
-        rows.push(json!({
-            "message_id": id,
-            "thread_id": thread.as_str(),
-            "sequence": i as u64 + 1,
-            "kind": kind,
-            "status": "finalized",
-            "actor_id": null,
-            "source_binding_id": null,
-            "reply_target_binding_id": null,
-            "turn_id": m.run_id,
-            "turn_run_id": m.run_id,
-            "content": m.text,
-            "redaction_ref": null,
-        }));
+        rows.push(TimelineRow {
+            message_id: timeline_message_id(thread, i),
+            index: i,
+            kind,
+            text: m.text.clone(),
+            run_id: m.run_id.clone(),
+            at: m.at,
+        });
     }
+    rows
+}
+
+pub(super) fn timeline_messages(
+    thread: &ThreadId,
+    history: &[HistoryMessage],
+    limit: usize,
+) -> Vec<Value> {
+    let rows: Vec<Value> = timeline_rows(thread, history)
+        .into_iter()
+        .map(|row| {
+            json!({
+                "message_id": row.message_id,
+                "thread_id": thread.as_str(),
+                "sequence": row.index as u64 + 1,
+                "kind": row.kind,
+                "status": "finalized",
+                "actor_id": null,
+                "source_binding_id": null,
+                "reply_target_binding_id": null,
+                "turn_id": row.run_id,
+                "turn_run_id": row.run_id,
+                "content": row.text,
+                "redaction_ref": null,
+            })
+        })
+        .collect();
     let skip = rows.len().saturating_sub(limit);
     rows.into_iter().skip(skip).collect()
 }

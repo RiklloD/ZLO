@@ -1,13 +1,20 @@
-//! Orchestrator knowledge layered on history search, and the
-//! `ironclaw.history.search` model tool.
+//! History search with the orchestrator: the `history.search` view
+//! decorator, the `ironclaw.history.search` model tool, and the lineage they
+//! share.
 //!
-//! The transcript service knows message text; the engine knows how threads
-//! relate: a delegated child (subagent) has a parent task, a fork has a fork
-//! transfer from its source. Delegated children rank below the person's own
-//! threads, and forks collapse into the group of their lineage root so one
-//! conversation does not fill the results several times.
+//! The transcript service knows message text (canonical rows and the search
+//! projections of CLI transcripts, see `history_ingest`); the engine knows how
+//! threads relate: a delegated child (subagent) has a parent task, a fork has
+//! a fork transfer from its source. Delegated children rank below the
+//! person's own threads (inside the index query, before the answer is cut),
+//! and forks collapse into the group of their lineage root. A CLI thread's
+//! messages are read and scrolled from its runtime transcript.
+//!
+//! Answering is a pure read for both callers. Only the view starts indexing
+//! (a bounded background catch-up of the canonical index and a one-time
+//! sweep of the owner's CLI threads); the model tool never writes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -25,14 +32,30 @@ use ironclaw_loop_host::{
     SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 use ironclaw_orchestrator::engine::Engine;
+use ironclaw_orchestrator::model::ThreadRecord;
 use ironclaw_orchestrator::profiles::ProfileOwner;
 use ironclaw_product_contracts::history::{
-    HISTORY_SEARCH_VIEW, HistorySearchMode, HistorySearchRequest, HistorySearchResponse,
+    HISTORY_DEFAULT_READ_MESSAGES, HISTORY_DEFAULT_WINDOW, HISTORY_MAX_READ_MESSAGES,
+    HISTORY_MAX_WINDOW, HISTORY_MESSAGE_MAX_CHARS, HISTORY_SEARCH_VIEW, HistorySearchMessage,
+    HistorySearchMode, HistorySearchRequest, HistorySearchResponse, HistorySearchRole,
     HistoryThreadOrigin, HistoryThreadResult,
 };
-use ironclaw_threads::{HISTORY_SEARCH_MAX_HITS_PER_THREAD, SessionThreadService, ThreadScope};
+use ironclaw_product_contracts::surface::{
+    ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode,
+    ProductSurfaceInvokeRequest, ProductSurfaceInvokeResponse, ProductSurfaceQueryPage,
+    ProductSurfaceQueryRequest, ProductSurfaceStreamRequest, ProductSurfaceStreamResponse,
+    ProductSurfaceValidationCode,
+};
+use ironclaw_threads::{
+    HISTORY_SEARCH_MAX_HITS_PER_THREAD, SessionThreadService, ThreadScope, visible_user_text,
+};
 
-use crate::history_search::{HistorySearchError, demote_non_own, run_history_search};
+use super::external::{segment_message_id, timeline_rows};
+use super::history_ingest::{IngestOnCompletion, owner_swept, spawn_owner_sweep};
+use crate::history_search::{
+    DelegatedThreads, HistorySearchError, caller_thread_scope, demote_non_own, run_history_search,
+    spawn_index_catch_up,
+};
 
 /// Capability id and provider tool name of the history tool.
 pub const HISTORY_SEARCH_CAPABILITY_ID: &str = "ironclaw.history.search";
@@ -134,8 +157,265 @@ fn collapse_lineage(threads: &mut Vec<HistoryThreadResult>, roots: &HashMap<Stri
     *threads = kept;
 }
 
+/// Thread ids the engine records as delegated children of the owner.
+async fn delegated_threads(engine: &Engine, owner: &ProfileOwner) -> DelegatedThreads {
+    match engine.store().inbox_threads(owner).await {
+        Ok(threads) => Arc::new(
+            threads
+                .into_iter()
+                .filter(|t| t.parent_thread_id.is_some())
+                .map(|t| t.thread_id.as_str().to_string())
+                .collect::<HashSet<String>>(),
+        ),
+        Err(error) => {
+            tracing::debug!(%error, "history search skips delegation tiers");
+            DelegatedThreads::default()
+        }
+    }
+}
+
+/// Answer one history request. A pure read, shared by the view and the
+/// model tool. `orch_scope` is the caller as the engine sees it (thread
+/// ownership); `scope` is the caller's own transcript cell.
+pub(crate) async fn answer_history(
+    engine: Option<&Engine>,
+    threads: &dyn SessionThreadService,
+    scope: &ThreadScope,
+    orch_scope: &ironclaw_orchestrator::model::ThreadScope,
+    request: &HistorySearchRequest,
+) -> Result<HistorySearchResponse, HistorySearchError> {
+    let Some(engine) = engine else {
+        return run_history_search(threads, scope, request, &DelegatedThreads::default()).await;
+    };
+    let owner = ProfileOwner::from(orch_scope);
+    let delegated = delegated_threads(engine, &owner).await;
+    if matches!(
+        request.mode(),
+        HistorySearchMode::Scroll | HistorySearchMode::Read
+    ) && let Some(raw) = request.thread_id.as_deref()
+        && let Ok(id) = ironclaw_host_api::ids::ThreadId::new(raw)
+        && let Ok(Some(thread)) = engine.external_thread(&id).await
+        && engine.owned_thread(&id, orch_scope).await.is_ok()
+    {
+        let mut response = external_window(engine, &thread, request, &delegated).await?;
+        apply_lineage(engine, &owner, &mut response).await;
+        return Ok(response);
+    }
+    let mut response = run_history_search(threads, scope, request, &delegated).await?;
+    apply_lineage(engine, &owner, &mut response).await;
+    Ok(response)
+}
+
+/// Read or scroll a CLI thread from its runtime transcript: the same rows,
+/// ids and visibility as its timeline and its search projections.
+async fn external_window(
+    engine: &Engine,
+    thread: &ThreadRecord,
+    request: &HistorySearchRequest,
+    delegated: &HashSet<String>,
+) -> Result<HistorySearchResponse, HistorySearchError> {
+    let unavailable = |error: ironclaw_orchestrator::error::OrchestratorError| {
+        tracing::debug!(%error, "history search could not read a CLI transcript");
+        HistorySearchError::Unavailable(ironclaw_threads::SessionThreadError::Backend(
+            "runtime transcript unavailable".to_string(),
+        ))
+    };
+    let segmented = !engine
+        .segments(&thread.thread_id)
+        .await
+        .map_err(unavailable)?
+        .is_empty();
+    let mut messages: Vec<HistorySearchMessage> = Vec::new();
+    for source in engine
+        .external_transcript_sources(thread)
+        .await
+        .map_err(unavailable)?
+    {
+        for row in timeline_rows(&thread.thread_id, &source.messages) {
+            let role = match row.kind {
+                "user" if visible_user_text(&row.text).is_some() => HistorySearchRole::User,
+                "assistant" => HistorySearchRole::Assistant,
+                _ => continue,
+            };
+            let text = match role {
+                HistorySearchRole::User => visible_user_text(&row.text).unwrap_or_default(),
+                HistorySearchRole::Assistant => row.text.as_str(),
+            }
+            .trim();
+            if text.is_empty() {
+                continue;
+            }
+            let id = if segmented {
+                segment_message_id(&thread.thread_id, source.segment as usize, row.message_id)
+            } else {
+                row.message_id
+            };
+            let truncated = text.chars().count() > HISTORY_MESSAGE_MAX_CHARS;
+            let mut text: String = text.chars().take(HISTORY_MESSAGE_MAX_CHARS).collect();
+            if truncated {
+                text.push('…');
+            }
+            messages.push(HistorySearchMessage {
+                message_id: id.to_string(),
+                sequence: messages.len() as u64 + 1,
+                role,
+                created_at: row.at.and_then(chrono::DateTime::from_timestamp_millis),
+                text,
+                truncated,
+            });
+        }
+    }
+    let thread_result = HistoryThreadResult {
+        thread_id: thread.thread_id.as_str().to_string(),
+        title: thread.title.clone(),
+        updated_at: chrono::DateTime::from_timestamp_millis(thread.updated_at),
+        origin: if delegated.contains(thread.thread_id.as_str()) {
+            HistoryThreadOrigin::Subagent
+        } else {
+            HistoryThreadOrigin::Own
+        },
+        lineage_root_thread_id: None,
+        related_thread_ids: Vec::new(),
+        hits: Vec::new(),
+    };
+    let (window, next_from_sequence) = if request.mode() == HistorySearchMode::Scroll {
+        let anchor = match (&request.around_message_id, request.around_sequence) {
+            (Some(id), _) => messages
+                .iter()
+                .position(|m| &m.message_id == id)
+                .ok_or(HistorySearchError::NotFound)?,
+            (None, Some(sequence)) => messages
+                .iter()
+                .position(|m| m.sequence >= sequence)
+                .unwrap_or(messages.len().saturating_sub(1)),
+            (None, None) => 0,
+        };
+        let w = request
+            .window
+            .unwrap_or(HISTORY_DEFAULT_WINDOW)
+            .clamp(1, HISTORY_MAX_WINDOW) as usize;
+        let start = anchor.saturating_sub(w);
+        let end = (anchor + w + 1).min(messages.len());
+        (messages[start..end].to_vec(), None)
+    } else {
+        let limit = request
+            .limit
+            .unwrap_or(HISTORY_DEFAULT_READ_MESSAGES)
+            .clamp(1, HISTORY_MAX_READ_MESSAGES) as usize;
+        let from = request.from_sequence.unwrap_or(0);
+        let mut rest = messages.into_iter().filter(|m| m.sequence >= from);
+        let window: Vec<HistorySearchMessage> = rest.by_ref().take(limit).collect();
+        (window, rest.next().map(|m| m.sequence))
+    };
+    Ok(HistorySearchResponse {
+        mode: request.mode(),
+        query: None,
+        threads: Vec::new(),
+        thread: Some(thread_result),
+        messages: window,
+        next_from_sequence,
+        index_complete: true,
+    })
+}
+
+/// Answers `history.search` (everything else passes through) and keeps the
+/// index current: every view request starts a bounded background catch-up
+/// of the caller's canonical index and, once per process, a sweep of their
+/// CLI threads; completed turns re-index their CLI thread.
+pub struct HistorySearchSurface {
+    inner: Arc<dyn ProductSurface>,
+    engine: Arc<Engine>,
+    threads: Arc<dyn SessionThreadService>,
+}
+
+/// Wrap `inner` so history search covers CLI threads. Without an engine the
+/// inner surface answers the view itself (canonical transcripts only).
+pub fn wrap_surface(
+    inner: Arc<dyn ProductSurface>,
+    engine: Option<Arc<Engine>>,
+    threads: Arc<dyn SessionThreadService>,
+) -> Arc<dyn ProductSurface> {
+    let Some(engine) = engine else {
+        return inner;
+    };
+    engine.add_turn_listener(Arc::new(IngestOnCompletion {
+        engine: Arc::downgrade(&engine),
+        threads: Arc::clone(&threads),
+    }));
+    Arc::new(HistorySearchSurface {
+        inner,
+        engine,
+        threads,
+    })
+}
+
+#[async_trait]
+impl ProductSurface for HistorySearchSurface {
+    async fn invoke(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: ProductSurfaceInvokeRequest,
+    ) -> Result<ProductSurfaceInvokeResponse, ProductSurfaceError> {
+        self.inner.invoke(caller, request).await
+    }
+
+    async fn query(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: ProductSurfaceQueryRequest,
+    ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
+        if request.view_id != HISTORY_SEARCH_VIEW.id {
+            return self.inner.query(caller, request).await;
+        }
+        let history: HistorySearchRequest =
+            serde_json::from_value(request.input).map_err(|error| {
+                tracing::debug!(%error, "history search request rejected");
+                ProductSurfaceError::validation("input", ProductSurfaceValidationCode::InvalidValue)
+            })?;
+        let scope = caller_thread_scope(&caller).ok_or_else(|| {
+            ProductSurfaceError::from_status(ProductSurfaceErrorCode::InvalidRequest, 400, false)
+        })?;
+        let orch_scope = super::surface::scope_of(&caller);
+        let owner = ProfileOwner::from(&orch_scope);
+        spawn_index_catch_up(&self.threads, &scope);
+        spawn_owner_sweep(&self.engine, &self.threads, owner.clone());
+        let mut response = answer_history(
+            Some(&self.engine),
+            self.threads.as_ref(),
+            &scope,
+            &orch_scope,
+            &history,
+        )
+        .await?;
+        // Until this process has swept the owner's CLI threads, their older
+        // messages may be missing: say so, and the desktop asks again.
+        response.index_complete &= owner_swept(&self.engine, &owner);
+        Ok(ProductSurfaceQueryPage {
+            items: vec![
+                serde_json::to_value(response).map_err(ProductSurfaceError::internal_from)?,
+            ],
+            next_cursor: None,
+        })
+    }
+
+    async fn stream_events(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: ProductSurfaceStreamRequest,
+    ) -> Result<ProductSurfaceStreamResponse, ProductSurfaceError> {
+        self.inner.stream_events(caller, request).await
+    }
+}
+
 /// The `history_search` model tool for one run's capability surface. It acts
 /// on the run's acting user's own threads only; no model calls happen inside.
+///
+/// Mediation exception (`.claude/rules/tools.md`, "Direct access
+/// exceptions"): like the other synthetic loop tools it is not dispatched
+/// through `CapabilityHost`. It is a pure read of the acting user's own
+/// transcripts through the typed `SessionThreadService` facade and the
+/// engine's read APIs — no write, no indexing, no network, no secret — so
+/// no authorization, approval, resource or runtime obligation is skipped.
 pub fn history_search_capability(
     threads: Arc<dyn SessionThreadService>,
     engine: Option<Arc<Engine>>,
@@ -234,7 +514,21 @@ impl SyntheticCapabilityHandler for HistorySearchToolHandler {
             owner_user_id: Some(user_id.clone()),
             mission_id: None,
         };
-        let mut response = match run_history_search(self.threads.as_ref(), &scope, &request).await {
+        let orch_scope = ironclaw_orchestrator::model::ThreadScope {
+            tenant_id: resource.tenant_id.clone(),
+            user_id: user_id.clone(),
+            agent_id: resource.agent_id.clone(),
+            project_id: resource.project_id.clone(),
+        };
+        let response = match answer_history(
+            self.engine.as_deref(),
+            self.threads.as_ref(),
+            &scope,
+            &orch_scope,
+            &request,
+        )
+        .await
+        {
             Ok(response) => response,
             Err(HistorySearchError::Invalid { field, reason }) => {
                 return Ok(model_failure(
@@ -256,13 +550,6 @@ impl SyntheticCapabilityHandler for HistorySearchToolHandler {
                 ));
             }
         };
-        if let Some(engine) = &self.engine {
-            let owner = ProfileOwner {
-                tenant_id: resource.tenant_id,
-                user_id,
-            };
-            apply_lineage(engine, &owner, &mut response).await;
-        }
         let summary = match response.mode {
             HistorySearchMode::Discover => {
                 format!("history_search found {} thread(s)", response.threads.len())
@@ -305,12 +592,6 @@ impl SyntheticCapabilityHandler for HistorySearchToolHandler {
     }
 }
 
-/// The decorator's half of the `history.search` view: the inner surface
-/// answers from transcripts, then lineage refines the ranking.
-pub(crate) fn is_history_view(view_id: &str) -> bool {
-    view_id == HISTORY_SEARCH_VIEW.id
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,141 +624,6 @@ mod tests {
         let ids: Vec<&str> = threads.iter().map(|t| t.thread_id.as_str()).collect();
         assert_eq!(ids, ["fork-b", "other"]);
         assert_eq!(threads[0].related_thread_ids, ["root"]);
-    }
-
-    /// The undecorated surface answers the view from "transcripts": a fork,
-    /// an unrelated thread, and the fork's source, in that rank order.
-    struct Inner;
-
-    #[async_trait]
-    impl ironclaw_product_contracts::surface::ProductSurface for Inner {
-        async fn invoke(
-            &self,
-            _caller: ironclaw_product_contracts::surface::ProductSurfaceCaller,
-            _request: ironclaw_product_contracts::surface::ProductSurfaceInvokeRequest,
-        ) -> Result<
-            ironclaw_product_contracts::surface::ProductSurfaceInvokeResponse,
-            ironclaw_product_contracts::surface::ProductSurfaceError,
-        > {
-            Err(ironclaw_product_contracts::surface::ProductSurfaceError::not_found())
-        }
-
-        async fn query(
-            &self,
-            _caller: ironclaw_product_contracts::surface::ProductSurfaceCaller,
-            request: ironclaw_product_contracts::surface::ProductSurfaceQueryRequest,
-        ) -> Result<
-            ironclaw_product_contracts::surface::ProductSurfaceQueryPage,
-            ironclaw_product_contracts::surface::ProductSurfaceError,
-        > {
-            assert_eq!(request.view_id, HISTORY_SEARCH_VIEW.id);
-            let response = HistorySearchResponse {
-                mode: HistorySearchMode::Discover,
-                query: Some("deploy".into()),
-                threads: vec![
-                    result("fork", HistoryThreadOrigin::Own),
-                    result("other", HistoryThreadOrigin::Own),
-                    result("root", HistoryThreadOrigin::Own),
-                ],
-                thread: None,
-                messages: Vec::new(),
-                next_from_sequence: None,
-                index_complete: true,
-            };
-            Ok(
-                ironclaw_product_contracts::surface::ProductSurfaceQueryPage {
-                    items: vec![serde_json::to_value(response).unwrap()],
-                    next_cursor: None,
-                },
-            )
-        }
-
-        async fn stream_events(
-            &self,
-            _caller: ironclaw_product_contracts::surface::ProductSurfaceCaller,
-            _request: ironclaw_product_contracts::surface::ProductSurfaceStreamRequest,
-        ) -> Result<
-            ironclaw_product_contracts::surface::ProductSurfaceStreamResponse,
-            ironclaw_product_contracts::surface::ProductSurfaceError,
-        > {
-            Err(ironclaw_product_contracts::surface::ProductSurfaceError::not_found())
-        }
-    }
-
-    #[tokio::test]
-    async fn the_decorated_view_collapses_forks_into_their_lineage_root() {
-        use ironclaw_host_api::ids::TenantId;
-        use ironclaw_orchestrator::model::{
-            Author, TransferDelivery, TransferId, TransferKind, TransferRecord, TransferStatus,
-            TransferStrategy, now_ms,
-        };
-        use ironclaw_product_contracts::surface::{ProductSurface, ProductSurfaceCaller};
-
-        let dir = tempfile::tempdir().unwrap();
-        let db = Arc::new(
-            libsql::Builder::new_local(dir.path().join("o.db"))
-                .build()
-                .await
-                .unwrap(),
-        );
-        let runtime =
-            Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
-        let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
-        engine
-            .store()
-            .insert_transfer(&TransferRecord {
-                id: TransferId::generate(),
-                kind: TransferKind::Fork,
-                source_thread: ThreadId::new("root").unwrap(),
-                target_thread: Some(ThreadId::new("fork").unwrap()),
-                source_point: None,
-                base_point: None,
-                strategy: TransferStrategy::PortableContext,
-                status: TransferStatus::Consumed,
-                delivery: TransferDelivery::NextMessage,
-                handoff: None,
-                created_by: Author::User,
-                created_at: now_ms(),
-                consumed_at: Some(now_ms()),
-            })
-            .await
-            .unwrap();
-        let surface =
-            crate::orchestration::OrchestratedProductSurface::new(Arc::new(Inner), engine, None);
-        let page = surface
-            .query(
-                ProductSurfaceCaller::new(
-                    TenantId::new("t1").unwrap(),
-                    UserId::new("u1").unwrap(),
-                    None,
-                    None,
-                ),
-                ironclaw_product_contracts::surface::ProductSurfaceQueryRequest {
-                    view_id: HISTORY_SEARCH_VIEW.id.into(),
-                    input: serde_json::json!({"query": "deploy"}),
-                    cursor: None,
-                    limit: None,
-                },
-            )
-            .await
-            .unwrap();
-        let response: HistorySearchResponse =
-            serde_json::from_value(page.items[0].clone()).unwrap();
-        let ids: Vec<&str> = response
-            .threads
-            .iter()
-            .map(|t| t.thread_id.as_str())
-            .collect();
-        assert_eq!(
-            ids,
-            ["fork", "other"],
-            "the fork and its root are one result"
-        );
-        assert_eq!(
-            response.threads[0].lineage_root_thread_id.as_deref(),
-            Some("root")
-        );
-        assert_eq!(response.threads[0].related_thread_ids, ["root"]);
     }
 
     #[test]

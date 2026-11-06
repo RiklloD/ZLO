@@ -8,6 +8,9 @@ mod external;
 #[cfg(test)]
 mod external_tests;
 mod history;
+mod history_ingest;
+#[cfg(test)]
+mod history_tests;
 mod inbox;
 mod observer;
 mod profile_context;
@@ -20,8 +23,8 @@ mod telemetry;
 mod tools;
 
 pub use history::{
-    HISTORY_SEARCH_CAPABILITY_ID, HISTORY_SEARCH_TOOL_NAME, history_search_capability,
-    history_search_input_schema,
+    HISTORY_SEARCH_CAPABILITY_ID, HISTORY_SEARCH_TOOL_NAME, HistorySearchSurface,
+    history_search_capability, history_search_input_schema, wrap_surface as wrap_history_search,
 };
 pub use observer::OrchestratorProcessObserver;
 pub use profile_context::{CliProfileContext, ProfileSkillFilter, SkillFiles, UserSkillFiles};

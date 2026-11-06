@@ -186,25 +186,6 @@ impl OrchestratedProductSurface {
         Ok((id, parent))
     }
 
-    /// `history.search`: the inner surface answers from transcripts, then the
-    /// engine's delegation and fork lineage refines the ranking.
-    async fn history_view(
-        &self,
-        caller: ProductSurfaceCaller,
-        request: ProductSurfaceQueryRequest,
-    ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
-        let owner = ironclaw_orchestrator::profiles::ProfileOwner::from(&scope_of(&caller));
-        let mut inner_page = self.inner.query(caller, request).await?;
-        let Some(first) = inner_page.items.first_mut() else {
-            return Ok(inner_page);
-        };
-        let mut response: ironclaw_product_contracts::history::HistorySearchResponse =
-            serde_json::from_value(first.take()).map_err(ProductSurfaceError::internal_from)?;
-        super::history::apply_lineage(&self.engine, &owner, &mut response).await;
-        *first = serde_json::to_value(response).map_err(ProductSurfaceError::internal_from)?;
-        Ok(inner_page)
-    }
-
     async fn orchestrator_view(
         &self,
         view: &str,
@@ -807,9 +788,6 @@ impl ProductSurface for OrchestratedProductSurface {
             .await?
         {
             return Ok(page(value));
-        }
-        if super::history::is_history_view(&request.view_id) {
-            return self.history_view(caller, request).await;
         }
         if let Some(value) = self
             .orchestrator_view(&request.view_id, request.input.clone(), &scope)
