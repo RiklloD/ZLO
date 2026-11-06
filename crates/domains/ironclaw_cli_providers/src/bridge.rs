@@ -321,6 +321,8 @@ pub struct CliBridge {
     mcp_url: OnceLock<String>,
     /// Where approvals are recorded, set once by the host.
     ledger: OnceLock<Store>,
+    /// Host tools beside the orchestrator's on the MCP route.
+    pub(crate) tool_provider: OnceLock<Arc<dyn crate::bridge_tools::BridgeToolProvider>>,
 }
 
 impl std::fmt::Debug for CliBridge {
@@ -338,6 +340,7 @@ impl CliBridge {
             events: broadcast::channel(EVENT_BUFFER).0,
             mcp_url: OnceLock::new(),
             ledger: OnceLock::new(),
+            tool_provider: OnceLock::new(),
         })
     }
 
@@ -906,7 +909,9 @@ pub async fn serve_mcp(
         .and_then(|token| bridge.resolve_token(token.trim()))
         .ok_or(401u16)?;
     match serde_json::from_slice::<Value>(body) {
-        Ok(message @ Value::Object(_)) => Ok(handle_mcp(engine, &grant, &message).await),
+        Ok(message @ Value::Object(_)) => {
+            Ok(crate::bridge_tools::handle_with_tools(bridge, engine, &grant, &message).await)
+        }
         _ => Err(400),
     }
 }

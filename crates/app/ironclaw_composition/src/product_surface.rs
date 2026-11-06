@@ -337,6 +337,16 @@ pub(crate) fn build_product_surface_with_channel_connection(
         runtime.orchestrator.clone(),
         runtime.product_thread_service(),
     );
+    // ... and offer the history tool to CLI runs on the bridge's MCP route.
+    if let (Some(bridge), Some(engine)) =
+        (runtime.cli_bridge.as_ref(), runtime.orchestrator.as_ref())
+    {
+        ironclaw_assistant::orchestration::register_history_bridge_tool(
+            bridge,
+            engine,
+            runtime.product_thread_service(),
+        );
+    }
     let surface =
         ironclaw_assistant::computer_use::wrap_surface(surface, runtime.computer_use.clone());
     // Subscription usage windows for the Usage page (polled on demand).

@@ -24,7 +24,8 @@ mod tools;
 
 pub use history::{
     HISTORY_SEARCH_CAPABILITY_ID, HISTORY_SEARCH_TOOL_NAME, HistorySearchSurface,
-    history_search_capability, history_search_input_schema, wrap_surface as wrap_history_search,
+    history_search_capability, history_search_input_schema, register_history_bridge_tool,
+    wrap_surface as wrap_history_search,
 };
 pub use observer::OrchestratorProcessObserver;
 pub use profile_context::{CliProfileContext, ProfileSkillFilter, SkillFiles, UserSkillFiles};

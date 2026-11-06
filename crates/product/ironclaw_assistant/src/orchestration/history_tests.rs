@@ -309,6 +309,34 @@ async fn cli_threads_become_searchable_and_navigable() {
             .any(|m| m.message_id == hit.message_id)
     );
 
+    // A CLI run reaches the same search through the bridge's MCP route,
+    // as its session thread.
+    let bridge = ironclaw_cli_providers::bridge::CliBridge::new(Duration::from_secs(10));
+    super::history::register_history_bridge_tool(&bridge, &engine, Arc::clone(&threads));
+    let token = bridge.mint_token(
+        ironclaw_cli_providers::bridge::SessionGrant {
+            thread_id: short.clone(),
+            run_id: "r".into(),
+        },
+        Duration::from_secs(60),
+    );
+    let body = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": {"name": "history_search", "arguments": {"query": "heron"}}});
+    let answer = ironclaw_cli_providers::bridge::serve_mcp(
+        &bridge,
+        &engine,
+        true,
+        Some(&format!("Bearer {token}")),
+        body.to_string().as_bytes(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(answer["result"]["isError"], false);
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    let via_mcp: HistorySearchResponse = serde_json::from_str(text).unwrap();
+    assert_eq!(via_mcp.threads[0].thread_id, "cli-short");
+
     // A completed turn re-indexes the thread.
     let mut grown = cli.history.lock().unwrap().get(&short).cloned().unwrap();
     grown.push(msg(HistoryRole::Assistant, "the toucan follow-up landed"));

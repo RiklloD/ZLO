@@ -407,6 +407,96 @@ impl ProductSurface for HistorySearchSurface {
     }
 }
 
+/// `history_search` for CLI runs (Claude, Codex) on the loopback MCP route,
+/// beside the orchestrator tools. Same pure-read answer as the model tool,
+/// as the session thread's owner; never indexes.
+struct HistoryBridgeTool {
+    engine: std::sync::Weak<Engine>,
+    threads: Arc<dyn SessionThreadService>,
+}
+
+fn bridge_result(text: String, is_error: bool) -> serde_json::Value {
+    serde_json::json!({"content": [{"type": "text", "text": text}], "isError": is_error})
+}
+
+#[async_trait]
+impl ironclaw_cli_providers::bridge_tools::BridgeToolProvider for HistoryBridgeTool {
+    fn tools(&self) -> Vec<serde_json::Value> {
+        vec![serde_json::json!({
+            "name": HISTORY_SEARCH_TOOL_NAME,
+            "description": DESCRIPTION.trim(),
+            "inputSchema": history_search_input_schema(),
+        })]
+    }
+
+    fn handles(&self, name: &str) -> bool {
+        name == HISTORY_SEARCH_TOOL_NAME
+    }
+
+    async fn call(
+        &self,
+        thread: &ThreadRecord,
+        _name: &str,
+        arguments: &serde_json::Value,
+    ) -> serde_json::Value {
+        let Some(engine) = self.engine.upgrade() else {
+            return bridge_result("history_search is unavailable".into(), true);
+        };
+        let request: HistorySearchRequest = match serde_json::from_value(arguments.clone()) {
+            Ok(request) => request,
+            Err(error) => {
+                tracing::debug!(%error, "history_search bridge arguments rejected");
+                return bridge_result("history_search arguments are invalid".into(), true);
+            }
+        };
+        let Some(scope) = super::history_ingest::projection_scope(&thread.scope) else {
+            return bridge_result("history_search needs an agent-scoped thread".into(), true);
+        };
+        match answer_history(
+            Some(&engine),
+            self.threads.as_ref(),
+            &scope,
+            &thread.scope,
+            &request,
+        )
+        .await
+        {
+            Ok(response) => match serde_json::to_string(&response) {
+                Ok(text) => bridge_result(text, false),
+                Err(error) => {
+                    tracing::debug!(%error, "history_search bridge output did not encode");
+                    bridge_result("history_search failed".into(), true)
+                }
+            },
+            Err(HistorySearchError::Invalid { field, reason }) => {
+                bridge_result(format!("history_search: {field} {reason}"), true)
+            }
+            Err(HistorySearchError::NotFound) => {
+                bridge_result("history_search: no such thread or message".into(), true)
+            }
+            Err(HistorySearchError::Unavailable(error)) => {
+                tracing::debug!(%error, "history_search bridge storage unavailable");
+                bridge_result(
+                    "history_search: history is temporarily unavailable".into(),
+                    true,
+                )
+            }
+        }
+    }
+}
+
+/// Offer `history_search` to CLI runs through the bridge's MCP route.
+pub fn register_history_bridge_tool(
+    bridge: &ironclaw_cli_providers::bridge::CliBridge,
+    engine: &Arc<Engine>,
+    threads: Arc<dyn SessionThreadService>,
+) {
+    bridge.set_tool_provider(Arc::new(HistoryBridgeTool {
+        engine: Arc::downgrade(engine),
+        threads,
+    }));
+}
+
 /// The `history_search` model tool for one run's capability surface. It acts
 /// on the run's acting user's own threads only; no model calls happen inside.
 ///
