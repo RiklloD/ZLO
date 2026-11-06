@@ -7235,6 +7235,7 @@ async fn standalone_webui_bundle_routes_approval_gates_into_interaction_service(
             always: None,
             credential_ref: None,
             answer: None,
+            feedback: None,
         },
     )
     .await
@@ -7306,6 +7307,7 @@ async fn standalone_webui_bundle_routes_auth_gates_into_interaction_service() {
             always: None,
             credential_ref: None,
             answer: None,
+            feedback: None,
         },
     )
     .await

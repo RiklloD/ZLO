@@ -10,10 +10,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ironclaw_cli_providers::antigravity::{AntigravityConfig, AntigravityRuntime};
-use ironclaw_cli_providers::bridge::{CliBridge, DEFAULT_APPROVAL_TIMEOUT};
+use ironclaw_cli_providers::bridge::{CliBridge, DEFAULT_APPROVAL_TIMEOUT, GateAnswer};
 use ironclaw_cli_providers::codex::{CodexConfig, CodexRuntime};
 use ironclaw_cli_providers::muse::{MuseConfig, MuseRuntime};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
+use ironclaw_host_api::turn::DenialFeedback;
 use ironclaw_orchestrator::model::{Millis, ThreadRecord, ThreadScope};
 use ironclaw_orchestrator::runtime::*;
 use ironclaw_orchestrator::telemetry::TurnTelemetry;
@@ -150,6 +151,15 @@ fn antigravity(
     pid_file: Option<&Path>,
     recorder: &Arc<Recorder>,
 ) -> AntigravityRuntime {
+    antigravity_with(dir, pid_file, recorder, None)
+}
+
+fn antigravity_with(
+    dir: &Path,
+    pid_file: Option<&Path>,
+    recorder: &Arc<Recorder>,
+    bridge: Option<Arc<CliBridge>>,
+) -> AntigravityRuntime {
     let body = AGY
         .replace("__LOG__", &dir.join("agy.log").display().to_string())
         .replace(
@@ -171,7 +181,7 @@ fn antigravity(
             state_dir: dir.join("state"),
         },
         sink(recorder),
-        None,
+        bridge,
     )
     .unwrap()
 }
@@ -322,7 +332,17 @@ fn muse(
     recorder: &Arc<Recorder>,
     bridge: Option<Arc<CliBridge>>,
 ) -> MuseRuntime {
-    let body = MUSE
+    muse_with(dir, pid_file, recorder, bridge, MUSE)
+}
+
+fn muse_with(
+    dir: &Path,
+    pid_file: Option<&Path>,
+    recorder: &Arc<Recorder>,
+    bridge: Option<Arc<CliBridge>>,
+    script_body: &str,
+) -> MuseRuntime {
+    let body = script_body
         .replace("__LOG__", &dir.join("muse.log").display().to_string())
         .replace(
             "__PID__",
@@ -450,7 +470,7 @@ async fn muse_with_a_bridge_asks_the_owner_and_runs_the_approved_call() {
     };
     assert_eq!(gate.tool_name, "bash");
     assert_eq!(gate.body.as_deref(), Some("rm -rf /"));
-    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, true));
+    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, GateAnswer::Approve));
     wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
 
     let log = std::fs::read_to_string(dir.path().join("muse.log")).unwrap();
@@ -540,7 +560,16 @@ done
 "#;
 
 fn codex(dir: &Path, recorder: &Arc<Recorder>, bridge: Option<Arc<CliBridge>>) -> CodexRuntime {
-    let body = CODEX.replace("__LOG__", &dir.join("codex.log").display().to_string());
+    codex_with(dir, recorder, bridge, CODEX)
+}
+
+fn codex_with(
+    dir: &Path,
+    recorder: &Arc<Recorder>,
+    bridge: Option<Arc<CliBridge>>,
+    script_body: &str,
+) -> CodexRuntime {
+    let body = script_body.replace("__LOG__", &dir.join("codex.log").display().to_string());
     std::fs::write(dir.join("auth.json"), "{}").unwrap();
     CodexRuntime::new(
         CodexConfig {
@@ -611,6 +640,275 @@ async fn codex_starts_then_resumes_and_declines_without_a_bridge() {
     assert_eq!(history[3].tool_calls, vec!["shell()".to_string()]);
 }
 
+// ── Rejection feedback ("no, do X instead") on runtimes whose approval reply
+// has no message field: decline, then steer the words into the same turn; if
+// the turn cannot take them (it ended, or refused the steer), they wait in the
+// thread's durable queue and run as the next turn's input — never just a
+// debug line while the UI says "sent".
+
+const FEEDBACK: &str = "run the tests instead";
+const FEEDBACK_TEXT: &str = "The user rejected this call: run the tests instead";
+
+/// The orchestrator store the host records approvals and the queue in.
+async fn ledger(dir: &Path) -> Arc<ironclaw_orchestrator::engine::Engine> {
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.join("orch.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    ironclaw_orchestrator::engine::Engine::open_libsql(runtime, "codex")
+        .await
+        .unwrap()
+}
+
+/// Reject the turn's first gate with [`FEEDBACK`] and wait for the turn.
+async fn reject_first_gate(bridge: &CliBridge, recorder: &Recorder, thread: &ThreadId) {
+    let gate = loop {
+        if let Some(g) = bridge
+            .snapshot(thread)
+            .and_then(|s| s.gates.first().cloned())
+        {
+            break g;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert!(bridge.resolve_gate(
+        thread,
+        &gate.gate_ref,
+        GateAnswer::Decline {
+            feedback: Some(DenialFeedback::new(FEEDBACK).unwrap())
+        }
+    ));
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+}
+
+/// The thread's pending queue texts once the driver has settled delivery.
+async fn queued_after_settle(
+    engine: &ironclaw_orchestrator::engine::Engine,
+    thread: &ThreadId,
+    expect_queued: bool,
+) -> Vec<String> {
+    for _ in 0..200 {
+        let texts: Vec<String> = engine
+            .store()
+            .queue(thread, false)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|item| item.text)
+            .collect();
+        if !texts.is_empty() || !expect_queued {
+            return texts;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Vec::new()
+}
+
+/// Antigravity (ACP) can neither carry a message on a reject nor be steered
+/// mid-turn: the reject goes out as `reject_once` and the feedback waits in
+/// the queue as the next turn's input.
+#[tokio::test]
+async fn antigravity_rejection_feedback_is_queued_for_the_next_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let engine = ledger(dir.path()).await;
+    bridge.record_to(engine.store().clone());
+    std::fs::create_dir_all(dir.path().join("profile/antigravity-acp")).unwrap();
+    std::fs::write(
+        dir.path().join("profile/antigravity-acp/acp_token.json"),
+        "{}",
+    )
+    .unwrap();
+    let rt = antigravity_with(dir.path(), None, &recorder, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt, "gemini-b").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    reject_first_gate(&bridge, &recorder, &thread.thread_id).await;
+
+    let log = std::fs::read_to_string(dir.path().join("agy.log")).unwrap();
+    assert!(log.contains(r#""optionId":"no""#), "{log}");
+    assert_eq!(
+        queued_after_settle(&engine, &thread.thread_id, true).await,
+        vec![FEEDBACK_TEXT.to_string()]
+    );
+}
+
+/// Codex holds the turn after the decline; the steer is accepted and ends it.
+fn codex_holding(steer_reply: &str) -> String {
+    CODEX.replace(
+        "  case \"$line\" in\n",
+        &format!(
+            "  case \"$line\" in\n    *'\"decision\":\"decline\"'*) ;;\n    *'\"method\":\"turn/steer\"'*)\n      {steer_reply}\n      emit turn/completed '{{\"threadId\":\"cx-1\",\"turn\":{{\"id\":\"tu-1\",\"status\":\"completed\",\"error\":null}}}}' ;;\n"
+        ),
+    )
+}
+
+#[tokio::test]
+async fn codex_rejection_declines_then_steers_the_feedback_into_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let engine = ledger(dir.path()).await;
+    bridge.record_to(engine.store().clone());
+    let held = codex_holding(r#"reply "$id" '{"turnId":"tu-1"}'"#);
+    let rt = codex_with(dir.path(), &recorder, Some(Arc::clone(&bridge)), &held);
+    let thread = thread(&rt, "gpt-b").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    reject_first_gate(&bridge, &recorder, &thread.thread_id).await;
+
+    let log = std::fs::read_to_string(dir.path().join("codex.log")).unwrap();
+    let decline = log.find(r#""decision":"decline""#).expect("declined");
+    let steer = log.find(r#""method":"turn/steer""#).expect("steered");
+    assert!(decline < steer, "the decline goes first: {log}");
+    assert!(log.contains(FEEDBACK_TEXT), "{log}");
+    assert!(log.contains(r#""expectedTurnId":"tu-1""#), "{log}");
+    assert!(!log.contains(r#""decision":"accept""#), "{log}");
+    assert_eq!(
+        queued_after_settle(&engine, &thread.thread_id, false).await,
+        Vec::<String>::new(),
+        "an acknowledged steer is not queued again"
+    );
+}
+
+#[tokio::test]
+async fn codex_rejection_feedback_is_queued_when_the_steer_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let engine = ledger(dir.path()).await;
+    bridge.record_to(engine.store().clone());
+    let refusing = codex_holding(
+        r#"printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32600,"message":"turn mismatch"}}\n' "$id""#,
+    );
+    let rt = codex_with(dir.path(), &recorder, Some(Arc::clone(&bridge)), &refusing);
+    let thread = thread(&rt, "gpt-b").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    reject_first_gate(&bridge, &recorder, &thread.thread_id).await;
+
+    assert_eq!(
+        queued_after_settle(&engine, &thread.thread_id, true).await,
+        vec![FEEDBACK_TEXT.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn codex_rejection_feedback_is_queued_when_the_decline_ends_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let engine = ledger(dir.path()).await;
+    bridge.record_to(engine.store().clone());
+    // The stock fake completes the turn as soon as it gets the decline.
+    let rt = codex(dir.path(), &recorder, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt, "gpt-b").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    reject_first_gate(&bridge, &recorder, &thread.thread_id).await;
+
+    assert_eq!(
+        queued_after_settle(&engine, &thread.thread_id, true).await,
+        vec![FEEDBACK_TEXT.to_string()]
+    );
+}
+
+/// Muse holds the turn after its decision; the steer reply then ends it. The
+/// approval offers a once-scoped `denied` choice (non-shell approvals do), so
+/// the denial does not end the turn the way `abort` does.
+fn muse_holding(steer_reply: &str) -> String {
+    MUSE.replace(
+        r#"{\"choiceId\":\"stop\",\"decision\":\"abort\"}"#,
+        r#"{\"choiceId\":\"no\",\"decision\":\"denied\",\"scope\":\"once\"},{\"choiceId\":\"stop\",\"decision\":\"abort\"}"#,
+    )
+    .replace(
+        "  case \"$line\" in\n",
+        &format!(
+            "  case \"$line\" in\n    *'\"method\":\"approval/decide\"'*) reply \"$id\" '{{}}' ;;\n    *'\"method\":\"turn/steer\"'*)\n      {steer_reply}\n      emit turn/completed \"{{\\\"sessionId\\\":\\\"$SID\\\",\\\"turnId\\\":\\\"$TID\\\",\\\"terminal\\\":\\\"completed\\\"}}\" ;;\n"
+        ),
+    )
+}
+
+#[tokio::test]
+async fn muse_rejection_declines_then_steers_the_feedback_into_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let engine = ledger(dir.path()).await;
+    bridge.record_to(engine.store().clone());
+    let held = muse_holding(r#"reply "$id" "{\"turnId\":\"$TID\"}""#);
+    let rt = muse_with(
+        dir.path(),
+        None,
+        &recorder,
+        Some(Arc::clone(&bridge)),
+        &held,
+    );
+    let thread = thread(&rt, "default").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    reject_first_gate(&bridge, &recorder, &thread.thread_id).await;
+
+    let log = std::fs::read_to_string(dir.path().join("muse.log")).unwrap();
+    let decide = log.find(r#""method":"approval/decide""#).expect("decided");
+    let steer = log.find(r#""method":"turn/steer""#).expect("steered");
+    assert!(decide < steer, "the denial goes first: {log}");
+    assert!(log.contains(r#""choiceId":"no""#), "{log}");
+    assert!(log.contains(FEEDBACK_TEXT), "{log}");
+    assert_eq!(
+        queued_after_settle(&engine, &thread.thread_id, false).await,
+        Vec::<String>::new()
+    );
+}
+
+#[tokio::test]
+async fn muse_rejection_feedback_is_queued_when_the_steer_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let engine = ledger(dir.path()).await;
+    bridge.record_to(engine.store().clone());
+    let refusing = muse_holding(
+        r#"printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32600,"message":"turn mismatch"}}\n' "$id""#,
+    );
+    let rt = muse_with(
+        dir.path(),
+        None,
+        &recorder,
+        Some(Arc::clone(&bridge)),
+        &refusing,
+    );
+    let thread = thread(&rt, "default").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    reject_first_gate(&bridge, &recorder, &thread.thread_id).await;
+
+    assert_eq!(
+        queued_after_settle(&engine, &thread.thread_id, true).await,
+        vec![FEEDBACK_TEXT.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn muse_rejection_feedback_is_queued_when_abort_ends_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let engine = ledger(dir.path()).await;
+    bridge.record_to(engine.store().clone());
+    // Shell approvals offer no `denied`: the denial takes `abort` (`stop`),
+    // and the stock fake ends the turn on any decision.
+    let rt = muse(dir.path(), None, &recorder, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt, "default").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    reject_first_gate(&bridge, &recorder, &thread.thread_id).await;
+
+    let log = std::fs::read_to_string(dir.path().join("muse.log")).unwrap();
+    assert!(log.contains(r#""choiceId":"stop""#), "{log}");
+    assert_eq!(
+        queued_after_settle(&engine, &thread.thread_id, true).await,
+        vec![FEEDBACK_TEXT.to_string()]
+    );
+}
+
 /// With the bridge: workspace sandbox, `untrusted` policy, and the shell
 /// approval waits as a gate; the owner's approval answers `accept`.
 #[tokio::test]
@@ -633,7 +931,7 @@ async fn codex_with_a_bridge_asks_the_owner_and_accepts_once() {
     };
     assert_eq!(gate.tool_name, "shell");
     assert_eq!(gate.body.as_deref(), Some("rm -rf /"));
-    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, true));
+    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, GateAnswer::Approve));
     wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
 
     let log = std::fs::read_to_string(dir.path().join("codex.log")).unwrap();

@@ -2449,7 +2449,7 @@ impl HostRuntimeLoopCapabilityPort {
         if let Some(auth_resume) = request.auth_resume.as_ref().filter(|resume| {
             matches!(
                 resume.disposition,
-                Some(ironclaw_turns::GateResumeDisposition::Denied)
+                Some(ironclaw_turns::GateResumeDisposition::Denied { .. })
             )
         }) {
             if request.approval_resume.is_some() {
@@ -3493,7 +3493,7 @@ fn invocation_idempotency_key(
         (None, Some(auth_resume))
             if matches!(
                 auth_resume.disposition,
-                Some(ironclaw_turns::GateResumeDisposition::Denied)
+                Some(ironclaw_turns::GateResumeDisposition::Denied { .. })
             ) =>
         {
             "auth-denied".to_string()

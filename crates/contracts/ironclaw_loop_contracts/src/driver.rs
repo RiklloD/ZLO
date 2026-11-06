@@ -65,11 +65,7 @@ pub struct AgentLoopDriverResumeRequest {
     pub run_id: TurnRunId,
     pub checkpoint_id: TurnCheckpointId,
     pub resolved_run_profile: ResolvedRunProfile,
-    #[serde(
-        rename = "auth_resume_disposition",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(flatten, with = "ironclaw_host_api::turn::resume_disposition_fields")]
     pub resume_disposition: Option<ironclaw_host_api::turn::GateResumeDisposition>,
 }
 

@@ -917,7 +917,7 @@ impl ApprovalInteractionService for RecordingApprovalInteractionService {
         request: ResolveApprovalInteractionRequest,
     ) -> Result<ResolveApprovalInteractionResponse, ironclaw_assistant::ProductSurfaceFailure> {
         let run_id = request.run_id_hint.expect("webui passes run_id");
-        let decision = request.decision;
+        let decision = request.decision.clone();
         self.resolutions.lock().expect("lock").push(request);
         Ok(match decision {
             ApprovalInteractionDecision::ApproveOnce | ApprovalInteractionDecision::AlwaysAllow => {
@@ -927,7 +927,7 @@ impl ApprovalInteractionService for RecordingApprovalInteractionService {
                     event_cursor: EventCursor(19),
                 })
             }
-            ApprovalInteractionDecision::Deny => {
+            ApprovalInteractionDecision::Deny { .. } => {
                 ResolveApprovalInteractionResponse::Resumed(ResumeTurnResponse {
                     run_id,
                     status: TurnStatus::Queued,
@@ -6311,7 +6311,7 @@ async fn approval_gate_denial_uses_approval_interaction_service_and_returns_canc
             .last_resolution()
             .expect("resolution")
             .decision,
-        ApprovalInteractionDecision::Deny
+        ApprovalInteractionDecision::Deny { feedback: None }
     );
 }
 

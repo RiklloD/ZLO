@@ -711,6 +711,7 @@ async fn standalone_denied_shell_approval_does_not_issue_resume_lease() {
             gate.approval_request_id,
             DenyApproval {
                 denied_by: Principal::HostRuntime,
+                feedback: None,
             },
         )
         .await

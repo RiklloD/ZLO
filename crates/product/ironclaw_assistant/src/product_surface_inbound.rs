@@ -24,7 +24,10 @@
 //! bringing the trait into scope.
 
 use ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
-use ironclaw_host_api::turn::{IdempotencyKey, SanitizedCancelReason, TurnGateRef, TurnRunId};
+use ironclaw_host_api::turn::{
+    DenialFeedback, DenialFeedbackError, IdempotencyKey, SanitizedCancelReason, TurnGateRef,
+    TurnRunId,
+};
 use ironclaw_host_api::{
     attachment::InboundAttachment,
     ids::ThreadId,
@@ -300,7 +303,12 @@ impl IntoProductInboundCommand for ProductResolveGateRequest {
         let thread_id = parse_thread_id(self.thread_id)?;
         let run_id = parse_run_id(self.run_id)?;
         let gate_ref = parse_gate_ref(self.gate_ref)?;
-        let resolution = parse_gate_resolution(self.resolution, self.always, self.credential_ref)?;
+        let resolution = parse_gate_resolution(
+            self.resolution,
+            self.always,
+            self.credential_ref,
+            self.feedback,
+        )?;
 
         Ok(ProductInboundCommand::ResolveGate {
             scope: caller.turn_scope(thread_id),
@@ -377,17 +385,28 @@ fn parse_cancel_reason(
     }
 }
 
-fn parse_gate_resolution(
+pub(crate) fn parse_gate_resolution(
     resolution: Option<String>,
     always: Option<bool>,
     credential_ref: Option<String>,
+    feedback: Option<String>,
 ) -> Result<ProductGateResolution, ProductSurfaceError> {
     let resolution = required_text("resolution", resolution, 64, TextMode::Token)?;
+    // Feedback explains a rejection; on anything else it is refused rather
+    // than ignored, so it can never ride along with an approval.
+    if feedback.is_some() && resolution != "declined" {
+        return Err(validation_error(
+            "feedback",
+            ProductSurfaceValidationCode::InvalidValue,
+        ));
+    }
     match resolution.as_str() {
         "approved" => Ok(ProductGateResolution::Approved {
             always: always.unwrap_or(false),
         }),
-        "declined" => Ok(ProductGateResolution::Declined),
+        "declined" => Ok(ProductGateResolution::Declined {
+            feedback: parse_denial_feedback(feedback)?,
+        }),
         "credential_provided" => Ok(ProductGateResolution::CredentialProvided {
             credential_ref: required_text(
                 "credential_ref",
@@ -400,6 +419,43 @@ fn parse_gate_resolution(
             "resolution",
             ProductSurfaceValidationCode::InvalidValue,
         )),
+    }
+}
+
+/// "No, do X instead" text on a decline. A blank field is a plain decline;
+/// anything else must pass `DenialFeedback`'s bounds and is then redacted
+/// with the model-input redaction (credential values and host paths become
+/// markers; ordinary words such as "password" stay) — this is the only
+/// place feedback enters, so the audit record, the resume record, the loop
+/// checkpoint and the CLI ledger only ever hold the redacted form.
+fn parse_denial_feedback(
+    feedback: Option<String>,
+) -> Result<Option<DenialFeedback>, ProductSurfaceError> {
+    let Some(raw) = feedback.filter(|raw| !raw.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let bounded = DenialFeedback::new(raw).map_err(denial_feedback_error)?;
+    let redacted = ironclaw_safety::redact_model_input_text(bounded.as_str()).into_text();
+    // Markers can be longer than what they replace; keep the bound.
+    let redacted: String = redacted
+        .chars()
+        .take(ironclaw_host_api::turn::DENIAL_FEEDBACK_MAX_CHARS)
+        .collect();
+    DenialFeedback::new(redacted)
+        .map(Some)
+        .map_err(denial_feedback_error)
+}
+
+fn denial_feedback_error(error: DenialFeedbackError) -> ProductSurfaceError {
+    {
+        let code = match error {
+            DenialFeedbackError::Empty => ProductSurfaceValidationCode::Blank,
+            DenialFeedbackError::TooLong => ProductSurfaceValidationCode::TooLong,
+            DenialFeedbackError::ControlCharacter => {
+                ProductSurfaceValidationCode::InvalidControlCharacter
+            }
+        };
+        validation_error("feedback", code)
     }
 }
 

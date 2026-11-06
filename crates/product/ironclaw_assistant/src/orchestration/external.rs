@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use ironclaw_cli_providers::bridge::{
-    CliBridge, GateView, LiveEvent, QuestionView, ToolState, ToolView,
+    CliBridge, GateAnswer, GateView, LiveEvent, QuestionView, ToolState, ToolView,
 };
 use ironclaw_extension_contracts::external::ExternalConversationRef;
 use ironclaw_host_api::agent_plan::{AgentPlan, QuestionAnswer};
@@ -209,16 +209,17 @@ pub(super) fn timeline_messages(
 
 /// How the person resolved a CLI gate.
 pub(super) enum CliGateAnswer {
-    /// An approval gate, allowed or not.
-    Approval(bool),
+    /// An approval gate: approved, or declined with optional feedback ("no,
+    /// do X instead").
+    Approval(GateAnswer),
     /// A question gate: the answers, or `None` when dismissed.
     Question(Option<QuestionAnswer>),
 }
 
 /// `gate.resolve` on a CLI thread: answer the pending tool call or
 /// question. "Always" is not offered (it would be an allow rule) and counts
-/// as once. An answer that does not fit its form is refused and the
-/// question stays open.
+/// as once. A decline may carry the person's feedback. An answer that does
+/// not fit its form is refused and the question stays open.
 pub(super) fn resolve_gate(
     bridge: &CliBridge,
     thread: &ThreadId,
@@ -227,7 +228,7 @@ pub(super) fn resolve_gate(
     answer: CliGateAnswer,
 ) -> Result<RebornResolveGateResponse, ProductSurfaceError> {
     let resolved = match answer {
-        CliGateAnswer::Approval(approved) => bridge.resolve_gate(thread, gate_ref, approved),
+        CliGateAnswer::Approval(answer) => bridge.resolve_gate(thread, gate_ref, answer),
         CliGateAnswer::Question(answer) => bridge
             .answer_question(thread, gate_ref, answer)
             .map_err(|error| {

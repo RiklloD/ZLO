@@ -20,6 +20,7 @@ use crate::{
         ProcessId, ProjectId, TenantId, ThreadId, UserId,
     },
     scope::{ExecutionContext, Principal},
+    turn::DenialFeedback,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +76,7 @@ impl AuditEnvelope {
                 kind: "deny".to_string(),
                 reason: Some(reason),
                 actor: None,
+                feedback: None,
             },
             result: None,
         }
@@ -106,9 +108,18 @@ impl AuditEnvelope {
                 kind: decision.as_wire_str().to_string(),
                 reason: None,
                 actor: Some(resolved_by),
+                feedback: None,
             },
             result: None,
         }
+    }
+
+    /// Attach a denial's feedback; a no-op on any other decision.
+    pub fn with_denial_feedback(mut self, feedback: Option<DenialFeedback>) -> Self {
+        if self.decision.kind == ApprovalDecisionKind::Denied.as_wire_str() {
+            self.decision.feedback = feedback;
+        }
+        self
     }
 }
 
@@ -268,6 +279,9 @@ pub struct DecisionSummary {
     pub reason: Option<DenyReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<Principal>,
+    /// A denial's "no, do X instead" (redacted at ingress); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<DenialFeedback>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

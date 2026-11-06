@@ -223,11 +223,7 @@ pub struct TurnRunState {
     pub event_cursor: EventCursor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product_context: Option<ProductTurnContext>,
-    #[serde(
-        rename = "auth_resume_disposition",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(flatten, with = "ironclaw_host_api::turn::resume_disposition_fields")]
     pub resume_disposition: Option<crate::GateResumeDisposition>,
 }
 

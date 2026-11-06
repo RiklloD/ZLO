@@ -1059,23 +1059,148 @@ impl BlockedReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// How a parked gate was answered. Wire: the bare `"denied"`; feedback rides a
+/// sibling key ([`resume_disposition_fields`]) older readers ignore.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateResumeDisposition {
-    /// The user explicitly declined the gate (auth OR approval). The executor
-    /// surfaces this to the model as a non-retryable authorization failure rather
-    /// than re-dispatching the gate.
-    ///
-    /// New variants (e.g. `Deferred`) may be added here as needs arise.
-    Denied,
+    /// The user declined the gate (auth OR approval): a model-visible failure,
+    /// never a re-dispatch. `feedback` ("no, do X instead") only explains it.
+    Denied { feedback: Option<DenialFeedback> },
 }
 
 impl GateResumeDisposition {
-    /// Stable snake_case value shared with the serde wire representation.
+    pub const fn denied() -> Self {
+        Self::Denied { feedback: None }
+    }
+
     pub const fn as_str(&self) -> &'static str {
         match self {
-            Self::Denied => "denied",
+            Self::Denied { .. } => "denied",
         }
+    }
+
+    pub fn denial_feedback(&self) -> Option<&DenialFeedback> {
+        match self {
+            Self::Denied { feedback } => feedback.as_ref(),
+        }
+    }
+}
+
+/// Feedback here errors instead of vanishing: use a `*_disposition_fields` helper.
+impl Serialize for GateResumeDisposition {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.denial_feedback().is_some() {
+            return Err(serde::ser::Error::custom(
+                "denial feedback must be written through a `*_disposition_fields` helper",
+            ));
+        }
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for GateResumeDisposition {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "denied" => Ok(Self::denied()),
+            other => Err(serde::de::Error::unknown_variant(other, &["denied"])),
+        }
+    }
+}
+
+/// `#[serde(flatten, with = ...)]` helpers: the old key plus an additive one.
+macro_rules! disposition_fields {
+    ($module:ident, $key:literal, $feedback_key:literal) => {
+        pub mod $module {
+            use super::{DenialFeedback, GateResumeDisposition};
+            use serde::{Deserialize, ser::SerializeMap};
+            pub fn serialize<S: serde::Serializer>(
+                value: &Option<GateResumeDisposition>,
+                serializer: S,
+            ) -> Result<S::Ok, S::Error> {
+                let mut map = serializer.serialize_map(None)?;
+                if let Some(disposition) = value {
+                    map.serialize_entry($key, disposition.as_str())?;
+                    if let Some(feedback) = disposition.denial_feedback() {
+                        map.serialize_entry($feedback_key, feedback)?;
+                    }
+                }
+                map.end()
+            }
+            pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> Result<Option<GateResumeDisposition>, D::Error> {
+                #[derive(Deserialize)]
+                struct Fields {
+                    #[serde(rename = $key, default)]
+                    disposition: Option<GateResumeDisposition>,
+                    #[serde(rename = $feedback_key, default)]
+                    feedback: Option<DenialFeedback>,
+                }
+                let fields = Fields::deserialize(deserializer)?;
+                Ok(fields.disposition.map(|_| GateResumeDisposition::Denied {
+                    feedback: fields.feedback,
+                }))
+            }
+        }
+    };
+}
+disposition_fields!(
+    resume_disposition_fields,
+    "auth_resume_disposition",
+    "resume_denial_feedback"
+);
+disposition_fields!(slot_disposition_fields, "disposition", "denial_feedback");
+
+pub const DENIAL_FEEDBACK_MAX_CHARS: usize = 2_000;
+
+/// "No, do X instead": trimmed, 1..=[`DENIAL_FEEDBACK_MAX_CHARS`] characters,
+/// no control characters but newline/tab. Validated on the wire too.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct DenialFeedback(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DenialFeedbackError {
+    #[error("denial feedback is empty")]
+    Empty,
+    #[error("denial feedback is longer than {DENIAL_FEEDBACK_MAX_CHARS} characters")]
+    TooLong,
+    #[error("denial feedback contains a control character")]
+    ControlCharacter,
+}
+
+impl DenialFeedback {
+    pub fn new(raw: impl Into<String>) -> Result<Self, DenialFeedbackError> {
+        let trimmed = raw.into().trim().to_string();
+        if trimmed.is_empty() {
+            Err(DenialFeedbackError::Empty)
+        } else if trimmed.chars().count() > DENIAL_FEEDBACK_MAX_CHARS {
+            Err(DenialFeedbackError::TooLong)
+        } else if trimmed
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t')
+        {
+            Err(DenialFeedbackError::ControlCharacter)
+        } else {
+            Ok(Self(trimmed))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for DenialFeedback {
+    type Error = DenialFeedbackError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<DenialFeedback> for String {
+    fn from(value: DenialFeedback) -> Self {
+        value.0
     }
 }
 

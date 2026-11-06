@@ -324,20 +324,26 @@ where
             }
             Err(error) => return Err(error.into()),
         };
-        self.emit_approval_resolved(
-            &denied.scope,
-            &denied.request,
-            denial.denied_by,
-            ApprovalDecisionKind::Denied,
+        // The feedback rides the audit record only: the request is already
+        // `Denied` above, and nothing here reads it back as a decision.
+        self.emit_audit_best_effort(
+            ironclaw_host_api::audit::AuditEnvelope::approval_resolved(
+                &denied.scope,
+                &denied.request,
+                denial.denied_by,
+                ApprovalDecisionKind::Denied,
+            )
+            .with_denial_feedback(denial.feedback),
         )
         .await;
         Ok(denied)
     }
 
     /// Single emission path for approval-resolution audit events. Both
-    /// `approve_*` and `deny` go through this so the audit envelope's
-    /// scope/request/decision shape cannot diverge between resolution
-    /// kinds. See audit finding F3.
+    /// `approve_*` and `deny` build their envelope with
+    /// `AuditEnvelope::approval_resolved`, so the scope/request/decision shape
+    /// cannot diverge between resolution kinds (`deny` only adds its
+    /// feedback). See audit finding F3.
     async fn emit_approval_resolved(
         &self,
         scope: &ResourceScope,
@@ -398,6 +404,9 @@ pub struct LeaseApproval {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenyApproval {
     pub denied_by: Principal,
+    /// What the person said when rejecting ("no, do X instead"). Recorded on
+    /// the denial's audit envelope; it never changes the decision.
+    pub feedback: Option<ironclaw_host_api::turn::DenialFeedback>,
 }
 
 #[derive(Debug, Error)]

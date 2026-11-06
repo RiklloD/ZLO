@@ -42,6 +42,16 @@ pub enum GateDecision {
     Decline,
 }
 
+/// The body of a decline that carries the person's feedback.
+fn reject_with_feedback_body(feedback: &str) -> ProductResolveGateRequest {
+    ProductResolveGateRequest {
+        client_action_id: Some(client_action_id()),
+        resolution: Some("declined".to_string()),
+        feedback: Some(feedback.trim().to_string()),
+        ..Default::default()
+    }
+}
+
 pub fn client_action_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -281,6 +291,32 @@ impl Client {
             always,
             ..Default::default()
         };
+        self.post_gate_resolution(thread_id, run_id, gate_ref, &body)
+            .await
+    }
+
+    /// Reject a pending approval and say what to do instead ("no, do X
+    /// instead"). Still a decline; the backend validates and bounds the text
+    /// and hands it to the agent as the rejected call's result.
+    pub async fn resolve_gate_with_feedback(
+        &self,
+        thread_id: &str,
+        run_id: &str,
+        gate_ref: &str,
+        feedback: &str,
+    ) -> Result<serde_json::Value, ClientError> {
+        let body = reject_with_feedback_body(feedback);
+        self.post_gate_resolution(thread_id, run_id, gate_ref, &body)
+            .await
+    }
+
+    async fn post_gate_resolution(
+        &self,
+        thread_id: &str,
+        run_id: &str,
+        gate_ref: &str,
+        body: &ProductResolveGateRequest,
+    ) -> Result<serde_json::Value, ClientError> {
         self.post(
             &format!(
                 "{V2}/threads/{}/runs/{}/gates/{}/resolve",
@@ -288,7 +324,7 @@ impl Client {
                 seg(run_id),
                 seg(gate_ref)
             ),
-            &body,
+            body,
         )
         .await
     }
@@ -413,5 +449,22 @@ mod label_tests {
         assert_eq!(first_line("Plan my trip").as_deref(), Some("Plan my trip"));
         assert_eq!(first_line("  \n").as_deref(), None);
         assert!(first_line(&"é".repeat(100)).unwrap().ends_with('…'));
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::reject_with_feedback_body;
+
+    /// "No, do X instead" goes out as a decline with the person's words in
+    /// `feedback` — never with `always`, never as an approval.
+    #[test]
+    fn reject_with_feedback_is_a_decline_carrying_the_text() {
+        let body = serde_json::to_value(reject_with_feedback_body("  use the staging db \n"))
+            .expect("serialize");
+        assert_eq!(body["resolution"], "declined");
+        assert_eq!(body["feedback"], "use the staging db");
+        assert!(body.get("always").is_none(), "{body}");
+        assert!(body["client_action_id"].is_string());
     }
 }

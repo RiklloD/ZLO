@@ -389,6 +389,7 @@ impl PromptWriteSafetyEventSink for AuditPromptWriteSafetyEventSink {
                     .to_string(),
                 reason: None,
                 actor: None,
+                feedback: None,
             },
             result: Some(ActionResultSummary {
                 success: event.kind != PromptWriteSafetyEventKind::Rejected,

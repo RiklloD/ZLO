@@ -215,12 +215,53 @@ resolver
         approval_request_id,
         DenyApproval {
             denied_by: Principal::User(scope.user_id.clone()),
+            feedback: None,
         },
     )
     .await?;
 ```
 
 No lease is issued for denied requests.
+
+*Amended 2026-11-04, revised 2026-11-06 (reject with feedback).* A denial may
+carry the person's `DenialFeedback` ("no, do X instead"): trimmed, non-empty,
+at most 2,000 characters, no control characters besides newline and tab. It
+enters only through the product ingress (`ProductResolveGateRequest.feedback`,
+refused unless `resolution: "declined"`), which validates the original text
+and then runs it through the model-input redaction
+(`ironclaw_safety::redact_model_input_text`: credential values and host paths
+become markers, ordinary words such as "password" stay). Everything downstream
+holds only that redacted form, and it never changes the decision:
+
+- the `ApprovalResolved` audit record's `DecisionSummary.feedback` (absent on
+  approvals and on rows written before it existed). This is the one piece of
+  user-authored content in an otherwise metadata-only audit record — the
+  person's own words, bounded and redacted, kept because "why was this
+  denied" is the decision's audit trail;
+- the run's resume record: `auth_resume_disposition` stays the bare
+  `"denied"` it always was, and the text rides the additive sibling key
+  `resume_denial_feedback` (`ironclaw_host_api::turn::resume_disposition_fields`),
+  which readers built before it existed ignore — rollback and mixed-version
+  fleets keep working;
+- the loop's approval resume slot (`disposition` + sibling `denial_feedback`)
+  until the denied call is terminalized. Resumable loop state otherwise holds
+  refs only; this is a documented exception for bounded, redacted text with
+  no canonical store to reference (the approval record carries the decision,
+  not the words).
+
+The agent loop turns the feedback into the rejected call's model-visible
+`GateDeclined` result ("The user rejected this call: …") tagged
+`ObservationTrust::UserFeedback`, so persistence keeps the person's vocabulary
+instead of scrubbing it as tool output; the API-key-token and control-character
+guards still apply. The turn continues.
+
+CLI runtimes get the same answer through `CliBridge::resolve_gate`: Claude
+Code reads it as the PreToolUse hook's deny reason; Codex and Muse decline and
+then `turn/steer` the text into the turn, and when the turn cannot take it
+(the decline ended it, Muse chose `abort`, the decision or the steer was
+refused) it waits in the thread's durable `orch_queue` as the next turn's
+input; Antigravity (ACP: no reject message, no in-turn steer) always queues
+it. `orch_cli_approvals` records the text as the decision's reason.
 
 Approval resolution is ordered fail-closed around lease persistence:
 
@@ -239,7 +280,7 @@ let resolver = ApprovalResolver::new(&approvals, &leases).with_audit_sink(&audit
 
 Successful approve and deny transitions emit `AuditEnvelope::approval_resolved(...)` records with `AuditStage::ApprovalResolved`, the original approval correlation ID, the approval request ID, a summarized action, and `DecisionSummary { kind: "approved" | "denied", actor: Some(resolver principal), ... }`.
 
-The audit records do not include approval reasons, replay input, invocation fingerprints, lease IDs, lease contents, raw host paths, or secret values. The same redaction contract applies when records are persisted through `JsonlAuditSink` at a tenant/user/agent scoped virtual path from `scoped_audit_log_path(&scope, "approval-audit.jsonl")`. Audit sink failures are ignored and must not change approval resolution outcomes.
+Apart from a denial's feedback (the person's own words, bounded as above), the audit records do not include approval reasons, replay input, invocation fingerprints, lease IDs, lease contents, raw host paths, or secret values. The same redaction contract applies when records are persisted through `JsonlAuditSink` at a tenant/user/agent scoped virtual path from `scoped_audit_log_path(&scope, "approval-audit.jsonl")`. Audit sink failures are ignored and must not change approval resolution outcomes.
 
 ---
 

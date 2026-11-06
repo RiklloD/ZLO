@@ -599,7 +599,10 @@ impl ProcessJournalCommitObserver for RunOutcomeProcessCommitObserver {
         let run_id = TurnRunId::from_uuid(commit.state.process_id.as_uuid());
         let occurred_at = commit.occurred_at.unwrap_or(commit.state.created_at);
         if commit.kind == ProcessJournalKind::Resumed
-            && metadata.resume_disposition != Some(GateResumeDisposition::Denied)
+            && !matches!(
+                metadata.resume_disposition,
+                Some(GateResumeDisposition::Denied { .. })
+            )
         {
             self.resolve_open_run_notifications(
                 &commit.state,
@@ -749,15 +752,18 @@ impl RunOutcomeProcessCommitObserver {
         // An approval is decided either way once the child resumes; a denied
         // auth resume keeps the auth item actionable until a verified recovery,
         // exactly as the root-run path does.
-        let kinds: &[NotificationKind] =
-            if resumed && metadata.resume_disposition == Some(GateResumeDisposition::Denied) {
-                &[NotificationKind::ApprovalRequired]
-            } else {
-                &[
-                    NotificationKind::ApprovalRequired,
-                    NotificationKind::AuthenticationRequired,
-                ]
-            };
+        let kinds: &[NotificationKind] = if resumed
+            && matches!(
+                metadata.resume_disposition,
+                Some(GateResumeDisposition::Denied { .. })
+            ) {
+            &[NotificationKind::ApprovalRequired]
+        } else {
+            &[
+                NotificationKind::ApprovalRequired,
+                NotificationKind::AuthenticationRequired,
+            ]
+        };
         self.resolve_open_run_notifications(&commit.state, run_id, kinds, occurred_at)
             .await?;
         Ok(())

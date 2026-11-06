@@ -285,6 +285,16 @@ impl ChatView {
                         ))
                     })
                     .child(answer("Deny", GateDecision::Decline, false))
+                    .child({
+                        let (run, gate) = (run_id.clone(), gate_ref.clone());
+                        Button::new(SharedString::from(format!("gate-reject-{id}")))
+                            .label("Reject…")
+                            .xsmall()
+                            .outline()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_reject(run.clone(), gate.clone(), window, cx)
+                            }))
+                    })
                     .into_any_element()
             } else {
                 div()
@@ -293,6 +303,19 @@ impl ChatView {
                     .child("Answer it in the conversation.")
                     .into_any_element()
             })
+            // "No, do X instead", answered right here when opened from here.
+            .when_some(
+                approval
+                    .then(|| {
+                        crate::chat::reject_feedback::render_reject_editor(
+                            gate_ref,
+                            self.reject_snapshot().as_ref(),
+                            &cx.entity().downgrade(),
+                        )
+                    })
+                    .flatten(),
+                |d, editor| d.child(editor),
+            )
             .into_any_element()
     }
 

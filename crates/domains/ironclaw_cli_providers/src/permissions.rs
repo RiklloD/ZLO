@@ -8,6 +8,7 @@
 //! thread whose profile is on "Full access" (checked inside the bridge).
 
 use ironclaw_host_api::ids::ThreadId;
+use ironclaw_host_api::turn::DenialFeedback;
 use serde_json::Value;
 
 use crate::bridge::{CallClaim, CliBridge, ToolDecision};
@@ -28,10 +29,20 @@ pub struct PermissionRequest {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionDecision {
     AllowOnce,
-    Deny,
+    /// Not run. `feedback` is what the person said instead ("no, do X
+    /// instead"), for drivers whose protocol cannot carry a denial message
+    /// to hand to the agent another way (a steer). It never makes the call
+    /// run.
+    Deny {
+        feedback: Option<DenialFeedback>,
+    },
+}
+
+impl PermissionDecision {
+    pub const DENY: Self = Self::Deny { feedback: None };
 }
 
 /// Match a request to its turn where the driver reads it, before spawning
@@ -55,7 +66,7 @@ pub async fn decide(
             tool = %request.tool,
             "cli agent permission request denied (no approval bridge)"
         );
-        return PermissionDecision::Deny;
+        return PermissionDecision::DENY;
     };
     let input = request.subject.clone().map_or(Value::Null, Value::String);
     match bridge
@@ -70,6 +81,9 @@ pub async fn decide(
         .await
     {
         ToolDecision::Allow => PermissionDecision::AllowOnce,
-        ToolDecision::Deny(_) => PermissionDecision::Deny,
+        ToolDecision::Deny(_) => PermissionDecision::DENY,
+        ToolDecision::Rejected(feedback) => PermissionDecision::Deny {
+            feedback: Some(feedback),
+        },
     }
 }

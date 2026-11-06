@@ -1468,7 +1468,36 @@ impl HostRuntimeCapabilityHarness {
     /// persisted request to `Denied` (no lease issued) via `ApprovalResolver::deny`.
     /// The caller then resumes the run with `GateResumeDisposition::Denied` so the
     /// executor surfaces a non-retryable authorization failure to the model.
-    pub(crate) async fn deny_standalone_gate(&self, gate_ref: &TurnGateRef) -> HarnessResult<()> {
+    /// The durable status of the approval request behind `gate_ref`.
+    pub(crate) async fn approval_status(
+        &self,
+        gate_ref: &TurnGateRef,
+    ) -> HarnessResult<ironclaw_approvals::ApprovalStatus> {
+        let approval_parts = self
+            .approval_parts
+            .as_ref()
+            .ok_or("host runtime harness has no local-dev approval stores")?;
+        let request_id = approval_request_id_from_gate_ref(gate_ref)?;
+        let scope = self
+            .pending_approval_scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&request_id)
+            .cloned()
+            .ok_or("approval gate was not recorded by the host runtime harness")?;
+        let record = approval_parts
+            .approval_requests
+            .get(&scope, request_id)
+            .await?
+            .ok_or("approval request not found")?;
+        Ok(record.status)
+    }
+
+    pub(crate) async fn deny_standalone_gate(
+        &self,
+        gate_ref: &TurnGateRef,
+        feedback: Option<ironclaw_host_api::turn::DenialFeedback>,
+    ) -> HarnessResult<()> {
         let approval_parts = self
             .approval_parts
             .as_ref()
@@ -1491,6 +1520,7 @@ impl HostRuntimeCapabilityHarness {
                 request_id,
                 DenyApproval {
                     denied_by: Principal::User(scope.user_id.clone()),
+                    feedback,
                 },
             )
             .await?;

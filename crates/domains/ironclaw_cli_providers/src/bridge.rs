@@ -26,9 +26,10 @@ use std::time::{Duration, Instant};
 
 use ironclaw_host_api::agent_plan::{AgentPlan, QuestionForm};
 use ironclaw_host_api::ids::ThreadId;
+use ironclaw_host_api::turn::DenialFeedback;
 use ironclaw_orchestrator::cli_approvals::{CliApprovalDecision, CliApprovalRecord};
 use ironclaw_orchestrator::engine::{CallContext, Engine};
-use ironclaw_orchestrator::model::now_ms;
+use ironclaw_orchestrator::model::{Author, now_ms};
 use ironclaw_orchestrator::store::Store;
 use ironclaw_orchestrator::tools::TOOLS;
 use serde_json::{Value, json};
@@ -60,7 +61,38 @@ const EVENT_BUFFER: usize = 256;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolDecision {
     Allow,
+    /// Not run, for the host's reason (no turn, timeout, plain decline, …).
     Deny(String),
+    /// Not run: the person rejected it and said what to do instead. Still a
+    /// denial in every respect; the feedback only explains it to the agent.
+    Rejected(DenialFeedback),
+}
+
+impl ToolDecision {
+    /// What the agent reads (and the ledger records) for a denial; `None`
+    /// for an approval.
+    pub fn denial_message(&self) -> Option<String> {
+        match self {
+            Self::Allow => None,
+            Self::Deny(reason) => Some(reason.clone()),
+            Self::Rejected(feedback) => Some(rejection_message(feedback)),
+        }
+    }
+}
+
+/// The text an agent gets for a call the person rejected with feedback.
+pub fn rejection_message(feedback: &DenialFeedback) -> String {
+    format!("The user rejected this call: {}", feedback.as_str())
+}
+
+/// How the thread's owner answered one pending tool call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateAnswer {
+    Approve,
+    /// Decline, optionally saying what to do instead ("no, do X instead").
+    Decline {
+        feedback: Option<DenialFeedback>,
+    },
 }
 
 /// One pending tool call as the person sees it.
@@ -875,11 +907,9 @@ impl CliBridge {
                 CliApprovalDecision::TimedOut,
             ),
         };
-        let reason = match &decision {
-            ToolDecision::Deny(reason) => Some(reason.as_str()),
-            ToolDecision::Allow => None,
-        };
-        self.record_close(&gate.gate_ref, recorded, reason).await;
+        let reason = decision.denial_message();
+        self.record_close(&gate.gate_ref, recorded, reason.as_deref())
+            .await;
         // A timeout leaves the gate registered; close it either way.
         if let Ok(mut live) = self.live.lock()
             && let Some(turn) = live.get_mut(thread)
@@ -934,8 +964,33 @@ impl CliBridge {
         declined
     }
 
+    /// Keep rejection feedback the running turn could not take — the decline
+    /// ended it, or it refused the steer — as the thread's next turn input:
+    /// it waits in the durable queue (visible in the thread's queue) and the
+    /// engine runs it once the thread is idle. `false` when nothing could
+    /// keep it (no store), so the caller can say so.
+    pub async fn queue_undelivered_feedback(
+        &self,
+        thread: &ThreadId,
+        feedback: &DenialFeedback,
+    ) -> bool {
+        let Some(store) = self.ledger.get() else {
+            return false;
+        };
+        match store
+            .queue_add(thread, &rejection_message(feedback), Author::User)
+            .await
+        {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::debug!(%error, "cli bridge: rejection feedback not queued");
+                false
+            }
+        }
+    }
+
     /// Answer a pending gate on `thread`. `false` when there is none.
-    pub fn resolve_gate(&self, thread: &ThreadId, gate_ref: &str, approved: bool) -> bool {
+    pub fn resolve_gate(&self, thread: &ThreadId, gate_ref: &str, answer: GateAnswer) -> bool {
         let pending = self.live.lock().ok().and_then(|mut live| {
             let turn = live.get_mut(thread)?;
             let at = turn
@@ -947,13 +1002,18 @@ impl CliBridge {
         let Some(pending) = pending else {
             return false;
         };
-        let decision = if approved {
-            (ToolDecision::Allow, CliApprovalDecision::Allowed)
-        } else {
-            (
+        let decision = match answer {
+            GateAnswer::Approve => (ToolDecision::Allow, CliApprovalDecision::Allowed),
+            GateAnswer::Decline { feedback: None } => (
                 ToolDecision::Deny("The user declined this call.".into()),
                 CliApprovalDecision::Declined,
-            )
+            ),
+            GateAnswer::Decline {
+                feedback: Some(feedback),
+            } => (
+                ToolDecision::Rejected(feedback),
+                CliApprovalDecision::Declined,
+            ),
         };
         pending.answer.send(decision).is_ok()
     }
@@ -1184,7 +1244,7 @@ mod tests {
             tokio::task::yield_now().await;
         };
         assert_eq!(gate.reason.as_deref(), Some("Let me look."));
-        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, true));
+        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, GateAnswer::Approve));
         assert_eq!(waiter.await.unwrap(), ToolDecision::Allow);
 
         let snap = bridge.snapshot(&thread).unwrap();
@@ -1257,8 +1317,12 @@ mod tests {
             tokio::task::yield_now().await;
         };
         assert_eq!(gate.body.as_deref(), Some("ls"));
-        assert!(!bridge.resolve_gate(&ThreadId::new("other").unwrap(), &gate.gate_ref, true));
-        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, true));
+        assert!(!bridge.resolve_gate(
+            &ThreadId::new("other").unwrap(),
+            &gate.gate_ref,
+            GateAnswer::Approve
+        ));
+        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, GateAnswer::Approve));
         assert_eq!(waiter.await.unwrap(), ToolDecision::Allow);
 
         let pending = {
@@ -1331,12 +1395,33 @@ mod tests {
         };
         let allowed = ask("Bash");
         let gate = gate_for(0).await;
-        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, true));
+        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, GateAnswer::Approve));
         assert_eq!(allowed.await.unwrap(), ToolDecision::Allow);
         let declined = ask("Read");
         let gate = gate_for(0).await;
-        assert!(bridge.resolve_gate(&thread, &gate.gate_ref, false));
+        assert!(bridge.resolve_gate(
+            &thread,
+            &gate.gate_ref,
+            GateAnswer::Decline { feedback: None }
+        ));
         assert!(matches!(declined.await.unwrap(), ToolDecision::Deny(_)));
+        // "No, do X instead": still a decline, and the words are recorded.
+        let rejected = ask("Edit");
+        let gate = gate_for(0).await;
+        let feedback = DenialFeedback::new("edit the copy in /tmp instead").unwrap();
+        assert!(bridge.resolve_gate(
+            &thread,
+            &gate.gate_ref,
+            GateAnswer::Decline {
+                feedback: Some(feedback.clone())
+            }
+        ));
+        let decision = rejected.await.unwrap();
+        assert_eq!(decision, ToolDecision::Rejected(feedback));
+        assert_eq!(
+            decision.denial_message().as_deref(),
+            Some("The user rejected this call: edit the copy in /tmp instead")
+        );
         // Left waiting when the backend "stops".
         let _pending = ask("Write");
         gate_for(0).await;
@@ -1351,14 +1436,20 @@ mod tests {
             [
                 ("Bash", Some(D::Allowed)),
                 ("Read", Some(D::Declined)),
+                ("Edit", Some(D::Declined)),
                 ("Write", None)
             ]
         );
         assert_eq!(rows[0].body.as_deref(), Some("ls"));
+        assert_eq!(
+            rows[2].reason.as_deref(),
+            Some("The user rejected this call: edit the copy in /tmp instead"),
+            "the feedback is recorded with the decision"
+        );
 
         let reopened = open().await;
         let rows = reopened.store().cli_approvals(&thread).await.unwrap();
-        assert_eq!(rows[2].decision, Some(D::Interrupted));
+        assert_eq!(rows[3].decision, Some(D::Interrupted));
         assert_eq!(
             rows[0].decision,
             Some(D::Allowed),

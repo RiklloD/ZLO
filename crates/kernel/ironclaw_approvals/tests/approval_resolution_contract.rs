@@ -566,6 +566,7 @@ async fn denying_pending_dispatch_request_emits_redacted_approval_audit_event() 
             request_id,
             DenyApproval {
                 denied_by: Principal::User(scope.user_id.clone()),
+                feedback: None,
             },
         )
         .await
@@ -590,6 +591,44 @@ async fn denying_pending_dispatch_request_emits_redacted_approval_audit_event() 
         Some(Principal::User(scope.user_id.clone()))
     );
     assert_eq!(emitted[0].result, None);
+}
+
+#[tokio::test]
+async fn denying_with_feedback_records_it_on_the_audit_event_and_still_denies() {
+    let approvals = in_memory_backed_approval_request_store();
+    let leases = in_memory_backed_capability_lease_store();
+    let audit = InMemoryAuditSink::new();
+    let resolver = ApprovalResolver::new(&approvals, &leases).with_audit_sink(&audit);
+    let invocation_id = InvocationId::new();
+    let scope = sample_scope(invocation_id, "tenant1", "user1");
+    let approval = approval_request(invocation_id, CapabilityId::new("echo.say").unwrap());
+    let request_id = approval.id;
+    approvals
+        .save_pending(scope.clone(), approval.clone())
+        .await
+        .unwrap();
+
+    let feedback =
+        ironclaw_host_api::turn::DenialFeedback::new("use echo.whisper instead").unwrap();
+    let denied = resolver
+        .deny(
+            &scope,
+            request_id,
+            DenyApproval {
+                denied_by: Principal::User(scope.user_id.clone()),
+                feedback: Some(feedback.clone()),
+            },
+        )
+        .await
+        .unwrap();
+
+    // Feedback never turns the denial into anything else.
+    assert_eq!(denied.status, ApprovalStatus::Denied);
+    assert_eq!(leases.leases_for_scope(&scope).await, Vec::new());
+    let emitted = audit.records();
+    assert_eq!(emitted.len(), 1);
+    assert_eq!(emitted[0].decision.kind, "denied");
+    assert_eq!(emitted[0].decision.feedback, Some(feedback));
 }
 
 #[tokio::test]
@@ -659,6 +698,7 @@ async fn denying_pending_request_does_not_issue_lease() {
             request_id,
             DenyApproval {
                 denied_by: Principal::User(scope.user_id.clone()),
+                feedback: None,
             },
         )
         .await
@@ -689,6 +729,7 @@ async fn denying_non_pending_request_fails_without_changing_status() {
             request_id,
             DenyApproval {
                 denied_by: Principal::User(scope.user_id.clone()),
+                feedback: None,
             },
         )
         .await

@@ -13,7 +13,7 @@ use ironclaw_loop_contracts::{
 use super::capability_batch::{
     InvokedCapabilityBatch, InvokedCapabilityBatchError, InvokedCapabilityOutcome,
 };
-use super::capability_dispatch::{CapabilityErrorHandling, CapabilityRetryMode};
+use super::capability_dispatch::{CapabilityErrorHandling, CapabilityRetryMode, DeniedResume};
 use super::capability_failure::{capability_port_error_observation, capability_port_error_summary};
 use super::capability_helpers::capability_call_signature;
 use super::capability_outcomes::{
@@ -77,7 +77,7 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
             .filter(|pending| {
                 matches!(
                     pending.disposition,
-                    Some(ironclaw_host_api::turn::GateResumeDisposition::Denied)
+                    Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { .. })
                 )
             })
             .map(|pending| pending.activity_id_for_resume());
@@ -179,10 +179,17 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
         if let Some(pending) = state.pending_approval_resume.as_ref().filter(|p| {
             matches!(
                 p.disposition.as_ref(),
-                Some(ironclaw_host_api::turn::GateResumeDisposition::Denied)
+                Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { .. })
             )
         }) {
             let denied_activity_id = pending.activity_id_for_resume();
+            // "No, do X instead": the person's words become the call's
+            // result, so the model adapts instead of stopping.
+            let feedback = pending
+                .disposition
+                .as_ref()
+                .and_then(|disposition| disposition.denial_feedback())
+                .cloned();
             // Clear the slot unconditionally — even if the partition yields no
             // matching calls, a stale Denied disposition must not bleed into the
             // fall-through batch.
@@ -194,7 +201,10 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
                     &mut signatures,
                     &mut capability_batch,
                     denied_activity_id,
-                    "approval gate denied by user",
+                    DeniedResume {
+                        planner_summary: "approval gate denied by user",
+                        feedback,
+                    },
                     visible_calls,
                 )
                 .await?
@@ -219,7 +229,7 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
         if let Some(pending) = state.pending_external_tool_resume.as_ref().filter(|p| {
             matches!(
                 p.disposition.as_ref(),
-                Some(ironclaw_host_api::turn::GateResumeDisposition::Denied)
+                Some(ironclaw_host_api::turn::GateResumeDisposition::Denied { .. })
             )
         }) {
             let denied_activity_id = pending.activity_id_for_resume();
@@ -231,7 +241,10 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
                     &mut signatures,
                     &mut capability_batch,
                     denied_activity_id,
-                    "external tool gate cancelled by client",
+                    DeniedResume {
+                        planner_summary: "external tool gate cancelled by client",
+                        feedback: None,
+                    },
                     visible_calls,
                 )
                 .await?

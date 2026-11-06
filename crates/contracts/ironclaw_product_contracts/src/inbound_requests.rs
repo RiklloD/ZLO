@@ -277,6 +277,11 @@ pub struct ProductResolveGateRequest {
     /// declined to answer".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<ironclaw_host_api::agent_plan::QuestionAnswer>,
+    /// With `resolution: "declined"` on an approval gate: what the person
+    /// wants instead ("no, do X instead"). Bounded and validated at ingress
+    /// into a `DenialFeedback`; it never turns a decline into an approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,8 +314,13 @@ pub enum ProductGateResolution {
         always: bool,
     },
     /// Unified decline variant — covers both user-initiated approval denial
-    /// and auth-gate cancellation; the wire value is "declined".
-    Declined,
+    /// and auth-gate cancellation; the wire value is "declined". `feedback`
+    /// ("no, do X instead") reaches the model as the rejected call's result
+    /// on approval gates; it is absent from the wire when not given.
+    Declined {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feedback: Option<ironclaw_host_api::turn::DenialFeedback>,
+    },
     /// A host-stored credential reference, not a raw secret/token.
     CredentialProvided { credential_ref: String },
 }
@@ -437,7 +447,8 @@ mod tests {
             serde_json::json!({"resolution": "approved", "always": true})
         );
         assert_eq!(
-            serde_json::to_value(ProductGateResolution::Declined).expect("serialize"),
+            serde_json::to_value(ProductGateResolution::Declined { feedback: None })
+                .expect("serialize"),
             serde_json::json!({"resolution": "declined"})
         );
         assert_eq!(

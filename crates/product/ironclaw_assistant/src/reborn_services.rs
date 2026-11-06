@@ -6794,18 +6794,8 @@ where
         client_action_id: IdempotencyKey,
         resolution: ProductGateResolution,
     ) -> Result<RebornResolveGateResponse, ProductSurfaceError> {
-        let decision = match resolution {
-            ProductGateResolution::Approved { always } => {
-                if always {
-                    ApprovalInteractionDecision::AlwaysAllow
-                } else {
-                    ApprovalInteractionDecision::ApproveOnce
-                }
-            }
-            ProductGateResolution::Declined => ApprovalInteractionDecision::Deny,
-            ProductGateResolution::CredentialProvided { .. } => {
-                return Err(blocked_authentication_unavailable());
-            }
+        let Some(decision) = ApprovalInteractionDecision::from_gate_resolution(resolution) else {
+            return Err(blocked_authentication_unavailable());
         };
         let response = self
             .approval_interactions
@@ -6880,7 +6870,9 @@ where
                         .map_err(map_auth_interaction_error)?,
                 }
             }
-            ProductGateResolution::Declined => AuthInteractionDecision::Deny,
+            // Auth gates have no call for feedback to explain; the decline
+            // stands either way (the UI only offers feedback on approvals).
+            ProductGateResolution::Declined { .. } => AuthInteractionDecision::Deny,
             ProductGateResolution::Approved { .. } => {
                 return Err(blocked_authentication_unavailable());
             }
@@ -7013,7 +7005,7 @@ where
             ProductGateResolution::CredentialProvided { .. } => {
                 Err(blocked_authentication_unavailable())
             }
-            ProductGateResolution::Declined => {
+            ProductGateResolution::Declined { .. } => {
                 assert_generic_run_parked_on_gate(
                     self.turn_coordinator.as_ref(),
                     &scope,

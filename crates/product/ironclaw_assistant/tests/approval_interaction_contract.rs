@@ -217,7 +217,7 @@ struct RecordingApprovalResolver {
     spawn_approvals: Mutex<Vec<RecordedApproval>>,
     dispatch_lease_retries: Mutex<Vec<RecordedApproval>>,
     spawn_lease_retries: Mutex<Vec<RecordedApproval>>,
-    denials: Mutex<Vec<(ResourceScope, ApprovalRequestId, Principal)>>,
+    denials: Mutex<Vec<(ResourceScope, ApprovalRequestId, DenyApproval)>>,
     /// Shared ordered event log for call-ordering tests; None by default.
     event_log: Mutex<Option<Arc<Mutex<Vec<&'static str>>>>>,
 }
@@ -237,6 +237,14 @@ impl RecordingApprovalResolver {
 
     fn denial_count(&self) -> usize {
         self.denials.lock().expect("lock").len()
+    }
+
+    fn last_denial(&self) -> Option<DenyApproval> {
+        self.denials
+            .lock()
+            .expect("lock")
+            .last()
+            .map(|(_, _, denial)| denial.clone())
     }
 
     fn spawn_approval_count(&self) -> usize {
@@ -336,7 +344,7 @@ impl ApprovalResolutionPort for RecordingApprovalResolver {
         self.denials
             .lock()
             .expect("lock")
-            .push((scope.clone(), request_id, denial.denied_by));
+            .push((scope.clone(), request_id, denial));
         if let Some(log) = self.event_log.lock().expect("lock").as_ref() {
             log.lock().expect("lock").push("deny");
         }
@@ -1862,7 +1870,7 @@ async fn already_denied_gate_resumes_without_reissuing_denial() {
             actor: actor("user-alpha"),
             run_id_hint: Some(run_id),
             gate_ref,
-            decision: ApprovalInteractionDecision::Deny,
+            decision: ApprovalInteractionDecision::Deny { feedback: None },
             idempotency_key: IdempotencyKey::new("retry-denied").expect("idempotency"),
         })
         .await
@@ -1877,7 +1885,7 @@ async fn already_denied_gate_resumes_without_reissuing_denial() {
     assert_eq!(coordinator.resumption_count(), 1);
     assert_eq!(
         coordinator.last_resumption_disposition(),
-        Some(GateResumeDisposition::Denied)
+        Some(GateResumeDisposition::Denied { feedback: None })
     );
 }
 
@@ -1904,7 +1912,7 @@ async fn already_denied_replay_returns_stale_when_resume_turn_fails_precondition
             actor: actor("user-alpha"),
             run_id_hint: Some(run_id),
             gate_ref,
-            decision: ApprovalInteractionDecision::Deny,
+            decision: ApprovalInteractionDecision::Deny { feedback: None },
             idempotency_key: IdempotencyKey::new("replay-denied-cancelled").expect("idempotency"),
         })
         .await
@@ -1951,7 +1959,7 @@ async fn already_denied_replay_resumes_idempotently_when_disposition_marker_pres
             actor: actor("user-alpha"),
             run_id_hint: Some(run_id),
             gate_ref,
-            decision: ApprovalInteractionDecision::Deny,
+            decision: ApprovalInteractionDecision::Deny { feedback: None },
             idempotency_key: IdempotencyKey::new("replay-denied-idempotent").expect("idempotency"),
         })
         .await
@@ -1988,7 +1996,7 @@ async fn already_denied_replay_returns_stale_when_run_is_other_terminal_state() 
             actor: actor("user-alpha"),
             run_id_hint: Some(run_id),
             gate_ref,
-            decision: ApprovalInteractionDecision::Deny,
+            decision: ApprovalInteractionDecision::Deny { feedback: None },
             idempotency_key: IdempotencyKey::new("replay-denied-completed").expect("idempotency"),
         })
         .await
@@ -2022,7 +2030,10 @@ async fn discarded_gate_returns_stale_without_resolution() {
             ApprovalInteractionDecision::AlwaysAllow,
             "discarded-always-allow",
         ),
-        (ApprovalInteractionDecision::Deny, "discarded-deny"),
+        (
+            ApprovalInteractionDecision::Deny { feedback: None },
+            "discarded-deny",
+        ),
     ] {
         let (service, resolver, coordinator, run_id, gate_ref) = service_fixture_for_request_status(
             approval_request("delete a file"),
@@ -2035,7 +2046,7 @@ async fn discarded_gate_returns_stale_without_resolution() {
                 actor: actor("user-alpha"),
                 run_id_hint: Some(run_id),
                 gate_ref,
-                decision,
+                decision: decision.clone(),
                 idempotency_key: IdempotencyKey::new(key).expect("idempotency"),
             })
             .await
@@ -2071,7 +2082,10 @@ async fn expired_gate_returns_stale_without_resolution() {
             ApprovalInteractionDecision::AlwaysAllow,
             "expired-always-allow",
         ),
-        (ApprovalInteractionDecision::Deny, "expired-deny"),
+        (
+            ApprovalInteractionDecision::Deny { feedback: None },
+            "expired-deny",
+        ),
     ] {
         let (service, resolver, coordinator, run_id, gate_ref) = service_fixture_for_request_status(
             approval_request("delete a file"),
@@ -2084,7 +2098,7 @@ async fn expired_gate_returns_stale_without_resolution() {
                 actor: actor("user-alpha"),
                 run_id_hint: Some(run_id),
                 gate_ref,
-                decision,
+                decision: decision.clone(),
                 idempotency_key: IdempotencyKey::new(key).expect("idempotency"),
             })
             .await
@@ -2114,7 +2128,7 @@ async fn deny_marks_pending_gate_denied_then_resumes_run_with_disposition() {
             actor: actor("user-alpha"),
             run_id_hint: Some(run_id),
             gate_ref,
-            decision: ApprovalInteractionDecision::Deny,
+            decision: ApprovalInteractionDecision::Deny { feedback: None },
             idempotency_key: IdempotencyKey::new("deny-once").expect("idempotency"),
         })
         .await
@@ -2131,11 +2145,53 @@ async fn deny_marks_pending_gate_denied_then_resumes_run_with_disposition() {
     assert_eq!(coordinator.resumption_count(), 1);
     assert_eq!(
         coordinator.last_resumption_disposition(),
-        Some(GateResumeDisposition::Denied)
+        Some(GateResumeDisposition::Denied { feedback: None })
     );
     assert_eq!(
         coordinator.last_resumption_precondition(),
         Some(ResumeTurnPrecondition::BlockedApprovalGate)
+    );
+}
+
+/// "No, do X instead": the feedback is handed to the durable denial (audit)
+/// and to the resume disposition (the model's tool result), and the decision
+/// stays a denial — no approval, no lease, no cancel.
+#[tokio::test]
+async fn deny_with_feedback_records_it_with_the_denial_and_resumes_with_it() {
+    let (service, resolver, coordinator, run_id, gate_ref) = service_fixture("delete a file");
+    let feedback =
+        ironclaw_host_api::turn::DenialFeedback::new("archive it instead").expect("valid feedback");
+    let response = service
+        .resolve(ResolveApprovalInteractionRequest {
+            scope: scope(),
+            actor: actor("user-alpha"),
+            run_id_hint: Some(run_id),
+            gate_ref,
+            decision: ApprovalInteractionDecision::Deny {
+                feedback: Some(feedback.clone()),
+            },
+            idempotency_key: IdempotencyKey::new("deny-feedback").expect("idempotency"),
+        })
+        .await
+        .expect("deny");
+
+    assert!(matches!(
+        response,
+        ResolveApprovalInteractionResponse::Resumed(_)
+    ));
+    assert_eq!(resolver.approval_count(), 0);
+    let denial = resolver.last_denial().expect("denial recorded");
+    assert_eq!(
+        denial.denied_by,
+        Principal::User(actor("user-alpha").user_id)
+    );
+    assert_eq!(denial.feedback, Some(feedback.clone()));
+    assert_eq!(coordinator.cancellation_count(), 0);
+    assert_eq!(
+        coordinator.last_resumption_disposition(),
+        Some(GateResumeDisposition::Denied {
+            feedback: Some(feedback)
+        })
     );
 }
 
@@ -2160,7 +2216,7 @@ async fn idempotent_deny_replay_returns_same_resumed_response_as_first_deny() {
             actor: actor("user-alpha"),
             run_id_hint: Some(run_id),
             gate_ref: gate_ref.clone(),
-            decision: ApprovalInteractionDecision::Deny,
+            decision: ApprovalInteractionDecision::Deny { feedback: None },
             idempotency_key: IdempotencyKey::new("idem-deny-replay").expect("idempotency"),
         })
         .await
@@ -2216,7 +2272,7 @@ async fn idempotent_deny_replay_returns_same_resumed_response_as_first_deny() {
             actor: actor("user-alpha"),
             run_id_hint: Some(run_id),
             gate_ref,
-            decision: ApprovalInteractionDecision::Deny,
+            decision: ApprovalInteractionDecision::Deny { feedback: None },
             idempotency_key: IdempotencyKey::new("idem-deny-replay").expect("idempotency"),
         })
         .await
@@ -2257,7 +2313,7 @@ async fn replay_denied_gate_returns_transient_when_resume_turn_errors() {
             actor: actor("user-alpha"),
             run_id_hint: Some(run_id),
             gate_ref,
-            decision: ApprovalInteractionDecision::Deny,
+            decision: ApprovalInteractionDecision::Deny { feedback: None },
             idempotency_key: IdempotencyKey::new("replay-denied-resume-error")
                 .expect("idempotency"),
         })
@@ -2300,7 +2356,7 @@ async fn deny_marks_pending_gate_denied_then_propagates_resume_error_without_can
             actor: actor("user-alpha"),
             run_id_hint: Some(run_id),
             gate_ref,
-            decision: ApprovalInteractionDecision::Deny,
+            decision: ApprovalInteractionDecision::Deny { feedback: None },
             idempotency_key: IdempotencyKey::new("deny-resume-error").expect("idempotency"),
         })
         .await
@@ -2669,6 +2725,7 @@ async fn approval_resolver_port_preserves_audit_sink() {
             request_id,
             DenyApproval {
                 denied_by: Principal::User(alpha_actor.user_id),
+                feedback: None,
             },
         )
         .await

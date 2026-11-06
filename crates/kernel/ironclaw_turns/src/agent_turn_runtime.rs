@@ -238,11 +238,7 @@ pub struct TurnRunRecord {
     pub subagent_activation_provenance: Option<crate::ActivationProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product_context: Option<crate::ProductTurnContext>,
-    #[serde(
-        rename = "auth_resume_disposition",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(flatten, with = "ironclaw_host_api::turn::resume_disposition_fields")]
     pub resume_disposition: Option<crate::GateResumeDisposition>,
 }
 
@@ -363,7 +359,7 @@ mod tests {
             serde_json::from_value(json_val2).expect("deserialize TurnRunRecord with legacy key");
         assert_eq!(
             deserialized2.resume_disposition,
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback: None }),
             "resume_disposition must be Some(Denied) when legacy key auth_resume_disposition is present"
         );
     }

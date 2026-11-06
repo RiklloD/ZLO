@@ -146,11 +146,7 @@ pub struct ResumeTurnRequest {
     pub idempotency_key: IdempotencyKey,
     #[serde(default, skip_serializing_if = "ResumeTurnPrecondition::is_default")]
     pub precondition: ResumeTurnPrecondition,
-    #[serde(
-        rename = "auth_resume_disposition",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(flatten, with = "ironclaw_host_api::turn::resume_disposition_fields")]
     pub resume_disposition: Option<GateResumeDisposition>,
 }
 
@@ -203,12 +199,52 @@ mod tests {
 
     #[test]
     fn gate_resume_disposition_denied_round_trips() {
-        let disposition = GateResumeDisposition::Denied;
+        let disposition = GateResumeDisposition::Denied { feedback: None };
         let json = serde_json::to_string(&disposition).expect("serialize");
         assert_eq!(disposition.as_str(), "denied");
         assert_eq!(json, format!("\"{}\"", disposition.as_str()));
         let decoded: GateResumeDisposition = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(disposition, decoded);
+    }
+
+    /// "No, do X instead" rides an additive sibling key, so a reader built
+    /// before feedback existed (unit `Denied`, no feedback field) decodes the
+    /// new record, and the disposition key itself is byte-identical.
+    #[test]
+    fn denial_feedback_is_a_sibling_key_old_readers_ignore() {
+        #[derive(Debug, PartialEq, serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum OldDisposition {
+            Denied,
+        }
+        #[derive(Debug, serde::Deserialize)]
+        struct OldReader {
+            #[serde(rename = "auth_resume_disposition", default)]
+            resume_disposition: Option<OldDisposition>,
+        }
+
+        let feedback =
+            ironclaw_host_api::turn::DenialFeedback::new("archive it instead").expect("valid");
+        let request = make_resume_request(Some(GateResumeDisposition::Denied {
+            feedback: Some(feedback.clone()),
+        }));
+        let json = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(json["auth_resume_disposition"], "denied", "{json}");
+        assert_eq!(
+            json["resume_denial_feedback"], "archive it instead",
+            "{json}"
+        );
+
+        let old: OldReader = serde_json::from_value(json.clone()).expect("old reader decodes");
+        assert_eq!(old.resume_disposition, Some(OldDisposition::Denied));
+
+        let back: ResumeTurnRequest = serde_json::from_value(json).expect("new reader decodes");
+        assert_eq!(
+            back.resume_disposition,
+            Some(GateResumeDisposition::Denied {
+                feedback: Some(feedback)
+            })
+        );
     }
 
     #[test]
@@ -264,7 +300,7 @@ mod tests {
         );
 
         // --- 3. Some round-trip: Denied (unit variant) ---
-        let disposition = GateResumeDisposition::Denied;
+        let disposition = GateResumeDisposition::Denied { feedback: None };
         let some_request = make_resume_request(Some(disposition.clone()));
         let some_json = serde_json::to_value(&some_request).expect("serialize Some request");
         let disposition_value = some_json
@@ -312,7 +348,7 @@ mod tests {
             serde_json::from_value(json_value).expect("legacy JSON must deserialize");
         assert_eq!(
             deserialized.resume_disposition,
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback: None }),
             "legacy 'auth_resume_disposition' key must deserialize into resume_disposition"
         );
 

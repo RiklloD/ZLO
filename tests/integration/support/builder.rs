@@ -821,6 +821,10 @@ impl RebornIntegrationHarnessBuilder {
 pub struct RebornIntegrationHarness {
     pub(crate) ingress: RebornTestIngress,
     pub(crate) workflow: std::sync::Arc<DefaultProductSurface>,
+    /// The REAL approval interaction service the workflow dispatches to, when
+    /// the group was built `with_real_gate_dispatch_services`.
+    pub(crate) approval_interactions:
+        Option<Arc<dyn ironclaw_assistant::ApprovalInteractionService>>,
     pub(crate) conversation_id: String,
     /// External (raw, pre-resolution) actor id every submit for this thread is
     /// made under. Defaults to `HARNESS_ACTOR_ID`; a group thread built with
@@ -1358,6 +1362,86 @@ impl RebornIntegrationHarness {
             decision,
         )?;
         Ok(self.workflow.submit_inbound(envelope).await?)
+    }
+
+    /// The WebUI "Reject with feedback…" path below HTTP: the REAL product
+    /// normalization (`ProductResolveGateRequest::into_command` — ingress
+    /// validation and redaction) into the REAL `ApprovalInteractionService`
+    /// (durable denial, then resume). Scope and actor are then bound to this
+    /// thread's run exactly as `RebornServices::resolve_gate` binds them from
+    /// its access probe. Needs `.with_real_gate_dispatch_services()`.
+    pub async fn reject_gate_via_product_request(
+        &self,
+        run_id: TurnRunId,
+        gate_ref: &TurnGateRef,
+        feedback: &str,
+    ) -> HarnessResult<()> {
+        use ironclaw_assistant::{
+            ApprovalInteractionDecision, IntoProductInboundCommand, ProductInboundCommand,
+            ResolveApprovalInteractionRequest,
+        };
+        let service = self
+            .approval_interactions
+            .as_ref()
+            .ok_or("reject_gate_via_product_request needs with_real_gate_dispatch_services")?;
+        let caller = ironclaw_product_contracts::surface::ProductSurfaceCaller::new(
+            self.binding.tenant_id.clone(),
+            self.binding.actor_user_id.clone(),
+            self.binding.agent_id.clone(),
+            self.binding.project_id.clone(),
+        );
+        let request = ironclaw_product_contracts::inbound_requests::ProductResolveGateRequest {
+            client_action_id: Some(format!(
+                "reject-{}",
+                self.event_seq.fetch_add(1, Ordering::Relaxed)
+            )),
+            thread_id: Some(self.turn_scope.thread_id.as_str().to_string()),
+            run_id: Some(run_id.to_string()),
+            gate_ref: Some(gate_ref.as_str().to_string()),
+            resolution: Some("declined".to_string()),
+            feedback: Some(feedback.to_string()),
+            ..Default::default()
+        };
+        let ProductInboundCommand::ResolveGate {
+            run_id,
+            gate_ref,
+            client_action_id,
+            resolution,
+            ..
+        } = request.into_command(caller)?
+        else {
+            return Err("a resolve-gate request normalized to another command".into());
+        };
+        let decision = ApprovalInteractionDecision::from_gate_resolution(resolution)
+            .ok_or("not an approval resolution")?;
+        service
+            .resolve(ResolveApprovalInteractionRequest {
+                scope: self.turn_scope.clone(),
+                actor: ironclaw_turns::TurnActor::new(self.binding.actor_user_id.clone()),
+                run_id_hint: Some(run_id),
+                gate_ref,
+                decision,
+                idempotency_key: client_action_id,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// The durable status of this run's approval request behind `gate_ref`.
+    pub async fn approval_status(
+        &self,
+        gate_ref: &TurnGateRef,
+    ) -> HarnessResult<ironclaw_approvals::ApprovalStatus> {
+        self.capability_recorder.approval_status(gate_ref).await
+    }
+
+    /// Assert no captured model request carried `text` (any role).
+    pub async fn assert_model_never_saw_text(&self, text: &str) -> HarnessResult<()> {
+        let seen = self.captured_model_message_texts();
+        if seen.iter().any(|content| content.contains(text)) {
+            return Err(format!("a model request carried {text:?}").into());
+        }
+        Ok(())
     }
 
     /// Auth-side counterpart of [`submit_approval_resolution`](Self::submit_approval_resolution):
@@ -2082,16 +2166,59 @@ impl RebornIntegrationHarness {
     /// See [`approve_gate`](Self::approve_gate) for why this resumes with
     /// `ResumeTurnPrecondition::BlockedApprovalGate`.
     pub async fn deny_gate(&self, run_id: TurnRunId, gate_ref: &TurnGateRef) -> HarnessResult<()> {
+        self.deny_gate_with(run_id, gate_ref, None).await
+    }
+
+    /// [`deny_gate`](Self::deny_gate) with the person's "no, do X instead":
+    /// the feedback is recorded with the durable denial and resumes the run
+    /// as the rejected call's model-visible result.
+    pub async fn deny_gate_with_feedback(
+        &self,
+        run_id: TurnRunId,
+        gate_ref: &TurnGateRef,
+        feedback: &str,
+    ) -> HarnessResult<()> {
+        let feedback = ironclaw_host_api::turn::DenialFeedback::new(feedback)?;
+        self.deny_gate_with(run_id, gate_ref, Some(feedback)).await
+    }
+
+    async fn deny_gate_with(
+        &self,
+        run_id: TurnRunId,
+        gate_ref: &TurnGateRef,
+        feedback: Option<ironclaw_host_api::turn::DenialFeedback>,
+    ) -> HarnessResult<()> {
         self.capability_recorder
-            .deny_standalone_gate(gate_ref)
+            .deny_standalone_gate(gate_ref, feedback.clone())
             .await?;
         self.resume_run(
             run_id,
             gate_ref.clone(),
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback }),
             ResumeTurnPrecondition::BlockedApprovalGate,
         )
         .await
+    }
+
+    /// Every message's text across the captured model requests (all roles,
+    /// tool results included), in call order. Same per-thread `scripted_llm`
+    /// source as `captured_system_prompts`.
+    pub(super) fn captured_model_message_texts(&self) -> Vec<String> {
+        self.scripted_llm
+            .captured_requests()
+            .into_iter()
+            .flatten()
+            .map(|message| message.content)
+            .collect()
+    }
+
+    /// Assert some captured model request carried `text` (any role).
+    pub async fn assert_model_saw_text(&self, text: &str) -> HarnessResult<()> {
+        let seen = self.captured_model_message_texts();
+        if seen.iter().any(|content| content.contains(text)) {
+            return Ok(());
+        }
+        Err(format!("no model request carried {text:?}; saw {seen:#?}").into())
     }
 
     /// Deny a blocked AUTH gate and resume the run (user-declines path). Unlike
@@ -2116,7 +2243,7 @@ impl RebornIntegrationHarness {
         self.resume_run(
             run_id,
             gate_ref.clone(),
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback: None }),
             ResumeTurnPrecondition::BlockedAuthGate,
         )
         .await
@@ -2136,7 +2263,7 @@ impl RebornIntegrationHarness {
         self.resume_run(
             run_id,
             gate_ref.clone(),
-            Some(GateResumeDisposition::Denied),
+            Some(GateResumeDisposition::Denied { feedback: None }),
             ResumeTurnPrecondition::BlockedExternalToolGate,
         )
         .await

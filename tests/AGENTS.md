@@ -84,7 +84,7 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 
 | Area | Group | Flat int | Binary/QA | Python E2E |
 |---|---|---|---|---|
-| Approvals & permission gates | 10 | ✓ | ✓ | ✓ |
+| Approvals & permission gates | 11 | ✓ | ✓ | ✓ |
 | Auth / credentials / OAuth | 7 | 7 | ✓ | ✓ (heaviest) |
 | Extension lifecycle | 14 | 6 | ✓ | ✓ |
 | Channels (Slack/Telegram/webhook) | 5 | 3 | ✓ | ✓ |
@@ -100,7 +100,7 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **62** group scenarios · **63** flat integration bins (56 in
+Totals: **63** group scenarios · **63** flat integration bins (56 in
 `tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
@@ -108,17 +108,18 @@ Python scenarios, so its exhaustive totals are intentionally broader.
 
 ---
 
-## 3. Group scenarios — `tests/integration/group_*/` (62)
+## 3. Group scenarios — `tests/integration/group_*/` (63)
 
 Multi-thread journeys over ONE shared runtime and ONE shared set of stores. These are
 the canonical "a user does X in one conversation and sees the effect in another" tests.
 
-### 3.1 Approvals — `group_approvals/` (10)
+### 3.1 Approvals — `group_approvals/` (11)
 
 | The user can… | Evidence |
 |---|---|
 | Be asked to approve a risky file write, approve it, and watch the run finish | `scenario_gate_then_approve.rs` |
 | Deny that same prompt and get a real answer back (not a hang) | `scenario_gate_then_deny.rs` |
+| Reject that prompt with "no, do X instead" and have the assistant read their words as the call's result and carry on, without the rejected write ever running — including through the real product request (ingress validation and redaction → interaction service → durable denial → resume), where ordinary words like "password" survive into the stored transcript and a pasted credential value never does (a separate scenario because `gate_then_deny` pins the plain denial's wording and the feedback must reach the model's next request, which it does not assert) | `scenario_gate_then_reject_with_feedback.rs` (`run`; `via_product_request` in the real-gate-dispatch group) |
 | Say "always allow" once and never be asked again — including in a *different* conversation | `scenario_approve_always_persists_cross_thread.rs` |
 | Have a tool marked "ask each time" prompt once per use and resume in one round trip (not re-prompt itself into a loop) | `scenario_ask_each_time_resumes_once.rs` |
 | Approve/deny by replying in the channel ("approve"/"deny") rather than clicking a button | `scenario_submit_inbound_approval_resolution.rs` |
