@@ -248,6 +248,47 @@ impl Engine {
         target: Option<&Target>,
         created_by: Author,
     ) -> Result<Value> {
+        let spec = ForkSpec {
+            run,
+            title,
+            target,
+            summary: false,
+        };
+        self.fork_with(ctx, source, spec, created_by).await
+    }
+
+    /// A fresh thread seeded with a bounded digest of `source` instead of a
+    /// branch of its session: the "new thread from summary" a full context
+    /// window offers.
+    pub async fn fork_from_summary(
+        &self,
+        ctx: &CallContext,
+        source: &ThreadRecord,
+        title: Option<&str>,
+        created_by: Author,
+    ) -> Result<Value> {
+        let spec = ForkSpec {
+            run: None,
+            title,
+            target: None,
+            summary: true,
+        };
+        self.fork_with(ctx, source, spec, created_by).await
+    }
+
+    async fn fork_with(
+        &self,
+        ctx: &CallContext,
+        source: &ThreadRecord,
+        spec: ForkSpec<'_>,
+        created_by: Author,
+    ) -> Result<Value> {
+        let ForkSpec {
+            run,
+            title,
+            target,
+            summary,
+        } = spec;
         let messages = self.history(source).await?;
         if messages.is_empty() {
             return Err(OrchestratorError::invalid(
@@ -281,6 +322,7 @@ impl Engine {
         let source_title = source.title.clone().unwrap_or_else(|| "thread".into());
         let name = match title.map(str::trim).filter(|t| !t.is_empty()) {
             Some(t) => t.to_string(),
+            None if summary => format!("{source_title} (from summary)"),
             None if run.is_some() => format!("{source_title} (fork @ run {ordinal})"),
             None => format!("{source_title} (fork)"),
         };
@@ -294,6 +336,7 @@ impl Engine {
         };
         // A thread that switched runtime has no single native session to branch.
         let native = runtime.capabilities().native_fork
+            && !summary
             && latest
             && runtime_id == source.runtime_id
             && self.store.segments(&source.thread_id).await?.is_empty();
@@ -309,24 +352,30 @@ impl Engine {
                 source.provider.as_deref().unwrap_or("default provider"),
                 source.model.as_deref().unwrap_or("default model")
             );
-            let mut text = handoff::portable_context(
+            let budget = self.store.settings().await?.handoff_bytes;
+            // A fork of a fork: its history no longer holds the context it was
+            // seeded with, so carry that along ahead of its own conversation.
+            // One budget covers both: the inheritance gets at most half (its
+            // newest part), the conversation the rest.
+            let seed = self
+                .store
+                .fork_origin(&source.thread_id)
+                .await?
+                .and_then(|o| o.handoff)
+                .map(|seed| handoff::clip_inherited(&seed, budget / 2));
+            let digest_budget = budget.saturating_sub(seed.as_ref().map_or(0, |s| s.len() + 2));
+            let digest = handoff::portable_context(
                 &messages[..cut],
                 &source_title,
                 source.thread_id.as_str(),
                 &route,
                 "fork",
-                self.store.settings().await?.handoff_bytes,
+                digest_budget,
             );
-            // A fork of a fork: its history no longer holds the context it was
-            // seeded with, so carry that along ahead of its own conversation.
-            if let Some(seed) = self
-                .store
-                .fork_origin(&source.thread_id)
-                .await?
-                .and_then(|o| o.handoff)
-            {
-                text = format!("{seed}\n\n{text}");
-            }
+            let text = match seed {
+                Some(seed) => format!("{seed}\n\n{digest}"),
+                None => digest,
+            };
             (
                 runtime.create_thread(request).await?,
                 TransferStrategy::PortableContext,
@@ -495,4 +544,13 @@ fn steer_label(outcome: &SteerOutcome) -> &'static str {
         SteerOutcome::Restarted => "restarted",
         SteerOutcome::Rejected => "rejected",
     }
+}
+
+/// What a fork copies: up to which run, under which name and route, and
+/// whether as a digest rather than a session branch.
+struct ForkSpec<'a> {
+    run: Option<usize>,
+    title: Option<&'a str>,
+    target: Option<&'a Target>,
+    summary: bool,
 }

@@ -588,6 +588,23 @@ impl TurnRuntime for ClaudeCliRuntime {
         self.id.clone()
     }
 
+    /// `/compact` sent as a turn is the CLI's own compaction (the idle timer
+    /// sends the same); the CLI also compacts by itself near the limit.
+    fn compaction(&self) -> RuntimeCompaction {
+        RuntimeCompaction {
+            manual_prompt: Some(compact::COMPACT_PROMPT),
+            automatic: true,
+        }
+    }
+
+    fn injected_context(
+        &self,
+        profile: Option<&TurnProfile>,
+        goal: Option<&str>,
+    ) -> ironclaw_orchestrator::context_report::ContextSample {
+        crate::injected_context(profile, goal)
+    }
+
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             native_fork: false,

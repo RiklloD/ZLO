@@ -311,6 +311,9 @@ pub struct ForkOptions {
     pub title: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
+    /// Seed the fork with a digest of the conversation (a fresh context)
+    /// instead of branching the session.
+    pub summary: bool,
 }
 
 /// `ok: false` → [`ClientError::Refused`], anything else decodes as `T`.
@@ -468,6 +471,9 @@ impl Client {
         let mut body = json!({});
         if let Some(run) = options.run {
             body["run"] = json!(run);
+        }
+        if options.summary {
+            body["summary"] = json!(true);
         }
         for (key, value) in [
             ("title", &options.title),

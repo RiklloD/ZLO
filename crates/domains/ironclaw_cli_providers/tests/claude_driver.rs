@@ -55,6 +55,15 @@ echo '{"type":"assistant","message":{"id":"m","type":"message","role":"assistant
 echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":600,"duration_api_ms":500,"num_turns":1,"result":"Hello","session_id":"s","total_cost_usd":0.01,"usage":{"input_tokens":10,"cache_read_input_tokens":600,"cache_creation_input_tokens":390,"output_tokens":50},"modelUsage":{"claude-haiku-5-5":{"inputTokens":10,"outputTokens":50,"cacheReadInputTokens":600,"cacheCreationInputTokens":390,"webSearchRequests":0,"costUSD":0.01,"contextWindow":200000,"maxOutputTokens":32000}}}'
 "#;
 
+/// `/compact` sent as a turn: the summarizing call reads the whole context,
+/// then the boundary says what it left.
+const COMPACT: &str = r#"#!/bin/sh
+read -r _line
+echo '{"type":"assistant","message":{"id":"m","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[{"type":"text","text":"summary"}],"usage":{"input_tokens":10,"cache_read_input_tokens":170000,"cache_creation_input_tokens":0,"output_tokens":900}},"session_id":"s","uuid":"a1"}'
+echo '{"type":"system","subtype":"compact_boundary","session_id":"s","uuid":"b","compact_metadata":{"pre_tokens":170010,"post_tokens":9000,"trigger":"manual"}}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":600,"duration_api_ms":500,"num_turns":1,"result":"","session_id":"s","total_cost_usd":0.01,"usage":{"input_tokens":10,"cache_read_input_tokens":170000,"cache_creation_input_tokens":0,"output_tokens":900},"modelUsage":{"claude-haiku-5-5":{"inputTokens":10,"outputTokens":900,"cacheReadInputTokens":170000,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.01,"contextWindow":200000,"maxOutputTokens":32000}}}'
+"#;
+
 const HANG: &str = r#"#!/bin/sh
 read -r _line
 sleep 30 &
@@ -256,6 +265,25 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
 /// SOUL.md and the goal in its system prompt and the skills as a plugin; a
 /// Stop restart keeps it; a session that began in the shared folder stays
 /// there; history finds a transcript in either folder.
+#[tokio::test]
+async fn a_compact_turn_reports_the_context_it_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let rt = runtime(dir.path(), script(dir.path(), "claude", COMPACT), &sink);
+    let thread = thread(&rt).await;
+    let mut turn = input();
+    turn.text = "/compact".into();
+    turn.origin = TurnOrigin::UserPrompt;
+    rt.start_turn(&thread, turn).await.unwrap();
+    wait_for(|| !sink.telemetry.lock().unwrap().is_empty()).await;
+    let t = sink.telemetry.lock().unwrap()[0].clone();
+    // Not the 170k the summarizing call read: the meter drops at once.
+    assert_eq!(
+        (t.context_used, t.context_max),
+        (Some(9_000), Some(200_000))
+    );
+}
+
 #[tokio::test]
 async fn profile_soul_skills_and_folder_reach_the_cli() {
     let dir = tempfile::tempdir().unwrap();

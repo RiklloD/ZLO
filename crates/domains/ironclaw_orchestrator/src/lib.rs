@@ -22,6 +22,7 @@
 //! ([`store::Store`]).
 
 pub mod cli_approvals;
+pub mod context_report;
 pub mod delegation;
 pub mod engine;
 pub mod error;

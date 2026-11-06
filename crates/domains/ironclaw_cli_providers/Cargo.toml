@@ -25,6 +25,7 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_orchestrator = { path = "../ironclaw_orchestrator" }
 # Session import settings and report shapes (`session_import`).
+# Context-report categories (what ZLO injects into a CLI prompt).
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
 # Stop kills the CLI's whole process group (tool subprocesses included).
 # `fs`: session import opens transcripts with O_NOFOLLOW | O_NONBLOCK.

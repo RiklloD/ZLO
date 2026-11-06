@@ -1796,25 +1796,37 @@ where
                 )
             });
         if let Some(sink) = self.prompt_diagnostic_sink.as_ref() {
-            let capability_ids = if let Some(view) = request.capability_view.as_ref() {
-                view.visible_capability_ids.clone()
-            } else if let Some(capabilities) = self.capabilities.as_ref() {
-                match capabilities.tool_definitions() {
-                    Ok(definitions) => definitions
-                        .into_iter()
-                        .map(|definition| definition.capability_id)
-                        .collect(),
-                    Err(error) => {
-                        tracing::debug!(
-                            %error,
-                            "prompt diagnostics could not capture capability ids"
-                        );
-                        Vec::new()
-                    }
+            let definitions = match self.capabilities.as_ref().map(|c| c.tool_definitions()) {
+                Some(Ok(definitions)) => definitions,
+                Some(Err(error)) => {
+                    tracing::debug!(
+                        %error,
+                        "prompt diagnostics could not capture capability ids"
+                    );
+                    Vec::new()
                 }
-            } else {
-                Vec::new()
+                None => Vec::new(),
             };
+            let capability_ids: Vec<CapabilityId> =
+                if let Some(view) = request.capability_view.as_ref() {
+                    view.visible_capability_ids.clone()
+                } else {
+                    definitions
+                        .iter()
+                        .map(|definition| definition.capability_id.clone())
+                        .collect()
+                };
+            let visible: std::collections::HashSet<&CapabilityId> = capability_ids.iter().collect();
+            let tool_definition_sizes = definitions
+                .iter()
+                .filter(|definition| visible.contains(&definition.capability_id))
+                .map(|definition| {
+                    (
+                        definition.capability_id.clone(),
+                        tool_definition_chars(definition),
+                    )
+                })
+                .collect();
             sink.record_prompt(HostManagedPromptDiagnosticCapture {
                 context: self.run_context.clone(),
                 messages: resolved_messages
@@ -1823,6 +1835,7 @@ where
                         role: message.role,
                         content_ref: message.content_ref.clone(),
                         content: message.content.clone(),
+                        image_count: u32::try_from(message.image_parts.len()).unwrap_or(u32::MAX),
                     })
                     .collect(),
                 identity_message_count: prompt_grant.diagnostic_metadata.identity_message_count,
@@ -1831,6 +1844,7 @@ where
                     .instruction_snippet_count,
                 active_skills: prompt_grant.diagnostic_metadata.active_skills,
                 capability_ids,
+                tool_definition_sizes,
                 requested_model: requested_model_profile_id.clone(),
                 effective_model: diagnostic_initial_effective_model.clone(),
                 context_limit: self.prompt_context_budget.context_limit_tokens,
@@ -2573,6 +2587,9 @@ pub struct HostManagedPromptDiagnosticCapture {
     pub instruction_snippet_count: u32,
     pub active_skills: Vec<ironclaw_loop_contracts::SkillName>,
     pub capability_ids: Vec<CapabilityId>,
+    /// Characters of each visible tool definition as sent to the provider
+    /// (name, description and argument schema), for context breakdowns.
+    pub tool_definition_sizes: Vec<(CapabilityId, u64)>,
     pub requested_model: Option<ModelProfileId>,
     pub effective_model: Option<ProviderModelId>,
     pub context_limit: u64,
@@ -2583,6 +2600,16 @@ pub struct HostManagedPromptDiagnosticMessage {
     pub role: HostManagedModelMessageRole,
     pub content_ref: LoopMessageRef,
     pub content: String,
+    /// Image parts sent with the message (their bytes are not captured).
+    pub image_count: u32,
+}
+
+/// Characters a tool definition occupies in the provider request.
+fn tool_definition_chars(definition: &ironclaw_loop_contracts::ProviderToolDefinition) -> u64 {
+    let chars = definition.name.as_str().len()
+        + definition.description.chars().count()
+        + definition.parameters.to_string().len();
+    u64::try_from(chars).unwrap_or(u64::MAX)
 }
 
 #[derive(Debug, Clone)]
@@ -3823,6 +3850,7 @@ mod tests {
             instruction_snippet_count: 0,
             active_skills: Vec::new(),
             capability_ids: Vec::new(),
+            tool_definition_sizes: Vec::new(),
             requested_model: None,
             effective_model: None,
             context_limit: 1,
