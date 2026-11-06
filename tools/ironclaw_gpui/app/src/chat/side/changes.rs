@@ -7,7 +7,8 @@
 //! - comments on a line or a selected range (Zeron's review comments), sent
 //!   to the composer as one message for the agent;
 //! - the last turn's card: what the agent changed since its turn began
-//!   (a `git stash create` checkpoint), with Review, Keep and Undo.
+//!   (a `git stash create` checkpoint), with Review, Keep and Undo;
+//! - on Codex threads, Codex's own diff, review and revert (`codex.rs`).
 
 use std::rc::Rc;
 
@@ -16,6 +17,8 @@ use gpui_kit::component::diff::{
 };
 
 use super::{ChatView, Tab, empty, error_line, git, loading, short_path};
+
+mod codex;
 use crate::assets::ExtraIcon;
 use crate::design::{Palette, kit};
 use crate::ui::*;
@@ -25,6 +28,8 @@ enum Scope {
     #[default]
     Working,
     Turn,
+    /// The diff Codex reported for its turn.
+    Codex,
 }
 
 struct Comment {
@@ -67,6 +72,7 @@ pub(super) struct State {
     /// Files, additions and deletions of the last turn.
     turn_stats: Option<(usize, usize, usize)>,
     list_hidden: bool,
+    codex: codex::State,
 }
 
 impl State {
@@ -162,10 +168,12 @@ impl ChatView {
 
     /// Feed the viewer the patch of the current scope.
     fn changes_apply(&mut self, cx: &mut Context<Self>) {
+        let codex = (self.side.changes.scope == Scope::Codex).then(|| self.codex_patch());
         let state = &mut self.side.changes;
         let patch = match state.scope {
             Scope::Working => state.working_patch.clone(),
             Scope::Turn => state.turn_patch.clone(),
+            Scope::Codex => codex.unwrap_or_default(),
         };
         if state.diff.is_some() && patch == state.shown {
             return;
@@ -214,6 +222,11 @@ impl ChatView {
             });
         })
         .detach();
+    }
+
+    /// Another folder: a Codex workspace refusal was about the old one.
+    pub(super) fn changes_folder_changed(&mut self) {
+        self.side.changes.codex.mismatch = None;
     }
 
     /// Run a git mutation off the UI thread, then refresh.
@@ -334,6 +347,7 @@ impl ChatView {
         let what = match state.scope {
             Scope::Working => "uncommitted changes",
             Scope::Turn => "changes from your last turn",
+            Scope::Codex => "changes Codex made in its last turn",
         };
         let folder = self
             .side
@@ -394,6 +408,12 @@ impl ChatView {
             });
             self.side.changes.commit = Some((input, sub));
         }
+        // The Codex diff follows Codex's latest report while it is shown.
+        if self.side.changes.scope == Scope::Codex && self.codex_patch() != self.side.changes.shown
+        {
+            self.changes_apply(cx);
+        }
+        let codex_card = self.is_codex().then(|| self.render_codex_card(window, cx));
         let state = &self.side.changes;
         if !state.loaded {
             return loading();
@@ -607,6 +627,9 @@ impl ChatView {
             );
         }
 
+        if let Some(card) = codex_card {
+            col = col.child(card);
+        }
         if let Some(note) = state.note.clone() {
             col = col.child(
                 div()
@@ -678,6 +701,7 @@ impl ChatView {
                 match scope {
                     Scope::Working => "No uncommitted changes.",
                     Scope::Turn => "The last turn changed nothing.",
+                    Scope::Codex => "Codex has not reported a diff for this turn.",
                 },
                 cx,
             ),
@@ -988,6 +1012,23 @@ impl ChatView {
                 )
             })
             .collect();
+        // The latest Codex review's findings, on the lines they name.
+        let findings: Rc<Vec<(String, ironclaw_gpui_client::review::ReviewFinding)>> =
+            Rc::new(self.codex_findings());
+        let files: Vec<SharedString> = diff
+            .read(cx)
+            .files()
+            .iter()
+            .map(|f| f.path().clone())
+            .collect();
+        for (ix, (path, f)) in findings.iter().enumerate() {
+            if files.iter().any(|p| p.as_ref() == path.as_str()) {
+                annotations.push(DiffAnnotation::line(
+                    ElementId::NamedInteger("finding".into(), ix as u64),
+                    DiffLinePosition::new(path.clone(), DiffSide::Modified, f.end as usize),
+                ));
+            }
+        }
         let draft_input = state.draft.as_ref().map(|d| d.input.clone());
         if let Some(d) = state.draft.as_ref() {
             annotations.push(DiffAnnotation::line(
@@ -1017,6 +1058,41 @@ impl ChatView {
                     .border_color(p.accent.opacity(0.4))
                     .bg(p.surface_raised)
                     .text_xs();
+                if let ElementId::NamedInteger(name, ix) = annotation.id()
+                    && name.as_ref() == "finding"
+                    && let Some((_, f)) = findings.get(*ix as usize)
+                {
+                    let tint = codex::priority_color(f.priority, &p);
+                    return base
+                        .border_color(tint.opacity(0.5))
+                        .child(
+                            v_flex()
+                                .gap_0p5()
+                                .child(
+                                    h_flex()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_color(tint)
+                                                .child(format!("Codex {}", f.priority_label())),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                                .child(f.title.clone()),
+                                        ),
+                                )
+                                .when(!f.body.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .whitespace_normal()
+                                            .text_color(p.text_muted)
+                                            .child(f.body.clone()),
+                                    )
+                                }),
+                        )
+                        .into_any_element();
+                }
                 if let ElementId::NamedInteger(_, id) = annotation.id() {
                     let id = *id;
                     let text = comments

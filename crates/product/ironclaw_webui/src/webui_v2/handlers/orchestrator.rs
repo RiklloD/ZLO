@@ -281,6 +281,27 @@ pub async fn orchestrator_thread_fork(
     ))
 }
 
+/// `POST /api/webchat/v2/threads/{thread_id}/action` — a runtime-native
+/// thread operation (Codex review, revert of the last turn, compaction).
+/// The body is the typed [`ThreadAction`].
+pub async fn orchestrator_thread_action(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(thread_id): Path<String>,
+    Json(action): Json<ThreadAction>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    let request = OrchestratorThreadActionRequest { thread_id, action };
+    Ok(Json(
+        invoke_product_command(
+            state.services(),
+            caller,
+            ORCHESTRATOR_THREAD_ACTION_COMMAND,
+            request,
+        )
+        .await?,
+    ))
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrchestratorMergeBackBody {

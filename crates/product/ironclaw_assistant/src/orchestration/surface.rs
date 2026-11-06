@@ -558,6 +558,16 @@ impl OrchestratedProductSurface {
                     .await,
                 )
             }
+            ORCHESTRATOR_THREAD_ACTION_COMMAND_ID => {
+                let req: OrchestratorThreadActionRequest = decode(input)?;
+                answer(
+                    async {
+                        let thread = self.owned(&req.thread_id, scope).await?;
+                        to_json(engine.thread_action(&thread, req.action).await?)
+                    }
+                    .await,
+                )
+            }
             _ => return Ok(None),
         };
         result.map(Some)

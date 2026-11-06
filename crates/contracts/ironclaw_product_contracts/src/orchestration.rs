@@ -424,3 +424,128 @@ pub const ORCHESTRATOR_WORKTREE_COMMAND: ProductSurfaceCommandDescriptor<
     OrchestratorWorktreeRequest,
     serde_json::Value,
 > = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_WORKTREE_COMMAND_ID);
+/// What a code review looks at (Codex `review/start` targets).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReviewTarget {
+    /// Staged, unstaged and untracked changes.
+    UncommittedChanges,
+    /// The current branch against `branch` (its merge base).
+    BaseBranch { branch: String },
+    /// One commit; `title` is a label for the person.
+    Commit {
+        sha: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    /// Free-form review instructions.
+    Custom { instructions: String },
+}
+
+/// A runtime-native thread operation (`TurnRuntime::thread_action` in `ironclaw_orchestrator`).
+///
+/// An action that reads the work names the repository the client is
+/// showing (`repo`, an absolute path): the runtime refuses with
+/// [`ThreadActionRefusal::WorkspaceMismatch`] unless it is the root the
+/// thread's session works in, so a review never inspects another checkout.
+/// (Reverting a turn in the runtime's own session is a follow-up: pairing
+/// it with the client's file restore needs a crash-safe two-phase record.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ThreadAction {
+    /// Review code as a turn of the thread; findings are its reply.
+    Review { target: ReviewTarget, repo: String },
+    /// Summarize the session's context now.
+    Compact,
+}
+
+impl ThreadAction {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Review { .. } => "review",
+            Self::Compact => "compact",
+        }
+    }
+}
+
+/// Why a runtime refused a [`ThreadAction`] without doing anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum ThreadActionRefusal {
+    /// The session works in another repository than the client named.
+    WorkspaceMismatch { runtime_root: String },
+}
+
+/// How a [`ThreadAction`] went.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ThreadActionOutcome {
+    /// The action runs as a turn (`review`); it streams like one.
+    Started { run_id: Option<String> },
+    /// A turn or another action holds the session; nothing was done.
+    Busy,
+    /// Finished; `note` is a short line for the person.
+    Done { note: String },
+    /// Refused before anything changed.
+    Refused { refusal: ThreadActionRefusal },
+}
+
+/// A runtime-native operation on one thread (`POST /threads/{id}/action`):
+/// Codex review, revert of the last turn, or compaction. The answer is the
+/// serialized [`ThreadActionOutcome`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrchestratorThreadActionRequest {
+    pub thread_id: String,
+    pub action: ThreadAction,
+}
+
+pub const ORCHESTRATOR_THREAD_ACTION_COMMAND_ID: &str = "orchestrator.thread_action";
+pub const ORCHESTRATOR_THREAD_ACTION_COMMAND: ProductSurfaceCommandDescriptor<
+    OrchestratorThreadActionRequest,
+    serde_json::Value,
+> = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_THREAD_ACTION_COMMAND_ID);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_actions_and_refusals_use_their_wire_names() {
+        let action: ThreadAction = serde_json::from_value(serde_json::json!({
+            "action": "review", "target": {"type": "uncommitted_changes"}, "repo": "/w"
+        }))
+        .unwrap();
+        assert_eq!(
+            action,
+            ThreadAction::Review {
+                target: ReviewTarget::UncommittedChanges,
+                repo: "/w".into()
+            }
+        );
+        // A review must name the repository it reads.
+        assert!(
+            serde_json::from_value::<ThreadAction>(serde_json::json!({
+                "action": "review", "target": {"type": "uncommitted_changes"}
+            }))
+            .is_err()
+        );
+        // Revert is not part of this contract (yet).
+        assert!(
+            serde_json::from_value::<ThreadAction>(serde_json::json!({
+                "action": "revert_turn", "run_id": "r1", "repo": "/w"
+            }))
+            .is_err()
+        );
+        let refused = ThreadActionOutcome::Refused {
+            refusal: ThreadActionRefusal::WorkspaceMismatch {
+                runtime_root: "/codex".into(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&refused).unwrap(),
+            serde_json::json!({"status": "refused",
+                "refusal": {"reason": "workspace_mismatch", "runtime_root": "/codex"}})
+        );
+    }
+}

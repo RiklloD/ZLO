@@ -17,6 +17,7 @@
 
 use async_trait::async_trait;
 use ironclaw_host_api::ids::ThreadId;
+use ironclaw_product_contracts::orchestration::{ThreadAction, ThreadActionOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::error::OrchestratorError;
@@ -415,6 +416,16 @@ pub trait TurnRuntime: Send + Sync {
         _goal: Option<&str>,
     ) -> crate::context_report::ContextSample {
         crate::context_report::ContextSample::default()
+    }
+
+    /// A runtime-native operation on an idle thread (review, revert,
+    /// compact). Runtimes without one answer `Unsupported`.
+    async fn thread_action(
+        &self,
+        _thread: &ThreadRecord,
+        _action: ThreadAction,
+    ) -> Result<ThreadActionOutcome, RuntimeError> {
+        Err(RuntimeError::Unsupported("thread actions"))
     }
 }
 

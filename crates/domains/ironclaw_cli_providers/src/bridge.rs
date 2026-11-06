@@ -33,6 +33,8 @@ use ironclaw_orchestrator::tools::TOOLS;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, oneshot};
 
+mod detail;
+
 /// What the agent reads when it reaches for its own subagent tool.
 const BUILTIN_SUBAGENT_DENIAL: &str = "Built-in subagents are switched off here. Start a subagent with the \
      T3 orchestrator instead: t3_delegate (mcp__ironclaw__t3_delegate on Claude Code), which opens a thread \
@@ -133,6 +135,28 @@ pub enum LiveEvent {
         run_id: String,
         status: &'static str,
     },
+    /// The newest tail of tool row `invocation`'s output (whole, redacted).
+    ToolOutput {
+        thread: ThreadId,
+        run_id: String,
+        invocation: String,
+        tail: String,
+        /// Older output was dropped from the front.
+        truncated: bool,
+    },
+    /// The turn's aggregated unified diff so far (whole, redacted).
+    TurnDiff {
+        thread: ThreadId,
+        run_id: String,
+        diff: String,
+        truncated: bool,
+    },
+    /// A finished code review's findings text (redacted).
+    Review {
+        thread: ThreadId,
+        run_id: String,
+        text: String,
+    },
 }
 
 impl LiveEvent {
@@ -144,7 +168,10 @@ impl LiveEvent {
             | Self::Tool { thread, .. }
             | Self::GateOpened { thread, .. }
             | Self::GateClosed { thread, .. }
-            | Self::Ended { thread, .. } => thread,
+            | Self::Ended { thread, .. }
+            | Self::ToolOutput { thread, .. }
+            | Self::TurnDiff { thread, .. }
+            | Self::Review { thread, .. } => thread,
         }
     }
 }
@@ -157,6 +184,20 @@ pub struct LiveSnapshot {
     pub segments: Vec<SegmentView>,
     pub tools: Vec<ToolView>,
     pub gates: Vec<GateView>,
+    /// Output tails by tool invocation (redacted).
+    pub outputs: Vec<OutputView>,
+    /// The turn's diff so far (redacted), and whether it was cut.
+    pub diff: Option<(String, bool)>,
+    /// A review's findings, once it finished.
+    pub review: Option<String>,
+}
+
+/// The output tail of one tool row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputView {
+    pub invocation: String,
+    pub tail: String,
+    pub truncated: bool,
 }
 
 /// What the model wrote between two tool calls.
@@ -214,6 +255,10 @@ struct LiveTurn {
     /// Calls by the CLI's own id, when it has one.
     tools: Vec<(Option<String>, ToolView)>,
     gates: Vec<PendingGate>,
+    /// Output tails by tool invocation.
+    outputs: HashMap<String, detail::Detail>,
+    diff: detail::Detail,
+    review: Option<String>,
 }
 
 /// Unsent bodies of one segment, thinking before text.
@@ -229,6 +274,9 @@ impl LiveTurn {
             past: Vec::new(),
             tools: Vec::new(),
             gates: Vec::new(),
+            outputs: HashMap::new(),
+            diff: detail::Detail::default(),
+            review: None,
         }
     }
 
@@ -439,6 +487,22 @@ impl CliBridge {
             segments,
             tools: turn.tools.iter().map(|(_, t)| t.clone()).collect(),
             gates: turn.gates.iter().map(|g| g.view.clone()).collect(),
+            outputs: turn
+                .outputs
+                .iter()
+                .map(|(invocation, d)| OutputView {
+                    invocation: invocation.clone(),
+                    tail: ironclaw_safety::sanitize_display_text(&d.body),
+                    truncated: d.truncated,
+                })
+                .collect(),
+            diff: (!turn.diff.body.is_empty()).then(|| {
+                (
+                    ironclaw_safety::sanitize_display_text(&turn.diff.body),
+                    turn.diff.truncated,
+                )
+            }),
+            review: turn.review.clone(),
         })
     }
 
@@ -568,6 +632,9 @@ impl CliBridge {
             };
             Some(tool.clone())
         });
+        if let Some(tool) = &done {
+            self.flush_output(thread, run_id, &tool.invocation);
+        }
         self.emit_tools(thread, done.into_iter().collect());
     }
 
@@ -585,7 +652,14 @@ impl CliBridge {
             .map(|t| t.settle_tools(ToolState::Completed))
             .unwrap_or_default();
         let unsent = turn.as_mut().map(LiveTurn::flush).unwrap_or_default();
+        let details = turn
+            .as_mut()
+            .map(|t| t.take_details(thread, true))
+            .unwrap_or_default();
         self.emit_text(thread, run_id, unsent);
+        for event in details {
+            self.emit(event);
+        }
         self.emit_tools(thread, done);
         for gate in turn.map(|t| t.gates).unwrap_or_default() {
             let _ = gate.answer.send((

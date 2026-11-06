@@ -249,3 +249,131 @@ async fn orchestrator_made_cli_thread_serves_a_timeline() {
     // Anyone else still falls through to the inner 404.
     assert!(timeline(caller("intruder")).await.is_err());
 }
+
+/// Live command output, the turn diff and a review reach a CLI thread's
+/// stream as typed `cli_detail` items: the snapshot at connect carries
+/// them, and later changes arrive on the subscription.
+#[tokio::test]
+async fn cli_thread_stream_carries_command_output_diff_and_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+    let thread = ThreadId::new("codex-thread").unwrap();
+    let owner = caller("owner");
+    engine
+        .store()
+        .ensure_thread(&ThreadRecord::new(
+            thread.clone(),
+            scope_of(&owner),
+            RuntimeId::new("codex").unwrap(),
+        ))
+        .await
+        .unwrap();
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let surface =
+        OrchestratedProductSurface::new(Arc::new(Inner), engine, Some(Arc::clone(&bridge)));
+
+    let run = uuid::Uuid::new_v4().to_string();
+    bridge.turn_started(&thread, &run);
+    bridge.tool_observed(&thread, &run, "shell", Some("cargo test"), "c1");
+    bridge.tool_output(&thread, &run, "c1", "running 3 tests\n");
+    bridge.turn_diff(&thread, &run, "diff --git a/x b/x\n");
+
+    let mut stream = surface
+        .stream_events(
+            owner,
+            ProductSurfaceStreamRequest {
+                stream_id: Some(thread.to_string()),
+                after_cursor: None,
+            },
+        )
+        .await
+        .unwrap();
+    let items = stream.events[0]["payload"]["projection_update"]["state"]["items"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let details: Vec<&serde_json::Value> =
+        items.iter().filter_map(|i| i.get("cli_detail")).collect();
+    let output = details
+        .iter()
+        .find(|d| d["kind"] == "tool_output")
+        .unwrap_or_else(|| panic!("no output in {items:?}"));
+    assert_eq!(output["body"], "running 3 tests\n");
+    assert!(output["invocation_id"].is_string());
+    assert!(
+        details
+            .iter()
+            .any(|d| d["kind"] == "turn_diff" && d["body"] == "diff --git a/x b/x\n")
+    );
+
+    // A finding quoting a hardcoded key: the stream carries it redacted,
+    // the workspace-relative location intact.
+    bridge.review(
+        &thread,
+        &run,
+        "- [P1] Hardcoded key — src/a.rs:1-2\n  let k = \"sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\";",
+    );
+    let subscription = stream.subscription.take().unwrap();
+    let next = tokio::time::timeout(Duration::from_secs(5), subscription.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let frame = &next.events[0]["payload"]["projection_update"]["state"]["items"][0];
+    assert_eq!(frame["cli_detail"]["kind"], "review");
+    let body = frame["cli_detail"]["body"].as_str().unwrap();
+    assert!(body.contains("src/a.rs:1-2"), "{body}");
+    assert!(!body.contains("sk-proj-abcdefghijklmnop"), "{body}");
+}
+
+/// `orchestrator.thread_action` reaches the runtime of the caller's own
+/// thread only; a runtime without the action answers a correctable error.
+#[tokio::test]
+async fn thread_action_reaches_the_owners_runtime_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+    let thread = ThreadId::new("cli-thread").unwrap();
+    let owner = caller("owner");
+    engine
+        .store()
+        .ensure_thread(&ThreadRecord::new(
+            thread.clone(),
+            scope_of(&owner),
+            RuntimeId::new("claude-cli").unwrap(),
+        ))
+        .await
+        .unwrap();
+    engine.register_runtime(Arc::new(OneReply));
+    let surface = OrchestratedProductSurface::new(Arc::new(Inner), engine, None);
+    let act = |who: ProductSurfaceCaller| {
+        surface.invoke(
+            who,
+            ProductSurfaceInvokeRequest {
+                operation_id: CapabilityId::new(
+                    ironclaw_product_contracts::orchestration::ORCHESTRATOR_THREAD_ACTION_COMMAND_ID,
+                )
+                .unwrap(),
+                input: json!({"thread_id": thread.as_str(), "action": {"action": "compact"}}),
+                activity_id: ActivityId::new(),
+            },
+        )
+    };
+    assert!(act(caller("intruder")).await.is_err());
+    let answer = act(owner).await.unwrap();
+    assert_eq!(answer.output["ok"], false, "{}", answer.output);
+    assert_eq!(answer.output["error"], "unsupported");
+}

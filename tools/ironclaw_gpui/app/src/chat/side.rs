@@ -347,6 +347,7 @@ impl ChatView {
         remember: bool,
         cx: &mut Context<Self>,
     ) {
+        self.changes_folder_changed();
         if remember {
             let thread = self.thread_id.clone();
             let saved = folder.clone();

@@ -18,6 +18,7 @@ pub mod orchestration;
 mod pages;
 mod profile_calls;
 pub mod schedules;
+pub mod review;
 mod settings;
 mod stream;
 pub mod transcript;
@@ -34,6 +35,10 @@ pub use stream::{EventStream, StreamMessage, StreamStatus};
 
 pub use ironclaw_extension_contracts::hosted_mcp;
 pub use ironclaw_extension_contracts::state as extension_state;
+/// Runtime-native thread actions (Codex review, revert, compact).
+pub use ironclaw_product_contracts::orchestration::{
+    ReviewTarget, ThreadAction, ThreadActionOutcome, ThreadActionRefusal,
+};
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{

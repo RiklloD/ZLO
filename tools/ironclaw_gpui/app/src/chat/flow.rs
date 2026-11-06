@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use ironclaw_gpui_client::GateDecision;
-use ironclaw_gpui_client::transcript::{GateState, Row, ToolStatus};
+use ironclaw_gpui_client::transcript::{CliBody, GateState, Row, ToolStatus};
 
 use crate::design::{Palette, kit, motion};
 use crate::ui::*;
@@ -274,9 +274,15 @@ struct Leaf {
     detail: String,
     /// The full text the row opens to, when there is more than one line.
     body: Option<String>,
+    /// The streamed tail of a command's output (Codex), shown under the
+    /// row while it runs and when opened after.
+    output: Option<CliBody>,
     failed: bool,
     running: bool,
 }
+
+/// Lines of a command's output tail a row shows.
+const OUTPUT_LINES: usize = 14;
 
 /// The tail thought of a live group, as Zeron draws it: a "Thinking" label
 /// and nothing more. Its words show once it ends, folded under "Thought".
@@ -286,6 +292,7 @@ fn live_thought() -> Leaf {
         label: "Thinking".into(),
         detail: String::new(),
         body: None,
+        output: None,
         failed: false,
         running: true,
     }
@@ -334,6 +341,7 @@ fn leaf(row: &Row) -> Option<Leaf> {
             label: "Thought".into(),
             detail: one_line(text),
             body: (text.trim().len() > 80).then(|| text.trim().to_string()),
+            output: None,
             failed: false,
             running: false,
         },
@@ -383,6 +391,7 @@ fn leaf(row: &Row) -> Option<Leaf> {
                         .filter(|d| d.len() > 90 || d.contains('\n'))
                         .map(str::to_string),
                 ),
+                output: None,
                 failed: *status == ToolStatus::Failed,
                 running: *status == ToolStatus::Running,
             }
@@ -392,6 +401,7 @@ fn leaf(row: &Row) -> Option<Leaf> {
             label: "Loaded".into(),
             detail: names.join(", "),
             body: None,
+            output: None,
             failed: false,
             running: false,
         },
@@ -421,6 +431,7 @@ fn leaf(row: &Row) -> Option<Leaf> {
                     reason.as_deref(),
                     (text.len() > 90).then_some(text),
                 ),
+                output: None,
                 failed: declined,
                 running: false,
             }
@@ -498,6 +509,7 @@ pub(super) fn render_activity(
     live: bool,
     open: bool,
     toggles: &HashMap<String, bool>,
+    outputs: &HashMap<String, CliBody>,
     weak: &WeakEntity<ChatView>,
     cx: &App,
 ) -> AnyElement {
@@ -591,7 +603,20 @@ pub(super) fn render_activity(
         if thinking_now {
             leaf = live_thought();
         }
-        let expanded = leaf.body.is_some() && toggles.get(&open_key).copied().unwrap_or(false);
+        if matches!(row, Row::Tool { .. }) {
+            leaf.output = outputs
+                .get(row_key)
+                .filter(|o| !o.body.trim().is_empty())
+                .cloned();
+        }
+        let opened = toggles.get(&open_key).copied();
+        // A running command shows its output until closed; a finished one
+        // folds it away until opened.
+        let expanded = match (&leaf.output, opened) {
+            (Some(_), Some(on)) => on,
+            (Some(_), None) => leaf.running,
+            (None, on) => leaf.body.is_some() && on.unwrap_or(false),
+        };
         if !live {
             motion::settle(row_key);
         } else if motion::arrive(
@@ -636,8 +661,10 @@ fn tree_row(
     reduced: bool,
 ) -> AnyElement {
     let tint = if leaf.failed { p.danger } else { p.text_muted };
-    let expandable = leaf.body.is_some();
+    let expandable = leaf.body.is_some() || leaf.output.is_some();
     let body = leaf.body.clone();
+    let output = leaf.output.clone();
+    let running = leaf.running;
     let weak = weak.clone();
     let line = h_flex()
         .id(SharedString::from(format!("{key}-leaf")))
@@ -686,15 +713,15 @@ fn tree_row(
             d.cursor_pointer().on_click(move |_, _, cx| {
                 let key = open_key.clone();
                 let _ = weak.update(cx, |this, cx| {
-                    let on = this.toggles.get(&key).copied().unwrap_or(false);
+                    let on = this.toggles.get(&key).copied().unwrap_or(expanded);
                     this.toggles.insert(key, !on);
                     cx.notify();
                 });
             })
         });
-    let Some(body) = body else {
+    if body.is_none() && output.is_none() {
         return line.into_any_element();
-    };
+    }
     // An opened row's full text hangs under its label, the trunk carrying
     // on beside it unless this is the last row.
     let p = *p;
@@ -725,17 +752,26 @@ fn tree_row(
                         }),
                 )
                 .child(
-                    div()
+                    v_flex()
                         .flex_1()
                         .min_w_0()
                         .pb_2()
-                        .max_h(px(360.))
-                        .overflow_hidden()
-                        .text_size(ui(12.))
-                        .line_height(px(LABEL_LINE))
-                        .text_color(p.text_muted)
-                        .whitespace_normal()
-                        .child(body),
+                        .gap_1()
+                        .when_some(body, |d, body| {
+                            d.child(
+                                div()
+                                    .max_h(px(360.))
+                                    .overflow_hidden()
+                                    .text_size(ui(12.))
+                                    .line_height(px(LABEL_LINE))
+                                    .text_color(p.text_muted)
+                                    .whitespace_normal()
+                                    .child(body),
+                            )
+                        })
+                        .when_some(output, |d, output| {
+                            d.child(output_tail(&output, running, &p))
+                        }),
                 )
                 .into_any_element()
         },
@@ -744,6 +780,33 @@ fn tree_row(
         .w_full()
         .child(line)
         .children(detail)
+        .into_any_element()
+}
+
+/// A command's streamed output: its newest lines in a monospace well.
+fn output_tail(output: &CliBody, running: bool, p: &Palette) -> AnyElement {
+    let lines: Vec<&str> = output.body.trim_end_matches('\n').lines().collect();
+    let skip = lines.len().saturating_sub(OUTPUT_LINES);
+    let cut = output.truncated || skip > 0;
+    v_flex()
+        .w_full()
+        .px_2()
+        .py_1()
+        .rounded(px(6.))
+        .bg(p.text.opacity(0.04))
+        .font_family(crate::design::FONT_MONO)
+        .text_size(ui(11.))
+        .line_height(px(15.))
+        .text_color(p.text_muted)
+        .when(cut, |d| d.child(div().text_color(p.text_faint).child("…")))
+        .children(
+            lines[skip..]
+                .iter()
+                .map(|l| div().min_w_0().truncate().child(l.to_string())),
+        )
+        .when(running, |d| {
+            d.child(div().text_color(p.text_faint).child("▍"))
+        })
         .into_any_element()
 }
 

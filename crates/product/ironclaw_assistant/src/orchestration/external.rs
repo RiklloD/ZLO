@@ -22,6 +22,7 @@ use ironclaw_host_api::turn::{
 use ironclaw_orchestrator::model::ThreadRecord;
 use ironclaw_orchestrator::profile_runtime::UserTurn;
 use ironclaw_orchestrator::runtime::{HistoryMessage, HistoryRole};
+use ironclaw_product_contracts::outbound::CliDetailKind;
 use ironclaw_product_contracts::outbound::{
     CapabilityActivityStatusView, CapabilityActivityView, CapabilityActivityViewInput,
     PROJECTION_TEXT_MAX_BYTES, ProductGateKind, ProductOutboundEnvelope, ProductOutboundPayload,
@@ -286,6 +287,27 @@ fn snapshot_events(bridge: &CliBridge, thread: &ThreadId) -> Vec<Value> {
         items.extend(text_item(thread, &snap.run_id, seg.segment, &seg.text));
     }
     items.extend(snap.tools.iter().filter_map(|t| tool_item(thread, t)));
+    items.extend(
+        snap.outputs
+            .iter()
+            .filter_map(|o| output_item(&snap.run_id, &o.invocation, &o.tail, o.truncated)),
+    );
+    if let Some((diff, truncated)) = &snap.diff {
+        items.extend(detail_item(
+            &snap.run_id,
+            CliDetailKind::TurnDiff,
+            diff,
+            *truncated,
+        ));
+    }
+    if let Some(review) = &snap.review {
+        items.extend(detail_item(
+            &snap.run_id,
+            CliDetailKind::Review,
+            review,
+            false,
+        ));
+    }
     items.extend(snap.gates.iter().filter_map(gate_item));
     envelope(thread, items).into_iter().collect()
 }
@@ -317,7 +339,85 @@ fn items_for(event: &LiveEvent) -> Option<Vec<ProductProjectionItem>> {
             };
             vec![run_status(TurnRunId::parse(run_id).ok()?, status)]
         }
+        LiveEvent::ToolOutput {
+            run_id,
+            invocation,
+            tail,
+            truncated,
+            ..
+        } => vec![output_item(run_id, invocation, tail, *truncated)?],
+        LiveEvent::TurnDiff {
+            run_id,
+            diff,
+            truncated,
+            ..
+        } => vec![detail_item(
+            run_id,
+            CliDetailKind::TurnDiff,
+            diff,
+            *truncated,
+        )?],
+        LiveEvent::Review { run_id, text, .. } => {
+            vec![detail_item(run_id, CliDetailKind::Review, text, false)?]
+        }
     })
+}
+
+/// A tool row's output tail, keyed by its invocation so each frame
+/// replaces the last.
+fn output_item(
+    run_id: &str,
+    invocation: &str,
+    tail: &str,
+    truncated: bool,
+) -> Option<ProductProjectionItem> {
+    let (body, cut) = bounded(tail);
+    Some(ProductProjectionItem::CliDetail {
+        id: format!("output:{invocation}"),
+        run_id: Some(TurnRunId::parse(run_id).ok()?),
+        kind: CliDetailKind::ToolOutput,
+        invocation_id: Some(InvocationId::parse(invocation).ok()?),
+        body,
+        truncated: truncated || cut,
+    })
+}
+
+/// The run's diff or review, one item per run and kind.
+fn detail_item(
+    run_id: &str,
+    kind: CliDetailKind,
+    body: &str,
+    truncated: bool,
+) -> Option<ProductProjectionItem> {
+    if body.is_empty() {
+        return None;
+    }
+    let (body, cut) = bounded(body);
+    let tag = match kind {
+        CliDetailKind::ToolOutput => "output",
+        CliDetailKind::TurnDiff => "diff",
+        CliDetailKind::Review => "review",
+    };
+    Some(ProductProjectionItem::CliDetail {
+        id: format!("{tag}:{run_id}"),
+        run_id: Some(TurnRunId::parse(run_id).ok()?),
+        kind,
+        invocation_id: None,
+        body,
+        truncated: truncated || cut,
+    })
+}
+
+/// A body within the projection's text bound, cut at a char boundary.
+fn bounded(body: &str) -> (String, bool) {
+    if body.len() <= PROJECTION_TEXT_MAX_BYTES {
+        return (body.to_string(), false);
+    }
+    let mut at = PROJECTION_TEXT_MAX_BYTES;
+    while !body.is_char_boundary(at) {
+        at -= 1;
+    }
+    (body[..at].to_string(), true)
 }
 
 fn run_status(run_id: TurnRunId, status: &str) -> ProductProjectionItem {

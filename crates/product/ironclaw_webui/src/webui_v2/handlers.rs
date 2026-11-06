@@ -30,6 +30,7 @@ pub use orchestrator::{
     orchestrator_thread_tasks,
     orchestrator_thread_telemetry,
     orchestrator_thread_worktree,
+    orchestrator_thread_action,
 };
 mod profiles;
 pub use computer_use::{
