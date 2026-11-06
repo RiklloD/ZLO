@@ -29,6 +29,7 @@ pub mod error;
 pub mod goal_checks;
 pub mod goals;
 pub mod handoff;
+pub mod history_sources;
 pub mod inbox;
 mod migrate;
 pub mod model;

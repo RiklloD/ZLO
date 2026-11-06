@@ -35,6 +35,10 @@ pub(super) async fn timeline(
 ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
     let id = &thread.thread_id;
     let limit = request.input["limit"].as_u64().unwrap_or(200).clamp(1, 500) as usize;
+    let cursor = request
+        .cursor
+        .clone()
+        .or_else(|| request.input["cursor"].as_str().map(str::to_string));
     let (mut envelope, loop_items) = loop_transcript(inner, &caller, request).await?;
 
     let mut rows: Vec<Value> = Vec::new();
@@ -63,7 +67,7 @@ pub(super) async fn timeline(
                 .map_err(ProductSurfaceError::internal_from)?
                 .pop()
                 .unwrap_or_default();
-            for mut row in external::timeline_messages(id, &slice, usize::MAX) {
+            for mut row in external::timeline_values(id, &slice) {
                 // Message ids restart per segment; keep them unique.
                 let old = row["message_id"].to_string();
                 row["message_id"] = json!(Uuid::new_v5(
@@ -74,16 +78,17 @@ pub(super) async fn timeline(
             }
         }
     }
-    let skip = rows.len().saturating_sub(limit);
-    let mut rows: Vec<Value> = rows.into_iter().skip(skip).collect();
+    // Sequence is the row's position across the whole stitched thread, so
+    // pages (`cli:` cursors, newest first) number consistently.
     for (i, row) in rows.iter_mut().enumerate() {
-        row["sequence"] = json!(skip + i + 1);
+        row["sequence"] = json!(i + 1);
     }
+    let (rows, next) = external::page_rows(rows, limit, cursor.as_deref());
     if let Some(item) = envelope.items.first_mut() {
         item["messages"] = Value::Array(rows);
-        item["next_cursor"] = Value::Null;
+        item["next_cursor"] = next.clone().map_or(Value::Null, Value::String);
     }
-    envelope.next_cursor = None;
+    envelope.next_cursor = next;
     Ok(envelope)
 }
 

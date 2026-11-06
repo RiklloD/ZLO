@@ -1804,3 +1804,101 @@ async fn a_compaction_without_a_new_user_turn_refreshes_the_report() {
     assert!(r.used < 1_000, "estimate after compaction: {}", r.used);
     assert_eq!(r.level, ContextLevel::Normal);
 }
+
+#[tokio::test]
+async fn history_sources_read_external_transcripts_whole_and_listeners_fan_out() {
+    use crate::engine::TurnCompletedListener;
+    use crate::profiles::ProfileOwner;
+
+    #[derive(Default)]
+    struct Count(Mutex<Vec<ThreadId>>);
+    impl TurnCompletedListener for Count {
+        fn turn_completed(&self, thread: &ThreadRecord) {
+            self.0.lock().unwrap().push(thread.thread_id.clone());
+        }
+        fn busy(&self, _thread: &ThreadId) -> bool {
+            false
+        }
+    }
+
+    let h = harness().await;
+    let cli = Arc::new(FakeRuntime {
+        name: Some("cli"),
+        ..Default::default()
+    });
+    h.engine.register_runtime(cli.clone());
+    let c = tid("c");
+    h.engine.ensure_thread(&c, &scope(), None).await.unwrap();
+    let thread = h.engine.store().thread(&c).await.unwrap().unwrap();
+    h.engine
+        .set_route(
+            &thread,
+            &crate::delegation::Target {
+                provider: Some("cli".into()),
+                model: Some("m1".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let loop_thread = tid("loop");
+    h.engine
+        .ensure_thread(&loop_thread, &scope(), None)
+        .await
+        .unwrap();
+
+    // Longer than the timeline's history cap, with carried context.
+    let mut history: Vec<HistoryMessage> = (0..2_500)
+        .map(|n| msg(HistoryRole::Assistant, &format!("reply {n}")))
+        .collect();
+    history.push(msg(
+        HistoryRole::User,
+        "Context handoff (x). body\n\n[End of context handoff]\n\n---\n\ntyped tail",
+    ));
+    cli.history.lock().unwrap().insert(c.clone(), history);
+
+    let bound = h.engine.store().thread(&c).await.unwrap().unwrap();
+    let sources = h.engine.external_transcript_sources(&bound).await.unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].runtime_id.as_str(), "cli");
+    assert_eq!(
+        sources[0].messages.len(),
+        2_501,
+        "not capped at HISTORY_LIMIT"
+    );
+    assert_eq!(sources[0].messages[2_500].text, "typed tail");
+    let loop_record = h
+        .engine
+        .store()
+        .thread(&loop_thread)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        h.engine
+            .external_transcript_sources(&loop_record)
+            .await
+            .unwrap()
+            .is_empty(),
+        "IronClaw-loop threads are the canonical transcript"
+    );
+    let external: Vec<String> = h
+        .engine
+        .owner_external_threads(&ProfileOwner::from(&scope()))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.thread_id.as_str().to_string())
+        .collect();
+    assert_eq!(external, ["c"]);
+
+    let count = Arc::new(Count::default());
+    h.engine.add_turn_listener(count.clone());
+    h.engine
+        .store()
+        .set_turn_running(&loop_thread, Some("r1"), now_ms())
+        .await
+        .unwrap();
+    finish(&h.engine, &loop_thread, TurnOutcome::completed(None)).await;
+    assert_eq!(*count.0.lock().unwrap(), vec![loop_thread]);
+}

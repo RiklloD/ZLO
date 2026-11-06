@@ -504,6 +504,8 @@ impl Store {
                 .await?;
             conn.execute_batch(crate::worktree::WORKTREES_SCHEMA)
                 .await?;
+            conn.execute_batch(crate::history_sources::RUN_ORIGINS_SCHEMA)
+                .await?;
         }
         crate::schedules::upgrade_schema(self).await?;
         self.upgrade_inbox_schema().await?;

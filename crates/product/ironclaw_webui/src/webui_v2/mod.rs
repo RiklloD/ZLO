@@ -50,6 +50,7 @@ mod sse_capacity;
 // drives now ship from one crate.
 pub mod static_assets;
 
+pub use descriptors::{WEBUI_V2_PATTERN_HISTORY_SEARCH, WEBUI_V2_ROUTE_HISTORY_SEARCH};
 pub use descriptors::{
     WEBUI_V2_ROUTE_ADD_PROJECT_MEMBER, WEBUI_V2_ROUTE_ADMIN_CREATE_USER,
     WEBUI_V2_ROUTE_ADMIN_DELETE_USER, WEBUI_V2_ROUTE_ADMIN_DELETE_USER_SECRET,

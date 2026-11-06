@@ -35,6 +35,7 @@ mod command;
 mod context;
 mod draft;
 mod inbox;
+mod message_search;
 mod quick;
 
 pub(crate) use inbox::title_of as row_title;
@@ -157,6 +158,8 @@ pub struct Workspace {
     /// The Cmd+K menu while open.
     command: Option<command::CommandMenu>,
     command_opens: u64,
+    /// Message-text search shared by Cmd+K and the inbox field.
+    message_search: message_search::MessageSearch,
     quick: quick::Quick,
     main_window: gpui_kit::AnyWindowHandle,
     /// Live sidebar width while its edge is dragged; saved on release.
@@ -184,6 +187,7 @@ impl Workspace {
             _chat_events: Vec::new(),
             command: None,
             command_opens: 0,
+            message_search: Default::default(),
             quick: quick::Quick::default(),
             main_window: window.window_handle(),
             sidebar_drag: None,

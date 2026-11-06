@@ -12,6 +12,7 @@ pub mod commands;
 pub mod computer_use;
 mod connection;
 mod error;
+mod history_calls;
 mod inbox_calls;
 pub mod mentions;
 mod memory_calls;
@@ -56,4 +57,5 @@ pub use ironclaw_product_contracts::{
     workspace_views,
     hooks_catalog,
     memory_page,
+    history,
 };

@@ -7,6 +7,10 @@ mod cli_attachments;
 mod external;
 #[cfg(test)]
 mod external_tests;
+mod history;
+mod history_ingest;
+#[cfg(test)]
+mod history_tests;
 mod inbox;
 mod mentions;
 #[cfg(test)]
@@ -24,6 +28,11 @@ mod surface;
 mod telemetry;
 mod tools;
 
+pub use history::{
+    HISTORY_SEARCH_CAPABILITY_ID, HISTORY_SEARCH_TOOL_NAME, HistorySearchSurface,
+    history_search_capability, history_search_input_schema, register_history_bridge_tool,
+    wrap_surface as wrap_history_search,
+};
 pub use observer::OrchestratorProcessObserver;
 pub use profile_context::{CliProfileContext, ProfileSkillFilter, SkillFiles, UserSkillFiles};
 pub use profiles::{

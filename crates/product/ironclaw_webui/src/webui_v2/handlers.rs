@@ -52,6 +52,8 @@ pub use memory::{
     supermemory_delete_document, supermemory_documents, supermemory_forget, supermemory_search,
     supermemory_status,
 };
+mod history;
+pub use history::history_search;
 mod inbox;
 pub use inbox::{
     inbox_list, inbox_mutate, task_models_get, task_models_set, thread_goal, thread_goal_set,

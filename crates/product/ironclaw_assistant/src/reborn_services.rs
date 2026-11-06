@@ -4575,6 +4575,33 @@ where
                 let response = self.build_user_model_preference_view(caller).await?;
                 views::view_page(response)
             }
+            id if id == ironclaw_product_contracts::history::HISTORY_SEARCH_VIEW.id => {
+                let request: ironclaw_product_contracts::history::HistorySearchRequest =
+                    serde_json::from_value(query.params).map_err(|error| {
+                        tracing::debug!(%error, "history search request rejected");
+                        ProductSurfaceError::validation(
+                            "input",
+                            ProductSurfaceValidationCode::InvalidValue,
+                        )
+                    })?;
+                let scope =
+                    crate::history_search::caller_thread_scope(&caller).ok_or_else(|| {
+                        ProductSurfaceError::from_status(
+                            ProductSurfaceErrorCode::InvalidRequest,
+                            400,
+                            false,
+                        )
+                    })?;
+                // Indexing runs off the request path; this answer is a read.
+                crate::history_search::spawn_index_catch_up(&self.thread_service, &scope);
+                let response = crate::history_search::run_ready_history_search(
+                    self.thread_service.as_ref(),
+                    &scope,
+                    &request,
+                )
+                .await?;
+                views::view_page(response)
+            }
             id if id == THREADS_VIEW.id => {
                 let mut request: ProductListThreadsRequest =
                     serde_json::from_value(query.params)

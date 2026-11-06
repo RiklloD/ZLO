@@ -97,6 +97,13 @@ pub struct ChatView {
     turn_heights: Rc<RefCell<HashMap<String, f32>>>,
     /// Scroll the newest user message to the top on the next item sync.
     pin_next: bool,
+    /// A history-search hit to scroll to once its message is in the list.
+    reveal: Option<String>,
+    /// Keep the transcript loaded back to this message (an older hit was
+    /// opened): timeline reloads page back to it instead of the latest page.
+    history_floor: Option<String>,
+    /// A load back to `history_floor` is in flight.
+    floor_pending: bool,
     /// When the last message was sent: MonoCode's prompt rise lifts it from
     /// the composer to its place, then the reply rows slide in.
     prompt_rise: Option<Instant>,
@@ -345,6 +352,9 @@ impl ChatView {
             list_height: Rc::default(),
             turn_heights: Rc::default(),
             pin_next: false,
+            reveal: None,
+            history_floor: None,
+            floor_pending: false,
             prompt_rise: None,
             arrive: false,
             pacer: pace::Pacer::default(),
@@ -776,18 +786,32 @@ impl ChatView {
 
     fn load_timeline(&mut self, cx: &mut Context<Self>) {
         let thread_id = self.thread_id.clone();
-        let job = self
-            .backend
-            .spawn(move |c| async move { c.timeline(&thread_id, TIMELINE_LIMIT).await });
+        let floor = self.history_floor.clone();
+        let loaded_floor = floor.clone();
+        let job = self.backend.spawn(move |c| async move {
+            match floor {
+                Some(message_id) => c.timeline_through(&thread_id, &message_id).await,
+                None => c.timeline(&thread_id, TIMELINE_LIMIT).await,
+            }
+        });
         let task = cx.spawn(async move |this, cx| {
             let result = flatten(job.await);
             let _ = this.update(cx, |this, cx| match result {
                 Ok(page) => {
+                    // Only the load that reached the floor settles it.
+                    if this.history_floor == loaded_floor {
+                        this.floor_pending = false;
+                    }
                     cx.emit(ThreadUpdated);
                     this.transcript.set_timeline(page);
                     this.refresh_rows(cx);
                 }
-                Err(e) => this.set_error(e.to_string(), cx),
+                Err(e) => {
+                    if this.history_floor == loaded_floor {
+                        this.floor_pending = false;
+                    }
+                    this.set_error(e.to_string(), cx)
+                }
             });
         });
         self.keep(task);
@@ -862,6 +886,44 @@ impl ChatView {
         flow::is_open(key, live, &self.toggles)
     }
 
+    /// Scroll to `message_id` (a history-search hit) as soon as it is in
+    /// the loaded transcript.
+    pub fn reveal_message(&mut self, message_id: String, cx: &mut Context<Self>) {
+        self.reveal = Some(message_id);
+        self.try_reveal(cx);
+    }
+
+    fn try_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.reveal.clone() else {
+            return;
+        };
+        let Some(ix) = self.items.iter().position(|item| match item {
+            Item::Activity { rows, .. } => rows.iter().any(|r| r.key().ends_with(&target)),
+            other => other.key().ends_with(&target),
+        }) else {
+            // Not in the latest page: once that page is in, load back to
+            // the message (bounded), then try again; give up if even the
+            // older pages do not hold it.
+            if self.items.is_empty() {
+                return;
+            }
+            if self.history_floor.as_deref() == Some(target.as_str()) {
+                if !self.floor_pending {
+                    tracing::debug!("search hit is not in the thread's timeline");
+                    self.reveal = None;
+                }
+            } else {
+                self.history_floor = Some(target);
+                self.floor_pending = true;
+                self.load_timeline(cx);
+            }
+            return;
+        };
+        self.reveal = None;
+        self.scroller.update(cx, |s, cx| s.scroll_to_item(ix, cx));
+        cx.notify();
+    }
+
     /// Fold rows into list items and tell the virtual list exactly what
     /// moved, so only changed items are re-measured while text streams.
     fn sync_items(&mut self, live: bool, stopping: bool, cx: &mut Context<Self>) {
@@ -922,6 +984,7 @@ impl ChatView {
         let prompts = outline_prompts(&new_items);
         self.outline.update(cx, |o, cx| o.set(prompts, cx));
         self.items = Rc::new(new_items);
+        self.try_reveal(cx);
     }
 
     /// The reserve's height this frame: while held, exactly what keeps the

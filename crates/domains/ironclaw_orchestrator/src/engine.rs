@@ -78,6 +78,8 @@ pub struct Engine {
     pub(crate) reserved_dirs: StdMutex<std::collections::HashSet<std::path::PathBuf>>,
     /// One merge at a time per target checkout.
     pub(crate) checkout_locks: StdMutex<HashMap<std::path::PathBuf, Arc<Mutex<()>>>>,
+    /// More listeners told after every completed turn (history indexing).
+    extra_turn_listeners: StdMutex<Vec<Arc<dyn TurnCompletedListener>>>,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -128,6 +130,7 @@ impl Engine {
             worktree_ops: StdMutex::new(std::collections::HashSet::new()),
             reserved_dirs: StdMutex::new(std::collections::HashSet::new()),
             checkout_locks: StdMutex::new(HashMap::new()),
+            extra_turn_listeners: StdMutex::new(Vec::new()),
         }))
     }
 
@@ -144,6 +147,14 @@ impl Engine {
     /// Hear about every completed turn (first call wins).
     pub fn set_turn_listener(&self, listener: Arc<dyn TurnCompletedListener>) {
         let _ = self.turn_listener.set(listener); // silent-ok: already set by an earlier wiring
+    }
+
+    /// Add a listener told after every completed turn, beside the one
+    /// `set_turn_listener` installs.
+    pub fn add_turn_listener(&self, listener: Arc<dyn TurnCompletedListener>) {
+        if let Ok(mut listeners) = self.extra_turn_listeners.lock() {
+            listeners.push(listener);
+        }
     }
 
     /// The turn listener is still working on `thread`.
@@ -467,6 +478,17 @@ impl Engine {
             TurnAdmission::Started { run_id } => {
                 self.mark_running(&thread, run_id.as_deref(), now_ms())
                     .await?;
+                // Provenance for history search: this run's prompt is the
+                // engine's text, not the person's.
+                if origin.is_engine_scaffolding()
+                    && let Some(run) = run_id.as_deref()
+                    && let Err(error) = self
+                        .store
+                        .record_scaffolding_run(thread_id, run, origin)
+                        .await
+                {
+                    tracing::debug!(%error, "scaffolding run origin not recorded");
+                }
                 Ok(true)
             }
             TurnAdmission::Steered { .. } => Ok(true),
@@ -1111,6 +1133,14 @@ impl TurnEventSink for Engine {
         match result {
             Ok(Some(thread)) if completed => {
                 if let Some(listener) = self.turn_listener.get() {
+                    listener.turn_completed(&thread);
+                }
+                let extra = self
+                    .extra_turn_listeners
+                    .lock()
+                    .map(|l| l.clone())
+                    .unwrap_or_default(); // silent-ok: a poisoned list only follows a panic elsewhere
+                for listener in extra {
                     listener.turn_completed(&thread);
                 }
             }

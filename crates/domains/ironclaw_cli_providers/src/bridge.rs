@@ -443,6 +443,8 @@ pub struct CliBridge {
     /// Each thread's latest plan with its update number, kept past the
     /// turn so a stream that opens later still shows it.
     plans: Mutex<HashMap<ThreadId, (u64, String, AgentPlan)>>,
+    /// Host tools beside the orchestrator's on the MCP route.
+    pub(crate) tool_provider: OnceLock<Arc<dyn crate::bridge_tools::BridgeToolProvider>>,
 }
 
 impl std::fmt::Debug for CliBridge {
@@ -461,6 +463,7 @@ impl CliBridge {
             mcp_url: OnceLock::new(),
             ledger: OnceLock::new(),
             plans: Mutex::new(HashMap::new()),
+            tool_provider: OnceLock::new(),
         })
     }
 
@@ -1101,7 +1104,9 @@ pub async fn serve_mcp(
         .and_then(|token| bridge.resolve_token(token.trim()))
         .ok_or(401u16)?;
     match serde_json::from_slice::<Value>(body) {
-        Ok(message @ Value::Object(_)) => Ok(handle_mcp(engine, &grant, &message).await),
+        Ok(message @ Value::Object(_)) => {
+            Ok(crate::bridge_tools::handle_with_tools(bridge, engine, &grant, &message).await)
+        }
         _ => Err(400),
     }
 }

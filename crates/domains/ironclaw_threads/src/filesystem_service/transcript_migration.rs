@@ -25,7 +25,7 @@ use super::{
 const TRANSCRIPT_PAGE_CONFLICT_RETRIES: u32 = 5;
 
 /// Outcome of one transactional transcript-migration page.
-enum TranscriptPageOutcome {
+pub(super) enum TranscriptPageOutcome {
     Committed,
     /// The page lost a concurrency race and should be re-read and retried;
     /// carries the underlying error so retry exhaustion can fail loud with
@@ -75,48 +75,69 @@ where
                 (messages_root(scope, &thread_id)?, true),
                 (summaries_root(scope, &thread_id)?, false),
             ] {
-                let mut offset = 0u64;
-                let mut conflict_attempts = 0u32;
-                loop {
-                    let rows = self
-                        .filesystem
-                        .query(
-                            &scope.to_resource_scope(),
-                            &prefix,
-                            &Filter::All,
-                            Page::new(offset, Page::MAX_LIMIT),
-                        )
-                        .await?;
-                    if rows.is_empty() {
+                migrated =
+                    migrated.saturating_add(self.reproject_prefix(scope, &prefix, messages).await?);
+            }
+        }
+        Ok(migrated)
+    }
+
+    /// Rewrite the indexed projection of every message (or summary) row under
+    /// `prefix`, one bounded transactional page at a time, keeping each stored
+    /// body byte-for-byte. Shared by the transcript rebuild and the
+    /// history-search backfill.
+    async fn reproject_prefix(
+        &self,
+        scope: &ThreadScope,
+        prefix: &ScopedPath,
+        messages: bool,
+    ) -> Result<usize, SessionThreadError> {
+        let mut migrated = 0usize;
+        let mut offset = 0u64;
+        let mut conflict_attempts = 0u32;
+        loop {
+            let rows = match self
+                .filesystem
+                .query(
+                    &scope.to_resource_scope(),
+                    prefix,
+                    &Filter::All,
+                    Page::new(offset, Page::MAX_LIMIT),
+                )
+                .await
+            {
+                Ok(rows) => rows,
+                Err(error) if is_not_found(&error) => Vec::new(),
+                Err(error) => return Err(error.into()),
+            };
+            if rows.is_empty() {
+                break;
+            }
+            let received = rows.len();
+            match self.migrate_transcript_page(scope, messages, rows).await? {
+                TranscriptPageOutcome::Committed => {
+                    conflict_attempts = 0;
+                    migrated = migrated.saturating_add(received);
+                    if received < Page::MAX_LIMIT as usize {
                         break;
                     }
-                    let received = rows.len();
-                    match self.migrate_transcript_page(scope, messages, rows).await? {
-                        TranscriptPageOutcome::Committed => {
-                            conflict_attempts = 0;
-                            migrated = migrated.saturating_add(received);
-                            if received < Page::MAX_LIMIT as usize {
-                                break;
-                            }
-                            offset = offset.saturating_add(received as u64);
-                        }
-                        TranscriptPageOutcome::Conflict(error) => {
-                            // A live writer (turn finalization, preview append)
-                            // landed between this page's in-transaction reads
-                            // and its commit. Re-reading the page picks up the
-                            // committed versions, so the retry converges; the
-                            // bound keeps a pathological writer from pinning
-                            // the migration forever.
-                            conflict_attempts += 1;
-                            if conflict_attempts > TRANSCRIPT_PAGE_CONFLICT_RETRIES {
-                                return Err(error.into());
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                10u64.saturating_mul(conflict_attempts.into()),
-                            ))
-                            .await;
-                        }
+                    offset = offset.saturating_add(received as u64);
+                }
+                TranscriptPageOutcome::Conflict(error) => {
+                    // A live writer (turn finalization, preview append)
+                    // landed between this page's in-transaction reads
+                    // and its commit. Re-reading the page picks up the
+                    // committed versions, so the retry converges; the
+                    // bound keeps a pathological writer from pinning
+                    // the migration forever.
+                    conflict_attempts += 1;
+                    if conflict_attempts > TRANSCRIPT_PAGE_CONFLICT_RETRIES {
+                        return Err(error.into());
                     }
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        10u64.saturating_mul(conflict_attempts.into()),
+                    ))
+                    .await;
                 }
             }
         }
@@ -130,7 +151,7 @@ where
     /// bounded — an escaped `VersionMismatch` here surfaced to WebUI timeline
     /// reads as a retryable 503 whenever the scope's first transcript read
     /// overlapped a running turn.
-    async fn migrate_transcript_page(
+    pub(super) async fn migrate_transcript_page(
         &self,
         scope: &ThreadScope,
         messages: bool,

@@ -37,6 +37,8 @@ pub use gpui_kit::{
 };
 /// Drawing primitives for the computer-use viewer (frames, cursor, ripples).
 pub use gpui_kit::{Bounds, PathBuilder, Pixels, RenderImage, canvas, img, point, rgb, rgba};
+/// Highlighted runs in search snippets.
+pub use gpui_kit::{FontWeight, HighlightStyle, StyledText};
 
 use gpui_kit::component::text::{TextView, TextViewState};
 

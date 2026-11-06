@@ -351,6 +351,14 @@ impl RefreshingCapabilityPort {
             Arc::clone(&self.thread_service),
             self.fallback_user_id.clone(),
         )?);
+        // Read-only search of the acting user's own past chats.
+        synthetic_capabilities.push(
+            ironclaw_assistant::orchestration::history_search_capability(
+                Arc::clone(&self.thread_service),
+                self.orchestrator.clone(),
+                self.fallback_user_id.clone(),
+            )?,
+        );
         if let Some(outbound_preferences_service) = &self.outbound_preferences_service {
             synthetic_capabilities.extend(outbound_delivery_capabilities(
                 Arc::clone(outbound_preferences_service),

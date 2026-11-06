@@ -6,6 +6,7 @@
 
 use gpui_kit::ScrollHandle;
 use gpui_kit::component::IconName;
+use ironclaw_gpui_client::history::HistoryHit;
 use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
 
 use super::{Page, Workspace, row_title};
@@ -13,6 +14,11 @@ use crate::design::{self, Palette, Style, kit, motion};
 use crate::ui::*;
 
 const ROW_H: f32 = 36.;
+/// The "In messages" section header above the message hits.
+const HEADER_H: f32 = 28.;
+/// Message hits shown: threads, and hits per thread.
+const MESSAGE_THREADS: usize = 8;
+const HITS_PER_THREAD: usize = 2;
 const LIST_MAX_H: f32 = 380.;
 const RESULTS: usize = 60;
 /// MonoCode's modal: 200 ms ease-out, 6 px rise.
@@ -22,6 +28,11 @@ const RISE: f32 = 6.;
 #[derive(Clone, PartialEq)]
 enum Cmd {
     Thread(String),
+    /// A history-search hit: open the thread at the message.
+    Message {
+        thread_id: String,
+        message_id: String,
+    },
     NewThread(String),
     Page(Page),
     Scheme(&'static str),
@@ -37,6 +48,8 @@ struct Entry {
     title: SharedString,
     /// Right-hand hint: the kind of entry, or its shortcut.
     hint: SharedString,
+    /// Message hits draw their snippet in place of the title.
+    hit: Option<HistoryHit>,
 }
 
 pub(super) struct CommandMenu {
@@ -48,6 +61,13 @@ pub(super) struct CommandMenu {
     _subs: Vec<Subscription>,
 }
 
+impl CommandMenu {
+    /// What is typed in the palette's search field.
+    pub(super) fn query(&self, cx: &App) -> String {
+        self.input.read(cx).value().to_string()
+    }
+}
+
 impl Workspace {
     pub(super) fn toggle_command_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.command.take().is_some() {
@@ -55,7 +75,8 @@ impl Workspace {
             return;
         }
         let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search threads, settings and actions")
+            InputState::new(window, cx)
+                .placeholder("Search threads, messages, settings and actions")
         });
         input.update(cx, |s, cx| s.focus(window, cx));
         let subs =
@@ -66,6 +87,12 @@ impl Workspace {
                             menu.selected = 0;
                             menu.scroll.scroll_to_item(0);
                         }
+                        let query = this
+                            .command
+                            .as_ref()
+                            .map(|m| m.input.read(cx).value().to_string())
+                            .unwrap_or_default();
+                        this.search_messages(&query, cx);
                         cx.notify();
                     }
                     InputEvent::PressEnter { .. } => this.run_selected(window, cx),
@@ -105,6 +132,7 @@ impl Workspace {
                     "New thread".into()
                 },
                 hint: "New".into(),
+                hit: None,
             });
         }
         let mut rows: Vec<_> = list.rows.iter().collect();
@@ -120,6 +148,7 @@ impl Workspace {
                 icon: IconName::Inbox,
                 title: row_title(row).to_string().into(),
                 hint: profile.unwrap_or_else(|| "Thread".into()).into(),
+                hit: None,
             });
         }
         for (page, icon, label) in self.settings_pages() {
@@ -128,6 +157,7 @@ impl Workspace {
                 icon,
                 title: label.into(),
                 hint: "Settings".into(),
+                hit: None,
             });
         }
         let scheme = design::prefs::Prefs::of(cx).scheme.clone();
@@ -142,6 +172,7 @@ impl Workspace {
                     icon,
                     title: label.into(),
                     hint: "Appearance".into(),
+                    hit: None,
                 });
             }
         }
@@ -150,18 +181,21 @@ impl Workspace {
             icon: IconName::PanelBottom,
             title: "Toggle status bar".into(),
             hint: "⇧⌘S".into(),
+            hit: None,
         });
         out.push(Entry {
             cmd: Cmd::ToggleScheme,
             icon: IconName::Palette,
             title: "Toggle light and dark".into(),
             hint: "⇧⌘Y".into(),
+            hit: None,
         });
         out.push(Entry {
             cmd: Cmd::Browser,
             icon: IconName::Globe,
             title: "Open the web UI in the browser".into(),
             hint: "Action".into(),
+            hit: None,
         });
         out
     }
@@ -183,17 +217,58 @@ impl Workspace {
             .filter_map(|e| score(&query, &e.title.to_lowercase()).map(|s| (s, e)))
             .collect();
         scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
-        scored.into_iter().take(RESULTS).map(|(_, e)| e).collect()
+        let mut out: Vec<Entry> = scored.into_iter().take(RESULTS).map(|(_, e)| e).collect();
+        out.extend(self.message_entries(&query));
+        out
+    }
+
+    /// The "In messages" section: snippet rows from the message search.
+    fn message_entries(&self, query: &str) -> Vec<Entry> {
+        let mut out = Vec::new();
+        for thread in self
+            .message_search
+            .results(query)
+            .iter()
+            .take(MESSAGE_THREADS)
+        {
+            let title = thread
+                .title
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| "Conversation".into());
+            let hint = match super::message_search::origin_label(thread.origin) {
+                Some(origin) => format!("{origin} · {title}"),
+                None => title,
+            };
+            for hit in thread.hits.iter().take(HITS_PER_THREAD) {
+                out.push(Entry {
+                    cmd: Cmd::Message {
+                        thread_id: hit.thread_id.clone(),
+                        message_id: hit.message_id.clone(),
+                    },
+                    icon: IconName::FileText,
+                    title: hit.snippet.clone().into(),
+                    hint: hint.clone().into(),
+                    hit: Some(hit.clone()),
+                });
+            }
+        }
+        out
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let count = self.matches(cx).len();
+        let entries = self.matches(cx);
+        let count = entries.len();
+        let first_message = entries.iter().position(|e| e.hit.is_some());
         if let Some(menu) = self.command.as_mut()
             && count > 0
         {
             menu.selected = (menu.selected as isize + delta).rem_euclid(count as isize) as usize;
-            // The pill is the scroll content's first child.
-            menu.scroll.scroll_to_item(menu.selected + 1);
+            // The pill is the scroll content's first child; the section
+            // header is one more above the message hits.
+            let header = first_message.is_some_and(|first| menu.selected >= first);
+            menu.scroll
+                .scroll_to_item(menu.selected + 1 + usize::from(header));
             cx.notify();
         }
     }
@@ -211,6 +286,10 @@ impl Workspace {
         self.command = None;
         match cmd {
             Cmd::Thread(id) => self.open_thread(id, window, cx),
+            Cmd::Message {
+                thread_id,
+                message_id,
+            } => self.open_thread_at(thread_id, message_id, window, cx),
             Cmd::NewThread(profile) => self.start_in_profile(profile, window, cx),
             Cmd::Page(page) => self.show(page, window, cx),
             Cmd::Scheme(value) => design::update_appearance(cx, |p| p.scheme = value.into()),
@@ -231,13 +310,53 @@ impl Workspace {
         let input = menu.input.clone();
         let scroll = menu.scroll.clone();
         let entries = self.matches(cx);
+        let typed = input.read(cx).value().to_string();
+        let indexing = !typed.trim().is_empty() && self.message_search.indexing(&typed);
         let selected = selected.min(entries.len().saturating_sub(1));
-        let pill_top = (!entries.is_empty()).then_some(selected as f32 * ROW_H);
+        let first_message = entries.iter().position(|e| e.hit.is_some());
+        let header_above =
+            |ix: usize| first_message.is_some_and(|first| ix >= first) as u8 as f32 * HEADER_H;
+        let pill_top =
+            (!entries.is_empty()).then_some(selected as f32 * ROW_H + header_above(selected));
 
-        let rows = entries.into_iter().enumerate().map(|(ix, e)| {
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(entries.len() + 1);
+        for (ix, e) in entries.into_iter().enumerate() {
+            if Some(ix) == first_message {
+                rows.push(
+                    div()
+                        .h(px(HEADER_H))
+                        .flex_none()
+                        .px_3()
+                        .flex()
+                        .items_end()
+                        .pb_1()
+                        .text_xs()
+                        .text_color(p.text_faint)
+                        .child(if indexing {
+                            "In messages · indexing older chats…"
+                        } else {
+                            "In messages"
+                        })
+                        .into_any_element(),
+                );
+            }
             let on = ix == selected;
             let cmd = e.cmd.clone();
-            h_flex()
+            let label = match &e.hit {
+                Some(hit) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(super::message_search::snippet_text(hit, cx))
+                    .into_any_element(),
+                None => div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(e.title)
+                    .into_any_element(),
+            };
+            let row = h_flex()
                 .id(("cmdk-row", ix))
                 .relative()
                 .h(px(ROW_H))
@@ -263,15 +382,18 @@ impl Workspace {
                         .small()
                         .text_color(if on { p.text } else { p.text_muted }),
                 )
-                .child(div().flex_1().min_w_0().truncate().child(e.title))
+                .child(label)
                 .child(
                     div()
                         .flex_none()
+                        .max_w(px(220.))
+                        .truncate()
                         .text_xs()
                         .text_color(p.text_faint)
                         .child(e.hint),
-                )
-        });
+                );
+            rows.push(row.into_any_element());
+        }
         let list = v_flex()
             .id("cmdk-list")
             .relative()
@@ -321,7 +443,10 @@ impl Workspace {
                         .text_color(p.text_faint)
                         .child("↑↓ move")
                         .child("↵ open")
-                        .child("esc close"),
+                        .child("esc close")
+                        .when(indexing, |d| {
+                            d.child(div().flex_1()).child("Searching older chats…")
+                        }),
                 ),
         );
 

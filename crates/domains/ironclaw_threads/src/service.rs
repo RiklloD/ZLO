@@ -20,6 +20,11 @@ use crate::{
     ThreadMessageRecord, ThreadScope, ToolResultRecordRead, UpdateAssistantDraftRequest,
     UpdateThreadGoalRequest, UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
 };
+use crate::{
+    ExternalThreadSummary, ExternalTranscriptCursor, ExternalTranscriptCursorRequest,
+    ExternalTranscriptUpsert, MessageSearchIndexProgress, SearchThreadMessagesRequest,
+    SearchThreadMessagesResponse, UpsertExternalTranscriptRequest,
+};
 
 /// Canonical Reborn session thread and transcript boundary.
 #[async_trait]
@@ -493,6 +498,81 @@ pub trait SessionThreadService: Send + Sync {
                 .to_string(),
         ))
     }
+
+    /// Full-text search over the visible message text (user messages and
+    /// finalized assistant replies) of every thread in `request.scope`,
+    /// grouped by thread with highlighted snippets. Tool output, system and
+    /// hidden text are never searched. The default fails closed so a backend
+    /// without a search index answers unavailable instead of "no matches".
+    ///
+    /// Implementations MUST scope results exactly as
+    /// [`list_threads_for_scope`](Self::list_threads_for_scope) does.
+    async fn search_thread_messages(
+        &self,
+        _request: SearchThreadMessagesRequest,
+    ) -> Result<SearchThreadMessagesResponse, SessionThreadError> {
+        Err(SessionThreadError::Backend(
+            "search_thread_messages is not implemented by this SessionThreadService backend"
+                .to_string(),
+        ))
+    }
+
+    /// Whether history search over the scope is fully indexed and every
+    /// one-time migration its read paths depend on has run. A pure read:
+    /// callers that must never write (the model tool) answer only when this
+    /// is `true`. Defaults to `false` (fail closed).
+    async fn message_search_ready(&self, _scope: &ThreadScope) -> Result<bool, SessionThreadError> {
+        Ok(false)
+    }
+
+    /// One bounded indexing step for history search over the scope's own
+    /// transcripts: declares the index and re-projects at most `budget`
+    /// messages written before the projection existed, resuming from a
+    /// durable cursor. Never rewrites a message body. Run it off the request
+    /// path; `search_thread_messages` itself performs no writes.
+    async fn advance_message_search_index(
+        &self,
+        _scope: &ThreadScope,
+        _budget: usize,
+    ) -> Result<MessageSearchIndexProgress, SessionThreadError> {
+        Err(SessionThreadError::Backend(
+            "advance_message_search_index is not implemented by this SessionThreadService backend"
+                .to_string(),
+        ))
+    }
+
+    /// Upsert search projections of an external (CLI runtime) transcript.
+    /// Idempotent: an unchanged row is not rewritten, and the source cursor
+    /// only moves forward.
+    async fn upsert_external_transcript(
+        &self,
+        _request: UpsertExternalTranscriptRequest,
+    ) -> Result<ExternalTranscriptUpsert, SessionThreadError> {
+        Err(SessionThreadError::Backend(
+            "upsert_external_transcript is not implemented by this SessionThreadService backend"
+                .to_string(),
+        ))
+    }
+
+    /// The stored summary of an externally ingested thread, if any.
+    async fn external_thread_summary(
+        &self,
+        _scope: &ThreadScope,
+        _thread_id: &ThreadId,
+    ) -> Result<Option<ExternalThreadSummary>, SessionThreadError> {
+        Ok(None)
+    }
+
+    /// Where ingestion of the source stands (all zero when it never ran).
+    async fn external_transcript_cursor(
+        &self,
+        _request: ExternalTranscriptCursorRequest,
+    ) -> Result<ExternalTranscriptCursor, SessionThreadError> {
+        Err(SessionThreadError::Backend(
+            "external_transcript_cursor is not implemented by this SessionThreadService backend"
+                .to_string(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -816,5 +896,50 @@ where
         request: ListThreadsForScopeRequest,
     ) -> Result<ListThreadsForScopeResponse, SessionThreadError> {
         self.as_ref().list_threads_for_scope(request).await
+    }
+
+    async fn search_thread_messages(
+        &self,
+        request: SearchThreadMessagesRequest,
+    ) -> Result<SearchThreadMessagesResponse, SessionThreadError> {
+        self.as_ref().search_thread_messages(request).await
+    }
+
+    async fn advance_message_search_index(
+        &self,
+        scope: &ThreadScope,
+        budget: usize,
+    ) -> Result<MessageSearchIndexProgress, SessionThreadError> {
+        self.as_ref()
+            .advance_message_search_index(scope, budget)
+            .await
+    }
+
+    async fn message_search_ready(&self, scope: &ThreadScope) -> Result<bool, SessionThreadError> {
+        self.as_ref().message_search_ready(scope).await
+    }
+
+    async fn upsert_external_transcript(
+        &self,
+        request: UpsertExternalTranscriptRequest,
+    ) -> Result<ExternalTranscriptUpsert, SessionThreadError> {
+        self.as_ref().upsert_external_transcript(request).await
+    }
+
+    async fn external_thread_summary(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+    ) -> Result<Option<ExternalThreadSummary>, SessionThreadError> {
+        self.as_ref()
+            .external_thread_summary(scope, thread_id)
+            .await
+    }
+
+    async fn external_transcript_cursor(
+        &self,
+        request: ExternalTranscriptCursorRequest,
+    ) -> Result<ExternalTranscriptCursor, SessionThreadError> {
+        self.as_ref().external_transcript_cursor(request).await
     }
 }

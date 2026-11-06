@@ -33,6 +33,8 @@
 //! `replay_accepted_inbound_message` recomputes that key from its scoped
 //! request and performs one exact read.
 
+mod history_search_index;
+mod history_search_query;
 mod message_lookup_index;
 mod message_read;
 mod thread_index;
@@ -375,6 +377,16 @@ where
                 fs_index_key("message_status")?,
                 IndexValue::Text(serde_enum_index_value(&record.status)?),
             );
+        // Searchable text (user + finalized assistant text only) for history
+        // search. Rows that stop being searchable (redaction, supersede)
+        // drop the key on their rewrite, so the FTS projection follows.
+        let entry = match crate::history_search::search_projection(record) {
+            Some(text) => entry.with_indexed(
+                fs_index_key(crate::history_search::SEARCH_TEXT_INDEX_KEY)?,
+                IndexValue::Text(text),
+            ),
+            None => entry,
+        };
         message_lookup_index::with_message_lookup_projections(entry, record)
     }
 
@@ -452,19 +464,44 @@ where
             return Ok(());
         }
         let root = scoped_path(THREADS_PREFIX)?;
-        for index in root_index_specs()? {
-            match self
+        let specs = root_index_specs()?;
+        // A durable marker, versioned by the spec set, records that this mount
+        // already holds every declaration: a fresh process then reads instead
+        // of re-declaring, so a ready read path performs no catalog write.
+        let marker = root_indexes_marker_path(&specs)?;
+        let declared = self
+            .filesystem
+            .get(&resource_scope, &marker)
+            .await?
+            .is_some();
+        if !declared {
+            for index in &specs {
+                match self
+                    .filesystem
+                    .ensure_index(&resource_scope, &root, index)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(FilesystemError::Unsupported { .. })
+                        if policy == IndexDeclarationPolicy::Optional =>
+                    {
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            if let Err(error) = self
                 .filesystem
-                .ensure_index(&resource_scope, &root, &index)
+                .put(
+                    &resource_scope,
+                    &marker,
+                    Entry::bytes(b"declared".to_vec()),
+                    CasExpectation::Any,
+                )
                 .await
             {
-                Ok(()) => {}
-                Err(FilesystemError::Unsupported { .. })
-                    if policy == IndexDeclarationPolicy::Optional =>
-                {
-                    return Ok(());
-                }
-                Err(error) => return Err(error.into()),
+                // silent-ok: the declarations succeeded; without the marker the next process re-declares (idempotent).
+                tracing::debug!(%error, "root index declaration marker not written");
             }
         }
         if let Ok(mut ready) = self.ready_index_mounts.lock() {
@@ -1710,7 +1747,7 @@ where
     /// `{"kind":"subagent",…}`) so listing exclusion reads ONE spelling. The
     /// completion marker makes the sweep run once; retention holds — the
     /// metadata is updated, never deleted.
-    async fn ensure_prepared_markers_migrated(
+    pub(super) async fn ensure_prepared_markers_migrated(
         &self,
         scope: &ThreadScope,
     ) -> Result<(), SessionThreadError> {
@@ -3871,6 +3908,47 @@ where
         }
     }
 
+    async fn search_thread_messages(
+        &self,
+        request: crate::SearchThreadMessagesRequest,
+    ) -> Result<crate::SearchThreadMessagesResponse, SessionThreadError> {
+        self.search_history(request).await
+    }
+
+    async fn message_search_ready(&self, scope: &ThreadScope) -> Result<bool, SessionThreadError> {
+        self.search_index_complete(scope).await
+    }
+
+    async fn advance_message_search_index(
+        &self,
+        scope: &ThreadScope,
+        budget: usize,
+    ) -> Result<crate::MessageSearchIndexProgress, SessionThreadError> {
+        self.advance_search_index(scope, budget).await
+    }
+
+    async fn upsert_external_transcript(
+        &self,
+        request: crate::UpsertExternalTranscriptRequest,
+    ) -> Result<crate::ExternalTranscriptUpsert, SessionThreadError> {
+        self.upsert_projections(request).await
+    }
+
+    async fn external_thread_summary(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+    ) -> Result<Option<crate::ExternalThreadSummary>, SessionThreadError> {
+        self.projection_summary(scope, thread_id).await
+    }
+
+    async fn external_transcript_cursor(
+        &self,
+        request: crate::ExternalTranscriptCursorRequest,
+    ) -> Result<crate::ExternalTranscriptCursor, SessionThreadError> {
+        self.projection_cursor(request).await
+    }
+
     async fn list_threads_for_scope(
         &self,
         request: ListThreadsForScopeRequest,
@@ -4296,6 +4374,24 @@ fn root_index_specs() -> Result<Vec<IndexSpec>, SessionThreadError> {
     ];
     indexes.extend(message_lookup_index::lookup_index_specs()?);
     Ok(indexes)
+}
+
+/// `/threads/index-migrations/root-indexes-<digest>.declared`, the digest
+/// covering every root spec so a new or changed spec re-declares.
+fn root_indexes_marker_path(specs: &[IndexSpec]) -> Result<ScopedPath, SessionThreadError> {
+    let mut digest = Sha256::new();
+    for spec in specs {
+        digest.update(serialize_pretty(spec)?);
+    }
+    let hex: String = digest
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    scoped_path(&format!(
+        "{THREADS_PREFIX}/index-migrations/root-indexes-{hex}.declared"
+    ))
 }
 
 fn summary_index_spec() -> Result<IndexSpec, SessionThreadError> {

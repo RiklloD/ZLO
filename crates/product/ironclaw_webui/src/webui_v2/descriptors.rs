@@ -284,6 +284,9 @@ pub const WEBUI_V2_ROUTE_THREAD_GOAL_SET: &str = "webui.v2.goals.set";
 pub const WEBUI_V2_ROUTE_TASK_MODELS_GET: &str = "webui.v2.task_models.get";
 pub const WEBUI_V2_ROUTE_TASK_MODELS_SET: &str = "webui.v2.task_models.set";
 pub const WEBUI_V2_PATTERN_INBOX: &str = "/api/webchat/v2/inbox";
+// History search across the caller's past chats.
+pub const WEBUI_V2_ROUTE_HISTORY_SEARCH: &str = "webui.v2.history.search";
+pub const WEBUI_V2_PATTERN_HISTORY_SEARCH: &str = "/api/webchat/v2/history/search";
 pub const WEBUI_V2_PATTERN_INBOX_THREAD: &str = "/api/webchat/v2/inbox/{thread_id}";
 pub const WEBUI_V2_PATTERN_THREAD_GOAL: &str = "/api/webchat/v2/threads/{thread_id}/goal";
 pub const WEBUI_V2_PATTERN_TASK_MODELS: &str = "/api/webchat/v2/llm/task-models";
@@ -659,6 +662,11 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_ROUTE_SESSION_IMPORT_RUN,
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_SESSION_IMPORT,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_HISTORY_SEARCH,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_HISTORY_SEARCH,
         ),
         profile_route_descriptor(
             WEBUI_V2_ROUTE_THREAD_GOAL_GET,
