@@ -69,6 +69,8 @@ impl ProductSurface for Inner {
 #[derive(Default)]
 struct ScriptedCli {
     history: Mutex<std::collections::HashMap<ThreadId, Vec<HistoryMessage>>>,
+    /// Transcript reads, to prove what ingestion skips.
+    reads: std::sync::atomic::AtomicUsize,
 }
 
 impl ScriptedCli {
@@ -114,6 +116,7 @@ impl TurnRuntime for ScriptedCli {
         thread: &ThreadRecord,
         limit: usize,
     ) -> Result<Vec<HistoryMessage>, RuntimeError> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let all = self
             .history
             .lock()
@@ -719,4 +722,77 @@ async fn rewritten_cli_transcripts_are_reindexed() {
         .await
         .unwrap();
     search_until(surface.as_ref(), "nebula", "cli-rw").await;
+}
+
+/// The owner sweep is bounded per pass and resumable: a pass stops at its
+/// thread budget, the next pass reads only the threads not yet current, and
+/// a thread whose activity did not change is never re-read.
+#[tokio::test]
+async fn sweeps_are_bounded_and_skip_current_threads() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine) = engine().await;
+    let cli = Arc::new(ScriptedCli::default());
+    engine.register_runtime(cli.clone());
+    let threads: Arc<dyn SessionThreadService> = Arc::new(InMemorySessionThreadService::default());
+    for n in 0..30 {
+        let thread = cli_thread(&engine, &format!("cli-{n:02}"), "T").await;
+        cli.set(
+            &thread,
+            vec![msg(HistoryRole::User, &format!("item {n} mongoose"))],
+        );
+    }
+    let owner = ironclaw_orchestrator::profiles::ProfileOwner::from(&scope_of(&owner()));
+    let weak = Arc::downgrade(&engine);
+
+    assert!(
+        !super::history_ingest::sweep(&weak, threads.as_ref(), &owner).await,
+        "the first pass stops at its budget"
+    );
+    assert_eq!(cli.reads.load(SeqCst), 25);
+    assert!(super::history_ingest::sweep(&weak, threads.as_ref(), &owner).await);
+    assert_eq!(
+        cli.reads.load(SeqCst),
+        30,
+        "the second pass reads only the rest"
+    );
+    assert!(super::history_ingest::sweep(&weak, threads.as_ref(), &owner).await);
+    assert_eq!(
+        cli.reads.load(SeqCst),
+        30,
+        "current threads are not re-read"
+    );
+}
+
+/// A burst of completions for one thread runs one ingestion plus at most
+/// one coalesced follow-up, not one per completion.
+#[tokio::test]
+async fn completion_bursts_coalesce_per_thread() {
+    use ironclaw_orchestrator::engine::TurnCompletedListener;
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine) = engine().await;
+    let cli = Arc::new(ScriptedCli::default());
+    engine.register_runtime(cli.clone());
+    let threads: Arc<dyn SessionThreadService> = Arc::new(InMemorySessionThreadService::default());
+    let thread = cli_thread(&engine, "cli-burst", "Burst").await;
+    cli.set(&thread, vec![msg(HistoryRole::User, "burst lemur")]);
+    let listener = super::history_ingest::IngestOnCompletion::new(
+        Arc::downgrade(&engine),
+        Arc::clone(&threads),
+    );
+    let record = engine.store().thread(&thread).await.unwrap().unwrap();
+    for _ in 0..10 {
+        listener.turn_completed(&record);
+    }
+    for _ in 0..200 {
+        if listener.running.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(listener.running.lock().unwrap().is_empty());
+    let reads = cli.reads.load(SeqCst);
+    assert!(
+        (1..=2).contains(&reads),
+        "10 completions ran {reads} ingestions"
+    );
 }

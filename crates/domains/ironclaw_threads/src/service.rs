@@ -21,9 +21,9 @@ use crate::{
     UpdateThreadGoalRequest, UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
 };
 use crate::{
-    ExternalTranscriptCursor, ExternalTranscriptCursorRequest, ExternalTranscriptUpsert,
-    MessageSearchIndexProgress, SearchThreadMessagesRequest, SearchThreadMessagesResponse,
-    UpsertExternalTranscriptRequest,
+    ExternalThreadSummary, ExternalTranscriptCursor, ExternalTranscriptCursorRequest,
+    ExternalTranscriptUpsert, MessageSearchIndexProgress, SearchThreadMessagesRequest,
+    SearchThreadMessagesResponse, UpsertExternalTranscriptRequest,
 };
 
 /// Canonical Reborn session thread and transcript boundary.
@@ -554,6 +554,15 @@ pub trait SessionThreadService: Send + Sync {
         ))
     }
 
+    /// The stored summary of an externally ingested thread, if any.
+    async fn external_thread_summary(
+        &self,
+        _scope: &ThreadScope,
+        _thread_id: &ThreadId,
+    ) -> Result<Option<ExternalThreadSummary>, SessionThreadError> {
+        Ok(None)
+    }
+
     /// Where ingestion of the source stands (all zero when it never ran).
     async fn external_transcript_cursor(
         &self,
@@ -915,6 +924,16 @@ where
         request: UpsertExternalTranscriptRequest,
     ) -> Result<ExternalTranscriptUpsert, SessionThreadError> {
         self.as_ref().upsert_external_transcript(request).await
+    }
+
+    async fn external_thread_summary(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+    ) -> Result<Option<ExternalThreadSummary>, SessionThreadError> {
+        self.as_ref()
+            .external_thread_summary(scope, thread_id)
+            .await
     }
 
     async fn external_transcript_cursor(

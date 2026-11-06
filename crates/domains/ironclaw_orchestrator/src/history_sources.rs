@@ -20,52 +20,107 @@ pub struct TranscriptSource {
     pub messages: Vec<HistoryMessage>,
 }
 
+/// Where a source's messages come from, before reading it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptSourcePlan {
+    pub segment: u32,
+    pub runtime_id: RuntimeId,
+    pub session_id: Option<String>,
+    start: usize,
+    end: Option<usize>,
+}
+
+impl TranscriptSourcePlan {
+    /// A segment the thread switched away from: its slice never changes.
+    pub fn closed(&self) -> bool {
+        self.end.is_some()
+    }
+}
+
 impl Engine {
-    /// Every external-runtime source of `thread`, oldest segment first.
-    /// Segments on IronClaw's own loop are skipped (their messages are the
-    /// canonical transcript, indexed by the thread service itself).
-    pub async fn external_transcript_sources(
+    /// The thread's external-runtime sources, oldest segment first, without
+    /// reading any transcript. Segments on IronClaw's own loop are skipped
+    /// (their messages are the canonical transcript, indexed by the thread
+    /// service itself).
+    pub async fn external_source_plans(
         &self,
         thread: &ThreadRecord,
-    ) -> Result<Vec<TranscriptSource>> {
+    ) -> Result<Vec<TranscriptSourcePlan>> {
         let segments = self.store.segments(&thread.thread_id).await?;
         if segments.is_empty() {
             if self.is_default_runtime(&thread.runtime_id) {
                 return Ok(Vec::new());
             }
-            let messages = self
-                .full_session_history(
-                    thread,
-                    &thread.runtime_id,
-                    thread.native_session_id.as_deref(),
-                )
-                .await?;
-            return Ok(vec![TranscriptSource {
+            return Ok(vec![TranscriptSourcePlan {
                 segment: 0,
                 runtime_id: thread.runtime_id.clone(),
                 session_id: thread.native_session_id.clone(),
-                messages,
+                start: 0,
+                end: None,
             }]);
         }
-        let mut out = Vec::new();
-        for (k, seg) in segments.iter().enumerate() {
-            if self.is_default_runtime(&seg.runtime_id) {
-                continue;
-            }
-            let all = self
-                .full_session_history(thread, &seg.runtime_id, seg.native_session_id.as_deref())
-                .await?;
-            let end = seg.end.unwrap_or(all.len()).min(all.len());
-            let mut messages = all[seg.start.min(end)..end].to_vec();
-            handoff::strip_carried_context(&mut messages);
-            out.push(TranscriptSource {
+        Ok(segments
+            .iter()
+            .enumerate()
+            .filter(|(_, seg)| !self.is_default_runtime(&seg.runtime_id))
+            .map(|(k, seg)| TranscriptSourcePlan {
                 segment: u32::try_from(k).unwrap_or(u32::MAX),
                 runtime_id: seg.runtime_id.clone(),
                 session_id: seg.native_session_id.clone(),
+                start: seg.start,
+                end: seg.end,
+            })
+            .collect())
+    }
+
+    /// Read one source whole (not capped at `HISTORY_LIMIT`), carried
+    /// context stripped.
+    pub async fn read_external_source(
+        &self,
+        thread: &ThreadRecord,
+        plan: &TranscriptSourcePlan,
+    ) -> Result<Vec<HistoryMessage>> {
+        let all = self
+            .full_session_history(thread, &plan.runtime_id, plan.session_id.as_deref())
+            .await?;
+        let end = plan.end.unwrap_or(all.len()).min(all.len());
+        let mut messages = all[plan.start.min(end)..end].to_vec();
+        handoff::strip_carried_context(&mut messages);
+        Ok(messages)
+    }
+
+    /// Every external-runtime source of `thread`, read.
+    pub async fn external_transcript_sources(
+        &self,
+        thread: &ThreadRecord,
+    ) -> Result<Vec<TranscriptSource>> {
+        let mut out = Vec::new();
+        for plan in self.external_source_plans(thread).await? {
+            let messages = self.read_external_source(thread, &plan).await?;
+            out.push(TranscriptSource {
+                segment: plan.segment,
+                runtime_id: plan.runtime_id,
+                session_id: plan.session_id,
                 messages,
             });
         }
         Ok(out)
+    }
+
+    /// The latest durable activity stamp of `thread` (creation, user
+    /// message, turn end, any update): when it is unchanged, so is the
+    /// thread's transcript as far as the engine can tell.
+    pub fn thread_activity_version(thread: &ThreadRecord) -> i64 {
+        [
+            Some(thread.created_at),
+            Some(thread.updated_at),
+            thread.turn_ended_at,
+            thread.last_user_at,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(thread.updated_at)
     }
 
     /// The owner's threads that have at least one external-runtime source.

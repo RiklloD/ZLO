@@ -224,11 +224,13 @@ async fn upsert_cli(
                 title: Some(title.into()),
                 created_at: None,
                 updated_at: None,
+                source_version: None,
             },
             source: source(0),
             messages: rows,
             replace: false,
             anchor: None,
+            source_complete: false,
         })
         .await
         .unwrap()
@@ -248,11 +250,13 @@ async fn replace_cli(
                 title: Some("Rewritten".into()),
                 created_at: None,
                 updated_at: None,
+                source_version: None,
             },
             source: source(0),
             messages: rows,
             replace: true,
             anchor: Some("anchor-2".into()),
+            source_complete: false,
         })
         .await
         .unwrap()

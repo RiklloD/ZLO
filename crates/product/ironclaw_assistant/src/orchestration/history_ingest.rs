@@ -109,8 +109,8 @@ pub(crate) async fn ingest_thread(
         .await
         .map_err(|e| e.to_string())?
         .is_empty();
-    let sources = engine
-        .external_transcript_sources(thread)
+    let plans = engine
+        .external_source_plans(thread)
         .await
         .map_err(|e| e.to_string())?;
     let summary = ExternalThreadSummary {
@@ -118,13 +118,14 @@ pub(crate) async fn ingest_thread(
         title: thread.title.clone(),
         created_at: at(Some(thread.created_at)),
         updated_at: at(Some(thread.updated_at)),
+        source_version: Some(Engine::thread_activity_version(thread)),
     };
     let mut written = 0;
-    for source in sources {
+    for plan in plans {
         let key = ExternalTranscriptSource {
-            segment: source.segment,
-            runtime_id: source.runtime_id.as_str().to_string(),
-            session_id: source.session_id.clone(),
+            segment: plan.segment,
+            runtime_id: plan.runtime_id.as_str().to_string(),
+            session_id: plan.session_id.clone(),
         };
         let cursor = threads
             .external_transcript_cursor(ExternalTranscriptCursorRequest {
@@ -134,7 +135,16 @@ pub(crate) async fn ingest_thread(
             })
             .await
             .map_err(|e| e.to_string())?;
-        let rows = timeline_rows(&thread.thread_id, &source.messages);
+        // A closed segment never changes: once fully ingested it is not
+        // read again.
+        if plan.closed() && cursor.complete {
+            continue;
+        }
+        let source = engine
+            .read_external_source(thread, &plan)
+            .await
+            .map_err(|e| e.to_string())?;
+        let rows = timeline_rows(&thread.thread_id, &source);
         // A source that shrank, or whose last settled row is no longer the
         // one ingested, was rewritten: re-ingest it whole as a new generation.
         let rewritten = cursor.ingested_through > rows.len() as u64
@@ -155,15 +165,18 @@ pub(crate) async fn ingest_thread(
             .filter(|(ordinal, _)| *ordinal as u64 >= from)
             .filter_map(|(ordinal, row)| {
                 let id = if segmented {
-                    segment_message_id(&thread.thread_id, source.segment as usize, row.message_id)
+                    segment_message_id(&thread.thread_id, plan.segment as usize, row.message_id)
                 } else {
                     row.message_id
                 };
                 projection(row, ordinal as u64, id)
             })
             .collect();
+        // At least one call per source, so the summary (with its activity
+        // version) and a closed source's completion are recorded even when
+        // no row changed.
         let chunks: Vec<&[ExternalTranscriptMessage]> = if messages.is_empty() {
-            if rewritten { vec![&[][..]] } else { Vec::new() }
+            vec![&[][..]]
         } else {
             messages.chunks(UPSERT_CHUNK).collect()
         };
@@ -183,6 +196,7 @@ pub(crate) async fn ingest_thread(
                     // The new generation starts with the batch that ends it.
                     replace: rewritten && n == last,
                     anchor: anchor_of(&rows, through),
+                    source_complete: plan.closed() && n == last,
                 })
                 .await
                 .map_err(|e| e.to_string())?;
@@ -252,7 +266,17 @@ pub(crate) fn spawn_owner_sweep(
     });
 }
 
-async fn sweep(
+/// Threads one sweep pass ingests before stopping; the next search starts
+/// the next pass, which skips what this one finished.
+const SWEEP_THREADS_PER_PASS: usize = 25;
+/// Rows one sweep pass writes before stopping.
+const SWEEP_ROWS_PER_PASS: usize = 5_000;
+
+/// One bounded pass over the owner's CLI threads. A thread whose activity
+/// version matches its stored summary is skipped without reading its
+/// transcript, so a pass resumes where the last one (or the last process)
+/// stopped. `true` when every thread is current.
+pub(super) async fn sweep(
     engine: &Weak<Engine>,
     threads: &dyn SessionThreadService,
     owner: &ProfileOwner,
@@ -267,25 +291,70 @@ async fn sweep(
             return false;
         }
     };
+    let (mut ingested, mut rows) = (0usize, 0usize);
     let mut complete = true;
     for thread in list {
+        if ingested >= SWEEP_THREADS_PER_PASS || rows >= SWEEP_ROWS_PER_PASS {
+            tracing::debug!(ingested, rows, "history sweep pass reached its budget");
+            return false;
+        }
+        if thread_is_current(threads, &thread).await {
+            continue;
+        }
         match ingest_thread(&engine, threads, &thread).await {
             Ok(written) => {
-                tracing::debug!(thread = %thread.thread_id, written, "history sweep indexed a CLI thread")
+                ingested += 1;
+                rows += written;
+                tracing::debug!(thread = %thread.thread_id, written, "history sweep indexed a CLI thread");
             }
             Err(error) => {
                 complete = false;
                 tracing::debug!(thread = %thread.thread_id, %error, "history sweep skipped a CLI thread");
             }
         }
+        tokio::task::yield_now().await;
     }
     complete
 }
 
-/// Re-index a CLI thread after each of its completed turns.
+/// The thread's stored summary carries its current activity version.
+async fn thread_is_current(threads: &dyn SessionThreadService, thread: &ThreadRecord) -> bool {
+    let Some(scope) = projection_scope(&thread.scope) else {
+        return true;
+    };
+    match threads
+        .external_thread_summary(&scope, &thread.thread_id)
+        .await
+    {
+        Ok(Some(summary)) => {
+            summary.source_version == Some(Engine::thread_activity_version(thread))
+        }
+        Ok(None) => false,
+        Err(error) => {
+            tracing::debug!(%error, "history sweep could not read a thread summary");
+            false
+        }
+    }
+}
+
+/// Re-index a CLI thread after each of its completed turns. Jobs coalesce
+/// per thread: one ingestion runs at a time, and completions that land
+/// while it runs fold into a single follow-up run.
 pub(crate) struct IngestOnCompletion {
     pub(crate) engine: Weak<Engine>,
     pub(crate) threads: Arc<dyn SessionThreadService>,
+    /// Threads with an ingestion running, and whether another is due.
+    pub(crate) running: Arc<Mutex<std::collections::HashMap<ThreadId, bool>>>,
+}
+
+impl IngestOnCompletion {
+    pub(crate) fn new(engine: Weak<Engine>, threads: Arc<dyn SessionThreadService>) -> Self {
+        Self {
+            engine,
+            threads,
+            running: Arc::default(),
+        }
+    }
 }
 
 impl TurnCompletedListener for IngestOnCompletion {
@@ -293,17 +362,48 @@ impl TurnCompletedListener for IngestOnCompletion {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let (engine, threads, thread) = (
-            self.engine.clone(),
-            Arc::clone(&self.threads),
-            thread.clone(),
-        );
-        runtime.spawn(async move {
-            let Some(engine) = engine.upgrade() else {
+        {
+            let Ok(mut running) = self.running.lock() else {
                 return;
             };
-            if let Err(error) = ingest_thread(&engine, threads.as_ref(), &thread).await {
-                tracing::debug!(thread = %thread.thread_id, %error, "history indexing after a turn failed");
+            if let Some(again) = running.get_mut(&thread.thread_id) {
+                *again = true;
+                return;
+            }
+            running.insert(thread.thread_id.clone(), false);
+        }
+        let (engine, threads, running, id) = (
+            self.engine.clone(),
+            Arc::clone(&self.threads),
+            Arc::clone(&self.running),
+            thread.thread_id.clone(),
+        );
+        runtime.spawn(async move {
+            loop {
+                let Some(engine) = engine.upgrade() else {
+                    break;
+                };
+                // Re-read: the completion's record may be stale by now.
+                match engine.store().thread(&id).await {
+                    Ok(Some(thread)) => {
+                        if let Err(error) = ingest_thread(&engine, threads.as_ref(), &thread).await
+                        {
+                            tracing::debug!(thread = %id, %error, "history indexing after a turn failed");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => tracing::debug!(thread = %id, %error, "history indexing could not read the thread"),
+                }
+                let Ok(mut state) = running.lock() else {
+                    break;
+                };
+                match state.get_mut(&id) {
+                    Some(again) if *again => *again = false,
+                    _ => {
+                        state.remove(&id);
+                        break;
+                    }
+                }
             }
         });
     }

@@ -80,6 +80,10 @@ pub struct ExternalThreadSummary {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// The ingester's activity version of the thread when it last ingested
+    /// it: an unchanged version lets a sweep skip reading the transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +102,9 @@ pub struct UpsertExternalTranscriptRequest {
     /// The ingester's digest of the source's last settled row after this
     /// batch, stored with the cursor to detect a later rewrite.
     pub anchor: Option<String>,
+    /// The source can no longer change (a closed segment) and this batch
+    /// ends it: later ingestions skip it without reading it.
+    pub source_complete: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -119,6 +126,9 @@ pub struct ExternalTranscriptCursor {
     pub generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<String>,
+    /// A closed source fully ingested.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

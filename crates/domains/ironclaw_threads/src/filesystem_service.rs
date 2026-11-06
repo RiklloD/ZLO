@@ -3934,6 +3934,14 @@ where
         self.upsert_projections(request).await
     }
 
+    async fn external_thread_summary(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+    ) -> Result<Option<crate::ExternalThreadSummary>, SessionThreadError> {
+        self.projection_summary(scope, thread_id).await
+    }
+
     async fn external_transcript_cursor(
         &self,
         request: crate::ExternalTranscriptCursorRequest,

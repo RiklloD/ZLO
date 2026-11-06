@@ -1840,14 +1840,30 @@ impl SessionThreadService for InMemorySessionThreadService {
                 ingested_through: highest,
                 generation: source.cursor.generation.saturating_add(1),
                 anchor: request.anchor,
+                complete: request.source_complete,
             };
-        } else if highest > source.cursor.ingested_through {
-            source.cursor.ingested_through = highest;
-            source.cursor.anchor = request.anchor;
+        } else {
+            if highest > source.cursor.ingested_through {
+                source.cursor.ingested_through = highest;
+                source.cursor.anchor = request.anchor;
+            }
+            source.cursor.complete |= request.source_complete;
         }
         outcome.ingested_through = source.cursor.ingested_through;
         outcome.generation = source.cursor.generation;
         Ok(outcome)
+    }
+
+    async fn external_thread_summary(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+    ) -> Result<Option<crate::ExternalThreadSummary>, SessionThreadError> {
+        let state = self.state.lock().await;
+        Ok(state
+            .external
+            .get(&(scope.clone(), thread_id.clone()))
+            .and_then(|p| p.summary.clone()))
     }
 
     async fn external_transcript_cursor(

@@ -305,6 +305,7 @@ where
                 highest,
                 request.replace,
                 request.anchor,
+                request.source_complete,
             )
             .await?;
         outcome.ingested_through = after.ingested_through;
@@ -402,6 +403,7 @@ where
         through: u64,
         replace: bool,
         anchor: Option<String>,
+        complete: bool,
     ) -> Result<ExternalTranscriptCursor, SessionThreadError> {
         for _ in 0..CAS_RETRIES {
             let current = self.filesystem.get(resource_scope, path).await?;
@@ -417,12 +419,18 @@ where
                     ingested_through: through,
                     generation: existing.generation.saturating_add(1),
                     anchor: anchor.clone(),
+                    complete,
                 }
-            } else if through > existing.ingested_through {
+            } else if through > existing.ingested_through || (complete && !existing.complete) {
                 ExternalTranscriptCursor {
-                    ingested_through: through,
+                    ingested_through: through.max(existing.ingested_through),
                     generation: existing.generation,
-                    anchor: anchor.clone(),
+                    anchor: if through > existing.ingested_through {
+                        anchor.clone()
+                    } else {
+                        existing.anchor.clone()
+                    },
+                    complete: complete || existing.complete,
                 }
             } else {
                 return Ok(existing);

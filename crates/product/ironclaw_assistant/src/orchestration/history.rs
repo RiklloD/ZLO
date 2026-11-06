@@ -348,10 +348,10 @@ pub fn wrap_surface(
     let Some(engine) = engine else {
         return inner;
     };
-    engine.add_turn_listener(Arc::new(IngestOnCompletion {
-        engine: Arc::downgrade(&engine),
-        threads: Arc::clone(&threads),
-    }));
+    engine.add_turn_listener(Arc::new(IngestOnCompletion::new(
+        Arc::downgrade(&engine),
+        Arc::clone(&threads),
+    )));
     Arc::new(HistorySearchSurface {
         inner,
         engine,
