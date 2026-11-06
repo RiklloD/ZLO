@@ -10,11 +10,12 @@
 
 use ironclaw_gpui_client::Backend;
 use ironclaw_gpui_client::memory_page::{
-    MemoryArchiveOutcome, MemoryDocument, MemoryDocumentEntry, MemoryDocumentKind, MemorySearchHit,
-    MemoryPageWriteOutcome, SupermemoryBindingOrigin, SupermemoryDocumentPage, SupermemoryMemoryHit,
-    SupermemoryStatus,
+    MemoryArchiveOutcome, MemoryDocument, MemoryDocumentEntry, MemoryDocumentKind,
+    MemoryPageWriteOutcome, MemorySearchHit, SupermemoryBindingOrigin, SupermemoryDocumentPage,
+    SupermemoryMemoryHit, SupermemoryStatus,
 };
 
+use super::memory_draft::{Effect, SaveReply, apply_archived, apply_save};
 use super::{PageEvent, empty_state, error_line, header, page_body, refresh_button};
 use crate::jobs;
 use crate::ui::*;
@@ -25,13 +26,7 @@ enum Tab {
     Supermemory,
 }
 
-/// The open document and its editor, when editing.
-struct Open {
-    document: MemoryDocument,
-    editor: Option<Entity<TextareaState>>,
-    /// The save hit a newer version; `document` is that version.
-    conflict: bool,
-}
+type Open = super::memory_draft::Open<Entity<TextareaState>>;
 
 pub struct MemoryView {
     backend: Backend,
@@ -44,6 +39,9 @@ pub struct MemoryView {
     loaded: bool,
     documents: Vec<MemoryDocumentEntry>,
     open: Option<Open>,
+    /// Source of `Open::generation`; also tags open requests so only the
+    /// latest one is shown.
+    next_generation: u64,
     confirm_archive: bool,
     search: Entity<InputState>,
     hits: Option<Vec<MemorySearchHit>>,
@@ -100,6 +98,7 @@ impl MemoryView {
             loaded: false,
             documents: Vec::new(),
             open: None,
+            next_generation: 0,
             confirm_archive: false,
             search,
             hits: None,
@@ -152,19 +151,31 @@ impl MemoryView {
         );
     }
 
+    fn bump_generation(&mut self) -> u64 {
+        self.next_generation += 1;
+        self.next_generation
+    }
+
     fn open_document(&mut self, path: String, cx: &mut Context<Self>) {
         self.confirm_archive = false;
+        // Only the latest open request may replace what is shown.
+        let request = self.bump_generation();
         jobs::run(
             &self.backend,
             cx,
             move |c| async move { c.memory_document(&path).await },
-            |this, result, cx| {
+            move |this, result, cx| {
+                if this.next_generation != request {
+                    return;
+                }
                 match result {
                     Ok(document) => {
+                        let generation = this.bump_generation();
                         this.open = Some(Open {
                             document,
                             editor: None,
                             conflict: false,
+                            generation,
                         });
                         this.error = None;
                     }
@@ -188,6 +199,10 @@ impl MemoryView {
         editor.update(cx, |s, cx| s.focus(window, cx));
         open.editor = Some(editor);
         open.conflict = false;
+        self.next_generation += 1;
+        if let Some(open) = self.open.as_mut() {
+            open.generation = self.next_generation;
+        }
         cx.notify();
     }
 
@@ -200,7 +215,9 @@ impl MemoryView {
             .update(cx, |s, cx| s.set_value("", window, cx));
         let editor = cx.new(|cx| TextareaState::new(window, cx).auto_grow(10, 36));
         editor.update(cx, |s, cx| s.focus(window, cx));
+        let generation = self.bump_generation();
         self.open = Some(Open {
+            generation,
             document: MemoryDocument {
                 kind: MemoryDocumentKind::Note,
                 path,
@@ -223,7 +240,8 @@ impl MemoryView {
             return;
         };
         let content = editor.read(cx).value().to_string();
-        let path = open.document.path.clone();
+        let ticket = open.ticket();
+        let path = ticket.path.clone();
         // A new document carries no hash, so the save cannot overwrite one.
         let expected =
             (!open.document.content_hash.is_empty()).then(|| open.document.content_hash.clone());
@@ -233,34 +251,35 @@ impl MemoryView {
             &self.backend,
             cx,
             move |c| async move { c.memory_write(&path, &content, expected.as_deref()).await },
-            |this, result, cx| {
+            move |this, result, cx| {
                 this.busy = false;
-                match result {
+                let reply = match result {
                     Ok(response) => match (response.outcome, response.document) {
                         (MemoryPageWriteOutcome::Written, Some(document)) => {
-                            this.notice = Some(format!("Saved {}.", document.path).into());
-                            this.error = None;
-                            this.open = Some(Open {
-                                document,
-                                editor: None,
-                                conflict: false,
-                            });
-                            this.load_tree(cx);
+                            SaveReply::Written(document)
                         }
-                        (MemoryPageWriteOutcome::Conflict, current) => {
-                            // Keep the user's text; show that the stored one moved.
-                            if let Some(open) = this.open.as_mut() {
-                                if let Some(current) = current {
-                                    open.document = current;
-                                }
-                                open.conflict = true;
-                            }
-                        }
+                        (MemoryPageWriteOutcome::Conflict, current) => SaveReply::Conflict(current),
                         (MemoryPageWriteOutcome::Written, None) => {
-                            this.error = Some("Saved, but the read-back failed.".into());
+                            SaveReply::WrittenWithoutReadBack
                         }
                     },
-                    Err(e) => this.error = Some(e.to_string().into()),
+                    Err(e) => {
+                        this.error = Some(e.to_string().into());
+                        cx.notify();
+                        return;
+                    }
+                };
+                let saved = matches!(reply, SaveReply::Written(_));
+                // Only the draft that sent this save is touched.
+                match apply_save(&mut this.open, &ticket, reply, &mut this.next_generation) {
+                    Effect::Notice(text) => {
+                        this.notice = Some(text.into());
+                        this.error = None;
+                    }
+                    Effect::Error(text) => this.error = Some(text.into()),
+                }
+                if saved {
+                    this.load_tree(cx);
                 }
                 cx.notify();
             },
@@ -271,10 +290,8 @@ impl MemoryView {
         let Some(open) = self.open.as_ref() else {
             return;
         };
-        let (path, hash) = (
-            open.document.path.clone(),
-            open.document.content_hash.clone(),
-        );
+        let ticket = open.ticket();
+        let (path, hash) = (ticket.path.clone(), open.document.content_hash.clone());
         self.confirm_archive = false;
         self.busy = true;
         cx.notify();
@@ -282,7 +299,7 @@ impl MemoryView {
             &self.backend,
             cx,
             move |c| async move { c.memory_archive(&path, &hash).await },
-            |this, result, cx| {
+            move |this, result, cx| {
                 this.busy = false;
                 match result {
                     Ok(response) if response.outcome == MemoryArchiveOutcome::Archived => {
@@ -293,7 +310,7 @@ impl MemoryView {
                             )
                             .into(),
                         );
-                        this.open = None;
+                        apply_archived(&mut this.open, &ticket);
                         this.load_tree(cx);
                     }
                     Ok(_) => {
