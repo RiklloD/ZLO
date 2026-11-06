@@ -201,8 +201,10 @@ impl Engine {
         let mut view = thread.clone();
         view.runtime_id = runtime.clone();
         view.native_session_id = session.map(str::to_string);
+        // Whole: segment marks are positions in the full session history,
+        // so a capped read would slice the wrong rows past the cap.
         self.runtime(runtime)?
-            .history(&view, crate::engine::HISTORY_LIMIT)
+            .history(&view, usize::MAX)
             .await
             .map_err(Into::into)
     }

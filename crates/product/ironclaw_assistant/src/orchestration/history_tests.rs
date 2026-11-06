@@ -572,3 +572,100 @@ async fn tool_answers_are_pure_reads_ready_or_not() {
     assert_eq!(found.threads[0].thread_id, "thread-tool");
     assert_eq!(writes(), before, "a ready answer wrote");
 }
+
+/// A CLI transcript longer than the old 2,000-message window: a recent hit
+/// opens the row with that text in the newest timeline page, and an old hit
+/// is reachable by paging the timeline back with its cursor.
+#[tokio::test]
+async fn long_cli_thread_hits_open_their_own_timeline_rows() {
+    let (_dir, engine) = engine().await;
+    let cli = Arc::new(ScriptedCli::default());
+    engine.register_runtime(cli.clone());
+    let threads: Arc<dyn SessionThreadService> = Arc::new(InMemorySessionThreadService::default());
+    let big = cli_thread(&engine, "cli-big", "Big").await;
+    let history: Vec<HistoryMessage> = (0..2_600)
+        .map(|n| {
+            let word = match n {
+                10 => " oldword",
+                2_590 => " newword",
+                _ => "",
+            };
+            let role = if n % 2 == 0 {
+                HistoryRole::User
+            } else {
+                HistoryRole::Assistant
+            };
+            msg(role, &format!("line {n}{word}"))
+        })
+        .collect();
+    cli.set(&big, history);
+    let orchestrated: Arc<dyn ProductSurface> = Arc::new(OrchestratedProductSurface::new(
+        Arc::new(Inner),
+        Arc::clone(&engine),
+        None,
+    ));
+    let surface = wrap_surface(
+        Arc::clone(&orchestrated),
+        Some(Arc::clone(&engine)),
+        Arc::clone(&threads),
+    );
+    let timeline = |cursor: Option<String>| {
+        let orchestrated = Arc::clone(&orchestrated);
+        async move {
+            let page = orchestrated
+                .query(
+                    owner(),
+                    ProductSurfaceQueryRequest {
+                        view_id: crate::reborn_services::TIMELINE_VIEW.id.to_string(),
+                        input: json!({"thread_id": "cli-big", "limit": 200}),
+                        cursor,
+                        limit: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let item = page.items[0].clone();
+            (
+                item["messages"].as_array().unwrap().clone(),
+                page.next_cursor,
+            )
+        }
+    };
+    let row_text = |rows: &[Value], id: &str| {
+        rows.iter()
+            .find(|r| r["message_id"].as_str() == Some(id))
+            .and_then(|r| r["content"].as_str().map(str::to_string))
+    };
+
+    let recent = search_until(surface.as_ref(), "newword", "cli-big")
+        .await
+        .threads[0]
+        .hits[0]
+        .clone();
+    let (newest, mut cursor) = timeline(None).await;
+    assert_eq!(
+        row_text(&newest, &recent.message_id).as_deref(),
+        Some("line 2590 newword"),
+        "a recent hit opens its own row in the newest page"
+    );
+
+    let old = search_until(surface.as_ref(), "oldword", "cli-big")
+        .await
+        .threads[0]
+        .hits[0]
+        .clone();
+    let mut found = None;
+    while let Some(c) = cursor.take() {
+        let (rows, next) = timeline(Some(c)).await;
+        if let Some(text) = row_text(&rows, &old.message_id) {
+            found = Some(text);
+            break;
+        }
+        cursor = next;
+    }
+    assert_eq!(
+        found.as_deref(),
+        Some("line 10 oldword"),
+        "paging reaches an old hit"
+    );
+}

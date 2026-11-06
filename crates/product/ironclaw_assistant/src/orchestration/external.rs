@@ -220,12 +220,9 @@ pub(crate) fn timeline_rows(thread: &ThreadId, history: &[HistoryMessage]) -> Ve
     rows
 }
 
-pub(super) fn timeline_messages(
-    thread: &ThreadId,
-    history: &[HistoryMessage],
-    limit: usize,
-) -> Vec<Value> {
-    let rows: Vec<Value> = timeline_rows(thread, history)
+/// Every timeline row of a CLI history, oldest first, as timeline items.
+pub(super) fn timeline_values(thread: &ThreadId, history: &[HistoryMessage]) -> Vec<Value> {
+    timeline_rows(thread, history)
         .into_iter()
         .map(|row| {
             json!({
@@ -243,9 +240,28 @@ pub(super) fn timeline_messages(
                 "redaction_ref": null,
             })
         })
-        .collect();
-    let skip = rows.len().saturating_sub(limit);
-    rows.into_iter().skip(skip).collect()
+        .collect()
+}
+
+/// Cursor of a CLI timeline page: the position (in all rows, oldest first)
+/// the page ends before.
+const CLI_CURSOR_PREFIX: &str = "cli:";
+
+/// The page of `rows` ending before `cursor` (the newest page without one),
+/// at most `limit` rows, and the cursor of the next older page.
+pub(super) fn page_rows(
+    rows: Vec<Value>,
+    limit: usize,
+    cursor: Option<&str>,
+) -> (Vec<Value>, Option<String>) {
+    let end = cursor
+        .and_then(|c| c.strip_prefix(CLI_CURSOR_PREFIX))
+        .and_then(|n| n.parse::<usize>().ok())
+        .map_or(rows.len(), |n| n.min(rows.len()));
+    let start = end.saturating_sub(limit.max(1));
+    let next = (start > 0).then(|| format!("{CLI_CURSOR_PREFIX}{start}"));
+    let page = rows.into_iter().skip(start).take(end - start).collect();
+    (page, next)
 }
 
 /// `gate.resolve` on a CLI thread: answer the pending tool call. "Always"
@@ -530,7 +546,7 @@ mod tests {
             msg(HistoryRole::User, "again", "r2"),
             msg(HistoryRole::Assistant, "Sure.", "r2"),
         ];
-        let rows = timeline_messages(&thread, &history, 10);
+        let rows = page_rows(timeline_values(&thread, &history), 10, None).0;
         let shape: Vec<(&str, &str, &str)> = rows
             .iter()
             .map(|r| {

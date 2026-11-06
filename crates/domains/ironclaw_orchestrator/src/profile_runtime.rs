@@ -259,9 +259,16 @@ impl Engine {
         Ok(())
     }
 
-    /// The transcript of an external-runtime thread, from its runtime.
+    /// The whole transcript of an external-runtime thread, from its runtime:
+    /// not capped, so a row's position (and the timeline id derived from
+    /// it) never shifts as the thread grows. Carried context is stripped.
     pub async fn external_history(&self, thread: &ThreadRecord) -> Result<Vec<HistoryMessage>> {
-        self.history(thread).await
+        let mut messages = self
+            .runtime(&thread.runtime_id)?
+            .history(thread, usize::MAX)
+            .await?;
+        crate::handoff::strip_carried_context(&mut messages);
+        Ok(messages)
     }
 
     /// The thread's route and every provider it could switch to.

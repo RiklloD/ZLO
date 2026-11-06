@@ -825,6 +825,12 @@ impl ProductSurface for OrchestratedProductSurface {
             && let Some(thread) = self.external(&id, &scope).await
         {
             let limit = request.input["limit"].as_u64().unwrap_or(200).clamp(1, 500) as usize;
+            let mut request = request;
+            let cursor = request
+                .cursor
+                .take()
+                .or_else(|| request.input["cursor"].as_str().map(str::to_string));
+            request.input["cursor"] = Value::Null;
             let history = self
                 .engine
                 .external_history(&thread)
@@ -839,11 +845,18 @@ impl ProductSurface for OrchestratedProductSurface {
                 }
                 Err(e) => return Err(e),
             };
+            // Rows over the whole runtime history (stable ids), paged
+            // backwards with a `cli:` cursor.
+            let (page, next) = external::page_rows(
+                external::timeline_values(&id, &history),
+                limit,
+                cursor.as_deref(),
+            );
             if let Some(item) = result.items.first_mut() {
-                item["messages"] = Value::Array(external::timeline_messages(&id, &history, limit));
-                item["next_cursor"] = Value::Null;
+                item["messages"] = Value::Array(page);
+                item["next_cursor"] = next.clone().map_or(Value::Null, Value::String);
             }
-            result.next_cursor = None;
+            result.next_cursor = next;
             return Ok(result);
         }
         self.inner.query(caller, request).await
