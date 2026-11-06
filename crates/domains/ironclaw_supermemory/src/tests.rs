@@ -792,3 +792,30 @@ async fn admin_operations_are_off_without_a_key() {
     assert!(matches!(listed, Err(SupermemoryError::Disabled)));
     assert!(egress.requests().is_empty());
 }
+
+/// Review finding 5: delete-by-id removes the document from EVERY container,
+/// so a document shared with another container is refused even when it also
+/// carries the main container's tag.
+#[tokio::test]
+async fn delete_document_refuses_a_document_shared_with_another_container() {
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "");
+    egress.respond(
+        "/v3/documents/d3",
+        200,
+        json!({"id": "d3", "containerTags": ["work", "career"]}),
+    );
+    let refused = supermemory
+        .delete_document(&caller(), Some(&profile_binding()), "d3")
+        .await;
+    assert!(matches!(
+        refused,
+        Err(SupermemoryError::InvalidContainer { .. })
+    ));
+    assert!(
+        egress
+            .requests()
+            .iter()
+            .all(|call| call.method != NetworkMethod::Delete),
+        "nothing is deleted"
+    );
+}

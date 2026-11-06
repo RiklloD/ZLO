@@ -191,10 +191,9 @@ impl Supermemory {
             .await
     }
 
-    /// Delete document `id` from the primary container. The document is read
-    /// first and must carry the primary container's tag, so a page bound to
-    /// one profile cannot delete another container's documents. Read back
-    /// afterwards: a 404 is the evidence.
+    /// Delete document `id`, which must live in the primary container and no
+    /// other (delete-by-id is global). The document is read first; read back
+    /// afterwards, a 404 is the evidence.
     pub async fn delete_document(
         &self,
         caller: &SupermemoryCaller,
@@ -207,14 +206,22 @@ impl Supermemory {
             .ok_or(SupermemoryError::Disabled)?;
         let id = id.trim();
         let document = self.client().get_document(caller, &active.key, id).await?;
-        if !document
-            .container_tags
-            .iter()
-            .any(|tag| tag == active.primary.as_str())
-        {
+        // Delete-by-id removes the document from every container it is in,
+        // and the API has no container-scoped or conditional delete. So only
+        // a document that lives in the main container ALONE may go: one
+        // shared with another container (or with no tags to check) is
+        // refused rather than removed from places this profile never writes.
+        // Residual race, documented: tags could change between this read and
+        // the delete; Supermemory offers no precondition to close it.
+        let only_primary = !document.container_tags.is_empty()
+            && document
+                .container_tags
+                .iter()
+                .all(|tag| tag == active.primary.as_str());
+        if !only_primary {
             return Err(SupermemoryError::InvalidContainer {
                 reason: format!(
-                    "document is not in '{}', the container this profile writes",
+                    "document is not only in '{}', the container this profile writes",
                     active.primary
                 ),
             });
