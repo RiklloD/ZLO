@@ -371,11 +371,6 @@ impl ChatView {
         self.changes_checkpoint(cx);
     }
 
-    /// The gateway admitted the turn whose checkpoint was just taken.
-    pub(super) fn side_turn_admitted(&mut self, run: Option<String>) {
-        self.changes_turn_admitted(run);
-    }
-
     /// A turn ended: files, changes and outputs may have moved.
     pub(super) fn side_turn_ended(&mut self, cx: &mut Context<Self>) {
         if self.side.repo.is_some() {

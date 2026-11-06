@@ -1,5 +1,5 @@
 //! One holder per Codex thread session at a time: a turn (prompt or review),
-//! a thread action (revert, compaction) or an idle compaction. A holder
+//! a compaction asked for now, or an idle compaction. A holder
 //! keeps its [`Claim`] until its app-server process has exited; the claim
 //! releases on drop, so an early return or a panic cannot leave the
 //! session reserved.
@@ -61,9 +61,9 @@ mod tests {
         let admission = Arc::new(Admission::default());
         let a = ThreadId::new("a").unwrap();
         let b = ThreadId::new("b").unwrap();
-        let claim = admission.try_claim(&a, "revert").unwrap();
+        let claim = admission.try_claim(&a, "review").unwrap();
         assert!(admission.try_claim(&a, "turn").is_none());
-        assert_eq!(admission.holder(&a), Some("revert"));
+        assert_eq!(admission.holder(&a), Some("review"));
         // Other threads are independent.
         assert!(admission.try_claim(&b, "turn").is_some());
         drop(claim);

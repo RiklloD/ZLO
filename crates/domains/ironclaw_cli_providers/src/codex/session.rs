@@ -1,112 +1,42 @@
 //! What IronClaw knows about a Codex session beyond its transcript, kept
-//! append-only at `<state_dir>/sessions/<session>.jsonl`:
-//!
-//! - `turn`: an admitted turn — IronClaw's run id, Codex's native turn id,
-//!   and the canonical workspace root the turn ran in;
-//! - `revert`: the runs a revert hides, written *before* Codex is asked, so
-//!   a revert is never done natively without its record;
-//! - `revert_cancelled`: Codex refused or failed that revert; its runs stay.
-//!
-//! Writes report failure ([`append`] returns the error): a revert does not
-//! proceed when its intent cannot be recorded. Nothing is ever removed;
-//! reverted turns stay in the journal, hidden by [`SessionLog::reverted`].
+//! append-only at `<state_dir>/sessions/<session>.jsonl`: one `turn` record
+//! per admitted turn — IronClaw's run id, Codex's native turn id, and the
+//! canonical workspace root the turn ran in. Review reads the root back to
+//! refuse another checkout; the run ↔ native turn pairs are what a future
+//! revert would target. Nothing is ever removed.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use ironclaw_orchestrator::runtime::RuntimeError;
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
-/// One admitted turn.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct TurnRecord {
-    pub(super) run_id: String,
-    pub(super) turn_id: String,
-    pub(super) root: String,
-}
-
-/// The session's records, folded.
+/// The session's records, folded to what is read back today: the
+/// workspace root of each recorded turn, oldest first.
 #[derive(Debug, Default)]
 pub(super) struct SessionLog {
-    turns: Vec<TurnRecord>,
-    /// `(native turn id, runs it hides)`, in order.
-    reverts: Vec<(String, Vec<String>)>,
-    cancelled: HashSet<String>,
+    roots: Vec<String>,
 }
 
 impl SessionLog {
     pub(super) fn parse(raw: &str) -> Self {
-        let mut log = Self::default();
-        // silent-ok: a torn last line (a crash mid-append) is skipped
-        for record in raw
+        let roots = raw
             .lines()
+            // silent-ok: a torn last line (a crash mid-append) is skipped
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        {
-            let s = |k: &str| record.get(k).and_then(Value::as_str).map(str::to_string);
-            match record.get("kind").and_then(Value::as_str) {
-                Some("turn") => {
-                    if let (Some(run_id), Some(turn_id), Some(root)) =
-                        (s("run_id"), s("turn_id"), s("root"))
-                    {
-                        log.turns.push(TurnRecord {
-                            run_id,
-                            turn_id,
-                            root,
-                        });
-                    }
-                }
-                Some("revert") => {
-                    let runs = record["runs"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect();
-                    if let Some(turn) = s("turn_id") {
-                        log.reverts.push((turn, runs));
-                    }
-                }
-                Some("revert_cancelled") => {
-                    if let Some(turn) = s("turn_id") {
-                        log.cancelled.insert(turn);
-                    }
-                }
-                _ => {}
-            }
-        }
-        log
-    }
-
-    /// Runs whose turns a revert undid (and Codex did not refuse).
-    pub(super) fn reverted(&self) -> HashSet<String> {
-        self.reverts
-            .iter()
-            .filter(|(turn, _)| !self.cancelled.contains(turn))
-            .flat_map(|(_, runs)| runs.iter().cloned())
-            .collect()
-    }
-
-    pub(super) fn turn_of(&self, run_id: &str) -> Option<&TurnRecord> {
-        self.turns.iter().find(|t| t.run_id == run_id)
-    }
-
-    /// `run_id` and every later recorded run not reverted yet: what a
-    /// revert before `run_id`'s turn removes from the session.
-    pub(super) fn runs_from(&self, run_id: &str) -> Vec<String> {
-        let reverted = self.reverted();
-        self.turns
-            .iter()
-            .skip_while(|t| t.run_id != run_id)
-            .filter(|t| !reverted.contains(&t.run_id))
-            .map(|t| t.run_id.clone())
-            .collect()
+            .filter(|r| {
+                r.get("kind").and_then(Value::as_str) == Some("turn")
+                    && r.get("run_id").is_some_and(Value::is_string)
+                    && r.get("turn_id").is_some_and(Value::is_string)
+            })
+            .filter_map(|r| r.get("root").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        Self { roots }
     }
 
     /// The root of the session's latest turn.
     pub(super) fn root(&self) -> Option<&str> {
-        self.turns.last().map(|t| t.root.as_str())
+        self.roots.last().map(String::as_str)
     }
 }
 
@@ -153,14 +83,6 @@ pub(super) fn turn_record(run_id: &str, turn_id: &str, root: &str) -> Value {
     json!({"kind": "turn", "run_id": run_id, "turn_id": turn_id, "root": root})
 }
 
-pub(super) fn revert_record(turn_id: &str, runs: &[String]) -> Value {
-    json!({"kind": "revert", "turn_id": turn_id, "runs": runs})
-}
-
-pub(super) fn revert_cancelled_record(turn_id: &str) -> Value {
-    json!({"kind": "revert_cancelled", "turn_id": turn_id})
-}
-
 /// The canonical root of `dir`'s workspace: its git top level when it is in
 /// a repository, else the folder itself.
 pub(super) async fn workspace_root(dir: &Path) -> String {
@@ -190,33 +112,6 @@ pub(super) fn canonical(path: &Path) -> String {
 mod tests {
     use super::*;
 
-    fn log(records: &[Value]) -> SessionLog {
-        let raw: String = records.iter().map(|r| format!("{r}\n")).collect();
-        SessionLog::parse(&raw)
-    }
-
-    #[test]
-    fn a_revert_hides_its_run_and_every_later_one_unless_cancelled() {
-        let mut records = vec![
-            turn_record("r1", "t1", "/w"),
-            turn_record("r2", "t2", "/w"),
-            turn_record("r3", "t3", "/w"),
-        ];
-        let l = log(&records);
-        assert_eq!(l.runs_from("r2"), ["r2", "r3"]);
-        assert_eq!(l.turn_of("r2").unwrap().turn_id, "t2");
-        records.push(revert_record("t2", &["r2".into(), "r3".into()]));
-        let l = log(&records);
-        assert_eq!(
-            l.reverted(),
-            HashSet::from(["r2".to_string(), "r3".to_string()])
-        );
-        // A later revert does not list runs already reverted.
-        assert_eq!(l.runs_from("r1"), ["r1"]);
-        records.push(revert_cancelled_record("t2"));
-        assert!(log(&records).reverted().is_empty());
-    }
-
     #[test]
     fn a_torn_line_is_skipped_and_the_root_is_the_latest_turns() {
         let raw = format!(
@@ -226,7 +121,7 @@ mod tests {
         );
         let l = SessionLog::parse(&raw);
         assert_eq!(l.root(), Some("/b"));
-        assert!(l.turn_of("r3").is_none());
+        assert_eq!(l.roots, ["/a", "/b"]);
     }
 
     #[tokio::test]
@@ -238,5 +133,8 @@ mod tests {
         assert!(err.is_err());
         // Reading it back fails loudly too, rather than as an empty session.
         assert!(load(dir.path(), "s").await.is_err());
+        // A session with no turns yet has no root.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(load(empty.path(), "s").await.unwrap().root().is_none());
     }
 }

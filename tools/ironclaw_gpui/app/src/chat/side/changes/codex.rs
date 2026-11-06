@@ -6,17 +6,14 @@
 //!   base branch, the last commit, or custom instructions. The review runs
 //!   as a turn of the thread (its findings are the reply); the findings with
 //!   a location also land on the diff as annotations.
-//! - **Undo**: on the last turn's card, one coordinated operation
-//!   ([`ironclaw_gpui_client::codex_undo`]): Codex reverts the turn the
-//!   checkpoint was taken for (by run id, in this folder's repository only),
-//!   then the files are restored from the checkpoint. A refusal touches
-//!   nothing; a failed restore keeps the checkpoint for "Restore files".
-//! - **One repository**: every action names this folder's repository; when
-//!   Codex works elsewhere it refuses, and Review and Undo stay disabled
+//! - **Undo** stays the tab's own checkpoint restore (files only), on
+//!   Codex threads too: reverting the turn in Codex's conversation is a
+//!   follow-up (it needs a crash-safe pairing with the file restore).
+//! - **One repository**: Review names this folder's repository; when Codex
+//!   works elsewhere it refuses, and Review stays disabled for the folder
 //!   with the reason shown.
 //! - **Compact**: `thread/compact/start` now.
 
-use ironclaw_gpui_client::codex_undo::{self, AfterRevert, UndoOutcome};
 use ironclaw_gpui_client::review::{self, ReviewFinding};
 use ironclaw_gpui_client::{ReviewTarget, ThreadAction, ThreadActionOutcome, ThreadActionRefusal};
 
@@ -34,8 +31,8 @@ const TARGETS: [(&str, &str); 3] = [
 
 #[derive(Default)]
 pub(in crate::chat::side) struct State {
-    /// Codex refused an action here: it works in this other root. Review
-    /// and Undo stay disabled for this folder until the folder changes.
+    /// Codex refused a review here: it works in this other root. Review
+    /// stays disabled for this folder until the folder changes.
     pub(in crate::chat::side) mismatch: Option<String>,
     /// The target picker is open.
     menu: bool,
@@ -85,13 +82,12 @@ impl ChatView {
 
     /// Remember a workspace refusal: Codex works in another root.
     fn note_refusal(&mut self, refusal: &ThreadActionRefusal) {
-        if let ThreadActionRefusal::WorkspaceMismatch { runtime_root } = refusal {
-            self.side.changes.codex.mismatch = Some(runtime_root.clone());
-        }
+        let ThreadActionRefusal::WorkspaceMismatch { runtime_root } = refusal;
+        self.side.changes.codex.mismatch = Some(runtime_root.clone());
     }
 
     /// Ask the thread's runtime for `action`; the answer lands as a note.
-    /// Shares the tab's one busy slot with git actions and Undo.
+    /// Shares the tab's one busy slot with the git actions.
     pub(in crate::chat::side) fn codex_action(
         &mut self,
         action: ThreadAction,
@@ -131,10 +127,16 @@ impl ChatView {
                         this.load_timeline(cx);
                     }
                     Ok(ThreadActionOutcome::Busy) => {
-                        state.error = Some(UndoOutcome::Busy.message());
+                        state.error = Some(
+                            "Codex is busy with this thread; try again when it is done.".into(),
+                        );
                     }
-                    Ok(ThreadActionOutcome::Refused { refusal }) => {
-                        state.error = Some(UndoOutcome::Refused(refusal).message());
+                    Ok(ThreadActionOutcome::Refused {
+                        refusal: ThreadActionRefusal::WorkspaceMismatch { runtime_root },
+                    }) => {
+                        state.error = Some(format!(
+                            "Codex works in {runtime_root}, not this folder: nothing was reviewed."
+                        ));
                     }
                     Err(e) => state.error = Some(e.to_string()),
                 }
@@ -170,88 +172,6 @@ impl ChatView {
             return;
         };
         self.codex_action(ThreadAction::Review { target, repo }, "review", cx);
-    }
-
-    /// Undo the last turn on a Codex thread as one operation: Codex reverts
-    /// the checkpoint's run first; only then are the files restored. With
-    /// the revert already done (a restore that failed), only the restore
-    /// runs again.
-    pub(in crate::chat::side) fn codex_undo(&mut self, cx: &mut Context<Self>) {
-        let state = &self.side.changes;
-        if state.busy.is_some() {
-            return;
-        }
-        let (Some(repo), Some(cp)) = (self.codex_repo(), state.checkpoint.clone()) else {
-            return;
-        };
-        let restore_only = state.restore_pending;
-        let run = state.checkpoint_run.clone();
-        if !restore_only && run.is_none() {
-            self.side.changes.codex.error =
-                Some("This turn has no run to revert in Codex; nothing was undone.".into());
-            cx.notify();
-            return;
-        }
-        self.side.changes.busy = Some("undo");
-        self.side.changes.codex.error = None;
-        self.side.changes.codex.note = None;
-        cx.notify();
-        let thread_id = self.thread_id.clone();
-        let revert = (!restore_only).then(|| {
-            let action = ThreadAction::RevertTurn {
-                run_id: run.unwrap_or_default(),
-                repo: repo.clone(),
-            };
-            self.backend
-                .spawn(move |c| async move { c.thread_action(&thread_id, &action).await })
-        });
-        let dir = self.side.repo.clone();
-        cx.spawn(async move |this, cx| {
-            let next = match revert {
-                Some(job) => codex_undo::after_revert(crate::jobs::flatten(job.await)),
-                None => AfterRevert::Restore {
-                    note: "Codex already reverted the turn".into(),
-                },
-            };
-            let outcome = match next {
-                AfterRevert::Stop(outcome) => outcome,
-                AfterRevert::Restore { note } => {
-                    let restored = match dir {
-                        Some(dir) => {
-                            cx.background_spawn(async move { super::git::undo_turn(&dir, &cp) })
-                                .await
-                        }
-                        None => Err("no repository".to_string()),
-                    };
-                    codex_undo::after_restore(note, restored)
-                }
-            };
-            let _ = this.update(cx, |this, cx| this.codex_undo_finished(outcome, cx));
-        })
-        .detach();
-    }
-
-    fn codex_undo_finished(&mut self, outcome: UndoOutcome, cx: &mut Context<Self>) {
-        if let UndoOutcome::Refused(refusal) = &outcome {
-            self.note_refusal(refusal);
-        }
-        let state = &mut self.side.changes;
-        state.busy = None;
-        state.restore_pending = outcome.restore_pending();
-        if !outcome.keeps_checkpoint() {
-            state.checkpoint = None;
-            state.checkpoint_run = None;
-            state.turn_stats = None;
-            state.turn_patch.clear();
-            state.scope = super::Scope::Working;
-        }
-        match &outcome {
-            UndoOutcome::Done { .. } => state.codex.note = Some(outcome.message()),
-            _ => state.codex.error = Some(outcome.message()),
-        }
-        self.changes_refresh(cx);
-        self.load_timeline(cx);
-        cx.notify();
     }
 
     fn codex_custom_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -400,7 +320,7 @@ impl ChatView {
         }
         if let Some(root) = mismatch {
             card = card.child(div().text_xs().text_color(p.text_muted).child(format!(
-                "Codex works in {root}, not this folder: Review and Undo are off here."
+                "Codex works in {root}, not this folder: Review is off here."
             )));
         }
         if let Some(note) = state.codex.note.clone() {

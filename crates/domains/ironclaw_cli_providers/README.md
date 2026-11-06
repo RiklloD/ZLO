@@ -20,16 +20,15 @@ aggregated diff, all as live-only bridge state (`LiveEvent::ToolOutput`,
 `TurnDiff`, `Review`; projected as `cli_detail` items). The durable journal
 keeps only the user prompt and the answer, as before. Runtime-native
 operations go through `TurnRuntime::thread_action`: a review
-(`review/start`, run as a turn whose findings are the answer), revert of a
-named run and every later one (`thread/revert` before that run's native
-turn; journal rows are hidden by run id, nothing is deleted, files are not
-touched) and compaction (`thread/compact/start`, now or after 4.5 idle
-minutes like Claude CLI threads when idle compaction is on). Review and
-revert are refused unless the client's repo is the session's workspace
-root; each admitted turn's native id and root are recorded in
-`<state>/codex/sessions/<session>.jsonl`, and a revert's intent is written
-there before Codex is asked. One claim per thread admits a turn, an action
-or a compaction at a time.
+(`review/start`, run as a turn whose findings are the answer; refused
+unless the client's repo is the session's workspace root, read from the
+per-turn records in `<state>/codex/sessions/<session>.jsonl`) and
+compaction (`thread/compact/start`, now or after 4.5 idle minutes like
+Claude CLI threads when idle compaction is on). One claim per thread admits
+a turn, an action or a compaction at a time; a turn's teardown is a drop
+guard, so a panicking or dropped turn task still frees the session and is
+reported failed. Reverting a turn in Codex's session (`thread/revert`) is a
+follow-up: see the orchestrator README.
 
 - **Family / layer:** `domains` / `substrates` · **Package:** `ironclaw_cli_providers`
 - **Use this when:** you change how a CLI agent runs a turn: process spawn,

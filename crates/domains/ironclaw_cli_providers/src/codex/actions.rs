@@ -2,18 +2,12 @@
 //!
 //! - **Review** (`review/start`, inline delivery): runs as a turn of the
 //!   thread (see `TurnKind::Review`); this file only shapes its request.
-//! - **Revert** of a run (`thread/revert` before that run's native turn,
-//!   read from the session record): refused unless the client's repo is the
-//!   session's workspace and the run is known and not reverted yet. The
-//!   intent is recorded before Codex is asked (and cancelled if Codex
-//!   refuses); the journal keeps every row, rows of reverted runs are hidden
-//!   when the history is read. Nothing is deleted. Files are not touched
-//!   (Codex 0.166's revert is conversation-only); the app restores them from
-//!   its own per-turn checkpoint after this succeeds.
+//! - **Revert** is not offered yet: pairing Codex's `thread/revert` with
+//!   the app's file restore needs a crash-safe two-phase record (pending →
+//!   confirmed, reconciled on reopen) that this runtime does not keep.
 //! - **Compact** (`thread/compact/start`), now or when the thread idles
 //!   (`compact.rs`). One visible "Context compacted." row marks it.
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
@@ -77,20 +71,6 @@ fn marker(text: &str, hidden: bool) -> HistoryMessage {
         hidden,
         ..journal::message(HistoryRole::System, text.to_string(), Vec::new())
     }
-}
-
-/// Mark hidden every row of a reverted run. Rows stay in the result (and in
-/// the journal); rows without a run id predate run tagging and stay shown.
-pub(super) fn hide_reverted(
-    mut rows: Vec<HistoryMessage>,
-    reverted: &HashSet<String>,
-) -> Vec<HistoryMessage> {
-    for row in &mut rows {
-        if row.run_id.as_ref().is_some_and(|r| reverted.contains(r)) {
-            row.hidden = true;
-        }
-    }
-    rows
 }
 
 /// What a compaction run reported.
@@ -224,87 +204,6 @@ impl CodexRuntime {
         }))
     }
 
-    /// Revert run `run_id` and every later run, holding the session.
-    pub(super) async fn revert_turn(
-        &self,
-        thread: &ThreadRecord,
-        run_id: &str,
-        repo: &str,
-        _claim: Claim,
-    ) -> Result<ThreadActionOutcome, RuntimeError> {
-        let session = Self::session_of(thread)?;
-        if let Some(refused) = self.workspace_refusal(thread, repo).await? {
-            return Ok(refused);
-        }
-        let log = session::load(&self.config.state_dir, session).await?;
-        let refuse = |refusal| Ok(ThreadActionOutcome::Refused { refusal });
-        if log.reverted().contains(run_id) {
-            return refuse(ThreadActionRefusal::AlreadyReverted);
-        }
-        let Some(turn) = log.turn_of(run_id).map(|t| t.turn_id.clone()) else {
-            return refuse(ThreadActionRefusal::UnknownTurn);
-        };
-        if saved_thread(&self.config, session).await.is_none() {
-            return refuse(ThreadActionRefusal::UnknownTurn);
-        }
-        let runs = log.runs_from(run_id);
-        // The intent first: a revert Codex performed is never unrecorded.
-        let state = &self.config.state_dir;
-        session::append(state, session, &session::revert_record(&turn, &runs)).await?;
-        let native = self.native_revert(thread, session, &turn).await;
-        if let Err(error) = native {
-            let cancelled =
-                session::append(state, session, &session::revert_cancelled_record(&turn)).await;
-            return Err(match cancelled {
-                Ok(()) => error,
-                Err(_) => RuntimeError::Unavailable(format!(
-                    "{error}; the transcript still marks these turns reverted"
-                )),
-            });
-        }
-        Ok(ThreadActionOutcome::Done {
-            note: format!(
-                "Reverted {} turn{} in Codex's conversation.",
-                runs.len(),
-                if runs.len() == 1 { "" } else { "s" }
-            ),
-        })
-    }
-
-    /// `thread/revert` before `turn` on a short-lived app-server.
-    async fn native_revert(
-        &self,
-        thread: &ThreadRecord,
-        session: &str,
-        turn: &str,
-    ) -> Result<(), RuntimeError> {
-        let (mut child, pgid) = spawn_app_server(&self.config)?;
-        let reverted = async {
-            let (client, _inbound) = connect(&mut child, pgid)?;
-            let (codex_thread, _) = open_session(
-                &client,
-                &self.config,
-                session,
-                thread.model.as_deref(),
-                session_policy(self.bridge.is_some()),
-            )
-            .await
-            .map_err(|e| RuntimeError::Unavailable(format!("codex resume: {}", e.label())))?;
-            client
-                .request(
-                    "thread/revert",
-                    json!({"threadId": codex_thread, "beforeTurnId": turn}),
-                    COMMAND_TIMEOUT,
-                )
-                .await
-                .map_err(|e| RuntimeError::Rejected(format!("codex revert: {}", e.label())))?;
-            Ok::<_, RuntimeError>(())
-        }
-        .await;
-        rpc::end_group(&mut child, pgid, rpc::KILL_GRACE).await;
-        reverted
-    }
-
     /// Compact now, holding the session; a new turn preempts it like an
     /// idle compaction.
     pub(super) async fn compact_now(
@@ -357,41 +256,6 @@ pub(super) async fn note_compacted(config: &CodexConfig, session: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn row(role: HistoryRole, text: &str) -> HistoryMessage {
-        journal::message(role, text.into(), Vec::new())
-    }
-
-    fn run_row(role: HistoryRole, text: &str, run: Option<&str>) -> HistoryMessage {
-        HistoryMessage {
-            run_id: run.map(str::to_string),
-            ..row(role, text)
-        }
-    }
-
-    /// The rows of the reverted runs are hidden, whatever their position:
-    /// a refused review's row (no admitted turn, a run never reverted) and
-    /// untagged older rows stay shown, and nothing is dropped.
-    #[test]
-    fn reverted_runs_are_hidden_by_run_id_not_by_position() {
-        let rows = vec![
-            row(HistoryRole::User, "old untagged"),
-            run_row(HistoryRole::User, "edit it", Some("r1")),
-            run_row(HistoryRole::Assistant, "edited", Some("r1")),
-            run_row(HistoryRole::User, "refused review", Some("r0")),
-            run_row(HistoryRole::User, "review", Some("r2")),
-            run_row(HistoryRole::Assistant, "findings", Some("r2")),
-        ];
-        let reverted = HashSet::from(["r1".to_string(), "r2".to_string()]);
-        let out = hide_reverted(rows, &reverted);
-        assert_eq!(out.len(), 6, "nothing is deleted");
-        let shown: Vec<&str> = out
-            .iter()
-            .filter(|m| !m.hidden)
-            .map(|m| m.text.as_str())
-            .collect();
-        assert_eq!(shown, ["old untagged", "refused review"]);
-    }
 
     #[test]
     fn review_targets_use_codex_names() {

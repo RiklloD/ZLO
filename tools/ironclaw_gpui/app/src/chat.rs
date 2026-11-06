@@ -1011,11 +1011,6 @@ impl ChatView {
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(ack) => {
                     this.transcript.ack_pending_user(pending);
-                    // A started turn owns the checkpoint taken at send; a
-                    // steered or queued message does not.
-                    if ack.outcome.as_deref() == Some("submitted") {
-                        this.side_turn_admitted(ack.run_id.clone());
-                    }
                     if let Some(notice) = ack.notice.filter(|n| !n.trim().is_empty()) {
                         this.error = Some(notice.into());
                     }

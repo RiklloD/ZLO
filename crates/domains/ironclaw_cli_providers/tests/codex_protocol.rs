@@ -5,10 +5,10 @@
 //! - live turn detail on the bridge: reasoning summaries as thinking, reply
 //!   text, the command row with its streaming output tail, the turn diff;
 //! - `review/start` as a turn whose findings are the answer;
-//! - `thread/revert` before the native turn of the run a client names, in
-//!   the session's own workspace only, with the journal keeping the reverted
-//!   rows (hidden, never deleted) and the intent recorded first;
-//! - one holder per session: a prompt or action during a revert is `Busy`;
+//! - review in the session's own workspace only (another repo is refused
+//!   before Codex is asked);
+//! - one holder per session: a prompt or action during a review is `Busy`,
+//!   while a compaction yields to a new turn;
 //! - `thread/compact/start`.
 
 use std::os::unix::fs::PermissionsExt;
@@ -48,8 +48,9 @@ impl TurnEventSink for Recorder {
 
 /// Recorded app-server traffic. A turn streams a reasoning summary, runs
 /// `cargo test` (two output chunks, exit 101), edits a file (turn diff) and
-/// answers; a review answers with findings; revert and compaction reply as
-/// 0.166.0 does.
+/// answers; a review answers with findings; compaction replies as 0.166.0
+/// does. With `GATE`, a review's turn and a compaction finish only once
+/// that file exists.
 const CODEX: &str = r#"#!/bin/sh
 LOG=__LOG__
 id_of() { printf '%s' "$1" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p'; }
@@ -79,13 +80,11 @@ while IFS= read -r line; do
       reply "$id" '{"turn":{"id":"tu-r","status":"inProgress"},"reviewThreadId":"cx-1"}'
       emit item/completed '{"threadId":"cx-1","turnId":"tu-r","item":{"type":"enteredReviewMode","id":"e1","review":"current changes"}}'
       emit item/completed '{"threadId":"cx-1","turnId":"tu-r","item":{"type":"exitedReviewMode","id":"x1","review":"One issue.\n\nReview comment:\n\n- [P1] Off by one — /w/src/a.rs:3-4\n  The loop skips the last element."}}'
-      emit turn/completed '{"threadId":"cx-1","turn":{"id":"tu-r","status":"completed","error":null}}' ;;
-    *'"method":"thread/turns/list"'*) reply "$id" '{"data":[{"id":"tu-r","status":"completed"}],"nextCursor":null,"backwardsCursor":null}' ;;
-    *'"method":"thread/revert"'*)
       while [ -n "$GATE" ] && [ ! -f "$GATE" ]; do sleep 0.05; done
-      reply "$id" '{"thread":{"id":"cx-1"},"turnsBackwardsCursor":null,"itemsBackwardsCursor":null}' ;;
+      emit turn/completed '{"threadId":"cx-1","turn":{"id":"tu-r","status":"completed","error":null}}' ;;
     *'"method":"thread/compact/start"'*)
       reply "$id" '{}'
+      while [ -n "$GATE" ] && [ ! -f "$GATE" ]; do sleep 0.05; done
       emit item/completed '{"threadId":"cx-1","turnId":"tu-c","item":{"type":"contextCompaction","id":"cc"}}' ;;
   esac
 done
@@ -95,7 +94,8 @@ fn runtime(dir: &Path, recorder: &Arc<Recorder>, bridge: Arc<CliBridge>) -> Code
     gated_runtime(dir, recorder, bridge, None)
 }
 
-/// With `gate`, `thread/revert` answers only once that file exists.
+/// With `gate`, a review's turn and a compaction finish only once that
+/// file exists.
 fn gated_runtime(
     dir: &Path,
     recorder: &Arc<Recorder>,
@@ -265,13 +265,6 @@ fn review(repo: &str, target: ReviewTarget) -> ThreadAction {
     }
 }
 
-fn revert(run: &str, repo: &str) -> ThreadAction {
-    ThreadAction::RevertTurn {
-        run_id: run.to_string(),
-        repo: repo.to_string(),
-    }
-}
-
 fn started(admission: TurnAdmission) -> String {
     match admission {
         TurnAdmission::Started { run_id: Some(run) } => run,
@@ -279,84 +272,72 @@ fn started(admission: TurnAdmission) -> String {
     }
 }
 
-/// Codex works in repo A; the app shows repo B. Review and revert are
-/// refused before Codex is asked, naming the root Codex works in.
+fn work_root(dir: &Path) -> String {
+    std::fs::canonicalize(dir.join("work"))
+        .unwrap()
+        .display()
+        .to_string()
+}
+
+async fn wait_for_log(dir: &Path, needle: &str) {
+    for _ in 0..500 {
+        if dir.join("codex.log").exists() && log(dir).contains(needle) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("{needle} never reached codex");
+}
+
+/// Codex works in repo A; the app shows repo B. The review is refused
+/// before Codex is asked, naming the root Codex works in; naming repo A it
+/// runs.
 #[tokio::test]
-async fn review_and_revert_are_refused_for_another_repository() {
+async fn review_is_refused_for_another_repository() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
     let rt = runtime(dir.path(), &recorder, Arc::clone(&bridge));
-    let repo_a = std::fs::canonicalize(dir.path().join("work"))
-        .unwrap()
-        .display()
-        .to_string();
+    let repo_a = work_root(dir.path());
     let repo_b = git_repo(&dir.path().join("other"));
     let thread = thread(&rt).await;
-    let run = started(rt.start_turn(&thread, input()).await.unwrap());
+    started(rt.start_turn(&thread, input()).await.unwrap());
     wait_finished(&recorder, 1).await;
 
-    let mismatch = ThreadActionOutcome::Refused {
-        refusal: ThreadActionRefusal::WorkspaceMismatch {
-            runtime_root: repo_a.clone(),
-        },
-    };
     let reviewed = rt
         .thread_action(&thread, review(&repo_b, ReviewTarget::UncommittedChanges))
         .await
         .unwrap();
-    assert_eq!(reviewed, mismatch);
-    let reverted = rt
-        .thread_action(&thread, revert(&run, &repo_b))
-        .await
-        .unwrap();
-    assert_eq!(reverted, mismatch);
-    let l = log(dir.path());
-    assert!(
-        !l.contains(r#""method":"review/start""#) && !l.contains(r#""method":"thread/revert""#),
-        "{l}"
+    assert_eq!(
+        reviewed,
+        ThreadActionOutcome::Refused {
+            refusal: ThreadActionRefusal::WorkspaceMismatch {
+                runtime_root: repo_a.clone(),
+            },
+        }
     );
-    // The same calls naming repo A go through.
+    assert!(!log(dir.path()).contains(r#""method":"review/start""#));
     let ok = rt
-        .thread_action(&thread, revert(&run, &repo_a))
+        .thread_action(&thread, review(&repo_a, ReviewTarget::UncommittedChanges))
         .await
         .unwrap();
-    assert!(matches!(ok, ThreadActionOutcome::Done { .. }), "{ok:?}");
+    assert!(matches!(ok, ThreadActionOutcome::Started { .. }), "{ok:?}");
+    wait_finished(&recorder, 2).await;
 }
 
-/// edit (run 1) -> review (run 2) -> undo of run 1's checkpoint: Codex is
-/// asked to revert before run 1's own turn, and both runs' rows are hidden
-/// (kept in the journal). A review Codex refused journals nothing; reverting
-/// again or an unknown run is refused.
+/// A review is a turn whose findings are the answer; one Codex refused
+/// leaves no row behind. Compaction finishes on Codex's compaction item.
 #[tokio::test]
-async fn revert_targets_the_named_runs_turn_and_hides_its_rows_by_run() {
+async fn review_answers_with_findings_and_compact_runs_natively() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
     let rt = runtime(dir.path(), &recorder, Arc::clone(&bridge));
-    let repo = std::fs::canonicalize(dir.path().join("work"))
-        .unwrap()
-        .display()
-        .to_string();
+    let repo = work_root(dir.path());
     let thread = thread(&rt).await;
-
-    // Nothing to revert before the session exists: no app-server spawned.
-    let early = rt
-        .thread_action(&thread, revert("r-none", &repo))
-        .await
-        .unwrap();
-    assert_eq!(
-        early,
-        ThreadActionOutcome::Refused {
-            refusal: ThreadActionRefusal::UnknownTurn
-        }
-    );
-    assert!(!dir.path().join("codex.log").exists());
-
-    let edit = started(rt.start_turn(&thread, input()).await.unwrap());
+    started(rt.start_turn(&thread, input()).await.unwrap());
     wait_finished(&recorder, 1).await;
 
-    // A review Codex refuses leaves no row behind.
     let refused = rt
         .thread_action(
             &thread,
@@ -391,47 +372,22 @@ async fn revert_targets_the_named_runs_turn_and_hides_its_rows_by_run() {
     assert!(review_out.final_text.unwrap().contains("[P1] Off by one"));
     assert!(events.iter().any(|e| matches!(e,
         LiveEvent::Review { text, .. } if text.contains("Off by one"))));
+    let l = log(dir.path());
+    assert!(
+        l.contains(r#""target":{"type":"uncommittedChanges"}"#)
+            && l.contains(r#""delivery":"inline""#),
+        "{l}"
+    );
 
     let history = rt.history(&thread, 50).await.unwrap();
     let texts: Vec<&str> = history.iter().map(|m| m.text.as_str()).collect();
     assert!(!texts.iter().any(|t| t.contains("refuse")), "{texts:?}");
-
-    let done = rt
-        .thread_action(&thread, revert(&edit, &repo))
-        .await
-        .unwrap();
-    assert!(matches!(done, ThreadActionOutcome::Done { .. }), "{done:?}");
-    let l = log(dir.path());
-    assert!(l.contains(r#""beforeTurnId":"tu-1""#), "{l}");
     assert!(
-        !l.contains("thread/turns/list"),
-        "the run names the turn: {l}"
+        texts.contains(&"Review my uncommitted changes."),
+        "{texts:?}"
     );
+    assert!(history.iter().all(|m| !m.hidden));
 
-    let history = rt.history(&thread, 50).await.unwrap();
-    assert!(history.iter().all(|m| m.hidden), "{history:?}");
-    assert!(
-        history.iter().any(|m| m.text.contains("[P1] Off by one")),
-        "reverted rows stay in the journal"
-    );
-    assert_eq!(
-        rt.thread_action(&thread, revert(&edit, &repo))
-            .await
-            .unwrap(),
-        ThreadActionOutcome::Refused {
-            refusal: ThreadActionRefusal::AlreadyReverted
-        }
-    );
-    assert_eq!(
-        rt.thread_action(&thread, revert("r-unknown", &repo))
-            .await
-            .unwrap(),
-        ThreadActionOutcome::Refused {
-            refusal: ThreadActionRefusal::UnknownTurn
-        }
-    );
-
-    // Compact: done once Codex reports the compaction item.
     let compacted = rt
         .thread_action(&thread, ThreadAction::Compact)
         .await
@@ -445,41 +401,26 @@ async fn revert_targets_the_named_runs_turn_and_hides_its_rows_by_run() {
     assert_eq!(history.last().unwrap().text, "Context compacted.");
 }
 
-/// While a revert holds the session, a prompt and another action are Busy;
+/// While a review holds the session, a prompt and another action are Busy;
 /// once it is done, the prompt starts.
 #[tokio::test]
-async fn a_revert_holds_the_session_until_codex_answers() {
+async fn a_review_holds_the_session_until_it_ends() {
     let dir = tempfile::tempdir().unwrap();
     let gate = dir.path().join("gate");
     let recorder = Arc::new(Recorder::default());
     let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
-    let rt = Arc::new(gated_runtime(
-        dir.path(),
-        &recorder,
-        Arc::clone(&bridge),
-        Some(&gate),
-    ));
-    let repo = std::fs::canonicalize(dir.path().join("work"))
-        .unwrap()
-        .display()
-        .to_string();
+    let rt = gated_runtime(dir.path(), &recorder, Arc::clone(&bridge), Some(&gate));
+    let repo = work_root(dir.path());
     let thread = thread(&rt).await;
-    let run = started(rt.start_turn(&thread, input()).await.unwrap());
+    started(rt.start_turn(&thread, input()).await.unwrap());
     wait_finished(&recorder, 1).await;
 
-    let reverting = {
-        let (rt, thread, action) = (Arc::clone(&rt), thread.clone(), revert(&run, &repo));
-        tokio::spawn(async move { rt.thread_action(&thread, action).await })
-    };
-    for _ in 0..500 {
-        if dir.path().join("codex.log").exists()
-            && log(dir.path()).contains(r#""method":"thread/revert""#)
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(log(dir.path()).contains(r#""method":"thread/revert""#));
+    let reviewing = rt
+        .thread_action(&thread, review(&repo, ReviewTarget::UncommittedChanges))
+        .await
+        .unwrap();
+    assert!(matches!(reviewing, ThreadActionOutcome::Started { .. }));
+    wait_for_log(dir.path(), r#""method":"review/start""#).await;
     assert_eq!(
         rt.start_turn(&thread, input()).await.unwrap(),
         TurnAdmission::Busy
@@ -491,46 +432,49 @@ async fn a_revert_holds_the_session_until_codex_answers() {
         ThreadActionOutcome::Busy
     );
     std::fs::write(&gate, "").unwrap();
-    let done = reverting.await.unwrap().unwrap();
-    assert!(matches!(done, ThreadActionOutcome::Done { .. }), "{done:?}");
+    wait_finished(&recorder, 2).await;
     assert!(matches!(
         rt.start_turn(&thread, input()).await.unwrap(),
         TurnAdmission::Started { .. }
     ));
-    wait_finished(&recorder, 2).await;
+    wait_finished(&recorder, 3).await;
 }
 
-/// A revert whose intent cannot be recorded never reaches Codex.
+/// A compaction yields: a new turn stops it, waits for its process, and
+/// starts; the compaction reports it did not finish.
 #[tokio::test]
-async fn a_revert_that_cannot_be_recorded_is_not_performed() {
+async fn a_new_turn_preempts_a_running_compaction() {
     let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("gate");
     let recorder = Arc::new(Recorder::default());
     let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
-    let rt = runtime(dir.path(), &recorder, Arc::clone(&bridge));
-    let repo = std::fs::canonicalize(dir.path().join("work"))
-        .unwrap()
-        .display()
-        .to_string();
+    let rt = Arc::new(gated_runtime(
+        dir.path(),
+        &recorder,
+        Arc::clone(&bridge),
+        Some(&gate),
+    ));
     let thread = thread(&rt).await;
-    let run = started(rt.start_turn(&thread, input()).await.unwrap());
+    // A first turn (the gate only holds reviews and compactions).
+    started(rt.start_turn(&thread, input()).await.unwrap());
     wait_finished(&recorder, 1).await;
 
-    let record = dir.path().join("state").join("sessions").join(format!(
-        "{}.jsonl",
-        thread.native_session_id.as_deref().unwrap()
+    let compacting = {
+        let (rt, thread) = (Arc::clone(&rt), thread.clone());
+        tokio::spawn(async move { rt.thread_action(&thread, ThreadAction::Compact).await })
+    };
+    wait_for_log(dir.path(), r#""method":"thread/compact/start""#).await;
+    assert!(matches!(
+        rt.start_turn(&thread, input()).await.unwrap(),
+        TurnAdmission::Started { .. }
     ));
-    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o444)).unwrap();
-    let result = rt.thread_action(&thread, revert(&run, &repo)).await;
-    assert!(result.is_err(), "{result:?}");
-    assert!(!log(dir.path()).contains(r#""method":"thread/revert""#));
-    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(
-        rt.history(&thread, 10)
-            .await
-            .unwrap()
-            .iter()
-            .all(|m| !m.hidden)
+    assert_eq!(
+        compacting.await.unwrap().unwrap(),
+        ThreadActionOutcome::Busy
     );
+    wait_finished(&recorder, 2).await;
+    let history = rt.history(&thread, 50).await.unwrap();
+    assert!(!history.iter().any(|m| m.text == "Context compacted."));
 }
 
 async fn wait_finished(recorder: &Recorder, n: usize) {

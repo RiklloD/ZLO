@@ -24,7 +24,9 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   `send`, `runs`, `fork`, `merge_back`, `lineage`, `capabilities`, `status`).
   It implements `runtime::TurnEventSink`.
 - `runtime::TurnRuntime` — the runtime seam (create thread, start turn,
-  steer, cancel, history, optional native fork, catalog) with
+  steer, cancel, history, optional native fork, catalog, and
+  `thread_action` for runtime-native operations — Codex review and
+  compaction; `Engine::thread_action` answers `busy` while a turn runs) with
   `RuntimeCapabilities { native_fork, steer_in_turn, reports_usage,
   reports_restart_cuts }` and
   `TurnOutcome { status, final_text, error, usage: TurnUsage,
@@ -44,6 +46,12 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   the planner's unattended-prompt scan on the rendered text. A run posts
   into the schedule's thread, or into a fresh thread per run
   (`bind_to_current_thread=false`) on the same runtime, profile and model.
+- Reverting a turn inside a runtime's own session (Codex `thread/revert`)
+  is a follow-up, deliberately not a `ThreadAction` yet: paired with the
+  app's file restore it needs a crash-safe two-phase record (intent pending
+  → confirmed, reconciled when the session reopens), retries that do not
+  inherit an earlier failure, the session held until the files are
+  restored, and a checkpoint bound to the exact turn it was taken for.
 - `cli_approvals` — `orch_cli_approvals`, the durable record of CLI tool
   approvals the `ironclaw_cli_providers` bridge asks; open rows are closed
   as `interrupted` when the engine opens.

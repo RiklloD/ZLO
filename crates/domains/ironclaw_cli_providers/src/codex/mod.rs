@@ -17,7 +17,7 @@
 //!
 //! While a turn runs, reply and reasoning-summary deltas, tool rows with
 //! their streaming output and the turn's diff go to the bridge's live
-//! state (`live.rs`). Review, revert and compaction are `thread_action`s
+//! state (`live.rs`). Review and compaction are `thread_action`s
 //! (`actions.rs`); idle threads compact like Claude CLI threads do
 //! (`compact.rs`).
 
@@ -27,6 +27,7 @@ mod compact;
 mod fold;
 mod live;
 mod session;
+mod turn_end;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -111,8 +112,7 @@ struct LiveTurn {
     client: RpcClient,
     codex_thread: String,
     turn_id: String,
-    /// IronClaw's run id: steers journal under it, so a revert of the run
-    /// hides them with it.
+    /// IronClaw's run id, which steers are journaled under.
     run_id: String,
 }
 
@@ -167,7 +167,7 @@ impl CodexRuntime {
     /// stopped first (and waited for), then the claim is taken or `None`
     /// while a turn or another action holds it.
     async fn admit(&self, thread: &ThreadId, what: &'static str) -> Option<admission::Claim> {
-        // Only a compaction yields; a turn, review or revert keeps the session.
+        // Only a compaction yields; a turn or a review keeps the session.
         if self
             .admission
             .holder(thread)
@@ -234,9 +234,19 @@ impl CodexRuntime {
         let idle = compact::IdleArm::new(self, thread);
         let bridge = self.bridge.clone();
         let sink = self.sink.clone();
-        let active = Arc::clone(&self.active);
         let thread_id = thread.thread_id.clone();
         let run = run_id.clone();
+        // Owns the teardown: a panic or a dropped task still clears the
+        // live state, frees the session and reports the turn.
+        let mut end = turn_end::TurnEnd::new(turn_end::TurnEndParts {
+            thread_id: thread_id.clone(),
+            run: run.clone(),
+            active: Arc::clone(&self.active),
+            bridge: bridge.clone(),
+            sink: sink.clone(),
+            claim,
+            done: done_tx,
+        });
         tokio::spawn(async move {
             if let Some(sink) = sink.upgrade() {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
@@ -247,25 +257,18 @@ impl CodexRuntime {
             }
             let (outcome, telemetry) = turn.run(client, inbound).await;
             close_server(&mut child, pgid).await;
-            if let Some(bridge) = &bridge {
-                bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
-            }
-            if let Ok(mut map) = active.lock() {
-                map.remove(&thread_id);
-            }
-            // The process is gone: the session is free before the engine
-            // hears the turn ended (it may start the next one at once).
-            drop(claim);
+            end.settle(outcome.status.as_str());
             let context_used = telemetry.as_ref().and_then(|t| t.context_used);
             let status = outcome.status;
             if let Some(sink) = sink.upgrade() {
                 if let Some(telemetry) = telemetry {
                     sink.turn_telemetry(&thread_id, telemetry, now_ms()).await;
                 }
+                end.reporting();
                 sink.turn_finished(&thread_id, Some(run), outcome, now_ms())
                     .await;
             }
-            let _ = done_tx.send(true); // silent-ok: nobody waiting on this turn
+            end.finish();
             idle.arm(status, context_used);
         });
         Ok(run_id)
@@ -504,9 +507,8 @@ impl Turn {
             }
         };
         fold.turn_id = Some(turn_id.clone());
-        // Which native turn this run is, and where it works: a revert of
-        // the run and the repo checks of later actions read it back. Lost,
-        // the run can only be refused later (`unknown_turn`), never misread.
+        // Which native turn this run is, and where it works: Review's
+        // workspace check reads the root back.
         if let Err(error) = session::append(
             &self.config.state_dir,
             &self.session,
@@ -945,12 +947,7 @@ impl TurnRuntime for CodexRuntime {
         let Some(session) = thread.native_session_id.as_deref() else {
             return Ok(Vec::new());
         };
-        // Whole journal: rows of reverted runs are kept, marked hidden.
-        let all = journal::read(&self.config.transcript(session), usize::MAX).await?;
-        let log = session::load(&self.config.state_dir, session).await?;
-        let mut shown = actions::hide_reverted(all, &log.reverted());
-        let skip = shown.len().saturating_sub(limit);
-        Ok(shown.split_off(skip))
+        journal::read(&self.config.transcript(session), limit).await
     }
 
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
@@ -994,9 +991,6 @@ impl TurnRuntime for CodexRuntime {
                 Ok(ThreadActionOutcome::Started {
                     run_id: Some(run_id),
                 })
-            }
-            ThreadAction::RevertTurn { run_id, repo } => {
-                self.revert_turn(thread, &run_id, &repo, claim).await
             }
             ThreadAction::Compact => self.compact_now(thread, claim).await,
         }

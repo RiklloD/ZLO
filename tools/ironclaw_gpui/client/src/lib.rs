@@ -8,7 +8,6 @@
 mod api;
 pub mod attachments;
 mod backend;
-pub mod codex_undo;
 pub mod commands;
 pub mod computer_use;
 mod connection;

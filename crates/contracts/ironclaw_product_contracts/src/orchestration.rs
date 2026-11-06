@@ -212,21 +212,17 @@ pub enum ReviewTarget {
 
 /// A runtime-native thread operation (`TurnRuntime::thread_action` in `ironclaw_orchestrator`).
 ///
-/// Every action that reads or rewrites work names the repository the
-/// client is showing (`repo`, an absolute path): the runtime refuses with
+/// An action that reads the work names the repository the client is
+/// showing (`repo`, an absolute path): the runtime refuses with
 /// [`ThreadActionRefusal::WorkspaceMismatch`] unless it is the root the
-/// thread's session works in, so a review never inspects, and an undo never
-/// pairs with, another checkout.
+/// thread's session works in, so a review never inspects another checkout.
+/// (Reverting a turn in the runtime's own session is a follow-up: pairing
+/// it with the client's file restore needs a crash-safe two-phase record.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ThreadAction {
     /// Review code as a turn of the thread; findings are its reply.
     Review { target: ReviewTarget, repo: String },
-    /// Undo run `run_id` and every later turn in the runtime's own session
-    /// (the turn a client checkpoint was taken for). The transcript keeps
-    /// those turns, marked reverted (LLM data is never deleted). Refused
-    /// when the run is unknown to the session or already reverted.
-    RevertTurn { run_id: String, repo: String },
     /// Summarize the session's context now.
     Compact,
 }
@@ -235,7 +231,6 @@ impl ThreadAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Review { .. } => "review",
-            Self::RevertTurn { .. } => "revert_turn",
             Self::Compact => "compact",
         }
     }
@@ -247,11 +242,6 @@ impl ThreadAction {
 pub enum ThreadActionRefusal {
     /// The session works in another repository than the client named.
     WorkspaceMismatch { runtime_root: String },
-    /// The run has no native turn in the session (never admitted, or from
-    /// before turns were recorded).
-    UnknownTurn,
-    /// The run was already reverted.
-    AlreadyReverted,
 }
 
 /// How a [`ThreadAction`] went.
@@ -291,20 +281,27 @@ mod tests {
     #[test]
     fn thread_actions_and_refusals_use_their_wire_names() {
         let action: ThreadAction = serde_json::from_value(serde_json::json!({
-            "action": "revert_turn", "run_id": "r1", "repo": "/w"
+            "action": "review", "target": {"type": "uncommitted_changes"}, "repo": "/w"
         }))
         .unwrap();
         assert_eq!(
             action,
-            ThreadAction::RevertTurn {
-                run_id: "r1".into(),
+            ThreadAction::Review {
+                target: ReviewTarget::UncommittedChanges,
                 repo: "/w".into()
             }
         );
-        // An action that rewrites work must name its repository.
+        // A review must name the repository it reads.
         assert!(
             serde_json::from_value::<ThreadAction>(serde_json::json!({
-                "action": "revert_turn", "run_id": "r1"
+                "action": "review", "target": {"type": "uncommitted_changes"}
+            }))
+            .is_err()
+        );
+        // Revert is not part of this contract (yet).
+        assert!(
+            serde_json::from_value::<ThreadAction>(serde_json::json!({
+                "action": "revert_turn", "run_id": "r1", "repo": "/w"
             }))
             .is_err()
         );
