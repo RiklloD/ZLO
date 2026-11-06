@@ -61,6 +61,13 @@ pub(super) struct CommandMenu {
     _subs: Vec<Subscription>,
 }
 
+impl CommandMenu {
+    /// What is typed in the palette's search field.
+    pub(super) fn query(&self, cx: &App) -> String {
+        self.input.read(cx).value().to_string()
+    }
+}
+
 impl Workspace {
     pub(super) fn toggle_command_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.command.take().is_some() {

@@ -32,9 +32,10 @@ const FOLLOW_UP: Duration = Duration::from_millis(1_500);
 const MAX_FOLLOW_UPS: u32 = 40;
 
 /// When to ask again for the same query: only while the backend reports the
-/// index incomplete, and a bounded number of times.
-fn follow_up_after(index_complete: bool, follow_ups: u32) -> Option<Duration> {
-    (!index_complete && follow_ups < MAX_FOLLOW_UPS).then_some(FOLLOW_UP)
+/// index incomplete, a search surface still shows the query, and a bounded
+/// number of times.
+fn follow_up_after(index_complete: bool, follow_ups: u32, wanted: bool) -> Option<Duration> {
+    (wanted && !index_complete && follow_ups < MAX_FOLLOW_UPS).then_some(FOLLOW_UP)
 }
 
 #[derive(Default)]
@@ -83,6 +84,20 @@ fn normalized(query: &str) -> String {
 }
 
 impl Workspace {
+    /// Whether an open search surface (Cmd+K, the inbox field) shows `query`.
+    fn message_query_wanted(&self, query: &str, cx: &App) -> bool {
+        let palette = self
+            .command
+            .as_ref()
+            .map(|menu| normalized(&menu.query(cx)));
+        let inbox = self
+            .inbox
+            .search
+            .as_ref()
+            .map(|(input, _)| normalized(&input.read(cx).value()));
+        palette.as_deref() == Some(query) || inbox.as_deref() == Some(query)
+    }
+
     /// Ask for `query` after the debounce; a newer query replaces it.
     pub(super) fn search_messages(&mut self, query: &str, cx: &mut Context<Self>) {
         let query = normalized(query);
@@ -119,6 +134,12 @@ impl Workspace {
                 if this.message_search.asked != query {
                     return;
                 }
+                // Nothing shows this query any more (the palette closed, the
+                // field changed): stop asking.
+                if follow_ups > 0 && !this.message_query_wanted(&query, cx) {
+                    this.message_search.asked.clear();
+                    return;
+                }
                 let request = HistorySearchRequest {
                     query: Some(query.clone()),
                     limit: Some(THREADS),
@@ -139,7 +160,8 @@ impl Workspace {
                                 this.message_search.answered = query.clone();
                                 this.message_search.results = found.threads;
                                 this.message_search.complete = complete;
-                                if let Some(after) = follow_up_after(complete, follow_ups) {
+                                let wanted = this.message_query_wanted(&query, cx);
+                                if let Some(after) = follow_up_after(complete, follow_ups, wanted) {
                                     this.fetch_messages(query, after, follow_ups + 1, cx);
                                 }
                             }
@@ -232,11 +254,16 @@ mod tests {
     }
 
     #[test]
-    fn follow_ups_run_only_while_indexing_and_are_bounded() {
-        assert_eq!(follow_up_after(false, 0), Some(FOLLOW_UP));
-        assert_eq!(follow_up_after(false, MAX_FOLLOW_UPS - 1), Some(FOLLOW_UP));
-        assert_eq!(follow_up_after(false, MAX_FOLLOW_UPS), None);
-        assert_eq!(follow_up_after(true, 0), None);
+    fn follow_ups_run_only_while_indexing_shown_and_bounded() {
+        assert_eq!(follow_up_after(false, 0, true), Some(FOLLOW_UP));
+        assert_eq!(
+            follow_up_after(false, MAX_FOLLOW_UPS - 1, true),
+            Some(FOLLOW_UP)
+        );
+        assert_eq!(follow_up_after(false, MAX_FOLLOW_UPS, true), None);
+        assert_eq!(follow_up_after(true, 0, true), None);
+        // No search surface shows the query (palette closed): no polling.
+        assert_eq!(follow_up_after(false, 0, false), None);
     }
 
     #[test]
