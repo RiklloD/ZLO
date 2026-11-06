@@ -27,7 +27,7 @@ use crate::history_search::{
 use crate::{
     ExternalThreadSummary, FilesystemSessionThreadService, SearchThreadMessagesRequest,
     SearchThreadMessagesResponse, SessionThreadError, SessionThreadService, ThreadHistoryRequest,
-    ThreadMessageRecord, history_query_terms,
+    ThreadMessageRecord, history_query_terms, term_coverage,
 };
 
 use super::{
@@ -84,39 +84,61 @@ where
             });
         }
         let index_complete = self.search_index_complete(&request.scope).await?;
-        let mut groups = self
-            .search_with_candidates(&request, &terms, HISTORY_SEARCH_CANDIDATES)
-            .await?;
-        if let Some(groups_first) = groups.as_ref()
-            && groups_first.1
-            && tier_zero_groups(&groups_first.0, &request) < clamp_max_threads(request.max_threads)
-        {
-            groups = self
-                .search_with_candidates(&request, &terms, HISTORY_SEARCH_WIDE_CANDIDATES)
-                .await?;
+        let wanted = clamp_max_threads(request.max_threads);
+        let Some(mut pool) = self
+            .collect(&request, &terms, HISTORY_SEARCH_CANDIDATES, None)
+            .await?
+        else {
+            // An undeclared index answers nothing yet: not complete.
+            return Ok(SearchThreadMessagesResponse {
+                threads: Vec::new(),
+                index_complete: false,
+            });
+        };
+        let mut groups = pool.group(&terms, &request);
+        if pool.saturated && tier_zero_groups(&groups, &request) < wanted {
+            if let Some(wide) = self
+                .collect(&request, &terms, HISTORY_SEARCH_WIDE_CANDIDATES, None)
+                .await?
+            {
+                pool = wide;
+                groups = pool.group(&terms, &request);
+            }
+            // Better-ranked lower-tier threads can still fill every slot
+            // beyond the widest fetch: search the person's own threads one
+            // by one (most recent first, bounded) so a match there is found.
+            if pool.saturated
+                && request.tiering.is_some()
+                && request.thread_id.is_none()
+                && tier_zero_groups(&groups, &request) < wanted
+            {
+                self.scan_own_threads(&request, &terms, &mut pool, &groups, wanted)
+                    .await?;
+                groups = pool.group(&terms, &request);
+            }
         }
-        // An undeclared index answers nothing yet: not complete.
-        let declared = groups.is_some();
         Ok(SearchThreadMessagesResponse {
-            threads: groups.map(|(g, _)| g).unwrap_or_default(),
-            index_complete: index_complete && declared,
+            threads: groups,
+            index_complete,
         })
     }
 
-    /// Grouped results and whether either fetch was saturated; `None` when
-    /// the FTS index is not declared yet.
-    async fn search_with_candidates(
+    /// Candidates under the request's prefixes (or one thread's, when
+    /// `thread` is given); `None` when the FTS index is not declared yet.
+    async fn collect(
         &self,
         request: &SearchThreadMessagesRequest,
         terms: &[String],
         limit: u32,
-    ) -> Result<Option<(Vec<crate::ThreadSearchResult>, bool)>, SessionThreadError> {
+        thread: Option<&ThreadId>,
+    ) -> Result<Option<CandidatePool>, SessionThreadError> {
         let scope = &request.scope;
-        let canonical_prefix = match &request.thread_id {
+        let narrowed = thread.or(request.thread_id.as_ref());
+        let canonical_prefix = match narrowed {
             Some(id) => messages_root(scope, id)?,
             None => scoped_path(&format!("{}/threads", scope_axes_string(scope)))?,
         };
-        let projection_prefix = projections_root(scope, request.thread_id.as_ref())?;
+        let projection_prefix = projections_root(scope, narrowed)?;
         let query = terms.join(" ");
         let Some(canonical) = self
             .fts_rows(scope, &canonical_prefix, &query, limit)
@@ -128,9 +150,10 @@ where
             .fts_rows(scope, &projection_prefix, &query, limit)
             .await?
             .unwrap_or_default();
-        let saturated = canonical.len() >= limit as usize || external.len() >= limit as usize;
-
-        let mut candidates = Vec::with_capacity(canonical.len() + external.len());
+        let mut pool = CandidatePool {
+            saturated: canonical.len() >= limit as usize || external.len() >= limit as usize,
+            ..CandidatePool::default()
+        };
         for (backend_rank, row) in canonical.into_iter().enumerate() {
             if row.entry.kind.as_ref().map(RecordKind::as_str) != Some(THREAD_MESSAGE_KIND) {
                 continue;
@@ -142,7 +165,8 @@ where
             if !row.path.as_str().contains(&expected) {
                 continue;
             }
-            candidates.extend(RankedCandidate::from_record(&record, backend_rank));
+            pool.candidates
+                .extend(RankedCandidate::from_record(&record, backend_rank));
         }
         let mut external_threads = Vec::new();
         for (backend_rank, row) in external.into_iter().enumerate() {
@@ -160,16 +184,14 @@ where
             if !external_threads.contains(&stored.thread_id) {
                 external_threads.push(stored.thread_id.clone());
             }
-            candidates.extend(RankedCandidate::from_external(
+            pool.candidates.extend(RankedCandidate::from_external(
                 stored.thread_id,
                 &stored.message,
                 backend_rank,
             ));
         }
-
-        let mut threads = HashMap::new();
         let mut seen: Vec<ThreadId> = Vec::new();
-        for candidate in &candidates {
+        for candidate in &pool.candidates {
             if !seen.contains(&candidate.thread_id) {
                 seen.push(candidate.thread_id.clone());
             }
@@ -183,7 +205,7 @@ where
                 .await
             {
                 Ok(record) => {
-                    threads.insert(thread_id, record);
+                    pool.threads.insert(thread_id, record);
                 }
                 // A CLI-only thread (a fork or delegated child the
                 // orchestrator made) has no session record: its projection
@@ -192,7 +214,8 @@ where
                     if external_threads.contains(&thread_id) =>
                 {
                     if let Some(summary) = self.projection_summary(scope, &thread_id).await? {
-                        threads.insert(thread_id, external_thread_record(scope, &summary));
+                        pool.threads
+                            .insert(thread_id, external_thread_record(scope, &summary));
                     }
                 }
                 // A message whose thread record is gone is not a result.
@@ -200,12 +223,61 @@ where
                 Err(error) => return Err(error),
             }
         }
-        Ok(Some((
-            group_ranked_candidates(candidates, &threads, terms, request),
-            saturated,
-        )))
+        Ok(Some(pool))
     }
 
+    /// Search tier-0 threads one at a time, newest activity first, adding
+    /// their candidates to `pool` until `wanted` tier-0 threads match or
+    /// `OWN_SCAN_MAX_THREADS` were searched.
+    async fn scan_own_threads(
+        &self,
+        request: &SearchThreadMessagesRequest,
+        terms: &[String],
+        pool: &mut CandidatePool,
+        groups: &[crate::ThreadSearchResult],
+        wanted: usize,
+    ) -> Result<(), SessionThreadError> {
+        let mut found = tier_zero_groups(groups, request);
+        let mut searched = 0usize;
+        let mut cursor = None;
+        let in_groups: Vec<ThreadId> = groups.iter().map(|g| g.thread.thread_id.clone()).collect();
+        loop {
+            let page = self
+                .list_threads_for_scope(crate::ListThreadsForScopeRequest {
+                    scope: request.scope.clone(),
+                    limit: Some(OWN_SCAN_PAGE),
+                    cursor: cursor.take(),
+                })
+                .await?;
+            for thread in page.threads {
+                if found >= wanted || searched >= OWN_SCAN_MAX_THREADS {
+                    return Ok(());
+                }
+                if request.tier_of(&thread) != 0 || in_groups.contains(&thread.thread_id) {
+                    continue;
+                }
+                searched += 1;
+                let Some(own) = self
+                    .collect(request, terms, OWN_SCAN_HITS, Some(&thread.thread_id))
+                    .await?
+                else {
+                    return Ok(());
+                };
+                if own
+                    .candidates
+                    .iter()
+                    .any(|c| term_coverage(&c.text, terms) > 0)
+                {
+                    found += 1;
+                }
+                pool.absorb(own);
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return Ok(()),
+            }
+        }
+    }
     /// Ranked rows under `prefix`; `None` when the index is not declared.
     async fn fts_rows(
         &self,
@@ -250,5 +322,41 @@ where
             Some(row) => Ok(Some(deserialize::<ExternalThreadSummary>(&row.entry.body)?)),
             None => Ok(None),
         }
+    }
+}
+
+/// Threads listed per page while scanning own threads.
+const OWN_SCAN_PAGE: u32 = 100;
+/// Own threads searched one by one at most, per search.
+const OWN_SCAN_MAX_THREADS: usize = 300;
+/// Candidates fetched per own thread.
+const OWN_SCAN_HITS: u32 = 20;
+
+/// Candidates and the records of the threads they belong to.
+#[derive(Default)]
+struct CandidatePool {
+    candidates: Vec<RankedCandidate>,
+    threads: HashMap<ThreadId, crate::SessionThreadRecord>,
+    saturated: bool,
+}
+
+impl CandidatePool {
+    fn group(
+        &self,
+        terms: &[String],
+        request: &SearchThreadMessagesRequest,
+    ) -> Vec<crate::ThreadSearchResult> {
+        group_ranked_candidates(self.candidates.clone(), &self.threads, terms, request)
+    }
+
+    /// Add another pool's candidates, ranked after this pool's.
+    fn absorb(&mut self, other: CandidatePool) {
+        let offset = self.candidates.len();
+        self.candidates
+            .extend(other.candidates.into_iter().map(|mut c| {
+                c.backend_rank += offset;
+                c
+            }));
+        self.threads.extend(other.threads);
     }
 }

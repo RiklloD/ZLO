@@ -382,6 +382,7 @@ fn collapse_whitespace(text: &str) -> String {
 
 /// A candidate message the backend matched, in backend rank order: a
 /// canonical transcript row or an external transcript projection.
+#[derive(Clone)]
 pub(crate) struct RankedCandidate {
     pub(crate) thread_id: ThreadId,
     pub(crate) message_id: ThreadMessageId,

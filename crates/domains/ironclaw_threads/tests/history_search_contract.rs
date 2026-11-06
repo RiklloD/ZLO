@@ -514,6 +514,41 @@ async fn ranking_contract(service: &dyn SessionThreadService) {
     assert_eq!(tiered.threads[0].thread.thread_id.as_str(), "thread-own");
 }
 
+/// Origin tiers hold beyond the candidate ceiling: more than the widest
+/// fetch of better-ranked automation messages still leave the person's own
+/// weak match first.
+async fn saturation_contract(service: &dyn SessionThreadService) {
+    let mine = scope("carol");
+    for n in 0..2 {
+        let auto = new_thread(service, &mine, &format!("auto-sat-{n}")).await;
+        for k in 0..600 {
+            say(
+                service,
+                &mine,
+                &auto,
+                &format!("invoice report summary {k} for the invoice report run"),
+            )
+            .await;
+        }
+    }
+    let own = new_thread(service, &mine, "thread-own-sat").await;
+    say(service, &mine, &own, "where did the invoice go").await;
+    index_all(service, &mine).await;
+    let found = service
+        .search_thread_messages(SearchThreadMessagesRequest {
+            max_threads: 5,
+            tiering: Some(Arc::new(AutoLast)),
+            ..SearchThreadMessagesRequest::new(mine.clone(), "invoice report summary")
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        found.threads.first().map(|t| t.thread.thread_id.as_str()),
+        Some("thread-own-sat"),
+        "the own thread is found beyond the candidate ceiling"
+    );
+}
+
 /// CLI transcripts: projections are searchable, idempotent, cursor-monotonic,
 /// visibility-filtered, narrowable to a thread, and a CLI-only thread with no
 /// session record still groups under its summary title.
@@ -670,6 +705,7 @@ async fn history_search_in_memory_reference_satisfies_the_search_contract() {
     search_contract(&service, &service).await;
     let ranking = InMemorySessionThreadService::default();
     ranking_contract(&ranking).await;
+    saturation_contract(&ranking).await;
     let external = InMemorySessionThreadService::default();
     external_contract(&external).await;
 }
@@ -690,6 +726,7 @@ async fn history_search_filesystem_in_memory_backend_satisfies_the_search_contra
     all_contracts(|user| filesystem_service(&backend, user)).await;
     let ranking = Arc::new(InMemoryBackend::new());
     ranking_contract(filesystem_service(&ranking, "alice").as_ref()).await;
+    saturation_contract(filesystem_service(&ranking, "carol").as_ref()).await;
     let external = Arc::new(InMemoryBackend::new());
     external_contract(filesystem_service(&external, "alice").as_ref()).await;
 }
@@ -700,6 +737,7 @@ async fn history_search_filesystem_libsql_backend_satisfies_the_search_contract(
     all_contracts(|user| filesystem_service(&backend, user)).await;
     let (_ranking_dir, ranking) = libsql_backend().await;
     ranking_contract(filesystem_service(&ranking, "alice").as_ref()).await;
+    saturation_contract(filesystem_service(&ranking, "carol").as_ref()).await;
     let (_external_dir, external) = libsql_backend().await;
     external_contract(filesystem_service(&external, "alice").as_ref()).await;
 }
@@ -711,6 +749,7 @@ async fn history_search_filesystem_postgres_backend_satisfies_the_search_contrac
     };
     all_contracts(|user| filesystem_service(&backend, user)).await;
     ranking_contract(filesystem_service(&backend, "carol").as_ref()).await;
+    saturation_contract(filesystem_service(&backend, "erin").as_ref()).await;
     external_contract(filesystem_service(&backend, "dave").as_ref()).await;
     drop(backend);
     db.cleanup().await;
