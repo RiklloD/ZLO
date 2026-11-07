@@ -234,3 +234,70 @@ fn sidebar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     }
     list
 }
+
+// ---- Called by the chat (area A). PORT-STUB(area B): replace the bodies
+// with the ports of `drafts.rs`, `run_clock.rs`, `workspace/draft.rs` and the
+// workspace's chat-event handlers; keep the signatures.
+
+/// An unsent message of one thread: its text, its pills (byte range and id;
+/// each label is the text under its range) and its staged files (GPUI
+/// `drafts::Draft`).
+#[derive(Clone, Default)]
+pub struct Draft {
+    pub text: String,
+    pub pills: Vec<(std::ops::Range<usize>, String)>,
+    pub files: Vec<ironclaw_gpui_client::attachments::StagedFile>,
+}
+
+/// PORT-STUB(area B): `drafts::restore`, the thread's unsent draft.
+pub fn draft_restore(_s: &State, _thread_id: &str) -> Option<Draft> {
+    None
+}
+
+/// PORT-STUB(area B): `drafts::record`, called on every composer edit and
+/// after a send clears it.
+pub fn draft_record(_s: &mut State, _thread_id: &str, _draft: Draft) {}
+
+/// PORT-STUB(area B): GPUI `ThreadUpdated`: a timeline load landed, so the
+/// sidebar picks up server-set titles (refresh inbox and unread).
+pub fn thread_updated(_s: &mut State, _thread_id: &str) {}
+
+/// PORT-STUB(area B): GPUI `RunEnded`: a run watched live ended on its own
+/// (telemetry, title poll, inbox visit, system alert when not focused).
+pub fn run_ended(_s: &mut State, _thread_id: &str, _failed: bool) {}
+
+/// PORT-STUB(area B): GPUI `OpenRunLogs`: a failed run's Logs button shows
+/// the operator page's gateway log lines for `run_id`.
+pub fn open_run_logs(s: &mut State, _run_id: String) {
+    show(s, Page::Operator);
+}
+
+/// PORT-STUB(area B): `run_clock::start`, when `thread_id`'s run began (kept
+/// across views, from the backend's time when known).
+pub fn run_clock_start(
+    _s: &mut State,
+    _thread_id: &str,
+    _run: Option<&str>,
+    sent_ms: Option<i64>,
+) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    let since = sent_ms
+        .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
+        .and_then(|at| (chrono::Utc::now() - at).to_std().ok());
+    since.and_then(|d| now.checked_sub(d)).unwrap_or(now)
+}
+
+/// PORT-STUB(area B): `run_clock::end`.
+pub fn run_clock_end(_s: &mut State, _thread_id: &str) {}
+
+/// PORT-STUB(area B): the new-thread screen (GPUI `workspace/draft.rs`),
+/// shown for `Page::Draft`. It sends its first message with
+/// `chat::open` + `chat::send_text`.
+pub fn draft_view(
+    s: &State,
+    _cx: &mut rune::Cx<State>,
+    _k: &rune_kit::Kit,
+    _layer: &mut Vec<El>,
+) -> El {
+    centered(&s.palette, "New thread")
+}

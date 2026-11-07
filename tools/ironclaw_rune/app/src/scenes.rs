@@ -8,6 +8,11 @@
 use crate::state::{Conn, Page, State};
 
 pub const SCENES: &[(&str, fn(&mut State))] = &[
+    ("chat", crate::chat::fixtures::chat),
+    ("chat-gate", crate::chat::fixtures::gate),
+    ("chat-menu", crate::chat::fixtures::menu),
+    ("chat-question", crate::chat::fixtures::question),
+    ("chat-running", crate::chat::fixtures::running),
     ("shell", shell),
 ];
 

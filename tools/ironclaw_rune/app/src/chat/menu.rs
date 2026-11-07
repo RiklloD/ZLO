@@ -1,0 +1,558 @@
+//! The `/` and `@` composer menu, shared by a thread's composer and the
+//! new-thread screen: its inventory, highlight, keys and popover (GPUI
+//! `chat/menu.rs`).
+//!
+//! `@` lists mentions first (the Changes selection, files, folders, recent
+//! threads; `ironclaw_gpui_client::mentions`), then tools and skills. A
+//! picked mention becomes an atomic pill in the composer.
+//!
+//! A composer owns a [`ComposerMenu`] and finds it again through a
+//! [`MenuOf`] (its slot in `State`), so file listings and rankings that land
+//! later reach the right menu, or nothing if it is gone.
+
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
+
+use ironclaw_gpui_client::commands::{
+    MenuItem, MenuSources, complete_mention, menu_matches_with, tab_complete, trigger_token,
+};
+use ironclaw_gpui_client::mentions::{
+    self, FileIndex, IndexCache, LineRange, MentionContext, MentionKind, RankedPaths, Ranking,
+    ThreadEntry,
+};
+use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
+use ironclaw_gpui_client::{Client, ClientError};
+use rune::{El, Icon, TextEdit, Tx, col, icon, row, text};
+
+use super::flow;
+use crate::icons;
+use crate::jobs;
+use crate::state::State;
+
+thread_local! {
+    /// File listings per project folder, shared by every composer.
+    static INDEXES: RefCell<IndexCache> = RefCell::default();
+}
+
+/// What a click on a menu row does.
+pub type OnPick = Rc<dyn Fn(&mut State, &MenuItem, &mut Tx)>;
+
+/// Finds a composer's menu again from the root state.
+pub type MenuOf = Arc<dyn for<'a> Fn(&'a mut State) -> Option<&'a mut ComposerMenu> + Send + Sync>;
+
+#[derive(Default)]
+pub struct ComposerMenu {
+    pub sources: Rc<MenuSources>,
+    index: usize,
+    /// The draft the menu was closed for with Esc; typing reopens it.
+    dismissed: Option<String>,
+    /// The project folder's listing, for `@` files and folders.
+    files: Option<Arc<FileIndex>>,
+    /// The folder the listing was last asked for: a listing of another
+    /// folder that lands later is not applied.
+    files_root: Option<PathBuf>,
+    /// The latest ranking of `files`, made off the UI thread.
+    ranked: Option<Arc<RankedPaths>>,
+    /// The `(listing, query)` being ranked now, so it is not started twice.
+    ranking: Option<(u64, String)>,
+    /// The `@` query typed last, ranked once its listing lands.
+    want_query: Option<String>,
+    /// Lines picked in the Changes tab, offered as an `@` selection.
+    pub selection: Option<(PathBuf, LineRange)>,
+    /// The thread this composer belongs to, left out of `@` threads.
+    pub current_thread: Option<String>,
+}
+
+/// What a menu key did.
+pub enum MenuKey {
+    /// The menu is closed or the key isn't one of its keys.
+    Unused,
+    Handled,
+    /// Enter on a command: the host runs it or fills in its arguments.
+    Command(RebornProductCommandInfo),
+}
+
+impl ComposerMenu {
+    /// Entries for the current draft, empty when the menu is closed.
+    pub fn items(&self, draft: &str) -> Vec<MenuItem> {
+        if self.dismissed.as_deref() == Some(draft) {
+            return Vec::new();
+        }
+        let ctx = MentionContext {
+            index: self.files.as_deref(),
+            threads: &[],
+            selection: self
+                .selection
+                .as_ref()
+                .map(|(path, range)| (path.as_path(), *range)),
+            current_thread: self.current_thread.as_deref(),
+            // Ranking a big listing never runs here, on the UI thread.
+            ranking: match &self.ranked {
+                Some(ranked) => Ranking::Ready(ranked),
+                None => Ranking::Pending,
+            },
+        };
+        menu_matches_with(draft, &self.sources, &ctx)
+    }
+
+    /// The `@` query being typed, lowercase as the menu matches it.
+    pub fn at_query(draft: &str) -> Option<String> {
+        let (_, token) = trigger_token(draft)?;
+        token.strip_prefix('@').map(str::to_lowercase)
+    }
+
+    /// Point `@` files at `root`'s listing (or none).
+    fn want_root(&mut self, root: Option<PathBuf>) {
+        if self.files_root != root {
+            self.files = None;
+            self.ranked = None;
+            self.ranking = None;
+        }
+        self.files_root = root;
+    }
+
+    /// Take a listing that landed: only the one for the folder last asked
+    /// for. Returns whether it was taken.
+    fn accept_index(&mut self, index: Arc<FileIndex>) -> bool {
+        if self.files_root.as_deref() != Some(index.root.as_path()) {
+            return false;
+        }
+        if self.files.as_ref().map(|f| f.generation) != Some(index.generation) {
+            self.ranked = None;
+            self.ranking = None;
+        }
+        self.files = Some(index);
+        true
+    }
+
+    /// Take a ranking that landed: only one of the listing shown now, for
+    /// the query typed now (an older query's ranking may land later).
+    fn accept_ranking(&mut self, ranked: RankedPaths) -> bool {
+        let current = self.files.as_ref().map(|f| f.generation);
+        if self.ranking.as_ref().map(|(g, q)| (*g, q.as_str()))
+            == Some((ranked.generation, ranked.query.as_str()))
+        {
+            self.ranking = None;
+        }
+        if current != Some(ranked.generation)
+            || self.want_query.as_deref() != Some(ranked.query.as_str())
+        {
+            return false;
+        }
+        self.ranked = Some(Arc::new(ranked));
+        true
+    }
+
+    /// The highlighted row, clamped to `len`.
+    pub fn selected(&self, len: usize) -> usize {
+        self.index.min(len.saturating_sub(1))
+    }
+
+    /// The draft changed: the highlight goes back to the top.
+    pub fn reset(&mut self) {
+        self.index = 0;
+    }
+
+    /// ↑ ↓ move the highlight (scrolled into view), Tab fills in the
+    /// highlighted row, Enter picks it, Esc closes the menu.
+    pub fn key(&mut self, key: MenuKeyName, composer: &mut TextEdit, tx: &mut Tx) -> MenuKey {
+        let items = self.items(&composer.text);
+        if items.is_empty() {
+            return MenuKey::Unused;
+        }
+        let len = items.len();
+        match key {
+            MenuKeyName::Up => self.index = (self.selected(len) + len - 1) % len,
+            MenuKeyName::Down => self.index = (self.selected(len) + 1) % len,
+            MenuKeyName::Tab => {
+                let item = &items[self.selected(len)];
+                if let MenuItem::Mention(_) = item {
+                    pick(item, composer);
+                } else if let Some(text) = tab_complete(&composer.text, &items, self.selected(len)) {
+                    set_text_at_end(composer, text);
+                }
+            }
+            MenuKeyName::Enter => return pick(&items[self.selected(len)], composer),
+            MenuKeyName::Escape => self.dismissed = Some(composer.text.clone()),
+        }
+        if matches!(key, MenuKeyName::Up | MenuKeyName::Down) {
+            tx.scroll_into_view(row_key(&items[self.selected(len)]));
+        }
+        MenuKey::Handled
+    }
+}
+
+/// The keys the menu takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MenuKeyName {
+    Up,
+    Down,
+    Tab,
+    Enter,
+    Escape,
+}
+
+impl MenuKeyName {
+    /// The menu key a composer key is, if any (no modifiers but Shift-less).
+    pub fn of(ev: &rune::KeyEvent) -> Option<Self> {
+        let m = ev.mods;
+        if m.cmd || m.ctrl || m.alt || m.shift {
+            return None;
+        }
+        Some(match ev.key {
+            rune::Key::Up => Self::Up,
+            rune::Key::Down => Self::Down,
+            rune::Key::Tab => Self::Tab,
+            rune::Key::Enter => Self::Enter,
+            rune::Key::Escape => Self::Escape,
+            _ => return None,
+        })
+    }
+}
+
+/// A skill or extension replaces the word being typed with its mention; a
+/// command goes back to the host.
+pub fn pick(item: &MenuItem, composer: &mut TextEdit) -> MenuKey {
+    if let MenuItem::Command(command) = item {
+        return MenuKey::Command(command.clone());
+    }
+    if let MenuItem::Mention(entry) = item {
+        insert_chip(composer, &entry.uri, &entry.label);
+        return MenuKey::Handled;
+    }
+    let text = complete_mention(&composer.text, item);
+    set_text_at_end(composer, text);
+    MenuKey::Handled
+}
+
+/// Replace the `@word` being typed with a mention pill and a space.
+fn insert_chip(composer: &mut TextEdit, uri: &mentions::MentionUri, label: &str) {
+    let draft = composer.text.clone();
+    let start = trigger_token(&draft).map_or(draft.len(), |(start, _)| start);
+    let chip = mentions::chip_text(label);
+    let id = mentions::token_id(uri);
+    composer.undo_group(|e| {
+        e.replace_with_pill(start..draft.len(), id, &chip);
+        e.insert(" ");
+    });
+    composer.focused = true;
+}
+
+fn set_text_at_end(composer: &mut TextEdit, text: String) {
+    // `replace_text` leaves the caret after the last word.
+    composer.replace_text(text);
+    composer.mark_edited();
+}
+
+/// Point `@` files at `root`'s listing: the cached one at once, rebuilt in
+/// the background when missing or stale. A listing of a folder no longer
+/// asked for is dropped.
+pub fn sync_index(s: &mut State, root: Option<&Path>, menu_of: MenuOf) {
+    let root = root.map(Path::to_path_buf);
+    if let Some(menu) = menu_of(s) {
+        menu.want_root(root.clone());
+    }
+    let Some(root) = root else {
+        return;
+    };
+    let (cached, rebuild) = INDEXES.with(|c| c.borrow_mut().get(&root));
+    if let (Some(index), Some(menu)) = (cached, menu_of(s)) {
+        menu.accept_index(index);
+    }
+    if !rebuild {
+        return;
+    }
+    let dir = root.clone();
+    jobs::blocking(
+        s,
+        move || FileIndex::build(&dir),
+        move |s, index, _| {
+            let index_root = index.root.clone();
+            INDEXES.with(|c| c.borrow_mut().put(index));
+            let (fresh, _) = INDEXES.with(|c| c.borrow_mut().get(&index_root));
+            let query = menu_of(s).and_then(|menu| {
+                let taken = fresh.is_some_and(|index| menu.accept_index(index));
+                taken.then(|| menu.want_query.clone()).flatten()
+            });
+            match query {
+                Some(query) => rank_in_background(s, query, menu_of),
+                None if menu_of(s).is_none() => {
+                    INDEXES.with(|c| c.borrow_mut().abandon(&root));
+                }
+                None => {}
+            }
+        },
+    );
+}
+
+/// Rank the menu's listing for `query` off the UI thread; the menu shows
+/// its previous ranking until this one lands.
+pub fn rank_in_background(s: &mut State, query: String, menu_of: MenuOf) {
+    let Some(menu) = menu_of(s) else {
+        return;
+    };
+    let query = query.trim().to_string();
+    menu.want_query = Some(query.clone());
+    let Some(index) = menu.files.clone() else {
+        return;
+    };
+    let key = (index.generation, query.clone());
+    if menu
+        .ranked
+        .as_ref()
+        .is_some_and(|r| r.is_for(&index, &query))
+        || menu.ranking.as_ref() == Some(&key)
+    {
+        return;
+    }
+    menu.ranking = Some(key);
+    jobs::blocking(
+        s,
+        move || mentions::rank_paths(&index, &query),
+        move |s, ranked, _| {
+            // silent-ok: the composer closed while ranking
+            if let Some(menu) = menu_of(s) {
+                menu.accept_ranking(ranked);
+            }
+        },
+    );
+}
+
+/// Recent threads from the inbox list, newest first.
+fn thread_entries(rows: Vec<ironclaw_gpui_client::inbox::InboxRow>) -> Vec<ThreadEntry> {
+    let mut threads: Vec<ThreadEntry> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let title = row.title.filter(|t| !t.trim().is_empty())?;
+            Some(ThreadEntry {
+                thread_id: row.thread_id,
+                title,
+                last_activity_at: row.last_activity_at,
+            })
+        })
+        .collect();
+    threads.sort_by_key(|t| std::cmp::Reverse(t.last_activity_at));
+    threads
+}
+
+/// Fetch the menu's inventory. Skills, extensions and threads only enrich
+/// it, so a failed fetch leaves those sections empty.
+pub async fn load(c: Client, commands: bool) -> Result<MenuSources, ClientError> {
+    let commands = if commands {
+        c.list_commands().await?.commands
+    } else {
+        Vec::new()
+    };
+    let skills = c.skills().await.map(|l| l.skills).unwrap_or_default();
+    let extensions = c
+        .extensions()
+        .await
+        .map(|l| l.extensions)
+        .unwrap_or_default();
+    let threads = c.inbox().await.map(|l| l.rows).unwrap_or_default();
+    Ok(MenuSources {
+        threads: thread_entries(threads),
+        commands,
+        skills: skills
+            .into_iter()
+            .map(|s| MenuItem::Skill {
+                name: s.name,
+                description: s.description,
+            })
+            .collect(),
+        extensions: extensions
+            .into_iter()
+            .filter(|e| !e.tools.is_empty() && e.activation_error.is_none())
+            .map(|e| MenuItem::Extension {
+                name: e.package_ref.id.to_string(),
+                description: e.display_name,
+            })
+            .collect(),
+    })
+}
+
+/// Whether the list mixes sections, so each gets a heading.
+fn mixed(items: &[MenuItem]) -> bool {
+    items.windows(2).any(|w| w[0].section() != w[1].section())
+}
+
+fn row_key(item: &MenuItem) -> String {
+    format!("menu-{}-{}", item.section(), item.name())
+}
+
+/// The menu popover, one heading per section. `on_pick` runs on a click.
+pub fn render(
+    s: &State,
+    items: &[MenuItem],
+    selected: usize,
+    on_pick: OnPick,
+) -> El {
+    let p = &s.palette;
+    let sections = items.iter().map(MenuItem::section).collect::<Vec<_>>();
+    // A lone section needs no heading.
+    let mixed = mixed(items);
+    let small = flow::type_at(s, 12., 16., 400.);
+    let mut list = col().key("command-menu").w_full().padding(4.);
+    for (ix, item) in items.iter().enumerate() {
+        if mixed && (ix == 0 || sections[ix - 1] != sections[ix]) {
+            list = list.child(
+                text(item.section())
+                    .key(format!("menu-head-{}", item.section()))
+                    .font(small)
+                    .color(p.text_muted)
+                    .px(8.)
+                    .pt(6.)
+                    .pb(2.),
+            );
+        }
+        let pick = item.clone();
+        let on_pick = on_pick.clone();
+        let mut line = row()
+            .key(row_key(item))
+            .role("button")
+            .label(item.label())
+            .h(30.)
+            .px(8.)
+            .gap(12.)
+            .center_y()
+            .radius(crate::design::CONTROL_RADIUS)
+            .hover(p.hover)
+            .cursor(rune::Cursor::Pointer);
+        if ix == selected {
+            line = line.fill(p.active);
+        }
+        if let Some(glyph) = mention_icon(item) {
+            line = line.child(icon(glyph, 12.).color(p.text_muted));
+        }
+        line = line
+            .child(
+                text(item.label())
+                    .font(flow::type_at(s, 13., 18., 500.))
+                    .color(p.text)
+                    .truncate()
+                    .max_w(320.),
+            )
+            .child(
+                text(item.description().to_string())
+                    .font(small)
+                    .color(p.text_muted)
+                    .truncate()
+                    .min_w(0.)
+                    .grow(1.),
+            )
+            .on_press_tx(move |s: &mut State, tx| on_pick(s, &pick, tx));
+        list = list.child(line);
+    }
+    col().key("command-menu-pop")
+        .w_full()
+        .radius(12.)
+        .border(1., p.border)
+        .fill(p.surface_overlay)
+        .shadow(8., 24., rune::Color::BLACK.alpha(0.2))
+        .transition(flow::rise(4.))
+        .child(
+            col().key("command-menu-scroll")
+                .w_full()
+                .max_h(280.)
+                .scroll(rune::ScrollSpec { stick_bottom: false })
+                .child(list),
+        )
+}
+
+/// The leading icon of an `@` mention row.
+fn mention_icon(item: &MenuItem) -> Option<&'static Icon> {
+    let MenuItem::Mention(entry) = item else {
+        return None;
+    };
+    Some(kind_icon(entry.kind))
+}
+
+/// The icon for a mention of `kind`, in the menu and on its pill.
+pub fn kind_icon(kind: MentionKind) -> &'static Icon {
+    match kind {
+        MentionKind::File => &icons::FILE,
+        MentionKind::Folder => &icons::FOLDER,
+        MentionKind::Thread => &icons::MESSAGES_SQUARE,
+        MentionKind::Changes => &icons::FILE_DIFF,
+    }
+}
+
+/// The section a mention belongs to, for its pill's icon.
+pub fn uri_kind(uri: &mentions::MentionUri) -> MentionKind {
+    use mentions::MentionUri as U;
+    match uri {
+        U::File { .. } => MentionKind::File,
+        U::Directory { .. } => MentionKind::Folder,
+        U::Thread { .. } => MentionKind::Thread,
+        U::GitDiff { .. } | U::Selection { .. } | U::Skill { .. } | U::Extension { .. } => {
+            MentionKind::Changes
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listing(root: &str) -> Arc<FileIndex> {
+        Arc::new(FileIndex {
+            root: PathBuf::from(root),
+            files: vec!["menu.rs".into()],
+            generation: root.bytes().map(u64::from).sum(),
+            ..FileIndex::default()
+        })
+    }
+
+    /// A listing of folder A that lands after the menu moved to folder B is
+    /// dropped, and so is a ranking of a listing no longer shown.
+    #[test]
+    fn late_results_for_another_folder_are_dropped() {
+        let mut menu = ComposerMenu::default();
+        menu.want_root(Some(PathBuf::from("/b")));
+        assert!(!menu.accept_index(listing("/a")));
+        assert!(menu.files.is_none());
+        assert!(menu.accept_index(listing("/b")));
+        let stale = mentions::rank_paths(&listing("/a"), "menu");
+        assert!(!menu.accept_ranking(stale));
+        assert!(menu.ranked.is_none());
+        let shown = menu.files.clone().unwrap();
+        menu.want_query = Some("menu".into());
+        assert!(menu.accept_ranking(mentions::rank_paths(&shown, "menu")));
+        // Moving to another folder clears what was shown for the last one.
+        menu.want_root(Some(PathBuf::from("/c")));
+        assert!(menu.files.is_none() && menu.ranked.is_none());
+    }
+
+    /// Typing `@me` then `@men` ranks both; the `@me` ranking landing last
+    /// must not replace the `@men` one.
+    #[test]
+    fn an_older_querys_ranking_never_overwrites_a_newer_one() {
+        let mut menu = ComposerMenu::default();
+        menu.want_root(Some(PathBuf::from("/b")));
+        assert!(menu.accept_index(listing("/b")));
+        let shown = menu.files.clone().unwrap();
+        menu.want_query = Some("me".into());
+        menu.want_query = Some("men".into());
+        assert!(menu.accept_ranking(mentions::rank_paths(&shown, "men")));
+        assert!(!menu.accept_ranking(mentions::rank_paths(&shown, "me")));
+        assert_eq!(menu.ranked.as_ref().unwrap().query, "men");
+    }
+
+    /// Picking an `@` file swaps the typed query for one pill and a space.
+    #[test]
+    fn a_picked_mention_becomes_a_pill() {
+        let mut edit = TextEdit::new("look at @men");
+        let uri = mentions::MentionUri::File {
+            path: "/p/menu.rs".into(),
+            line_range: None,
+        };
+        insert_chip(&mut edit, &uri, "menu.rs");
+        let pills: Vec<_> = edit.pills().map(|(r, id)| (r, id.to_string())).collect();
+        assert_eq!(pills.len(), 1);
+        assert_eq!(pills[0].1, mentions::token_id(&uri));
+        assert!(edit.text.starts_with("look at "));
+        assert!(edit.text.ends_with(' '));
+    }
+}
