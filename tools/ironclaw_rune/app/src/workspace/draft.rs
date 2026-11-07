@@ -55,30 +55,59 @@ pub type ComposerTarget = crate::voice::Composer;
 /// the open chat's or new-thread screen's while this window is in front.
 /// Otherwise `open_quick` opens the quick composer for it.
 pub fn voice_composer(s: &mut State, open_quick: bool) -> Option<ComposerTarget> {
-    if s.workspace.quick.is_open() {
-        return Some(ComposerTarget::Quick);
-    }
-    if s.workspace.window_active {
-        match s.page {
-            Page::Chat => {
-                if let Some(id) = super::active_id(s) {
-                    return Some(ComposerTarget::Chat(id.to_string()));
-                }
-            }
-            Page::Draft if s.workspace.draft.is_some() => return Some(ComposerTarget::Draft),
-            _ => {}
+    let front = match s.page {
+        Page::Chat => super::active_id(s).map(|id| ComposerTarget::Chat(id.to_string())),
+        Page::Draft if s.workspace.draft.is_some() => Some(ComposerTarget::Draft),
+        _ => None,
+    };
+    match pick_voice_composer(
+        s.workspace.quick.is_open(),
+        s.workspace.window_active,
+        front,
+        open_quick,
+    ) {
+        VoicePick::Composer(target) => Some(target),
+        VoicePick::OpenQuick => {
+            super::quick::open(s);
+            s.workspace.quick.is_open().then_some(ComposerTarget::Quick)
         }
+        VoicePick::Nothing => None,
     }
-    if !open_quick {
-        return None;
+}
+
+/// [`voice_composer`]'s choice.
+#[derive(Debug, PartialEq, Eq)]
+enum VoicePick {
+    Composer(ComposerTarget),
+    OpenQuick,
+    Nothing,
+}
+
+/// The quick composer while it is open; else the main window's composer
+/// (`front`) while that window is in front; else, for a key press from
+/// another app (`open_quick`), the quick composer, opened for it.
+fn pick_voice_composer(
+    quick_open: bool,
+    window_active: bool,
+    front: Option<ComposerTarget>,
+    open_quick: bool,
+) -> VoicePick {
+    if quick_open {
+        return VoicePick::Composer(ComposerTarget::Quick);
     }
-    super::quick::open(s);
-    Some(ComposerTarget::Quick)
+    if window_active && let Some(front) = front {
+        return VoicePick::Composer(front);
+    }
+    if open_quick {
+        VoicePick::OpenQuick
+    } else {
+        VoicePick::Nothing
+    }
 }
 
 /// The draft's text field, for a voice target that is the draft. The chat
-/// composer is area A's; the quick composer lives in its own window
-/// (`quick::insert_text`).
+/// composer is area A's; the quick composer's is a mirror of its window's
+/// field (`quick::voice_edit`).
 pub fn composer_edit<'a>(s: &'a mut State, target: &ComposerTarget) -> Option<&'a mut TextEdit> {
     match target {
         ComposerTarget::Draft => s.workspace.draft.as_mut().map(|d| &mut d.input),
@@ -150,13 +179,14 @@ fn without_tokens(text: &str, tokens: &[drafts::DraftToken]) -> String {
 }
 
 /// A prompt from the quick composer: the new-thread screen's send, with its
-/// profile and model choice.
-pub(super) fn quick_send(s: &mut State, text: String) {
+/// profile and model choice. `voice` is talk mode's claim when it pressed
+/// Enter there (`quick::send` took it and refused an empty send).
+pub(super) fn quick_send(s: &mut State, text: String, voice: Option<crate::voice::Submission>) {
     open(s);
     if let Some(draft) = s.workspace.draft.as_mut() {
         draft.input.replace_text(text);
     }
-    send(s);
+    send_with(s, voice);
 }
 
 /// A profile picked in either menu: open the draft screen in it.
@@ -202,6 +232,12 @@ pub(super) fn record(s: &mut State) {
 /// it rides along into the new chat's first send).
 pub fn send(s: &mut State) {
     let voice = crate::voice::take_submission(s, &ComposerTarget::Draft);
+    send_with(s, voice);
+}
+
+/// [`send`] with talk mode's claim already taken (by this screen or the
+/// quick composer).
+fn send_with(s: &mut State, voice: Option<crate::voice::Submission>) {
     let refuse = |s: &mut State, why: &str| {
         if let Some(sub) = voice {
             crate::voice::submission_refused(s, sub, why);
@@ -601,6 +637,40 @@ fn empty_draft(profile: &str) -> DraftState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_picks_the_open_quick_composer_first() {
+        let chat = || Some(ComposerTarget::Chat("t1".into()));
+        for (window_active, open_quick) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                pick_voice_composer(true, window_active, chat(), open_quick),
+                VoicePick::Composer(ComposerTarget::Quick)
+            );
+        }
+    }
+
+    #[test]
+    fn voice_types_into_the_front_composer_while_the_window_is_in_front() {
+        assert_eq!(
+            pick_voice_composer(false, true, Some(ComposerTarget::Chat("t1".into())), true),
+            VoicePick::Composer(ComposerTarget::Chat("t1".into()))
+        );
+        assert_eq!(
+            pick_voice_composer(false, true, Some(ComposerTarget::Draft), false),
+            VoicePick::Composer(ComposerTarget::Draft)
+        );
+    }
+
+    #[test]
+    fn a_key_press_from_another_app_opens_the_quick_composer() {
+        // The window is behind another app, or shows a page with no composer.
+        let chat = Some(ComposerTarget::Chat("t1".into()));
+        assert_eq!(pick_voice_composer(false, false, chat.clone(), true), VoicePick::OpenQuick);
+        assert_eq!(pick_voice_composer(false, true, None, true), VoicePick::OpenQuick);
+        // A mic click or a barge-in never opens it.
+        assert_eq!(pick_voice_composer(false, false, chat, false), VoicePick::Nothing);
+        assert_eq!(pick_voice_composer(false, true, None, false), VoicePick::Nothing);
+    }
 
     #[test]
     fn restored_text_drops_inline_card_text() {

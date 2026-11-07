@@ -744,15 +744,15 @@ pub(crate) fn with_tx(s: &State, f: impl FnOnce(&mut State, &str, &mut Tx) + Sen
 
 /// The composer field voice dictates into, if that composer exists now:
 /// `Chat(id)` is the open chat's (or its side chat's) composer, `Draft`
-/// the new-thread screen's. The quick composer's field lives in its own
-/// window's state, out of reach here (voice types there with
-/// `workspace::quick::insert_text`).
+/// the new-thread screen's, `Quick` the main state's mirror of the open
+/// quick composer's field (voice edits it through
+/// `workspace::quick::voice_edit`, which also edits the window's field).
 pub fn voice_composer<'a>(s: &'a State, composer: &crate::voice::Composer) -> Option<&'a TextEdit> {
     use crate::voice::Composer;
     match composer {
         Composer::Chat(id) => chat_ref(s, id).map(|c| &c.composer),
         Composer::Draft => s.workspace.draft.as_ref().map(|d| &d.input),
-        Composer::Quick => None,
+        Composer::Quick => s.workspace.quick.is_open().then_some(&s.workspace.quick.input),
     }
 }
 
@@ -778,7 +778,7 @@ pub fn voice_press_enter(s: &mut State, composer: &crate::voice::Composer, tx: &
             actions::send(s, &id, tx);
         }
         Composer::Draft => crate::workspace::send_draft(s),
-        Composer::Quick => {}
+        Composer::Quick => crate::workspace::quick::press_enter(s),
     }
 }
 

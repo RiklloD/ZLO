@@ -186,7 +186,7 @@ fn render_desktop(s: &State, k: &Kit) -> El {
                 Some(if bundled {
                     "Starts ZLO when you log in to your Mac."
                 } else {
-                    "Available when ZLO runs from ZLO.app (tools/ironclaw_gpui/bundle.sh)."
+                    "Available when ZLO runs from ZLO Rune.app (tools/ironclaw_rune/bundle.sh)."
                 }),
                 login,
             ),

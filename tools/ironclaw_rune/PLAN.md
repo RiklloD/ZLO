@@ -5,6 +5,12 @@ Started 07.11.2026. A full rewrite of the GPUI app (`tools/ironclaw_gpui/app`,
 file. **The GPUI app is not touched**: if Rune disappoints, we go back to it.
 
 - Binary: `zlo-rune` (`cargo run --release` here). The GPUI app stays `zlo`.
+- App bundle: `bash bundle.sh` builds `target/ZLO Rune.app` and installs it
+  to `~/Applications` (`--no-install` builds only; `ZLO_BACKEND=` reuses a
+  built backend). Bundle id and login-item LaunchAgent label are both
+  `com.numoh.rune`, apart from GPUI's `com.numoh.desktop`, so permissions,
+  notifications, defaults and "Open at login" never collide. The backend
+  (`zlo-backend`, signed `com.numoh.backend`) and the gateway home are shared.
 - Shared: the GUI-free gateway client `tools/ironclaw_gpui/client` (path
   dependency, unchanged) and the preferences file
   (`~/Library/Application Support/ZLO/prefs.json`, same format).
@@ -103,7 +109,7 @@ merged back by the integrator. (Git cannot create `rune-port/<area>` beside a `r
 | **G Look** | `design/{battery,brands,dock,flip,kit,motion,paint,panels,pulse,smooth_scroll,styles,wallpaper}.rs`, `assets.rs`, `ui.rs` (~5.2k) | `design/look.rs` + `design/*`, shared widgets in `design/kit.rs` |
 
 Not ported: `vendor/` (GPUI patches; Rune does its own frame pacing and
-scrolling), `bundle.sh` (a Rune bundle script comes with integration).
+scrolling). `bundle.sh` has its own Rune version here (`ZLO Rune.app`).
 
 ## Phases
 
@@ -133,14 +139,15 @@ Ticked items are done and checked in code; open ones say why.
 
 - [x] B: `voice::start(s)` and `snapshot::start(s)` from `workspace::start`; "Try again" calls `crate::service::start()` first (B merge).
 - [x] A/B: `chat::{voice_composer, voice_composer_mut, voice_press_enter, stage_snapshot}` on A's state (Chat → the open chat or its side chat, Draft → B's new-thread field); chat and draft send handlers take `voice::take_submission` and report accepted/queued/refused (the draft's claim rides into `chat::send_text`); `voice::run_ended` on run end. SnapShot routes through `workspace::stage_snapshot` (settings → threads, draft or chat).
-- [ ] B: quick composer first in `voice/session.rs::resolve` (PORT-STUB kept). The quick composer's `TextEdit` lives in its own window's state (`QuickState`, another `AppHandle`), so `voice_composer{,_mut}` cannot hand it out; live dictation with a preedit there needs the field moved into `State` (or a voice target that edits through `AppHandle::update`). Decision for B/F.
+- [x] B/F: quick composer voice (parity review P1-4). The field stays in the quick window; the main state keeps a mirror the quick window's `poll` updates, voice edits run on the mirror and, as the same edit, on the window's field via `AppHandle::update`; the controls are `voice::ui::draw` over a `Controls` copy the main `poll` sends. `voice/session.rs::resolve` uses `workspace::voice_composer` (quick first, `open_quick` opens it); Enter goes through `quick::send`, which takes talk mode's claim and refuses an empty send. Design notes at the top of `workspace/quick.rs`.
+- [x] Bundle (parity review P1-6): `bundle.sh` → `ZLO Rune.app`, id and login-item label `com.numoh.rune`; Settings, voice and permission copy name ZLO Rune.
 - [ ] D: local page helpers in `pages/usage/common_stub.rs` and `voice/settings.rs` → `pages::common` (refactor only; behaviour is right).
 - [x] G: `design::brands::provider_logo` in profiles pickers, usage history and Providers (`pages/providers/logos.rs` deleted).
 - [ ] G: shared hover/row/floating helpers; mono font for the memory and SKILL.md editors (PORT-STUB in `pages/memory.rs`): rune-kit's `TextArea` takes no text style, so this needs a Rune change.
 - [x] H: `chat::model_picker::pretty_model` in `common_stub.rs`; `provider_mark` in the profiles pickers.
 
 Remaining `PORT-STUB` markers (`rg -n PORT-STUB app/src`), each an open item
-below: `voice/session.rs` (quick composer voice target), `pages/memory.rs`
+below: `pages/memory.rs`
 (mono editor font needs Rune), `pages/usage/common_stub.rs` and
 `pages/c_widgets.rs` (helper consolidation into `pages::common` and
 `design::kit`).
@@ -165,7 +172,7 @@ below: `voice/session.rs` (quick composer voice target), `pages/memory.rs`
 - [x] A: `side::init` after open, `side::docks` beside a `.grow(1).min_w(0)` column, `side::on_turn_started/ended`, `side::open_link`, `side::adopt_folder` from mention roots, `side::on_cli_report` when the CLI diff or review moves. Side chats: `side::SideChat` owns an embedded `ChatState` (`chat::build_side_chat` + `start_side_chat`), drawn with `chat::embedded_view`.
 - [x] B: `side::titlebar_actions` in the breadcrumb (via `chat::titlebar_actions`), ⌥⌘B/⌘E/⌥⌘N; `side/dock.rs::viewport` reads the shell's `window` layout.
 - [ ] B: `s.native.covered` while overlays show; `side::dock_widths` for the wallpaper area. Need a live window to see native views.
-- [ ] Live test: native views (QuickLook, WKWebView), system notifications, window-frame restore, voice and SnapShot in a real window.
+- [ ] Live test (from `ZLO Rune.app`): native views (QuickLook, WKWebView), system notifications, window-frame restore, voice (including dictation into the quick composer from another app) and SnapShot in a real window.
 - [x] B merge: stubs B wrote into F/G/H/E files replaced by adapters onto the real APIs.
 - [ ] B: `workspace/inbox{,/view}.rs` over 800 lines (split).
 - [x] Clippy: `SCENES` uses a `Scene` type alias; `cargo clippy --all-targets -- -D warnings` is clean.
@@ -178,6 +185,5 @@ below: `voice/session.rs` (quick composer voice target), `pages/memory.rs`
   chat has no model picker pill, goal, queue (⌥Enter sends into the running
   turn instead), fork-from-message or computer share. GPUI side chats had
   their own; making H's modules thread-id based would lift this.
-- The voice target for the quick composer (see above).
 - `#![allow(dead_code)]` in `main.rs` still hides unused port items; drop it
   once the parity review is through.

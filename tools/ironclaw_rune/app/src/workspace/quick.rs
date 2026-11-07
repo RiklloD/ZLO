@@ -8,6 +8,32 @@
 //! a launcher panel (non-activating, hidden until shown) added with
 //! `App::window`; the shortcut is Rune's `App::global_shortcut`, so GPUI's
 //! hand-written HIToolbox registration is gone.
+//!
+//! ## Voice
+//!
+//! Voice runs in the main window's `State`; the field lives in this window.
+//! Two windows cannot share one state, so:
+//!
+//! - **The field stays here** ([`QuickState::input`]): keys, IME and Enter
+//!   act on it directly, and it is what this window draws.
+//! - **The main state keeps a mirror** ([`Quick::input`]). This window's
+//!   `poll` copies the field there whenever it changed (a key press, a
+//!   paste), so voice reads it synchronously like any other composer
+//!   (`chat::voice_composer`: the caret for spacing, the text on Enter).
+//! - **Voice edits go both ways as the same edit** ([`voice_edit`]): the
+//!   closure runs on the mirror at once and is queued to this window with
+//!   `AppHandle::update`, where it runs on the real field in order with the
+//!   person's own key presses. Nothing typed is overwritten; a mirror that
+//!   briefly lags catches up on this window's next `poll`.
+//! - **The controls** are `voice::ui::draw` over a [`Controls`] copy that the
+//!   main window's `poll` sends whenever it changes ([`poll`]); a press goes
+//!   back as a `voice::ui::Press` through `AppHandle::update`.
+//! - **Enter** (a key here, or talk mode's) ends in [`send`] on the main
+//!   state, which takes talk mode's claim, refuses an empty send, and hands
+//!   both to `draft::quick_send`.
+//!
+//! Voice resolves the quick composer first while it is open, and a voice
+//! key pressed in another app opens it (`draft::voice_composer`).
 
 use rune::{
     Align, App, AppHandle, AppSpec, Color, Cx, DisplayTarget, El, Key, KeyEvent, OverlayPlacement,
@@ -17,16 +43,24 @@ use rune::{
 use super::ui::{self, XS, t};
 use crate::design::{self, Palette};
 use crate::state::State;
+use crate::voice::Composer;
+use crate::voice::ui::{Controls, OnPress, Press};
 
 pub const SHORTCUT: &str = "cmd+shift+space";
 const WIDTH: f32 = 640.;
 const HEIGHT: f32 = 132.;
+const PLACEHOLDER: &str = "Ask IronClaw anything…";
 
-/// The main window's side: the quick window's handle and whether it shows.
+/// The main window's side: the quick window's handle, whether it shows,
+/// and the voice mirror of its field.
 #[derive(Default)]
 pub struct Quick {
     handle: Option<AppHandle<QuickState>>,
     open: bool,
+    /// The field as the quick window last reported it, plus voice's edits.
+    pub input: TextEdit,
+    /// The voice controls last sent to the quick window.
+    sent_controls: Option<Controls>,
 }
 
 impl Quick {
@@ -38,10 +72,32 @@ impl Quick {
 /// The quick window's own state.
 pub struct QuickState {
     input: TextEdit,
+    /// The field as last copied to the main state's mirror.
+    synced: Synced,
     palette: Palette,
+    /// The voice controls, as the main window last sent them.
+    voice: Option<Controls>,
     main: AppHandle<State>,
     /// Became the key window once; only then does losing focus close it.
     seen_active: bool,
+}
+
+/// The parts of the field the mirror needs.
+#[derive(Clone, Default, PartialEq)]
+struct Synced {
+    text: String,
+    caret: (usize, usize),
+    preedit: Option<String>,
+}
+
+impl Synced {
+    fn of(edit: &TextEdit) -> Self {
+        Self {
+            text: edit.text.clone(),
+            caret: (edit.anchor, edit.focus),
+            preedit: edit.preedit.as_ref().map(|(p, _)| p.clone()),
+        }
+    }
 }
 
 /// Add the quick window and its global shortcut to the app. Call before
@@ -52,6 +108,7 @@ pub fn install(app: App<State>) -> (App<State>, AppHandle<QuickState>) {
         fonts: design::FONTS,
         families: design::FAMILIES,
         on_key: Some(quick_key),
+        poll: Some(quick_poll),
         ..AppSpec::new("ZLO Quick", (WIDTH, HEIGHT), unreachable_init, view)
     };
     let quick = App::new(spec)
@@ -59,7 +116,9 @@ pub fn install(app: App<State>) -> (App<State>, AppHandle<QuickState>) {
             let prefs = crate::design::prefs::Prefs::load();
             QuickState {
                 input: TextEdit::new(""),
+                synced: Synced::default(),
                 palette: design::resolve(&prefs, true),
+                voice: None,
                 main,
                 seen_active: false,
             }
@@ -73,8 +132,9 @@ pub fn install(app: App<State>) -> (App<State>, AppHandle<QuickState>) {
             }
         });
     let mut app = app.global_shortcut(SHORTCUT, |s, _| toggle(s));
-    let (handle, _window) =
-        app.window(WindowSpec::from_app("quick", quick).configured_options(WindowOptions::launcher_panel()));
+    let (handle, _window) = app.window(
+        WindowSpec::from_app("quick", quick).configured_options(WindowOptions::launcher_panel()),
+    );
     (app, handle)
 }
 
@@ -115,6 +175,7 @@ pub fn toggle(s: &mut State) {
         q.palette = palette;
         q.input.clear();
         q.input.focused = true;
+        q.synced = Synced::of(&q.input);
         q.seen_active = false;
     });
     // Spotlight's spot: centred, near the top of the screen.
@@ -128,18 +189,84 @@ pub fn toggle(s: &mut State) {
         },
     );
     q.open();
-    s.workspace.quick.open = true;
+    let quick = &mut s.workspace.quick;
+    quick.open = true;
+    quick.input = TextEdit::new("");
+    // Sent again by the next `poll`.
+    quick.sent_controls = None;
 }
 
-/// Type `text` into the open quick composer (voice).
-pub fn insert_text(s: &State, text: String) {
-    if let Some(q) = &s.workspace.quick.handle {
+/// A voice edit of the quick composer's field: run on the mirror now (its
+/// result is voice's), and queued to the quick window as the same edit.
+/// `None` when the quick composer is closed.
+pub(crate) fn voice_edit<R>(
+    s: &mut State,
+    f: impl Fn(&mut TextEdit) -> R + Clone + Send + 'static,
+) -> Option<R> {
+    let quick = &mut s.workspace.quick;
+    if !quick.open {
+        return None;
+    }
+    let out = f(&mut quick.input);
+    if let Some(q) = &quick.handle {
+        let f = f.clone();
         q.update(move |q, _| {
-            let mut full = q.input.text.clone();
-            full.push_str(&text);
-            q.input.replace_text(full);
+            let _ = f(&mut q.input);
         });
     }
+    Some(out)
+}
+
+/// The main window's frame hook: send the voice controls to the open quick
+/// composer when they changed. Never changes what the main window shows.
+pub fn poll(s: &mut State) -> bool {
+    if !s.workspace.quick.open {
+        s.workspace.quick.sent_controls = None;
+        return false;
+    }
+    let controls = Controls::of(s, &Composer::Quick);
+    let quick = &mut s.workspace.quick;
+    if quick.sent_controls.as_ref() == Some(&controls) {
+        return false;
+    }
+    quick.sent_controls = Some(controls.clone());
+    if let Some(q) = &quick.handle {
+        q.update(move |q, _| q.voice = Some(controls));
+    }
+    false
+}
+
+/// Enter in the quick composer, on the main state: from its own field
+/// (keyboard) or the mirror (talk mode's Enter, `chat::voice_press_enter`).
+/// Takes talk mode's claim; an empty send is refused (the composer stays
+/// open), anything else becomes a new thread with the claim riding along.
+pub(crate) fn send(s: &mut State, text: String) {
+    let voice = crate::voice::take_submission(s, &Composer::Quick);
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        if let Some(sub) = voice {
+            crate::voice::submission_refused(s, sub, "There was nothing to send.");
+        }
+        return;
+    }
+    s.workspace.quick.input = TextEdit::new("");
+    if let Some(q) = &s.workspace.quick.handle {
+        q.update(|q, _| {
+            q.input.clear();
+            q.synced = Synced::of(&q.input);
+        });
+    }
+    close(s);
+    super::draft::quick_send(s, text, voice);
+    if !s.fixture {
+        s.rt.handle.open();
+    }
+}
+
+/// Talk mode's Enter (`chat::voice_press_enter`): send what the mirror holds.
+pub(crate) fn press_enter(s: &mut State) {
+    let text = s.workspace.quick.input.text.clone();
+    send(s, text);
 }
 
 fn close_from_quick(q: &mut QuickState, tx: &mut Tx) {
@@ -156,48 +283,46 @@ fn quick_key(q: &mut QuickState, ev: &KeyEvent, tx: &mut Tx) -> bool {
     false
 }
 
-fn submit(q: &mut QuickState, tx: &mut Tx) {
-    let text = q.input.text.trim().to_string();
-    if text.is_empty() {
-        return;
+/// Before each of this window's frames: copy a changed field to the mirror.
+fn quick_poll(q: &mut QuickState, _clock: f64, _tx: &mut Tx) -> bool {
+    let now = Synced::of(&q.input);
+    if now != q.synced {
+        q.synced = now;
+        let edit = q.input.clone();
+        q.main.update(move |s, _| {
+            if s.workspace.quick.open {
+                s.workspace.quick.input = edit;
+            }
+        });
     }
-    q.input.clear();
-    q.main.update(move |s, _| {
-        s.workspace.quick.open = false;
-        super::draft::quick_send(s, text);
-    });
-    q.main.open();
-    close_from_quick(q, tx);
+    false
+}
+
+fn submit(q: &mut QuickState, _tx: &mut Tx) {
+    let text = q.input.text.clone();
+    q.main.update(move |s, _| send(s, text));
 }
 
 fn view(q: &QuickState, _cx: &mut Cx<QuickState>) -> El {
     let p = &q.palette;
-    let k = design::kit(p);
-    let _ = &k;
     let input = ui::grow_box(
-        ui::plain_area(&q.input, 16., "Ask IronClaw anything…", p)
+        ui::plain_area(&q.input, 16., PLACEHOLDER, p)
             .on_edit(|q: &mut QuickState| &mut q.input)
             .on_submit(submit),
         1,
         4,
     );
-    let card = col()
-        .w_full()
-        .h_full()
-        .px(16.)
-        .pt(12.)
-        .pb(8.)
-        .gap(8.)
-        .child(el().grow(1.0).min_h(0.0).child(input))
-        .child(
-            row()
-                .gap(12.)
-                .center_y()
-                .child(ui::dot(p.accent, 6.))
-                .child(el().grow(1.0).child(t("New thread in IronClaw", XS, p.text_faint)))
-                .child(t("↵ send", XS, p.text_faint))
-                .child(t("esc close", XS, p.text_faint)),
-        );
+    let controls = q.voice.as_ref().map(|c| {
+        let on = |press: Press| -> OnPress<QuickState> {
+            Box::new(move |q: &mut QuickState| {
+                q.main.update(move |s, _| {
+                    crate::voice::ui::press(s, press, Composer::Quick, None);
+                });
+            })
+        };
+        crate::voice::ui::draw(c, p, on, |mic| mic)
+    });
+    let card = card(p, input, controls).w_full().h_full();
     el().w_full()
         .h_full()
         .padding(8.)
@@ -205,26 +330,121 @@ fn view(q: &QuickState, _cx: &mut Cx<QuickState>) -> El {
         .child(ui::floating(p, card, 16.))
 }
 
-/// The scene renders the panel in the main window's state (headless tools
-/// draw only the primary window): a fixture copy of the card.
-pub fn fixture_card(s: &State) -> El {
-    let p = &s.palette;
-    let card = col()
-        .w(WIDTH - 16.)
-        .h(HEIGHT - 16.)
+/// The card's column: the field, then the hint row with the voice controls.
+fn card(p: &Palette, input: El, controls: Option<El>) -> El {
+    let mut hints = row()
+        .gap(12.)
+        .center_y()
+        .child(ui::dot(p.accent, 6.))
+        .child(
+            el().grow(1.0)
+                .child(t("New thread in IronClaw", XS, p.text_faint)),
+        )
+        .child(t("↵ send", XS, p.text_faint))
+        .child(t("esc close", XS, p.text_faint));
+    if let Some(controls) = controls {
+        hints = hints.child(controls);
+    }
+    col()
         .px(16.)
         .pt(12.)
         .pb(8.)
         .gap(8.)
-        .child(el().grow(1.0).child(t("Ask IronClaw anything…", 16., p.text_faint)))
-        .child(
-            row()
-                .gap(12.)
-                .center_y()
-                .child(ui::dot(p.accent, 6.))
-                .child(el().grow(1.0).child(t("New thread in IronClaw", XS, p.text_faint)))
-                .child(t("↵ send", XS, p.text_faint))
-                .child(t("esc close", XS, p.text_faint)),
+        .child(el().grow(1.0).min_h(0.0).child(input))
+        .child(hints)
+}
+
+/// The scene renders the panel in the main window's state (headless tools
+/// draw only the primary window): the same card, with the field's text as
+/// plain text and the controls drawn over the main state.
+pub fn fixture_card(s: &State) -> El {
+    let p = &s.palette;
+    let text = &s.workspace.quick.input.text;
+    let input = if text.is_empty() {
+        t(PLACEHOLDER, 16., p.text_faint)
+    } else {
+        t(text.clone(), 16., p.text)
+    };
+    let controls = crate::voice::ui::draw(
+        &Controls::of(s, &Composer::Quick),
+        p,
+        |press: Press| -> OnPress<State> {
+            Box::new(move |s: &mut State| {
+                crate::voice::ui::press(s, press, Composer::Quick, None);
+            })
+        },
+        |mic| mic,
+    );
+    ui::floating(
+        p,
+        card(p, input, Some(controls))
+            .w(WIDTH - 16.)
+            .h(HEIGHT - 16.),
+        16.,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> State {
+        let spec = AppSpec::new("test", (100., 100.), unreachable_main, |_: &State, _| el());
+        let handle = App::new(spec).handle();
+        State::new(crate::jobs::Rt::new(handle))
+    }
+
+    fn unreachable_main() -> State {
+        unreachable!("tests build their own state")
+    }
+
+    #[test]
+    fn an_empty_quick_send_refuses_talk_modes_claim_and_stays_open() {
+        let mut s = state();
+        s.fixture = true;
+        s.workspace.quick.open = true;
+        let sub = crate::voice::fixtures::claim(&mut s, Composer::Quick);
+        send(&mut s, "   \n".into());
+        assert!(
+            !crate::voice::fixtures::waits_for(&s, sub),
+            "the claim was refused"
         );
-    ui::floating(p, card, 16.)
+        assert!(crate::voice::take_submission(&mut s, &Composer::Quick).is_none());
+        assert!(
+            s.workspace.quick.is_open(),
+            "nothing was sent, so it stays open"
+        );
+        assert!(s.workspace.draft.is_none(), "no new thread was started");
+    }
+
+    #[test]
+    fn a_quick_send_takes_the_claim_into_the_new_thread() {
+        let mut s = state();
+        s.fixture = true;
+        s.workspace.quick.open = true;
+        let sub = crate::voice::fixtures::claim(&mut s, Composer::Quick);
+        send(&mut s, "  hello  ".into());
+        // Taken by this send: no one else can take it, and it still waits
+        // for the gateway (no backend here, so the thread is still being
+        // made).
+        assert!(crate::voice::take_submission(&mut s, &Composer::Quick).is_none());
+        assert!(crate::voice::fixtures::waits_for(&s, sub));
+        assert!(!s.workspace.quick.is_open());
+        assert_eq!(
+            s.workspace.draft.as_ref().map(|d| d.input.text.as_str()),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn voice_edits_reach_the_mirror_only_while_open() {
+        let mut s = state();
+        assert_eq!(voice_edit(&mut s, |e: &mut TextEdit| e.insert("x")), None);
+        s.workspace.quick.open = true;
+        assert_eq!(
+            voice_edit(&mut s, |e: &mut TextEdit| e.insert("hi")),
+            Some(())
+        );
+        assert_eq!(s.workspace.quick.input.text, "hi");
+    }
 }

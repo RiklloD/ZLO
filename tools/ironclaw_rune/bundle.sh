@@ -1,0 +1,164 @@
+#!/bin/sh
+# Build ZLO Rune (the Rune app, backend and computer-use engine) and install
+# it to ~/Applications. Modelled on tools/ironclaw_gpui/bundle.sh; the two
+# apps live side by side.
+#
+#   ZLO Rune.app/Contents/MacOS/zlo-rune                   the window (Rune)
+#   ZLO Rune.app/Contents/MacOS/zlo-backend                IronClaw, started by zlo-rune
+#   ZLO Rune.app/Contents/Helpers/ZLO Computer Use.app     the engine, started by the backend
+#
+# Its own bundle id, com.numoh.rune (the GPUI app is com.numoh.desktop), so
+# macOS keeps separate permissions (microphone, speech, Accessibility, Screen
+# Recording), notification settings and defaults for it. Its login item is
+# the LaunchAgent com.numoh.rune (app/src/login_item.rs). The backend is
+# shared: both apps run the same gateway home, and zlo-backend keeps the
+# identifier com.numoh.backend, which the keychain item trusts.
+#
+# Signing as in the GPUI script: IRONCLAW_SIGN_IDENTITY, else the first
+# "Apple Development" identity; ZLO_ALLOW_ADHOC=1 forces ad-hoc signing.
+#
+# The backend is built from this repo (cargo build --release -p ironclaw)
+# unless ZLO_BACKEND=/path/to/ironclaw names a binary to copy (for example
+# ~/Applications/ZLO.app/Contents/MacOS/zlo-backend). The engine is the pinned
+# release, cached and checked like the GPUI script does (same cache), unless
+# ZLO_ENGINE_APP=/path/to/Some.app names a local build.
+#
+#   sh tools/ironclaw_rune/bundle.sh              build, install, reopen if it was open
+#   sh tools/ironclaw_rune/bundle.sh --no-install build only (tools/ironclaw_rune/target/ZLO Rune.app)
+set -eu
+
+ENGINE_TAG=engine-v0.6.0
+ENGINE_URL=https://github.com/RiklloD/hermes-plugin-computer-use-plus/releases/download/$ENGINE_TAG/open-computer-use-engine-arm64.zip
+ENGINE_SHA256=098dc77a2ae1a9e817a2c4e7967ae016c11ed01cf315874b5f7dd44a8bfbebf0
+
+BUNDLE_ID=com.numoh.rune
+NAME="ZLO Rune"
+EXE=zlo-rune
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+icon_src="$here/app/assets/icon.png"
+app="$here/target/$NAME.app"
+dest="$HOME/Applications/$NAME.app"
+engine_name="ZLO Computer Use.app"
+
+backend="${ZLO_BACKEND:-}"
+if [ -z "$backend" ]; then
+  (cd "$repo" && SKIP_FRONTEND_BUILD= cargo build --release -p ironclaw)
+  backend="$repo/target/release/ironclaw"
+fi
+[ -f "$backend" ] || { echo "no backend binary at $backend" >&2; exit 1; }
+cd "$here"
+cargo build --release -p ironclaw_rune
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers"
+cp "target/release/$EXE" "$app/Contents/MacOS/$EXE"
+cp "$backend" "$app/Contents/MacOS/zlo-backend"
+
+# Engine: a local build, or the pinned release (cached, checksum verified).
+if [ -n "${ZLO_ENGINE_APP:-}" ]; then
+  cp -R "$ZLO_ENGINE_APP" "$app/Contents/Helpers/$engine_name"
+else
+  cache="$HOME/Library/Caches/ZLO/$ENGINE_TAG.zip"
+  if [ ! -f "$cache" ] || ! echo "$ENGINE_SHA256  $cache" | shasum -a 256 -c - >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$cache")"
+    curl -fsSL "$ENGINE_URL" -o "$cache.part"
+    mv "$cache.part" "$cache"
+  fi
+  echo "$ENGINE_SHA256  $cache" | shasum -a 256 -c - >/dev/null || {
+    echo "engine checksum mismatch for $cache" >&2; rm -f "$cache"; exit 1; }
+  unpack=$(mktemp -d)
+  ditto -x -k "$cache" "$unpack"
+  mv "$unpack"/*.app "$app/Contents/Helpers/$engine_name"
+  rm -rf "$unpack"
+fi
+engine_plist="$app/Contents/Helpers/$engine_name/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName ZLO Computer Use" \
+  -c "Set :CFBundleDisplayName ZLO Computer Use" "$engine_plist"
+
+# Icon: every size macOS asks for, scaled from the 1024 px app icon.
+iconset=$(mktemp -d)/AppIcon.iconset
+mkdir -p "$iconset"
+for size in 16 32 128 256 512; do
+  sips -z $size $size "$icon_src" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+  double=$((size * 2))
+  sips -z $double $double "$icon_src" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
+rm -rf "$(dirname "$iconset")"
+
+# The same keys as the GPUI app's plist, under this app's own name and id.
+cat > "$app/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>$NAME</string>
+    <key>CFBundleDisplayName</key>
+    <string>$NAME</string>
+    <key>CFBundleIdentifier</key>
+    <string>$BUNDLE_ID</string>
+    <key>CFBundleExecutable</key>
+    <string>$EXE</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$version</string>
+    <key>CFBundleVersion</key>
+    <string>$version</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>ZLO listens while you dictate, talk to it, or (if you turn it on) for its wake word.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>ZLO turns your speech into text on this Mac so you can dictate messages.</string>
+</dict>
+</plist>
+EOF
+plutil -lint "$app/Contents/Info.plist" >/dev/null
+
+identity="${IRONCLAW_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/{print $2; exit}')}"
+if [ -z "$identity" ]; then
+  [ -n "${ZLO_ALLOW_ADHOC:-}" ] || {
+    echo "no Apple Development identity: ad-hoc signing resets macOS permissions and the keychain trust on every rebuild. Set ZLO_ALLOW_ADHOC=1 to build anyway." >&2
+    exit 1; }
+  echo "warning: ZLO_ALLOW_ADHOC set, signing ad-hoc" >&2
+fi
+# Inside out: nested code first, the outer seal last.
+codesign --force --sign "${identity:--}" --timestamp=none "$app/Contents/Helpers/$engine_name"
+codesign --force --sign "${identity:--}" --timestamp=none --identifier com.numoh.backend \
+  "$app/Contents/MacOS/zlo-backend"
+codesign --force --sign "${identity:--}" --timestamp=none "$app"
+codesign --verify --deep --strict "$app"
+echo "Built $app ($version)"
+
+[ "${1:-}" = "--no-install" ] && exit 0
+
+# Replace, never overwrite in place: macOS kills a running binary whose
+# signed file changed underneath it. Quitting ZLO Rune also stops its backend.
+was_running=
+if pgrep -f "$dest/Contents/MacOS/$EXE" >/dev/null; then
+  was_running=1
+  osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 || true
+  i=0
+  while pgrep -f "$dest/Contents/MacOS/" >/dev/null; do
+    i=$((i + 1))
+    [ $i -gt 60 ] && { echo "$NAME did not quit; quit it and run again." >&2; exit 1; }
+    sleep 0.5
+  done
+fi
+mkdir -p "$HOME/Applications"
+rm -rf "$dest"
+cp -R "$app" "$dest"
+echo "Installed $dest"
+[ -n "$was_running" ] && open "$dest"
+exit 0

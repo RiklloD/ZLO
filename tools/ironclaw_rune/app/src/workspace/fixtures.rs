@@ -250,8 +250,12 @@ pub fn fixture_disconnected(s: &mut State) {
 }
 
 /// The quick composer's card (it is its own window; headless tools draw the
-/// primary window, so the scene shows the card over the shell).
+/// primary window, so the scene shows the card over the shell), dictating:
+/// the voice controls with the Listening pill, the mic on.
 pub fn fixture_quick(s: &mut State) {
     fixture_shell(s);
     s.workspace.quick_fixture = true;
+    s.workspace.quick.input = rune::TextEdit::new("Summarise yesterday's failed runs");
+    let quick = crate::voice::Composer::Quick;
+    crate::voice::fixtures::with_status(s, &["click", "words"], Some(quick));
 }
