@@ -40,6 +40,9 @@ pub struct ContextMeter {
     error: Option<String>,
     /// Threads whose banner was closed, until their level changes.
     dismissed: HashSet<(String, u8)>,
+    /// Bumped per load: only the newest load's answer lands (two loads of
+    /// one thread, A → B → A, must not land oldest last).
+    load_gen: jobs::Generation,
 }
 
 impl ContextMeter {
@@ -193,11 +196,15 @@ pub(super) fn load(s: &mut State) {
     };
     let asked = id.clone();
     s.workspace.context.loading = true;
+    let generation = s.workspace.context.load_gen.bump();
     jobs::run(
         s,
         "context",
         move |c| async move { c.thread_context(&id).await },
         move |s, result, _| {
+            if s.workspace.context.load_gen != generation {
+                return;
+            }
             s.workspace.context.loading = false;
             if active_id(s) != Some(asked.as_str()) {
                 return;
