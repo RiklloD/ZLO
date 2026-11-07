@@ -71,3 +71,18 @@ fn the_working_word_rotates_every_seven_seconds() {
     assert_eq!(format_elapsed(125), "2m 5s");
     assert_eq!(format_elapsed(3_700), "1h 1m");
 }
+
+#[test]
+fn a_late_latest_page_never_replaces_a_history_load() {
+    use super::{ChatState, accept_timeline};
+    let mut c = ChatState::new("t".into());
+    // Load 1 asks for the latest page; a search hit then sets the floor and
+    // load 2 pages back to it.
+    c.history_floor = Some("msg:old".into());
+    assert!(accept_timeline(&mut c, 2, Some("msg:old")), "the history load lands");
+    assert!(!accept_timeline(&mut c, 1, None), "the delayed latest page is dropped");
+    // Same floor: a page asked before one already shown is dropped too.
+    assert!(accept_timeline(&mut c, 4, Some("msg:old")));
+    assert!(!accept_timeline(&mut c, 3, Some("msg:old")));
+    assert!(accept_timeline(&mut c, 5, Some("msg:old")));
+}

@@ -136,6 +136,10 @@ pub struct ChatState {
     history_floor: Option<String>,
     /// A load back to `history_floor` is in flight.
     floor_pending: bool,
+    /// Timeline loads, numbered as asked: the last one asked, and the
+    /// newest one shown. An older page never replaces a newer one.
+    timeline_asked: u64,
+    timeline_shown: u64,
     /// The chat opened from the new-thread screen (its first message).
     pub arrive: bool,
     /// Streaming replies revealed at a steady rate.
@@ -206,6 +210,8 @@ impl ChatState {
             reveal: None,
             history_floor: None,
             floor_pending: false,
+            timeline_asked: 0,
+            timeline_shown: 0,
             arrive: false,
             pacer: pace::Pacer::default(),
             pacing: false,
@@ -421,7 +427,9 @@ pub fn resubscribe(s: &mut State, id: &str) {
 }
 
 pub(crate) fn load_timeline(s: &mut State, id: &str) {
-    let Some(c) = chat_ref(s, id) else { return };
+    let Some(c) = chat_for(s, id) else { return };
+    c.timeline_asked += 1;
+    let asked = c.timeline_asked;
     let floor = c.history_floor.clone();
     let loaded_floor = floor.clone();
     let thread_id = id.to_string();
@@ -444,6 +452,9 @@ pub(crate) fn load_timeline(s: &mut State, id: &str) {
                 c.floor_pending = false;
             }
             match result {
+                Ok(_) if !accept_timeline(c, asked, loaded_floor.as_deref()) => {
+                    tracing::debug!(thread_id = %thread_id, "dropped a superseded timeline page");
+                }
                 Ok(page) => {
                     c.transcript.set_timeline(page);
                     refresh_rows(s, &thread_id, tx);
@@ -454,6 +465,18 @@ pub(crate) fn load_timeline(s: &mut State, id: &str) {
             }
         },
     );
+}
+
+/// Whether a timeline page asked as load `asked` back to `floor` may
+/// replace the transcript: not when the floor changed since (a latest-page
+/// load must not undo a search hit's history load), nor when a load asked
+/// later already landed. Notes it as shown when it may.
+fn accept_timeline(c: &mut ChatState, asked: u64, floor: Option<&str>) -> bool {
+    if c.history_floor.as_deref() != floor || asked < c.timeline_shown {
+        return false;
+    }
+    c.timeline_shown = asked;
+    true
 }
 
 fn on_stream(s: &mut State, id: &str, generation: Generation, batch: Vec<StreamMessage>, tx: &mut Tx) {
