@@ -497,7 +497,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             p,
             "row-id",
             "Id",
-            Some("Lowercase, used as the folder name. It cannot change later.".into()),
+            Some("Lowercase, used as the folder name. It cannot change later."),
             field(&ps.id, "profile-id (lowercase, used as folder name)", "profile-id", |s| {
                 &mut s.pages.profiles.id
             }),
@@ -516,14 +516,14 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             p,
             "row-model",
             "Default model",
-            Some("New threads on this profile start here.".into()),
+            Some("New threads on this profile start here."),
             picker(s, k, layer, Menu::Model, pickers::model_summary(ps)),
         ),
         keyed_setting_row(
             p,
             "row-approval",
             "Approvals",
-            Some("Whether tool calls run on their own or wait for you.".into()),
+            Some("Whether tool calls run on their own or wait for you."),
             picker(s, k, layer, Menu::Approval, pickers::approval_summary(ps)),
         ),
     ];
@@ -533,7 +533,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             p,
             "row-memory",
             "Supermemory container",
-            Some("Long-term memory this profile reads and writes.".into()),
+            Some("Long-term memory this profile reads and writes."),
             picker(s, k, layer, Menu::Memory, ps.picks.memory.clone().unwrap_or_else(|| "None".into())),
         ),
     ];
@@ -542,14 +542,14 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             p,
             "row-tools",
             "Tools",
-            Some("Limit the tools this profile can call.".into()),
+            Some("Limit the tools this profile can call."),
             picker(s, k, layer, Menu::Tools, count_summary(ps.picks.tools.len(), "All tools", "tool", "allowed")),
         ),
         keyed_setting_row(
             p,
             "row-skills",
             "Skills",
-            Some("Skills hidden from this profile.".into()),
+            Some("Skills hidden from this profile."),
             picker(
                 s,
                 k,
@@ -562,7 +562,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             p,
             "row-mcp",
             "MCP servers",
-            Some("Servers this profile can reach.".into()),
+            Some("Servers this profile can reach."),
             picker(s, k, layer, Menu::Mcp, count_summary(ps.picks.mcp.len(), "All MCP servers", "server", "enabled")),
         ),
     ];
