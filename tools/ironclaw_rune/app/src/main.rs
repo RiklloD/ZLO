@@ -9,9 +9,12 @@ mod chat;
 mod design;
 mod icons;
 mod jobs;
+mod login_item;
 mod native_view;
 mod pages;
+mod permissions;
 mod scenes;
+mod service;
 mod snapshot;
 mod state;
 mod voice;
@@ -36,6 +39,7 @@ fn poll(s: &mut State, _clock: f64, tx: &mut Tx) -> bool {
 fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.is_command('q') && !ev.mods.shift {
         tracing::debug!("quit requested");
+        service::stop();
         tx.quit();
         return true;
     }
@@ -50,6 +54,12 @@ fn main() {
         )
         .init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "ZLO (Rune) started");
+    // ZLO owns the local backend's lifetime: started at launch, stopped on
+    // quit (area F, `service.rs`). Headless scenes and scripts leave it be.
+    let headless = rune::is_headless();
+    if !headless {
+        service::start();
+    }
 
     let spec = AppSpec::<State> {
         min_size: Some((720.0, 480.0)),
@@ -71,6 +81,9 @@ fn main() {
         .keep_running()
         .on_reopen(|_, has_visible, _| has_visible);
     app.run();
+    if !headless {
+        service::stop();
+    }
 }
 
 /// `AppSpec::init` wants a plain fn; the real state comes from `App::init`.
