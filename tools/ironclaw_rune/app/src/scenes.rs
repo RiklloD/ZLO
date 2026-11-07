@@ -5,12 +5,21 @@
 //! is needed. Keep fixture builders in the owning module
 //! (e.g. `chat::fixtures`) and list them here, one line each, sorted.
 
+use crate::design::gallery;
 use crate::state::{Conn, Page, State};
 
 pub const SCENES: &[(&str, fn(&mut State))] = &[
     ("computer", |s| crate::chat::computer::scene(s, false)),
     ("computer-big", |s| crate::chat::computer::scene(s, true)),
     ("goals", crate::chat::goals::scene),
+    ("kit-gallery", gallery::fixture_kit_gallery),
+    ("kit-gallery-light", gallery::fixture_kit_gallery_light),
+    ("look-wallpaper-ascii", gallery::fixture_wallpaper_ascii),
+    ("look-wallpaper-dither", gallery::fixture_wallpaper_dither),
+    ("look-wallpaper-dither-full", gallery::fixture_wallpaper_dither_full),
+    ("look-wallpaper-halftone", gallery::fixture_wallpaper_halftone),
+    ("look-wallpaper-scanlines", gallery::fixture_wallpaper_scanlines),
+    ("look-wallpaper-scene", gallery::fixture_wallpaper_scene),
     ("memory", memory),
     ("memory-draft", memory_draft),
     ("memory-supermemory", memory_supermemory),

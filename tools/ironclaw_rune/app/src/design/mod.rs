@@ -7,9 +7,18 @@
 //! rune-kit's semantic tokens, so kit components (Button, Menu, Select,
 //! TextInput, Markdown, ...) paint in the same colours as our own elements.
 
+pub mod battery;
+pub mod brands;
+pub mod gallery;
+pub mod kit;
 pub mod look;
+pub mod motion;
+pub mod paint;
+pub mod panels;
 pub mod prefs;
+pub mod styles;
 pub mod themes;
+pub mod wallpaper;
 
 use rune::Color;
 use rune_kit::{Kit, PaletteSeed};

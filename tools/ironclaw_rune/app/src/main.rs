@@ -25,11 +25,16 @@ use rune::{App, AppSpec, Cx, El, KeyEvent, Tx};
 use crate::state::State;
 
 fn view(s: &State, cx: &mut Cx<State>) -> El {
+    design::look::apply_motion(s, cx);
+    if let Some(preview) = design::gallery::preview(s, cx) {
+        return preview;
+    }
     workspace::view(s, cx)
 }
 
 fn poll(s: &mut State, _clock: f64, tx: &mut Tx) -> bool {
     let mut changed = workspace::poll(s, tx);
+    changed |= design::look::poll(s, tx);
     changed |= chat::poll(s, tx);
     changed |= voice::poll(s, tx);
     changed |= snapshot::poll(s, tx);
@@ -75,9 +80,11 @@ fn main() {
     let app = app
         .init(move || {
             let mut s = State::new(jobs::Rt::new(handle));
+            design::look::start(&mut s);
             workspace::start(&mut s);
             s
         })
+        .on_focus(design::look::on_focus)
         .keep_running()
         .on_reopen(|_, has_visible, _| has_visible);
     app.run();
