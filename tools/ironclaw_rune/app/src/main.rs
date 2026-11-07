@@ -67,9 +67,7 @@ fn window_focus(s: &mut State, focused: bool, tx: &mut Tx) {
 
 fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.is_command('q') && !ev.mods.shift {
-        tracing::debug!("quit requested");
-        workspace::on_close(s, tx);
-        tx.quit();
+        workspace::quit(s, tx);
         return true;
     }
     workspace::on_key(s, ev, tx)

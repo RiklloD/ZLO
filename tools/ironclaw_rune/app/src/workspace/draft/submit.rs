@@ -69,6 +69,19 @@ impl Submission {
     }
 }
 
+/// Why the new-thread screen cannot send now (GPUI `send_draft_as`'s copy),
+/// or `None` when it can.
+fn refusal(draft: Option<&DraftState>) -> Option<&'static str> {
+    let Some(draft) = draft else {
+        return Some("There is no new-thread screen to send from.");
+    };
+    let (text, files) = inline_files::outgoing(&draft.input, &draft.staged);
+    if text.is_empty() && files.is_empty() {
+        return Some("There was nothing to send.");
+    }
+    draft.sending.then_some("A new thread is still being created; try again.")
+}
+
 /// [`send`] with talk mode's claim already taken.
 pub(super) fn send_with(s: &mut State, voice: Option<crate::voice::Submission>) {
     let refuse = |s: &mut State, why: &str| {
@@ -76,16 +89,10 @@ pub(super) fn send_with(s: &mut State, voice: Option<crate::voice::Submission>) 
             crate::voice::submission_refused(s, sub, why);
         }
     };
-    let Some(draft) = s.workspace.draft.as_ref() else {
-        return refuse(s, "There was nothing to send.");
-    };
-    let (text, files) = inline_files::outgoing(&draft.input, &draft.staged);
-    if text.is_empty() && files.is_empty() {
-        return refuse(s, "There was nothing to send.");
+    if let Some(why) = refusal(s.workspace.draft.as_ref()) {
+        return refuse(s, why);
     }
-    if draft.sending {
-        return refuse(s, "A new thread is already being created.");
-    }
+    let Some(draft) = s.workspace.draft.as_ref() else { return };
     let origin = Origin::Draft { generation: draft.generation };
     let submission = Submission::of(
         s,
@@ -213,6 +220,22 @@ mod tests {
         let Some(d) = s.workspace.draft.as_ref() else { panic!("no draft") };
         let origin = Origin::Draft { generation: d.generation };
         Submission::of(s, d, d.input.text.clone(), inline_files::pills(&d.input), d.staged.clone(), origin)
+    }
+
+    #[test]
+    fn a_refused_send_says_why_in_gpuis_words() {
+        assert_eq!(refusal(None), Some("There is no new-thread screen to send from."));
+        let s = with_draft("  ");
+        assert_eq!(refusal(s.workspace.draft.as_ref()), Some("There was nothing to send."));
+        let mut s = with_draft("hello");
+        assert_eq!(refusal(s.workspace.draft.as_ref()), None);
+        if let Some(d) = s.workspace.draft.as_mut() {
+            d.sending = true;
+        }
+        assert_eq!(
+            refusal(s.workspace.draft.as_ref()),
+            Some("A new thread is still being created; try again.")
+        );
     }
 
     #[test]

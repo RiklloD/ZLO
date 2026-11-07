@@ -11,7 +11,7 @@ use rune::{El, TextEdit, col, icon, row};
 use rune_kit::{Kit, TextInput};
 
 use super::ui::{self, SM};
-use super::{Tab, side, side_mut, side_total, tab_shown};
+use super::{Tab, side_of, side, side_mut, side_total, tab_shown, thread_id};
 use crate::icons;
 use crate::jobs;
 use crate::native_view::{self, Slot, Source, WebCommand, WebState};
@@ -32,6 +32,9 @@ pub(super) struct BrowserState {
     /// The page state the toolbar last drew.
     shown: Option<WebState>,
     polling: bool,
+    /// The running poll loop; a tick of an older loop (or of another
+    /// thread's side state) ends instead of doubling this one.
+    poll: jobs::Generation,
 }
 
 /// Show `url` in the Browser tab.
@@ -54,43 +57,58 @@ fn close(s: &mut State) {
 }
 
 /// Follow the page while the tab shows: quick while it loads, slow after,
-/// stopped once the tab hides.
+/// stopped once the tab hides. The loop belongs to the thread that started
+/// it, under a fresh generation.
 pub(super) fn start(s: &mut State) {
     if page().is_none() {
         return;
     }
+    let Some(thread) = thread_id(s) else { return };
     let Some(x) = side_mut(s) else { return };
     if x.browser.polling {
         return;
     }
     x.browser.polling = true;
-    tick(s, Duration::from_millis(250));
+    let generation = x.browser.poll.bump();
+    tick(s, thread, generation, Duration::from_millis(250));
 }
 
-fn tick(s: &State, wait: Duration) {
-    jobs::after(s, wait, |s, _| {
-        if !tab_shown(s, Tab::Browser) {
-            if let Some(x) = side_mut(s) {
-                x.browser.polling = false;
-            }
-            return;
+fn tick(s: &State, thread: String, generation: jobs::Generation, wait: Duration) {
+    jobs::after(s, wait, move |s, _| {
+        if let Some(wait) = step(s, &thread, generation) {
+            tick(s, thread, generation, wait);
         }
-        let state = native_view::web_state();
-        let loading = state.as_ref().is_some_and(|s| s.loading);
-        if let Some(x) = side_mut(s) {
-            // The field follows the page unless the person is typing in it.
-            if let Some(url) = state.as_ref().map(|w| w.url.clone()).filter(|u| !u.is_empty())
-                && !x.browser.input.focused
-                && x.browser.input.text != url
-            {
-                x.browser.input.replace_text(url);
-            }
-            if state != x.browser.shown {
-                x.browser.shown = state;
-            }
-        }
-        tick(s, Duration::from_millis(if loading { 250 } else { 1000 }));
     });
+}
+
+/// One poll of loop `generation`, started on `thread`: the wait before the
+/// next, or `None` once it ends (another thread is open, a newer loop runs,
+/// or the tab hid).
+fn step(s: &mut State, thread: &str, generation: jobs::Generation) -> Option<Duration> {
+    let x = side_of(s, thread)?;
+    if x.browser.poll != generation {
+        return None;
+    }
+    if !tab_shown(s, Tab::Browser) {
+        if let Some(x) = side_of(s, thread) {
+            x.browser.polling = false;
+        }
+        return None;
+    }
+    let state = native_view::web_state();
+    let loading = state.as_ref().is_some_and(|s| s.loading);
+    let x = side_of(s, thread)?;
+    // The field follows the page unless the person is typing in it.
+    if let Some(url) = state.as_ref().map(|w| w.url.clone()).filter(|u| !u.is_empty())
+        && !x.browser.input.focused
+        && x.browser.input.text != url
+    {
+        x.browser.input.replace_text(url);
+    }
+    if state != x.browser.shown {
+        x.browser.shown = state;
+    }
+    Some(Duration::from_millis(if loading { 250 } else { 1000 }))
 }
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
@@ -212,7 +230,42 @@ fn address(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::address;
+    use super::*;
+
+    /// The open chat `thread` with the Browser tab showing and a page.
+    fn browsing(thread: &str) -> State {
+        let mut s = crate::chat::fixtures::test_state();
+        s.chat = Some(crate::chat::ChatState::new(thread.into()));
+        s.prefs.side_open = true;
+        s.prefs.side_tab = Tab::Browser.id().into();
+        PAGE.with(|p| *p.borrow_mut() = Some("http://localhost:3000".into()));
+        s
+    }
+
+    fn loop_of(s: &State) -> (bool, jobs::Generation) {
+        let x = side(s).expect("side state");
+        (x.browser.polling, x.browser.poll)
+    }
+
+    #[test]
+    fn a_poll_tick_only_runs_for_the_thread_and_loop_that_started_it() {
+        let mut s = browsing("t1");
+        start(&mut s);
+        let (polling, first) = loop_of(&s);
+        assert!(polling);
+        assert!(step(&mut s, "t1", first).is_some(), "its own loop goes on");
+
+        // Another thread opens and starts its own loop: the first one's
+        // tick ends and leaves the new loop alone.
+        s.chat = Some(crate::chat::ChatState::new("t2".into()));
+        start(&mut s);
+        let (_, second) = loop_of(&s);
+        assert_ne!(first, second);
+        assert!(step(&mut s, "t1", first).is_none());
+        assert!(step(&mut s, "t2", first).is_none(), "an older loop on this thread ends too");
+        assert_eq!(loop_of(&s), (true, second), "the running loop is untouched");
+        assert!(step(&mut s, "t2", second).is_some());
+    }
 
     #[test]
     fn addresses_resolve_like_a_browser_bar() {
