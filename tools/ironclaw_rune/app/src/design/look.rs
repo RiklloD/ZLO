@@ -101,11 +101,6 @@ pub fn wallpaper_layer(s: &State, area: &str) -> Option<El> {
     wallpaper::layer(s, area)
 }
 
-/// [`wallpaper_layer`] with rounded corners, for a rounded panel.
-pub fn wallpaper_layer_rounded(s: &State, area: &str, radius: f32) -> Option<El> {
-    wallpaper::layer_rounded(s, area, radius)
-}
-
 /// Paint the wallpaper at `size` points now (headless fixtures drop async
 /// replies, so the normal background paint never lands there).
 pub fn fixture_wallpaper(s: &mut State, size: (u32, u32)) {

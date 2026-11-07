@@ -8,7 +8,6 @@ pub const XS_MEDIUM: TextStyle = TextStyle::new(12., 500.);
 pub const XS_SEMIBOLD: TextStyle = TextStyle::new(12., 600.);
 pub const SM: TextStyle = TextStyle::new(14., 400.);
 pub const SM_MEDIUM: TextStyle = TextStyle::new(14., 500.);
-pub const BODY: TextStyle = TextStyle::new(14., 400.);
 pub const BODY_SEMIBOLD: TextStyle = TextStyle::new(14., 600.);
 pub const LG_SEMIBOLD: TextStyle = TextStyle::new(18., 600.);
 pub const MONO_XS: TextStyle = TextStyle::new(12., 400.).mono();

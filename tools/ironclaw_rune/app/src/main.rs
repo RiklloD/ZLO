@@ -1,4 +1,3 @@
-#![allow(dead_code)] // During the port: foundation items land before their users.
 //! ZLO on Rune: a native window onto the local IronClaw gateway.
 //!
 //! A from-scratch port of the GPUI app (`tools/ironclaw_gpui/app`), which is

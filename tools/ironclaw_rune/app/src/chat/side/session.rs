@@ -24,11 +24,6 @@ use crate::state::State;
 
 const TOGGLE_KEY: &str = "side-session-toggle";
 
-/// ⌥⌘N works here: not busy forking, and the conversation has a message.
-pub fn new_side_chat_allowed(s: &State) -> bool {
-    side(s).is_some_and(|x| !x.chat_busy) && !bridge::rows(s).is_empty()
-}
-
 /// Fork this conversation into a side chat and show it (⌥⌘N). Area A's
 /// embedded side chat must not call this: only top-level chats have side
 /// chats (Zeron's rule).

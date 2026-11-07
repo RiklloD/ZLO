@@ -111,3 +111,15 @@ pub fn format_elapsed(secs: u64) -> String {
         _ => format!("{}h {}m", secs / 3_600, (secs % 3_600) / 60),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elapsed_labels_use_two_units() {
+        assert_eq!(format_elapsed(12), "12s");
+        assert_eq!(format_elapsed(184), "3m 4s");
+        assert_eq!(format_elapsed(3_720), "1h 2m");
+    }
+}

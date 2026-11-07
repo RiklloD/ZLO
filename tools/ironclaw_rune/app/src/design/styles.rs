@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 
 use rune::{Curve, Spring, SystemMaterial};
 
-use super::motion::{EASE_OUT_QUINT, TAILWIND};
+use super::motion::TAILWIND;
 use super::prefs::Prefs;
 
 /// Popovers and menus: a hair under critical, settles without a wobble
@@ -55,12 +55,8 @@ pub struct Style {
     /// Page and thread entrances.
     pub enter: Spring,
     pub enter_rise: f32,
-    /// Popovers and menus.
-    pub pop: Spring,
     /// Sliding selection indicators and toggles.
     pub slide: Spring,
-    /// The ease-out-quint curve `slide` approximates, for colour morphs.
-    pub slide_curve: Curve,
 }
 
 impl Style {
@@ -77,9 +73,7 @@ impl Style {
             hover: Curve::tween(0.160, TAILWIND),
             enter: Spring::new(0.46, 0.0),
             enter_rise: 8.,
-            pop: POP,
             slide: Spring::new(0.30, 0.0),
-            slide_curve: Curve::tween(0.300, EASE_OUT_QUINT),
         }
     }
 

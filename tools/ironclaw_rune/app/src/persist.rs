@@ -68,6 +68,7 @@ impl Writer {
     }
 
     /// Whether saves through this writer are dropped.
+    #[cfg(test)]
     pub fn discards(&self) -> bool {
         self.tx.is_none()
     }

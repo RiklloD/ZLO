@@ -24,16 +24,9 @@ use crate::state::State;
 
 /// Zeron Icons' state morph: 280 ms on `cubic-bezier(.22, 1, .36, 1)`.
 pub const GLYPH: Spring = Spring::new(0.28, 0.0);
-/// A column opening or closing: Zeron's panel clock (CSS `ease`, 240 ms).
-pub const REVEAL: Spring = Spring::new(0.24, 0.0);
 /// Titlebar button target and its glyph.
 pub const TOGGLE_SIZE: f32 = 28.;
 const GLYPH_SIZE: f32 = 16.;
-/// The glyph size [`toggle_with`] callers draw at.
-pub const GLYPH_PX: f32 = GLYPH_SIZE;
-/// Where the titlebar cluster ends, measured from the window's left edge.
-pub const CLUSTER_END: f32 = super::TRAFFIC_LIGHTS_WIDTH + TOGGLE_SIZE;
-
 /// The rounded frame both glyphs share: `<rect x=3 y=4 w=18 h=16 rx=4
 /// stroke-width=1.75>`; a centred stroke grows the box by half the stroke on
 /// each side.
@@ -129,23 +122,3 @@ pub fn toggle_with(s: &State, key: &str, label: &str, glyph: El) -> El {
         .child(glyph)
 }
 
-/// A column that slides open or shut: a clipping wrapper whose width
-/// springs between 0 and `width` on [`REVEAL`] while `child` stays laid out
-/// at its full width, so nothing rewraps mid-slide. `right` anchors the
-/// child to the wrapper's right edge (a right pane slides in from the
-/// window's edge).
-pub fn column(key: &str, open: bool, width: f32, right: bool, child: El) -> El {
-    let inner = el().key(format!("{key}-inner")).w(width).h_full().child(child);
-    let inner = if right {
-        inner.pin(None, Some(0.), Some(0.), Some(0.))
-    } else {
-        inner.pin(Some(0.), Some(0.), None, Some(0.))
-    };
-    el().key(key.to_string())
-        .w(if open { width } else { 0. })
-        .h_full()
-        
-        .clip_soft(0.)
-        .motion(REVEAL)
-        .child(inner)
-}

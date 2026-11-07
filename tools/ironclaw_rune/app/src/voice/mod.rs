@@ -553,6 +553,7 @@ pub mod fixtures {
 
     /// Talk mode pressed Enter in `composer`: the claim its send handler
     /// takes (`take_submission`).
+    #[cfg(test)]
     pub fn claim(s: &mut State, composer: Composer) -> Submission {
         let mut e = match s.voice.engine.take() {
             Some(e) => e,
@@ -565,6 +566,7 @@ pub mod fixtures {
     }
 
     /// Talk mode still waits on `sub` (it was neither refused nor answered).
+    #[cfg(test)]
     pub fn waits_for(s: &State, sub: Submission) -> bool {
         s.voice.engine.as_ref().is_some_and(|e| e.turn.waits_for(sub))
     }

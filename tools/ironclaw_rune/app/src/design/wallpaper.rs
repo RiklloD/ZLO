@@ -59,19 +59,7 @@ pub struct WallpaperState {
 }
 
 impl WallpaperState {
-    /// A picture is showing.
-    pub fn ready(&self) -> bool {
-        self.image.is_some()
-    }
 }
-
-/// The areas a wallpaper can cover (`prefs.wallpaper_area`): (id, name).
-pub const AREAS: [(&str, &str); 4] = [
-    ("window", "Window"),
-    ("conversation", "Conversation"),
-    ("sidebar", "Sidebar"),
-    ("pane", "Right pane"),
-];
 
 /// Whether the wallpaper shows at all.
 pub fn enabled(prefs: &Prefs) -> bool {

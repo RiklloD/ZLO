@@ -22,8 +22,6 @@ use crate::jobs::{self, Generation};
 use crate::pages::common::{Btn, button, error_line, rows_card, setting_row, switch};
 use crate::state::State;
 
-/// How often the app asks for a background rescan.
-pub const RESCAN_EVERY: Duration = Duration::from_secs(15 * 60);
 const RUNNING_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
@@ -209,27 +207,6 @@ pub fn view(s: &State, k: &Kit) -> El {
     };
     rows.push(setting_row(p, "Import terminal sessions", Some(&note), now));
     d.child(rows_card(p, rows))
-}
-
-/// Ask for the first-launch import now, then a rescan every
-/// [`RESCAN_EVERY`]. Fire and forget: failures only reach the debug log.
-/// The workspace calls this once the gateway connected.
-pub fn schedule(s: &State) {
-    let Some(backend) = s.rt.backend.clone() else {
-        return;
-    };
-    let ticker = backend.clone();
-    backend.spawn(move |_| async move {
-        let mut trigger = ImportTrigger::Launch;
-        loop {
-            let job = ticker.spawn(move |c| async move { c.session_import_tick(trigger).await });
-            if let Err(e) = jobs::flatten(job.await) {
-                tracing::debug!(error = %e, "session import tick failed");
-            }
-            tokio::time::sleep(RESCAN_EVERY).await;
-            trigger = ImportTrigger::Background;
-        }
-    });
 }
 
 pub fn fixture(s: &mut State) {

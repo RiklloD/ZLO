@@ -11,11 +11,10 @@ use ironclaw_gpui_client::mentions as mention;
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::transcript::{AttachmentChip, Row};
 use ironclaw_gpui_client::wire::CommandEffect;
-use ironclaw_gpui_client::workspace_views::ProjectFsEntryKind;
 use ironclaw_gpui_client::{Client, ClientError, GateDecision};
 use rune::Tx;
 
-use super::{FilesPanel, Reserve, chat_for, chat_ref, goals, inline_files, menu, set_error};
+use super::{Reserve, chat_for, chat_ref, goals, inline_files, menu, set_error};
 use crate::jobs;
 use crate::state::State;
 
@@ -157,47 +156,6 @@ pub(crate) fn open_attachment(s: &mut State, id: &str, chip: AttachmentChip) {
     open_fetched(s, id, dir, &chip.filename, move |c| async move {
         c.attachment_bytes(&thread_id, &message_id, &attachment).await
     });
-}
-
-/// The conversation's files panel at `path` (its root when `None`).
-pub fn browse(s: &mut State, id: &str, path: Option<String>) {
-    let Some(c) = chat_for(s, id) else { return };
-    c.files = Some(FilesPanel {
-        path: path.clone(),
-        entries: None,
-        error: None,
-    });
-    let thread = id.to_string();
-    let req = thread.clone();
-    jobs::run(
-        s,
-        "chat",
-        move |c| async move { c.thread_files(&req, path.as_deref()).await },
-        move |s, result, _| {
-            // Ignore answers for a panel that was closed meanwhile.
-            let Some(panel) = chat_for(s, &thread).and_then(|c| c.files.as_mut()) else {
-                return;
-            };
-            match result {
-                Ok(list) => {
-                    // Dot-files are the gateway's own bookkeeping.
-                    let mut entries: Vec<_> = list
-                        .entries
-                        .into_iter()
-                        .filter(|e| !e.name.starts_with('.'))
-                        .collect();
-                    entries.sort_by_key(|e| {
-                        (
-                            !matches!(e.kind, ProjectFsEntryKind::Directory),
-                            e.name.clone(),
-                        )
-                    });
-                    panel.entries = Some(entries);
-                }
-                Err(e) => panel.error = Some(e.to_string()),
-            }
-        },
-    );
 }
 
 /// Fetch bytes, write them under the app's temp folder and hand the file

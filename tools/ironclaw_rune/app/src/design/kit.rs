@@ -31,7 +31,7 @@
 //!   .outline() .danger() .small() .xsmall() .large() .selected() .pill_selected()
 //!   .disabled() .loading() .full() .tooltip() .accessibility_label()
 //!   .on_press(|s: &mut State| ..) .on_press_tx(..) .build(s) -> El`;
-//!   `button(key)` is `Button::new(key)`.
+
 //! - `row(s, key, active) -> El` list/sidebar row; `row_ink(s, active) -> (Color, Color)`
 //! - `pill_row(s, key, active) -> El` a row over a `slide_pill`
 //! - `slide_pill(s, key, top: Option<f32>) -> Option<El>` gliding selection
@@ -70,7 +70,7 @@ pub use loops::{claw_mark, gradient_spinner, pulse_dots, shimmer_text, status_do
 use std::rc::Rc;
 
 use rune::tok::TextStyle;
-use rune::{Color, Cursor, El, Icon, Key, KeyEvent, Shadow, Transition, Tx, col, el, icon, text};
+use rune::{Color, Cursor, El, Icon, Shadow, Transition, Tx, col, el, icon, text};
 
 use super::motion::{self, mix};
 use super::styles::Style;
@@ -276,10 +276,9 @@ pub struct Button {
     on_press: Option<Press>,
 }
 
-pub fn button(key: impl Into<String>) -> Button {
-    Button::new(key)
-}
-
+// The builder mirrors GPUI's `kit::Button` whole (the gallery scene shows
+// every variant); not every setter has a caller yet.
+#[allow(dead_code)]
 impl Button {
     pub fn new(key: impl Into<String>) -> Self {
         Self {
@@ -671,23 +670,6 @@ pub fn shortcut_badge(s: &State, index: usize) -> El {
         )
 }
 
-/// The digit of a bare `⌘1`..`⌘9` keystroke as a 0-based index.
-pub fn cmd_digit(ev: &KeyEvent) -> Option<usize> {
-    let m = &ev.mods;
-    // Off macOS Ctrl is the command key itself; on macOS it is an extra.
-    let extra_ctrl = cfg!(target_os = "macos") && m.ctrl;
-    if extra_ctrl || m.alt || m.shift {
-        return None;
-    }
-    match &ev.key {
-        Key::Command(c) => match c.to_digit(10) {
-            Some(n @ 1..=9) => Some(n as usize - 1),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// A floating popover card that arrives on the style's spring, falling
 /// 6 points into place. Put it in the view's overlay `layer`, anchored with
 /// `El::anchored`, or use `rune_kit::Popover` and style its content with
@@ -697,12 +679,6 @@ pub fn popover(s: &State, key: &str, content: El) -> El {
     floating(&st, &s.palette)
         .apply(content.key(key.to_string()).radius(st.panel_radius.clamp(6., 12.)))
         .transition(motion::pop(-6.))
-}
-
-/// Swap a snapping hover for a fading wash (GPUI `smooth_bg`).
-pub fn hover_bg(el: El, s: &State) -> El {
-    let st = Style::of(&s.prefs);
-    el.hover(s.palette.hover).hover_motion(st.hover, st.hover)
 }
 
 /// A raised card used for approval prompts and run notices, in the active

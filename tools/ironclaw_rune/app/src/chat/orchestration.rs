@@ -113,12 +113,6 @@ pub fn opened(s: &mut State, id: &str) {
     refresh(s, id);
 }
 
-/// The runtime the thread runs on (`codex`, `claude-cli`, `ironclaw`), once
-/// the orchestrator has seen it.
-pub fn thread_runtime(s: &State, id: &str) -> Option<String> {
-    crate::chat::chat_ref(s, id)?.orchestration.queue.runtime.clone()
-}
-
 /// Re-read tasks and queue (and lineage until loaded), and the goal.
 /// Coalesces: a call during a refresh only marks it stale.
 pub fn refresh(s: &mut State, id: &str) {
@@ -290,12 +284,6 @@ pub fn has_tail(s: &State, id: &str) -> bool {
     o.tasks.iter().any(|t| t.status.is_live())
         || (!c.goals.editing() && c.goals.goal.is_some())
         || !o.queue.items.is_empty()
-}
-
-/// The running turn, streamed (IronClaw's loop) or polled (CLI runtime).
-pub fn running_run(s: &State, id: &str) -> Option<String> {
-    crate::chat::active_run(s, id)
-        .or_else(|| crate::chat::chat_ref(s, id)?.orchestration.queue.external_run().map(str::to_string))
 }
 
 /// Start the slow poll if something is moving. It stops by itself.

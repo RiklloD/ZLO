@@ -56,7 +56,6 @@ use std::time::{Duration, Instant};
 use ironclaw_gpui_client::attachments::StagedFile;
 use ironclaw_gpui_client::transcript::{Row, RunEnd, Transcript};
 use ironclaw_gpui_client::wire::AttachmentLimits;
-use ironclaw_gpui_client::workspace_views::ProjectFsEntry;
 use ironclaw_gpui_client::{EventStream, StreamMessage, StreamStatus};
 use rune::{Cx, El, TextEdit, Tx};
 use rune_kit::Kit;
@@ -81,14 +80,6 @@ const PACE_TICK: Duration = Duration::from_millis(30);
 /// Zeron's reading column; Appearance → Conversation width moves it.
 pub fn content_width(s: &State) -> f32 {
     s.prefs.conversation_width.clamp(480., 1200.)
-}
-
-/// One folder of the conversation's own workspace.
-pub struct FilesPanel {
-    /// `None` is the conversation's root folder.
-    pub path: Option<String>,
-    pub entries: Option<Vec<ProjectFsEntry>>,
-    pub error: Option<String>,
 }
 
 /// Zeron's turn: room kept under the newest user message so it sits high
@@ -159,8 +150,6 @@ pub struct ChatState {
     pub menu: menu::ComposerMenu,
     /// The profile's approval-mode pill after the model pill.
     pub approval: approval_mode::ApprovalPill,
-    /// The conversation's files panel, when open.
-    pub files: Option<FilesPanel>,
     /// The agent's live checklist above the composer.
     pub plan_strip: plan_strip::PlanStrip,
     /// What the person has filled in on open question forms.
@@ -224,7 +213,6 @@ impl ChatState {
             error: None,
             menu: Default::default(),
             approval: Default::default(),
-            files: None,
             plan_strip: Default::default(),
             questions: Default::default(),
             embedded: false,

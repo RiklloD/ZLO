@@ -213,7 +213,14 @@ fn ready(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El
                 .w_full()
                 .grow(1.0)
                 .min_h(0.0)
-                .transition(rune::Transition::opacity())
+                // Page and thread entrances fade in while rising, as GPUI's
+                // `Style::enter` + `enter_rise` did.
+                .transition({
+                    let st = crate::design::styles::Style::of(&s.prefs);
+                    rune::Transition::opacity()
+                        .combined(rune::Transition::offset(0., st.enter_rise))
+                        .springs(rune::SpringPair::with_exit_ratio(st.enter, 0.5))
+                })
                 .child(main),
         );
     for area in ["conversation", "pane"] {
