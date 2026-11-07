@@ -92,6 +92,17 @@ fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut OrchestrationSt
     crate::chat::chat_for(s, thread_id).map(|c| &mut c.orchestration)
 }
 
+/// The chat extras instance showing `thread_id` now, for a reply to check
+/// with [`slot_of`] (goals and orchestration share it).
+pub(crate) fn instance_of(s: &mut State, thread_id: &str) -> Option<jobs::Instance> {
+    slot(s, thread_id).map(|o| o.instance)
+}
+
+/// Whether `instance` is still the chat extras showing `thread_id`.
+pub(crate) fn is_current(s: &mut State, thread_id: &str, instance: jobs::Instance) -> bool {
+    slot_of(s, thread_id, instance).is_some()
+}
+
 /// [`slot`], only while it is the instance that asked.
 fn slot_of<'a>(s: &'a mut State, thread_id: &str, instance: jobs::Instance) -> Option<&'a mut OrchestrationState> {
     slot(s, thread_id).filter(|o| o.instance == instance)
@@ -221,30 +232,42 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
 
 /// A fork shows its source conversation above its own messages.
 fn load_fork_prefix(s: &mut State, id: &str) {
+    let Some(instance) = instance_of(s, id) else { return };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
         "orchestration",
         move |c| async move { c.fork_prefix(&thread_id).await },
-        move |s, result, _| match result {
-            Ok(prefix) => crate::chat::set_fork_prefix(s, &asked, prefix),
-            Err(e) => tracing::debug!(error = %e, "fork source load failed"),
+        move |s, result, _| {
+            if !is_current(s, &asked, instance) {
+                return;
+            }
+            match result {
+                Ok(prefix) => crate::chat::set_fork_prefix(s, &asked, prefix),
+                Err(e) => tracing::debug!(error = %e, "fork source load failed"),
+            }
         },
     );
 }
 
 /// Forks merged back into this thread show where they arrived.
 fn load_merges(s: &mut State, id: &str) {
+    let Some(instance) = instance_of(s, id) else { return };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
         "orchestration",
         move |c| async move { c.merged_in(&thread_id).await },
-        move |s, result, _| match result {
-            Ok(merges) => crate::chat::set_merges(s, &asked, merges),
-            Err(e) => tracing::debug!(error = %e, "merged forks load failed"),
+        move |s, result, _| {
+            if !is_current(s, &asked, instance) {
+                return;
+            }
+            match result {
+                Ok(merges) => crate::chat::set_merges(s, &asked, merges),
+                Err(e) => tracing::debug!(error = %e, "merged forks load failed"),
+            }
         },
     );
 }
@@ -336,10 +359,9 @@ pub fn queue_follow_up(s: &mut State, id: &str, text: String) -> bool {
         "orchestration",
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
         move |s, result, _| {
-            let Some(o) = slot(s, &asked) else { return };
-            if o.instance == instance {
-                o.busy = false;
-            }
+            // A closed (or closed and reopened) chat's reply is dropped.
+            let Some(o) = slot_of(s, &asked, instance) else { return };
+            o.busy = false;
             match result {
                 Ok(queue) => o.queue = queue,
                 Err(e) => {
@@ -371,10 +393,9 @@ pub(crate) fn queue_action(s: &mut State, id: &str, action: QueueAction) {
         "orchestration",
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
         move |s, result, _| {
-            let Some(o) = slot(s, &asked) else { return };
-            if o.instance == instance {
-                o.busy = false;
-            }
+            // A closed (or closed and reopened) chat's reply is dropped.
+            let Some(o) = slot_of(s, &asked, instance) else { return };
+            o.busy = false;
             match result {
                 Ok(queue) => o.queue = queue,
                 Err(e) => crate::chat::report_error(s, &asked, e.to_string()),
@@ -385,20 +406,22 @@ pub(crate) fn queue_action(s: &mut State, id: &str, action: QueueAction) {
 }
 
 pub fn cancel_task(s: &mut State, id: &str, task_id: String) {
+    let Some(instance) = instance_of(s, id) else { return };
     let thread_id = id.to_string();
     jobs::run(
         s,
         "orchestration",
         move |c| async move { c.cancel_task(&task_id).await },
-        move |s, result, _| match result {
-            Ok(view) => {
-                if let Some(o) = slot(s, &thread_id)
-                    && let Some(task) = o.tasks.iter_mut().find(|t| t.task_id == view.task_id)
-                {
-                    *task = view;
+        move |s, result, _| {
+            let Some(o) = slot_of(s, &thread_id, instance) else { return };
+            match result {
+                Ok(view) => {
+                    if let Some(task) = o.tasks.iter_mut().find(|t| t.task_id == view.task_id) {
+                        *task = view;
+                    }
                 }
+                Err(e) => crate::chat::report_error(s, &thread_id, e.to_string()),
             }
-            Err(e) => crate::chat::report_error(s, &thread_id, e.to_string()),
         },
     );
 }
@@ -424,10 +447,10 @@ pub fn fork(s: &mut State, id: &str, at_run: Option<u32>) {
         },
         move |s, result, _| {
             // The fork opens as the main chat, from a side chat too (GPUI
-            // `OpenThread` bubbles up to the window).
-            if let Some(o) = slot_of(s, &asked, instance) {
-                o.busy = false;
-            }
+            // `OpenThread` bubbles up to the window); a chat closed since
+            // asking drops it, as GPUI's dropped view does.
+            let Some(o) = slot_of(s, &asked, instance) else { return };
+            o.busy = false;
             match result {
                 Ok(forked) => crate::workspace::open_thread(s, forked.fork_thread_id),
                 Err(e) => crate::chat::report_error(s, &asked, e.to_string()),
@@ -458,10 +481,9 @@ pub(crate) fn merge_back(s: &mut State, id: &str) {
                 .and_then(|m| m.target_thread_id.as_deref())
                 .and_then(|id| crate::workspace::thread_title(s, id))
                 .unwrap_or_else(|| "the original thread".into());
-            let Some(o) = slot(s, &asked) else { return };
-            if o.instance == instance {
-                o.busy = false;
-            }
+            // A closed (or closed and reopened) chat's reply is dropped.
+            let Some(o) = slot_of(s, &asked, instance) else { return };
+            o.busy = false;
             match result {
                 Ok(merged) => {
                     o.note = Some(merged.note.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| {

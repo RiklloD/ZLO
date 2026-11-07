@@ -208,9 +208,19 @@ fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut GoalsState> {
     crate::chat::chat_for(s, thread_id).map(|c| &mut c.goals)
 }
 
+/// [`slot`], only while the chat extras `instance` that asked still shows
+/// it: a chat closed and reopened on the same thread is a new instance.
+fn slot_of<'a>(s: &'a mut State, thread_id: &str, instance: jobs::Instance) -> Option<&'a mut GoalsState> {
+    if !crate::chat::orchestration::is_current(s, thread_id, instance) {
+        return None;
+    }
+    slot(s, thread_id)
+}
+
 /// Read the goal once per thread open, and again while its check can still
 /// move (each orchestration refresh asks).
 pub fn load(s: &mut State, id: &str) {
+    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else { return };
     let Some(g) = slot(s, id) else { return };
     let thread_id = id.to_string();
     if g.reading || (g.loaded && !g.check_can_move()) {
@@ -224,7 +234,7 @@ pub fn load(s: &mut State, id: &str) {
         "goal",
         move |c| async move { c.thread_goal(&thread_id).await },
         move |s, result, _| {
-            let Some(g) = slot(s, &asked) else { return };
+            let Some(g) = slot_of(s, &asked, instance) else { return };
             g.reading = false;
             match result {
                 Ok(doc) => g.goal = doc.goal,
@@ -237,8 +247,8 @@ pub fn load(s: &mut State, id: &str) {
     );
 }
 
-fn apply_goal(s: &mut State, asked: &str, result: Result<ThreadGoalResponse, ClientError>) {
-    let Some(g) = slot(s, asked) else { return };
+fn apply_goal(s: &mut State, asked: &str, instance: jobs::Instance, result: Result<ThreadGoalResponse, ClientError>) {
+    let Some(g) = slot_of(s, asked, instance) else { return };
     match result {
         Ok(doc) => {
             g.goal = doc.goal;
@@ -251,37 +261,40 @@ fn apply_goal(s: &mut State, asked: &str, result: Result<ThreadGoalResponse, Cli
 }
 
 fn write_goal(s: &mut State, id: &str, objective: Option<String>, status: Option<GoalStatus>) {
+    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else { return };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
         "goal",
         move |c| async move { c.set_thread_goal(&thread_id, objective.as_deref(), status).await },
-        move |s, result, _| apply_goal(s, &asked, result),
+        move |s, result, _| apply_goal(s, &asked, instance, result),
     );
 }
 
 /// Set (or with `None` remove) the check, and the objective if given.
 fn write_goal_check(s: &mut State, id: &str, objective: Option<String>, check: Option<GoalCheckSpec>) {
+    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else { return };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
         "goal",
         move |c| async move { c.set_thread_goal_check(&thread_id, objective.as_deref(), check.as_ref()).await },
-        move |s, result, _| apply_goal(s, &asked, result),
+        move |s, result, _| apply_goal(s, &asked, instance, result),
     );
 }
 
 /// `revision` is the check the strip showed when it was clicked.
 fn goal_check_action(s: &mut State, id: &str, action: GoalCheckAction, revision: u64) {
+    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else { return };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
         "goal",
         move |c| async move { c.goal_check_action(&thread_id, action, revision).await },
-        move |s, result, _| apply_goal(s, &asked, result),
+        move |s, result, _| apply_goal(s, &asked, instance, result),
     );
 }
 
@@ -541,14 +554,34 @@ mod tests {
         let mut s = test_state();
         with_side_chat(&mut s, "sc2");
         let doc = || ThreadGoalResponse { thread_id: "sc2".into(), goal: fixture().goal };
-        apply_goal(&mut s, "sc2", Ok(doc()));
+        let inst = crate::chat::orchestration::instance_of(&mut s, "sc2").expect("side chat extras");
+        apply_goal(&mut s, "sc2", inst, Ok(doc()));
         assert!(chat_ref(&s, "sc2").is_some_and(|c| c.goals.goal.is_some()));
         assert!(chat_ref(&s, "t1").is_some_and(|c| c.goals.goal.is_none()), "the open chat's goal is its own");
         close_side_chat(&mut s);
-        apply_goal(&mut s, "sc2", Ok(doc()));
-        apply_goal(&mut s, "sc2", Err(ClientError::Config("gone".into())));
+        apply_goal(&mut s, "sc2", inst, Ok(doc()));
+        apply_goal(&mut s, "sc2", inst, Err(ClientError::Config("gone".into())));
         let main = chat_ref(&s, "t1");
         assert!(main.is_some_and(|c| c.goals.goal.is_none() && c.error.is_none()));
+    }
+
+    #[test]
+    fn a_goal_reply_of_a_closed_chat_skips_the_reopened_one() {
+        // The same thread, closed and reopened: a new extras instance.
+        let mut s = test_state();
+        with_side_chat(&mut s, "sc2");
+        let old = crate::chat::orchestration::instance_of(&mut s, "sc2").expect("extras");
+        close_side_chat(&mut s);
+        with_side_chat(&mut s, "sc2");
+        let doc = ThreadGoalResponse { thread_id: "sc2".into(), goal: fixture().goal };
+        apply_goal(&mut s, "sc2", old, Ok(doc));
+        apply_goal(&mut s, "sc2", old, Err(ClientError::Config("late".into())));
+        let side = chat_ref(&s, "sc2").expect("reopened side chat");
+        assert!(side.goals.goal.is_none(), "the old chat's goal never lands");
+        assert!(side.error.is_none(), "nor its error");
+        let new = crate::chat::orchestration::instance_of(&mut s, "sc2").expect("extras");
+        apply_goal(&mut s, "sc2", new, Ok(ThreadGoalResponse { thread_id: "sc2".into(), goal: fixture().goal }));
+        assert!(chat_ref(&s, "sc2").is_some_and(|c| c.goals.goal.is_some()));
     }
 
     #[test]

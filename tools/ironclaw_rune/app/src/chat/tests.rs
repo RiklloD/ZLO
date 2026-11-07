@@ -86,3 +86,46 @@ fn a_late_latest_page_never_replaces_a_history_load() {
     assert!(!accept_timeline(&mut c, 3, Some("msg:old")));
     assert!(accept_timeline(&mut c, 5, Some("msg:old")));
 }
+
+#[test]
+fn a_superseded_timeline_load_keeps_its_error_to_itself() {
+    use super::{ChatState, superseded_timeline};
+    let mut c = ChatState::new("t".into());
+    // Loads 1 and 2 of the latest page: only the newer one may show a failure.
+    c.timeline_asked = 2;
+    assert!(superseded_timeline(&c, 1, None));
+    assert!(!superseded_timeline(&c, 2, None));
+    // A search hit moved the floor while load 2 was out.
+    c.history_floor = Some("msg:old".into());
+    assert!(superseded_timeline(&c, 2, None));
+    c.timeline_asked = 3;
+    assert!(!superseded_timeline(&c, 3, Some("msg:old")));
+}
+
+#[test]
+fn every_live_fold_asks_the_run_clock_again() {
+    use ironclaw_gpui_client::inbox::InboxState;
+    use rune::{Cx, El, Env, Runtime};
+
+    use crate::state::State;
+
+    fn blank(_: &State, _: &mut Cx<State>) -> El {
+        rune::el()
+    }
+    let mut s = super::fixtures::test_state();
+    super::fixtures::running(&mut s);
+    let id = s.chat.as_ref().map(|c| c.thread_id.clone()).expect("open chat");
+    let mut rt = Runtime::new(s, blank, (100., 100.), Env::new(true, 1.));
+    let fold = |rt: &mut Runtime<State>| {
+        let id = id.clone();
+        rt.update(move |s, tx| super::sync_items(s, &id, tx));
+        rt.state.chat.as_ref().and_then(|c| c.run_started).expect("a live run has a start")
+    };
+    assert!(fold(&mut rt).elapsed().as_secs() < 30, "first seen now");
+    // The inbox then reports the backend's turn start, 90 s ago: the next
+    // fold takes it, not only the first.
+    let mut row = crate::workspace::fixtures::row(&id, "t", "p", InboxState::Working, 0);
+    row.working_since = Some(chrono::Utc::now().timestamp_millis() - 90_000);
+    rt.update(move |s, _| crate::run_clock::set_rows(s, &[row]));
+    assert!(fold(&mut rt).elapsed().as_secs() >= 89);
+}
