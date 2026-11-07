@@ -10,6 +10,9 @@
 //! the composer's `TextareaState`; Rune has one state tree, so a target
 //! names its composer ([`Composer`]) and finds the `TextEdit` again through
 //! the composer owners (`crate::chat::voice_composer{,_mut}`) every time.
+//! The quick composer's field lives in its own window; an edit there goes
+//! to its mirror in the main state and, as the same edit, to the window
+//! (`workspace::quick::voice_edit`).
 
 use rune::{TextEdit, Tx};
 
@@ -48,8 +51,16 @@ impl Target {
         crate::chat::voice_composer(s, &self.composer).is_some()
     }
 
-    /// Edit the composer's field; `None` when it is gone.
-    fn edit<R>(&self, s: &mut State, f: impl FnOnce(&mut TextEdit) -> R) -> Option<R> {
+    /// Edit the composer's field; `None` when it is gone. `f` may run
+    /// twice (the quick composer's mirror and its window), so it is `Fn`.
+    fn edit<R>(
+        &self,
+        s: &mut State,
+        f: impl Fn(&mut TextEdit) -> R + Clone + Send + 'static,
+    ) -> Option<R> {
+        if self.composer == Composer::Quick {
+            return crate::workspace::quick::voice_edit(s, f);
+        }
         crate::chat::voice_composer_mut(s, &self.composer).map(f)
     }
 
@@ -114,9 +125,11 @@ impl Live {
         if append.is_empty() && volatile == self.shown {
             return;
         }
-        let done = self.target.edit(s, |edit| {
+        let tail = volatile.clone();
+        let done = self.target.edit(s, move |edit| {
             // Drop the old tail and insert the newly committed words at the
             // caret; then show the new tail as the preedit.
+            let volatile = &tail;
             edit.preedit = None;
             if !append.is_empty() {
                 edit.insert(&append);

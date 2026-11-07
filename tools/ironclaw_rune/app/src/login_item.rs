@@ -6,7 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-const LABEL: &str = "com.numoh.desktop";
+/// This app's own label (and bundle id, see `bundle.sh`): the GPUI app uses
+/// `com.numoh.desktop`, and sharing it would let either app overwrite the
+/// other's login item.
+const LABEL: &str = "com.numoh.rune";
 
 /// The `.app` this process runs from, if any.
 pub fn bundle_path() -> Option<PathBuf> {
@@ -38,7 +41,7 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
             Err(e) => Err(format!("cannot remove {}: {e}", path.display())),
         };
     }
-    let bundle = bundle_path().ok_or("ZLO is not running from its .app bundle")?;
+    let bundle = bundle_path().ok_or("ZLO Rune is not running from its .app bundle")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
@@ -83,8 +86,9 @@ mod tests {
 
     #[test]
     fn plist_opens_the_bundle_and_escapes_its_path() {
-        let text = plist(Path::new("/Users/a&b/Applications/ZLO.app"));
-        assert!(text.contains("<string>/Users/a&amp;b/Applications/ZLO.app</string>"));
+        let text = plist(Path::new("/Users/a&b/Applications/ZLO Rune.app"));
+        assert!(text.contains("<string>/Users/a&amp;b/Applications/ZLO Rune.app</string>"));
         assert!(text.contains("<key>RunAtLoad</key>\n    <true/>"));
+        assert!(text.contains("<string>com.numoh.rune</string>"));
     }
 }

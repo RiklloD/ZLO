@@ -150,7 +150,7 @@ fn wake_on(prefs: &VoicePrefs) -> bool {
 }
 
 /// Something to tell the person, with the Settings pane that fixes it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Notice {
     pub text: String,
     pub pane: Option<PrivacyPane>,
@@ -558,6 +558,24 @@ pub mod fixtures {
             text: text.into(),
             pane,
         });
+    }
+
+    /// Talk mode pressed Enter in `composer`: the claim its send handler
+    /// takes (`take_submission`).
+    pub fn claim(s: &mut State, composer: Composer) -> Submission {
+        let mut e = match s.voice.engine.take() {
+            Some(e) => e,
+            None => Engine::silent(s),
+        };
+        let sub = e.turn.submit();
+        e.submitting = Some((composer, sub));
+        s.voice.engine = Some(e);
+        sub
+    }
+
+    /// Talk mode still waits on `sub` (it was neither refused nor answered).
+    pub fn waits_for(s: &State, sub: Submission) -> bool {
+        s.voice.engine.as_ref().is_some_and(|e| e.turn.waits_for(sub))
     }
 
     pub fn dictation_off() -> (&'static str, Option<PrivacyPane>) {

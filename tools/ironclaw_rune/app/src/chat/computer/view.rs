@@ -263,9 +263,9 @@ fn permissions_card(p: &Palette, cu: &ComputerState, k: &Kit) -> El {
         .child(
             txt(
                 if screen {
-                    "Click Allow, switch ZLO on in System Settings, then reopen ZLO."
+                    "Click Allow, switch ZLO Rune on in System Settings, then reopen ZLO Rune."
                 } else {
-                    "Click Allow, then switch ZLO on in System Settings."
+                    "Click Allow, then switch ZLO Rune on in System Settings."
                 },
                 XS,
                 p.text_faint,

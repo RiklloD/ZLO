@@ -277,7 +277,7 @@ Each item is sized for one focused fix.
 3. **Draft screen inline file cards and paste.** FIXED in 355afdc5d. Use
    `inline_files::insert`/`pasted` in place of the chips (`draft.rs:475, 535`),
    and add `on_input_paste` (GPUI `draft.rs:405, 415`).
-4. **Voice in the quick composer.** Add `voice::ui::composer_controls` to the
+4. **FIXED in e24b0b8cb.** **Voice in the quick composer.** Add `voice::ui::composer_controls` to the
    quick card. Pass talk mode's claim through `quick::submit` and
    `draft::quick_send`, refusing when there is nothing to send. Make the quick
    composer the first voice target, and have `open_quick` open it for a key
@@ -293,6 +293,7 @@ Each item is sized for one focused fix.
    `workspace::shell::tests::overlays_cover_the_native_previews`. The native
    side still needs a live window (PLAN "Manual checks").
 6. **A Rune `bundle.sh` (`ZLO Rune.app`)** with its own bundle id, the usage
+6. **FIXED in e24b0b8cb** (bundle id and login-item label `com.numoh.rune`). **A Rune `bundle.sh` (`ZLO Rune.app`)** with its own bundle id, the usage
    strings, and a LaunchAgent label different from `com.numoh.desktop`
    (`login_item.rs:9`). Point the copy in `pages/settings.rs:189` and
    `voice/apple.rs:97` at it. Without a bundle, system notifications, voice,

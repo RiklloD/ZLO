@@ -22,7 +22,7 @@ use super::engine::{
 use super::mic::{Mic, Start};
 use super::turn::{Answer, PendingTurn, Submission};
 use super::{Notice, wake};
-use crate::state::{Page, State};
+use crate::state::State;
 
 const TICK: Duration = Duration::from_millis(200);
 const SPEECH_POLL: Duration = Duration::from_millis(250);
@@ -294,29 +294,18 @@ fn with_live(s: &mut State, f: impl FnOnce(&mut Live, &mut State)) {
     }
 }
 
-/// The composer to type into: the open chat or the new-thread screen;
-/// `open_quick` brings the window to the front for a key press from
-/// another app (GPUI `Workspace::voice_composer`).
+/// The composer to type into: the open quick composer, else the open chat
+/// or the new-thread screen while the main window is in front; for a key
+/// press from another app (`open_quick`) the quick composer, opened for it
+/// (GPUI `Workspace::voice_composer`; the choice is
+/// `workspace::voice_composer`'s).
 fn resolve(s: &mut State, open_quick: bool) -> Option<Target> {
-    // PORT-STUB(area B): the quick composer comes first when it is open,
-    // and `open_quick` opens it when the main window is not in front
-    // (GPUI `Workspace::voice_composer` → `quick_input`/`open_quick`). Until
-    // the quick composer is ported, the main window comes forward instead.
-    let target = match s.page {
-        Page::Chat => s.chat.as_ref().map(|c| {
-            Target::new(
-                Composer::Chat(c.thread_id.clone()),
-                Some(c.thread_id.clone()),
-            )
-        }),
-        Page::Draft => Some(Target::new(Composer::Draft, None)),
-        _ => None,
-    }
-    .filter(|t| t.alive(s));
-    if target.is_some() && open_quick && !s.fixture {
-        s.rt.handle.open();
-    }
-    target
+    let composer = crate::workspace::voice_composer(s, open_quick)?;
+    let thread = match &composer {
+        Composer::Chat(id) => Some(id.clone()),
+        Composer::Draft | Composer::Quick => None,
+    };
+    Some(Target::new(composer, thread)).filter(|t| t.alive(s))
 }
 
 /// The heard text that belongs in the composer (after the wake phrase in

@@ -46,6 +46,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 
 fn poll(s: &mut State, _clock: f64, tx: &mut Tx) -> bool {
     let mut changed = workspace::poll(s, tx);
+    // The quick composer's voice controls live in its own window.
+    changed |= workspace::quick::poll(s);
     changed |= chat::poll(s, tx);
     changed |= voice::poll(s, tx);
     changed |= snapshot::poll(s, tx);

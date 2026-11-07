@@ -10,7 +10,7 @@
 //!
 //! macOS kills a process that opens the microphone or the recognizer
 //! without the usage strings in its Info.plist, so a plain `cargo run`
-//! binary is refused up front (`bundle.sh` writes the strings).
+//! binary is refused up front (`tools/ironclaw_rune/bundle.sh` writes the strings).
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,7 +94,7 @@ fn declares(key: &str) -> bool {
 fn ready() -> Result<(), SttFailure> {
     if !declares(MIC_USAGE) || !declares(SPEECH_USAGE) {
         return Err(SttFailure {
-            message: "Voice works in ZLO.app (tools/ironclaw_gpui/bundle.sh); this build has no \
+            message: "Voice works in ZLO Rune.app (tools/ironclaw_rune/bundle.sh); this build has no \
                       microphone permission strings."
                 .into(),
             pane: None,
@@ -199,7 +199,7 @@ pub(crate) async fn authorize() -> Result<(), SttFailure> {
     ready()?;
     let denied = |pane: PrivacyPane| SttFailure {
         message: format!(
-            "ZLO has no {} access. Turn it on in System Settings → Privacy & Security.",
+            "ZLO Rune has no {} access. Turn it on in System Settings → Privacy & Security.",
             pane.label()
         ),
         pane: Some(pane),
