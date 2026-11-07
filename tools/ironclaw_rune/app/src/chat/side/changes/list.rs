@@ -5,7 +5,7 @@
 use rune::{El, ScrollSpec, col, icon, row};
 use rune_kit::Kit;
 
-use super::super::ui::{self, XS};
+use super::super::ui::{self, xs};
 use super::{ChangesState, confirmed, git_action, jump};
 use crate::chat::side::git;
 use crate::design::smooth_scroll::WheelGlide;
@@ -28,7 +28,7 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
             .pt(8.)
             .gap(4.)
             .items_center()
-            .child(ui::line(label, XS, p.text_faint).grow(1.))
+            .child(ui::line(label, xs(), p.text_faint).grow(1.))
             .child(
                 ui::btn(if stage { "Stage all" } else { "Unstage all" })
                     .disabled(busy)
@@ -127,9 +127,16 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
         ui::hover_row(s, format!("change-{id}-{}", change.path))
             .min_h(24.)
             .gap(6.)
-            .child(ui::line(letter.to_string(), XS, if armed { p.danger } else { color }).w(12.))
-            .child(ui::line(name, XS, p.text).max_w(180.))
-            .child(ui::line(dir, XS, p.text_faint).grow(1.).min_w(0.))
+            .child(
+                ui::line(
+                    letter.to_string(),
+                    xs(),
+                    if armed { p.danger } else { color },
+                )
+                .w(12.),
+            )
+            .child(ui::line(name, xs(), p.text).max_w(180.))
+            .child(ui::line(dir, xs(), p.text_faint).grow(1.).min_w(0.))
             .on_press_tx(move |s: &mut State, tx| jump(s, &to, tx))
             .child(actions)
     };
@@ -155,7 +162,7 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
         )
         .child(ui::line(
             format!("{count} changed file{}", if count == 1 { "" } else { "s" }),
-            XS,
+            xs(),
             p.text_muted,
         ))
         .on_press(|s: &mut State| {

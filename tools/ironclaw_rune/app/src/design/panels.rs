@@ -14,8 +14,7 @@
 //! - [`card_glyph`]`(key, open, size, color) -> El`
 //! - [`toggle`]`(s, key, open, right, label) -> El` (caller adds `.on_press`)
 //! - [`toggle_with`]`(s, key, label, glyph) -> El`
-//! - [`column`]`(key, open, width, right, child) -> El`
-//! - consts [`GLYPH`], [`REVEAL`], [`TOGGLE_SIZE`], [`GLYPH_PX`], [`CLUSTER_END`]
+//! - consts [`GLYPH`], [`TOGGLE_SIZE`], [`GLYPH_PX`]
 
 use rune::{Color, El, Spring, el};
 
@@ -27,6 +26,8 @@ pub const GLYPH: Spring = Spring::new(0.28, 0.0);
 /// Titlebar button target and its glyph.
 pub const TOGGLE_SIZE: f32 = 28.;
 const GLYPH_SIZE: f32 = 16.;
+/// The glyph size [`toggle_with`] callers draw at.
+pub const GLYPH_PX: f32 = GLYPH_SIZE;
 /// The rounded frame both glyphs share: `<rect x=3 y=4 w=18 h=16 rx=4
 /// stroke-width=1.75>`; a centred stroke grows the box by half the stroke on
 /// each side.

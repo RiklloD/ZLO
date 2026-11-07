@@ -71,7 +71,7 @@ pub(super) fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>
     let access = if s.voice.authorized {
         text("Allowed")
             .key("voice-allowed")
-            .font(TextStyle::new(14., 400.))
+            .font(TextStyle::new(crate::design::styles::rem(14.), 400.))
             .color(p.success)
     } else {
         Button::new("Allow")
@@ -81,6 +81,7 @@ pub(super) fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>
     };
     let phrase = el().key("voice-phrase").w(180.).child(
         TextInput::new(&s.voice.wake_phrase)
+            .width(None)
             .label("Wake phrase")
             .on_edit(|s: &mut State| &mut s.voice.wake_phrase)
             .on_submit(|s: &mut State, _| {
@@ -246,7 +247,13 @@ fn fixture_preview(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         if let Some(icon) = crate::snapshot::icon(s, file) {
             chip = chip.child(icon);
         }
-        chips = chips.child(chip.child(text(title).font(TextStyle::new(12., 400.)).color(p.text)));
+        chips = chips.child(
+            chip.child(
+                text(title)
+                    .font(TextStyle::new(crate::design::styles::rem(12.), 400.))
+                    .color(p.text),
+            ),
+        );
     }
     row()
         .key("fixture-composer")
@@ -326,7 +333,7 @@ fn page_body(key: &'static str, content: El) -> El {
 fn header(s: &State, title: &'static str) -> El {
     row().justify_between().items_center().px(8.).pb(8.).child(
         text(title)
-            .font(TextStyle::new(20., 500.))
+            .font(TextStyle::new(crate::design::styles::rem(20.), 500.))
             .color(s.palette.text),
     )
 }
@@ -339,14 +346,14 @@ fn group_header(s: &State, title: &'static str, note: Option<&'static str>) -> E
         text(title)
             .font(TextStyle {
                 line_height: 22.,
-                ..TextStyle::new(16., 600.)
+                ..TextStyle::new(crate::design::styles::rem(16.), 600.)
             })
             .color(p.text),
     );
     if let Some(note) = note {
         out = out.child(
             text(note)
-                .font(TextStyle::new(12., 400.))
+                .font(TextStyle::new(crate::design::styles::rem(12.), 400.))
                 .color(p.text_muted)
                 .wrap(),
         );
@@ -389,17 +396,17 @@ fn setting_row(
     control: El,
 ) -> El {
     let p = &s.palette;
-    let mut left = col()
-        .grow(1.)
-        .min_w(160.)
-        .gap(1.)
-        .child(text(label).font(TextStyle::new(14., 500.)).color(p.text));
+    let mut left = col().grow(1.).min_w(160.).gap(1.).child(
+        text(label)
+            .font(TextStyle::new(crate::design::styles::rem(14.), 500.))
+            .color(p.text),
+    );
     if let Some(d) = description {
         left = left.child(
             text(d)
                 .font(TextStyle {
                     line_height: 18.,
-                    ..TextStyle::new(12., 400.)
+                    ..TextStyle::new(crate::design::styles::rem(12.), 400.)
                 })
                 .color(p.text_muted)
                 .wrap(),

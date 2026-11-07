@@ -14,7 +14,7 @@ use rune::{El, TextEdit, Tx, col, el, icon, row};
 use rune_kit::diff::{Annotation, DiffMode, DiffState, DiffView, LineRange, LineRef, Side};
 use rune_kit::{ButtonVariant, Kit, TextInput};
 
-use super::ui::{self, XS, XS_MED};
+use super::ui::{self, xs, xs_med};
 use super::{
     SideState, Tab, bridge, git, short_path, side, side_mut, side_of, side_total, thread_id,
 };
@@ -498,12 +498,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .items_center()
         .child(icon(&icons::GIT_BRANCH, 12.).color(p.text_faint))
         .child(
-            ui::line(b.name.clone(), XS, p.text_muted)
+            ui::line(b.name.clone(), xs(), p.text_muted)
                 .shrink()
                 .min_w(0.),
         );
     if let Some(sync) = sync {
-        toolbar = toolbar.child(ui::line(sync, XS, p.accent));
+        toolbar = toolbar.child(ui::line(sync, xs(), p.accent));
     }
     toolbar = toolbar
         .child(ui::grow())
@@ -583,7 +583,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         col = col.child(codex::card(s, k));
     }
     if let Some(note) = state.note.clone() {
-        col = col.child(ui::line(note, XS, p.success).px(12.).pt(4.));
+        col = col.child(ui::line(note, xs(), p.success).px(12.).pt(4.));
     }
     if let Some(e) = state.error.clone() {
         col = col.child(ui::error_line(s, e));
@@ -597,6 +597,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             col_box()
                 .child(
                     TextInput::new(&state.commit)
+                        .width(None)
                         .placeholder("Commit message")
                         .label("Commit message")
                         .on_edit(|s: &mut State| &mut side_total(s).changes.commit)
@@ -666,7 +667,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .child(
                     ui::line(
                         format!("{count} comment{}", if count == 1 { "" } else { "s" }),
-                        XS,
+                        xs(),
                         p.text,
                     )
                     .grow(1.),
@@ -721,13 +722,13 @@ fn turn_card(s: &State, k: &Kit, state: &ChangesState, files: usize, add: usize,
                             "Last turn changed {files} file{}",
                             if files == 1 { "" } else { "s" }
                         ),
-                        XS_MED,
+                        xs_med(),
                         p.text,
                     )
                     .grow(1.),
                 )
-                .child(ui::line(format!("+{add}"), XS, p.success))
-                .child(ui::line(format!("−{del}"), XS, p.danger)),
+                .child(ui::line(format!("+{add}"), xs(), p.success))
+                .child(ui::line(format!("−{del}"), xs(), p.danger)),
         )
         .child(
             row()

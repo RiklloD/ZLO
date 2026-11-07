@@ -24,8 +24,9 @@
 //! Headless renders and tests, which open no window, follow the pref.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use rune::{Curve, Spring, SystemMaterial};
+use rune::{Curve, Spring, SystemMaterial, TextStyle};
 
 use super::motion::TAILWIND;
 use super::prefs::Prefs;
@@ -95,6 +96,50 @@ impl Style {
     /// Body text size, scaled from the 16 pt rem (GPUI `text_sm` = 14).
     pub fn text(&self, px_at_16: f32) -> f32 {
         (px_at_16 * self.font_size / 16.).round()
+    }
+}
+
+/// The UI type scale, `font_size / 16` (GPUI's rem against its 16 pt
+/// base), as `f32` bits. Set from the preferences at the top of every view
+/// build ([`set_type_scale`]), read by the shared text helpers
+/// ([`rem`], [`scaled`]) so pages, compact controls, the side pane and
+/// rune-kit's components follow Appearance → UI font size together, as the
+/// transcript does through [`Style::text`]. Code keeps its fixed sizes.
+static TYPE_SCALE: AtomicU32 = AtomicU32::new(0x3f80_0000); // 1.0
+
+/// Record the type scale the preferences ask for. Call once per view build,
+/// before anything draws text.
+pub fn set_type_scale(prefs: &Prefs) {
+    let k = Style::of(prefs).font_size / 16.;
+    TYPE_SCALE.store(k.to_bits(), Ordering::Relaxed);
+}
+
+/// The current type scale (1 at the default 16 pt base).
+pub fn type_scale() -> f32 {
+    f32::from_bits(TYPE_SCALE.load(Ordering::Relaxed))
+}
+
+/// A text size given at the 16 pt base, at the current scale: whole points
+/// when scaled, as [`Style::text`] rounds, and untouched at the default.
+pub fn rem(px_at_16: f32) -> f32 {
+    let k = type_scale();
+    if (k - 1.).abs() < f32::EPSILON {
+        px_at_16
+    } else {
+        (px_at_16 * k).round()
+    }
+}
+
+/// `style` at the current type scale: its size and an explicit line height.
+pub fn scaled(style: TextStyle) -> TextStyle {
+    TextStyle {
+        size: rem(style.size),
+        line_height: if style.line_height > 0. {
+            rem(style.line_height)
+        } else {
+            0.
+        },
+        ..style
     }
 }
 

@@ -17,7 +17,7 @@ use crate::design::kit::hover_wash;
 use crate::pages::common::controls::{
     Look, header_with, keyed_refresh, keyed_setting_row, press_button, styled,
 };
-use crate::pages::common::ts::{SM, SM_MEDIUM, TITLE, XS, XS_SEMIBOLD};
+use crate::pages::common::ts::{sm, sm_medium, title as page_title, xs, xs_semibold};
 use crate::pages::common::{
     block_fill, empty_state, error_line, glyph, group_header, page_body, rows_card,
 };
@@ -400,7 +400,7 @@ fn render_row(s: &State, k: &Kit, p_info: &ProfileInfo) -> El {
         meta.push(format!("used {}", jobs::when(at)));
     }
     let mut name_row = row().gap(8.0).center_y().child(
-        styled(p_info.settings.display_name.clone(), SM_MEDIUM, p.text)
+        styled(p_info.settings.display_name.clone(), sm_medium(), p.text)
             .truncate()
             .shrink(),
     );
@@ -429,7 +429,7 @@ fn render_row(s: &State, k: &Kit, p_info: &ProfileInfo) -> El {
                 .min_w(0.0)
                 .gap(1.0)
                 .child(name_row)
-                .child(styled(meta.join(" · "), XS, p.text_muted).truncate()),
+                .child(styled(meta.join(" · "), xs(), p.text_muted).truncate()),
         )
         // Shown on hover: start a thread without opening the profile.
         .child(
@@ -690,7 +690,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
     }
     footer = footer.child(el().grow(1.0));
     if let Some(n) = &ps.notice {
-        footer = footer.child(styled(n.clone(), XS, p.text_muted));
+        footer = footer.child(styled(n.clone(), xs(), p.text_muted));
     }
     footer = footer
         .child(press_button(
@@ -754,7 +754,7 @@ fn render_detail_header(s: &State, k: &Kit) -> El {
         .center_y()
         .cursor(Cursor::Pointer)
         .child(glyph(&icons::CHEVRON_LEFT, 12.0, p.text_muted))
-        .child(styled("Profiles", XS, p.text_muted))
+        .child(styled("Profiles", xs(), p.text_muted))
         .on_press(back);
     let mut top = row().w_full().px(8.0).gap(12.0).center_y();
     if let Some(pi) = profile {
@@ -763,7 +763,7 @@ fn render_detail_header(s: &State, k: &Kit) -> El {
     let mut titles = col()
         .grow(1.0)
         .min_w(0.0)
-        .child(styled(title, TITLE, p.text).truncate());
+        .child(styled(title, page_title(), p.text).truncate());
     if let Some(pi) = profile {
         titles = titles.child(styled(
             format!(
@@ -772,7 +772,7 @@ fn render_detail_header(s: &State, k: &Kit) -> El {
                 pi.thread_count,
                 if pi.thread_count == 1 { "" } else { "s" }
             ),
-            XS,
+            xs(),
             p.text_muted,
         ));
     }
@@ -816,7 +816,7 @@ fn avatar(id: &str, name: &str) -> El {
         .radius(15.0)
         .center()
         .fill(tint.alpha(0.16))
-        .child(styled(initials, XS_SEMIBOLD, tint))
+        .child(styled(initials, xs_semibold(), tint))
         .a11y_hidden()
 }
 
@@ -901,7 +901,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
         if let Some(n) = &ps.notice {
             b = b.child(
                 el().px(8.0)
-                    .child(styled(n.clone(), SM, p.text_muted).wrap()),
+                    .child(styled(n.clone(), sm(), p.text_muted).wrap()),
             );
         }
         if ps.loaded && ps.items.is_empty() {

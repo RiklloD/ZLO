@@ -2,7 +2,7 @@
 //! and switched on the Providers page (GPUI `pages/operator/setup.rs`).
 
 use crate::pages::common::controls::{muted, outlined_tag, spinner};
-use crate::pages::common::ts::{BODY_SEMIBOLD, SM_MEDIUM};
+use crate::pages::common::ts::{body_semibold, sm_medium};
 use crate::pages::common::{Tone, card, error_line, glyph};
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorSetupResponse, RebornOperatorSetupStatus, RebornOperatorSetupStepStatus,
@@ -78,7 +78,7 @@ fn render_state(s: &State, k: &Kit, panel: &SetupPanel) -> El {
                     .min_w(0.)
                     .child(
                         text(step.name.replace('_', " "))
-                            .font(SM_MEDIUM)
+                            .font(sm_medium())
                             .color(p.text),
                     )
                     .child(muted(p, step.message.clone())),
@@ -95,7 +95,7 @@ fn render_state(s: &State, k: &Kit, panel: &SetupPanel) -> El {
                     col()
                         .grow(1.)
                         .min_w(0.)
-                        .child(text(active).font(BODY_SEMIBOLD).color(p.text))
+                        .child(text(active).font(body_semibold()).color(p.text))
                         .child(muted(p, setup.message.clone())),
                 )
                 .child(status),

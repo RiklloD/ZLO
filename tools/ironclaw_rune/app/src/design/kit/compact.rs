@@ -6,6 +6,7 @@
 use rune::{Color, El, Icon, Shadow, TextStyle, el, icon, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 
+use crate::design::styles::rem;
 use crate::design::{self, Palette};
 use crate::state::State;
 
@@ -15,12 +16,13 @@ pub const SM: f32 = 14.;
 pub const ICON_XS: f32 = 12.;
 pub const ICON_SM: f32 = 14.;
 
+/// A line at `size` (at the 16 px base, scaled to the UI font size).
 pub fn txt(s: impl Into<String>, size: f32, color: Color) -> El {
-    text(s).font(TextStyle::new(size, 400.)).color(color)
+    text(s).font(TextStyle::new(rem(size), 400.)).color(color)
 }
 
 pub fn txt_medium(s: impl Into<String>, size: f32, color: Color) -> El {
-    text(s).font(TextStyle::new(size, 500.)).color(color)
+    text(s).font(TextStyle::new(rem(size), 500.)).color(color)
 }
 
 pub fn ico(i: &'static Icon, size: f32, color: Color) -> El {

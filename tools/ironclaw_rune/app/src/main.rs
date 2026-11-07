@@ -37,6 +37,8 @@ use rune::{App, AppSpec, Chrome, Cx, El, KeyEvent, Tx, WindowOptions};
 use crate::state::State;
 
 fn view(s: &State, cx: &mut Cx<State>) -> El {
+    // Appearance → UI font size scales every shared text style this build.
+    design::styles::set_type_scale(&s.prefs);
     design::look::apply_motion(s, cx);
     if let Some(preview) = design::gallery::preview(s, cx) {
         return preview;
@@ -44,11 +46,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     workspace::view(s, cx)
 }
 
-fn poll(s: &mut State, _clock: f64, tx: &mut Tx) -> bool {
+fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = workspace::poll(s, tx);
     // The quick composer's voice controls live in its own window.
     changed |= workspace::quick::poll(s);
     changed |= chat::poll(s, tx);
+    // A closed dock's column stays drawn until its clip has slid shut.
+    changed |= chat::side::poll(s, clock, tx);
     changed |= voice::poll(s, tx);
     changed |= snapshot::poll(s, tx);
     changed |= design::look::poll(s, tx);

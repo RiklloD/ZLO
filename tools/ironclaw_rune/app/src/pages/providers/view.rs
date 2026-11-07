@@ -4,7 +4,7 @@ use crate::pages::common::controls::{
     Look, Size, button_sized, header_with, icon_button_sized, input, muted, open_url, outlined_tag,
     refresh_icon, rule, section_title, spinner, spinner_line,
 };
-use crate::pages::common::ts::{BODY_SEMIBOLD, MONO_XS, SM, SM_MEDIUM, XS, XS_MEDIUM};
+use crate::pages::common::ts::{MONO_XS, body_semibold, sm, sm_medium, xs, xs_medium};
 use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
 use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView};
 use ironclaw_gpui_client::orchestration::RouteProvider;
@@ -91,7 +91,7 @@ fn render_task_models(s: &State, k: &Kit) -> El {
                 col()
                     .grow(1.)
                     .min_w(0.)
-                    .child(text("Thread titles").font(BODY_SEMIBOLD).color(p.text))
+                    .child(text("Thread titles").font(body_semibold()).color(p.text))
                     .child(muted(
                         p,
                         "Names a thread after its first reply. One model for every profile.",
@@ -152,7 +152,7 @@ fn render_task_models(s: &State, k: &Kit) -> El {
                 col()
                     .w_full()
                     .gap(4.)
-                    .child(text(name).font(XS).color(p.text_muted))
+                    .child(text(name).font(xs()).color(p.text_muted))
                     .child(row().w_full().flex_wrap().gap(4.).children(buttons)),
             );
         }
@@ -267,10 +267,14 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                 col()
                     .grow(1.)
                     .min_w(0.)
-                    .child(text(display_name(&pv.id)).font(BODY_SEMIBOLD).color(p.text))
+                    .child(
+                        text(display_name(&pv.id))
+                            .font(body_semibold())
+                            .color(p.text),
+                    )
                     .child(
                         text(pv.description.clone())
-                            .font(XS)
+                            .font(xs())
                             .color(p.text_muted)
                             .truncate(),
                     ),
@@ -321,7 +325,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                 } else {
                     outlined_tag(p, Tone::Danger, "Failed")
                 })
-                .child(text(msg.clone()).font(XS).color(p.text).wrap().grow(1.)),
+                .child(text(msg.clone()).font(xs()).color(p.text).wrap().grow(1.)),
         );
     }
     if ps.confirm_delete.as_deref() == Some(pv.id.as_str()) {
@@ -336,7 +340,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                         "Remove {} and its stored API key?",
                         display_name(&pv.id)
                     ))
-                    .font(SM)
+                    .font(sm())
                     .color(p.text)
                     .wrap()
                     .grow(1.),
@@ -448,7 +452,7 @@ fn render_quick_switch(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
         .w_full()
         .gap(6.)
         .child(rule(p))
-        .child(text("Quick switch in chat").font(XS_MEDIUM).color(p.text))
+        .child(text("Quick switch in chat").font(xs_medium()).color(p.text))
         .child(muted(
             p,
             if pinned.is_empty() {
@@ -579,17 +583,17 @@ fn render_tile(s: &State, ix: usize, pv: &LlmProviderView) -> El {
                 ))
                 .child(
                     text(display_name(&pv.id))
-                        .font(SM_MEDIUM)
+                        .font(sm_medium())
                         .color(p.text)
                         .truncate()
                         .grow(1.)
                         .min_w(0.),
                 )
-                .child(text(kind_of(&pv.id).label()).font(XS).color(p.text_muted)),
+                .child(text(kind_of(&pv.id).label()).font(xs()).color(p.text_muted)),
         )
         .child(
             text(pv.description.clone())
-                .font(XS)
+                .font(xs())
                 .color(p.text_muted)
                 .truncate()
                 .pt(4.),
@@ -635,7 +639,7 @@ fn render_accounts(s: &State, k: &Kit) -> El {
                         Kind::ApiKey => "Paste an API key",
                         Kind::Local => "Run on this Mac",
                     })
-                    .font(XS_MEDIUM)
+                    .font(xs_medium())
                     .color(p.text_muted),
                 )
                 .child(row().w_full().flex_wrap().gap(8.).children(tiles)),
@@ -682,15 +686,15 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
     let mut info = col()
         .grow(1.)
         .min_w(0.)
-        .child(text(r.name).font(BODY_SEMIBOLD).color(p.text))
-        .child(text(r.blurb).font(XS).color(p.text_muted).wrap());
+        .child(text(r.name).font(body_semibold()).color(p.text))
+        .child(text(r.blurb).font(xs()).color(p.text_muted).wrap());
     if let Some((label, cmd)) = r.command {
         info = info.child(
             row()
                 .pt(4.)
                 .gap(8.)
                 .center_y()
-                .child(text(label).font(XS).color(p.text_muted))
+                .child(text(label).font(xs()).color(p.text_muted))
                 .child(text(cmd).font(MONO_XS).color(p.text).selectable(true))
                 .child(
                     icon_button_sized(&icons::COPY, "Copy command", Size::XSmall)

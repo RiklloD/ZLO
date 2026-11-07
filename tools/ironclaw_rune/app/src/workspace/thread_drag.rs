@@ -207,7 +207,10 @@ pub fn ghost(s: &State) -> Option<El> {
             .child(icon(&icons::FILE, 14.).color(p.text_muted))
             .child(
                 text(dragged.title.clone())
-                    .font(rune::TextStyle::new(13., super::ui::REGULAR).lh(18.))
+                    .font(
+                        rune::TextStyle::new(crate::design::styles::rem(13.), super::ui::REGULAR)
+                            .lh(crate::design::styles::rem(18.)),
+                    )
                     .color(p.text)
                     .truncate()
                     .min_w(0.),

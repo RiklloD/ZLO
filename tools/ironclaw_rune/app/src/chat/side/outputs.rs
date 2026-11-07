@@ -14,7 +14,7 @@ use rune::{El, col, icon, row};
 use rune_kit::Kit;
 
 use super::preview::{self, Opened};
-use super::ui::{self, SM, XS};
+use super::ui::{self, sm, xs};
 use super::{side, side_mut, side_of, thread_id};
 use crate::icons;
 use crate::jobs::{self, Generation};
@@ -215,7 +215,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 let mut line = ui::hover_row(s, format!("output-{ix}"))
                     .label(entry.name.clone())
                     .child(icon(glyph, 12.).color(p.text_muted))
-                    .child(ui::line(entry.name.clone(), SM, p.text).grow(1.).min_w(0.));
+                    .child(
+                        ui::line(entry.name.clone(), sm(), p.text)
+                            .grow(1.)
+                            .min_w(0.),
+                    );
                 if dir {
                     line = line.child(icon(&icons::CHEVRON_RIGHT, 12.).color(p.text_faint));
                 }
@@ -242,7 +246,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         );
     }
     bar = bar
-        .child(ui::line(folder, XS, p.text_muted).grow(1.).min_w(0.).px(4.))
+        .child(
+            ui::line(folder, xs(), p.text_muted)
+                .grow(1.)
+                .min_w(0.)
+                .px(4.),
+        )
         .child(
             ui::ibtn(&icons::REFRESH_CW, "Refresh")
                 .on_press(move |s: &mut State| browse(s, current.clone()))

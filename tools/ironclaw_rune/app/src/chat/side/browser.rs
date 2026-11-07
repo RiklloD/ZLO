@@ -10,7 +10,7 @@ use std::time::Duration;
 use rune::{El, TextEdit, col, icon, row};
 use rune_kit::{Kit, TextInput};
 
-use super::ui::{self, SM};
+use super::ui::{self, sm};
 use super::{Tab, side, side_mut, side_of, side_total, tab_shown, thread_id};
 use crate::icons;
 use crate::jobs;
@@ -163,6 +163,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(
             row().grow(1.).min_w(0.).child(
                 TextInput::new(&x.browser.input)
+                    .width(None)
                     .placeholder("Address, e.g. localhost:3000")
                     .label("Address")
                     .on_edit(|s: &mut State| &mut side_total(s).browser.input)
@@ -211,7 +212,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .child(icon(&icons::GLOBE, 28.).color(p.text_faint))
             .child(ui::para(
                 "Type an address above. A local dev server works too, like localhost:3000.",
-                SM,
+                sm(),
                 p.text_muted,
             )),
     };

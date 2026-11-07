@@ -15,7 +15,7 @@ use std::time::Instant;
 use rune::{El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, el, row, text};
 use rune_kit::{ButtonVariant, Kit, TextInput};
 
-use super::ui::{self, MONO_XS, XS};
+use super::ui::{self, MONO_XS, xs};
 use super::{short_path, side, side_mut, side_of, side_total, thread_id};
 use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
@@ -263,7 +263,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     if state.lines.is_empty() {
         lines = lines.child(ui::para(
             format!("Commands run in {folder} with your login shell. Try `git log --oneline -5` or `npm test`."),
-            XS,
+            xs(),
             p.text_faint,
         ));
     }
@@ -312,10 +312,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .py(8.)
         .gap(4.)
         .items_center()
-        .child(ui::line("$", XS, p.accent))
+        .child(ui::line("$", xs(), p.accent))
         .child(
             row().grow(1.).min_w(0.).child(
                 TextInput::new(&state.input)
+                    .width(None)
                     .placeholder("Run a command…")
                     .label("Command")
                     .on_edit(|s: &mut State| &mut side_total(s).console.input)

@@ -11,7 +11,7 @@ use rune::{El, col, icon, row};
 use rune_kit::Kit;
 
 use super::preview::{self, Opened};
-use super::ui::{self, XS};
+use super::ui::{self, xs};
 use super::{SideState, bridge, git, side, side_mut, side_of, thread_id};
 use crate::icons;
 use crate::jobs::{self, Generation};
@@ -251,7 +251,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         } else {
             &icons::FILE
         };
-        let name = ui::line(entry.name.clone(), XS, color).grow(1.).min_w(0.);
+        let name = ui::line(entry.name.clone(), xs(), color).grow(1.).min_w(0.);
         let mut line = ui::hover_row(s, format!("project-row-{}", entry.path.display()))
             .min_h(24.)
             .pl(6. + depth as f32 * 12.)
@@ -266,7 +266,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             line = line.child(ui::dot(p.warning, 5.));
         }
         if let Some(l) = letter {
-            line = line.child(ui::line(l.to_string(), XS, color).w(12.));
+            line = line.child(ui::line(l.to_string(), xs(), color).w(12.));
         }
         let _ = ix;
         list = list.child(line.on_press(move |s: &mut State| {

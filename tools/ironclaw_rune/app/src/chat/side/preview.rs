@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use rune::{El, Pixels, SurfaceFit, col, el, row};
 use rune_kit::{Kit, Markdown};
 
-use super::ui::{self, SM, SM_MED, XS};
+use super::ui::{self, sm, sm_med, xs};
 use crate::icons;
 use crate::state::State;
 
@@ -195,10 +195,10 @@ fn fenced(lang: &str, text: &str) -> String {
 /// The file's body. `key` must be stable per file so Markdown keeps its blocks.
 fn render(s: &State, k: &Kit, opened: &Opened, key: &str) -> El {
     let p = &s.palette;
-    let note = |content: String| ui::para(content, SM, p.text_muted);
+    let note = |content: String| ui::para(content, sm(), p.text_muted);
     match &opened.preview {
         Preview::Loading => ui::loading(k),
-        Preview::Failed(e) => ui::para(e.clone(), SM, p.danger),
+        Preview::Failed(e) => ui::para(e.clone(), sm(), p.danger),
         Preview::TooLarge(size) => note(format!(
             "{} is too large to show here. Open it in its app.",
             crate::jobs::size(*size)
@@ -225,7 +225,7 @@ fn render(s: &State, k: &Kit, opened: &Opened, key: &str) -> El {
                     .key(format!("side-preview:{key}")),
             );
             if *cut {
-                col = col.child(ui::line("Showing the first 256 KB.", XS, p.text_faint));
+                col = col.child(ui::line("Showing the first 256 KB.", xs(), p.text_faint));
             }
             col
         }
@@ -274,7 +274,7 @@ pub(super) fn toolbar(
                         .key(format!("{key}-back")),
                 )
                 .child(
-                    ui::line(opened.title.clone(), SM_MED, p.text)
+                    ui::line(opened.title.clone(), sm_med(), p.text)
                         .grow(1.)
                         .min_w(0.),
                 )

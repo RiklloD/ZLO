@@ -12,7 +12,7 @@ use ironclaw_gpui_client::transcript::{GateState, Row, ToolStatus};
 use rune::{El, col, el, icon, row};
 use rune_kit::{Kit, Spinner};
 
-use super::ui::{self, SM, SM_MED, XS, XS_MED};
+use super::ui::{self, sm, sm_med, xs, xs_med};
 use super::{bridge, side, side_mut};
 use crate::icons;
 use crate::state::State;
@@ -104,7 +104,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .radius(8.)
                 .fill(p.accent_wash)
                 .child(Spinner::new().size(12.).build(k))
-                .child(ui::line("Working", SM, p.text).grow(1.))
+                .child(ui::line("Working", sm(), p.text).grow(1.))
                 .child(
                     ui::outline("Stop")
                         .icon(&icons::SQUARE)
@@ -160,11 +160,15 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .gap(8.)
                 .items_center()
                 .child(
-                    ui::line(prompt, XS_MED, if ix == 0 { p.text } else { p.text_muted })
-                        .grow(1.)
-                        .min_w(0.),
+                    ui::line(
+                        prompt,
+                        xs_med(),
+                        if ix == 0 { p.text } else { p.text_muted },
+                    )
+                    .grow(1.)
+                    .min_w(0.),
                 )
-                .child(ui::line(summary, XS, p.text_faint)),
+                .child(ui::line(summary, xs(), p.text_faint)),
         );
         for step in turn.steps {
             group = group.child(step_row(s, step));
@@ -235,10 +239,10 @@ fn waiting_card(s: &State, k: &Kit, row_: &Row) -> El {
                 .gap(8.)
                 .items_start()
                 .child(icon(&icons::TRIANGLE_ALERT, 12.).color(p.warning).mt(2.))
-                .child(ui::para(headline.clone(), SM_MED, p.text).grow(1.)),
+                .child(ui::para(headline.clone(), sm_med(), p.text).grow(1.)),
         );
     if let Some(text) = reason.clone().or(body.clone()) {
-        card = card.child(ui::para(text, XS, p.text_muted).max_lines(4));
+        card = card.child(ui::para(text, xs(), p.text_muted).max_lines(4));
     }
     card = card.child(if approval {
         let mut answers = row().gap(4.).child(answer(
@@ -265,7 +269,7 @@ fn waiting_card(s: &State, k: &Kit, row_: &Row) -> El {
                     .key(format!("gate-reject-{gate_ref}")),
             )
     } else {
-        ui::line("Answer it in the conversation.", XS, p.text_faint)
+        ui::line("Answer it in the conversation.", xs(), p.text_faint)
     });
     // "No, do X instead", answered right here when opened from here.
     if approval && let Some(editor) = bridge::reject_editor(s, k, gate_ref) {
@@ -343,7 +347,7 @@ fn step_row(s: &State, row_: &Row) -> El {
         .items_center()
         .radius(6.)
         .child(row().w(14.).justify_center().child(mark))
-        .child(ui::line(title, XS, p.text_muted).grow(1.).min_w(0.));
+        .child(ui::line(title, xs(), p.text_muted).grow(1.).min_w(0.));
     if detail.is_some() {
         let toggle_key = key.to_string();
         line = line
@@ -365,7 +369,7 @@ fn step_row(s: &State, row_: &Row) -> El {
                 .padding(8.)
                 .radius(6.)
                 .fill(p.hover)
-                .child(ui::para(detail, XS, p.text_muted)),
+                .child(ui::para(detail, xs(), p.text_muted)),
         );
     }
     out

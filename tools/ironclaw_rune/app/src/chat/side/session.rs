@@ -16,8 +16,9 @@ use ironclaw_gpui_client::orchestration::ForkOptions;
 use rune::{Align, Color, Cursor, Cx, El, Side, col, el, icon, row};
 use rune_kit::Kit;
 
-use super::ui::{self, SM, XS};
+use super::ui::{self, sm, xs};
 use super::{SideChat, Tab, bridge, pick_project_folder, short_path, side, side_mut, thread_id};
+use crate::design::panels;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -150,7 +151,7 @@ pub(super) fn chat_actions(s: &State) -> El {
         .min_w(0.)
         .gap(4.)
         .items_center()
-        .child(ui::line(title, XS, p.text_faint).grow(1.).min_w(0.))
+        .child(ui::line(title, xs(), p.text_faint).grow(1.).min_w(0.))
         .child(
             ui::ibtn(&icons::PLUS, "New side chat")
                 .on_press(new_side_chat)
@@ -178,15 +179,15 @@ pub(super) fn toggle(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let Some(x) = side(s) else { return el() };
     let open = x.session_open;
-    let ink = if open { p.text } else { p.text_muted };
-    let mut toggle = super::dock::toggle(
-        s,
-        TOGGLE_KEY,
+    let glyph = panels::card_glyph(
+        &format!("{TOGGLE_KEY}-glyph"),
         open,
-        "Session and side chats",
-        card_glyph(ink),
+        panels::GLYPH_PX,
+        p.text_muted,
     )
-    .on_press(|s: &mut State| {
+    .group_color(p.text);
+    let toggle = panels::toggle_with(s, TOGGLE_KEY, "Session and side chats", glyph);
+    let mut toggle = super::dock::active(s, toggle, open).on_press(|s: &mut State| {
         let Some(x) = side_mut(s) else { return };
         x.session_open = !x.session_open;
         if x.session_open {
@@ -201,20 +202,6 @@ pub(super) fn toggle(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         layer.push(card(s, k));
     }
     toggle
-}
-
-/// The session glyph (GPUI `panels::card_glyph`): a card with two lines.
-fn card_glyph(ink: Color) -> El {
-    col()
-        .w(15.)
-        .h(13.)
-        .radius(3.)
-        .border(1.5, ink)
-        .px(3.)
-        .py(3.)
-        .gap(2.)
-        .child(el().w(7.).h(1.5).fill(ink))
-        .child(el().w(5.).h(1.5).fill(ink.alpha(0.6)))
 }
 
 /// Zeron's session card: two glass cards, where the chat runs (profile,
@@ -246,7 +233,7 @@ fn card(s: &State, k: &Kit) -> El {
             .radius(8.)
             .child(icon(glyph, 15.).color(if live { p.text_muted } else { p.text_faint }))
             .child(
-                ui::line(content, SM, if live { p.text } else { p.text_faint })
+                ui::line(content, sm(), if live { p.text } else { p.text_faint })
                     .grow(1.)
                     .min_w(0.),
             )
@@ -258,7 +245,7 @@ fn card(s: &State, k: &Kit) -> El {
             e
         }
     };
-    let hint = |content: &str| ui::line(content.to_string(), XS, p.text_faint);
+    let hint = |content: &str| ui::line(content.to_string(), xs(), p.text_faint);
 
     // Where it runs.
     let model = bridge::model_label(s);
@@ -281,7 +268,7 @@ fn card(s: &State, k: &Kit) -> El {
                     .gap(4.)
                     .items_center()
                     .child(icon(&icons::GIT_BRANCH, 12.).color(p.text_faint))
-                    .child(ui::line(branch.clone(), XS, p.text_faint)),
+                    .child(ui::line(branch.clone(), xs(), p.text_faint)),
             );
         }
         place = place.child(folder_row);
@@ -311,7 +298,7 @@ fn card(s: &State, k: &Kit) -> El {
     let running = bridge::side_chat_running(s);
     let mut list = col().child(el().px(8.).pt(8.).pb(4.).child(ui::line(
         "SIDE CHATS",
-        rune::tok::TextStyle::new(12., 600.),
+        rune::tok::TextStyle::new(crate::design::styles::rem(12.), 600.),
         p.text_faint,
     )));
     for (ix, id) in chats(s).into_iter().enumerate() {

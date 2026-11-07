@@ -7,7 +7,7 @@ use crate::pages::common::controls::{
     Look, press_button, press_icon, press_icon_disabled, rule, styled,
 };
 use crate::pages::common::empty_state;
-use crate::pages::common::ts::{BODY_SEMIBOLD, SM, SM_MEDIUM, XS};
+use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs};
 use ironclaw_gpui_client::memory_page::{
     SupermemoryBindingInfo, SupermemoryBindingOrigin, SupermemoryDocumentPage,
     SupermemoryDocumentSummary, SupermemoryMemoryHit, SupermemoryStatus,
@@ -285,7 +285,7 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
         .w_full()
         .gap(12.0)
         .child(profile_picker)
-        .child(styled(binding_line(status), SM, p.text_muted).wrap());
+        .child(styled(binding_line(status), sm(), p.text_muted).wrap());
     if !status.active {
         return c;
     }
@@ -347,8 +347,8 @@ fn render_hits(s: &State, k: &Kit, hits: &[SupermemoryMemoryHit], primary: Optio
                 col()
                     .grow(1.0)
                     .min_w(0.0)
-                    .child(styled(hit.content.clone(), SM, p.text).wrap())
-                    .child(styled(meta, XS, p.text_muted)),
+                    .child(styled(hit.content.clone(), sm(), p.text).wrap())
+                    .child(styled(meta, xs(), p.text_muted)),
             );
         if can_forget {
             r = r.child(if confirming {
@@ -386,7 +386,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
         .w_full()
         .child(col().pt(16.0).pb(4.0).child(styled(
             format!("Captured documents in {}", page.container),
-            BODY_SEMIBOLD,
+            body_semibold(),
             p.text,
         )));
     if page.documents.is_empty() {
@@ -404,9 +404,9 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
         let mut text_col = col()
             .grow(1.0)
             .min_w(0.0)
-            .child(styled(title, SM_MEDIUM, p.text).truncate());
+            .child(styled(title, sm_medium(), p.text).truncate());
         if let Some(preview) = &document.preview {
-            text_col = text_col.child(styled(preview.clone(), XS, p.text_muted).wrap());
+            text_col = text_col.child(styled(preview.clone(), xs(), p.text_muted).wrap());
         }
         text_col = text_col.child(styled(
             format!(
@@ -418,7 +418,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
                     .map(|t| format!(" · {t}"))
                     .unwrap_or_default()
             ),
-            XS,
+            xs(),
             p.text_muted,
         ));
         let mut r = row()
@@ -487,7 +487,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
             .child(prev)
             .child(styled(
                 format!("{current_page} / {total}"),
-                XS,
+                xs(),
                 p.text_muted,
             ))
             .child(next),

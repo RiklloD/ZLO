@@ -8,7 +8,7 @@ use crate::pages::common::controls::{
     Look, Size, button_sized, header_with, icon_button_sized, input, outlined_tag, refresh_icon,
     rule, spinner,
 };
-use crate::pages::common::ts::{BODY_SEMIBOLD, SM_MEDIUM, XS};
+use crate::pages::common::ts::{body_semibold, sm_medium, xs};
 use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
 use std::collections::HashMap;
 
@@ -294,12 +294,12 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
                 .min_w(0.)
                 .child(
                     text(format!("/{}", x.name))
-                        .font(BODY_SEMIBOLD)
+                        .font(body_semibold())
                         .color(p.text),
                 )
                 .child(
                     text(x.description.clone())
-                        .font(XS)
+                        .font(xs())
                         .color(p.text_muted)
                         .wrap(),
                 ),
@@ -429,10 +429,10 @@ fn render_results(s: &State, k: &Kit) -> Option<El> {
                                 col()
                                     .grow(1.)
                                     .min_w(0.)
-                                    .child(text(hit.name.clone()).font(SM_MEDIUM).color(p.text))
+                                    .child(text(hit.name.clone()).font(sm_medium()).color(p.text))
                                     .child(
                                         text(hit.description.clone())
-                                            .font(XS)
+                                            .font(xs())
                                             .color(p.text_muted)
                                             .wrap(),
                                     ),
@@ -480,14 +480,14 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
                 .child(
                     col()
                         .grow(1.)
-                        .child(text("Auto-activate skills").font(SM_MEDIUM).color(p.text))
+                        .child(text("Auto-activate skills").font(sm_medium()).color(p.text))
                         .child(
                             text(if on {
                                 "Skills turn on by themselves when a message matches them."
                             } else {
                                 "Skills only run when you type /name in a message."
                             })
-                            .font(XS)
+                            .font(xs())
                             .color(p.text_muted)
                             .wrap(),
                         ),

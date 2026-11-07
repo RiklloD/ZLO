@@ -6,7 +6,7 @@ use rune::{El, col, el, icon, row};
 use rune_kit::diff::{Annotation, DiffState, LineRange, LineRef, Side};
 use rune_kit::{Kit, TextInput};
 
-use super::super::ui::{self, XS, XS_MED};
+use super::super::ui::{self, xs, xs_med};
 use super::{Comment, codex, save_draft, stats, sync_annotations};
 use crate::chat::side::{SideState, git, side, side_mut, side_total};
 use crate::icons;
@@ -33,11 +33,15 @@ pub(super) fn annotation(s: &State, k: &Kit, a: &Annotation) -> El {
         let mut body = col().gap(2.).child(
             row()
                 .gap(4.)
-                .child(ui::line(format!("Codex {}", f.priority_label()), XS, tint))
-                .child(ui::line(f.title.clone(), XS_MED, p.text).shrink()),
+                .child(ui::line(
+                    format!("Codex {}", f.priority_label()),
+                    xs(),
+                    tint,
+                ))
+                .child(ui::line(f.title.clone(), xs_med(), p.text).shrink()),
         );
         if !f.body.is_empty() {
-            body = body.child(ui::para(f.body.clone(), XS, p.text_muted));
+            body = body.child(ui::para(f.body.clone(), xs(), p.text_muted));
         }
         return base.border(1., tint.alpha(0.5)).child(body);
     }
@@ -54,7 +58,7 @@ pub(super) fn annotation(s: &State, k: &Kit, a: &Annotation) -> El {
                 .gap(8.)
                 .items_start()
                 .child(icon(&icons::MESSAGE_SQUARE_PLUS, 12.).color(p.accent))
-                .child(ui::para(text, XS, p.text).grow(1.))
+                .child(ui::para(text, xs(), p.text).grow(1.))
                 .child(
                     ui::ibtn(&icons::CLOSE, "Remove comment")
                         .on_press(move |s: &mut State| {
@@ -74,6 +78,7 @@ pub(super) fn annotation(s: &State, k: &Kit, a: &Annotation) -> El {
     base.gap(4.)
         .child(
             TextInput::new(&draft.input)
+                .width(None)
                 .placeholder("Comment for the agent")
                 .label("Comment for the agent")
                 .on_edit(|s: &mut State| match side_total(s).changes.draft.as_mut() {

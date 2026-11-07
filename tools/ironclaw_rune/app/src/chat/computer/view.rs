@@ -252,7 +252,7 @@ fn card_view(
             .max_w(w * 0.7)
             .child(
                 text(tag)
-                    .font(TextStyle::new(10.5, 600.))
+                    .font(TextStyle::new(crate::design::styles::rem(10.5), 600.))
                     .color(Color::WHITE)
                     .truncate(),
             ),

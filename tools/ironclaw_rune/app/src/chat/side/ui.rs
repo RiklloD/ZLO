@@ -10,12 +10,26 @@ use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant
 use crate::design::smooth_scroll::WheelGlide;
 use crate::state::State;
 
-/// gpui-kit's `text_size(10)`, `text_xs`, `text_sm`.
-pub const TINY: TextStyle = TextStyle::new(10., 400.);
-pub const XS: TextStyle = TextStyle::new(12., 400.);
-pub const XS_MED: TextStyle = TextStyle::new(12., 500.);
-pub const SM: TextStyle = TextStyle::new(13., 400.);
-pub const SM_MED: TextStyle = TextStyle::new(13., 500.);
+/// gpui-kit's `text_size(10)`, `text_xs`, `text_sm`, scaled to Appearance →
+/// UI font size (`styles::rem`); code ([`MONO_XS`]) keeps its size.
+fn at(size: f32, weight: f32) -> TextStyle {
+    TextStyle::new(crate::design::styles::rem(size), weight)
+}
+pub fn tiny() -> TextStyle {
+    at(10., 400.)
+}
+pub fn xs() -> TextStyle {
+    at(12., 400.)
+}
+pub fn xs_med() -> TextStyle {
+    at(12., 500.)
+}
+pub fn sm() -> TextStyle {
+    at(13., 400.)
+}
+pub fn sm_med() -> TextStyle {
+    at(13., 500.)
+}
 pub const MONO_XS: TextStyle = TextStyle::new(12., 400.).mono();
 
 /// A text in `style` and `color`, truncated to one line.
@@ -36,14 +50,14 @@ pub fn para(content: impl Into<String>, style: TextStyle, color: Color) -> El {
 pub fn empty(s: &State, content: impl Into<String>) -> El {
     el().w_full()
         .padding(16.)
-        .child(para(content, SM, s.palette.text_muted))
+        .child(para(content, sm(), s.palette.text_muted))
 }
 
 pub fn error_line(s: &State, content: impl Into<String>) -> El {
     el().w_full()
         .px(12.)
         .py(8.)
-        .child(para(content, XS, s.palette.danger))
+        .child(para(content, xs(), s.palette.danger))
 }
 
 pub fn loading(k: &Kit) -> El {
@@ -63,7 +77,7 @@ pub fn heading(s: &State, content: impl Into<String>) -> El {
         .pb(4.)
         .gap(8.)
         .items_center()
-        .child(line(content, XS_MED, s.palette.text_faint))
+        .child(line(content, xs_med(), s.palette.text_faint))
 }
 
 /// A tab's scrolling column. Each tab keys its own, so each keeps its

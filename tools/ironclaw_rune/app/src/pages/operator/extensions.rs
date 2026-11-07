@@ -4,7 +4,7 @@
 //! `pages/operator/extensions.rs`.
 
 use crate::pages::common::controls::{Look, Size, button_sized, input, muted, outlined_tag};
-use crate::pages::common::ts::{BODY_SEMIBOLD, XS, XS_MEDIUM};
+use crate::pages::common::ts::{body_semibold, xs, xs_medium};
 use crate::pages::common::{Tone, card, empty_state, error_line, loading};
 use ironclaw_gpui_client::ClientError;
 use ironclaw_gpui_client::operator::AdminConfigGroup;
@@ -166,7 +166,7 @@ fn render_group(s: &State, k: &Kit, ix: usize, g: &GroupForm) -> El {
             .center_y()
             .child(
                 text(g.group.display_name.clone())
-                    .font(BODY_SEMIBOLD)
+                    .font(body_semibold())
                     .color(p.text)
                     .grow(1.),
             )
@@ -196,14 +196,14 @@ fn render_group(s: &State, k: &Kit, ix: usize, g: &GroupForm) -> El {
             .gap(2.)
             .child(
                 text(format!("{}{}", f.label, if f.required { " *" } else { "" }))
-                    .font(XS_MEDIUM)
+                    .font(xs_medium())
                     .color(p.text),
             )
             .child(field.build(k).key(format!("field-{ix}-{fi}")));
         if !f.description.is_empty() {
             block = block.child(
                 text(f.description.clone())
-                    .font(XS)
+                    .font(xs())
                     .color(p.text_muted)
                     .wrap(),
             );

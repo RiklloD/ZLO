@@ -12,9 +12,17 @@ use crate::workspace::fixtures as ws;
 /// One scene: its name and the fixture that fills the state.
 pub type Scene = (&'static str, fn(&mut State));
 
+/// The UI font size the `*-large-type` scenes ask for (default 16).
+const LARGE_TYPE: f32 = 20.;
+
 pub const SCENES: &[Scene] = &[
     ("appearance", |s| {
         page_with(s, Page::Appearance, crate::pages::settings::fixture)
+    }),
+    // Appearance → UI font size at 20 pt: every shared text style follows.
+    ("appearance-large-type", |s| {
+        page_with(s, Page::Appearance, crate::pages::settings::fixture);
+        s.prefs.ui_font_size = LARGE_TYPE;
     }),
     ("appearance-translucent", |s| {
         page_with(s, Page::Appearance, crate::pages::settings::fixture);
@@ -33,6 +41,10 @@ pub const SCENES: &[Scene] = &[
     }),
     ("chat", crate::chat::fixtures::chat),
     ("chat-gate", crate::chat::fixtures::gate),
+    ("chat-large-type", |s| {
+        crate::chat::side::fixtures::activity(s);
+        s.prefs.ui_font_size = LARGE_TYPE;
+    }),
     ("chat-menu", crate::chat::fixtures::menu),
     ("chat-question", crate::chat::fixtures::question),
     ("chat-running", crate::chat::fixtures::running),
@@ -75,6 +87,10 @@ pub const SCENES: &[Scene] = &[
     ("model-picker", |s| {
         crate::chat::model_picker::scene(s, false)
     }),
+    ("model-picker-large-type", |s| {
+        crate::chat::model_picker::scene(s, false);
+        s.prefs.ui_font_size = LARGE_TYPE;
+    }),
     ("model-picker-effort", |s| {
         crate::chat::model_picker::scene(s, true)
     }),
@@ -104,6 +120,10 @@ pub const SCENES: &[Scene] = &[
         page_with(s, Page::Projects, crate::pages::projects::fixture)
     }),
     ("providers", crate::pages::providers::fixtures::providers),
+    ("providers-large-type", |s| {
+        crate::pages::providers::fixtures::providers(s);
+        s.prefs.ui_font_size = LARGE_TYPE;
+    }),
     (
         "providers-catalog",
         crate::pages::providers::fixtures::catalog,

@@ -105,7 +105,7 @@ pub fn styled(s: impl Into<String>, style: TextStyle, color: Color) -> El {
 
 /// 12 px muted text that wraps (GPUI operator `muted`).
 pub fn muted(p: &Palette, msg: impl Into<String>) -> El {
-    styled(msg, ts::XS, p.text_muted).wrap()
+    styled(msg, ts::xs(), p.text_muted).wrap()
 }
 
 /// [`header`] with several actions, 8 px apart.
@@ -115,7 +115,7 @@ pub fn header_with(p: &Palette, title: &str, actions: Vec<El>) -> El {
 
 /// A section label (GPUI `div().pt_6().pb_2().font_semibold()`).
 pub fn section_title(p: &Palette, title: &str, top: f32) -> El {
-    styled(title, ts::BODY_SEMIBOLD, p.text).pt(top).pb(8.)
+    styled(title, ts::body_semibold(), p.text).pt(top).pb(8.)
 }
 
 /// One setting under a caller's key (see [`super::setting_row`]).
@@ -135,7 +135,7 @@ pub fn keyed_setting_row(
     if let Some(d) = description {
         left = left.child(
             text(d)
-                .font(super::font(super::XS, 400.).lh(18.))
+                .font(super::font(super::XS, 400.).lh(crate::design::styles::rem(18.)))
                 .color(p.text_muted)
                 .wrap(),
         );
@@ -183,7 +183,7 @@ pub fn outlined_tag(p: &Palette, tone: Tone, label: impl Into<String>) -> El {
         .radius(4.)
         .fill(fill)
         .border(1., c.alpha(0.25))
-        .child(styled(label, ts::XS, ink).single_line())
+        .child(styled(label, ts::xs(), ink).single_line())
 }
 
 /// GPUI `design::kit::row` as the pickers draw it: a hoverable list row,
@@ -218,7 +218,7 @@ pub fn spinner_line(p: &Palette, k: &Kit, msg: &str) -> El {
         .gap(8.)
         .center_y()
         .child(spinner(k))
-        .child(styled(msg, ts::XS, p.text))
+        .child(styled(msg, ts::xs(), p.text))
 }
 
 /// Open a URL from a handler; failures go to the log.

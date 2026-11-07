@@ -3,7 +3,7 @@
 use crate::pages::common::controls::{
     Look, Size, button_sized, muted, outlined_tag, rule, spinner,
 };
-use crate::pages::common::ts::{MONO_XS, SM, SM_MEDIUM, XS, XS_MEDIUM};
+use crate::pages::common::ts::{MONO_XS, sm, sm_medium, xs, xs_medium};
 use crate::pages::common::{Tone, card, empty_state, error_line, glyph};
 use ironclaw_gpui_client::operator::InspectorRun;
 use ironclaw_gpui_client::operator::inspector::{
@@ -44,7 +44,7 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
             .on_press(move |s: &mut State| super::select_thread(s, id.clone()))
             .child(
                 text(title)
-                    .font(if selected { SM_MEDIUM } else { SM })
+                    .font(if selected { sm_medium() } else { sm() })
                     .color(p.text)
                     .truncate()
                     .grow(1.)
@@ -56,7 +56,7 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
             r.hover(p.hover)
         };
         if let Some(at) = t.updated_at {
-            r = r.child(text(jobs::ago(at)).font(XS).color(p.text_muted));
+            r = r.child(text(jobs::ago(at)).font(xs()).color(p.text_muted));
         }
         r
     });
@@ -175,7 +175,7 @@ fn render_run(s: &State, k: &Kit, panel: &InspectorPanel, run: &InspectorRun) ->
             .child(muted(p, format!("#{}", m.iteration)))
             .child(
                 text(model)
-                    .font(SM)
+                    .font(sm())
                     .color(p.text)
                     .truncate()
                     .grow(1.)
@@ -226,7 +226,7 @@ fn render_run(s: &State, k: &Kit, panel: &InspectorPanel, run: &InspectorRun) ->
             ))
             .child(
                 text(name)
-                    .font(SM)
+                    .font(sm())
                     .color(p.text)
                     .truncate()
                     .grow(1.)
@@ -257,14 +257,14 @@ fn render_run(s: &State, k: &Kit, panel: &InspectorPanel, run: &InspectorRun) ->
                         .format("%H:%M:%S")
                         .to_string(),
                 )
-                .font(XS)
+                .font(xs())
                 .color(p.text_muted),
             )
-            .child(text(activity_label(e.kind)).font(XS_MEDIUM).color(p.text));
+            .child(text(activity_label(e.kind)).font(xs_medium()).color(p.text));
         if let Some(summary) = e.summary.as_ref() {
             r = r.child(
                 text(summary.content().to_string())
-                    .font(XS)
+                    .font(xs())
                     .color(p.text_muted)
                     .truncate()
                     .grow(1.)

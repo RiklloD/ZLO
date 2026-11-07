@@ -178,12 +178,13 @@ fn header(s: &State, k: &Kit) -> El {
     let inbox = &s.workspace.inbox;
     // T3 Code's search: a magnifier and the text, no box.
     let search = TextInput::new(&inbox.search)
+        .width(None)
         .placeholder("Search")
         .plain()
         .leading_icon(&icons::SEARCH)
         .leading_icon_size(16.)
         .text_style(rune::TextStyle::new(
-            design::SIDEBAR_TITLE_SIZE,
+            design::styles::rem(design::SIDEBAR_TITLE_SIZE),
             ui::REGULAR,
         ))
         .on_edit(|s: &mut State| &mut s.workspace.inbox.search)

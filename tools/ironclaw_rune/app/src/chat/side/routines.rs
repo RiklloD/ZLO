@@ -17,7 +17,7 @@ use ironclaw_gpui_client::schedules::{LastOutcome, ScheduleInfo};
 use rune::{El, col, icon, row};
 use rune_kit::Kit;
 
-use super::ui::{self, SM, XS};
+use super::ui::{self, sm, xs};
 use super::{bridge, side, side_mut};
 use crate::icons;
 use crate::jobs;
@@ -201,7 +201,7 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                                 p.text_faint
                             }),
                         )
-                        .child(ui::line(sch.title.clone(), SM, p.text).grow(1.).min_w(0.))
+                        .child(ui::line(sch.title.clone(), sm(), p.text).grow(1.).min_w(0.))
                         .child(button("run", "Run now", &icons::PLAY, None))
                         .child(if sch.enabled {
                             button("pause", "Pause", &icons::PAUSE, Some(false))
@@ -209,7 +209,9 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                             button("resume", "Resume", &icons::PLAY, Some(true))
                         }),
                 )
-                .child(ui::line(format!("{status} · {}", sch.describe), XS, p.text_faint).pl(22.));
+                .child(
+                    ui::line(format!("{status} · {}", sch.describe), xs(), p.text_faint).pl(22.),
+                );
             if let Some(last) = last {
                 card = card.child(
                     row()
@@ -229,7 +231,7 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                                 },
                                 jobs::ago(last)
                             ),
-                            XS,
+                            xs(),
                             p.text_muted,
                         ))
                         .child(icon(&icons::ARROW_RIGHT, 12.).color(p.text_muted))
@@ -328,7 +330,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             } else {
                 p.text_muted
             }))
-            .child(ui::line(info.name.clone(), SM, p.text).grow(1.).min_w(0.));
+            .child(ui::line(info.name.clone(), sm(), p.text).grow(1.).min_w(0.));
         if !finished {
             head = head
                 .child(action("Run now", &icons::PLAY, AutomationAction::RunNow))
@@ -350,7 +352,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .child(
                 ui::line(
                     format!("{status} · {}", schedule(&info.source)),
-                    XS,
+                    xs(),
                     p.text_faint,
                 )
                 .pl(22.),
@@ -368,7 +370,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .gap(4.)
                 .items_center()
                 .child(ui::dot(last_color, 6.))
-                .child(ui::line(format!("{label} {when}"), XS, p.text_muted));
+                .child(ui::line(format!("{label} {when}"), xs(), p.text_muted));
             if let Some(thread) = run_thread {
                 line = line
                     .cursor(rune::Cursor::Pointer)

@@ -8,7 +8,7 @@
 use crate::pages::common::controls::{
     Look, Size, button_sized, input, muted, outlined_tag, rule, spinner,
 };
-use crate::pages::common::ts::{MONO_XS, SM_MEDIUM};
+use crate::pages::common::ts::{MONO_XS, sm_medium};
 use crate::pages::common::{Tone, empty_state, error_line, loading};
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorConfigEntry, RebornOperatorConfigListResponse,
@@ -217,7 +217,7 @@ fn render_row(
                 .min_w(0.)
                 .child(
                     text(entry.key.clone())
-                        .font(SM_MEDIUM)
+                        .font(sm_medium())
                         .color(p.text)
                         .truncate(),
                 )
