@@ -10,6 +10,7 @@
 use rune::{Color, El, Icon, ScrollSpec, TextStyle, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 
+use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
 use crate::icons;
 
@@ -35,7 +36,7 @@ pub fn page_body(key: &str, content: El) -> El {
         .min_h(0.)
         .scroll(ScrollSpec {
             stick_bottom: false,
-        })
+        }).wheel_glide(key)
         .child(
             row()
                 .w_full()

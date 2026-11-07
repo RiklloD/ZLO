@@ -28,10 +28,13 @@
 //!   lands on the next poll at the latest).
 //!
 //! The native view sits above Rune's own view, so Rune popovers can't draw
-//! over it; set [`NativeViews::covered`] while an overlay shows and the
-//! views hide. Rune keeps keyboard focus except while the page is clicked.
+//! over it. The window's root view calls [`cover`] on every run with
+//! whether its overlay layer holds anything (the ⌘K menu, a menu or
+//! popover, a dialog), and the views hide meanwhile (GPUI
+//! `frame_begin(window, command.is_some())`). Rune keeps keyboard focus
+//! except while the page is clicked.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -102,8 +105,27 @@ impl Source {
 pub struct NativeViews {
     /// Where each slot's [`surface`] element was last drawn, window points.
     rects: [Option<[f32; 4]>; 2],
-    /// An overlay (command menu, dialog) covers the window: views hide.
-    pub covered: bool,
+    /// An overlay (command menu, popover, dialog) covers the window: views
+    /// hide. Written by the root view as it assembles its overlay layer
+    /// ([`cover`]), so it is a `Cell`: the view only reads the state, and
+    /// the views hide in that same view run.
+    covered: Cell<bool>,
+}
+
+impl NativeViews {
+    /// Whether an overlay covers the window, as the last view run drew it.
+    pub fn covered(&self) -> bool {
+        self.covered.get()
+    }
+}
+
+/// Mark the window covered by an overlay or not. The root view
+/// (`workspace::shell::view`) calls it on every run with whether its overlay
+/// layer holds anything; a change hides or shows the views at once.
+pub fn cover(s: &State, covered: bool) {
+    if s.native.covered.replace(covered) != covered {
+        reconcile(s);
+    }
 }
 
 fn ext(path: &Path) -> String {
@@ -191,7 +213,7 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
 }
 
 fn reconcile(s: &State) {
-    let wanted = if s.native.covered || s.fixture {
+    let wanted = if s.native.covered() || s.fixture {
         [None, None]
     } else {
         crate::chat::side::native_wanted(s)

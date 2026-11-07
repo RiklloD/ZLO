@@ -14,7 +14,8 @@ use super::{
     SETTLED_PAGE, Shelves, branch_tail, mark, settle, settle_blocker, shelves, short_age,
     snooze_presets, subagents, title_of, wake_label,
 };
-use crate::design::{self, Palette};
+use crate::design::smooth_scroll::WheelGlide;
+use crate::design::{self, Palette, motion};
 use crate::icons;
 use crate::state::{Page, State};
 use crate::workspace::{active_id, draft, message_search, thread_drag};
@@ -141,7 +142,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
             .w_full()
             .grow(1.0)
             .min_h(0.0)
-            .scroll(ScrollSpec { stick_bottom: false })
+            .scroll(ScrollSpec { stick_bottom: false }).wheel_glide("inbox-scroll")
             .child(
                 col()
                     .key("inbox-list")
@@ -613,7 +614,12 @@ fn card(
     if let Some(line) = subagents::line(s, &sh.tree, row_data, false) {
         card = card.child(line);
     }
-    let mut out = col().key(format!("card-{id}")).w_full().child(card);
+    // A resorted row glides to its new place (GPUI `flip::ROW_SECS`).
+    let mut out = col()
+        .key(format!("card-{id}"))
+        .w_full()
+        .motion(motion::ROW_RESORT)
+        .child(card);
     if menu_open {
         out = out.child(snooze_menu(p, &id));
     }
@@ -753,7 +759,11 @@ fn slim(s: &State, sh: &Shelves<'_>, row_data: &InboxRow, active: bool, now: i64
     if line.is_none() {
         return slim;
     }
-    let mut out = col().key(format!("slim-{id}")).w_full().child(slim);
+    let mut out = col()
+        .key(format!("slim-{id}"))
+        .w_full()
+        .motion(motion::ROW_RESORT)
+        .child(slim);
     if let Some(line) = line {
         out = out.child(el().pl(34.).pb(4.).child(line));
     }

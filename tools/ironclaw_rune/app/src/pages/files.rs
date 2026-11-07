@@ -11,6 +11,7 @@ use rune_kit::{Kit, Markdown, Spinner};
 use super::common::{
     SM, XL, XS, choice, empty_state, error_line, font, glyph, label, refresh_button,
 };
+use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -247,7 +248,7 @@ fn render_list(s: &State) -> El {
         .min_h(0.)
         .scroll(ScrollSpec {
             stick_bottom: false,
-        })
+        }).wheel_glide("file-list")
         .child(list.children(rows))
 }
 
@@ -310,7 +311,7 @@ fn render_preview(s: &State, k: &Kit) -> El {
         .min_h(0.)
         .scroll(ScrollSpec {
             stick_bottom: false,
-        })
+        }).wheel_glide(format!("file-preview-{path}"))
         .child(
             col()
                 .w_full()

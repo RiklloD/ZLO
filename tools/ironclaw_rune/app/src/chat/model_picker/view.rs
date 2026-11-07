@@ -9,6 +9,7 @@ use super::{
     ModelPickerState, NATIVE, Rail, Slot, cycle_rail, edit_prefs, effort_label, hidden_summary, pick,
     pick_effort, pretty_model, reorder, toggle_provider,
 };
+use crate::design::smooth_scroll::WheelGlide;
 use crate::chat::extras_ui::{
     ICON_SM, ICON_XS, SM, XS, ghost_icon, ico, panel_surface, shortcut_badge, spacer, spinner, txt, txt_medium,
 };
@@ -265,7 +266,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
                 .key("model-list")
                 .grow(1.)
                 .min_h(0.)
-                .scroll(rune::ScrollSpec { stick_bottom: false })
+                .scroll(rune::ScrollSpec { stick_bottom: false }).wheel_glide("model-list")
                 .child(rows),
         );
     if hidden > 0 {
@@ -305,7 +306,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
                     .key("model-rail")
                     .min_h(0.)
                     .h_full()
-                    .scroll(rune::ScrollSpec { stick_bottom: false })
+                    .scroll(rune::ScrollSpec { stick_bottom: false }).wheel_glide("model-rail")
                     .child(rail),
             )
             .child(el().w(1.).h_full().fill(p.border))

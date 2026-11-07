@@ -10,6 +10,7 @@ use rune_kit::{Kit, Switch};
 use super::super::logs::log_row;
 use super::super::section_title;
 use super::{InspectorPanel, ToolDetail, short_id};
+use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{CONTROL_RADIUS, Palette};
 use crate::icons;
 use crate::jobs;
@@ -65,7 +66,7 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
             .max_h(220.)
             .scroll(ScrollSpec {
                 stick_bottom: false,
-            })
+            }).wheel_glide("inspect-threads")
             .children(threads),
     );
     if panel.thread.is_some() {
@@ -405,7 +406,7 @@ fn render_prompt(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
                         .max_h(PROMPT_MAX_HEIGHT)
                         .scroll(ScrollSpec {
                             stick_bottom: false,
-                        })
+                        }).wheel_glide("inspector-prompt")
                         .child(code_block(p, body)),
                 ),
             )

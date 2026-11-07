@@ -11,6 +11,7 @@ use rune_kit::{ControlSize, Dialog, Kit};
 use super::inbox::view as inbox_view;
 use super::ui::{self, MEDIUM, SEMIBOLD, SM, XS, t, tw};
 use super::{active_id, command, context, draft, settings_groups, settings_pages, status};
+use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::{Conn, Page, State};
@@ -41,11 +42,19 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         Conn::Failed { message, retry_in } => failed(&p, &k, message, *retry_in),
         Conn::Ready => ready(s, &p, cx, &k, &mut layer),
     };
+    // GPUI's shell: the surface at the style's shell alpha. Translucent, the
+    // window's backdrop is the system material (macOS blurs the desktop
+    // through it); opaque windows and headless renders draw the fill alone.
+    let st = design::styles::Style::of(&s.prefs);
     let mut root = col()
         .key("window")
         .w_full()
         .h_full()
-        .fill(p.surface)
+        .fill(p.surface.alpha(st.shell_alpha));
+    if let Some(material) = st.material() {
+        root = root.system_material(material);
+    }
+    let mut root = root
         .on_pointer_move(|s: &mut State, _| crate::design::look::input(s))
         .child(el().w_full().grow(1.0).min_h(0.0).child(body));
     if !s.prefs.status_bar_hidden {
@@ -64,6 +73,10 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         );
     }
     confirm_delete(s, &k, &mut layer);
+    // Native previews draw above Rune's view: while anything floats in the
+    // overlay layer (⌘K, a menu or popover, a dialog) they hide.
+    crate::native_view::cover(s, !layer.is_empty());
+    // The thread-drag card floats too, but must not hide the previews.
     layer.extend(super::thread_drag::ghost(s));
     rune_kit::root(root, layer)
 }
@@ -467,7 +480,7 @@ fn settings_nav(s: &State, p: &Palette) -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .scroll(rune::ScrollSpec { stick_bottom: false })
+        .scroll(rune::ScrollSpec { stick_bottom: false }).wheel_glide("settings-nav")
         .child(nav)
 }
 
@@ -621,5 +634,41 @@ fn apply_system_dark(s: &mut State, dark: bool) {
     s.palette = palette;
     if flipped {
         crate::design::look::reload(s);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rune::{App, AppSpec, Env, Runtime};
+
+    use crate::state::State;
+
+    fn no_init() -> State {
+        unreachable!("tests build the state themselves")
+    }
+
+    /// The app's real view over a fixture state; the handle goes to an app
+    /// that never runs, so background replies are dropped.
+    fn runtime(fill: fn(&mut State)) -> Runtime<State> {
+        let app = App::new(AppSpec::new("ZLO test", (1280., 820.), no_init, crate::view));
+        let mut s = State::new(crate::jobs::Rt::new(app.handle()));
+        fill(&mut s);
+        let mut rt = Runtime::new(s, crate::view, (1280., 820.), Env::new(true, 1.));
+        rt.frame(0.);
+        rt
+    }
+
+    #[test]
+    fn overlays_cover_the_native_previews() {
+        let mut rt = runtime(crate::workspace::fixtures::fixture_command_menu);
+        assert!(rt.state.native.covered(), "⌘K hides native previews");
+
+        rt.update(|s, _| s.workspace.command = None);
+        rt.frame(1. / 60.);
+        assert!(!rt.state.native.covered(), "and they come back when it closes");
+
+        rt.update(|s, _| s.workspace.confirm_delete = Some("t-pin".into()));
+        rt.frame(1. / 60.);
+        assert!(rt.state.native.covered(), "a dialog covers them too");
     }
 }

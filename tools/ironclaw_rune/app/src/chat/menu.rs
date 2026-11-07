@@ -27,6 +27,7 @@ use ironclaw_gpui_client::{Client, ClientError};
 use rune::{El, Icon, TextEdit, Tx, col, icon, row, text};
 
 use super::flow;
+use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -471,7 +472,7 @@ pub fn render(
             col().key("command-menu-scroll")
                 .w_full()
                 .max_h(280.)
-                .scroll(rune::ScrollSpec { stick_bottom: false })
+                .scroll(rune::ScrollSpec { stick_bottom: false }).wheel_glide("command-menu-scroll")
                 .child(list),
         )
 }

@@ -16,6 +16,7 @@ use rune::{Cx, El, GrowthSpec, ScrollSpec, Tx, col, el, icon, row, text};
 use rune_kit::Kit;
 
 use super::{ChatState, Item, chat_for, composer, flow, menu, outline, question_form, rows};
+use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::state::State;
 
@@ -347,7 +348,7 @@ fn transcript(s: &State, chat: &ChatState, _cx: &mut Cx<State>, k: &Kit, _layer:
         .w_full()
         .h_full()
         .min_h(0.)
-        .scroll(ScrollSpec { stick_bottom: true })
+        .scroll(ScrollSpec { stick_bottom: true }).wheel_glide(transcript_key(&id))
         .scroll_edge_fade(24.)
         .on_layout_tx(move |s: &mut State, r, tx| {
             let Some(c) = chat_for(s, &layout_id) else { return };
