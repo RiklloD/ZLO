@@ -57,3 +57,51 @@ pub fn view(s: &State, _cx: &mut Cx<State>, _k: &Kit, _layer: &mut Vec<El>) -> E
     };
     col().w_full().h_full().center().child(text(label).color(p.text_muted))
 }
+
+// ---------------------------------------------------------------------------
+// Voice and SnapShot hooks (area F calls these; the owners fill them in).
+// ---------------------------------------------------------------------------
+
+/// The composer field voice dictates into, if that composer exists now.
+/// `Chat(id)` is the open thread's composer when `id` is open; `Draft` and
+/// `Quick` are area B's new-thread and quick composers.
+// PORT-STUB(area A): return the open chat's composer `TextEdit` for
+// `Composer::Chat(id)` when `s.chat` is that thread; route `Draft`/`Quick`
+// to area B's draft and quick composer (GPUI `Workspace::voice_composer`).
+pub fn voice_composer<'a>(
+    _s: &'a State,
+    _composer: &crate::voice::Composer,
+) -> Option<&'a rune::TextEdit> {
+    None
+}
+
+/// [`voice_composer`], mutable: voice inserts committed words at the caret
+/// and shows the still-changing tail as the field's preedit.
+// PORT-STUB(area A): same routing as `voice_composer`.
+pub fn voice_composer_mut<'a>(
+    _s: &'a mut State,
+    _composer: &crate::voice::Composer,
+) -> Option<&'a mut rune::TextEdit> {
+    None
+}
+
+/// Send what `composer` holds, exactly as pressing Enter in it does (GPUI
+/// emitted `InputEvent::PressEnter`). The send handler must call
+/// `crate::voice::take_submission(s, composer)` synchronously and report
+/// the outcome with `voice::submission_{accepted,queued,refused}`.
+// PORT-STUB(area A): call the chat composer's send for `Chat(id)`; route
+// `Draft`/`Quick` to area B's send.
+pub fn voice_press_enter(_s: &mut State, _composer: &crate::voice::Composer, _tx: &mut Tx) {}
+
+/// A SnapShot finished: stage it where the person is writing (GPUI
+/// `Workspace::stage_snapshot` + `ChatView::stage_snapshot`). Leave Settings
+/// for the threads first; on `Page::Chat` stage into the open chat with
+/// `crate::snapshot::stage_into(&mut s.snapshot, &mut chat.staged, snap,
+/// &limits)`; otherwise open the new-thread screen and stage there (area
+/// B). An `Err` (or a failed `stage_into`) becomes the composer's error.
+// PORT-STUB(area A, area B): routing above; until then the error is logged.
+pub fn stage_snapshot(_s: &mut State, snap: Result<crate::snapshot::Snapshot, String>) {
+    if let Err(e) = snap {
+        tracing::warn!(error = %e, "SnapShot failed");
+    }
+}
