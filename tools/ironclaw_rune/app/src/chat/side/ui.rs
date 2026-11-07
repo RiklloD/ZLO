@@ -25,7 +25,7 @@ pub fn line(content: impl Into<String>, style: TextStyle, color: Color) -> El {
 
 /// A wrapping text in `style` and `color`.
 pub fn para(content: impl Into<String>, style: TextStyle, color: Color) -> El {
-    text(content.into()).font(style).color(color).wrap()
+    text(content.into()).font(style).color(color).wrap().w_full()
 }
 
 /// A muted line for empty lists.
