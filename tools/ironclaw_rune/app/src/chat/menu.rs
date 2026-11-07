@@ -145,6 +145,21 @@ impl ComposerMenu {
         true
     }
 
+    /// A scene's `@` files: `files` under `root`, ranked for `query` now
+    /// (a real menu lists and ranks off the UI thread).
+    pub fn fixture_files(&mut self, root: &Path, files: Vec<String>, query: &str) {
+        let index = Arc::new(FileIndex {
+            root: root.to_path_buf(),
+            files,
+            generation: 1,
+            ..FileIndex::default()
+        });
+        self.want_root(Some(root.to_path_buf()));
+        self.accept_index(index.clone());
+        self.want_query = Some(query.to_string());
+        self.accept_ranking(mentions::rank_paths(&index, query));
+    }
+
     /// The highlighted row, clamped to `len`.
     pub fn selected(&self, len: usize) -> usize {
         self.index.min(len.saturating_sub(1))

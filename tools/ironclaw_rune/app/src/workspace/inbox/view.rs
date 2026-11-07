@@ -17,7 +17,7 @@ use super::{
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::{Page, State};
-use crate::workspace::{active_id, draft, message_search};
+use crate::workspace::{active_id, draft, message_search, thread_drag};
 
 /// The sidebar's thread list with its header. `layer` takes the profile
 /// menu, which floats over the list so no row moves.
@@ -573,6 +573,7 @@ fn card(
     );
     let open_id = id.clone();
     let menu_id = id.clone();
+    let (drag_id, drag_title) = (id.clone(), title_of(row_data).to_string());
     let mut card = col()
         .key(format!("row-{id}"))
         .role("button")
@@ -588,8 +589,14 @@ fn card(
         .fill(rest)
         .hover(if active { Color::TRANSPARENT } else { hover })
         .hover_group()
-        .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
+        .on_press(move |s: &mut State| {
+            if !thread_drag::take_press(s) {
+                crate::workspace::open_thread(s, open_id.clone());
+            }
+        })
         .on_secondary_press(move |s: &mut State, at, tx| super::open_row_menu(s, &menu_id, at, tx))
+        // Drop it on a chat to hand that chat this thread's transcript.
+        .on_drag(move |s: &mut State, d, tx| thread_drag::drag(s, &drag_id, &drag_title, d, tx))
         .child(meta)
         .child(
             tw(

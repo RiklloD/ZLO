@@ -63,11 +63,15 @@ pub(crate) fn column(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, l
         .min_w(0.)
         .h_full()
         .min_h(0.);
-    if chat.drop_over {
+    if chat.drop_over || crate::workspace::thread_drag::over_chat(s, &id) {
         main = main.fill(p.accent_wash);
     }
-    let (drop_id, hover_id) = (id.clone(), id.clone());
+    let (drop_id, hover_id, rect_id) = (id.clone(), id.clone(), id.clone());
     main = main
+        // A sidebar thread dropped here attaches its transcript.
+        .on_drawn_layout_tx(move |s: &mut State, r, tx| {
+            crate::workspace::thread_drag::saw_chat(s, &rect_id, r, tx)
+        })
         .on_drop_files(move |s: &mut State, files, _tx| {
             super::actions::attach(s, &drop_id, files.to_vec());
             if let Some(c) = chat_for(s, &drop_id) {

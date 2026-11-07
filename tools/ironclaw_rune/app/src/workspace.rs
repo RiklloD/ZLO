@@ -37,6 +37,7 @@ mod message_search;
 pub mod quick;
 mod shell;
 mod status;
+pub(crate) mod thread_drag;
 pub(crate) mod ui;
 
 // Voice (area F) and SnapShot (area F) call these.
@@ -110,6 +111,8 @@ pub struct WorkspaceState {
     pub context: context::ContextMeter,
     /// Live sidebar width while its edge is dragged; saved on release.
     pub sidebar_drag: Option<f32>,
+    /// A sidebar thread being dragged onto a chat or the draft.
+    pub thread_drag: thread_drag::ThreadDrag,
     /// The window is the key window (GPUI `window.is_window_active()`).
     pub window_active: bool,
     /// The thread whose delete is being confirmed.
@@ -141,6 +144,7 @@ impl Default for WorkspaceState {
             telemetry: None,
             context: Default::default(),
             sidebar_drag: None,
+            thread_drag: Default::default(),
             window_active: true,
             confirm_delete: None,
             timers: Timers::default(),

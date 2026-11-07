@@ -4,9 +4,12 @@
 //! is sent, so abandoned drafts leave no empty threads behind. (GPUI
 //! `workspace/draft.rs`.)
 //!
-//! Staged files show as chips over the text here; GPUI's inline file cards
-//! and the `/` `@` menu belong to the chat composer (area A) and join this
-//! screen at integration.
+//! The composer shares the chat's pieces (area A): staged files are inline
+//! cards at the caret (`chat::inline_files`), a paste of files or a picture
+//! attaches them, and the `@` menu (`chat::menu`) offers files of the last
+//! project folder; it has no commands, since those need a thread. A thread
+//! dragged from the sidebar onto the card attaches its transcript
+//! (`thread_drag`).
 
 mod snapshot;
 
@@ -14,15 +17,18 @@ use std::path::PathBuf;
 
 use ironclaw_gpui_client::attachments::{self, StagedFile};
 use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
-use rune::{Color, Cx, El, FileDialogOptions, TextEdit, Tx, col, el, row};
+use ironclaw_gpui_client::commands::MenuItem;
+use rune::{Color, Cx, El, FileDialogOptions, KeyEvent, TextEdit, Tx, col, el, row};
 use rune_kit::{Kit, Placement};
 
 pub use snapshot::stage_snapshot;
 
 use super::inbox::{self, view::profile_picker};
 use super::ui::{self, SEMIBOLD, SM, XS, t, tw};
+use crate::chat::menu::{self, ComposerMenu, MenuKey, MenuKeyName};
 use crate::chat::model_picker::ModelPickerState;
-use crate::design::{self, prefs::Wallpaper};
+use crate::chat::inline_files;
+use crate::design::{self, motion, prefs::Wallpaper};
 use crate::drafts;
 use crate::icons;
 use crate::jobs::{self, Generation};
@@ -37,8 +43,12 @@ pub struct DraftState {
     /// The draft's model and effort pick (area H draws and owns it).
     pub picker: ModelPickerState,
     pub menu_open: bool,
-    /// Files for the first message, handed to the thread on send.
+    /// Files for the first message, handed to the thread on send; each has
+    /// its card in `input`.
     pub staged: Vec<StagedFile>,
+    /// The `/` and `@` menu: no commands, since those need a thread; `@`
+    /// files come from the last project folder used.
+    pub menu: ComposerMenu,
     pub sending: bool,
     pub error: Option<String>,
     /// Start the thread in a new git worktree of the last project folder
@@ -100,25 +110,16 @@ pub(super) fn open(s: &mut State) {
             .or_else(|| list.last_used_profile_id.clone())
             .or_else(|| list.profiles.first().map(|p| p.profile_id.clone()))
             .unwrap_or_else(|| DEFAULT_PROFILE_ID.into());
-        let mut staged = Vec::new();
-        let mut text = String::new();
-        if let Some(draft) = saved {
-            staged = draft.files;
-            text = without_tokens(&draft.text, &draft.tokens);
+        let mut draft = empty_draft(&profile);
+        if let Some(saved) = saved {
+            draft.staged = saved.files;
+            let pills: Vec<_> = saved.tokens.into_iter().map(|t| (t.range, t.id)).collect();
+            inline_files::set_content(&mut draft.input, &saved.text, &pills);
         }
         let generation = s.workspace.draft_opens.bump();
-        let draft = DraftState {
-            profile: profile.clone(),
-            input: TextEdit::new(text),
-            picker: ModelPickerState::default(),
-            menu_open: false,
-            staged,
-            sending: false,
-            error: None,
-            worktree: false,
-            generation,
-        };
+        draft.generation = generation;
         s.workspace.draft = Some(draft);
+        load_menu(s, generation);
         crate::design::look::reshuffle(s);
     }
     // A kept draft re-reads its profile: its default may have changed. The
@@ -133,20 +134,67 @@ pub(super) fn open(s: &mut State) {
     inbox::reveal_active_subagent(s);
 }
 
-/// The draft's text with its inline card text taken out: the cards show as
-/// chips here.
-fn without_tokens(text: &str, tokens: &[drafts::DraftToken]) -> String {
-    let mut out = String::new();
-    let mut last = 0;
-    for token in tokens {
-        if token.range.start < last || token.range.end > text.len() {
-            continue;
-        }
-        out.push_str(&text[last..token.range.start]);
-        last = token.range.end;
+/// Skills, extensions and threads for the `@` menu of the draft opened as
+/// `generation`.
+fn load_menu(s: &mut State, generation: Generation) {
+    jobs::run(
+        s,
+        "draft menu",
+        |c| menu::load(c, false),
+        move |s, result, _| {
+            let draft = s.workspace.draft.as_mut().filter(|d| d.generation == generation);
+            if let (Ok(sources), Some(draft)) = (result, draft) {
+                draft.menu.sources = std::rc::Rc::new(sources);
+            }
+        },
+    );
+}
+
+/// The draft's menu, found again from the root.
+fn menu_of() -> menu::MenuOf {
+    std::sync::Arc::new(|s: &mut State| s.workspace.draft.as_mut().map(|d| &mut d.menu))
+}
+
+/// The text changed: the menu's highlight goes back to the top, cards that
+/// were deleted drop their files, an `@` query ranks the last project
+/// folder's files, and the draft is noted.
+fn on_change(s: &mut State) {
+    let Some(draft) = s.workspace.draft.as_mut() else {
+        return;
+    };
+    draft.menu.reset();
+    inline_files::prune(&draft.input, &mut draft.staged);
+    if let Some(query) = ComposerMenu::at_query(&draft.input.text) {
+        let root = s.prefs.last_project.clone();
+        menu::sync_index(s, root.as_deref(), menu_of());
+        menu::rank_in_background(s, query, menu_of());
     }
-    out.push_str(&text[last..]);
-    out
+    record(s);
+}
+
+/// Menu keys for the draft composer (GPUI `draft_menu_key`).
+fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    let Some(name) = MenuKeyName::of(ev) else {
+        return false;
+    };
+    let Some(draft) = s.workspace.draft.as_mut() else {
+        return false;
+    };
+    match draft.menu.key(name, &mut draft.input, tx) {
+        MenuKey::Unused => false,
+        // The draft's menu lists no commands.
+        MenuKey::Handled | MenuKey::Command(_) => {
+            on_change(s);
+            true
+        }
+    }
+}
+
+fn pick_item(s: &mut State, item: &MenuItem) {
+    if let Some(draft) = s.workspace.draft.as_mut() {
+        menu::pick(item, &mut draft.input);
+    }
+    on_change(s);
 }
 
 /// A prompt from the quick composer: the new-thread screen's send, with its
@@ -187,9 +235,17 @@ pub(super) fn record(s: &mut State) {
     let Some(draft) = s.workspace.draft.as_ref() else {
         return;
     };
+    let text = draft.input.text.clone();
+    let tokens = inline_files::pills(&draft.input)
+        .into_iter()
+        .filter_map(|(range, id)| {
+            let shown = text.get(range.clone())?.to_string();
+            Some(drafts::DraftToken { range, id, label: shown.clone(), text: shown })
+        })
+        .collect();
     let saved = drafts::Draft {
-        text: draft.input.text.clone(),
-        tokens: Vec::new(),
+        text,
+        tokens,
         files: draft.staged.clone(),
         profile: Some(draft.profile.clone()),
     };
@@ -215,14 +271,15 @@ pub fn send(s: &mut State) {
     let Some(draft) = s.workspace.draft.as_mut() else {
         return refuse(s, "There was nothing to send.");
     };
-    let text = draft.input.text.trim().to_string();
-    if text.is_empty() && draft.staged.is_empty() {
+    let (text, files) = inline_files::outgoing(&draft.input, &draft.staged);
+    if text.is_empty() && files.is_empty() {
         return refuse(s, "There was nothing to send.");
     }
     if draft.sending {
         return refuse(s, "A new thread is already being created.");
     }
     let content = draft.input.text.clone();
+    let pills = inline_files::pills(&draft.input);
     draft.sending = true;
     draft.error = None;
     let profile = draft.profile.clone();
@@ -267,7 +324,7 @@ pub fn send(s: &mut State) {
                 inbox::refresh(s);
                 super::open_thread(s, id.clone());
                 if super::active_id(s) == Some(id.as_str()) {
-                    crate::chat::send_text(s, content, Vec::new(), files, voice, tx);
+                    crate::chat::send_text(s, content, pills, files, voice, tx);
                 } else if let Some(sub) = voice {
                     crate::voice::submission_refused(s, sub, "The new thread did not open.");
                 }
@@ -346,13 +403,76 @@ pub(super) fn attach(s: &mut State, paths: Vec<PathBuf>) {
     );
 }
 
-/// Stage `files` in the draft.
+/// Stage `files` in the draft and put their cards at its caret.
 pub(super) fn place(s: &mut State, files: Vec<StagedFile>) {
+    let Some(draft) = s.workspace.draft.as_ref() else {
+        return;
+    };
+    let mut all = draft.staged.clone();
+    all.extend(files.iter().cloned());
+    let mut input = draft.input.clone();
+    inline_files::insert(s, &mut input, &files, &all);
+    if let Some(draft) = s.workspace.draft.as_mut() {
+        draft.staged = all;
+        draft.input = input;
+    }
+    record(s);
+}
+
+/// Files or a picture pasted into the draft's composer.
+fn paste(s: &mut State, pasted: inline_files::Pasted) {
+    match pasted {
+        inline_files::Pasted::Paths(paths) => attach(s, paths),
+        inline_files::Pasted::Image { bytes, mime } => {
+            let (Some(draft), Some(session)) = (s.workspace.draft.as_mut(), s.session.as_ref())
+            else {
+                return;
+            };
+            match inline_files::pasted_image(bytes, mime, &draft.staged, &session.attachments) {
+                Ok(file) => place(s, vec![file]),
+                Err(problem) => draft.error = Some(problem),
+            }
+        }
+    }
+}
+
+/// A sidebar thread dropped on the card: attach its transcript as a file
+/// (GPUI `attach_thread_to_draft`).
+pub(super) fn attach_thread(s: &mut State, id: String, title: String) {
     let Some(draft) = s.workspace.draft.as_mut() else {
         return;
     };
-    draft.staged.extend(files);
-    record(s);
+    draft.input.focused = true;
+    let generation = draft.generation;
+    let Some(session) = s.session.as_ref() else {
+        return;
+    };
+    let limits = session.attachments.clone();
+    jobs::run(
+        s,
+        "attach thread",
+        move |c| async move { c.thread_attachment(&id, &title, &limits).await },
+        move |s, result, _| {
+            let (Some(draft), Some(session)) = (s.workspace.draft.as_mut(), s.session.as_ref())
+            else {
+                return;
+            };
+            // A reset or send must not attach this to a different draft.
+            if draft.generation != generation {
+                return;
+            }
+            let result = result.map_err(|e| e.to_string()).and_then(|file| {
+                attachments::check(&file, &draft.staged, &session.attachments).map(|()| file)
+            });
+            match result {
+                Ok(file) => {
+                    draft.error = None;
+                    place(s, vec![file]);
+                }
+                Err(error) => draft.error = Some(error),
+            }
+        },
+    );
 }
 
 pub(super) fn profile_name(s: &State) -> String {
@@ -472,37 +592,19 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             6.,
         ));
     }
-    let chips: Vec<El> = draft
-        .staged
-        .iter()
-        .map(|f| {
-            let key = f.key;
-            row()
-                .key(format!("draft-file-{key}"))
-                .gap(4.)
-                .px(8.)
-                .h(24.)
-                .center_y()
-                .radius(12.)
-                .fill(p.surface_raised)
-                .child(ui::glyph(&icons::FILE, 12., p.text_muted))
-                .child(t(f.filename.clone(), XS, p.text).truncate())
-                .child(ui::ghost_icon(
-                    k,
-                    &icons::CLOSE,
-                    "Remove",
-                    rune_kit::ControlSize::Mini,
-                    move |s| {
-                        if let Some(d) = s.workspace.draft.as_mut() {
-                            d.staged.retain(|f| f.key != key);
-                        }
-                        record(s);
-                    },
-                ))
-        })
-        .collect();
+    let snapshots = inline_files::snapshot_keys(s, &draft.staged);
     let input = ui::grow_box(
         ui::plain_area(&draft.input, 15., "Do anything…", p)
+            .pill_colors(p.hover, Some(p.text))
+            .pill_icon(move |pill| inline_files::pill_icon_for(&snapshots, pill))
+            .on_input_key(on_key)
+            .on_input_paste(|s: &mut State, content, _tx| {
+                let Some(pasted) = inline_files::pasted(content) else {
+                    return false;
+                };
+                paste(s, pasted);
+                true
+            })
             .on_edit(|s: &mut State| {
                 &mut s
                     .workspace
@@ -510,13 +612,16 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
                     .get_or_insert_with(|| empty_draft(DEFAULT_PROFILE_ID))
                     .input
             })
-            .on_input_change(|s: &mut State, _| record(s))
+            .on_input_change(|s: &mut State, _| on_change(s))
             .on_submit(|s: &mut State, _| send(s)),
         2,
         10,
     );
+    let thread_over = super::thread_drag::over_draft(s);
     let mut card = col()
         .key("draft-composer")
+        .matched(motion::COMPOSER_MATCH)
+        .motion(motion::DOCK)
         .w_full()
         .max_w(HERO_WIDTH)
         .padding(12.)
@@ -525,16 +630,16 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .fill(p.surface_card)
         .border(
             1.,
-            if draft.input.focused {
+            if thread_over {
+                p.accent
+            } else if draft.input.focused {
                 p.border_strong
             } else {
                 p.border
             },
         )
+        .on_drawn_layout_tx(super::thread_drag::saw_draft)
         .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()));
-    if !chips.is_empty() {
-        card = card.child(row().flex_wrap().gap(4.).children(chips));
-    }
     card = card.child(input).child(
         row()
             .gap(6.)
@@ -546,6 +651,20 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             .child(crate::voice::ui::composer_controls(s, k, layer, &ComposerTarget::Draft, None))
             .child(send_button),
     );
+    // The hero card sits mid-screen, so the menu opens below it, as wide.
+    let items = draft.menu.items(&draft.input.text);
+    if !items.is_empty() {
+        let selected = draft.menu.selected(items.len());
+        let on_pick: menu::OnPick = std::rc::Rc::new(|s: &mut State, item, _tx| pick_item(s, item));
+        let width = cx.layout_size("draft-composer").map_or(HERO_WIDTH, |[w, _]| w);
+        layer.push(rune_kit::popover::anchored(
+            k,
+            el().w(width).child(menu::render(s, &items, selected, on_pick)),
+            "draft-composer",
+            Placement::Bottom,
+            8.,
+        ));
+    }
     let mut body = col()
         .key("draft-body")
         .w_full()
@@ -584,32 +703,17 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     root.child(body)
 }
 
-fn empty_draft(profile: &str) -> DraftState {
+pub(super) fn empty_draft(profile: &str) -> DraftState {
     DraftState {
         profile: profile.into(),
         input: TextEdit::new(""),
         picker: ModelPickerState::default(),
         menu_open: false,
         staged: Vec::new(),
+        menu: ComposerMenu::default(),
         sending: false,
         error: None,
         worktree: false,
         generation: Generation::default(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn restored_text_drops_inline_card_text() {
-        let tokens = vec![drafts::DraftToken {
-            range: 4..10,
-            id: "1".into(),
-            text: "[a.md]".into(),
-            label: "a.md".into(),
-        }];
-        assert_eq!(without_tokens("see [a.md] now", &tokens), "see  now");
     }
 }

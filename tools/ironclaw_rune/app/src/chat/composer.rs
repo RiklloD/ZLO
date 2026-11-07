@@ -259,7 +259,7 @@ pub(crate) fn view(
     };
     let access = super::approval_mode::pill(s, chat, k);
     // Keyed by thread: a side chat's composer sits beside this one.
-    composer_card(
+    let card = composer_card(
         s,
         &chat.composer_key(),
         chat.composer.focused,
@@ -268,7 +268,12 @@ pub(crate) fn view(
         input,
         picker,
         controls,
-    )
+    );
+    // The new-thread composer flies down to this dock (GPUI `design/dock.rs`).
+    match chat.embedded {
+        false => card.matched(design::motion::COMPOSER_MATCH).motion(design::motion::DOCK),
+        true => card,
+    }
 }
 
 /// The composer's keys, before the field edits with them.

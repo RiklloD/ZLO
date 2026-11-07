@@ -64,6 +64,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         );
     }
     confirm_delete(s, &k, &mut layer);
+    layer.extend(super::thread_drag::ghost(s));
     rune_kit::root(root, layer)
 }
 
