@@ -17,7 +17,7 @@ mod supermemory;
 use crate::pages::common::controls::{
     Look, header_with, keyed_refresh, press_button, press_icon, styled,
 };
-use crate::pages::common::ts::{BODY_SEMIBOLD, SM, SM_MEDIUM, XS};
+use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs};
 use crate::pages::common::{block_fill, empty_state, error_line, page_body};
 use ironclaw_gpui_client::memory_page::{
     MemoryArchiveOutcome, MemoryDocument, MemoryDocumentEntry, MemoryDocumentKind,
@@ -428,12 +428,12 @@ fn render_local(s: &State, k: &Kit) -> El {
                 })
                 .hover(p.hover)
                 .child(
-                    styled(entry.path.clone(), SM, p.text)
+                    styled(entry.path.clone(), sm(), p.text)
                         .truncate()
                         .grow(1.0)
                         .min_w(0.0),
                 )
-                .child(styled(kind_label(entry.kind), XS, p.text_muted))
+                .child(styled(kind_label(entry.kind), xs(), p.text_muted))
                 .on_press(move |s: &mut State| open_document(s, path.clone())),
         );
     }
@@ -469,11 +469,11 @@ fn render_local(s: &State, k: &Kit) -> El {
                         .w_full()
                         .py(6.0)
                         .cursor(Cursor::Pointer)
-                        .child(styled(hit.path.clone(), SM_MEDIUM, p.text))
+                        .child(styled(hit.path.clone(), sm_medium(), p.text))
                         .child(
                             styled(
                                 hit.snippet.chars().take(240).collect::<String>(),
-                                XS,
+                                xs(),
                                 p.text_muted,
                             )
                             .wrap(),
@@ -633,8 +633,8 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
                     col()
                         .grow(1.0)
                         .min_w(0.0)
-                        .child(styled(doc.path.clone(), BODY_SEMIBOLD, p.text))
-                        .child(styled(provenance, XS, p.text_muted).wrap()),
+                        .child(styled(doc.path.clone(), body_semibold(), p.text))
+                        .child(styled(provenance, xs(), p.text_muted).wrap()),
                 )
                 .child(actions),
         );
@@ -644,7 +644,7 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
                 "This document changed since you opened it (the agent may have \
                  written to it). Your text is kept; Save anyway replaces the \
                  newer version, which stays in the history.",
-                SM,
+                sm(),
                 p.danger,
             )
             .wrap(),
@@ -669,7 +669,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         body = body.child(error_line(p, e));
     }
     if let Some(n) = &m.notice {
-        body = body.child(el().pb(12.0).child(styled(n.clone(), SM, p.text_muted)));
+        body = body.child(el().pb(12.0).child(styled(n.clone(), sm(), p.text_muted)));
     }
     page_body("memory-page", body.child(content))
 }

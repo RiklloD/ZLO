@@ -20,7 +20,7 @@ use ironclaw_gpui_client::{ReviewTarget, ThreadAction, ThreadActionOutcome, Thre
 use rune::{Color, El, TextEdit, col, row};
 use rune_kit::{Kit, TextInput};
 
-use super::super::ui::{self, XS, XS_MED};
+use super::super::ui::{self, xs, xs_med};
 use super::{Scope, set_scope};
 use crate::chat::side::{bridge, side, side_mut, side_of, side_total, thread_id};
 use crate::design::Palette;
@@ -196,7 +196,7 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
     let mut head = row()
         .gap(4.)
         .items_center()
-        .child(ui::line("Codex", XS_MED, p.text).grow(1.));
+        .child(ui::line("Codex", xs_med(), p.text).grow(1.));
     if has_diff {
         head = head.child(
             ui::btn(if scope == Scope::Codex {
@@ -270,6 +270,7 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
                 .child(
                     row().grow(1.).min_w(0.).child(
                         TextInput::new(&state.codex.custom)
+                            .width(None)
                             .placeholder("Or tell Codex what to review")
                             .label("Review instructions")
                             .on_edit(|s: &mut State| &mut side_total(s).changes.codex.custom)
@@ -290,15 +291,15 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
     if let Some(root) = mismatch {
         card = card.child(ui::para(
             format!("Codex works in {root}, not this folder: Review is off here."),
-            XS,
+            xs(),
             p.text_muted,
         ));
     }
     if let Some(note) = state.codex.note.clone() {
-        card = card.child(ui::para(note, XS, p.success));
+        card = card.child(ui::para(note, xs(), p.success));
     }
     if let Some(error) = state.codex.error.clone() {
-        card = card.child(ui::para(error, XS, p.danger));
+        card = card.child(ui::para(error, xs(), p.danger));
     }
     if !findings.is_empty() {
         let mut list = col().gap(2.).child(ui::line(
@@ -307,7 +308,7 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
                 findings.len(),
                 if findings.len() == 1 { "" } else { "s" }
             ),
-            XS,
+            xs(),
             p.text_muted,
         ));
         for (path, f) in findings.iter().take(8) {
@@ -315,13 +316,13 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
             if f.priority.is_some() {
                 line = line.child(ui::line(
                     f.priority_label(),
-                    XS,
+                    xs(),
                     priority_color(f.priority, p),
                 ));
             }
             list = list.child(
-                line.child(ui::line(f.title.clone(), XS, p.text).shrink().min_w(0.))
-                    .child(ui::line(format!("{path}:{}", f.start), XS, p.text_faint)),
+                line.child(ui::line(f.title.clone(), xs(), p.text).shrink().min_w(0.))
+                    .child(ui::line(format!("{path}:{}", f.start), xs(), p.text_faint)),
             );
         }
         card = card.child(list);

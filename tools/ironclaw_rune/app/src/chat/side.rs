@@ -288,6 +288,11 @@ pub struct SideState {
     wide: [bool; 2],
     /// When each dock last opened, for native views to wait out the slide.
     opened_at: [Option<Instant>; 2],
+    /// Each dock's column is still drawn: open, or closed less than
+    /// [`dock::CLOSE_HOLD`] ago while its clip slides shut ([`poll`]).
+    shown: [bool; 2],
+    /// When a closed dock's column may go (app clock, seconds).
+    hold: [Option<f64>; 2],
     /// The session card is open.
     session_open: bool,
     /// A side chat is being forked.
@@ -402,6 +407,40 @@ fn toggle_dock(s: &mut State, dock: Dock) {
         mark_opened(s, dock);
         load(s, dock_tab(s, dock));
     }
+}
+
+/// Keeps a closed dock's column drawn until its clip has slid shut, so the
+/// body and its titlebar tabs leave with the slide instead of fading out
+/// ahead of it. Runs from the app's `poll`, whatever closed the dock.
+pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
+    let open = [dock_open(s, Dock::Work), dock_open(s, Dock::Side)];
+    let Some(x) = side_mut(s) else { return false };
+    let mut changed = false;
+    for (ix, open) in open.into_iter().enumerate() {
+        if open {
+            x.shown[ix] = true;
+            x.hold[ix] = None;
+        } else if x.shown[ix] {
+            match x.hold[ix] {
+                None => {
+                    x.hold[ix] = Some(clock + dock::CLOSE_HOLD);
+                    tx.wake_after(std::time::Duration::from_secs_f64(dock::CLOSE_HOLD));
+                }
+                Some(until) if clock >= until => {
+                    x.shown[ix] = false;
+                    x.hold[ix] = None;
+                    changed = true;
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    changed
+}
+
+/// `dock`'s column is drawn: open, or still sliding shut.
+fn dock_drawn(s: &State, dock: Dock) -> bool {
+    dock_open(s, dock) || side(s).is_some_and(|x| x.shown[dock.ix()])
 }
 
 fn mark_opened(s: &mut State, dock: Dock) {

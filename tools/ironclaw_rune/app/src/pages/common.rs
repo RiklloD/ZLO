@@ -21,12 +21,14 @@ use crate::state::State;
 /// Zeron's settings column (`widgets::page_column`).
 pub const PAGE_MAX_WIDTH: f32 = 760.;
 
-/// Geist at `size` px and `weight` (400 regular, 500 medium, 600 semibold).
+/// Geist at `size` px (at the 16 px base, scaled to the UI font size) and
+/// `weight` (400 regular, 500 medium, 600 semibold).
 pub fn font(size: f32, weight: f32) -> TextStyle {
-    TextStyle::new(size, weight)
+    TextStyle::new(crate::design::styles::rem(size), weight)
 }
 
-/// Text sizes of the GPUI app's rem scale (16 px base).
+/// Text sizes of the GPUI app's rem scale (16 px base); [`font`] and the
+/// helpers built on it scale them to the UI font size.
 pub const XS: f32 = 12.;
 pub const SM: f32 = 14.;
 pub const BASE: f32 = 16.;
@@ -71,7 +73,10 @@ pub fn group_header(p: &Palette, title: &str, note: Option<&str>) -> El {
         .pb(8.)
         .px(8.)
         .gap(2.)
-        .child(label(title, BASE, 600., p.text).font(font(BASE, 600.).lh(22.)));
+        .child(
+            label(title, BASE, 600., p.text)
+                .font(font(BASE, 600.).lh(crate::design::styles::rem(22.))),
+        );
     if let Some(note) = note {
         d = d.child(para(note, XS, p.text_muted));
     }

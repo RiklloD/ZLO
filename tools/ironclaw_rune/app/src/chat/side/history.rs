@@ -8,7 +8,7 @@ use rune::{Color, El, canvas, col, el, row};
 use rune_kit::Kit;
 use rune_kit::diff::{DiffMode, DiffState, DiffView};
 
-use super::ui::{self, SM_MED, TINY, XS};
+use super::ui::{self, sm_med, tiny, xs};
 use super::{SideState, git, side, side_mut, side_of, thread_id};
 use crate::design::Palette;
 use crate::icons;
@@ -280,11 +280,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .radius(4.)
                     .fill(p.accent_wash)
                     .max_w(110.)
-                    .child(ui::line(r.clone(), TINY, p.accent)),
+                    .child(ui::line(r.clone(), tiny(), p.accent)),
             );
         }
         subject = subject.child(
-            ui::line(commit.subject.clone(), XS, p.text)
+            ui::line(commit.subject.clone(), xs(), p.text)
                 .shrink()
                 .min_w(0.),
         );
@@ -302,7 +302,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .child(graph_cell(row_, graph_w, p))
                 .child(col().grow(1.).min_w(0.).child(subject).child(ui::line(
                     meta,
-                    TINY,
+                    tiny(),
                     p.text_faint,
                 )))
                 .on_press(move |s: &mut State| open(s, to_open.clone())),
@@ -349,11 +349,11 @@ fn commit_view(s: &State, k: &Kit, detail: &Detail) -> El {
         .filter(|b| !b.is_empty());
     let mut info = col().w_full().px(12.).py(8.).gap(4.).child(ui::line(
         format!("{} · {} · {}", c.short(), c.author, ago(c.time)),
-        XS,
+        xs(),
         p.text_muted,
     ));
     if let Some(body) = body {
-        info = info.child(ui::para(body, XS, p.text));
+        info = info.child(ui::para(body, xs(), p.text));
     }
     let diff = match (&detail.diff, &detail.error) {
         (_, Some(e)) => ui::error_line(s, e.clone()),
@@ -381,7 +381,7 @@ fn commit_view(s: &State, k: &Kit, detail: &Detail) -> El {
                         .key("commit-back"),
                 )
                 .child(
-                    ui::line(c.subject.clone(), SM_MED, p.text)
+                    ui::line(c.subject.clone(), sm_med(), p.text)
                         .grow(1.)
                         .min_w(0.),
                 )

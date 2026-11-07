@@ -9,7 +9,7 @@ use rune::{Color, El, col, icon, row};
 use rune_kit::Kit;
 
 use super::bridge;
-use super::ui::{self, SM, XS};
+use super::ui::{self, sm, xs};
 use crate::design::Palette;
 use crate::icons;
 use crate::state::State;
@@ -99,7 +99,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .gap(8.)
             .items_center()
             .child(status_dot(color, live))
-            .child(ui::line(title, SM, p.text).grow(1.).min_w(0.));
+            .child(ui::line(title, sm(), p.text).grow(1.).min_w(0.));
         if live && !task.cancel_requested {
             let id = id.clone();
             head = head.child(
@@ -127,14 +127,14 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .radius(8.)
             .hover(p.hover)
             .child(head)
-            .child(ui::line(meta, XS, p.text_faint).pl(16.));
+            .child(ui::line(meta, xs(), p.text_faint).pl(16.));
         if let Some(note) = note {
             let ink = if task.status == TaskStatus::Failed {
                 p.danger
             } else {
                 p.text_muted
             };
-            card = card.child(ui::para(note, XS, ink).max_lines(3).pl(16.));
+            card = card.child(ui::para(note, xs(), ink).max_lines(3).pl(16.));
         }
         list = list.child(card);
     }
@@ -158,8 +158,8 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 ui::hover_row(s, format!("agent-fork-{ix}"))
                     .mx(8.)
                     .child(icon(&icons::GIT_FORK, 12.).color(p.text_faint))
-                    .child(ui::line(label, XS, p.text_faint))
-                    .child(ui::line(title, SM, p.text).grow(1.).min_w(0.))
+                    .child(ui::line(label, xs(), p.text_faint))
+                    .child(ui::line(title, sm(), p.text).grow(1.).min_w(0.))
                     .on_press(move |s: &mut State| {
                         crate::workspace::open_thread(s, thread.clone())
                     }),

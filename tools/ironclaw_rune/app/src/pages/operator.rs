@@ -16,7 +16,7 @@ mod setup;
 mod status;
 
 use crate::pages::common::controls::{Look, Size, button_sized, header_with, muted, refresh_icon};
-use crate::pages::common::ts::{BODY_SEMIBOLD, SM};
+use crate::pages::common::ts::{body_semibold, sm};
 use crate::pages::common::{glyph, page_body};
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorConfigDiagnostic, RebornOperatorConfigDiagnosticSeverity,
@@ -177,7 +177,7 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
 /// GPUI operator `section_title`: 20 px above, 8 below, semibold.
 fn section_title(s: &State, title: &str) -> El {
     text(title.to_string())
-        .font(BODY_SEMIBOLD)
+        .font(body_semibold())
         .color(s.palette.text)
         .pt(20.)
         .pb(8.)
@@ -186,7 +186,7 @@ fn section_title(s: &State, title: &str) -> El {
 /// A success notice line.
 fn notice_line(s: &State, msg: &str) -> El {
     text(msg.to_string())
-        .font(SM)
+        .font(sm())
         .color(s.palette.success)
         .wrap()
         .pb(12.)
@@ -204,7 +204,7 @@ fn confirm_row(s: &State, k: &Kit, message: String, confirm: Button, cancel: But
         .border(1., p.danger)
         .child(
             text(message)
-                .font(SM)
+                .font(sm())
                 .color(p.text)
                 .wrap()
                 .grow(1.)
@@ -225,7 +225,7 @@ fn diagnostic_row(s: &State, d: &RebornOperatorConfigDiagnostic) -> El {
         .grow(1.)
         .min_w(0.)
         .gap(2.)
-        .child(text(d.message.clone()).font(SM).color(p.text).wrap())
+        .child(text(d.message.clone()).font(sm()).color(p.text).wrap())
         .child(muted(p, format!("{}  ·  {}", d.key, d.reason_code)));
     if !d.remediation.is_empty() {
         c = c.child(muted(p, d.remediation.clone()));

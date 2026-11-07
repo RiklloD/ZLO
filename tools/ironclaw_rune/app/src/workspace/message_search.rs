@@ -197,7 +197,7 @@ pub fn snippet_text(p: &Palette, hit: &HistoryHit, size: f32) -> El {
         .map(|h| Span::new(h.start, h.end).weight(600.).color(p.text))
         .collect();
     rich(hit.snippet.clone(), spans)
-        .font(TextStyle::new(size, 400.))
+        .font(TextStyle::new(crate::design::styles::rem(size), 400.))
         .color(p.text_muted)
 }
 

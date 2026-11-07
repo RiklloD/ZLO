@@ -4,7 +4,7 @@
 use crate::pages::common::controls::{
     Look, Size, button_sized, muted, outlined_tag, rule, spinner,
 };
-use crate::pages::common::ts::{BODY_SEMIBOLD, SM_MEDIUM};
+use crate::pages::common::ts::{body_semibold, sm_medium};
 use crate::pages::common::{Tone, card, error_line, loading};
 use ironclaw_gpui_client::ClientError;
 use ironclaw_gpui_client::product_wire::{
@@ -125,7 +125,7 @@ fn render_readiness(s: &State, k: &Kit) -> El {
                 .w_full()
                 .gap(8.)
                 .center_y()
-                .child(text("Overall").font(BODY_SEMIBOLD).color(p.text).grow(1.))
+                .child(text("Overall").font(body_semibold()).color(p.text).grow(1.))
                 .child(state_tag(s, report.overall))
                 .child(muted(
                     p,
@@ -158,7 +158,7 @@ fn render_service(s: &State, k: &Kit) -> El {
                 col()
                     .grow(1.)
                     .min_w(0.)
-                    .child(text("IronClaw service").font(BODY_SEMIBOLD).color(p.text))
+                    .child(text("IronClaw service").font(body_semibold()).color(p.text))
                     .child(muted(p, format!("Gateway answering at {base_url}"))),
             )
             .child(outlined_tag(p, Tone::Success, "Running"))
@@ -234,7 +234,7 @@ fn render_diagnostics(s: &State, k: &Kit) -> El {
             .child(
                 col()
                     .grow(1.)
-                    .child(text("Doctor").font(BODY_SEMIBOLD).color(p.text))
+                    .child(text("Doctor").font(body_semibold()).color(p.text))
                     .child(muted(
                         p,
                         "Checks setup and readiness and explains what to fix.",
@@ -258,7 +258,7 @@ fn check_row(s: &State, c: &RebornOperatorStatusCheck) -> El {
         .grow(1.)
         .min_w(0.)
         .gap(2.)
-        .child(text(c.id.replace('_', " ")).font(SM_MEDIUM).color(p.text))
+        .child(text(c.id.replace('_', " ")).font(sm_medium()).color(p.text))
         .child(muted(p, c.summary.clone()));
     if let Some(r) = &c.remediation {
         info = info.child(muted(p, r.clone()));

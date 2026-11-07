@@ -16,17 +16,18 @@ pub const REGULAR: f32 = 400.;
 pub const MEDIUM: f32 = 500.;
 pub const SEMIBOLD: f32 = 600.;
 
-/// Text at `size` points in the UI face.
+/// Text at `size` points (at the 16 pt base, scaled to the UI font size)
+/// in the UI face.
 pub fn t(s: impl Into<String>, size: f32, color: Color) -> El {
     text(s.into())
-        .font(TextStyle::new(size, REGULAR))
+        .font(TextStyle::new(crate::design::styles::rem(size), REGULAR))
         .color(color)
 }
 
 /// Text at `size` and `weight`.
 pub fn tw(s: impl Into<String>, size: f32, weight: f32, color: Color) -> El {
     text(s.into())
-        .font(TextStyle::new(size, weight))
+        .font(TextStyle::new(crate::design::styles::rem(size), weight))
         .color(color)
 }
 
@@ -190,6 +191,7 @@ pub fn rule(p: &Palette) -> El {
 /// `.on_edit(..)`, `.on_submit(..)` and `.on_input_change(..)` on the
 /// returned field before wrapping it with [`grow_box`].
 pub fn plain_area(edit: &rune::TextEdit, size: f32, placeholder: &str, p: &Palette) -> El {
+    let size = crate::design::styles::rem(size);
     rune::text_input(
         edit,
         TextStyle::new(size, REGULAR).lh((size * 1.45).round()),

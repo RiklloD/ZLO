@@ -280,12 +280,21 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
         if picks.is_empty() {
             continue;
         }
-        rows = rows.child(group_header(p, m, slot, k, title, provider));
+        // Each group is its own keyed list: a model shows both under Recent
+        // and under its provider, and row keys are only unique per group.
+        let group_key = provider.map_or_else(
+            || format!("model-group-{title}"),
+            |pv| format!("model-group-{}", pv.provider),
+        );
+        let mut group = col()
+            .key(group_key)
+            .child(group_header(p, m, slot, k, title, provider));
         for (provider, model) in picks {
             let badge = (m.cmd_held && shown < 9).then_some(shown);
             shown += 1;
-            rows = rows.child(model_row(s, m, slot, k, provider, model, badge));
+            group = group.child(model_row(s, m, slot, k, provider, model, badge));
         }
+        rows = rows.child(group);
     }
     if shown == 0 {
         let msg = if m.route.is_none() {

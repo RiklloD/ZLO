@@ -4,7 +4,7 @@
 //! per-hook enablement has no backend yet. Port of GPUI `pages/hooks.rs`.
 
 use crate::pages::common::controls::{header_with, outlined_tag, refresh_icon, rule, spinner};
-use crate::pages::common::ts::{SM, SM_MEDIUM, XS};
+use crate::pages::common::ts::{sm, sm_medium, xs};
 use crate::pages::common::{Tone, empty_state, error_line, page_body};
 use ironclaw_gpui_client::hooks_catalog::{
     HookCatalog, HookCatalogEntry, HookSource, HookTrustClassView,
@@ -82,11 +82,11 @@ fn render_hook(s: &State, k: &Kit, hook: &HookCatalogEntry) -> El {
     let mut info = col()
         .grow(1.)
         .min_w(0.)
-        .child(text(hook.name.clone()).font(SM_MEDIUM).color(p.text))
-        .child(text(hook.id.clone()).font(XS).color(p.text_muted))
-        .child(text(meta).font(XS).color(p.text_muted).wrap());
+        .child(text(hook.name.clone()).font(sm_medium()).color(p.text))
+        .child(text(hook.id.clone()).font(xs()).color(p.text_muted))
+        .child(text(meta).font(xs()).color(p.text_muted).wrap());
     if let Some(note) = &hook.note {
-        info = info.child(text(note.clone()).font(XS).color(p.text_muted).wrap());
+        info = info.child(text(note.clone()).font(xs()).color(p.text_muted).wrap());
     }
     col()
         .key(format!("hook-{}", hook.id))
@@ -126,7 +126,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
                     on_off(catalog.framework_enabled),
                     on_off(catalog.third_party_enabled),
                 ))
-                .font(SM)
+                .font(sm())
                 .color(p.text_muted)
                 .wrap()
                 .pb(12.),

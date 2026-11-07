@@ -355,6 +355,7 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .wheel_glide("cmdk-list")
         .child(col().w_full().padding(4.).children(rows));
     let input = TextInput::new(&menu.input)
+        .width(None)
         .placeholder("Search threads, messages, settings and actions")
         .plain()
         .on_edit(|s: &mut State| {
@@ -395,7 +396,7 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 .gap(12.)
                 .center_y()
                 .child(ui::glyph(&icons::SEARCH, 16., p.text_muted))
-                .child(el().grow(1.0).child(input)),
+                .child(el().grow(1.0).min_w(0.0).child(input)),
         )
         .child(ui::rule(p))
         .child(list);

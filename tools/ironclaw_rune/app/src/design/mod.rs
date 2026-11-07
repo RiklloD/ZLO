@@ -187,6 +187,24 @@ pub fn kit(p: &Palette) -> Kit {
     c.submit_fg = on_accent;
     c.submit_icon = on_accent;
     k.radius.sm = CONTROL_RADIUS;
+    // rune-kit's components (buttons, inputs, menus, selects) follow
+    // Appearance → UI font size with the app's own text; code stays put.
+    let ty = &mut k.ty;
+    for style in [
+        &mut ty.ui,
+        &mut ty.ui_medium,
+        &mut ty.ui_compact,
+        &mut ty.small,
+        &mut ty.small_medium,
+        &mut ty.body,
+        &mut ty.body_medium,
+        &mut ty.text_small,
+        &mut ty.text_small_medium,
+        &mut ty.text_xsmall,
+        &mut ty.text_xsmall_medium,
+    ] {
+        *style = styles::scaled(*style);
+    }
     k
 }
 

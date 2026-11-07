@@ -23,7 +23,7 @@ mod compactions;
 mod history;
 
 use crate::pages::common::controls::{header_with, keyed_refresh, rule, styled};
-use crate::pages::common::ts::{BODY_SEMIBOLD, SM, XS};
+use crate::pages::common::ts::{body_semibold, sm, xs};
 use crate::pages::common::{empty_state, error_line, page_body};
 use std::time::{Duration, Instant};
 
@@ -204,7 +204,7 @@ fn segmented<T: Copy + PartialEq + 'static>(
             .py(4.0)
             .radius(6.0)
             .cursor(Cursor::Pointer)
-            .child(styled(*name, XS, if on { p.text } else { p.text_muted }))
+            .child(styled(*name, xs(), if on { p.text } else { p.text_muted }))
             .on_press(move |s: &mut State| on_pick(s, value));
         if on {
             pill = pill
@@ -314,11 +314,11 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
         row()
             .gap(8.0)
             .center_y()
-            .child(styled(provider.label.clone(), BODY_SEMIBOLD, p.text));
+            .child(styled(provider.label.clone(), body_semibold(), p.text));
     if let Some(plan) = &provider.plan {
         title = title.child(el().px(6.0).radius(4.0).fill(p.accent_wash).child(styled(
             plan.clone(),
-            XS,
+            xs(),
             p.accent_strong,
         )));
     }
@@ -329,7 +329,7 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
         .gap(8.0)
         .child(title);
     if let Some(st) = status_text(provider.status) {
-        top = top.child(styled(st, XS, p.warning));
+        top = top.child(styled(st, xs(), p.warning));
     }
     let mut card = col()
         .key(format!("usage-provider-{ix}"))
@@ -341,7 +341,7 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
         .fill(p.surface_card)
         .child(top);
     if let Some(m) = &provider.message {
-        card = card.child(styled(m.clone(), SM, p.text_muted).wrap());
+        card = card.child(styled(m.clone(), sm(), p.text_muted).wrap());
     }
     for (wx, w) in provider.windows.iter().enumerate() {
         card = card.child(window_row(p, w, now).key(format!("window-{wx}")));
@@ -352,19 +352,19 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
                 "Updated {} · may be out of date",
                 jobs::ago(from_millis(at))
             ),
-            XS,
+            xs(),
             p.warning,
         ),
         Some(at) => styled(
             format!("Updated {}", jobs::ago(from_millis(at))),
-            XS,
+            xs(),
             p.text_faint,
         ),
         None => el(),
     };
     let mut foot = row().w_full().justify_between().gap(12.0).child(updated);
     if let Some(detail) = &provider.detail {
-        foot = foot.child(styled(detail.clone(), XS, p.text_faint).wrap().shrink());
+        foot = foot.child(styled(detail.clone(), xs(), p.text_faint).wrap().shrink());
     }
     card.child(foot)
 }
@@ -385,12 +385,12 @@ fn idle_row(p: &Palette, ix: usize, provider: &ProviderUsage) -> El {
         .items_start()
         .child(
             el().w(120.0)
-                .child(styled(provider.label.clone(), SM, p.text_muted)),
+                .child(styled(provider.label.clone(), sm(), p.text_muted)),
         )
         .child(
             el().grow(1.0)
                 .min_w(0.0)
-                .child(styled(why, SM, p.text_faint).wrap()),
+                .child(styled(why, sm(), p.text_faint).wrap()),
         )
 }
 
@@ -402,9 +402,9 @@ fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
     let ahead = elapsed.and_then(|e| ahead_of_pace(pct, e));
     let mut right = row()
         .gap(8.0)
-        .child(styled(format!("{pct:.0}%"), SM, p.text));
+        .child(styled(format!("{pct:.0}%"), sm(), p.text));
     if let Some(r) = resets {
-        right = right.child(styled(r, SM, p.text_faint));
+        right = right.child(styled(r, sm(), p.text_faint));
     }
     let mut bar = el()
         .key("bar")
@@ -438,12 +438,12 @@ fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
             row()
                 .w_full()
                 .justify_between()
-                .child(styled(window.label.clone(), SM, p.text))
+                .child(styled(window.label.clone(), sm(), p.text))
                 .child(right),
         )
         .child(bar);
     if let Some(caption) = ahead {
-        c = c.child(styled(caption, XS, p.warning));
+        c = c.child(styled(caption, xs(), p.warning));
     }
     c
 }

@@ -6,7 +6,7 @@
 use crate::chat::model_picker::pretty_model;
 use crate::pages::common::controls::{floating, hairline, hover_row, styled};
 use crate::pages::common::glyph;
-use crate::pages::common::ts::{SM, XS};
+use crate::pages::common::ts::{sm, xs};
 use std::collections::BTreeSet;
 
 use ironclaw_gpui_client::orchestration::RouteProvider;
@@ -239,7 +239,12 @@ pub(super) fn trigger(s: &State, k: &Kit, layer: &mut Vec<El>, menu: Menu, summa
         .border(1.0, if open { p.accent } else { p.border })
         .cursor(Cursor::Pointer)
         .hover(p.hover)
-        .child(styled(summary, SM, p.text).truncate().grow(1.0).min_w(0.0))
+        .child(
+            styled(summary, sm(), p.text)
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        )
         .child(glyph(&icons::CHEVRON_DOWN, 12.0, p.text_muted))
         .on_press(move |s: &mut State| toggle_menu(s, menu))
 }
@@ -311,7 +316,7 @@ fn model_popover(s: &State, k: &Kit) -> El {
                     14.0,
                 ))
                 .child(
-                    styled(rp.name.clone(), SM, p.text)
+                    styled(rp.name.clone(), sm(), p.text)
                         .truncate()
                         .grow(1.0)
                         .min_w(0.0),
@@ -515,9 +520,9 @@ fn checklist_popover(s: &State, k: &Kit, menu: Menu, empty_label: &'static str) 
         let mut text = col()
             .grow(1.0)
             .min_w(0.0)
-            .child(styled(c.label, SM, p.text).truncate());
+            .child(styled(c.label, sm(), p.text).truncate());
         if !c.detail.is_empty() {
-            text = text.child(styled(c.detail, XS, p.text_faint).truncate());
+            text = text.child(styled(c.detail, xs(), p.text_faint).truncate());
         }
         rows = rows.child(
             hover_row(p, format!("check-{}-{}", menu as u8, c.id), false)
@@ -565,7 +570,7 @@ fn pick_row(p: &Palette, key: String, text: String, on: bool) -> El {
     let mut r = hover_row(p, key, on)
         .role("menuitemradio")
         .checked(on)
-        .child(styled(text, SM, p.text).truncate().grow(1.0).min_w(0.0));
+        .child(styled(text, sm(), p.text).truncate().grow(1.0).min_w(0.0));
     if on {
         r = r.child(glyph(&icons::CHECK, 13.0, p.text_muted));
     }
@@ -590,7 +595,7 @@ fn check_box(p: &Palette, on: bool) -> El {
 }
 
 fn note(p: &Palette, text: &'static str) -> El {
-    el().px(8.0).py(4.0).child(styled(text, XS, p.text_faint))
+    el().px(8.0).py(4.0).child(styled(text, xs(), p.text_faint))
 }
 
 #[cfg(test)]

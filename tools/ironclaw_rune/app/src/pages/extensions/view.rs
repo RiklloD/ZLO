@@ -4,7 +4,7 @@ use crate::pages::common::controls::{
     Look, Size, button_sized, header_with, icon_button_sized, input, open_url, outlined_tag,
     refresh_icon, rule, section_title, spinner_line,
 };
-use crate::pages::common::ts::{BODY_SEMIBOLD, SM, SM_MEDIUM, XS, XS_MEDIUM};
+use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs, xs_medium};
 use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
 use ironclaw_gpui_client::extension_state::LifecyclePublicState;
 use ironclaw_gpui_client::product_wire::{
@@ -116,13 +116,13 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
                         .build(k)
                         .key("pair-new"),
                     )
-                    .child(text("Waiting for the bot").font(XS).color(p.text_muted));
+                    .child(text("Waiting for the bot").font(xs()).color(p.text_muted));
                 col()
                     .w_full()
                     .gap(8.)
                     .child(
                         text("Send this code to the bot from your chat app:")
-                            .font(SM)
+                            .font(sm())
                             .color(p.text)
                             .wrap(),
                     )
@@ -138,7 +138,7 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
                             )
                             .child(
                                 text(format!("expires {}", jobs::when(code.expires_at)))
-                                    .font(XS)
+                                    .font(xs())
                                     .color(p.text_muted),
                             ),
                     )
@@ -147,7 +147,7 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
             None => row()
                 .gap(8.)
                 .center_y()
-                .child(text("Not connected.").font(SM).color(p.text))
+                .child(text("Not connected.").font(sm()).color(p.text))
                 .child(
                     loading(
                         button_sized("Get a pairing code", Look::Primary, Size::Small)
@@ -181,7 +181,11 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
     });
     card(p)
         .key("mcp-form")
-        .child(text("Custom MCP server").font(BODY_SEMIBOLD).color(p.text))
+        .child(
+            text("Custom MCP server")
+                .font(body_semibold())
+                .color(p.text),
+        )
         .child(
             input(&form.name)
                 .placeholder("Name, e.g. Linear")
@@ -201,7 +205,7 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
             row()
                 .gap(8.)
                 .center_y()
-                .child(text("Sign-in").font(XS_MEDIUM).color(p.text))
+                .child(text("Sign-in").font(xs_medium()).color(p.text))
                 .children(auth),
         )
         .child(
@@ -277,9 +281,9 @@ fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
             let mut label = row()
                 .gap(8.)
                 .center_y()
-                .child(text(prompt.clone()).font(XS_MEDIUM).color(p.text));
+                .child(text(prompt.clone()).font(xs_medium()).color(p.text));
             if optional {
-                label = label.child(text("optional").font(XS).color(p.text_muted));
+                label = label.child(text("optional").font(xs()).color(p.text_muted));
             }
             if provided {
                 label = label.child(outlined_tag(p, Tone::Success, "Saved"));
@@ -330,7 +334,7 @@ fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
     }
     let mut c = col().w_full().gap(12.).child(rule(p));
     if let Some(t) = instructions {
-        c = c.child(text(t).font(SM).color(p.text).wrap());
+        c = c.child(text(t).font(sm()).color(p.text).wrap());
     }
     c.children(rows).child(buttons)
 }
@@ -374,12 +378,12 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
                 .min_w(0.)
                 .child(
                     text(e.display_name.clone())
-                        .font(BODY_SEMIBOLD)
+                        .font(body_semibold())
                         .color(p.text),
                 )
                 .child(
                     text(e.description.clone())
-                        .font(XS)
+                        .font(xs())
                         .color(p.text_muted)
                         .truncate(),
                 ),
@@ -427,7 +431,7 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
                 .map(|v| format!(" · v{v}"))
                 .unwrap_or_default()
         ))
-        .font(XS)
+        .font(xs())
         .color(p.text_muted),
     );
     if let Some(err) = &e.activation_error {
@@ -461,12 +465,12 @@ fn render_catalog(s: &State, k: &Kit, ix: usize, entry: &RebornExtensionRegistry
                         .min_w(0.)
                         .child(
                             text(entry.display_name.clone())
-                                .font(SM_MEDIUM)
+                                .font(sm_medium())
                                 .color(p.text),
                         )
                         .child(
                             text(entry.description.clone())
-                                .font(XS)
+                                .font(xs())
                                 .color(p.text_muted)
                                 .wrap(),
                         ),
