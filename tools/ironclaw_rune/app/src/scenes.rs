@@ -14,6 +14,11 @@ pub type Scene = (&'static str, fn(&mut State));
 
 pub const SCENES: &[Scene] = &[
     ("appearance", |s| page_with(s, Page::Appearance, crate::pages::settings::fixture)),
+    ("appearance-translucent", |s| {
+        page_with(s, Page::Appearance, crate::pages::settings::fixture);
+        // Headless renders draw the shell's translucent fills (no material).
+        s.prefs.translucent = true;
+    }),
     ("automation-form", |s| page_with(s, Page::Automations, crate::pages::automations::fixture_form)),
     ("automations", |s| page_with(s, Page::Automations, crate::pages::automations::fixture)),
     ("chat", crate::chat::fixtures::chat),

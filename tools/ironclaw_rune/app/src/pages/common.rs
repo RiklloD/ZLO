@@ -11,6 +11,7 @@ use rune_kit::{
     Switch,
 };
 
+use crate::design::smooth_scroll::WheelGlide;
 use crate::design::Palette;
 use crate::state::State;
 
@@ -143,7 +144,7 @@ pub fn page_body(key: &str, content: El) -> El {
         .min_h(0.)
         .scroll(ScrollSpec {
             stick_bottom: false,
-        })
+        }).wheel_glide(key)
         .child(
             row()
                 .w_full()

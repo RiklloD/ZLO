@@ -11,6 +11,7 @@ use rune::{Color, Cx, El, ScrollSpec, TextStyle, col, el, row, text};
 use rune_kit::{Button, Kit, SegmentedControl, Switch, TextInput};
 
 use super::{HOTKEYS, VoicePrefs};
+use crate::design::smooth_scroll::WheelGlide;
 use crate::state::State;
 
 const PACES: [(f32, &str); 3] = [(0.42, "Slow"), (0.5, "Normal"), (0.58, "Fast")];
@@ -283,7 +284,7 @@ fn page_body(key: &'static str, content: El) -> El {
         .w_full()
         .h_full()
         .min_h(0.)
-        .scroll(ScrollSpec { stick_bottom: false })
+        .scroll(ScrollSpec { stick_bottom: false }).wheel_glide(key)
         .child(
             row()
                 .w_full()

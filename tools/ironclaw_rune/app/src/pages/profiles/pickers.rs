@@ -14,6 +14,7 @@ use super::super::usage::common_stub::{
     SM, XS, floating, glyph, hairline, kit_row, label, pretty_model,
 };
 use super::ProfilesState;
+use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::State;
@@ -256,7 +257,7 @@ fn search_field(k: &Kit) -> impl Fn(&ProfilesState) -> El + '_ {
 
 /// A scroll viewport capped at `max` points tall.
 fn capped(key: &str, max: f32, rows: El) -> El {
-    col().key(key.to_string()).w_full().max_h(max).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(rows)
+    col().key(key.to_string()).w_full().max_h(max).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).wheel_glide(key).child(rows)
 }
 
 /// Providers on the left, the rail provider's models on the right.

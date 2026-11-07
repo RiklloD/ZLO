@@ -521,6 +521,8 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             },
         )
     });
+    // Rune sets a window's transparency when it opens it, so turning this
+    // on shows from the next launch (`design::styles`); off applies at once.
     let translucent_on = prefs.translucent;
     let translucent = switch(
         k,
@@ -570,7 +572,7 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         .chain([setting_row(
             p,
             "Translucent window",
-            Some("The desktop shows through the sidebar, blurred by macOS."),
+            Some(translucent_detail(prefs)),
             translucent,
         )]),
     );
@@ -674,4 +676,14 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(motion_rows)
         .child(group_header(p, "Fonts and layout", None))
         .child(layout_rows)
+}
+
+/// The Translucent window row's detail: GPUI's line, plus a relaunch note
+/// while the pref is on and the open window is still opaque.
+fn translucent_detail(prefs: &crate::design::prefs::Prefs) -> &'static str {
+    if crate::design::styles::translucency_pending(prefs) {
+        "The desktop shows through the sidebar, blurred by macOS. Takes effect when ZLO next opens."
+    } else {
+        "The desktop shows through the sidebar, blurred by macOS."
+    }
 }

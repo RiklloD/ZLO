@@ -14,6 +14,7 @@ use super::{
     Dock, KEEP, Tab, WIDE_SHARE, WIDTH_DEFAULT, WIDTH_MAX, WIDTH_MIN, badge, bridge, dock_open,
     dock_tab, pick_project_folder, session, short_path, side, side_mut,
 };
+use crate::design::motion;
 use crate::icons;
 use crate::state::State;
 
@@ -390,18 +391,34 @@ fn header(s: &State, k: &Kit, dock: Dock, right: f32, width: f32) -> El {
         )
 }
 
-/// A dock's tab icons, each with its attention dot. The selection fill
-/// moves between them on Rune's colour spring (Zeron's tab slide).
+/// A dock's tab icons, each with its attention dot. One selection pill
+/// glides between them on [`motion::PILL`] (GPUI's `flip` pill, Zeron's
+/// tab slide); the cells carry no fill of their own.
 fn tabs(s: &State, k: &Kit, dock: Dock) -> El {
+    /// A small icon button's side (rune-kit `ControlSize::Small`) and the
+    /// strip's gap: where each cell starts.
+    const CELL: f32 = 20.;
+    const GAP: f32 = 2.;
     let p = &s.palette;
     let current = dock_tab(s, dock);
     let has_chat = side(s).is_some_and(|x| x.chat.is_some());
-    let mut strip = row().gap(2.).items_center();
-    for t in dock.tabs().iter().copied().filter(|t| *t != Tab::SideChat || has_chat) {
+    let shown: Vec<Tab> = dock.tabs().iter().copied().filter(|t| *t != Tab::SideChat || has_chat).collect();
+    let mut strip = row().gap(GAP).items_center();
+    if let Some(ix) = shown.iter().position(|t| *t == current) {
+        strip = strip.child(
+            el().key(format!("side-{}-tab-pill", dock.key()))
+                .absolute(ix as f32 * (CELL + GAP), 0.)
+                .size(CELL, CELL)
+                .radius(crate::design::CONTROL_RADIUS)
+                .fill(p.active)
+                .a11y_hidden()
+                .motion(motion::PILL),
+        );
+    }
+    for t in shown {
         let mut cell = el()
             .key(format!("side-tab-{}", t.id()))
             .radius(crate::design::CONTROL_RADIUS)
-            .fill(if t == current { p.active } else { Color::TRANSPARENT })
             .child(
                 ui::ibtn(t.icon(), t.label())
                     .on_press(move |s: &mut State| super::show(s, t))

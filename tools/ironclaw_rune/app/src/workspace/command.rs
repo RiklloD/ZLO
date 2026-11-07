@@ -10,6 +10,7 @@ use rune_kit::{Kit, TextInput};
 
 use super::ui::{self, XS, t};
 use super::{message_search, row_title};
+use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::state::{Page, State};
 
@@ -341,7 +342,7 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .key("cmdk-list")
         .w_full()
         .max_h(LIST_MAX_H)
-        .scroll(ScrollSpec { stick_bottom: false })
+        .scroll(ScrollSpec { stick_bottom: false }).wheel_glide("cmdk-list")
         .child(col().w_full().padding(4.).children(rows));
     let input = TextInput::new(&menu.input)
         .placeholder("Search threads, messages, settings and actions")

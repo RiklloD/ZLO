@@ -7,6 +7,7 @@ use rune_kit::Kit;
 
 use super::super::ui::{self, XS};
 use super::{ChangesState, confirmed, git_action, jump};
+use crate::design::smooth_scroll::WheelGlide;
 use crate::chat::side::git;
 use crate::icons;
 use crate::state::State;
@@ -161,7 +162,7 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
             .key("changes-list")
             .w_full()
             .max_h(220.)
-            .scroll(ScrollSpec { stick_bottom: false })
+            .scroll(ScrollSpec { stick_bottom: false }).wheel_glide("changes-list")
             .child(list),
     )
 }

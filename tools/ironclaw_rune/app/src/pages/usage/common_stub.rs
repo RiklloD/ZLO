@@ -11,6 +11,7 @@
 use rune::{Color, Cursor, El, ScrollSpec, TextStyle, col, el, icon, row, text};
 use rune_kit::{ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 
+use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
 use crate::state::State;
 
@@ -126,7 +127,7 @@ pub fn page_body(key: &str, content: El) -> El {
             .w_full()
             .grow(1.0)
             .min_h(0.0)
-            .scroll(ScrollSpec { stick_bottom: false })
+            .scroll(ScrollSpec { stick_bottom: false }).wheel_glide("scroll")
             .child(
                 row().w_full().justify_center().px(40.0).pt(28.0).pb(48.0).child(
                     col().w_full().max_w(PAGE_MAX_WIDTH).child(content),

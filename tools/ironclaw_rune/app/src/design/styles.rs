@@ -13,8 +13,17 @@
 //! drawn by the platform under the element in a transparent window. In an
 //! opaque window and in headless renders Rune draws the element's fill
 //! instead, which is why `shell_alpha`/`panel_alpha` still apply to fills.
-//! A transparent window is a `WindowSpec`/`AppSpec` choice of the
-//! foundation (see the area G report).
+//!
+//! GPUI flipped the window's backdrop live (`set_translucent`/`apply_window`).
+//! Rune fixes a window's transparency when it creates the window
+//! (`WindowOptions::transparent`), so `main` asks for a transparent window
+//! when `prefs.translucent` is on at launch and records it here
+//! ([`set_window_translucent`]). The style is translucent only while both
+//! hold: switching the pref on mid-session waits for the next launch
+//! (Appearance says so), and switching it off turns the fills opaque at once.
+//! Headless renders and tests, which open no window, follow the pref.
+
+use std::sync::OnceLock;
 
 use rune::{Curve, Spring, SystemMaterial};
 
@@ -74,9 +83,9 @@ impl Style {
         }
     }
 
-    /// The style the preferences ask for.
+    /// The style the preferences ask for, within what the window can show.
     pub fn of(prefs: &Prefs) -> Self {
-        let mut s = Self::new(prefs.translucent);
+        let mut s = Self::new(prefs.translucent && window_translucent().unwrap_or(true));
         if prefs.ui_font_size > 0. {
             s.font_size = prefs.ui_font_size;
         }
@@ -93,4 +102,26 @@ impl Style {
     pub fn text(&self, px_at_16: f32) -> f32 {
         (px_at_16 * self.font_size / 16.).round()
     }
+}
+
+/// Whether the open window was created transparent; unset without a window.
+static WINDOW_TRANSLUCENT: OnceLock<bool> = OnceLock::new();
+
+/// Record the transparency `main` created the window with (once, at launch).
+pub fn set_window_translucent(on: bool) {
+    if WINDOW_TRANSLUCENT.set(on).is_err() {
+        tracing::debug!("window translucency already recorded");
+    }
+}
+
+/// The transparency the window was created with, or `None` when there is no
+/// window (headless renders, tests).
+pub fn window_translucent() -> Option<bool> {
+    WINDOW_TRANSLUCENT.get().copied()
+}
+
+/// The pref is on but the window opened opaque: it shows after a relaunch.
+/// (Off always applies at once: the fills turn opaque.)
+pub fn translucency_pending(prefs: &Prefs) -> bool {
+    prefs.translucent && window_translucent() == Some(false)
 }

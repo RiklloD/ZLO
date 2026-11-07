@@ -19,9 +19,9 @@
 //! | `roll_text` | `rune_kit::RollingText` ([`roll_text`]) |
 //! | `pump`, `frame_tail` (keep frames coming) | Rune's clock requests frames only while a track moves |
 //! | `dock.rs` composer hand-off | `El::matched(COMPOSER_MATCH)` on both composers ([`COMPOSER_MATCH`]) |
-//! | `flip.rs` resorted rows / sliding pills | keyed rows animate their layout per edge on `.motion(ROW_RESORT)` |
+//! | `flip.rs` resorted rows / sliding pills | keyed inbox rows on `.motion(ROW_RESORT)`; the side dock's tab pill on `.motion(PILL)` |
 //! | `pulse.rs` shared 30 Hz loop clock | `El::looping` / `El::cycle` (one render clock, frames only while visible) |
-//! | `smooth_scroll.rs` wheel glide | Rune scrolls smoothly itself (README "Smooth scrolling") |
+//! | `smooth_scroll.rs` wheel glide | ported: Rune scrolls a wheel 1:1, so `design::smooth_scroll` glides notches per viewport (`.wheel_glide(key)`) |
 //!
 //! Reduced motion (the battery saver, `prefs.reduce_motion`) is one switch
 //! for all of it: `look::apply_motion` sets `Cx::reduced_motion`, under which

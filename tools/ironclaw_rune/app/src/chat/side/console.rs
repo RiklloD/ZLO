@@ -17,6 +17,7 @@ use rune_kit::{ButtonVariant, Kit, TextInput};
 
 use super::ui::{self, MONO_XS, XS};
 use super::{short_path, side, side_mut, side_of, side_total, thread_id};
+use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::state::State;
 
@@ -277,7 +278,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .w_full()
         .grow(1.)
         .min_h(0.)
-        .scroll(ScrollSpec { stick_bottom: true })
+        .scroll(ScrollSpec { stick_bottom: true }).wheel_glide(OUT_KEY)
         .child(lines);
     let action = if running {
         ui::btn("Stop")

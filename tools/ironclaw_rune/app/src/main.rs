@@ -32,7 +32,7 @@ mod voice;
 mod window_state;
 mod workspace;
 
-use rune::{App, AppSpec, Chrome, Cx, El, KeyEvent, Tx};
+use rune::{App, AppSpec, Chrome, Cx, El, KeyEvent, Tx, WindowOptions};
 
 use crate::state::State;
 
@@ -91,6 +91,12 @@ fn main() {
         scenes: scenes::SCENES,
         ..AppSpec::new("ZLO", (1280.0, 820.0), placeholder_init, view)
     };
+    // Translucency is fixed when Rune creates the window, so the pref is
+    // read here, at launch (`design::styles`).
+    let translucent = !headless && design::prefs::Prefs::load().translucent;
+    if !headless {
+        design::styles::set_window_translucent(translucent);
+    }
     // Content runs under a transparent titlebar; the sidebar keeps its top
     // strip free (`.window_drag()`) so the window still drags from it.
     let mut app = App::new(spec)
@@ -98,6 +104,10 @@ fn main() {
             full_size_content: true,
             traffic_lights: Some((16.0, 17.0)),
             drag_regions: true,
+        })
+        .window_options(WindowOptions {
+            transparent: translucent,
+            ..WindowOptions::default()
         })
         .keep_running()
         // ⌘ held alone shows the sidebar's ⌘N badges.

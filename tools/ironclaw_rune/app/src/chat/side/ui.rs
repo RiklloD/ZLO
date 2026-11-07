@@ -7,6 +7,7 @@ use rune::tok::TextStyle;
 use rune::{Color, El, Icon, ScrollSpec, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Spinner};
 
+use crate::design::smooth_scroll::WheelGlide;
 use crate::state::State;
 
 /// gpui-kit's `text_size(10)`, `text_xs`, `text_sm`.
@@ -60,12 +61,13 @@ pub fn heading(s: &State, content: impl Into<String>) -> El {
 /// A tab's scrolling column. Each tab keys its own, so each keeps its
 /// scroll position.
 pub fn scroll(key: impl Into<String>, content: El) -> El {
+    let key: String = key.into();
     col()
-        .key(key)
+        .key(key.clone())
         .w_full()
         .grow(1.)
         .min_h(0.)
-        .scroll(ScrollSpec { stick_bottom: false })
+        .scroll(ScrollSpec { stick_bottom: false }).wheel_glide(key)
         .child(col().w_full().pb(12.).child(content))
 }
 
