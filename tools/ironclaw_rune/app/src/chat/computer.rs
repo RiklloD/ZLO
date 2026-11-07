@@ -465,35 +465,70 @@ fn control(s: &mut State, id: &str, action: ComputerControl) {
     cu.busy = true;
     cu.note = None;
     let (thread_id, viewer, generation) = (cu.thread_id.clone(), cu.viewer.clone(), cu.generation);
-    let asked = thread_id.clone();
+    let (asked, owner) = (thread_id.clone(), viewer.clone());
     jobs::run(
         s,
         "computer use",
         move |c| async move { c.computer_control(&thread_id, action, &viewer).await },
-        move |s, result, _| {
-            let Some(cu) = same(s, &asked, generation) else { return };
-            cu.busy = false;
-            match result {
-                Ok(_) => {
-                    match action {
-                        ComputerControl::TakeOver => cu.mine = true,
-                        ComputerControl::HandBack | ComputerControl::Stop => cu.mine = false,
-                    }
-                    sync_cards(s, &asked);
-                }
-                Err(e) => {
-                    cu.note = Some(
-                        match action {
-                            ComputerControl::Stop => "Could not stop the agent",
-                            ComputerControl::TakeOver => "Could not take over",
-                            ComputerControl::HandBack => "Could not hand back",
-                        }
-                        .into(),
-                    );
-                    tracing::warn!(error = %e, "computer-use control failed");
-                }
+        move |s, result, _| control_landed(s, &asked, generation, owner, action, result.map(|_| ())),
+    );
+}
+
+/// A control request's answer. A Take Over that succeeded after the share
+/// that asked went away (its chat closed, or reopened as a new share) has no
+/// owner to hand it back on drop, so it is handed back at once.
+fn control_landed(
+    s: &mut State,
+    asked: &str,
+    generation: Generation,
+    viewer: String,
+    action: ComputerControl,
+    result: Result<(), ironclaw_gpui_client::ClientError>,
+) {
+    let Some(cu) = same(s, asked, generation) else {
+        if result.is_ok() && matches!(action, ComputerControl::TakeOver) {
+            tracing::debug!("take over landed for a closed share; handing back");
+            hand_back(s, asked.to_string(), viewer);
+        }
+        return;
+    };
+    cu.busy = false;
+    match result {
+        Ok(()) => {
+            match action {
+                ComputerControl::TakeOver => cu.mine = true,
+                ComputerControl::HandBack | ComputerControl::Stop => cu.mine = false,
             }
-        },
+            sync_cards(s, asked);
+        }
+        Err(e) => {
+            cu.note = Some(
+                match action {
+                    ComputerControl::Stop => "Could not stop the agent",
+                    ComputerControl::TakeOver => "Could not take over",
+                    ComputerControl::HandBack => "Could not hand back",
+                }
+                .into(),
+            );
+            tracing::warn!(error = %e, "computer-use control failed");
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static HANDED_BACK: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Give the desktop `viewer` holds in `thread_id` back to the agent.
+fn hand_back(s: &State, thread_id: String, viewer: String) {
+    #[cfg(test)]
+    HANDED_BACK.with(|h| h.borrow_mut().push((thread_id.clone(), viewer.clone())));
+    jobs::run(
+        s,
+        "computer use",
+        move |c| async move { c.computer_control(&thread_id, ComputerControl::HandBack, &viewer).await },
+        |_, _, _| {},
     );
 }
 
@@ -660,6 +695,7 @@ pub fn scene(s: &mut State, big: bool) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use super::{WireState, apply, fixture};
     use crate::chat::fixtures::{close_side_chat, test_state, with_side_chat};
     use crate::chat::{chat_for, chat_ref};
@@ -682,5 +718,41 @@ mod tests {
         close_side_chat(&mut s);
         apply(&mut s, "sc2", Generation::default(), wire());
         assert!(chat_ref(&s, "t1").is_some_and(|c| c.computer.session.is_none()));
+    }
+
+
+    fn open_chat(s: &mut State, id: &str) {
+        s.chat = Some(crate::chat::ChatState::new(id.into()));
+    }
+
+    #[test]
+    fn a_reopened_chat_does_not_match_the_old_polls() {
+        let mut s = crate::chat::fixtures::test_state();
+        open_chat(&mut s, "A");
+        start(&mut s, "A");
+        let old = slot(&mut s, "A").map(|cu| cu.generation).expect("share");
+        open_chat(&mut s, "B");
+        open_chat(&mut s, "A");
+        start(&mut s, "A");
+        let new = slot(&mut s, "A").map(|cu| cu.generation).expect("share");
+        assert!(same(&mut s, "A", old).is_none(), "the old poll loop would run beside the new one");
+        assert!(same(&mut s, "A", new).is_some());
+    }
+
+    #[test]
+    fn a_take_over_landing_after_close_is_handed_back() {
+        let mut s = crate::chat::fixtures::test_state();
+        open_chat(&mut s, "A");
+        start(&mut s, "A");
+        let (generation, viewer) = slot(&mut s, "A").map(|cu| (cu.generation, cu.viewer.clone())).expect("share");
+        // Take Over is pending; the chat closes (its Drop sees `mine == false`).
+        open_chat(&mut s, "B");
+        control_landed(&mut s, "A", generation, viewer.clone(), ComputerControl::TakeOver, Ok(()));
+        let sent = HANDED_BACK.with(|h| h.borrow_mut().drain(..).collect::<Vec<_>>());
+        assert_eq!(sent, vec![("A".to_string(), viewer)]);
+
+        // A failed one, or a hand back, needs nothing.
+        control_landed(&mut s, "A", generation, "v".into(), ComputerControl::HandBack, Ok(()));
+        assert!(HANDED_BACK.with(|h| h.borrow().is_empty()));
     }
 }

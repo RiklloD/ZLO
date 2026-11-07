@@ -62,6 +62,9 @@ pub struct OrchestrationState {
     /// Another refresh was asked for while one was in flight.
     stale: bool,
     polling: bool,
+    /// This chat's extras, as opposed to an earlier chat of the same thread
+    /// (closed and reopened): replies and poll ticks of that one stop.
+    instance: jobs::Instance,
 }
 
 thread_local! {
@@ -89,6 +92,11 @@ fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut OrchestrationSt
     crate::chat::chat_for(s, thread_id).map(|c| &mut c.orchestration)
 }
 
+/// [`slot`], only while it is the instance that asked.
+fn slot_of<'a>(s: &'a mut State, thread_id: &str, instance: jobs::Instance) -> Option<&'a mut OrchestrationState> {
+    slot(s, thread_id).filter(|o| o.instance == instance)
+}
+
 /// The chat opened: read everything once.
 pub fn opened(s: &mut State, id: &str) {
     refresh(s, id);
@@ -111,6 +119,7 @@ pub fn refresh(s: &mut State, id: &str) {
         return;
     }
     o.loading = true;
+    let instance = o.instance;
     // A merge waiting for the next message turns sent once it is.
     let want_lineage = !o.lineage_loaded || o.lineage.merges_in.iter().any(|m| m.status == "pending");
     let asked = thread_id.clone();
@@ -126,10 +135,10 @@ pub fn refresh(s: &mut State, id: &str) {
             Ok(Snapshot { tasks: tasks.map(|t| t.tasks), queue, lineage })
         },
         move |s, result: Result<Snapshot, ClientError>, _| match result {
-            Ok(snapshot) => apply_snapshot(s, &asked, snapshot),
+            Ok(snapshot) => apply_snapshot(s, &asked, instance, snapshot),
             Err(e) => {
                 tracing::debug!(error = %e, "orchestration refresh failed");
-                if let Some(o) = slot(s, &asked) {
+                if let Some(o) = slot_of(s, &asked, instance) {
                     o.loading = false;
                 }
             }
@@ -137,9 +146,9 @@ pub fn refresh(s: &mut State, id: &str) {
     );
 }
 
-fn apply_snapshot(s: &mut State, asked: &str, snap: Snapshot) {
+fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Snapshot) {
     let embedded = crate::chat::embedded(s, asked);
-    let Some(o) = slot(s, asked) else { return };
+    let Some(o) = slot_of(s, asked, instance) else { return };
     let mut reload_timeline = false;
     let (mut load_prefix, mut load_merge_list) = (false, false);
     o.loading = false;
@@ -274,27 +283,36 @@ pub fn ensure_poll(s: &mut State, id: &str) {
         return;
     }
     o.polling = true;
-    schedule_tick(s, id.to_string());
+    let instance = o.instance;
+    schedule_tick(s, id.to_string(), instance);
 }
 
-fn schedule_tick(s: &State, thread_id: String) {
+fn schedule_tick(s: &State, thread_id: String, instance: jobs::Instance) {
     jobs::after(s, POLL, move |s, _| {
-        if slot(s, &thread_id).is_none() {
-            return;
-        }
-        if !needs_poll(s, &thread_id) {
-            if let Some(o) = slot(s, &thread_id) {
-                o.polling = false;
-            }
-            return;
-        }
-        // In the background nothing is watching; the next stream event or a
-        // later tick catches up.
-        if crate::workspace::window_active(s) {
-            refresh(s, &thread_id);
-        }
-        schedule_tick(s, thread_id);
+        tick(s, thread_id, instance);
     });
+}
+
+/// One poll tick of the chat extras `instance`; a tick of a chat that was
+/// closed (and maybe reopened as a new instance) ends its loop. `true` when
+/// it scheduled the next tick.
+fn tick(s: &mut State, thread_id: String, instance: jobs::Instance) -> bool {
+    if slot_of(s, &thread_id, instance).is_none() {
+        return false;
+    }
+    if !needs_poll(s, &thread_id) {
+        if let Some(o) = slot_of(s, &thread_id, instance) {
+            o.polling = false;
+        }
+        return false;
+    }
+    // In the background nothing is watching; the next stream event or a
+    // later tick catches up.
+    if crate::workspace::window_active(s) {
+        refresh(s, &thread_id);
+    }
+    schedule_tick(s, thread_id, instance);
+    true
 }
 
 /// Queue `text` as a follow-up for after the current turn (the composer's
@@ -308,6 +326,8 @@ pub fn queue_follow_up(s: &mut State, id: &str, text: String) -> bool {
         return false;
     }
     o.busy = true;
+    // Only this instance's Busy is this reply's to clear.
+    let instance = o.instance;
     o.note = None;
     let asked = thread_id.clone();
     let action = QueueAction::Add(text.clone());
@@ -317,7 +337,9 @@ pub fn queue_follow_up(s: &mut State, id: &str, text: String) -> bool {
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
         move |s, result, _| {
             let Some(o) = slot(s, &asked) else { return };
-            o.busy = false;
+            if o.instance == instance {
+                o.busy = false;
+            }
             match result {
                 Ok(queue) => o.queue = queue,
                 Err(e) => {
@@ -340,6 +362,8 @@ pub(crate) fn queue_action(s: &mut State, id: &str, action: QueueAction) {
         return;
     }
     o.busy = true;
+    // Only this instance's Busy is this reply's to clear.
+    let instance = o.instance;
     o.note = None;
     let asked = thread_id.clone();
     jobs::run(
@@ -348,7 +372,9 @@ pub(crate) fn queue_action(s: &mut State, id: &str, action: QueueAction) {
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
         move |s, result, _| {
             let Some(o) = slot(s, &asked) else { return };
-            o.busy = false;
+            if o.instance == instance {
+                o.busy = false;
+            }
             match result {
                 Ok(queue) => o.queue = queue,
                 Err(e) => crate::chat::report_error(s, &asked, e.to_string()),
@@ -386,6 +412,8 @@ pub fn fork(s: &mut State, id: &str, at_run: Option<u32>) {
         return;
     }
     o.busy = true;
+    // Only this instance's Busy is this reply's to clear.
+    let instance = o.instance;
     let asked = thread_id.clone();
     jobs::run(
         s,
@@ -397,7 +425,7 @@ pub fn fork(s: &mut State, id: &str, at_run: Option<u32>) {
         move |s, result, _| {
             // The fork opens as the main chat, from a side chat too (GPUI
             // `OpenThread` bubbles up to the window).
-            if let Some(o) = slot(s, &asked) {
+            if let Some(o) = slot_of(s, &asked, instance) {
                 o.busy = false;
             }
             match result {
@@ -415,6 +443,8 @@ pub(crate) fn merge_back(s: &mut State, id: &str) {
         return;
     }
     o.busy = true;
+    // Only this instance's Busy is this reply's to clear.
+    let instance = o.instance;
     o.note = None;
     let asked = thread_id.clone();
     jobs::run(
@@ -429,7 +459,9 @@ pub(crate) fn merge_back(s: &mut State, id: &str) {
                 .and_then(|id| crate::workspace::thread_title(s, id))
                 .unwrap_or_else(|| "the original thread".into());
             let Some(o) = slot(s, &asked) else { return };
-            o.busy = false;
+            if o.instance == instance {
+                o.busy = false;
+            }
             match result {
                 Ok(merged) => {
                     o.note = Some(merged.note.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| {
@@ -572,12 +604,17 @@ pub fn scene(s: &mut State) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use super::{Snapshot, apply_snapshot, countdown, duration, fixture, queue_follow_up};
     use crate::chat::chat_ref;
     use crate::chat::fixtures::{close_side_chat, test_state, with_side_chat};
 
     fn snapshot() -> Snapshot {
         Snapshot { tasks: Ok(Vec::new()), queue: Ok(fixture().queue), lineage: None }
+    }
+
+    fn instance(s: &mut crate::state::State, id: &str) -> jobs::Instance {
+        slot(s, id).map(|o| o.instance).unwrap_or_default()
     }
 
     fn queued(s: &crate::state::State, id: &str) -> usize {
@@ -588,11 +625,13 @@ mod tests {
     fn a_refresh_lands_in_its_own_chat_and_is_dropped_once_that_chat_closed() {
         let mut s = test_state();
         with_side_chat(&mut s, "sc2");
-        apply_snapshot(&mut s, "sc2", snapshot());
+        let inst = instance(&mut s, "sc2");
+        apply_snapshot(&mut s, "sc2", inst, snapshot());
         assert_eq!(queued(&s, "sc2"), 2);
         assert_eq!(queued(&s, "t1"), 0, "the open chat's queue is its own");
+        let old = instance(&mut s, "sc2");
         close_side_chat(&mut s);
-        apply_snapshot(&mut s, "sc2", snapshot());
+        apply_snapshot(&mut s, "sc2", old, snapshot());
         assert_eq!(queued(&s, "t1"), 0);
     }
 
@@ -615,5 +654,22 @@ mod tests {
         assert_eq!(duration(7_500), "2 h 5 min");
         assert_eq!(countdown(1_000, 5_000), "any moment now");
         assert_eq!(countdown(725_000, 5_000), "in 12 min");
+    }
+
+
+    #[test]
+    fn a_reopened_chat_does_not_double_the_poll() {
+        // A running turn: the extras poll. Close and reopen the same thread.
+        let mut s = crate::chat::fixtures::test_state();
+        crate::chat::fixtures::running(&mut s);
+        let id = s.chat.as_ref().map(|c| c.thread_id.clone()).expect("chat");
+        let old = slot(&mut s, &id).map(|o| o.instance).expect("extras");
+        crate::chat::fixtures::running(&mut s);
+        assert_eq!(s.chat.as_ref().map(|c| c.thread_id.clone()), Some(id.clone()));
+        let new = slot(&mut s, &id).map(|o| o.instance).expect("extras");
+        assert_ne!(old, new);
+        assert!(needs_poll(&s, &id));
+        assert!(!tick(&mut s, id.clone(), old), "the closed chat's loop keeps polling");
+        assert!(tick(&mut s, id, new));
     }
 }

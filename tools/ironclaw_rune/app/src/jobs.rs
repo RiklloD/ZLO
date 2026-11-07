@@ -121,18 +121,44 @@ pub fn after(
     });
 }
 
-/// A counter that invalidates earlier async replies: bump it when the thing
+/// A token that invalidates earlier async replies: bump it when the thing
 /// that asked goes away (thread switched, page closed, query changed), and
 /// compare the captured value in `done`.
+///
+/// Every bump (and [`Generation::unique`]) takes the next value of one
+/// app-wide counter, so values are never reused, not even by a slot that was
+/// dropped and created again: a chat closed and reopened (A → B → A) starts
+/// from a fresh value, and a reply or timer of the old one can never match.
+/// `Default` (0) is never handed out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Generation(pub u64);
 
 impl Generation {
+    /// A value no other `Generation` in this process has held.
+    pub fn unique() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
     pub fn bump(&mut self) -> Self {
-        self.0 += 1;
+        *self = Self::unique();
         *self
     }
 }
+
+/// Names one instance of a slot (a chat's extras, say) for its timers and
+/// replies: a fresh [`Generation::unique`] each time the slot is created,
+/// never bumped. A timer that captured it stops once the slot it belongs to
+/// was replaced, even by one for the same thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Instance(Generation);
+
+impl Default for Instance {
+    fn default() -> Self {
+        Self(Generation::unique())
+    }
+}
+
 
 /// "just now", "5 min ago", "3 h ago", then a local date.
 pub fn ago(at: DateTime<Utc>) -> String {
@@ -155,5 +181,25 @@ pub fn size(bytes: u64) -> String {
         b if b < 1024 => format!("{b} B"),
         b if b < 1024 * 1024 => format!("{:.1} KB", b as f64 / 1024.),
         b => format!("{:.1} MB", b as f64 / (1024. * 1024.)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Generation, Instance};
+
+    #[test]
+    fn every_instance_is_distinct() {
+        assert_ne!(Instance::default(), Instance::default());
+    }
+
+    #[test]
+    fn a_recreated_slot_never_repeats_an_earlier_generation() {
+        let mut first = Generation::default();
+        let old = first.bump();
+        // The slot is dropped and made again from its default.
+        let mut second = Generation::default();
+        assert_ne!(second.bump(), old);
+        assert_ne!(Generation::unique(), Generation::default());
     }
 }

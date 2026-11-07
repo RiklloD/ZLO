@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn a_restored_failed_send_is_recorded_as_the_draft() {
-        let mut s = crate::state::test_state();
+        let mut s = crate::chat::fixtures::test_state();
         s.chat = Some(super::super::ChatState::new("t1".into()));
         let c = chat_for(&mut s, "t1").expect("chat");
         let _ = restore_failed(c, "first try", &[], Vec::new(), "boom".into());

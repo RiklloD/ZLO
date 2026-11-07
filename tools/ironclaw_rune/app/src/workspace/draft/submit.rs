@@ -201,7 +201,7 @@ mod tests {
     use crate::workspace::draft::{empty_draft, quick_send};
 
     fn with_draft(text: &str) -> State {
-        let mut s = crate::state::test_state();
+        let mut s = crate::chat::fixtures::test_state();
         let mut draft = empty_draft("p");
         draft.generation = s.workspace.draft_opens.bump();
         draft.input.replace_text(text);

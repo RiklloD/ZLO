@@ -411,7 +411,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("zlo-drafts-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let writer = crate::persist::Writer::spawn();
-        let mut s = crate::state::test_state();
+        let mut s = crate::chat::fixtures::test_state();
         s.workspace.drafts.dir = Some(dir.clone());
         // Many edits each saved, then the send clears the draft; the quit
         // save waits for all of them.
