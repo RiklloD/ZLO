@@ -88,6 +88,8 @@ impl State {
     pub fn new(rt: Rt) -> Self {
         let prefs = Prefs::load();
         let palette = design::resolve(&prefs, true);
+        let mut workspace: crate::workspace::WorkspaceState = Default::default();
+        workspace.sidebar = crate::workspace::sidebar_pane(&prefs);
         Self {
             rt,
             prefs,
@@ -98,7 +100,7 @@ impl State {
             page: Page::Chat,
             launched: std::time::Instant::now(),
             fixture: false,
-            workspace: Default::default(),
+            workspace,
             chat: None,
             pages: Default::default(),
             voice: Default::default(),

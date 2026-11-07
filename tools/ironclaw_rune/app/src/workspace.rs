@@ -109,8 +109,9 @@ pub struct WorkspaceState {
     pub telemetry: Option<ThreadTelemetry>,
     /// The context meter's popover, report and banner state.
     pub context: context::ContextMeter,
-    /// Live sidebar width while its edge is dragged; saved on release.
-    pub sidebar_drag: Option<f32>,
+    /// The sidebar pane: its width and whether it shows (the frame's
+    /// `SplitView` drags and peeks it). Prefs mirror it (`persist_sidebar`).
+    pub sidebar: rune_kit::shell::PaneState,
     /// A sidebar thread being dragged onto a chat or the draft.
     pub thread_drag: thread_drag::ThreadDrag,
     /// The window is the key window (GPUI `window.is_window_active()`).
@@ -147,7 +148,7 @@ impl Default for WorkspaceState {
             quick: Default::default(),
             telemetry: None,
             context: Default::default(),
-            sidebar_drag: None,
+            sidebar: rune_kit::shell::PaneState::new(crate::design::SIDEBAR_WIDTH),
             thread_drag: Default::default(),
             window_active: true,
             field_focused: Default::default(),
@@ -211,10 +212,54 @@ pub fn toggle_scheme(s: &mut State) {
 /// the running slide alone), and the one after has rows pinned to the end
 /// ride the viewport's bottom edge as the composer rewraps (`follow_edge`),
 /// so nothing moves vertically once the slide is over.
+/// The sidebar pane as the prefs describe it: the saved width (0 is the
+/// default) within the sidebar's range, open unless hidden.
+pub fn sidebar_pane(prefs: &crate::design::prefs::Prefs) -> rune_kit::shell::PaneState {
+    use crate::design::{SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_WIDTH};
+    let mut pane =
+        rune_kit::shell::PaneState::new(SIDEBAR_WIDTH).range(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+    if prefs.sidebar_width > 0. {
+        pane = pane.with_width(prefs.sidebar_width);
+    }
+    if prefs.sidebar_hidden {
+        pane = pane.collapsed();
+    }
+    pane
+}
+
+/// Shows or hides the sidebar outright (scenes, restores), prefs too.
+pub fn set_sidebar_open(s: &mut State, open: bool) {
+    s.workspace.sidebar.set_open(open);
+    persist_sidebar(s);
+}
+
+/// Saves the sidebar pane's open state and width to prefs when they moved
+/// (a toggle, a drag on its edge once released, a drag that folded it).
+fn persist_sidebar(s: &mut State) {
+    let pane = s.workspace.sidebar;
+    if pane.is_resizing() {
+        return;
+    }
+    let saved = sidebar_pane(&s.prefs);
+    if saved.is_open() == pane.is_open() && saved.width() == pane.width() {
+        return;
+    }
+    let width = if pane.width() == pane.default_width() {
+        0.
+    } else {
+        pane.width()
+    };
+    s.update_prefs(|p| {
+        p.sidebar_hidden = !pane.is_open();
+        p.sidebar_width = width;
+    });
+}
+
 pub fn toggle_sidebar(s: &mut State, tx: &mut rune::Tx) {
     tx.motion(crate::design::panels::REVEAL);
     tx.follow_edge();
-    s.update_prefs(|p| p.sidebar_hidden = !p.sidebar_hidden);
+    s.workspace.sidebar.toggle();
+    persist_sidebar(s);
     s.rt.handle.update(|s, tx| {
         tx.instant();
         s.rt.handle.update(|_, tx| {
@@ -588,6 +633,8 @@ fn session_import_tick(
 
 /// Runs before every frame: due timers. True when the view should re-run.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
+    // A drag on the sidebar's edge (the frame's grip) lands in the pane.
+    persist_sidebar(s);
     if s.fixture || !matches!(s.conn, Conn::Ready) {
         return false;
     }

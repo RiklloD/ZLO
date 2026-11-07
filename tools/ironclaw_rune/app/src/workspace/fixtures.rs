@@ -52,7 +52,7 @@ fn base(s: &mut State) {
     s.workspace.timers = Default::default();
     // Scenes start from the person's prefs file; show the shell's parts.
     s.prefs.status_bar_hidden = false;
-    s.prefs.sidebar_hidden = false;
+    super::set_sidebar_open(s, true);
 }
 
 fn inbox() -> InboxListResponse {
