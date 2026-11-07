@@ -67,11 +67,6 @@ impl IdleCompactor {
         tracing::debug!(thread = %thread, "codex idle compaction: preempted");
     }
 
-    #[cfg(test)]
-    fn has_slot(&self, thread: &ThreadId) -> bool {
-        self.slots.lock().is_ok_and(|s| s.contains_key(thread))
-    }
-
     /// Register a slot for `thread` (replacing a timer): its id, the cancel
     /// signal the work watches, and the sender it flips when its process
     /// is gone.
@@ -184,6 +179,11 @@ impl IdleArm {
 mod tests {
     use super::*;
 
+    /// Whether `compactor` still holds a slot for `thread`.
+    fn has_slot(compactor: &IdleCompactor, thread: &ThreadId) -> bool {
+        compactor.slots.lock().is_ok_and(|s| s.contains_key(thread))
+    }
+
     #[tokio::test]
     async fn preempt_keeps_the_slot_until_the_compaction_has_shut_down() {
         let compactor = Arc::new(IdleCompactor::default());
@@ -196,7 +196,7 @@ mod tests {
         cancelled.wait_for(|c| *c).await.unwrap();
         // Cancelled but still shutting down: the slot is still there, and a
         // second preempt waits too.
-        assert!(compactor.has_slot(&thread));
+        assert!(has_slot(&compactor, &thread));
         let second = {
             let (compactor, thread) = (Arc::clone(&compactor), thread.clone());
             tokio::spawn(async move { compactor.preempt(&thread).await })
@@ -206,7 +206,7 @@ mod tests {
         done.send(true).unwrap();
         preempting.await.unwrap();
         second.await.unwrap();
-        assert!(!compactor.has_slot(&thread));
+        assert!(!has_slot(&compactor, &thread));
     }
 
     #[test]

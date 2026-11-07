@@ -82,12 +82,13 @@ impl OrchestratedProductSurface {
     }
 }
 
-impl OrchestratedProductSurface {
-    /// Import from these folders instead of the process's home (tests).
-    #[cfg(test)]
-    pub(crate) fn set_importer(&mut self, importer: Arc<SessionImporter>) {
-        self.importer = Some(importer);
-    }
+/// Import from these folders instead of the process's home (tests).
+#[cfg(test)]
+pub(crate) fn set_importer(
+    surface: &mut OrchestratedProductSurface,
+    importer: Arc<SessionImporter>,
+) {
+    surface.importer = Some(importer);
 }
 
 fn to_json<T: serde::Serialize>(value: T) -> Result<Value, OrchestratorError> {

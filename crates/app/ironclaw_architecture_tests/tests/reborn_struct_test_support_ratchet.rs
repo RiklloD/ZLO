@@ -71,14 +71,31 @@ struct FrozenPathCount {
 /// profile wiring made `RebornRuntimeStores::capability_policy` production-used instead of
 /// test-support-only, then #7171 did the same for the skill mount view once
 /// `skill_mounts_for` began deriving it per gate.
-const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 79;
+// 79 -> 81 / 268 -> 271 (2026-11-07, ZLO terminal session import): the
+// importer's crash-safety failure injection (`SessionImporter::fail_at` field
+// and setter) and its test budget override (`set_limits`). They prove an
+// interrupted import retries instead of being skipped or duplicated, which
+// needs a seam between each filesystem write and the store commit.
+const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 81;
 // 269 -> 268 (2026-08-31/09-01): the delivery-coordinator handle on
 // `RebornRuntime` became an ungated production field (shutdown reads it);
 // its accessor stays test-support (integration harnesses wiring their own
 // run-delivery observer are its only callers).
-const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 268;
+const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 271;
 
 const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
+    FrozenPathCount {
+        category: "test-support",
+        item_kind: "field",
+        path: "crates/domains/ironclaw_cli_providers/src/session_import/mod.rs",
+        count: 1,
+    },
+    FrozenPathCount {
+        category: "test-support",
+        item_kind: "method",
+        path: "crates/domains/ironclaw_cli_providers/src/session_import/mod.rs",
+        count: 2,
+    },
     FrozenPathCount {
         category: "dead-code",
         item_kind: "field",

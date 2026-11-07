@@ -1169,13 +1169,19 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // which the desktop client writes and ironclaw_assistant reads. The
         // placement itself lives in ironclaw_assistant. Count read from this
         // test's failure message.
-        // 17_878 -> 18_154 (2026-11-05, terminal session import): the
-        // `session_import` settings/status/request DTOs and the two
-        // descriptors, plus `InboxRow.imported`. Vendor-neutral (sources are
-        // opaque ids the backend labels); the ledger lives in
-        // ironclaw_orchestrator, the parsing in ironclaw_cli_providers. Count
-        // read from this test's failure message.
-        ("ironclaw_product_contracts", 18_154),
+        // 17_878 -> 20_186 (2026-11-07, ZLO feature integration): the twelve
+        // feature branches merged together, each adding DTOs and descriptors
+        // only: terminal session import (`session_import`, `InboxRow.imported`),
+        // the context report vocabulary and fork `summary` flag, worktree
+        // isolation (`OrchestratorWorktreeRequest`, `InboxRow.worktree_branch`),
+        // Codex thread actions (`ThreadAction`/`ReviewTarget`, `CliDetail`),
+        // plan and question projection items with the gate `answer`, reject
+        // feedback on gate resolution, the `mention` codec and `mention_roots`,
+        // the memory page and hooks catalog ports, history search, desktop
+        // schedule mutations, and goal checks. Behavior lives in the owning
+        // crates. Count read from this test's failure message on the merged
+        // tree.
+        ("ironclaw_product_contracts", 20_186),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

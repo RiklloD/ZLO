@@ -227,13 +227,16 @@ mod tests {
         transcript(&projects, &app, "6c1e0b4a-0000-4000-8000-000000000001");
 
         let mut surface = OrchestratedProductSurface::new(Arc::new(Empty), engine, None);
-        surface.set_importer(Arc::new(SessionImporter::new(ImportPaths {
-            claude_projects: projects,
-            codex_sessions: root.join(".codex").join("sessions"),
-            codex_state: root.join(".ironclaw").join("codex"),
-            claude_imports: ironclaw_cli_providers::claude::imports_dir(&root.join("work")),
-            own_roots: vec![root.join(".ironclaw")],
-        })));
+        super::surface::set_importer(
+            &mut surface,
+            Arc::new(SessionImporter::new(ImportPaths {
+                claude_projects: projects,
+                codex_sessions: root.join(".codex").join("sessions"),
+                codex_state: root.join(".ironclaw").join("codex"),
+                claude_imports: ironclaw_cli_providers::claude::imports_dir(&root.join("work")),
+                own_roots: vec![root.join(".ironclaw")],
+            })),
+        );
 
         let started: SessionImportStatus =
             serde_json::from_value(run(&surface, json!({"run": "manual"})).await).unwrap();
