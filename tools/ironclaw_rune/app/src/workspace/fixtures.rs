@@ -184,15 +184,72 @@ pub fn fixture_draft(s: &mut State) {
     s.chat = None;
     s.workspace.drafts_fixture("Plan the Rune port of the settings pages", Some("work"));
     super::draft::open(s);
+    let caret = s.workspace.draft.as_ref().map_or(0, |d| d.input.text.len());
     if let Some(d) = s.workspace.draft.as_mut() {
-        d.staged.push(ironclaw_gpui_client::attachments::StagedFile {
-            key: 1,
-            filename: "PLAN.md".into(),
-            mime_type: "text/markdown".into(),
-            size: 4_210,
-            body: ironclaw_gpui_client::attachments::Body::Bytes(Vec::new()),
-        });
+        d.input.set_caret(caret);
+        d.input.insert(" using ");
     }
+    super::draft::place(s, vec![fixture_file(1, "PLAN.md")]);
+}
+
+fn fixture_file(key: u64, name: &str) -> ironclaw_gpui_client::attachments::StagedFile {
+    ironclaw_gpui_client::attachments::StagedFile {
+        key,
+        filename: name.into(),
+        mime_type: "text/markdown".into(),
+        size: 4_210,
+        body: ironclaw_gpui_client::attachments::Body::Bytes(Vec::new()),
+    }
+}
+
+/// The new-thread screen with two inline file cards between the words.
+pub fn fixture_draft_files(s: &mut State) {
+    fixture_shell(s);
+    s.chat = None;
+    s.workspace.drafts_fixture("Compare ", Some("work"));
+    super::draft::open(s);
+    let end = |s: &mut State| {
+        if let Some(d) = s.workspace.draft.as_mut() {
+            let len = d.input.text.len();
+            d.input.set_caret(len);
+        }
+    };
+    end(s);
+    super::draft::place(s, vec![fixture_file(1, "PLAN.md")]);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.input.insert("with ");
+    }
+    super::draft::place(s, vec![fixture_file(2, "PARITY_REVIEW.md")]);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.input.insert("and list what is left.");
+    }
+}
+
+/// The new-thread screen's `@` menu on the last project folder's files.
+pub fn fixture_draft_mention(s: &mut State) {
+    fixture_shell(s);
+    s.chat = None;
+    s.workspace.drafts_fixture("Look at @men", Some("work"));
+    super::draft::open(s);
+    let root = std::path::PathBuf::from("/Users/zlo/src/ironclaw");
+    if let Some(d) = s.workspace.draft.as_mut() {
+        let len = d.input.text.len();
+        d.input.set_caret(len);
+        let files = ["tools/ironclaw_rune/app/src/chat/menu.rs", "tools/ironclaw_gpui/app/src/chat/menu.rs", "crates/product/ironclaw_webui/frontend/src/menu.ts", "docs/internal/menus.md"];
+        d.menu.fixture_files(&root, files.iter().map(|f| f.to_string()).collect(), "men");
+    }
+}
+
+/// A sidebar thread dragged over the new-thread composer.
+pub fn fixture_thread_drag_draft(s: &mut State) {
+    fixture_draft(s);
+    super::thread_drag::fixture(s, "t-pin", "Rune port plan", [790., 440.], [424., 380., 720., 130.]);
+}
+
+/// A sidebar thread dragged over the open chat.
+pub fn fixture_thread_drag(s: &mut State) {
+    crate::chat::fixtures::chat(s);
+    super::thread_drag::fixture(s, "t-pin", "Rune port plan", [760., 380.], [250., 0., 1030., 790.]);
 }
 
 /// The status bar with a filling context window and its banner.

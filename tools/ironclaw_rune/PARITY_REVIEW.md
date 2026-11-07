@@ -266,15 +266,15 @@ Each item is sized for one focused fix.
 
 ### P1: missing feature
 
-1. **Thread drag-and-drop.** Make inbox rows drag sources
+1. **Thread drag-and-drop.** FIXED in 355afdc5d. Make inbox rows drag sources
    (GPUI `workspace/inbox.rs:1446`). Make the chat transcript or composer a drop
    target that calls the existing, unused `chat::actions::attach_thread`
    (`chat/actions.rs:58`; GPUI `chat.rs:1567-1568`). Give the draft screen a
    drop target that calls `thread_attachment` (GPUI `workspace/draft.rs:343-389, 704-708`).
-2. **Draft screen `@` menu.** Wire `chat::menu::ComposerMenu` into
+2. **Draft screen `@` menu.** FIXED in 355afdc5d. Wire `chat::menu::ComposerMenu` into
    `workspace/draft.rs`, with files from the last project folder and no
    commands (GPUI `draft.rs:36-38, 97-118, 482`).
-3. **Draft screen inline file cards and paste.** Use
+3. **Draft screen inline file cards and paste.** FIXED in 355afdc5d. Use
    `inline_files::insert`/`pasted` in place of the chips (`draft.rs:475, 535`),
    and add `on_input_paste` (GPUI `draft.rs:405, 415`).
 4. **Voice in the quick composer.** Add `voice::ui::composer_controls` to the
@@ -305,7 +305,7 @@ Each item is sized for one focused fix.
 1. Re-add the mouse-wheel glide that `design/smooth_scroll.rs` provided, as a
    Rune feature or an app-level wheel filter, and correct the claim at
    `design/motion.rs:23`.
-2. Put `.matched(COMPOSER_MATCH)` on the hero and docked composers, so the
+2. FIXED in 355afdc5d. Put `.matched(COMPOSER_MATCH)` on the hero and docked composers, so the
    draft-to-chat glide comes back (`design/motion.rs:86-88`; GPUI
    `design/dock.rs`).
 3. Put `.motion(ROW_RESORT)` on the keyed inbox rows (`design/motion.rs:79`;
