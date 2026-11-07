@@ -153,8 +153,8 @@ below: `voice/session.rs` (quick composer voice target), `pages/memory.rs`
 - [x] B: `look::wallpaper_layer` in window/conversation/sidebar, `look::reshuffle` on a new draft (B merge).
 - [ ] B: keep `s.palette`/`s.system_dark` current on a live appearance change; drop G's `LookState::preview` fixture hook. Needs a live window to check.
 - [x] D: `look::reload(s)` after wallpaper/theme changes (Appearance).
-- [ ] All areas: replace remaining local helpers (`common_stub.rs`, `pages/c_widgets.rs`, `chat/extras_ui.rs`, letter tiles) with `design::kit`/`design::motion`; composers share `.matched(COMPOSER_MATCH)`, rows `.motion(ROW_RESORT)`. Refactor; PORT-STUB notes in `common_stub.rs` and `c_widgets.rs` mark the spots.
-- [ ] Foundation: `prefs.translucent` → transparent window so the system material shows (Appearance only saves the pref). Needs a live window.
+- [ ] All areas: replace remaining local helpers (`common_stub.rs`, `pages/c_widgets.rs`, `chat/extras_ui.rs`, letter tiles) with `design::kit`/`design::motion`; composers share `.matched(COMPOSER_MATCH)` (rows `.motion(ROW_RESORT)` and the dock tab pill are done). Refactor; PORT-STUB notes in `common_stub.rs` and `c_widgets.rs` mark the spots.
+- [x] Foundation: `prefs.translucent` → transparent window at launch (`main.rs`, `design::styles::set_window_translucent`), system material on the shell root; turning it on mid-session takes effect at the next launch (Appearance says so). Live check under "Manual checks".
 - [x] B: session import after connecting (`workspace::start_polling` ticks it and the rescan; D's `session_import::schedule` is not needed); titles API is one (`crate::titles`).
 - [x] A: `chat::approval_mode_changed` (D and E callers).
 - [ ] C, E, F: move local page helpers to `pages::common` (refactor only).
@@ -164,8 +164,25 @@ below: `voice/session.rs` (quick composer voice target), `pages/memory.rs`
 - [x] S: `chat/side/bridge.rs` wired to the real chat (rows, running, stop, gates, reject editor, composer insert, attach, CLI diff/review, timeline, profile), H (model label, tasks, lineage, cancel, fork, refresh, computer share) and titles; `pub use changes::on_cli_report`; `side/fixtures.rs::chat_view` gone (side scenes fill the real chat).
 - [x] A: `side::init` after open, `side::docks` beside a `.grow(1).min_w(0)` column, `side::on_turn_started/ended`, `side::open_link`, `side::adopt_folder` from mention roots, `side::on_cli_report` when the CLI diff or review moves. Side chats: `side::SideChat` owns an embedded `ChatState` (`chat::build_side_chat` + `start_side_chat`), drawn with `chat::embedded_view`.
 - [x] B: `side::titlebar_actions` in the breadcrumb (via `chat::titlebar_actions`), ⌥⌘B/⌘E/⌥⌘N; `side/dock.rs::viewport` reads the shell's `window` layout.
-- [ ] B: `s.native.covered` while overlays show; `side::dock_widths` for the wallpaper area. Need a live window to see native views.
+- [x] B: native views hide while the overlay layer is non-empty (`native_view::cover` from `workspace/shell.rs`; unit test). Live check under "Manual checks".
+- [ ] B: `side::dock_widths` for the wallpaper area.
+- [x] Wheel glide: `design::smooth_scroll` (`.wheel_glide(key)` on every vertical viewport) restores GPUI's `smooth_scroll.rs` feel for mouse wheels.
 - [ ] Live test: native views (QuickLook, WKWebView), system notifications, window-frame restore, voice and SnapShot in a real window.
+
+### Manual checks (cannot run headless)
+
+- **Native views under overlays:** open an HTML or PDF file in the side
+  pane, then press ⌘K, open the model picker, and delete a thread from a
+  sidebar row's menu (the confirm dialog). The preview must vanish while
+  each shows and come back when it closes.
+- **Translucent window:** turn on Settings → Appearance → Translucent
+  window; the row adds "Takes effect when ZLO next opens." Relaunch: the
+  desktop shows blurred through the sidebar and, fainter, the panel. Turn
+  it off: the window turns opaque at once.
+- **Wheel glide:** with a notched mouse, one tick in the transcript, the
+  inbox and a settings page glides about 40 pt over ~0.2 s, and a fast spin
+  is one motion; a trackpad still tracks the fingers 1:1; ⌘ + wheel is not
+  smoothed.
 - [x] B merge: stubs B wrote into F/G/H/E files replaced by adapters onto the real APIs.
 - [ ] B: `workspace/inbox{,/view}.rs` over 800 lines (split).
 - [x] Clippy: `SCENES` uses a `Scene` type alias; `cargo clippy --all-targets -- -D warnings` is clean.

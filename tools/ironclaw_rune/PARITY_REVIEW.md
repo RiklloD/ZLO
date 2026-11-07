@@ -287,6 +287,11 @@ Each item is sized for one focused fix.
 5. **Hide native previews under overlays.** Set `s.native.covered` while the
    command menu or a popover shows (`native_view.rs:106, 194`; GPUI
    `workspace.rs:1544-1545`).
+   **FIXED in fbfd7aefc**: `workspace/shell.rs` calls
+   `native_view::cover(s, !layer.is_empty())` as it assembles the overlay
+   layer, so ⌘K and every menu, popover and dialog hide the views. Test:
+   `workspace::shell::tests::overlays_cover_the_native_previews`. The native
+   side still needs a live window (PLAN "Manual checks").
 6. **A Rune `bundle.sh` (`ZLO Rune.app`)** with its own bundle id, the usage
    strings, and a LaunchAgent label different from `com.numoh.desktop`
    (`login_item.rs:9`). Point the copy in `pages/settings.rs:189` and
@@ -299,17 +304,29 @@ Each item is sized for one focused fix.
 8. **Translucent window.** Make the window transparent when
    `prefs.translucent` is on (GPUI `design/mod.rs` `set_translucent`/`apply_window`;
    Rune `pages/settings/appearance.rs:524` only saves it).
+   **FIXED in fbfd7aefc**: Rune fixes transparency when it creates the window,
+   so `main.rs` reads the pref at launch (`WindowOptions { transparent }`) and
+   the shell root draws the system material under its fill at `shell_alpha`.
+   Turning it on mid-session shows after a relaunch (the Appearance row then
+   adds "Takes effect when ZLO next opens."); off applies at once. Scene
+   `appearance-translucent`; needs a live-window check.
 
 ### P2: polish
 
 1. Re-add the mouse-wheel glide that `design/smooth_scroll.rs` provided, as a
    Rune feature or an app-level wheel filter, and correct the claim at
    `design/motion.rs:23`.
+   **FIXED in fbfd7aefc**: `design/smooth_scroll.rs` (`.wheel_glide(key)` on all
+   19 vertical viewports) takes imprecise, unmodified notches in `on_wheel`
+   and glides with `Tx::scroll_to_with` on a 200 ms spring, moving the target
+   on mid-glide; trackpads stay 1:1. The `motion.rs` claim is corrected.
 2. Put `.matched(COMPOSER_MATCH)` on the hero and docked composers, so the
    draft-to-chat glide comes back (`design/motion.rs:86-88`; GPUI
    `design/dock.rs`).
 3. Put `.motion(ROW_RESORT)` on the keyed inbox rows (`design/motion.rs:79`;
    GPUI `design/flip.rs`).
+   **FIXED in fbfd7aefc**: card and slim rows; the side dock's tabs also get
+   GPUI's single gliding pill (`.motion(PILL)`), the other `flip::` user.
 4. Call `run_clock::start` on every live fold, not only the first
    (`chat.rs:544`; GPUI `chat.rs:930-937`).
 5. Record the window frame as it changes, not only in `on_close`
