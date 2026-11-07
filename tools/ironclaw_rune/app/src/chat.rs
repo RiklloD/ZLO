@@ -22,6 +22,7 @@ mod approval_reason;
 pub mod composer;
 pub mod computer;
 pub(crate) mod extras_ui;
+pub(crate) mod downloads;
 mod file_links;
 pub mod flow;
 mod glyphs;

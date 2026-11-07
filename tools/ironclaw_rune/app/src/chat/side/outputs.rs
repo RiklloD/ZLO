@@ -76,14 +76,15 @@ pub(super) fn browse(s: &mut State, path: Option<String>) {
 /// it in the pane.
 pub(super) fn open(s: &mut State, path: String) {
     let Some(thread) = thread_id(s) else { return };
-    let name = std::path::Path::new(&path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".into());
-    let dir = std::env::temp_dir().join("zlo").join(&thread).join("files");
-    let local = dir.join(&name);
+    // Thread id and path come from the gateway: one folder per full remote
+    // path (a hash, never a joined path), so two `report.md`s in different
+    // folders never share a local copy.
+    let file = crate::chat::downloads::file_name(&path);
+    let name = file.to_string_lossy().into_owned();
+    let dir = crate::chat::downloads::dir_for("output", &[&thread, &path]);
+    let local = dir.join(&file);
     let Some(x) = side_mut(s) else { return };
-    x.outputs.opened = Some(Opened::loading(name, local.clone()));
+    x.outputs.opened = Some(Opened::loading(name, local));
     let generation = x.outputs.open_gen.bump();
     let asked = thread.clone();
     jobs::run(
@@ -91,14 +92,9 @@ pub(super) fn open(s: &mut State, path: String) {
         "outputs",
         move |c| async move {
             let bytes = c.thread_file_bytes(&asked, &path).await?;
-            let saved = async {
-                tokio::fs::create_dir_all(&dir).await?;
-                tokio::fs::write(&local, bytes).await
-            };
-            saved
+            crate::chat::downloads::save_async(dir, file, bytes)
                 .await
-                .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))?;
-            Ok::<PathBuf, ClientError>(local)
+                .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))
         },
         move |s, result, _| match result {
             Ok(local) => read_into(s, thread, generation, local, true),

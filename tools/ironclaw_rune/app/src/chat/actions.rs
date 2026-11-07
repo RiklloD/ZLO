@@ -151,7 +151,8 @@ pub(crate) fn open_attachment(s: &mut State, id: &str, chip: AttachmentChip) {
         return;
     };
     let thread_id = id.to_string();
-    let dir = PathBuf::from(&message_id).join(&chip.id);
+    // The ids come from the gateway: hashed, never joined as a path.
+    let dir = super::downloads::dir_for("attachment", &[id, &message_id, &chip.id]);
     let attachment = chip.id.clone();
     open_fetched(s, id, dir, &chip.filename, move |c| async move {
         c.attachment_bytes(&thread_id, &message_id, &attachment).await
@@ -204,18 +205,14 @@ pub fn browse(s: &mut State, id: &str, path: Option<String>) {
 pub(crate) fn open_fetched<Fut>(
     s: &mut State,
     id: &str,
-    subdir: PathBuf,
+    dir: PathBuf,
     name: &str,
     fetch: impl FnOnce(Client) -> Fut + Send + 'static,
 ) where
     Fut: std::future::Future<Output = Result<Vec<u8>, ClientError>> + Send + 'static,
 {
     // The name comes from the gateway; keep only its last component.
-    let name = Path::new(name)
-        .file_name()
-        .map(|n| n.to_owned())
-        .unwrap_or_else(|| "file".into());
-    let dir = std::env::temp_dir().join("zlo").join(subdir);
+    let name = super::downloads::file_name(name);
     let thread = id.to_string();
     jobs::run(
         s,
@@ -224,15 +221,9 @@ pub(crate) fn open_fetched<Fut>(
             let fetched = fetch(c);
             async move {
                 let bytes = fetched.await?;
-                let path = dir.join(name);
-                let saved = async {
-                    tokio::fs::create_dir_all(&dir).await?;
-                    tokio::fs::write(&path, bytes).await
-                };
-                saved
+                super::downloads::save_async(dir, name, bytes)
                     .await
-                    .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))?;
-                Ok::<_, ClientError>(path)
+                    .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))
             }
         },
         move |s, result, _| match result {
