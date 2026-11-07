@@ -406,16 +406,34 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
                     if let Some(r) = c.reserve.as_mut() {
                         r.held = false;
                     }
-                    // Put the text and its cards back so a retry needs no
-                    // re-picking.
-                    c.staged = files;
-                    inline_files::set_content(&mut c.composer, &draft_text, &draft_pills);
-                    set_error(s, &thread_id, e.to_string());
+                    let error = restore_failed(c, &draft_text, &draft_pills, files, e.to_string());
+                    record_draft(s, &thread_id);
+                    set_error(s, &thread_id, error);
                     super::refresh_rows(s, &thread_id, tx);
                 }
             }
         },
     );
+}
+
+/// A send failed: put its text and cards back so a retry needs no
+/// re-picking (GPUI's behaviour), but only into an empty composer with no
+/// files staged. When the person has typed or attached since, that stays,
+/// and the error names the unsent message instead. Returns the error to show.
+pub(super) fn restore_failed(
+    c: &mut super::ChatState,
+    text: &str,
+    pills: &[(std::ops::Range<usize>, String)],
+    files: Vec<StagedFile>,
+    error: String,
+) -> String {
+    if c.composer.text.is_empty() && c.staged.is_empty() {
+        c.staged = files;
+        inline_files::set_content(&mut c.composer, text, pills);
+        error
+    } else {
+        format!("{error} Not sent: \u{201c}{}\u{201d}", text.trim())
+    }
 }
 
 /// Stop the running turn. The row flips to "Stopping" on the click itself;
@@ -541,4 +559,32 @@ pub(crate) fn record_draft(s: &mut State, id: &str) {
         profile: None,
     };
     crate::drafts::record(s, id, draft);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_send_restores_only_into_an_empty_composer() {
+        let mut c = super::super::ChatState::new("t1".into());
+        let error = restore_failed(&mut c, "first try", &[], Vec::new(), "boom".into());
+        assert_eq!((c.composer.text.as_str(), error.as_str()), ("first try", "boom"));
+
+        let mut c = super::super::ChatState::new("t1".into());
+        c.composer.replace_text("typed since");
+        let error = restore_failed(&mut c, "first try", &[], Vec::new(), "boom".into());
+        assert_eq!(c.composer.text, "typed since", "what was typed since survives");
+        assert!(error.contains("\u{201c}first try\u{201d}"), "{error}");
+    }
+
+    #[test]
+    fn a_restored_failed_send_is_recorded_as_the_draft() {
+        let mut s = crate::state::test_state();
+        s.chat = Some(super::super::ChatState::new("t1".into()));
+        let c = chat_for(&mut s, "t1").expect("chat");
+        let _ = restore_failed(c, "first try", &[], Vec::new(), "boom".into());
+        record_draft(&mut s, "t1");
+        assert_eq!(crate::drafts::restore(&s, "t1").map(|d| d.text), Some("first try".into()));
+    }
 }

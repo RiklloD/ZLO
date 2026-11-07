@@ -79,13 +79,15 @@ pub(crate) fn steer(s: &mut State, id: &str, voice: Option<crate::voice::Submiss
                 // back in the composer so Stop or ⌥Enter can act on them.
                 Ok(ack) if ack.outcome.as_deref() == Some(REJECTED_OUTCOME) => {
                     c.transcript.drop_pending_user(pending);
-                    c.staged = files;
-                    inline_files::set_content(&mut c.composer, &draft_text, &draft_pills);
-                    set_error(
-                        s,
-                        &thread_id,
-                        "The running turn didn't take this message. Press Stop to end it, or ⌥Enter to queue the message for after it.",
+                    let error = actions::restore_failed(
+                        c,
+                        &draft_text,
+                        &draft_pills,
+                        files,
+                        "The running turn didn't take this message. Press Stop to end it, or ⌥Enter to queue the message for after it.".into(),
                     );
+                    actions::record_draft(s, &thread_id);
+                    set_error(s, &thread_id, error);
                     super::refresh_rows(s, &thread_id, tx);
                     super::load_timeline(s, &thread_id);
                 }
@@ -110,9 +112,9 @@ pub(crate) fn steer(s: &mut State, id: &str, voice: Option<crate::voice::Submiss
                 }
                 Err(e) => {
                     c.transcript.drop_pending_user(pending);
-                    c.staged = files;
-                    inline_files::set_content(&mut c.composer, &draft_text, &draft_pills);
-                    set_error(s, &thread_id, e.to_string());
+                    let error = actions::restore_failed(c, &draft_text, &draft_pills, files, e.to_string());
+                    actions::record_draft(s, &thread_id);
+                    set_error(s, &thread_id, error);
                     super::refresh_rows(s, &thread_id, tx);
                 }
             }
