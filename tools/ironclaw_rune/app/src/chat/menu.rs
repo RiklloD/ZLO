@@ -186,7 +186,8 @@ impl ComposerMenu {
                 let item = &items[self.selected(len)];
                 if let MenuItem::Mention(_) = item {
                     pick(item, composer);
-                } else if let Some(text) = tab_complete(&composer.text, &items, self.selected(len)) {
+                } else if let Some(text) = tab_complete(&composer.text, &items, self.selected(len))
+                {
                     set_text_at_end(composer, text);
                 }
             }
@@ -399,12 +400,7 @@ fn row_key(item: &MenuItem) -> String {
 }
 
 /// The menu popover, one heading per section. `on_pick` runs on a click.
-pub fn render(
-    s: &State,
-    items: &[MenuItem],
-    selected: usize,
-    on_pick: OnPick,
-) -> El {
+pub fn render(s: &State, items: &[MenuItem], selected: usize, on_pick: OnPick) -> El {
     let p = &s.palette;
     let sections = items.iter().map(MenuItem::section).collect::<Vec<_>>();
     // A lone section needs no heading.
@@ -461,7 +457,8 @@ pub fn render(
             .on_press_tx(move |s: &mut State, tx| on_pick(s, &pick, tx));
         list = list.child(line);
     }
-    col().key("command-menu-pop")
+    col()
+        .key("command-menu-pop")
         .w_full()
         .radius(12.)
         .border(1., p.border)
@@ -469,10 +466,14 @@ pub fn render(
         .shadow(8., 24., rune::Color::BLACK.alpha(0.2))
         .transition(flow::rise(4.))
         .child(
-            col().key("command-menu-scroll")
+            col()
+                .key("command-menu-scroll")
                 .w_full()
                 .max_h(280.)
-                .scroll(rune::ScrollSpec { stick_bottom: false }).wheel_glide("command-menu-scroll")
+                .scroll(rune::ScrollSpec {
+                    stick_bottom: false,
+                })
+                .wheel_glide("command-menu-scroll")
                 .child(list),
         )
 }

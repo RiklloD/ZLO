@@ -40,12 +40,20 @@ fn status_of(cu: &ComputerState, s: &ComputerSession) -> Status {
     }
     if s.ended {
         return match &s.last_failure {
-            Some(f) => st(0xef4444, false, format!("Ended · last problem: {}", f.label)),
+            Some(f) => st(
+                0xef4444,
+                false,
+                format!("Ended · last problem: {}", f.label),
+            ),
             None => st(0x777777, false, "Done".into()),
         };
     }
     if s.inflight > 0 {
-        let text = if s.label.is_empty() { "Working…".into() } else { s.label.clone() };
+        let text = if s.label.is_empty() {
+            "Working…".into()
+        } else {
+            s.label.clone()
+        };
         return st(0x22c55e, true, text);
     }
     if s.ok == Some(false) {
@@ -56,8 +64,16 @@ fn status_of(cu: &ComputerState, s: &ComputerSession) -> Status {
         };
         return st(0xef4444, false, format!("{why}: {}", s.label));
     }
-    let last = if s.label.is_empty() { "—" } else { s.label.as_str() };
-    st(INDIGO_SOFT, true, format!("Waiting for the agent · last: {last}"))
+    let last = if s.label.is_empty() {
+        "—"
+    } else {
+        s.label.as_str()
+    };
+    st(
+        INDIGO_SOFT,
+        true,
+        format!("Waiting for the agent · last: {last}"),
+    )
 }
 
 fn age_text(app: &ComputerApp) -> Option<String> {
@@ -67,7 +83,11 @@ fn age_text(app: &ComputerApp) -> Option<String> {
         a if a < 60 => format!("{a}s old"),
         a => format!("{}m old", a / 60),
     };
-    Some(if app.capture.method.as_deref() == Some("snapshot") { format!("{text} · agent view") } else { text })
+    Some(if app.capture.method.as_deref() == Some("snapshot") {
+        format!("{text} · agent view")
+    } else {
+        text
+    })
 }
 
 /// The picture's rectangle inside a stage of `w`×`h` (contain, anchored
@@ -123,11 +143,15 @@ fn overlay(card: &Card, rect: (f32, f32, f32, f32), scale: f32) -> Shape {
         let tip = at(g.at().0);
         let k = 0.9 * scale.max(0.6);
         let pt = |x: f32, y: f32| [tip[0] + (x - 4.) * k, tip[1] + (y - 2.5) * k];
-        let arrow: Vec<[f32; 2]> =
-            [(4., 2.5), (19.5, 11.5), (12.7, 13.), (9.1, 19.5)].iter().map(|(x, y)| pt(*x, *y)).collect();
+        let arrow: Vec<[f32; 2]> = [(4., 2.5), (19.5, 11.5), (12.7, 13.), (9.1, 19.5)]
+            .iter()
+            .map(|(x, y)| pt(*x, *y))
+            .collect();
         let mut outline = arrow.clone();
         outline.push(arrow[0]);
-        shape = shape.fill(arrow, rgb(INDIGO)).stroke(outline, 1.7, Color::WHITE);
+        shape = shape
+            .fill(arrow, rgb(INDIGO))
+            .stroke(outline, 1.7, Color::WHITE);
     }
     shape
 }
@@ -150,7 +174,11 @@ fn card_view(
     big: bool,
 ) -> El {
     let CardGeometry { w, h, scale } = geometry;
-    let key = if big { "cu-big".to_string() } else { format!("cu-card-{}", app.window_id) };
+    let key = if big {
+        "cu-big".to_string()
+    } else {
+        format!("cu-card-{}", app.window_id)
+    };
     let card = cu.cards.get(&app.window_id);
     let natural = card.map_or((0, 0), |c| c.natural);
     let rect = content_rect(natural, w, h);
@@ -159,7 +187,12 @@ fn card_view(
         Some("Paused while you have control".to_string())
     } else if !has_image {
         card.and_then(|c| c.refusal.clone())
-            .or_else(|| app.capture.error.clone().map(|e| format!("No picture: {e}")))
+            .or_else(|| {
+                app.capture
+                    .error
+                    .clone()
+                    .map(|e| format!("No picture: {e}"))
+            })
             .or_else(|| Some("Connecting…".into()))
     } else {
         None
@@ -170,7 +203,11 @@ fn card_view(
         .filter(|t| t.window_id == Some(app.window_id) && now_ms() - cu.skew_ms - t.at < TYPING_MS);
     let cursor = card.and_then(|c| c.glide).map(|g| g.at().0);
     let window = app.window_id;
-    let tag = if app.app.is_empty() { app.title.clone() } else { app.app.clone() };
+    let tag = if app.app.is_empty() {
+        app.title.clone()
+    } else {
+        app.app.clone()
+    };
     let old = app.capture.frame_age.is_some_and(|a| a > 4.) && session.inflight > 0;
     let running = front && session.inflight > 0;
     let radius = 10. * scale.max(0.7);
@@ -179,10 +216,16 @@ fn card_view(
     if let Some(card) = card {
         if card.has_image {
             stage = stage.child(
-                el().pin(Some(rect.0), Some(rect.1), None, None).size(rect.2, rect.3).pixels(&card.pixels),
+                el().pin(Some(rect.0), Some(rect.1), None, None)
+                    .size(rect.2, rect.3)
+                    .pixels(&card.pixels),
             );
         }
-        stage = stage.child(canvas(overlay(card, rect, scale)).pin(Some(0.), Some(0.), None, None).size(w, h));
+        stage = stage.child(
+            canvas(overlay(card, rect, scale))
+                .pin(Some(0.), Some(0.), None, None)
+                .size(w, h),
+        );
     }
     if let Some(note) = note {
         stage = stage.child(
@@ -190,16 +233,29 @@ fn card_view(
                 .center()
                 .padding(12.)
                 .fill(Color::BLACK.alpha(0.55))
-                .child(txt(note, XS, rgb(0xaaaaaa)).wrap().align(rune::Align::Center)),
+                .child(
+                    txt(note, XS, rgb(0xaaaaaa))
+                        .wrap()
+                        .align(rune::Align::Center),
+                ),
         );
     }
     stage = stage.child(
         el().pin(Some(6.), Some(6.), None, None)
             .px(7.)
             .radius(99.)
-            .fill(if front { rgb(INDIGO).alpha(0.92) } else { rgb(0x3c3c3c).alpha(0.9) })
+            .fill(if front {
+                rgb(INDIGO).alpha(0.92)
+            } else {
+                rgb(0x3c3c3c).alpha(0.9)
+            })
             .max_w(w * 0.7)
-            .child(text(tag).font(TextStyle::new(10.5, 600.)).color(Color::WHITE).truncate()),
+            .child(
+                text(tag)
+                    .font(TextStyle::new(10.5, 600.))
+                    .color(Color::WHITE)
+                    .truncate(),
+            ),
     );
     if let Some(age) = age_text(app).filter(|_| front) {
         stage = stage.child(
@@ -233,19 +289,34 @@ fn card_view(
         .radius(radius)
         .clip_rounded(radius)
         .fill(rgb(0x0d0d0d))
-        .border(1., if running { rgb(INDIGO).alpha(0.75) } else { Color::WHITE.alpha(0.14) })
+        .border(
+            1.,
+            if running {
+                rgb(INDIGO).alpha(0.75)
+            } else {
+                Color::WHITE.alpha(0.14)
+            },
+        )
         .shadow(10., 30., Color::BLACK.alpha(0.35))
         .cursor(rune::Cursor::Pointer)
         .role("button")
         .label(format!("{} window", app.app))
         .on_press({
             let id = id.to_string();
-            move |s: &mut State| if big { close_big(s, &id) } else { click_card(s, &id, window, front) }
+            move |s: &mut State| {
+                if big {
+                    close_big(s, &id)
+                } else {
+                    click_card(s, &id, window, front)
+                }
+            }
         });
     if front {
         out = out.child(stage);
     } else {
-        out = out.hover_group().child(el().group_opacity(0.7, 0.95).child(stage));
+        out = out
+            .hover_group()
+            .child(el().group_opacity(0.7, 0.95).child(stage));
     }
     out
 }
@@ -255,7 +326,9 @@ fn card_view(
 fn permissions_card(p: &Palette, id: &str, cu: &ComputerState, k: &Kit) -> El {
     let (allow_id, later_id) = (id.to_string(), id.to_string());
     let names: Vec<&str> = cu.missing.iter().map(|m| m.label()).collect();
-    let screen = cu.missing.contains(&permissions::Permission::ScreenRecording);
+    let screen = cu
+        .missing
+        .contains(&permissions::Permission::ScreenRecording);
     col()
         .key("cu-permissions")
         .pin(None, Some(12.), Some(12.), None)
@@ -265,7 +338,14 @@ fn permissions_card(p: &Palette, id: &str, cu: &ComputerState, k: &Kit) -> El {
         .radius(8.)
         .fill(p.surface_overlay)
         .border(1., p.border)
-        .child(txt(format!("ZLO needs {} to use apps for you.", names.join(" and ")), XS, p.text).wrap())
+        .child(
+            txt(
+                format!("ZLO needs {} to use apps for you.", names.join(" and ")),
+                XS,
+                p.text,
+            )
+            .wrap(),
+        )
         .child(
             txt(
                 if screen {
@@ -281,22 +361,43 @@ fn permissions_card(p: &Palette, id: &str, cu: &ComputerState, k: &Kit) -> El {
         .child(
             row()
                 .gap(8.)
-                .child(variant_button(k, "cu-allow", "Allow", None, ButtonVariant::Submit, false, move |s| {
-                    if let Some(cu) = slot(s, &allow_id) {
-                        permissions::request(&cu.missing);
-                    }
-                }))
-                .child(ghost_button(k, "cu-later", "Later", None, false, move |s| {
-                    if let Some(cu) = slot(s, &later_id) {
-                        cu.permissions_hidden = true;
-                    }
-                })),
+                .child(variant_button(
+                    k,
+                    "cu-allow",
+                    "Allow",
+                    None,
+                    ButtonVariant::Submit,
+                    false,
+                    move |s| {
+                        if let Some(cu) = slot(s, &allow_id) {
+                            permissions::request(&cu.missing);
+                        }
+                    },
+                ))
+                .child(ghost_button(
+                    k,
+                    "cu-later",
+                    "Later",
+                    None,
+                    false,
+                    move |s| {
+                        if let Some(cu) = slot(s, &later_id) {
+                            cu.permissions_hidden = true;
+                        }
+                    },
+                )),
         )
 }
 
 /// The stack, pinned to the top right of its parent; the enlarged card
 /// goes into `layer`.
-pub fn view(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
+pub fn view(
+    s: &State,
+    chat: &ChatState,
+    cx: &mut Cx<State>,
+    k: &Kit,
+    layer: &mut Vec<El>,
+) -> Option<El> {
     let cu = &chat.computer;
     let id = chat.thread_id.as_str();
     let p = &s.palette;
@@ -314,7 +415,12 @@ pub fn view(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, layer: &mu
         let top = STAGE_H / 2. + ix as f32 * 10. - h / 2.;
         let geometry = CardGeometry { w, h, scale };
         deck = deck.child(
-            card_view(id, cu, app, session, geometry, ix == 0, false).pin(None, Some(top), Some(right), None),
+            card_view(id, cu, app, session, geometry, ix == 0, false).pin(
+                None,
+                Some(top),
+                Some(right),
+                None,
+            ),
         );
     }
     let mut dot = el().size(7., 7.).radius(3.5).fill(rgb(status.dot));
@@ -336,36 +442,65 @@ pub fn view(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, layer: &mu
         .fill(p.surface_overlay)
         .border(1., p.border)
         .child(dot)
-        .child(txt(cu.note.clone().unwrap_or(status.text), XS, p.text).truncate().grow(1.).min_w(0.));
+        .child(
+            txt(cu.note.clone().unwrap_or(status.text), XS, p.text)
+                .truncate()
+                .grow(1.)
+                .min_w(0.),
+        );
     if !session.ended {
         let stop_id = id.to_string();
         bar = bar.child(
-            ghost_button(k, "cu-stop", "Stop", Some(&icons::SQUARE), false, move |s| stop(s, &stop_id))
-                .help("Stop the agent now (also stops this conversation's turn)"),
+            ghost_button(
+                k,
+                "cu-stop",
+                "Stop",
+                Some(&icons::SQUARE),
+                false,
+                move |s| stop(s, &stop_id),
+            )
+            .help("Stop the agent now (also stops this conversation's turn)"),
         );
     }
     if !held_elsewhere {
         let take_id = id.to_string();
-        let take = ghost_button(k, "cu-take", if cu.mine { "Hand back" } else { "Take over" }, None, false, move |s| {
-            take_over_or_back(s, &take_id)
-        })
-            .help(if cu.mine {
-                "Give the computer back to the agent"
-            } else {
-                "Pause the agent and use the computer yourself until you hand it back"
-            });
-        bar = bar.child(if cu.mine { el().radius(6.).fill(p.active).child(take) } else { take });
+        let take = ghost_button(
+            k,
+            "cu-take",
+            if cu.mine { "Hand back" } else { "Take over" },
+            None,
+            false,
+            move |s| take_over_or_back(s, &take_id),
+        )
+        .help(if cu.mine {
+            "Give the computer back to the agent"
+        } else {
+            "Pause the agent and use the computer yourself until you hand it back"
+        });
+        bar = bar.child(if cu.mine {
+            el().radius(6.).fill(p.active).child(take)
+        } else {
+            take
+        });
     }
     let hide_id = id.to_string();
-    bar = bar.child(ghost_icon(k, "cu-hide", &icons::CLOSE, "Hide the screen share (stops capturing)", move |s| {
-        toggle_hidden(s, &hide_id)
-    }));
+    bar = bar.child(ghost_icon(
+        k,
+        "cu-hide",
+        &icons::CLOSE,
+        "Hide the screen share (stops capturing)",
+        move |s| toggle_hidden(s, &hide_id),
+    ));
 
     if let Some(app) = cu.big.and_then(|w| apps.iter().find(|a| a.window_id == w)) {
         let [vw, vh] = cx.layout_size("kit-root").unwrap_or([1280., 820.]);
         let w = (vw * 0.8).min(1100.);
         let h = (vh * 0.75).min(760.);
-        let geometry = CardGeometry { w, h, scale: w / CARD_W };
+        let geometry = CardGeometry {
+            w,
+            h,
+            scale: w / CARD_W,
+        };
         layer.push(
             el().key("cu-big-veil")
                 .absolute(0., 0.)

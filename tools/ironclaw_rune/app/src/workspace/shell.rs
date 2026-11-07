@@ -89,7 +89,9 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
 /// from before the window lost focus.
 fn note_field_focus(s: &State, cx: &Cx<State>) {
     if s.workspace.window_active {
-        s.workspace.field_focused.set(cx.caret("kit-root").is_some());
+        s.workspace
+            .field_focused
+            .set(cx.caret("kit-root").is_some());
     }
 }
 
@@ -102,18 +104,14 @@ fn loading(s: &State, p: &Palette) -> El {
         .h_full()
         .center()
         .gap(16.)
-        .child(
-            crate::design::kit::claw_mark(s).cycle(rune::Cycle {
-                period: 1.4,
-                phase: 0.,
-                stops: &[(0.0, 0.55), (0.5, 1.0), (1.0, 0.55)],
-                still: 1.0,
-                fps: 30.0,
-            }),
-        )
-        .child(
-            t("Starting IronClaw", SM, p.text_muted).key("loading-caption"),
-        )
+        .child(crate::design::kit::claw_mark(s).cycle(rune::Cycle {
+            period: 1.4,
+            phase: 0.,
+            stops: &[(0.0, 0.55), (0.5, 1.0), (1.0, 0.55)],
+            still: 1.0,
+            fps: 30.0,
+        }))
+        .child(t("Starting IronClaw", SM, p.text_muted).key("loading-caption"))
 }
 
 fn failed(p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>) -> El {
@@ -125,7 +123,10 @@ fn failed(p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>) -> El {
         .gap(12.)
         .padding(32.)
         .child(tw("Can't connect to IronClaw", 16., SEMIBOLD, p.text))
-        .child(el().w(520.).child(t(message.to_string(), SM, p.text_muted).wrap()));
+        .child(
+            el().w(520.)
+                .child(t(message.to_string(), SM, p.text_muted).wrap()),
+        );
     if let Some(secs) = retry_in {
         c = c.child(t(format!("Trying again in {secs} s"), XS, p.text_faint));
     }
@@ -167,11 +168,12 @@ fn ready(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El
     let drawn = if shown { width } else { 0. };
     let main = match s.page {
         Page::Chat => match context::banner(s, k) {
-            Some(banner) if s.chat.is_some() => col()
-                .w_full()
-                .h_full()
-                .child(banner)
-                .child(el().w_full().grow(1.0).min_h(0.0).child(crate::chat::view(s, cx, k, layer))),
+            Some(banner) if s.chat.is_some() => col().w_full().h_full().child(banner).child(
+                el().w_full()
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .child(crate::chat::view(s, cx, k, layer)),
+            ),
             _ if s.chat.is_some() => crate::chat::view(s, cx, k, layer),
             _ => empty(s, p, k),
         },
@@ -186,7 +188,11 @@ fn ready(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El
             };
             el().w_full()
                 .h_full()
-                .child(el().pin(Some(0.), Some(0.), Some(0.), Some(0.)).inert().child(under))
+                .child(
+                    el().pin(Some(0.), Some(0.), Some(0.), Some(0.))
+                        .inert()
+                        .child(under),
+                )
                 .child(
                     el().pin(Some(0.), Some(0.), Some(0.), Some(0.))
                         .fill(p.bg.alpha(0.85))
@@ -238,17 +244,16 @@ fn ready(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El
         if let Some(over) = crate::design::look::wallpaper_layer(s, "sidebar") {
             sidebar = sidebar.child(over);
         }
-        shell = shell
-            .child(sidebar)
-            .child(sidebar_edge(s, p))
-            .child(
-                // The sidebar/panel hairline; accent while resizing.
-                el().w(1.5).h_full().fill(if s.workspace.sidebar_drag.is_some() {
+        shell = shell.child(sidebar).child(sidebar_edge(s, p)).child(
+            // The sidebar/panel hairline; accent while resizing.
+            el().w(1.5)
+                .h_full()
+                .fill(if s.workspace.sidebar_drag.is_some() {
                     p.accent.alpha(0.6)
                 } else {
                     p.border_strong
                 }),
-            );
+        );
     }
     // The window's sidebar button sits above both columns, so it never
     // moves when the sidebar folds.
@@ -275,11 +280,11 @@ fn sidebar_toggle(s: &State, p: &Palette) -> El {
         .size(16., 13.)
         .radius(3.)
         .border(1.4, p.text_muted)
-        .child(
-            el().w(5.)
-                .h_full()
-                .fill(if open { p.text_muted.alpha(0.6) } else { Color::TRANSPARENT }),
-        );
+        .child(el().w(5.).h_full().fill(if open {
+            p.text_muted.alpha(0.6)
+        } else {
+            Color::TRANSPARENT
+        }));
     row()
         .key("sidebar-toggle")
         .role("button")
@@ -339,7 +344,12 @@ fn sidebar(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         .pr(8.)
         .center_y()
         .window_drag()
-        .child(tw(if settings { "Settings" } else { "ZLO" }, SM, SEMIBOLD, p.text));
+        .child(tw(
+            if settings { "Settings" } else { "ZLO" },
+            SM,
+            SEMIBOLD,
+            p.text,
+        ));
     col()
         .key("sidebar")
         .w_full()
@@ -352,16 +362,14 @@ fn sidebar(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
             inbox_view::view(s, cx, k, layer)
         })
         .child(if settings {
-            row()
-                .padding(8.)
-                .child(
-                    rune_kit::Button::new("Back")
-                        .variant(rune_kit::ButtonVariant::Ghost)
-                        .control_size(ControlSize::Small)
-                        .icon(&icons::ARROW_LEFT)
-                        .on_press(super::back_to_threads)
-                        .build(k),
-                )
+            row().padding(8.).child(
+                rune_kit::Button::new("Back")
+                    .variant(rune_kit::ButtonVariant::Ghost)
+                    .control_size(ControlSize::Small)
+                    .icon(&icons::ARROW_LEFT)
+                    .on_press(super::back_to_threads)
+                    .build(k),
+            )
         } else {
             footer(s, p, k)
         })
@@ -447,17 +455,14 @@ fn settings_nav(s: &State, p: &Palette) -> El {
     let unread = s.workspace.unread;
     let mut nav = col().key("settings-nav-list").w_full().px(8.).pb(8.);
     for (gx, (heading, group)) in settings_groups(s).into_iter().enumerate() {
-        let mut rows = col()
-            .key(format!("nav-group-{gx}"))
-            .w_full()
-            .child(
-                row()
-                    .h(HEADING)
-                    .items_end()
-                    .pb(6.)
-                    .px(10.)
-                    .child(tw(heading, XS, MEDIUM, p.text_faint)),
-            );
+        let mut rows = col().key(format!("nav-group-{gx}")).w_full().child(
+            row().h(HEADING).items_end().pb(6.).px(10.).child(tw(
+                heading,
+                XS,
+                MEDIUM,
+                p.text_faint,
+            )),
+        );
         if gx > 0 {
             rows = rows.mt(GROUP_GAP);
         }
@@ -474,10 +479,25 @@ fn settings_nav(s: &State, p: &Palette) -> El {
                 .center_y()
                 .radius(8.)
                 .cursor(Cursor::Pointer)
-                .fill(if on { ui::selected_wash(p) } else { Color::TRANSPARENT })
-                .hover(if on { Color::TRANSPARENT } else { ui::hover_wash(p) })
-                .child(ui::glyph(icon, 16., if on { p.accent } else { p.text_muted }))
-                .child(el().grow(1.0).child(t(label, SM, if on { p.text } else { p.text_muted })))
+                .fill(if on {
+                    ui::selected_wash(p)
+                } else {
+                    Color::TRANSPARENT
+                })
+                .hover(if on {
+                    Color::TRANSPARENT
+                } else {
+                    ui::hover_wash(p)
+                })
+                .child(ui::glyph(
+                    icon,
+                    16.,
+                    if on { p.accent } else { p.text_muted },
+                ))
+                .child(
+                    el().grow(1.0)
+                        .child(t(label, SM, if on { p.text } else { p.text_muted })),
+                )
                 .on_press(move |s: &mut State| super::show(s, page));
             if page == Page::Notifications && unread > 0 {
                 r = r.child(
@@ -499,7 +519,10 @@ fn settings_nav(s: &State, p: &Palette) -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .scroll(rune::ScrollSpec { stick_bottom: false }).wheel_glide("settings-nav")
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+        .wheel_glide("settings-nav")
         .child(nav)
 }
 
@@ -562,7 +585,10 @@ fn breadcrumb(
                 .center_y()
                 .child(t(parent, 13., p.text_muted))
                 .child(t("/", 13., p.text_faint))
-                .child(el().min_w(0.0).child(tw(leaf, 13., MEDIUM, p.text).truncate())),
+                .child(
+                    el().min_w(0.0)
+                        .child(tw(leaf, 13., MEDIUM, p.text).truncate()),
+                ),
         );
     if let Some(actions) = actions {
         strip = strip.child(actions);
@@ -669,7 +695,12 @@ mod tests {
     /// The app's real view over a fixture state; the handle goes to an app
     /// that never runs, so background replies are dropped.
     fn runtime(fill: fn(&mut State)) -> Runtime<State> {
-        let app = App::new(AppSpec::new("ZLO test", (1280., 820.), no_init, crate::view));
+        let app = App::new(AppSpec::new(
+            "ZLO test",
+            (1280., 820.),
+            no_init,
+            crate::view,
+        ));
         let mut s = State::new(crate::jobs::Rt::new(app.handle()));
         fill(&mut s);
         let mut rt = Runtime::new(s, crate::view, (1280., 820.), Env::new(true, 1.));
@@ -684,7 +715,10 @@ mod tests {
 
         rt.update(|s, _| s.workspace.command = None);
         rt.frame(1. / 60.);
-        assert!(!rt.state.native.covered(), "and they come back when it closes");
+        assert!(
+            !rt.state.native.covered(),
+            "and they come back when it closes"
+        );
 
         rt.update(|s, _| s.workspace.confirm_delete = Some("t-pin".into()));
         rt.frame(1. / 60.);
@@ -694,7 +728,8 @@ mod tests {
     #[test]
     fn a_refocused_window_moves_focus_to_the_composer_only_when_no_field_had_it() {
         let mut rt = runtime(crate::chat::fixtures::chat);
-        let composer = |rt: &Runtime<State>| rt.state.chat.as_ref().is_some_and(|c| c.composer.focused);
+        let composer =
+            |rt: &Runtime<State>| rt.state.chat.as_ref().is_some_and(|c| c.composer.focused);
 
         // The composer holds the caret while the window is in front.
         rt.update(|s, _| {
@@ -704,7 +739,10 @@ mod tests {
         });
         rt.frame(1. / 60.);
         rt.frame(1. / 60.);
-        assert!(rt.state.workspace.field_focused.get(), "the view notes a focused field");
+        assert!(
+            rt.state.workspace.field_focused.get(),
+            "the view notes a focused field"
+        );
 
         // Nothing holds focus: back in front, the composer takes it.
         rt.update(|s, tx| {

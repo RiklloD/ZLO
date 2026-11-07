@@ -21,7 +21,6 @@ pub mod approval_mode;
 mod approval_reason;
 pub mod composer;
 pub mod computer;
-pub(crate) mod extras_ui;
 pub(crate) mod downloads;
 mod file_links;
 pub mod flow;
@@ -45,9 +44,9 @@ mod steer;
 mod view;
 mod visual;
 
+pub mod fixtures;
 #[cfg(test)]
 mod tests;
-pub mod fixtures;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -65,9 +64,9 @@ use crate::state::State;
 
 pub use flow::Item;
 pub use hooks::{
-    active_run, approval_mode_changed, composer_text, embedded, focus_composer, focus_composer_of, open_error,
-    reload_timeline, set_composer_text, set_fork_prefix, set_merges, stage_snapshot, stop_run, voice_composer,
-    voice_composer_mut, voice_press_enter, with_tx,
+    active_run, approval_mode_changed, composer_text, embedded, focus_composer, focus_composer_of,
+    open_error, reload_timeline, set_composer_text, set_fork_prefix, set_merges, stage_snapshot,
+    stop_run, voice_composer, voice_composer_mut, voice_press_enter, with_tx,
 };
 pub use view::view;
 
@@ -300,7 +299,6 @@ pub(crate) fn composer_edit<'a>(s: &'a mut State, thread_id: &str) -> &'a mut Te
     }
 }
 
-
 /// Open `thread_id` (replacing the open chat). Called by the workspace.
 /// Replacing the chat drops the old one's stream, which frees one of the
 /// gateway's per-user stream slots.
@@ -477,14 +475,23 @@ fn accept_timeline(c: &mut ChatState, asked: u64, floor: Option<&str>) -> bool {
     true
 }
 
-fn on_stream(s: &mut State, id: &str, generation: Generation, batch: Vec<StreamMessage>, tx: &mut Tx) {
+fn on_stream(
+    s: &mut State,
+    id: &str,
+    generation: Generation,
+    batch: Vec<StreamMessage>,
+    tx: &mut Tx,
+) {
     let Some(c) = chat_for(s, id) else { return };
     if c.stream_gen != generation {
         return;
     }
     // The CLI agent's turn diff and review, to tell the Changes tab (area
     // S) when either moves.
-    let cli_before = (c.transcript.cli_turn_diff().cloned(), c.transcript.cli_review().cloned());
+    let cli_before = (
+        c.transcript.cli_turn_diff().cloned(),
+        c.transcript.cli_review().cloned(),
+    );
     let mut changed = false;
     let mut ended = None;
     let mut reload = false;
@@ -517,7 +524,8 @@ fn on_stream(s: &mut State, id: &str, generation: Generation, batch: Vec<StreamM
         refresh_rows(s, id, tx);
     }
     let cli_moved = chat_ref(s, id).is_some_and(|c| {
-        (c.transcript.cli_turn_diff(), c.transcript.cli_review()) != (cli_before.0.as_ref(), cli_before.1.as_ref())
+        (c.transcript.cli_turn_diff(), c.transcript.cli_review())
+            != (cli_before.0.as_ref(), cli_before.1.as_ref())
     });
     if cli_moved && is_main(s, id) {
         side::on_cli_report(s);
@@ -622,7 +630,10 @@ fn try_reveal(s: &mut State, id: &str, tx: &mut Tx) {
             .iter()
             .any(|r| r.key().ends_with(&target))
             .then(|| key.clone()),
-        other => other.key().ends_with(&target).then(|| other.key().to_string()),
+        other => other
+            .key()
+            .ends_with(&target)
+            .then(|| other.key().to_string()),
     });
     let Some(key) = found else {
         // Not in the latest page: once that page is in, load back to the
@@ -742,7 +753,13 @@ pub fn report_error(s: &mut State, id: &str, message: impl Into<String>) {
 
 /// A side chat drawn inside its parent's pane: area S renders an embedded
 /// `ChatState` with this.
-pub fn embedded_view(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
+pub fn embedded_view(
+    s: &State,
+    chat: &ChatState,
+    cx: &mut Cx<State>,
+    k: &Kit,
+    layer: &mut Vec<El>,
+) -> El {
     view::column(s, chat, cx, k, layer)
 }
 

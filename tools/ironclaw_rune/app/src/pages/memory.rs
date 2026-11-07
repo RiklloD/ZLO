@@ -14,9 +14,11 @@
 mod draft;
 mod supermemory;
 
-use crate::pages::common::{block_fill, empty_state, error_line, page_body};
-use crate::pages::common::controls::{Look, header_with, keyed_refresh, press_button, press_icon, styled};
+use crate::pages::common::controls::{
+    Look, header_with, keyed_refresh, press_button, press_icon, styled,
+};
 use crate::pages::common::ts::{BODY_SEMIBOLD, SM, SM_MEDIUM, XS};
+use crate::pages::common::{block_fill, empty_state, error_line, page_body};
 use ironclaw_gpui_client::memory_page::{
     MemoryArchiveOutcome, MemoryDocument, MemoryDocumentEntry, MemoryDocumentKind,
     MemoryPageWriteOutcome, MemorySearchHit, SupermemoryDocumentPage, SupermemoryMemoryHit,
@@ -241,7 +243,8 @@ fn save(s: &mut State) {
     let ticket = open.ticket();
     let path = ticket.path.clone();
     // A new document carries no hash, so the save cannot overwrite one.
-    let expected = (!open.document.content_hash.is_empty()).then(|| open.document.content_hash.clone());
+    let expected =
+        (!open.document.content_hash.is_empty()).then(|| open.document.content_hash.clone());
     m.busy = true;
     jobs::run(
         s,
@@ -252,7 +255,9 @@ fn save(s: &mut State) {
             m.busy = false;
             let reply = match result {
                 Ok(response) => match (response.outcome, response.document) {
-                    (MemoryPageWriteOutcome::Written, Some(document)) => SaveReply::Written(document),
+                    (MemoryPageWriteOutcome::Written, Some(document)) => {
+                        SaveReply::Written(document)
+                    }
                     (MemoryPageWriteOutcome::Conflict, current) => SaveReply::Conflict(current),
                     (MemoryPageWriteOutcome::Written, None) => SaveReply::WrittenWithoutReadBack,
                 },
@@ -283,7 +288,10 @@ fn cancel_edit(s: &mut State) {
         open.editor = None;
         open.conflict = false;
     }
-    if m.open.as_ref().is_some_and(|o| o.document.content_hash.is_empty()) {
+    if m.open
+        .as_ref()
+        .is_some_and(|o| o.document.content_hash.is_empty())
+    {
         m.open = None;
     }
 }
@@ -355,20 +363,35 @@ fn set_tab(s: &mut State, tab: Tab) {
 
 fn tabs(s: &State, k: &Kit) -> El {
     let tab = |key: &str, title: &str, which: Tab| {
-        let look = if s.pages.memory.tab == which { Look::Primary } else { Look::Ghost };
-        press_button(k, key, title, look, None, false, move |s: &mut State| set_tab(s, which))
+        let look = if s.pages.memory.tab == which {
+            Look::Primary
+        } else {
+            Look::Ghost
+        };
+        press_button(k, key, title, look, None, false, move |s: &mut State| {
+            set_tab(s, which)
+        })
     };
     row()
         .key("memory-tabs")
         .gap(8.0)
         .pb(12.0)
         .child(tab("memory-tab-local", "Local (on this Mac)", Tab::Local))
-        .child(tab("memory-tab-supermemory", "Supermemory (remote)", Tab::Supermemory))
+        .child(tab(
+            "memory-tab-supermemory",
+            "Supermemory (remote)",
+            Tab::Supermemory,
+        ))
 }
 
 /// A text field with a trailing button, GPUI's `h_flex(Input, Button)`.
 pub(super) fn field_row(field: El, action: El) -> El {
-    row().w_full().gap(8.0).center_y().child(el().grow(1.0).min_w(0.0).child(field)).child(action)
+    row()
+        .w_full()
+        .gap(8.0)
+        .center_y()
+        .child(el().grow(1.0).min_w(0.0).child(field))
+        .child(action)
 }
 
 fn render_local(s: &State, k: &Kit) -> El {
@@ -398,9 +421,18 @@ fn render_local(s: &State, k: &Kit) -> El {
                 .radius(6.0)
                 .center_y()
                 .cursor(Cursor::Pointer)
-                .fill(if active { p.active } else { rune::Color::TRANSPARENT })
+                .fill(if active {
+                    p.active
+                } else {
+                    rune::Color::TRANSPARENT
+                })
                 .hover(p.hover)
-                .child(styled(entry.path.clone(), SM, p.text).truncate().grow(1.0).min_w(0.0))
+                .child(
+                    styled(entry.path.clone(), SM, p.text)
+                        .truncate()
+                        .grow(1.0)
+                        .min_w(0.0),
+                )
                 .child(styled(kind_label(entry.kind), XS, p.text_muted))
                 .on_press(move |s: &mut State| open_document(s, path.clone())),
         );
@@ -414,7 +446,13 @@ fn render_local(s: &State, k: &Kit) -> El {
             .on_submit(|s: &mut State, _| run_search(s))
             .build(k)
             .key("memory-search-field"),
-        press_icon(k, "memory-search", &icons::SEARCH, "Search local memory", run_search),
+        press_icon(
+            k,
+            "memory-search",
+            &icons::SEARCH,
+            "Search local memory",
+            run_search,
+        ),
     );
     let mut c = col().w_full().gap(12.0).child(search);
     if let Some(hits) = &m.hits {
@@ -433,11 +471,18 @@ fn render_local(s: &State, k: &Kit) -> El {
                         .cursor(Cursor::Pointer)
                         .child(styled(hit.path.clone(), SM_MEDIUM, p.text))
                         .child(
-                            styled(hit.snippet.chars().take(240).collect::<String>(), XS, p.text_muted).wrap(),
+                            styled(
+                                hit.snippet.chars().take(240).collect::<String>(),
+                                XS,
+                                p.text_muted,
+                            )
+                            .wrap(),
                         )
                         .on_press(move |s: &mut State| open_document(s, path.clone())),
                 );
-                h = h.child(crate::pages::common::controls::rule(p).key(format!("memory-hit-rule-{ix}")));
+                h = h.child(
+                    crate::pages::common::controls::rule(p).key(format!("memory-hit-rule-{ix}")),
+                );
             }
             c = c.child(h);
         }
@@ -451,7 +496,15 @@ fn render_local(s: &State, k: &Kit) -> El {
             .on_submit(|s: &mut State, _| create(s))
             .build(k)
             .key("memory-new-field"),
-        press_button(k, "memory-new", "New", Look::Outline, Some(&icons::PLUS), false, create),
+        press_button(
+            k,
+            "memory-new",
+            "New",
+            Look::Outline,
+            Some(&icons::PLUS),
+            false,
+            create,
+        ),
     ));
     if m.loaded && m.documents.is_empty() {
         c = c.child(empty_state(p, "No memory documents yet."));
@@ -478,7 +531,11 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
             kind_label(doc.kind),
             doc.word_count,
             doc.provenance.version_count,
-            if doc.provenance.version_count == 1 { "" } else { "s" }
+            if doc.provenance.version_count == 1 {
+                ""
+            } else {
+                "s"
+            }
         );
         if let Some(by) = &doc.provenance.last_changed_by {
             line.push_str(&format!(" · last saved by {by}"));
@@ -489,7 +546,15 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
     let actions = match (&open.editor, archived) {
         (Some(_), _) => row()
             .gap(8.0)
-            .child(press_button(k, "memory-cancel", "Cancel", Look::Ghost, None, false, cancel_edit))
+            .child(press_button(
+                k,
+                "memory-cancel",
+                "Cancel",
+                Look::Ghost,
+                None,
+                false,
+                cancel_edit,
+            ))
             .child(press_button(
                 k,
                 "memory-save",
@@ -502,7 +567,15 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
         (None, true) => row(),
         (None, false) => row()
             .gap(8.0)
-            .child(press_button(k, "memory-edit", "Edit", Look::Outline, None, false, start_edit))
+            .child(press_button(
+                k,
+                "memory-edit",
+                "Edit",
+                Look::Outline,
+                None,
+                false,
+                start_edit,
+            ))
             .child(if m.confirm_archive {
                 press_button(
                     k,
@@ -514,9 +587,13 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
                     archive,
                 )
             } else {
-                press_icon(k, "memory-archive", &icons::DELETE, "Remove", |s: &mut State| {
-                    s.pages.memory.confirm_archive = true
-                })
+                press_icon(
+                    k,
+                    "memory-archive",
+                    &icons::DELETE,
+                    "Remove",
+                    |s: &mut State| s.pages.memory.confirm_archive = true,
+                )
                 .label("Remove document")
             }),
     };
@@ -525,10 +602,12 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
         Some(editor) => mono_editor(editor)
             .rows(10, 36)
             .label(format!("Edit {}", doc.path))
-            .on_edit(|s: &mut State| match s.pages.memory.open.as_mut().and_then(|o| o.editor.as_mut()) {
-                Some(e) => e,
-                // The editor closed between frames: the edit lands nowhere.
-                None => &mut s.pages.memory.scratch,
+            .on_edit(|s: &mut State| {
+                match s.pages.memory.open.as_mut().and_then(|o| o.editor.as_mut()) {
+                    Some(e) => e,
+                    // The editor closed between frames: the edit lands nowhere.
+                    None => &mut s.pages.memory.scratch,
+                }
             })
             .build(k)
             .key(format!("memory-editor-{}", open.generation)),
@@ -582,7 +661,10 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         Tab::Local => render_local(s, k).key("memory-local"),
         Tab::Supermemory => supermemory::render(s, k).key("memory-supermemory"),
     };
-    let mut body = col().w_full().child(header_with(p, "Memory", vec![actions])).child(tabs(s, k));
+    let mut body = col()
+        .w_full()
+        .child(header_with(p, "Memory", vec![actions]))
+        .child(tabs(s, k));
     if let Some(e) = &m.error {
         body = body.child(error_line(p, e));
     }
@@ -608,7 +690,10 @@ fn fixture_tree(m: &mut MemoryState) {
         ("archive/notes/old-plan.md", Archived),
     ]
     .into_iter()
-    .map(|(path, kind)| MemoryDocumentEntry { path: path.into(), kind })
+    .map(|(path, kind)| MemoryDocumentEntry {
+        path: path.into(),
+        kind,
+    })
     .collect();
 }
 

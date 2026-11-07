@@ -95,7 +95,10 @@ pub fn focused_slot(s: &State) -> Option<Slot> {
 /// Esc: close whichever picker is open (the side chat's, the open chat's
 /// or the draft's) and give its composer the keys back. True when one was.
 pub fn close_open(s: &mut State) -> bool {
-    let mut slots: Vec<Slot> = crate::chat::side::side_chat_ids(s).iter().map(|id| Slot::chat(id)).collect();
+    let mut slots: Vec<Slot> = crate::chat::side::side_chat_ids(s)
+        .iter()
+        .map(|id| Slot::chat(id))
+        .collect();
     slots.extend(s.chat.as_ref().map(|c| Slot::chat(&c.thread_id)));
     slots.push(DRAFT);
     for slot in slots {
@@ -150,8 +153,14 @@ mod tests {
             c.model_picker.thread_id = Some("sc2".into());
         }
         let slot = Slot::chat("sc2");
-        assert_eq!(slot.get(&s).and_then(|p| p.thread_id.clone()).as_deref(), Some("sc2"));
-        assert_eq!(slot.get(&s).map(|p| p.model_label()).as_deref(), Some("Claude Opus 5.5"));
+        assert_eq!(
+            slot.get(&s).and_then(|p| p.thread_id.clone()).as_deref(),
+            Some("sc2")
+        );
+        assert_eq!(
+            slot.get(&s).map(|p| p.model_label()).as_deref(),
+            Some("Claude Opus 5.5")
+        );
         if let Some(p) = slot.get_mut(&mut s) {
             p.toggle();
         }
@@ -191,11 +200,17 @@ mod tests {
         close_side_chat(&mut s);
         assert!(slot.get_mut(&mut s).is_none());
         slot.event(&mut s, PickerEvent::Failed("route refused".into()));
-        assert!(chat_ref(&s, "t1").is_some_and(|c| c.error.is_none()), "not the open chat's error");
+        assert!(
+            chat_ref(&s, "t1").is_some_and(|c| c.error.is_none()),
+            "not the open chat's error"
+        );
         // While it is open, its failure lands in its own error line.
         with_side_chat(&mut s, "sc2");
         slot.event(&mut s, PickerEvent::Failed("route refused".into()));
-        assert_eq!(chat_ref(&s, "sc2").and_then(|c| c.error.clone()).as_deref(), Some("route refused"));
+        assert_eq!(
+            chat_ref(&s, "sc2").and_then(|c| c.error.clone()).as_deref(),
+            Some("route refused")
+        );
         assert!(chat_ref(&s, "t1").is_some_and(|c| c.error.is_none()));
     }
 }

@@ -57,13 +57,23 @@ pub(super) fn browse(s: &mut State, path: Option<String>) {
                 return;
             };
             // Ignore answers for a panel that was closed meanwhile.
-            let Some(panel) = x.outputs.files.as_mut() else { return };
+            let Some(panel) = x.outputs.files.as_mut() else {
+                return;
+            };
             match result {
                 Ok(list) => {
                     // Dot-files are the gateway's own bookkeeping.
-                    let mut entries: Vec<_> =
-                        list.entries.into_iter().filter(|e| !e.name.starts_with('.')).collect();
-                    entries.sort_by_key(|e| (!matches!(e.kind, ProjectFsEntryKind::Directory), e.name.clone()));
+                    let mut entries: Vec<_> = list
+                        .entries
+                        .into_iter()
+                        .filter(|e| !e.name.starts_with('.'))
+                        .collect();
+                    entries.sort_by_key(|e| {
+                        (
+                            !matches!(e.kind, ProjectFsEntryKind::Directory),
+                            e.name.clone(),
+                        )
+                    });
                     panel.entries = Some(entries);
                 }
                 Err(e) => panel.error = Some(e.to_string()),
@@ -98,7 +108,12 @@ pub(super) fn open(s: &mut State, path: String) {
         },
         move |s, result, _| match result {
             Ok(local) => read_into(s, thread, generation, local, true),
-            Err(e) => land(s, &thread, generation, preview::Preview::Failed(e.to_string())),
+            Err(e) => land(
+                s,
+                &thread,
+                generation,
+                preview::Preview::Failed(e.to_string()),
+            ),
         },
     );
 }
@@ -148,7 +163,9 @@ fn close_preview(s: &mut State) {
 }
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
-    let Some(x) = side(s) else { return ui::loading(k) };
+    let Some(x) = side(s) else {
+        return ui::loading(k);
+    };
     if let Some(opened) = x.outputs.opened.as_ref() {
         return ui::fill_col()
             .child(preview::toolbar(s, k, opened, "outputs", close_preview))
@@ -174,9 +191,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let body = match (&panel.entries, &panel.error) {
         (_, Some(e)) => ui::error_line(s, e.clone()),
         (None, None) => ui::loading(k),
-        (Some(entries), None) if entries.is_empty() => {
-            ui::empty(s, "Nothing yet. Files IronClaw writes in this conversation show up here.")
-        }
+        (Some(entries), None) if entries.is_empty() => ui::empty(
+            s,
+            "Nothing yet. Files IronClaw writes in this conversation show up here.",
+        ),
         (Some(entries), None) => {
             let mut list = col().w_full().px(8.);
             for (ix, entry) in entries.iter().enumerate() {
@@ -231,7 +249,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .build(k)
                 .key("outputs-refresh"),
         );
-    ui::fill_col().child(bar).child(ui::scroll("outputs-list", body))
+    ui::fill_col()
+        .child(bar)
+        .child(ui::scroll("outputs-list", body))
 }
 
 /// A fixture listing for scenes.

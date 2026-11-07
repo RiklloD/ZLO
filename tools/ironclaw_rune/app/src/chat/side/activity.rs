@@ -174,14 +174,17 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     if total > shown {
         list = list.child(
             row().px(12.).pt(8.).child(
-                ui::btn(format!("Show {} older turns", (total - shown).min(TURNS_PAGE)))
-                    .on_press(|s: &mut State| {
-                        if let Some(x) = side_mut(s) {
-                            x.activity.more += TURNS_PAGE;
-                        }
-                    })
-                    .build(k)
-                    .key("activity-more"),
+                ui::btn(format!(
+                    "Show {} older turns",
+                    (total - shown).min(TURNS_PAGE)
+                ))
+                .on_press(|s: &mut State| {
+                    if let Some(x) = side_mut(s) {
+                        x.activity.more += TURNS_PAGE;
+                    }
+                })
+                .build(k)
+                .key("activity-more"),
             ),
         );
     }
@@ -207,7 +210,11 @@ fn waiting_card(s: &State, k: &Kit, row_: &Row) -> El {
     let approval = *kind == ProductGateKind::Approval;
     let answer = |label: &'static str, decision: GateDecision, primary: bool| {
         let (run, gate) = (run_id.clone(), gate_ref.clone());
-        let b = if primary { ui::primary(label) } else { ui::outline(label) };
+        let b = if primary {
+            ui::primary(label)
+        } else {
+            ui::outline(label)
+        };
         b.on_press(move |s: &mut State| {
             bridge::resolve_gate(s, run.clone(), gate.clone(), decision)
         })
@@ -234,11 +241,17 @@ fn waiting_card(s: &State, k: &Kit, row_: &Row) -> El {
         card = card.child(ui::para(text, XS, p.text_muted).max_lines(4));
     }
     card = card.child(if approval {
-        let mut answers = row()
-            .gap(4.)
-            .child(answer("Approve", GateDecision::Approve { always: false }, true));
+        let mut answers = row().gap(4.).child(answer(
+            "Approve",
+            GateDecision::Approve { always: false },
+            true,
+        ));
         if *allow_always {
-            answers = answers.child(answer("Always", GateDecision::Approve { always: true }, false));
+            answers = answers.child(answer(
+                "Always",
+                GateDecision::Approve { always: true },
+                false,
+            ));
         }
         let (run, gate) = (run_id.clone(), gate_ref.clone());
         answers
@@ -274,8 +287,9 @@ fn step_row(s: &State, row_: &Row) -> El {
             reason,
         } => {
             let mark = match status {
-                ToolStatus::Running => mark(&icons::LOADER_CIRCLE, p.text_muted)
-                    .looping(rune::LoopSpec::rotation(1.0)),
+                ToolStatus::Running => {
+                    mark(&icons::LOADER_CIRCLE, p.text_muted).looping(rune::LoopSpec::rotation(1.0))
+                }
                 ToolStatus::Completed => mark(&icons::CHECK, p.success),
                 ToolStatus::Failed => mark(&icons::CIRCLE_X, p.danger),
             };
@@ -382,7 +396,14 @@ mod tests {
 
     #[test]
     fn turns_group_steps_newest_first() {
-        let rows = [tool("early"), user("a"), tool("t1"), user("b"), user("c"), tool("t2")];
+        let rows = [
+            tool("early"),
+            user("a"),
+            tool("t1"),
+            user("b"),
+            user("c"),
+            tool("t2"),
+        ];
         let t = turns(&rows);
         assert_eq!(t.len(), 3);
         assert_eq!(t[0].prompt, "c");

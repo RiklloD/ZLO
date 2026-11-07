@@ -15,7 +15,9 @@ use rune_kit::diff::{Annotation, DiffMode, DiffState, DiffView, LineRange, LineR
 use rune_kit::{ButtonVariant, Kit, TextInput};
 
 use super::ui::{self, XS, XS_MED};
-use super::{SideState, Tab, bridge, git, short_path, side, side_mut, side_of, side_total, thread_id};
+use super::{
+    SideState, Tab, bridge, git, short_path, side, side_mut, side_of, side_total, thread_id,
+};
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -92,9 +94,9 @@ struct Loaded {
 }
 
 fn stats(files: &[rune_kit::diff::FileDiff]) -> (usize, usize, usize) {
-    files
-        .iter()
-        .fold((0, 0, 0), |(n, a, d), f| (n + 1, a + f.additions(), d + f.deletions()))
+    files.iter().fold((0, 0, 0), |(n, a, d), f| {
+        (n + 1, a + f.additions(), d + f.deletions())
+    })
 }
 
 /// Re-read status, branch and both diffs. Coalesces like the orchestration poll.
@@ -186,7 +188,11 @@ fn apply(s: &mut State) {
     }
     let files = rune_kit::diff::parse(&patch);
     state.shown = patch;
-    let mode = if state.split { DiffMode::Split } else { DiffMode::Unified };
+    let mode = if state.split {
+        DiffMode::Split
+    } else {
+        DiffMode::Unified
+    };
     match state.diff.as_mut() {
         Some(diff) => diff.set_files(files),
         None => {
@@ -205,7 +211,9 @@ fn sync_annotations(s: &mut State) {
     let findings = codex::findings(s);
     let Some(x) = side_mut(s) else { return };
     let state = &mut x.changes;
-    let Some(diff) = state.diff.as_mut() else { return };
+    let Some(diff) = state.diff.as_mut() else {
+        return;
+    };
     let mut notes: Vec<Annotation> = state
         .comments
         .iter()
@@ -213,7 +221,11 @@ fn sync_annotations(s: &mut State) {
         .collect();
     for (ix, (path, f)) in findings.iter().enumerate() {
         if let Some(file) = diff.file_index(path) {
-            notes.push(Annotation::new(file, LineRef::new(Side::New, f.end), format!("finding-{ix}")));
+            notes.push(Annotation::new(
+                file,
+                LineRef::new(Side::New, f.end),
+                format!("finding-{ix}"),
+            ));
         }
     }
     if let Some(d) = &state.draft {
@@ -225,7 +237,9 @@ fn sync_annotations(s: &mut State) {
 /// Record the working tree before a turn, for its card.
 pub(super) fn checkpoint(s: &mut State) {
     let Some(thread) = thread_id(s) else { return };
-    let Some(repo) = side(s).and_then(|x| x.repo.clone()) else { return };
+    let Some(repo) = side(s).and_then(|x| x.repo.clone()) else {
+        return;
+    };
     jobs::blocking(
         s,
         move || git::checkpoint(&repo),
@@ -252,7 +266,8 @@ pub(super) fn folder_changed(x: &mut SideState) {
 /// findings follow it. Area A calls this when the transcript's CLI diff
 /// or review changes (GPUI did it while drawing).
 pub fn on_cli_report(s: &mut State) {
-    let follow = side(s).is_some_and(|x| x.changes.scope == Scope::Codex && x.changes.shown != codex::patch(s));
+    let follow = side(s)
+        .is_some_and(|x| x.changes.scope == Scope::Codex && x.changes.shown != codex::patch(s));
     if follow {
         apply(s);
     } else {
@@ -332,7 +347,12 @@ fn set_scope(s: &mut State, scope: Scope) {
 
 /// The lines picked for a comment (or the latest comment's), new side only,
 /// for the composer's `@` selection mention.
-pub(super) fn selection(x: &SideState) -> Option<(std::path::PathBuf, ironclaw_gpui_client::mentions::LineRange)> {
+pub(super) fn selection(
+    x: &SideState,
+) -> Option<(
+    std::path::PathBuf,
+    ironclaw_gpui_client::mentions::LineRange,
+)> {
     let state = &x.changes;
     let (range, path) = state
         .draft
@@ -366,7 +386,9 @@ fn start_draft(s: &mut State, range: LineRange) {
 fn save_draft(s: &mut State) {
     let Some(x) = side_mut(s) else { return };
     let state = &mut x.changes;
-    let Some(draft) = state.draft.take() else { return };
+    let Some(draft) = state.draft.take() else {
+        return;
+    };
     let text = draft.input.text.trim().to_string();
     if !text.is_empty() {
         state.next_comment += 1;
@@ -403,17 +425,28 @@ fn send_comments(s: &mut State) {
         } else {
             format!("lines {}-{}", c.range.start.line, c.range.end.line)
         };
-        text.push_str(&format!("\n{}. {} {lines} ({side}): {}", ix + 1, c.path, c.text));
+        text.push_str(&format!(
+            "\n{}. {} {lines} ({side}): {}",
+            ix + 1,
+            c.path,
+            c.text
+        ));
     }
     x.changes.comments.clear();
     sync_annotations(s);
     // Inserted at the cursor, so file cards already in the draft stay.
-    let gap = if bridge::composer_empty(s) { "" } else { "\n\n" };
+    let gap = if bridge::composer_empty(s) {
+        ""
+    } else {
+        "\n\n"
+    };
     bridge::composer_insert(s, &format!("{gap}{text}"));
 }
 
 fn diff_of(s: &State) -> &DiffState {
-    side(s).and_then(|x| x.changes.diff.as_ref()).unwrap_or_else(|| ui::empty_diff())
+    side(s)
+        .and_then(|x| x.changes.diff.as_ref())
+        .unwrap_or_else(|| ui::empty_diff())
 }
 
 fn diff_of_mut(s: &mut State) -> &mut DiffState {
@@ -434,7 +467,9 @@ fn jump(s: &mut State, path: &str, tx: &mut Tx) {
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
-    let Some(x) = side(s) else { return ui::loading(k) };
+    let Some(x) = side(s) else {
+        return ui::loading(k);
+    };
     if x.repo.is_none() {
         return ui::empty(
             s,
@@ -462,7 +497,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .gap(4.)
         .items_center()
         .child(icon(&icons::GIT_BRANCH, 12.).color(p.text_faint))
-        .child(ui::line(b.name.clone(), XS, p.text_muted).shrink().min_w(0.));
+        .child(
+            ui::line(b.name.clone(), XS, p.text_muted)
+                .shrink()
+                .min_w(0.),
+        );
     if let Some(sync) = sync {
         toolbar = toolbar.child(ui::line(sync, XS, p.accent));
     }
@@ -472,7 +511,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             ui::busy(ui::btn("Pull"), busy == Some("pull"))
                 .disabled(busy.is_some() || b.upstream.is_none())
                 .on_press(|s: &mut State| {
-                    git_action(s, "pull", |repo| git::pull(repo).map(|()| Some("Pulled.".into())))
+                    git_action(s, "pull", |repo| {
+                        git::pull(repo).map(|()| Some("Pulled.".into()))
+                    })
                 })
                 .build(k)
                 .key("changes-pull"),
@@ -481,7 +522,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             ui::busy(ui::btn("Push").icon(&icons::UPLOAD), busy == Some("push"))
                 .disabled(busy.is_some())
                 .on_press(|s: &mut State| {
-                    git_action(s, "push", |repo| git::push(repo).map(|()| Some("Pushed.".into())))
+                    git_action(s, "push", |repo| {
+                        git::push(repo).map(|()| Some("Pushed.".into()))
+                    })
                 })
                 .build(k)
                 .key("changes-push"),
@@ -492,7 +535,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .on_press(|s: &mut State| {
                     if let Some(x) = side_mut(s) {
                         x.changes.split = !x.changes.split;
-                        let mode = if x.changes.split { DiffMode::Split } else { DiffMode::Unified };
+                        let mode = if x.changes.split {
+                            DiffMode::Split
+                        } else {
+                            DiffMode::Unified
+                        };
                         if let Some(diff) = x.changes.diff.as_mut() {
                             diff.set_mode(mode);
                         }
@@ -562,7 +609,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                         .gap(4.)
                         .child(
                             ui::busy(
-                                ui::primary(if staged { "Commit staged" } else { "Commit all" }).icon(&icons::CHECK),
+                                ui::primary(if staged {
+                                    "Commit staged"
+                                } else {
+                                    "Commit all"
+                                })
+                                .icon(&icons::CHECK),
                                 busy == Some("commit"),
                             )
                             .disabled(busy.is_some() || !has)
@@ -611,7 +663,14 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .gap(4.)
                 .items_center()
                 .child(icon(&icons::MESSAGE_SQUARE_PLUS, 12.).color(p.accent))
-                .child(ui::line(format!("{count} comment{}", if count == 1 { "" } else { "s" }), XS, p.text).grow(1.))
+                .child(
+                    ui::line(
+                        format!("{count} comment{}", if count == 1 { "" } else { "s" }),
+                        XS,
+                        p.text,
+                    )
+                    .grow(1.),
+                )
                 .child(
                     ui::btn("Clear")
                         .on_press(|s: &mut State| {
@@ -623,7 +682,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                         .build(k)
                         .key("comments-clear"),
                 )
-                .child(ui::primary("Add to message").on_press(send_comments).build(k).key("comments-send")),
+                .child(
+                    ui::primary("Add to message")
+                        .on_press(send_comments)
+                        .build(k)
+                        .key("comments-send"),
+                ),
         );
     }
     col
@@ -653,7 +717,10 @@ fn turn_card(s: &State, k: &Kit, state: &ChangesState, files: usize, add: usize,
                 .child(icon(&icons::SPARKLES, 12.).color(p.accent))
                 .child(
                     ui::line(
-                        format!("Last turn changed {files} file{}", if files == 1 { "" } else { "s" }),
+                        format!(
+                            "Last turn changed {files} file{}",
+                            if files == 1 { "" } else { "s" }
+                        ),
                         XS_MED,
                         p.text,
                     )
@@ -666,12 +733,23 @@ fn turn_card(s: &State, k: &Kit, state: &ChangesState, files: usize, add: usize,
             row()
                 .gap(4.)
                 .child(
-                    ui::outline(if scope == Scope::Turn { "Show all changes" } else { "Review" })
-                        .on_press(move |s: &mut State| {
-                            set_scope(s, if scope == Scope::Turn { Scope::Working } else { Scope::Turn })
-                        })
-                        .build(k)
-                        .key("turn-review"),
+                    ui::outline(if scope == Scope::Turn {
+                        "Show all changes"
+                    } else {
+                        "Review"
+                    })
+                    .on_press(move |s: &mut State| {
+                        set_scope(
+                            s,
+                            if scope == Scope::Turn {
+                                Scope::Working
+                            } else {
+                                Scope::Turn
+                            },
+                        )
+                    })
+                    .build(k)
+                    .key("turn-review"),
                 )
                 .child(
                     ui::btn("Keep")
@@ -689,25 +767,38 @@ fn turn_card(s: &State, k: &Kit, state: &ChangesState, files: usize, add: usize,
                         .key("turn-keep"),
                 )
                 .child(
-                    ui::btn(if undo_armed { "Undo? Click again" } else { "Undo" })
-                        .icon(&icons::UNDO_2)
-                        .variant(if undo_armed { ButtonVariant::Danger } else { ButtonVariant::Ghost })
-                        .disabled(state.busy.is_some())
-                        .help("Put every file this turn touched back as it was")
-                        .on_press(|s: &mut State| {
-                            if !confirmed(s, "undo-turn") {
-                                return;
-                            }
-                            let Some(x) = side_mut(s) else { return };
-                            let Some(cp) = x.changes.checkpoint.clone() else { return };
-                            x.changes.scope = Scope::Working;
-                            git_action(s, "undo", move |repo| {
-                                let n = git::undo_turn(repo, &cp)?;
-                                Ok(Some(format!("Restored {n} file{}.", if n == 1 { "" } else { "s" })))
-                            });
-                        })
-                        .build(k)
-                        .key("turn-undo"),
+                    ui::btn(if undo_armed {
+                        "Undo? Click again"
+                    } else {
+                        "Undo"
+                    })
+                    .icon(&icons::UNDO_2)
+                    .variant(if undo_armed {
+                        ButtonVariant::Danger
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .disabled(state.busy.is_some())
+                    .help("Put every file this turn touched back as it was")
+                    .on_press(|s: &mut State| {
+                        if !confirmed(s, "undo-turn") {
+                            return;
+                        }
+                        let Some(x) = side_mut(s) else { return };
+                        let Some(cp) = x.changes.checkpoint.clone() else {
+                            return;
+                        };
+                        x.changes.scope = Scope::Working;
+                        git_action(s, "undo", move |repo| {
+                            let n = git::undo_turn(repo, &cp)?;
+                            Ok(Some(format!(
+                                "Restored {n} file{}.",
+                                if n == 1 { "" } else { "s" }
+                            )))
+                        });
+                    })
+                    .build(k)
+                    .key("turn-undo"),
                 ),
         )
 }
@@ -722,7 +813,18 @@ fn diff_view(s: &State, k: &Kit) -> El {
         .annotation(move |s: &State, a: &Annotation| notes::annotation(s, &k2, a))
         .header_actions(move |s: &State, file| {
             let path = side(s)
-                .and_then(|x| Some((x.repo.clone()?, x.changes.diff.as_ref()?.files().get(file)?.path().to_string())))
+                .and_then(|x| {
+                    Some((
+                        x.repo.clone()?,
+                        x.changes
+                            .diff
+                            .as_ref()?
+                            .files()
+                            .get(file)?
+                            .path()
+                            .to_string(),
+                    ))
+                })
                 .map(|(repo, rel)| repo.join(rel));
             ui::ibtn(&icons::FILE, "Show the whole file")
                 .on_press(move |s: &mut State| {

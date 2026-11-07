@@ -33,12 +33,20 @@ fn viewport(cx: &Cx<State>) -> f32 {
 fn rest_width(s: &State, dock: Dock, viewport: f32) -> f32 {
     let room = match dock {
         Dock::Work => {
-            let side = if dock_open(s, Dock::Side) { width(s, Dock::Side, viewport) } else { 0. };
+            let side = if dock_open(s, Dock::Side) {
+                width(s, Dock::Side, viewport)
+            } else {
+                0.
+            };
             viewport - KEEP - side
         }
         // An open work panel keeps at least its minimum.
         Dock::Side => {
-            let work = if dock_open(s, Dock::Work) { WIDTH_MIN } else { 0. };
+            let work = if dock_open(s, Dock::Work) {
+                WIDTH_MIN
+            } else {
+                0.
+            };
             viewport - KEEP - work
         }
     };
@@ -49,7 +57,11 @@ fn rest_width(s: &State, dock: Dock, viewport: f32) -> f32 {
     let normal = if saved > 0. { saved } else { WIDTH_DEFAULT }
         .clamp(WIDTH_MIN, WIDTH_MAX.min(room.max(WIDTH_MIN)));
     let wide = (viewport * WIDE_SHARE).clamp(WIDTH_MIN, room.max(WIDTH_MIN));
-    if side(s).is_some_and(|x| x.wide[dock.ix()]) { wide } else { normal }
+    if side(s).is_some_and(|x| x.wide[dock.ix()]) {
+        wide
+    } else {
+        normal
+    }
 }
 
 /// A dock's laid-out width: the dragged width while its edge is dragged.
@@ -63,7 +75,13 @@ fn width(s: &State, dock: Dock, viewport: f32) -> f32 {
 /// The right pane's and the work panel's widths, 0 when closed (GPUI
 /// `dock_sizes`, settled), for the wallpaper's conversation area.
 pub fn dock_widths(s: &State, viewport: f32) -> (f32, f32) {
-    let w = |dock| if dock_open(s, dock) { width(s, dock, viewport) } else { 0. };
+    let w = |dock| {
+        if dock_open(s, dock) {
+            width(s, dock, viewport)
+        } else {
+            0.
+        }
+    };
     (w(Dock::Side), w(Dock::Work))
 }
 
@@ -110,7 +128,11 @@ fn dock(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, dock: Dock)
         .fill(p.surface.alpha(0.45))
         .child(title(s, dock, tab))
         .child(ui::fill_col().child(body))
-        .child(el().pin(Some(0.), Some(0.), None, Some(0.)).w(1.).fill(p.border))
+        .child(
+            el().pin(Some(0.), Some(0.), None, Some(0.))
+                .w(1.)
+                .fill(p.border),
+        )
         .child(edge(s, dock, w, dragging, viewport));
     clip.child(pane)
 }
@@ -128,7 +150,11 @@ fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32) -> El {
         .pin(Some(0.), Some(0.), None, Some(0.))
         .w(6.)
         .cursor(Cursor::ResizeColumn)
-        .child(el().w(1.).h_full().fill(if dragging { p.accent.alpha(0.6) } else { Color::TRANSPARENT }))
+        .child(el().w(1.).h_full().fill(if dragging {
+            p.accent.alpha(0.6)
+        } else {
+            Color::TRANSPARENT
+        }))
         .on_drag(move |s: &mut State, d, tx| {
             tx.instant();
             match d.phase {
@@ -192,7 +218,10 @@ fn title(s: &State, dock: Dock, tab: Tab) -> El {
                     .max_w(160.)
                     .child(icon(&icons::GIT_BRANCH, 12.).color(p.text_muted))
                     .child(ui::line(wt.branch.clone(), XS, p.text_muted))
-                    .help(format!("Own git worktree {} on branch {}", wt.path, wt.branch)),
+                    .help(format!(
+                        "Own git worktree {} on branch {}",
+                        wt.path, wt.branch
+                    )),
             );
         }
         if let Some(folder) = &x.folder {
@@ -285,7 +314,11 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         el().pin(None, Some(0.), Some(right), Some(0.))
             .w(width)
             .fill(p.surface.alpha(0.45))
-            .child(el().pin(Some(0.), Some(0.), None, Some(0.)).w(1.).fill(p.border))
+            .child(
+                el().pin(Some(0.), Some(0.), None, Some(0.))
+                    .w(1.)
+                    .fill(p.border),
+            )
     };
     let work_open = dock_open(s, Dock::Work);
     let side_open = dock_open(s, Dock::Side);
@@ -293,7 +326,11 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         s,
         "side-work-toggle",
         work_open,
-        if work_open { "Hide changes and files" } else { "Changes, files and outputs" },
+        if work_open {
+            "Hide changes and files"
+        } else {
+            "Changes, files and outputs"
+        },
         icon(&icons::FOLDER_TREE, 15.).color(if work_open { p.text } else { p.text_muted }),
     )
     .on_press(|s: &mut State| super::toggle_work_panel(s));
@@ -301,14 +338,25 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         s,
         "side-pane-toggle",
         side_open,
-        if side_open { "Hide pane" } else { "Activity, browser and side chat" },
+        if side_open {
+            "Hide pane"
+        } else {
+            "Activity, browser and side chat"
+        },
         pane_glyph(if side_open { p.text } else { p.text_muted }),
     )
     .on_press(|s: &mut State| super::toggle_right_pane(s));
     let toggle_at = |right: f32, t: El| {
-        row().pin(None, Some(0.), Some(right + 8.), Some(0.)).items_center().child(t)
+        row()
+            .pin(None, Some(0.), Some(right + 8.), Some(0.))
+            .items_center()
+            .child(t)
     };
-    let mut strip = el().key("side-titlebar-block").h_full().w(block).clip_rounded(0.);
+    let mut strip = el()
+        .key("side-titlebar-block")
+        .h_full()
+        .w(block)
+        .clip_rounded(0.);
     if ww > SLOT {
         strip = strip.child(tint(sw, ww));
     }
@@ -378,7 +426,11 @@ fn header(s: &State, k: &Kit, dock: Dock, right: f32, width: f32) -> El {
         )
         .child(
             ui::ibtn(
-                if wide { &icons::MINIMIZE } else { &icons::MAXIMIZE },
+                if wide {
+                    &icons::MINIMIZE
+                } else {
+                    &icons::MAXIMIZE
+                },
                 if wide { "Narrow" } else { "Widen" },
             )
             .on_press(move |s: &mut State| {
@@ -402,7 +454,12 @@ fn tabs(s: &State, k: &Kit, dock: Dock) -> El {
     let p = &s.palette;
     let current = dock_tab(s, dock);
     let has_chat = side(s).is_some_and(|x| x.chat.is_some());
-    let shown: Vec<Tab> = dock.tabs().iter().copied().filter(|t| *t != Tab::SideChat || has_chat).collect();
+    let shown: Vec<Tab> = dock
+        .tabs()
+        .iter()
+        .copied()
+        .filter(|t| *t != Tab::SideChat || has_chat)
+        .collect();
     let mut strip = row().gap(GAP).items_center();
     if let Some(ix) = shown.iter().position(|t| *t == current) {
         strip = strip.child(

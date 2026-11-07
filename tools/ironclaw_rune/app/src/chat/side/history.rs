@@ -69,7 +69,9 @@ fn layout(commits: &[git::Commit]) -> Vec<GraphRow> {
         }
         let mut out = Vec::new();
         for (k, parent) in c.parents.iter().enumerate() {
-            let existing = lanes.iter().position(|l| l.as_deref() == Some(parent.as_str()));
+            let existing = lanes
+                .iter()
+                .position(|l| l.as_deref() == Some(parent.as_str()));
             let lane = match existing {
                 Some(lane) => lane,
                 None if k == 0 && lanes.get(node).is_none_or(Option::is_none) => node,
@@ -90,7 +92,12 @@ fn layout(commits: &[git::Commit]) -> Vec<GraphRow> {
         while lanes.last().is_some_and(Option::is_none) {
             lanes.pop();
         }
-        rows.push(GraphRow { node, into, through, out });
+        rows.push(GraphRow {
+            node,
+            into,
+            through,
+            out,
+        });
     }
     rows
 }
@@ -116,7 +123,9 @@ fn lane_color(lane: usize, p: &Palette) -> Color {
 }
 
 fn ago(unix: i64) -> String {
-    chrono::DateTime::from_timestamp(unix, 0).map(jobs::ago).unwrap_or_default()
+    chrono::DateTime::from_timestamp(unix, 0)
+        .map(jobs::ago)
+        .unwrap_or_default()
 }
 
 /// The graph cell of one row.
@@ -226,7 +235,10 @@ fn detail_diff(s: &State) -> &DiffState {
 }
 
 fn detail_diff_mut(s: &mut State) -> &mut DiffState {
-    match side_mut(s).and_then(|x| x.history.open.as_mut()).and_then(|d| d.diff.as_mut()) {
+    match side_mut(s)
+        .and_then(|x| x.history.open.as_mut())
+        .and_then(|d| d.diff.as_mut())
+    {
         Some(d) => d,
         None => ui::spare_diff(),
     }
@@ -234,7 +246,9 @@ fn detail_diff_mut(s: &mut State) -> &mut DiffState {
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
-    let Some(x) = side(s) else { return ui::loading(k) };
+    let Some(x) = side(s) else {
+        return ui::loading(k);
+    };
     if x.repo.is_none() {
         return ui::empty(s, "This folder is not a git repository.");
     }
@@ -253,7 +267,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let graph_w = 12. + lanes as f32 * LANE_W;
     let mut list = col().w_full();
     for (commit, row_) in commits.iter().zip(&x.history.graph) {
-        let meta = format!("{} · {} · {}", commit.short(), commit.author, ago(commit.time));
+        let meta = format!(
+            "{} · {} · {}",
+            commit.short(),
+            commit.author,
+            ago(commit.time)
+        );
         let mut subject = row().gap(4.).items_center();
         for r in commit.refs.iter().take(2) {
             subject = subject.child(
@@ -264,7 +283,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .child(ui::line(r.clone(), TINY, p.accent)),
             );
         }
-        subject = subject.child(ui::line(commit.subject.clone(), XS, p.text).shrink().min_w(0.));
+        subject = subject.child(
+            ui::line(commit.subject.clone(), XS, p.text)
+                .shrink()
+                .min_w(0.),
+        );
         let to_open = commit.clone();
         list = list.child(
             row()
@@ -277,13 +300,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .hover(p.hover)
                 .cursor(rune::Cursor::Pointer)
                 .child(graph_cell(row_, graph_w, p))
-                .child(
-                    col()
-                        .grow(1.)
-                        .min_w(0.)
-                        .child(subject)
-                        .child(ui::line(meta, TINY, p.text_faint)),
-                )
+                .child(col().grow(1.).min_w(0.).child(subject).child(ui::line(
+                    meta,
+                    TINY,
+                    p.text_faint,
+                )))
                 .on_press(move |s: &mut State| open(s, to_open.clone())),
         );
     }
@@ -304,7 +325,14 @@ fn lanes(x: &SideState) -> usize {
     x.history
         .graph
         .iter()
-        .flat_map(|r| r.through.iter().chain(&r.out).chain(&r.into).copied().chain([r.node]))
+        .flat_map(|r| {
+            r.through
+                .iter()
+                .chain(&r.out)
+                .chain(&r.into)
+                .copied()
+                .chain([r.node])
+        })
         .max()
         .unwrap_or(0)
         .min(LANES_MAX)
@@ -319,18 +347,19 @@ fn commit_view(s: &State, k: &Kit, detail: &Detail) -> El {
         .as_deref()
         .and_then(|m| m.split_once('\n').map(|(_, rest)| rest.trim().to_string()))
         .filter(|b| !b.is_empty());
-    let mut info = col()
-        .w_full()
-        .px(12.)
-        .py(8.)
-        .gap(4.)
-        .child(ui::line(format!("{} · {} · {}", c.short(), c.author, ago(c.time)), XS, p.text_muted));
+    let mut info = col().w_full().px(12.).py(8.).gap(4.).child(ui::line(
+        format!("{} · {} · {}", c.short(), c.author, ago(c.time)),
+        XS,
+        p.text_muted,
+    ));
     if let Some(body) = body {
         info = info.child(ui::para(body, XS, p.text));
     }
     let diff = match (&detail.diff, &detail.error) {
         (_, Some(e)) => ui::error_line(s, e.clone()),
-        (Some(_), None) => DiffView::new(detail_diff, detail_diff_mut).key("history-diff").build(s, k),
+        (Some(_), None) => DiffView::new(detail_diff, detail_diff_mut)
+            .key("history-diff")
+            .build(s, k),
         (None, None) => ui::loading(k),
     };
     ui::fill_col()
@@ -351,7 +380,11 @@ fn commit_view(s: &State, k: &Kit, detail: &Detail) -> El {
                         .build(k)
                         .key("commit-back"),
                 )
-                .child(ui::line(c.subject.clone(), SM_MED, p.text).grow(1.).min_w(0.))
+                .child(
+                    ui::line(c.subject.clone(), SM_MED, p.text)
+                        .grow(1.)
+                        .min_w(0.),
+                )
                 .child(
                     ui::ibtn(&icons::COPY, "Copy commit id")
                         .on_press_tx(move |_: &mut State, tx| tx.copy(sha.clone()))

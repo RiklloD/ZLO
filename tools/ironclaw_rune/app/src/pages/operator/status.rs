@@ -1,9 +1,11 @@
 //! Operator → Status: readiness checks, doctor diagnostics, and the OS
 //! service (GPUI `StatusPanel` in `pages/operator.rs`).
 
-use crate::pages::common::{Tone, card, error_line, loading};
-use crate::pages::common::controls::{Look, Size, button_sized, muted, outlined_tag, rule, spinner};
+use crate::pages::common::controls::{
+    Look, Size, button_sized, muted, outlined_tag, rule, spinner,
+};
 use crate::pages::common::ts::{BODY_SEMIBOLD, SM_MEDIUM};
+use crate::pages::common::{Tone, card, error_line, loading};
 use ironclaw_gpui_client::ClientError;
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorCommandPlaneResponse, RebornOperatorServiceLifecycleAction,
@@ -282,7 +284,9 @@ fn state_tag(s: &State, state: RebornOperatorStatusState) -> El {
         RebornOperatorStatusState::Ready => outlined_tag(p, Tone::Success, "Ready"),
         RebornOperatorStatusState::Degraded => outlined_tag(p, Tone::Warning, "Degraded"),
         RebornOperatorStatusState::Blocked => outlined_tag(p, Tone::Danger, "Blocked"),
-        RebornOperatorStatusState::NotConfigured => outlined_tag(p, Tone::Warning, "Not configured"),
+        RebornOperatorStatusState::NotConfigured => {
+            outlined_tag(p, Tone::Warning, "Not configured")
+        }
         RebornOperatorStatusState::Unsupported => outlined_tag(p, Tone::Secondary, "No probe"),
     }
 }

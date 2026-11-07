@@ -187,7 +187,9 @@ pub fn surface(slot: Slot) -> El {
 /// (`App::on_window`). A new window drops views made for the old one.
 pub fn on_window(window: &rune::WindowHandle) {
     let view = window.with_raw_handle(|handle| match handle.as_raw() {
-        RawWindowHandle::AppKit(h) => unsafe { Retained::retain(h.ns_view.as_ptr().cast::<AnyObject>()) },
+        RawWindowHandle::AppKit(h) => unsafe {
+            Retained::retain(h.ns_view.as_ptr().cast::<AnyObject>())
+        },
         _ => None,
     });
     match view {
@@ -311,7 +313,8 @@ fn click_on_rune(event: *mut AnyObject) -> bool {
             return false;
         }
         let at: CGPoint = msg_send![event, locationInWindow];
-        let at: CGPoint = msg_send![parent, convertPoint: at, fromView: std::ptr::null::<AnyObject>()];
+        let at: CGPoint =
+            msg_send![parent, convertPoint: at, fromView: std::ptr::null::<AnyObject>()];
         let hit: *mut AnyObject = msg_send![parent, hitTest: at];
         if hit.is_null() {
             return false;
@@ -345,7 +348,12 @@ fn reclaim_focus() {
 /// Reload `source` if it is showing (its file was rewritten).
 pub fn refresh(source: &Source) {
     SURFACES.with(|cell| {
-        for s in cell.borrow().iter().flatten().filter(|s| s.source == *source) {
+        for s in cell
+            .borrow()
+            .iter()
+            .flatten()
+            .filter(|s| s.source == *source)
+        {
             unsafe {
                 match s.engine {
                     Engine::Look => {
@@ -508,7 +516,10 @@ impl Surface {
                         }
                         Engine::Web => {
                             // Read access stops at the file's own folder.
-                            let dir = path.parent().and_then(|d| file_url(d)).unwrap_or(url.clone());
+                            let dir = path
+                                .parent()
+                                .and_then(|d| file_url(d))
+                                .unwrap_or(url.clone());
                             let _: *mut AnyObject =
                                 msg_send![v, loadFileURL: &*url, allowingReadAccessToURL: &*dir];
                         }
@@ -547,7 +558,11 @@ impl Surface {
             let local = CGRect {
                 origin: CGPoint {
                     x,
-                    y: if flipped { top } else { bounds.size.height - top - h },
+                    y: if flipped {
+                        top
+                    } else {
+                        bounds.size.height - top - h
+                    },
                 },
                 size: CGSize {
                     width: w.max(0.),
@@ -660,7 +675,8 @@ unsafe fn new_look_view() -> Option<Retained<AnyObject>> {
     unsafe {
         let alloc: Allocated<AnyObject> = msg_send![cls, alloc];
         // QLPreviewViewStyleNormal = 0.
-        let view: Option<Retained<AnyObject>> = msg_send![alloc, initWithFrame: ZERO, style: 0usize];
+        let view: Option<Retained<AnyObject>> =
+            msg_send![alloc, initWithFrame: ZERO, style: 0usize];
         let view = view?;
         let _: () = msg_send![&*view, setShouldCloseWithWindow: false];
         Some(view)

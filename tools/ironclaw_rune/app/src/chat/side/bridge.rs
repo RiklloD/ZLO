@@ -48,7 +48,9 @@ pub fn resolve_gate(s: &mut State, run_id: String, gate_ref: String, decision: G
 
 /// Open the "No, do X instead" editor for a gate (GPUI `ChatView::start_reject`).
 pub fn start_reject(s: &mut State, run_id: String, gate_ref: String) {
-    let Some(id) = open(s).map(|c| c.thread_id.clone()) else { return };
+    let Some(id) = open(s).map(|c| c.thread_id.clone()) else {
+        return;
+    };
     chat::reject_feedback::start_reject(s, &id, run_id, gate_ref);
 }
 
@@ -80,7 +82,9 @@ pub fn composer_empty(s: &State) -> bool {
 
 /// Attach files on this Mac to the next message (GPUI `ChatView::attach`).
 pub fn attach(s: &mut State, paths: Vec<std::path::PathBuf>) {
-    let Some(id) = open(s).map(|c| c.thread_id.clone()) else { return };
+    let Some(id) = open(s).map(|c| c.thread_id.clone()) else {
+        return;
+    };
     chat::actions::attach(s, &id, paths);
 }
 

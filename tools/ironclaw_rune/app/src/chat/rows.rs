@@ -13,10 +13,13 @@ use ironclaw_gpui_client::inbound_requests::{AnchoredPart, anchored_parts};
 use ironclaw_gpui_client::mentions::{self as mention, MentionPart, MentionSpan, MentionUri};
 use ironclaw_gpui_client::transcript::{AttachmentChip, GateState, Row, ToolStatus};
 use rune::{Color, El, Icon, PopupItem, PopupMenu, Tx, col, el, icon, row, text};
-use rune_kit::{Button, ControlSize, ButtonVariant, IconButton, IconButtonVariant, Kit};
+use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 
 use super::composer::{attachment_card, sent_subtitle};
-use super::{ChatState, actions, approval_reason, chat_for, flow, inline_files, menu, reject_feedback, visual};
+use super::{
+    ChatState, actions, approval_reason, chat_for, flow, inline_files, menu, reject_feedback,
+    visual,
+};
 use crate::icons;
 use crate::state::State;
 
@@ -72,14 +75,18 @@ pub(crate) fn with_actions(
     // The bar shows on hover (and while its check is up).
     let bar = bar.group_opacity(if copied { 1. } else { 0. }, 1.);
     let (menu_text, menu_key) = (copy_text.to_string(), key.to_string());
-    col().key(format!("{key}-group"))
+    col()
+        .key(format!("{key}-group"))
         .w_full()
         .gap(4.)
         .hover_group()
         .child(body)
         .child(bar)
         .on_secondary_press(move |_: &mut State, press, tx: &mut Tx| {
-            let selected = tx.text_selection().map(|sel| sel.text().to_string()).unwrap_or_default();
+            let selected = tx
+                .text_selection()
+                .map(|sel| sel.text().to_string())
+                .unwrap_or_default();
             let mut m = PopupMenu::new();
             if !selected.is_empty() {
                 m = m.item(PopupItem::new("selection", "Copy selection"));
@@ -139,12 +146,26 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
             } else {
                 placed_body(s, thread, key, &parts, attachments)
             };
-            let mut out = col().key(format!("{key}-user")).w_full().items_end().gap(4.);
+            let mut out = col()
+                .key(format!("{key}-user"))
+                .w_full()
+                .items_end()
+                .gap(4.);
             if !words.is_empty() {
-                out = out.child(flow::user_pill(s, key, body, *pending, super::content_width(s)));
+                out = out.child(flow::user_pill(
+                    s,
+                    key,
+                    body,
+                    *pending,
+                    super::content_width(s),
+                ));
             }
             let mut files = row().flex_wrap().justify_end().gap(4.);
-            for (ix, chip) in attachments.iter().enumerate().filter(|(ix, _)| !placed.contains(ix)) {
+            for (ix, chip) in attachments
+                .iter()
+                .enumerate()
+                .filter(|(ix, _)| !placed.contains(ix))
+            {
                 let card = attachment_card(
                     s,
                     format!("{key}-file-{ix}"),
@@ -161,19 +182,21 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
             text: words,
             streaming,
         } => visual::reply(s, thread, key, words, *streaming, k),
-        Row::System { text: words, .. } if words.starts_with("Switched to ") => switch_marker(s, words),
+        Row::System { text: words, .. } if words.starts_with("Switched to ") => {
+            switch_marker(s, words)
+        }
         Row::System { key, text: words } => text(words.clone())
             .key(format!("{key}-system"))
             .font(small)
             .color(p.text_muted)
             .wrap()
             .selectable(true),
-        Row::Thinking { key, text: words, .. } => {
-            activity_line(s, key, &icons::BOT, "Thinking", Some(words.clone()))
-        }
-        Row::Narration { key, text: words, .. } => {
-            activity_line(s, key, &icons::ELLIPSIS, words, None)
-        }
+        Row::Thinking {
+            key, text: words, ..
+        } => activity_line(s, key, &icons::BOT, "Thinking", Some(words.clone())),
+        Row::Narration {
+            key, text: words, ..
+        } => activity_line(s, key, &icons::ELLIPSIS, words, None),
         Row::Tool {
             key,
             title,
@@ -195,9 +218,9 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
             &format!("Using skills: {}", names.join(", ")),
             None,
         ),
-        Row::WorkSummary { key, text: words, .. } => {
-            activity_line(s, key, &icons::FILE_TEXT, words, None)
-        }
+        Row::WorkSummary {
+            key, text: words, ..
+        } => activity_line(s, key, &icons::FILE_TEXT, words, None),
         Row::Plan { key, plan } => activity_line(
             s,
             key,
@@ -210,7 +233,14 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
         Row::Delegated { key, title, body } => card(s, format!("{key}-delegated"))
             .gap(8.)
             .child(activity_line(s, key, &icons::BOT, title, None))
-            .child(visual::reply(s, thread, &format!("{key}-body"), body, false, k)),
+            .child(visual::reply(
+                s,
+                thread,
+                &format!("{key}-body"),
+                body,
+                false,
+                k,
+            )),
         Row::Gate {
             key,
             run_id,
@@ -298,7 +328,9 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
                             .variant(ButtonVariant::Ghost)
                             .control_size(ControlSize::Regular)
                             .help("Gateway log lines for this run")
-                            .on_press(move |s: &mut State| crate::workspace::open_run_logs(s, run.clone()))
+                            .on_press(move |s: &mut State| {
+                                crate::workspace::open_run_logs(s, run.clone())
+                            })
                             .build(k)
                             .key(format!("{key}-logs")),
                     );
@@ -331,7 +363,11 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
                     ),
             );
             if !title.is_empty() {
-                out = out.child(text(title.clone()).font(flow::type_at(s, 13., 19., 500.)).color(p.text));
+                out = out.child(
+                    text(title.clone())
+                        .font(flow::type_at(s, 13., 19., 500.))
+                        .color(p.text),
+                );
             }
             for (ix, f) in fields.iter().enumerate() {
                 out = out.child(
@@ -368,7 +404,8 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
 /// A plain card: the hairline frame cards share.
 fn card(s: &State, key: String) -> El {
     let p = &s.palette;
-    col().key(key)
+    col()
+        .key(key)
         .w_full()
         .gap(8.)
         .padding(12.)
@@ -378,7 +415,13 @@ fn card(s: &State, key: String) -> El {
 }
 
 /// An icon, a label and an optional muted detail on one line.
-fn activity_line(s: &State, key: &str, glyph: &'static Icon, label: &str, detail: Option<String>) -> El {
+fn activity_line(
+    s: &State,
+    key: &str,
+    glyph: &'static Icon,
+    label: &str,
+    detail: Option<String>,
+) -> El {
     let p = &s.palette;
     let small = flow::type_at(s, 12., 18., 400.);
     let mut out = row()
@@ -386,7 +429,13 @@ fn activity_line(s: &State, key: &str, glyph: &'static Icon, label: &str, detail
         .gap(8.)
         .center_y()
         .child(icon(glyph, 12.).color(p.text_muted))
-        .child(text(label.to_string()).font(small).color(p.text_muted).truncate().min_w(0.));
+        .child(
+            text(label.to_string())
+                .font(small)
+                .color(p.text_muted)
+                .truncate()
+                .min_w(0.),
+        );
     if let Some(detail) = detail.filter(|d| !d.trim().is_empty()) {
         out = out.child(
             text(detail.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -427,7 +476,13 @@ fn placed_parts(text: &str) -> Vec<Placed<'_>> {
 /// A sent message whose files and mentions sit between its words: each
 /// word and each card is one item of a wrapping row, so the cards flow with
 /// the text.
-fn placed_body(s: &State, thread: &str, key: &str, parts: &[Placed<'_>], chips: &[AttachmentChip]) -> El {
+fn placed_body(
+    s: &State,
+    thread: &str,
+    key: &str,
+    parts: &[Placed<'_>],
+    chips: &[AttachmentChip],
+) -> El {
     let p = &s.palette;
     let font = flow::type_at(s, 14., 22., 400.);
     let line = flow::ui(s, 22.);
@@ -487,7 +542,8 @@ fn placed_body(s: &State, thread: &str, key: &str, parts: &[Placed<'_>], chips: 
             }
         }
     }
-    row().key(format!("{key}-placed"))
+    row()
+        .key(format!("{key}-placed"))
         .flex_wrap()
         .center_y()
         .gap(4.)
@@ -594,7 +650,9 @@ fn render_gate(s: &State, chat: &ChatState, g: Gate<'_>, k: &Kit) -> El {
             // "No, do X instead" explains a rejected tool call; other gate
             // kinds have no call to explain.
             if matches!(kind, ProductGateKind::Approval) {
-                buttons = buttons.child(reject_feedback::reject_button(chat, g.key, g.run_id, g.gate_ref, k));
+                buttons = buttons.child(reject_feedback::reject_button(
+                    chat, g.key, g.run_id, g.gate_ref, k,
+                ));
             }
             Some(buttons)
         }
@@ -619,7 +677,14 @@ fn render_gate(s: &State, chat: &ChatState, g: Gate<'_>, k: &Kit) -> El {
         .gap(8.)
         .padding(10.)
         .radius(12.)
-        .border(1., if open { p.warning.alpha(0.45) } else { ink(0.08) })
+        .border(
+            1.,
+            if open {
+                p.warning.alpha(0.45)
+            } else {
+                ink(0.08)
+            },
+        )
         .fill(ink(0.045))
         .transition(flow::rise(8.))
         .child(
@@ -632,10 +697,11 @@ fn render_gate(s: &State, chat: &ChatState, g: Gate<'_>, k: &Kit) -> El {
                         .radius(6.)
                         .fill(ink(0.09))
                         .center()
-                        .child(
-                            icon(&icons::TRIANGLE_ALERT, 12.)
-                                .color(if open { p.warning } else { p.text_muted }),
-                        ),
+                        .child(icon(&icons::TRIANGLE_ALERT, 12.).color(if open {
+                            p.warning
+                        } else {
+                            p.text_muted
+                        })),
                 )
                 .child(
                     text(label)
@@ -685,7 +751,8 @@ fn switch_marker(s: &State, words: &str) -> El {
         None => words.to_string(),
     };
     let rule = || el().h(1.).grow(1.).fill(p.border);
-    row().w_full()
+    row()
+        .w_full()
         .gap(8.)
         .center_y()
         .child(rule())

@@ -3,14 +3,16 @@
 //! skills, MCP servers, the Supermemory containers profiles use), never
 //! from free text.
 
-use crate::pages::common::{glyph};
-use crate::pages::common::controls::{floating, hairline, hover_row, styled};
-use crate::pages::common::ts::{SM, XS};
 use crate::chat::model_picker::pretty_model;
+use crate::pages::common::controls::{floating, hairline, hover_row, styled};
+use crate::pages::common::glyph;
+use crate::pages::common::ts::{SM, XS};
 use std::collections::BTreeSet;
 
 use ironclaw_gpui_client::orchestration::RouteProvider;
-use ironclaw_gpui_client::profiles::{ApprovalMode, ProfileInfo, ProfileSettings, ProfileSupermemory};
+use ironclaw_gpui_client::profiles::{
+    ApprovalMode, ProfileInfo, ProfileSettings, ProfileSupermemory,
+};
 use rune::{Color, Cursor, El, FileDialogOptions, ScrollSpec, Tx, col, el, row};
 use rune_kit::{Kit, Placement, TextInput};
 
@@ -70,11 +72,16 @@ impl Picks {
     /// Writes the picks into `settings`; `base` keeps the Supermemory fields
     /// this form does not edit.
     pub fn apply(&self, settings: &mut ProfileSettings, base: Option<&ProfileSettings>) {
-        let all_or = |set: &BTreeSet<String>| Some(set.iter().cloned().collect::<Vec<_>>()).filter(|l| !l.is_empty());
+        let all_or = |set: &BTreeSet<String>| {
+            Some(set.iter().cloned().collect::<Vec<_>>()).filter(|l| !l.is_empty())
+        };
         let previous = base.and_then(|b| b.supermemory.clone());
         settings.supermemory = self.memory.clone().map(|container| ProfileSupermemory {
             container,
-            read_containers: previous.as_ref().map(|m| m.read_containers.clone()).unwrap_or_default(),
+            read_containers: previous
+                .as_ref()
+                .map(|m| m.read_containers.clone())
+                .unwrap_or_default(),
             instructions: previous.and_then(|m| m.instructions),
         });
         settings.allowed_capabilities = all_or(&self.tools);
@@ -91,7 +98,12 @@ impl Picks {
     /// profile as the server has it now. So a stale form never puts back
     /// "Full access" set elsewhere, and an untouched "allow nothing" list
     /// never turns into "allow everything".
-    pub fn keep_untouched(&self, origin: &Picks, settings: &mut ProfileSettings, current: &ProfileSettings) {
+    pub fn keep_untouched(
+        &self,
+        origin: &Picks,
+        settings: &mut ProfileSettings,
+        current: &ProfileSettings,
+    ) {
         if self.approval == origin.approval {
             settings.approval_mode = current.approval_mode;
         }
@@ -121,7 +133,9 @@ struct Choice {
     detail: String,
 }
 
-use crate::chat::approval_mode::{CHOICES as APPROVAL_CHOICES, key as approval_key, label as approval_label};
+use crate::chat::approval_mode::{
+    CHOICES as APPROVAL_CHOICES, key as approval_key, label as approval_label,
+};
 
 fn pr(s: &mut State) -> &mut ProfilesState {
     &mut s.pages.profiles
@@ -170,7 +184,10 @@ fn containers(ps: &ProfilesState) -> Vec<(String, bool)> {
     if let Some(current) = &ps.picks.memory {
         used.insert(current.clone());
     }
-    let own = ps.selected.clone().unwrap_or_else(|| ps.id.text.trim().to_string());
+    let own = ps
+        .selected
+        .clone()
+        .unwrap_or_else(|| ps.id.text.trim().to_string());
     let mut out: Vec<(String, bool)> = used.into_iter().map(|c| (c, false)).collect();
     if !own.is_empty() && !out.iter().any(|(c, _)| *c == own) {
         out.push((own, true));
@@ -258,7 +275,16 @@ fn search_field(k: &Kit) -> impl Fn(&ProfilesState) -> El + '_ {
 
 /// A scroll viewport capped at `max` points tall.
 fn capped(key: &str, max: f32, rows: El) -> El {
-    col().key(key.to_string()).w_full().max_h(max).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).wheel_glide(key).child(rows)
+    col()
+        .key(key.to_string())
+        .w_full()
+        .max_h(max)
+        .min_h(0.0)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .wheel_glide(key)
+        .child(rows)
 }
 
 /// Providers on the left, the rail provider's models on the right.
@@ -277,42 +303,65 @@ fn model_popover(s: &State, k: &Kit) -> El {
         let on = rail.as_deref() == Some(id.as_str());
         rail_rows = rail_rows.child(
             hover_row(p, format!("rail-{id}"), on)
-                .child(crate::chat::model_picker::provider_mark(s, rp.brand.as_deref(), &rp.runtime, &rp.provider, 14.0))
-                .child(styled(rp.name.clone(), SM, p.text).truncate().grow(1.0).min_w(0.0))
+                .child(crate::chat::model_picker::provider_mark(
+                    s,
+                    rp.brand.as_deref(),
+                    &rp.runtime,
+                    &rp.provider,
+                    14.0,
+                ))
+                .child(
+                    styled(rp.name.clone(), SM, p.text)
+                        .truncate()
+                        .grow(1.0)
+                        .min_w(0.0),
+                )
                 .on_press(move |s: &mut State| pr(s).rail = Some(id.clone())),
         );
     }
     let q = query(ps);
     let mut model_rows = col().w_full();
-    if let Some(rp) = providers.iter().find(|rp| Some(&rp.provider) == rail.as_ref()) {
-        let provider_on = ps.picks.provider.as_ref() == Some(&rp.provider) && ps.picks.model.is_none();
+    if let Some(rp) = providers
+        .iter()
+        .find(|rp| Some(&rp.provider) == rail.as_ref())
+    {
+        let provider_on =
+            ps.picks.provider.as_ref() == Some(&rp.provider) && ps.picks.model.is_none();
         let provider = rp.provider.clone();
         model_rows = model_rows.child(
-            pick_row(p, format!("model-{provider}-default"), "Its default model".into(), provider_on).on_press(
-                move |s: &mut State| {
-                    let ps = pr(s);
-                    ps.picks.provider = Some(provider.clone());
-                    ps.picks.model = None;
-                    ps.menu = None;
-                },
-            ),
+            pick_row(
+                p,
+                format!("model-{provider}-default"),
+                "Its default model".into(),
+                provider_on,
+            )
+            .on_press(move |s: &mut State| {
+                let ps = pr(s);
+                ps.picks.provider = Some(provider.clone());
+                ps.picks.model = None;
+                ps.menu = None;
+            }),
         );
-        for model in rp
-            .models
-            .iter()
-            .filter(|m| !ps.picker_prefs.model_hidden(&rp.provider, m) && (q.is_empty() || m.to_lowercase().contains(&q)))
-        {
-            let on = ps.picks.provider.as_ref() == Some(&rp.provider) && ps.picks.model.as_ref() == Some(model);
+        for model in rp.models.iter().filter(|m| {
+            !ps.picker_prefs.model_hidden(&rp.provider, m)
+                && (q.is_empty() || m.to_lowercase().contains(&q))
+        }) {
+            let on = ps.picks.provider.as_ref() == Some(&rp.provider)
+                && ps.picks.model.as_ref() == Some(model);
             let (provider, model) = (rp.provider.clone(), model.clone());
             model_rows = model_rows.child(
-                pick_row(p, format!("model-{provider}-{model}"), pretty_model(&model), on).on_press(
-                    move |s: &mut State| {
-                        let ps = pr(s);
-                        ps.picks.provider = Some(provider.clone());
-                        ps.picks.model = Some(model.clone());
-                        ps.menu = None;
-                    },
-                ),
+                pick_row(
+                    p,
+                    format!("model-{provider}-{model}"),
+                    pretty_model(&model),
+                    on,
+                )
+                .on_press(move |s: &mut State| {
+                    let ps = pr(s);
+                    ps.picks.provider = Some(provider.clone());
+                    ps.picks.model = Some(model.clone());
+                    ps.menu = None;
+                }),
             );
         }
     }
@@ -321,12 +370,14 @@ fn model_popover(s: &State, k: &Kit) -> El {
         .padding(4.0)
         .gap(4.0)
         .child(
-            pick_row(p, "model-none".into(), "IronClaw default".into(), none_on).on_press(|s: &mut State| {
-                let ps = pr(s);
-                ps.picks.provider = None;
-                ps.picks.model = None;
-                ps.menu = None;
-            }),
+            pick_row(p, "model-none".into(), "IronClaw default".into(), none_on).on_press(
+                |s: &mut State| {
+                    let ps = pr(s);
+                    ps.picks.provider = None;
+                    ps.picks.model = None;
+                    ps.menu = None;
+                },
+            ),
         )
         .child(hairline(p).w_full())
         .child(
@@ -334,7 +385,10 @@ fn model_popover(s: &State, k: &Kit) -> El {
                 .w_full()
                 .items_start()
                 .gap(4.0)
-                .child(el().w(170.0).child(capped("profile-model-rail", 320.0, rail_rows)))
+                .child(
+                    el().w(170.0)
+                        .child(capped("profile-model-rail", 320.0, rail_rows)),
+                )
                 .child(
                     col()
                         .grow(1.0)
@@ -363,12 +417,18 @@ fn memory_popover(s: &State) -> El {
     );
     for (container, new) in containers(ps) {
         let on = ps.picks.memory.as_ref() == Some(&container);
-        let text = if new { format!("{container} (new, created on first write)") } else { container.clone() };
-        c = c.child(pick_row(p, format!("memory-{container}"), text, on).on_press(move |s: &mut State| {
-            let ps = pr(s);
-            ps.picks.memory = Some(container.clone());
-            ps.menu = None;
-        }));
+        let text = if new {
+            format!("{container} (new, created on first write)")
+        } else {
+            container.clone()
+        };
+        c = c.child(
+            pick_row(p, format!("memory-{container}"), text, on).on_press(move |s: &mut State| {
+                let ps = pr(s);
+                ps.picks.memory = Some(container.clone());
+                ps.menu = None;
+            }),
+        );
     }
     c
 }
@@ -385,13 +445,17 @@ fn approval_popover(s: &State) -> El {
     for mode in APPROVAL_CHOICES {
         let on = ps.picks.approval == mode;
         c = c.child(
-            pick_row(p, format!("approval-{}", approval_key(mode)), approval_label(mode).into(), on).on_press(
-                move |s: &mut State| {
-                    let ps = pr(s);
-                    ps.picks.approval = mode;
-                    ps.menu = None;
-                },
-            ),
+            pick_row(
+                p,
+                format!("approval-{}", approval_key(mode)),
+                approval_label(mode).into(),
+                on,
+            )
+            .on_press(move |s: &mut State| {
+                let ps = pr(s);
+                ps.picks.approval = mode;
+                ps.menu = None;
+            }),
         );
     }
     c
@@ -419,8 +483,16 @@ fn checklist_popover(s: &State, k: &Kit, menu: Menu, empty_label: &'static str) 
         .iter()
         .map(|(id, detail)| Choice {
             id: id.clone(),
-            label: if menu == Menu::Mcp { detail.clone() } else { id.clone() },
-            detail: if menu == Menu::Mcp { id.clone() } else { detail.clone() },
+            label: if menu == Menu::Mcp {
+                detail.clone()
+            } else {
+                id.clone()
+            },
+            detail: if menu == Menu::Mcp {
+                id.clone()
+            } else {
+                detail.clone()
+            },
         })
         .collect();
     // A saved pick IronClaw no longer has stays visible so it can be removed.
@@ -440,7 +512,10 @@ fn checklist_popover(s: &State, k: &Kit, menu: Menu, empty_label: &'static str) 
     }) {
         let on = picked.contains(&c.id);
         let id = c.id.clone();
-        let mut text = col().grow(1.0).min_w(0.0).child(styled(c.label, SM, p.text).truncate());
+        let mut text = col()
+            .grow(1.0)
+            .min_w(0.0)
+            .child(styled(c.label, SM, p.text).truncate());
         if !c.detail.is_empty() {
             text = text.child(styled(c.detail, XS, p.text_faint).truncate());
         }
@@ -465,11 +540,20 @@ fn checklist_popover(s: &State, k: &Kit, menu: Menu, empty_label: &'static str) 
         .gap(4.0)
         .child(search_field(k)(ps))
         .child(
-            pick_row(p, format!("check-{}-none", menu as u8), empty_label.into(), picked.is_empty())
-                .on_press(move |s: &mut State| picked_set(pr(s), menu).clear()),
+            pick_row(
+                p,
+                format!("check-{}-none", menu as u8),
+                empty_label.into(),
+                picked.is_empty(),
+            )
+            .on_press(move |s: &mut State| picked_set(pr(s), menu).clear()),
         )
         .child(hairline(p).w_full())
-        .child(capped(&format!("profile-check-list-{}", menu as u8), 320.0, rows));
+        .child(capped(
+            &format!("profile-check-list-{}", menu as u8),
+            320.0,
+            rows,
+        ));
     if offered.is_empty() {
         c = c.child(note(p, "Nothing installed yet."));
     }
@@ -498,7 +582,8 @@ fn check_box(p: &Palette, on: bool) -> El {
         .border(1.0, if on { p.accent } else { p.border_strong })
         .a11y_hidden();
     if on {
-        b.fill(p.accent).child(glyph(&icons::CHECK, 10.0, p.on_solid))
+        b.fill(p.accent)
+            .child(glyph(&icons::CHECK, 10.0, p.on_solid))
     } else {
         b.fill(Color::TRANSPARENT)
     }

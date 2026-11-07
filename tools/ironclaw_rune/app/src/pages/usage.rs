@@ -22,12 +22,14 @@
 mod compactions;
 mod history;
 
-use crate::pages::common::{empty_state, error_line, page_body};
 use crate::pages::common::controls::{header_with, keyed_refresh, rule, styled};
 use crate::pages::common::ts::{BODY_SEMIBOLD, SM, XS};
+use crate::pages::common::{empty_state, error_line, page_body};
 use std::time::{Duration, Instant};
 
-use ironclaw_gpui_client::usage::{ProviderUsage, UsageHistory, UsageReport, UsageStatus, UsageWindow};
+use ironclaw_gpui_client::usage::{
+    ProviderUsage, UsageHistory, UsageReport, UsageStatus, UsageWindow,
+};
 use rune::{Color, Cursor, Cx, El, col, el, row};
 use rune_kit::Kit;
 
@@ -184,7 +186,12 @@ fn segmented<T: Copy + PartialEq + 'static>(
     current: T,
     on_pick: fn(&mut State, T),
 ) -> El {
-    let mut r = row().key(key.to_string()).padding(2.0).gap(2.0).radius(8.0).fill(p.surface_raised);
+    let mut r = row()
+        .key(key.to_string())
+        .padding(2.0)
+        .gap(2.0)
+        .radius(8.0)
+        .fill(p.surface_raised);
     for (ix, (value, name)) in options.iter().enumerate() {
         let value = *value;
         let on = value == current;
@@ -200,7 +207,9 @@ fn segmented<T: Copy + PartialEq + 'static>(
             .child(styled(*name, XS, if on { p.text } else { p.text_muted }))
             .on_press(move |s: &mut State| on_pick(s, value));
         if on {
-            pill = pill.fill(p.surface_card).shadow(1.0, 2.0, Color::BLACK.alpha(0.12));
+            pill = pill
+                .fill(p.surface_card)
+                .shadow(1.0, 2.0, Color::BLACK.alpha(0.12));
         } else {
             pill = pill.hover(p.hover);
         }
@@ -213,10 +222,11 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     let p = &s.palette;
     let u = &s.pages.usage;
     let (metric, days) = (u.metric, u.days);
-    let mut actions = row()
-        .gap(8.0)
-        .center_y()
-        .child(segmented(p, "usage-metric", &METRICS, metric, set_metric));
+    let mut actions =
+        row()
+            .gap(8.0)
+            .center_y()
+            .child(segmented(p, "usage-metric", &METRICS, metric, set_metric));
     if metric != Metric::Limits {
         actions = actions.child(segmented(p, "usage-period", &PERIODS, days, set_days));
     }
@@ -234,16 +244,16 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
             page = page.child(error_line(p, e));
         }
         let body = match (&u.history, &u.history_error) {
-            (Some((d, history)), _) => history::view(
-                s,
-                history,
-                metric,
-                u.history_in_flight || *d != days,
-            ),
+            (Some((d, history)), _) => {
+                history::view(s, history, metric, u.history_in_flight || *d != days)
+            }
             (None, Some(_)) => el(),
             (None, None) => empty_state(p, "Reading the CLIs' transcripts…"),
         };
-        return page_body("usage-page", page.child(body.key(format!("usage-{metric:?}"))));
+        return page_body(
+            "usage-page",
+            page.child(body.key(format!("usage-{metric:?}"))),
+        );
     }
     if let Some(e) = &u.error {
         page = page.child(error_line(p, e));
@@ -255,8 +265,10 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         (Some(report), _) => {
             // Providers with bars first; the ones without collapse to a line
             // each at the end.
-            let (live, idle): (Vec<_>, Vec<_>) =
-                report.providers.iter().partition(|pr| !pr.windows.is_empty());
+            let (live, idle): (Vec<_>, Vec<_>) = report
+                .providers
+                .iter()
+                .partition(|pr| !pr.windows.is_empty());
             let now = chrono::Utc::now().timestamp_millis();
             let mut c = col().w_full().gap(16.0);
             for (ix, pr) in live.into_iter().enumerate() {
@@ -298,19 +310,24 @@ const STALE_MS: i64 = 30 * 60 * 1000;
 
 fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> El {
     let stale = provider.fetched_at.is_some_and(|at| now - at > STALE_MS);
-    let mut title = row()
-        .gap(8.0)
-        .center_y()
-        .child(styled(provider.label.clone(), BODY_SEMIBOLD, p.text));
+    let mut title =
+        row()
+            .gap(8.0)
+            .center_y()
+            .child(styled(provider.label.clone(), BODY_SEMIBOLD, p.text));
     if let Some(plan) = &provider.plan {
-        title = title.child(
-            el().px(6.0)
-                .radius(4.0)
-                .fill(p.accent_wash)
-                .child(styled(plan.clone(), XS, p.accent_strong)),
-        );
+        title = title.child(el().px(6.0).radius(4.0).fill(p.accent_wash).child(styled(
+            plan.clone(),
+            XS,
+            p.accent_strong,
+        )));
     }
-    let mut top = row().w_full().justify_between().center_y().gap(8.0).child(title);
+    let mut top = row()
+        .w_full()
+        .justify_between()
+        .center_y()
+        .gap(8.0)
+        .child(title);
     if let Some(st) = status_text(provider.status) {
         top = top.child(styled(st, XS, p.warning));
     }
@@ -331,11 +348,18 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
     }
     let updated = match provider.fetched_at {
         Some(at) if stale => styled(
-            format!("Updated {} · may be out of date", jobs::ago(from_millis(at))),
+            format!(
+                "Updated {} · may be out of date",
+                jobs::ago(from_millis(at))
+            ),
             XS,
             p.warning,
         ),
-        Some(at) => styled(format!("Updated {}", jobs::ago(from_millis(at))), XS, p.text_faint),
+        Some(at) => styled(
+            format!("Updated {}", jobs::ago(from_millis(at))),
+            XS,
+            p.text_faint,
+        ),
         None => el(),
     };
     let mut foot = row().w_full().justify_between().gap(12.0).child(updated);
@@ -359,8 +383,15 @@ fn idle_row(p: &Palette, ix: usize, provider: &ProviderUsage) -> El {
         .py(10.0)
         .gap(12.0)
         .items_start()
-        .child(el().w(120.0).child(styled(provider.label.clone(), SM, p.text_muted)))
-        .child(el().grow(1.0).min_w(0.0).child(styled(why, SM, p.text_faint).wrap()))
+        .child(
+            el().w(120.0)
+                .child(styled(provider.label.clone(), SM, p.text_muted)),
+        )
+        .child(
+            el().grow(1.0)
+                .min_w(0.0)
+                .child(styled(why, SM, p.text_faint).wrap()),
+        )
 }
 
 fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
@@ -369,7 +400,9 @@ fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
     let elapsed = elapsed_share(window, now);
     // Only overspending earns a caption; the tick shows the rest.
     let ahead = elapsed.and_then(|e| ahead_of_pace(pct, e));
-    let mut right = row().gap(8.0).child(styled(format!("{pct:.0}%"), SM, p.text));
+    let mut right = row()
+        .gap(8.0)
+        .child(styled(format!("{pct:.0}%"), SM, p.text));
     if let Some(r) = resets {
         right = right.child(styled(r, SM, p.text_faint));
     }
@@ -379,7 +412,13 @@ fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
         .h(6.0)
         .radius(3.0)
         .fill(p.surface_raised)
-        .child(el().key("fill").h_full().w_frac(pct as f32 / 100.).radius(3.0).fill(level_color(p, pct)));
+        .child(
+            el().key("fill")
+                .h_full()
+                .w_frac(pct as f32 / 100.)
+                .radius(3.0)
+                .fill(level_color(p, pct)),
+        );
     // Where even spending would be by now.
     if let Some(e) = elapsed {
         bar = bar.child(
@@ -495,7 +534,6 @@ pub fn fixture_history(s: &mut State, metric: Metric) {
     s.pages.usage.days = 30;
 }
 
-
 /// Refresh the shared usage report (the status bar's name for [`refresh`]).
 pub fn refresh_report(s: &mut State, force: bool) {
     refresh(s, force);
@@ -516,6 +554,9 @@ mod tests {
         let now = chrono::Utc::now().timestamp_millis();
         assert_eq!(short_countdown(now - 1000), None);
         assert_eq!(countdown(now - 1000), "resetting");
-        assert_eq!(short_countdown(now + 14 * 60_000 + 30_000), Some("15m".into()));
+        assert_eq!(
+            short_countdown(now + 14 * 60_000 + 30_000),
+            Some("15m".into())
+        );
     }
 }

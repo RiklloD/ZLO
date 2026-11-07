@@ -11,7 +11,9 @@ use ironclaw_gpui_client::{ClientError, GateDecision};
 use rune::{El, KeyEvent, Tx, row};
 use rune_kit::Kit;
 
-use super::{ChatState, actions, chat_for, chat_ref, composer::round_button, inline_files, set_error};
+use super::{
+    ChatState, actions, chat_for, chat_ref, composer::round_button, inline_files, set_error,
+};
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -73,7 +75,9 @@ pub(crate) fn steer(s: &mut State, id: &str, voice: Option<crate::voice::Submiss
                 (Err(e), Some(sub)) => crate::voice::submission_refused(s, sub, &e.to_string()),
                 (_, None) => {}
             }
-            let Some(c) = chat_for(s, &thread_id) else { return };
+            let Some(c) = chat_for(s, &thread_id) else {
+                return;
+            };
             match result {
                 // The turn refused it: never show it as sent. The words go
                 // back in the composer so Stop or ⌥Enter can act on them.
@@ -112,7 +116,8 @@ pub(crate) fn steer(s: &mut State, id: &str, voice: Option<crate::voice::Submiss
                 }
                 Err(e) => {
                     c.transcript.drop_pending_user(pending);
-                    let error = actions::restore_failed(c, &draft_text, &draft_pills, files, e.to_string());
+                    let error =
+                        actions::restore_failed(c, &draft_text, &draft_pills, files, e.to_string());
                     actions::record_draft(s, &thread_id);
                     set_error(s, &thread_id, error);
                     super::refresh_rows(s, &thread_id, tx);
@@ -185,7 +190,9 @@ fn decline_for_steer(s: &mut State, id: &str, run: String, gate_ref: String) {
                 tracing::debug!(error = %e, "steer: approval already closed");
                 return;
             }
-            let Some(c) = chat_for(s, &thread_id) else { return };
+            let Some(c) = chat_for(s, &thread_id) else {
+                return;
+            };
             c.transcript.clear_gate_resolving(&gate_ref);
             set_error(s, &thread_id, e.to_string());
             super::refresh_rows(s, &thread_id, tx);
@@ -246,14 +253,21 @@ pub(crate) fn render_send(s: &State, chat: &ChatState, running: bool, k: &Kit) -
     let stop = round_button(s, "stop", &icons::SQUARE, !ready, "Stop", k)
         .help("Stop")
         .on_press_tx(move |s: &mut State, tx| actions::stop(s, &stop_id, tx));
-    let send = round_button(s, "steer-send", &icons::ARROW_UP, ready, "Send into this turn", k)
-        .help("Send into this turn (Enter) · after it (⌥Enter)")
-        .on_press_tx(move |s: &mut State, tx| {
-            if tx.mods().alt {
-                send_after_turn(s, &id, tx);
-            } else {
-                actions::send(s, &id, tx);
-            }
-        });
+    let send = round_button(
+        s,
+        "steer-send",
+        &icons::ARROW_UP,
+        ready,
+        "Send into this turn",
+        k,
+    )
+    .help("Send into this turn (Enter) · after it (⌥Enter)")
+    .on_press_tx(move |s: &mut State, tx| {
+        if tx.mods().alt {
+            send_after_turn(s, &id, tx);
+        } else {
+            actions::send(s, &id, tx);
+        }
+    });
     row().gap(6.).child(stop).child(send)
 }

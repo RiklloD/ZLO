@@ -87,7 +87,11 @@ unsafe fn string_of(ns: *mut AnyObject) -> Option<String> {
     if utf8.is_null() {
         return None;
     }
-    Some(unsafe { CStr::from_ptr(utf8) }.to_string_lossy().into_owned())
+    Some(
+        unsafe { CStr::from_ptr(utf8) }
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 fn ns_string(s: &str) -> Option<*mut AnyObject> {

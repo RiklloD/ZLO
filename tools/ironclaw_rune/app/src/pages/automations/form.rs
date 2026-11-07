@@ -79,7 +79,9 @@ const FORM_PICKER: Slot = Slot::Fixed(FixedSlot {
     get: |s| s.pages.automations.form.as_ref()?.picker.as_ref(),
     get_mut: |s| s.pages.automations.form.as_mut()?.picker.as_mut(),
     event: |s, event| {
-        if let (PickerEvent::Failed(message), Some(form)) = (event, s.pages.automations.form.as_mut()) {
+        if let (PickerEvent::Failed(message), Some(form)) =
+            (event, s.pages.automations.form.as_mut())
+        {
             form.errors.save = Some(message);
         }
     },
@@ -384,7 +386,13 @@ fn edit_form(s: &mut State, edit: impl FnOnce(&mut Form)) {
     form_changed(s);
 }
 
-pub fn render_form(s: &State, cx: &mut rune::Cx<State>, k: &Kit, form: &Form, layer: &mut Vec<El>) -> El {
+pub fn render_form(
+    s: &State,
+    cx: &mut rune::Cx<State>,
+    k: &Kit,
+    form: &Form,
+    layer: &mut Vec<El>,
+) -> El {
     let p = &s.palette;
     let (muted, danger) = (p.text_muted, p.danger);
     let editing = form.editing.is_some();

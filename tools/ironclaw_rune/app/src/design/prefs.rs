@@ -227,10 +227,14 @@ mod tests {
     #[test]
     fn only_changed_keys_are_patched() {
         let mut prefs = Prefs::default();
-        let serde_json::Value::Object(base) = serde_json::to_value(&prefs).unwrap() else { panic!() };
+        let serde_json::Value::Object(base) = serde_json::to_value(&prefs).unwrap() else {
+            panic!()
+        };
         assert_eq!(changed(None, &base).len(), base.len());
         prefs.conversation_width += 10.;
-        let serde_json::Value::Object(new) = serde_json::to_value(&prefs).unwrap() else { panic!() };
+        let serde_json::Value::Object(new) = serde_json::to_value(&prefs).unwrap() else {
+            panic!()
+        };
         let keys: Vec<_> = changed(Some(&base), &new).keys().cloned().collect();
         assert_eq!(keys, vec!["conversation_width".to_string()]);
     }

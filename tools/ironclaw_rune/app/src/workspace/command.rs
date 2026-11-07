@@ -333,16 +333,26 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
                     }
                 })
                 .on_press_tx(move |s: &mut State, tx: &mut Tx| run(s, cmd.clone(), tx))
-                .child(ui::glyph(e.icon, 16., if on { p.text } else { p.text_muted }))
+                .child(ui::glyph(
+                    e.icon,
+                    16.,
+                    if on { p.text } else { p.text_muted },
+                ))
                 .child(el().grow(1.0).min_w(0.0).child(label))
-                .child(el().max_w(220.).child(t(e.hint, XS, p.text_faint).truncate())),
+                .child(
+                    el().max_w(220.)
+                        .child(t(e.hint, XS, p.text_faint).truncate()),
+                ),
         );
     }
     let list = col()
         .key("cmdk-list")
         .w_full()
         .max_h(LIST_MAX_H)
-        .scroll(ScrollSpec { stick_bottom: false }).wheel_glide("cmdk-list")
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .wheel_glide("cmdk-list")
         .child(col().w_full().padding(4.).children(rows));
     let input = TextInput::new(&menu.input)
         .placeholder("Search threads, messages, settings and actions")
@@ -390,7 +400,10 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .child(ui::rule(p))
         .child(list);
     if empty {
-        card = card.child(el().padding(24.).child(t("Nothing matches", ui::SM, p.text_muted)));
+        card = card.child(
+            el().padding(24.)
+                .child(t("Nothing matches", ui::SM, p.text_muted)),
+        );
     }
     card = card.child(ui::rule(p)).child(footer);
     layer.push(

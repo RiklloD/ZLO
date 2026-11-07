@@ -49,7 +49,9 @@ pub(in crate::chat::side) struct CodexState {
 
 /// Codex's latest turn diff, empty before it reported one.
 pub(super) fn patch(s: &State) -> String {
-    bridge::cli_turn_diff(s).map(|d| d.body.clone()).unwrap_or_default()
+    bridge::cli_turn_diff(s)
+        .map(|d| d.body.clone())
+        .unwrap_or_default()
 }
 
 /// The latest review's findings, each with its path relative to the repo
@@ -107,7 +109,8 @@ fn action(s: &mut State, action: ThreadAction, label: &'static str) {
             let state = &mut x.changes.codex;
             match result {
                 Ok(ThreadActionOutcome::Started { .. }) => {
-                    state.note = Some("Codex is reviewing; its findings arrive as the reply.".into());
+                    state.note =
+                        Some("Codex is reviewing; its findings arrive as the reply.".into());
                     // The review streams like a turn.
                     bridge::refresh_orchestration(s);
                 }
@@ -116,13 +119,15 @@ fn action(s: &mut State, action: ThreadAction, label: &'static str) {
                     bridge::load_timeline(s);
                 }
                 Ok(ThreadActionOutcome::Busy) => {
-                    state.error = Some("Codex is busy with this thread; try again when it is done.".into());
+                    state.error =
+                        Some("Codex is busy with this thread; try again when it is done.".into());
                 }
                 Ok(ThreadActionOutcome::Refused {
                     refusal: ThreadActionRefusal::WorkspaceMismatch { runtime_root },
                 }) => {
-                    state.error =
-                        Some(format!("Codex works in {runtime_root}, not this folder: nothing was reviewed."));
+                    state.error = Some(format!(
+                        "Codex works in {runtime_root}, not this folder: nothing was reviewed."
+                    ));
                 }
                 Err(e) => state.error = Some(e.to_string()),
             }
@@ -194,13 +199,24 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
         .child(ui::line("Codex", XS_MED, p.text).grow(1.));
     if has_diff {
         head = head.child(
-            ui::btn(if scope == Scope::Codex { "Show all changes" } else { "Codex diff" })
-                .help("The diff Codex computed for its last turn")
-                .on_press(move |s: &mut State| {
-                    set_scope(s, if scope == Scope::Codex { Scope::Working } else { Scope::Codex })
-                })
-                .build(k)
-                .key("codex-diff"),
+            ui::btn(if scope == Scope::Codex {
+                "Show all changes"
+            } else {
+                "Codex diff"
+            })
+            .help("The diff Codex computed for its last turn")
+            .on_press(move |s: &mut State| {
+                set_scope(
+                    s,
+                    if scope == Scope::Codex {
+                        Scope::Working
+                    } else {
+                        Scope::Codex
+                    },
+                )
+            })
+            .build(k)
+            .key("codex-diff"),
         );
     }
     head = head
@@ -214,16 +230,19 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
         )
         .child(ui::selected(
             s,
-            ui::busy(ui::outline("Review with Codex").icon(&icons::SEARCH), busy == Some("review"))
-                .disabled(busy.is_some() || mismatch.is_some())
-                .expanded(menu)
-                .on_press(|s: &mut State| {
-                    if let Some(x) = side_mut(s) {
-                        x.changes.codex.menu = !x.changes.codex.menu;
-                    }
-                })
-                .build(k)
-                .key("codex-review"),
+            ui::busy(
+                ui::outline("Review with Codex").icon(&icons::SEARCH),
+                busy == Some("review"),
+            )
+            .disabled(busy.is_some() || mismatch.is_some())
+            .expanded(menu)
+            .on_press(|s: &mut State| {
+                if let Some(x) = side_mut(s) {
+                    x.changes.codex.menu = !x.changes.codex.menu;
+                }
+            })
+            .build(k)
+            .key("codex-review"),
             menu,
         ));
     let mut card = col()
@@ -259,7 +278,12 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
                             .key("codex-review-input"),
                     ),
                 )
-                .child(ui::primary("Review").on_press(custom_review).build(k).key("codex-review-custom")),
+                .child(
+                    ui::primary("Review")
+                        .on_press(custom_review)
+                        .build(k)
+                        .key("codex-review-custom"),
+                ),
         );
         card = card.child(picker);
     }
@@ -289,7 +313,11 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
         for (path, f) in findings.iter().take(8) {
             let mut line = row().gap(4.).min_w(0.);
             if f.priority.is_some() {
-                line = line.child(ui::line(f.priority_label(), XS, priority_color(f.priority, p)));
+                line = line.child(ui::line(
+                    f.priority_label(),
+                    XS,
+                    priority_color(f.priority, p),
+                ));
             }
             list = list.child(
                 line.child(ui::line(f.title.clone(), XS, p.text).shrink().min_w(0.))

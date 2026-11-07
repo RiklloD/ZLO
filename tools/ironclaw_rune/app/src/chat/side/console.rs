@@ -91,11 +91,19 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-fn pump(reader: impl Read + Send + 'static, kind: Kind, tx: mpsc::Sender<Msg>) -> std::thread::JoinHandle<()> {
+fn pump(
+    reader: impl Read + Send + 'static,
+    kind: Kind,
+    tx: mpsc::Sender<Msg>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
         let mut buf = Vec::new();
-        while reader.read_until(b'\n', &mut buf).map(|n| n > 0).unwrap_or(false) {
+        while reader
+            .read_until(b'\n', &mut buf)
+            .map(|n| n > 0)
+            .unwrap_or(false)
+        {
             let line = String::from_utf8_lossy(&buf);
             let line = strip_ansi(line.trim_end_matches('\n'));
             if tx.send(Msg::Line(kind, line)).is_err() {
@@ -236,14 +244,18 @@ fn recall(s: &mut State, up: bool) -> bool {
         (Some(i), false) => Some(i + 1),
     };
     state.recall = next;
-    let text = next.and_then(|i| state.history.get(i).cloned()).unwrap_or_default();
+    let text = next
+        .and_then(|i| state.history.get(i).cloned())
+        .unwrap_or_default();
     state.input.replace_text(text);
     true
 }
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
-    let Some(x) = side(s) else { return ui::loading(k) };
+    let Some(x) = side(s) else {
+        return ui::loading(k);
+    };
     let state = &x.console;
     let folder = x.folder.as_deref().map(short_path).unwrap_or_default();
     let running = state.running.is_some();
@@ -278,7 +290,8 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .w_full()
         .grow(1.)
         .min_h(0.)
-        .scroll(ScrollSpec { stick_bottom: true }).wheel_glide(OUT_KEY)
+        .scroll(ScrollSpec { stick_bottom: true })
+        .wheel_glide(OUT_KEY)
         .child(lines);
     let action = if running {
         ui::btn("Stop")

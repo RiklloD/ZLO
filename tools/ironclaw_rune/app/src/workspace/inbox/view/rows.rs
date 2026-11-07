@@ -6,14 +6,14 @@ use ironclaw_gpui_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus
 use rune::{Color, El, col, el, row};
 use rune_kit::{ControlSize, Kit};
 
-use crate::workspace::ui::{self, SEMIBOLD, XS, t, tw};
-use crate::workspace::inbox::{
-    Shelves, branch_tail, mark, settle, settle_blocker, short_age,
-    snooze_presets, subagents, title_of, wake_label,
-};
 use crate::design::{self, Palette, motion};
 use crate::icons;
 use crate::state::State;
+use crate::workspace::inbox::{
+    Shelves, branch_tail, mark, settle, settle_blocker, short_age, snooze_presets, subagents,
+    title_of, wake_label,
+};
+use crate::workspace::ui::{self, SEMIBOLD, XS, t, tw};
 use crate::workspace::{message_search, thread_drag};
 
 use super::selected_bg;
@@ -85,13 +85,19 @@ pub(super) fn card(
         .child(selected_bg(
             p,
             menu_open,
-            ui::ghost_icon(k, &icons::ALARM_CLOCK, "Snooze", ControlSize::Mini, move |s| {
-                let menu = &mut s.workspace.inbox.snooze_menu;
-                *menu = match menu {
-                    Some(open) if *open == snooze_id => None,
-                    _ => Some(snooze_id.clone()),
-                };
-            }),
+            ui::ghost_icon(
+                k,
+                &icons::ALARM_CLOCK,
+                "Snooze",
+                ControlSize::Mini,
+                move |s| {
+                    let menu = &mut s.workspace.inbox.snooze_menu;
+                    *menu = match menu {
+                        Some(open) if *open == snooze_id => None,
+                        _ => Some(snooze_id.clone()),
+                    };
+                },
+            ),
         ))
         .child(
             rune_kit::Button::new("Settle")
@@ -115,8 +121,17 @@ pub(super) fn card(
         meta = meta.child(draft_mark(p));
     }
     meta = meta
-        .child(profile_mark(p, &row_data.profile_id, &name, if active { 1. } else { 0. }))
-        .child(el().grow(1.0).min_w(36.).child(t(name, design::SIDEBAR_META_SIZE, p.text_muted).truncate()));
+        .child(profile_mark(
+            p,
+            &row_data.profile_id,
+            &name,
+            if active { 1. } else { 0. },
+        ))
+        .child(
+            el().grow(1.0)
+                .min_w(36.)
+                .child(t(name, design::SIDEBAR_META_SIZE, p.text_muted).truncate()),
+        );
     if let Some(b) = branch {
         meta = meta.child(branch_label(p, &b));
     }
@@ -131,7 +146,11 @@ pub(super) fn card(
     );
     let title = format!(
         "{}{}",
-        if row_data.parent_thread_id.is_some() { "↳ " } else { "" },
+        if row_data.parent_thread_id.is_some() {
+            "↳ "
+        } else {
+            ""
+        },
         title_of(row_data)
     );
     let open_id = id.clone();
@@ -157,7 +176,9 @@ pub(super) fn card(
                 crate::workspace::open_thread(s, open_id.clone());
             }
         })
-        .on_secondary_press(move |s: &mut State, at, tx| crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx))
+        .on_secondary_press(move |s: &mut State, at, tx| {
+            crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx)
+        })
         // Drop it on a chat to hand that chat this thread's transcript.
         .on_drag(move |s: &mut State, d, tx| thread_drag::drag(s, &drag_id, &drag_title, d, tx))
         .child(meta)
@@ -198,7 +219,10 @@ fn message_snippet(s: &State, row_data: &InboxRow) -> Option<El> {
     if query.is_empty() || title_of(row_data).to_lowercase().contains(&query) {
         return None;
     }
-    let hit = s.workspace.message_search.hit(&query, &row_data.thread_id)?;
+    let hit = s
+        .workspace
+        .message_search
+        .hit(&query, &row_data.thread_id)?;
     let p = &s.palette;
     let (thread_id, message_id) = (row_data.thread_id.clone(), hit.message_id.clone());
     Some(
@@ -228,17 +252,30 @@ fn snooze_menu(p: &Palette, thread_id: &str) -> El {
                 .cursor(rune::Cursor::Pointer)
                 .hover(p.hover)
                 .child(t(label, XS, p.text))
-                .on_press(move |s: &mut State| mark(s, id.clone(), InboxAction::Snooze, Some(until)))
+                .on_press(move |s: &mut State| {
+                    mark(s, id.clone(), InboxAction::Snooze, Some(until))
+                })
         })
         .collect();
     el().key(format!("snooze-{thread_id}"))
         .mx(8.)
         .mb(4.)
-        .child(ui::floating(p, col().w_full().padding(4.).children(items), 12.))
+        .child(ui::floating(
+            p,
+            col().w_full().padding(4.).children(items),
+            12.,
+        ))
 }
 
 /// Slim row for Snoozed and Settled: dimmed mark, title, wake or age.
-pub(super) fn slim(s: &State, sh: &Shelves<'_>, row_data: &InboxRow, active: bool, now: i64, k: &Kit) -> El {
+pub(super) fn slim(
+    s: &State,
+    sh: &Shelves<'_>,
+    row_data: &InboxRow,
+    active: bool,
+    now: i64,
+    k: &Kit,
+) -> El {
     let p = &s.palette;
     let id = row_data.thread_id.clone();
     let name = s
@@ -250,29 +287,40 @@ pub(super) fn slim(s: &State, sh: &Shelves<'_>, row_data: &InboxRow, active: boo
     let unread = s.workspace.inbox.unread.contains(&id);
     let label = match (snoozed, row_data.snooze_until) {
         (true, Some(at)) => wake_label(at),
-        _ => short_age(row_data.settled_at.unwrap_or(row_data.last_activity_at), now),
+        _ => short_age(
+            row_data.settled_at.unwrap_or(row_data.last_activity_at),
+            now,
+        ),
     };
     let (undo_id, delete_id, open_id, menu_id) = (id.clone(), id.clone(), id.clone(), id.clone());
-    let undo_label = if snoozed { "Wake now" } else { "Un-settle session" };
+    let undo_label = if snoozed {
+        "Wake now"
+    } else {
+        "Un-settle session"
+    };
     let mut buttons = row()
         .gap(1.)
         .center_y()
         .pin(None, Some(0.), Some(0.), Some(0.))
         .group_opacity(0., 1.)
         .child(ui::ghost_icon(
-        k,
-        if snoozed { &icons::BELL } else { &icons::UNDO_2 },
-        undo_label,
-        ControlSize::Mini,
-        move |s| {
-            let action = if snoozed {
-                InboxAction::Wake
+            k,
+            if snoozed {
+                &icons::BELL
             } else {
-                InboxAction::Unsettle
-            };
-            mark(s, undo_id.clone(), action, None)
-        },
-    ));
+                &icons::UNDO_2
+            },
+            undo_label,
+            ControlSize::Mini,
+            move |s| {
+                let action = if snoozed {
+                    InboxAction::Wake
+                } else {
+                    InboxAction::Unsettle
+                };
+                mark(s, undo_id.clone(), action, None)
+            },
+        ));
     if !snoozed {
         buttons = buttons.child(ui::ghost_icon(
             k,
@@ -298,12 +346,25 @@ pub(super) fn slim(s: &State, sh: &Shelves<'_>, row_data: &InboxRow, active: boo
         .center_y()
         .radius(design::ROW_RADIUS)
         .cursor(rune::Cursor::Pointer)
-        .fill(if active { ui::selected_wash(p) } else { Color::TRANSPARENT })
-        .hover(if active { Color::TRANSPARENT } else { ui::hover_wash(p) })
+        .fill(if active {
+            ui::selected_wash(p)
+        } else {
+            Color::TRANSPARENT
+        })
+        .hover(if active {
+            Color::TRANSPARENT
+        } else {
+            ui::hover_wash(p)
+        })
         .hover_group()
         .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
-        .on_secondary_press(move |s: &mut State, at, tx| crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx))
-        .child(el().opacity(0.4).child(profile_mark(p, &row_data.profile_id, &name, 0.)))
+        .on_secondary_press(move |s: &mut State, at, tx| {
+            crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx)
+        })
+        .child(
+            el().opacity(0.4)
+                .child(profile_mark(p, &row_data.profile_id, &name, 0.)),
+        )
         .child(
             el().grow(1.0).min_w(0.0).child(
                 tw(
@@ -342,14 +403,23 @@ pub(in crate::workspace) fn draft_mark(p: &Palette) -> El {
 
 /// The profile badge: a colored tile with the first letter. `lit` 0 draws
 /// the mark at rest, 1 at full strength on hover or open.
-pub(in crate::workspace) fn profile_mark(p: &Palette, profile_id: &str, name: &str, lit: f32) -> El {
+pub(in crate::workspace) fn profile_mark(
+    p: &Palette,
+    profile_id: &str,
+    name: &str,
+    lit: f32,
+) -> El {
     let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];
     let hash = profile_id
         .bytes()
         .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
     // Identity keeps its color at rest (T3 reversed its grayscale pass);
     // hover and selection only bring it to full strength.
-    let color = mix(p.text_muted, colors[hash as usize % colors.len()], 0.7 + 0.3 * lit);
+    let color = mix(
+        p.text_muted,
+        colors[hash as usize % colors.len()],
+        0.7 + 0.3 * lit,
+    );
     let letter = name
         .chars()
         .find(|c| c.is_alphanumeric())
@@ -377,56 +447,65 @@ pub(in crate::workspace) fn branch_label(p: &Palette, branch: &str) -> El {
         .min_w(0.0)
         .shrink()
         .child(ui::glyph(&icons::GIT_BRANCH, 12., p.text_muted))
-        .child(el().min_w(0.0).child(t(branch_tail(branch), XS, p.text_muted).truncate()))
+        .child(
+            el().min_w(0.0)
+                .child(t(branch_tail(branch), XS, p.text_muted).truncate()),
+        )
 }
 
 /// The status label: what the row is doing, or its age. The open thread
 /// shows no Done or Woke: the person is looking at it.
-pub(in crate::workspace) fn status_label(s: &State, row_data: &InboxRow, active: bool, now: i64) -> El {
+pub(in crate::workspace) fn status_label(
+    s: &State,
+    row_data: &InboxRow,
+    active: bool,
+    now: i64,
+) -> El {
     let p = &s.palette;
     let status = row_data
         .status
         .filter(|st| !(active && matches!(st, InboxStatus::Done | InboxStatus::Woke)));
     let key = format!("status-{}-{:?}", row_data.thread_id, status);
     let plain = |text: String, color: Color| t(text, XS, color);
-    let body = match status {
-        Some(InboxStatus::Working) => row()
-            .gap(4.)
-            .center_y()
-            .child(pulse_dots(p.accent))
-            .child(t(
-                match crate::run_clock::elapsed(s, &row_data.thread_id) {
-                    Some(secs) => format!("Working {}", format_elapsed(secs)),
-                    None => "Working".into(),
-                },
-                XS,
-                p.accent,
-            )),
-        // t3code's "needs you": amber, with a dot, until it is answered.
-        Some(InboxStatus::NeedsInput) => row()
-            .gap(4.)
-            .center_y()
-            .child(ui::dot(p.warning, 6.))
-            .child(t("Needs you", XS, p.warning)),
-        Some(InboxStatus::Background) => plain("Subagents".into(), p.accent),
-        Some(InboxStatus::Limited) => plain(
-            row_data
-                .limit_reset_at
-                .map(|at| format!("Limit · {}", wake_label(at)))
-                .unwrap_or_else(|| "Usage limit".into()),
-            p.warning,
-        ),
-        Some(InboxStatus::Interrupted) => plain("Interrupted".into(), p.warning),
-        Some(InboxStatus::Failed) => plain("Failed".into(), p.danger),
-        Some(InboxStatus::Stopped) => plain("Paused".into(), p.text_muted),
-        Some(InboxStatus::Woke) => plain("Woke".into(), p.accent),
-        Some(InboxStatus::Done) => row()
-            .gap(4.)
-            .center_y()
-            .child(ui::dot(p.accent, 6.))
-            .child(t(short_age(row_data.last_activity_at, now), XS, p.accent)),
-        None => plain(short_age(row_data.last_activity_at, now), p.text_faint),
-    };
+    let body =
+        match status {
+            Some(InboxStatus::Working) => row()
+                .gap(4.)
+                .center_y()
+                .child(pulse_dots(p.accent))
+                .child(t(
+                    match crate::run_clock::elapsed(s, &row_data.thread_id) {
+                        Some(secs) => format!("Working {}", format_elapsed(secs)),
+                        None => "Working".into(),
+                    },
+                    XS,
+                    p.accent,
+                )),
+            // t3code's "needs you": amber, with a dot, until it is answered.
+            Some(InboxStatus::NeedsInput) => row()
+                .gap(4.)
+                .center_y()
+                .child(ui::dot(p.warning, 6.))
+                .child(t("Needs you", XS, p.warning)),
+            Some(InboxStatus::Background) => plain("Subagents".into(), p.accent),
+            Some(InboxStatus::Limited) => plain(
+                row_data
+                    .limit_reset_at
+                    .map(|at| format!("Limit · {}", wake_label(at)))
+                    .unwrap_or_else(|| "Usage limit".into()),
+                p.warning,
+            ),
+            Some(InboxStatus::Interrupted) => plain("Interrupted".into(), p.warning),
+            Some(InboxStatus::Failed) => plain("Failed".into(), p.danger),
+            Some(InboxStatus::Stopped) => plain("Paused".into(), p.text_muted),
+            Some(InboxStatus::Woke) => plain("Woke".into(), p.accent),
+            Some(InboxStatus::Done) => row()
+                .gap(4.)
+                .center_y()
+                .child(ui::dot(p.accent, 6.))
+                .child(t(short_age(row_data.last_activity_at, now), XS, p.accent)),
+            None => plain(short_age(row_data.last_activity_at, now), p.text_faint),
+        };
     // Keyed by status: a change crossfades instead of snapping.
     el().key(key).child(body)
 }
@@ -442,7 +521,12 @@ fn pulse_dots(color: Color) -> El {
             fps: 30.0,
         })
     };
-    row().gap(2.).center_y().child(dot(0.)).child(dot(0.2)).child(dot(0.4))
+    row()
+        .gap(2.)
+        .center_y()
+        .child(dot(0.))
+        .child(dot(0.2))
+        .child(dot(0.4))
 }
 
 /// "12s", "2m 33s", "1h 04m" (GPUI `motion::format_elapsed`).

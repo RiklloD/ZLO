@@ -9,7 +9,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
-
 const EXTENSIONS: &[&str] = &[
     "pdf", "doc", "docx", "rtf", "odt", "pages", "xls", "xlsx", "csv", "tsv", "ods", "numbers",
     "ppt", "pptx", "odp", "key", "md", "markdown", "txt", "html", "htm", "json", "png", "jpg",

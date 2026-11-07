@@ -200,7 +200,9 @@ pub fn toggle(s: &mut State) {
 /// tall: a fifth of the way down (GPUI `quick.rs`), or 180 pt when the
 /// screen is unknown.
 fn top_margin(height: Option<f32>) -> f32 {
-    height.filter(|h| *h > 0.).map_or(180., |h| (h / 5.).round())
+    height
+        .filter(|h| *h > 0.)
+        .map_or(180., |h| (h / 5.).round())
 }
 
 /// A voice edit of the quick composer's field: run on the mirror now (its

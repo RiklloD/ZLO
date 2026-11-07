@@ -373,7 +373,7 @@ Each item is sized for one focused fix.
     "Remove document" (memory archive) and "New thread on this profile"
     (profiles row).
     **FIXED in 00afa97bc** for "Remove document" and "New thread on this
-    profile". "Filters" is still open: it lives in `workspace/inbox/view.rs`,
+    profile". "Filters" FIXED in the cleanup commit (`workspace/ui.rs::ghost_icon_named`); it was left open because it lives in `workspace/inbox/view.rs`,
     which was another delegate's file during this pass.
 11. Restore the draft copy "A new thread is still being created; try again."
     (`workspace/draft.rs:223`).

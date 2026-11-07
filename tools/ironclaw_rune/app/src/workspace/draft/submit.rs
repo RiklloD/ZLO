@@ -62,10 +62,17 @@ impl Submission {
 
     /// Whether `draft` is still the one sent, unedited since.
     fn is_unedited(&self, draft: &DraftState) -> bool {
-        self.origin == (Origin::Draft { generation: draft.generation })
+        self.origin
+            == (Origin::Draft {
+                generation: draft.generation,
+            })
             && draft.input.text == self.content
             && inline_files::pills(&draft.input) == self.pills
-            && draft.staged.iter().map(|f| f.key).eq(self.files.iter().map(|f| f.key))
+            && draft
+                .staged
+                .iter()
+                .map(|f| f.key)
+                .eq(self.files.iter().map(|f| f.key))
     }
 }
 
@@ -79,7 +86,9 @@ fn refusal(draft: Option<&DraftState>) -> Option<&'static str> {
     if text.is_empty() && files.is_empty() {
         return Some("There was nothing to send.");
     }
-    draft.sending.then_some("A new thread is still being created; try again.")
+    draft
+        .sending
+        .then_some("A new thread is still being created; try again.")
 }
 
 /// [`send`] with talk mode's claim already taken.
@@ -92,8 +101,12 @@ pub(super) fn send_with(s: &mut State, voice: Option<crate::voice::Submission>) 
     if let Some(why) = refusal(s.workspace.draft.as_ref()) {
         return refuse(s, why);
     }
-    let Some(draft) = s.workspace.draft.as_ref() else { return };
-    let origin = Origin::Draft { generation: draft.generation };
+    let Some(draft) = s.workspace.draft.as_ref() else {
+        return;
+    };
+    let origin = Origin::Draft {
+        generation: draft.generation,
+    };
     let submission = Submission::of(
         s,
         draft,
@@ -172,8 +185,13 @@ pub(super) fn submit(s: &mut State, sub: Submission, voice: Option<crate::voice:
 /// when the draft is empty, else the error names it, so nothing is lost and
 /// nothing typed is overwritten.
 pub(super) fn settle(s: &mut State, sub: &Submission, error: Option<String>) {
-    let Some(draft) = s.workspace.draft.as_mut() else { return };
-    let mine = sub.origin == (Origin::Draft { generation: draft.generation });
+    let Some(draft) = s.workspace.draft.as_mut() else {
+        return;
+    };
+    let mine = sub.origin
+        == (Origin::Draft {
+            generation: draft.generation,
+        });
     match error {
         None if sub.is_unedited(draft) => {
             s.workspace.draft = None;
@@ -194,7 +212,10 @@ pub(super) fn settle(s: &mut State, sub: &Submission, error: Option<String>) {
                 draft.error = Some(e);
                 record(s);
             } else {
-                draft.error = Some(format!("{e} The quick message was not sent: \u{201c}{}\u{201d}", sub.content));
+                draft.error = Some(format!(
+                    "{e} The quick message was not sent: \u{201c}{}\u{201d}",
+                    sub.content
+                ));
             }
         }
         // A draft replaced since: its own state is not this send's.
@@ -217,16 +238,33 @@ mod tests {
     }
 
     fn sent(s: &State) -> Submission {
-        let Some(d) = s.workspace.draft.as_ref() else { panic!("no draft") };
-        let origin = Origin::Draft { generation: d.generation };
-        Submission::of(s, d, d.input.text.clone(), inline_files::pills(&d.input), d.staged.clone(), origin)
+        let Some(d) = s.workspace.draft.as_ref() else {
+            panic!("no draft")
+        };
+        let origin = Origin::Draft {
+            generation: d.generation,
+        };
+        Submission::of(
+            s,
+            d,
+            d.input.text.clone(),
+            inline_files::pills(&d.input),
+            d.staged.clone(),
+            origin,
+        )
     }
 
     #[test]
     fn a_refused_send_says_why_in_gpuis_words() {
-        assert_eq!(refusal(None), Some("There is no new-thread screen to send from."));
+        assert_eq!(
+            refusal(None),
+            Some("There is no new-thread screen to send from.")
+        );
         let s = with_draft("  ");
-        assert_eq!(refusal(s.workspace.draft.as_ref()), Some("There was nothing to send."));
+        assert_eq!(
+            refusal(s.workspace.draft.as_ref()),
+            Some("There was nothing to send.")
+        );
         let mut s = with_draft("hello");
         assert_eq!(refusal(s.workspace.draft.as_ref()), None);
         if let Some(d) = s.workspace.draft.as_mut() {
@@ -275,7 +313,10 @@ mod tests {
         }
         settle(&mut s, &sub, Some("boom".into()));
         let d = s.workspace.draft.as_ref().expect("draft kept");
-        assert_eq!((d.input.text.as_str(), d.sending, d.error.as_deref()), ("hello", false, Some("boom")));
+        assert_eq!(
+            (d.input.text.as_str(), d.sending, d.error.as_deref()),
+            ("hello", false, Some("boom"))
+        );
     }
 
     #[test]
@@ -295,13 +336,20 @@ mod tests {
         settle(&mut s, &quick, Some("boom".into()));
         let d = s.workspace.draft.as_ref().expect("draft kept");
         assert_eq!(d.input.text, "my unsent draft");
-        assert!(d.error.as_deref().is_some_and(|e| e.contains("\u{201c}q\u{201d}")));
+        assert!(
+            d.error
+                .as_deref()
+                .is_some_and(|e| e.contains("\u{201c}q\u{201d}"))
+        );
 
         // An empty draft takes a failed quick message back.
         let mut s = with_draft("");
         let d = s.workspace.draft.as_ref().expect("draft");
         let quick = Submission::of(&s, d, "q".into(), Vec::new(), Vec::new(), Origin::Quick);
         settle(&mut s, &quick, Some("boom".into()));
-        assert_eq!(s.workspace.draft.as_ref().map(|d| d.input.text.as_str()), Some("q"));
+        assert_eq!(
+            s.workspace.draft.as_ref().map(|d| d.input.text.as_str()),
+            Some("q")
+        );
     }
 }

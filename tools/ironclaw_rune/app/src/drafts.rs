@@ -293,8 +293,8 @@ fn rekey(draft: Draft) -> Draft {
         text.push_str(&old[last..range.start]);
         last = range.end;
         // A mention chip names its target, not a staged file: it keeps its id.
-        let mention = ironclaw_gpui_client::mentions::token_mention(&token.id)
-            .map(|_| token.id.clone());
+        let mention =
+            ironclaw_gpui_client::mentions::token_mention(&token.id).map(|_| token.id.clone());
         if let Some(id) = keys.get(&token.id).cloned().or(mention) {
             let start = text.len();
             text.push_str(&token.text);
@@ -361,7 +361,11 @@ fn save_with(s: &mut State, writer: &crate::persist::Writer, now: bool) {
     if let Some(dir) = dir {
         for key in store.dirty.drain() {
             let file = file_for(&dir, &key);
-            match store.drafts.get(&key).map(|d| serde_json::to_vec(&to_saved(&key, d))) {
+            match store
+                .drafts
+                .get(&key)
+                .map(|d| serde_json::to_vec(&to_saved(&key, d)))
+            {
                 Some(Ok(json)) => writer.write(file, json),
                 Some(Err(e)) => tracing::warn!("could not encode a draft: {e}"),
                 None => writer.remove(file),
@@ -388,14 +392,12 @@ mod tests {
         };
         let text = "see [gone] and @x end".to_string();
         let draft = Draft {
-            tokens: vec![
-                DraftToken {
-                    range: 4..10,
-                    id: "7".into(),
-                    text: "[gone]".into(),
-                    label: "gone.txt".into(),
-                },
-            ],
+            tokens: vec![DraftToken {
+                range: 4..10,
+                id: "7".into(),
+                text: "[gone]".into(),
+                label: "gone.txt".into(),
+            }],
             files: vec![gone],
             profile: Some("p".into()),
             text,
@@ -416,17 +418,24 @@ mod tests {
         // Many edits each saved, then the send clears the draft; the quit
         // save waits for all of them.
         for i in 0..50 {
-            s.workspace.drafts.drafts.insert("t1".into(), Draft::text(format!("draft {i}")));
+            s.workspace
+                .drafts
+                .drafts
+                .insert("t1".into(), Draft::text(format!("draft {i}")));
             s.workspace.drafts.dirty.insert("t1".into());
             save_with(&mut s, &writer, false);
         }
         s.workspace.drafts.drafts.remove("t1");
         s.workspace.drafts.dirty.insert("t1".into());
-        s.workspace.drafts.drafts.insert("t2".into(), Draft::text("kept"));
+        s.workspace
+            .drafts
+            .drafts
+            .insert("t2".into(), Draft::text("kept"));
         s.workspace.drafts.dirty.insert("t2".into());
         save_with(&mut s, &writer, true);
         assert!(!file_for(&dir, "t1").exists(), "the sent draft came back");
-        let kept: Saved = serde_json::from_slice(&std::fs::read(file_for(&dir, "t2")).unwrap()).unwrap();
+        let kept: Saved =
+            serde_json::from_slice(&std::fs::read(file_for(&dir, "t2")).unwrap()).unwrap();
         assert_eq!(kept.text, "kept");
         let _ = std::fs::remove_dir_all(&dir);
     }

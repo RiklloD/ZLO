@@ -10,7 +10,12 @@ use crate::state::State;
 
 /// The right-click menu of an inbox row (a native menu). Every mark goes
 /// through the same calls as the hover buttons; "unread" is the local set.
-pub(in crate::workspace) fn open_row_menu(s: &State, thread_id: &str, at: rune::PointerPress, tx: &mut Tx) {
+pub(in crate::workspace) fn open_row_menu(
+    s: &State,
+    thread_id: &str,
+    at: rune::PointerPress,
+    tx: &mut Tx,
+) {
     let Some(row) = s.workspace.inbox.row(thread_id) else {
         return;
     };
@@ -40,7 +45,11 @@ pub(in crate::workspace) fn open_row_menu(s: &State, thread_id: &str, at: rune::
     let menu = menu
         .item(PopupItem::new(
             "unread",
-            if unread { "Mark as read" } else { "Mark as unread" },
+            if unread {
+                "Mark as read"
+            } else {
+                "Mark as unread"
+            },
         ))
         .separator()
         .item(PopupItem::new("copy-title", "Copy title"))

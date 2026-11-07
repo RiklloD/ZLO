@@ -10,7 +10,8 @@ use std::collections::HashSet;
 use chrono::Utc;
 use ironclaw_gpui_client::AutomationAction;
 use ironclaw_gpui_client::product_wire::{
-    RebornAutomationInfo, RebornAutomationRecentRunStatus, RebornAutomationSource, RebornAutomationState,
+    RebornAutomationInfo, RebornAutomationRecentRunStatus, RebornAutomationSource,
+    RebornAutomationState,
 };
 use ironclaw_gpui_client::schedules::{LastOutcome, ScheduleInfo};
 use rune::{El, col, icon, row};
@@ -154,7 +155,10 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                 (true, None) if sch.is_webhook() => "On each request".to_string(),
                 (true, None) => "Scheduled".to_string(),
             };
-            let button = |key: &str, label: &'static str, glyph: &'static rune::Icon, enabled: Option<bool>| {
+            let button = |key: &str,
+                          label: &'static str,
+                          glyph: &'static rune::Icon,
+                          enabled: Option<bool>| {
                 let id = id.clone();
                 ui::ibtn(glyph, label)
                     .disabled(busy)
@@ -162,8 +166,13 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                     .build(k)
                     .key(format!("schedule-{key}-{}", sch.id))
             };
-            let last = sch.last_run_at.and_then(chrono::DateTime::<Utc>::from_timestamp_millis);
-            let thread = sch.last_run_thread_id.clone().unwrap_or_else(|| sch.thread_id.clone());
+            let last = sch
+                .last_run_at
+                .and_then(chrono::DateTime::<Utc>::from_timestamp_millis);
+            let thread = sch
+                .last_run_thread_id
+                .clone()
+                .unwrap_or_else(|| sch.thread_id.clone());
             let failed = matches!(sch.last_outcome(), LastOutcome::Failed(_));
             let mut card = col()
                 .key(format!("schedule-{id}"))
@@ -178,8 +187,19 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                         .gap(8.)
                         .items_center()
                         .child(
-                            icon(if sch.is_webhook() { &icons::GLOBE } else { &icons::CALENDAR }, 12.)
-                                .color(if sch.enabled { p.text_muted } else { p.text_faint }),
+                            icon(
+                                if sch.is_webhook() {
+                                    &icons::GLOBE
+                                } else {
+                                    &icons::CALENDAR
+                                },
+                                12.,
+                            )
+                            .color(if sch.enabled {
+                                p.text_muted
+                            } else {
+                                p.text_faint
+                            }),
                         )
                         .child(ui::line(sch.title.clone(), SM, p.text).grow(1.).min_w(0.))
                         .child(button("run", "Run now", &icons::PLAY, None))
@@ -202,7 +222,11 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                         .child(ui::line(
                             format!(
                                 "{} {}",
-                                if failed { "Last attempt failed" } else { "Last queued" },
+                                if failed {
+                                    "Last attempt failed"
+                                } else {
+                                    "Last queued"
+                                },
                                 jobs::ago(last)
                             ),
                             XS,
@@ -210,7 +234,9 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                         ))
                         .child(icon(&icons::ARROW_RIGHT, 12.).color(p.text_muted))
                         .cursor(rune::Cursor::Pointer)
-                        .on_press(move |s: &mut State| crate::workspace::open_thread(s, thread.clone())),
+                        .on_press(move |s: &mut State| {
+                            crate::workspace::open_thread(s, thread.clone())
+                        }),
                 );
             }
             card
@@ -219,7 +245,9 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
 }
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
-    let Some(x) = side(s) else { return ui::loading(k) };
+    let Some(x) = side(s) else {
+        return ui::loading(k);
+    };
     let state = &x.routines;
     let list = match &state.list {
         None => return ui::loading(k),
@@ -229,15 +257,18 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let schedule_rows = schedule_rows(s, k, state);
     let mut out = col().w_full().child(
-        ui::heading(s, format!("Routines · {}", list.len() + schedule_rows.len()))
-            .child(ui::grow())
-            .child(
-                ui::ibtn(&icons::REFRESH_CW, "Refresh")
-                    .label("Refresh routines")
-                    .on_press(load)
-                    .build(k)
-                    .key("routines-refresh"),
-            ),
+        ui::heading(
+            s,
+            format!("Routines · {}", list.len() + schedule_rows.len()),
+        )
+        .child(ui::grow())
+        .child(
+            ui::ibtn(&icons::REFRESH_CW, "Refresh")
+                .label("Refresh routines")
+                .on_press(load)
+                .build(k)
+                .key("routines-refresh"),
+        ),
     );
     if state.scheduler_off {
         out = out.child(ui::error_line(
@@ -256,7 +287,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     for info in list {
         let id = info.automation_id.clone();
         let busy = state.busy.contains(&id);
-        let paused = matches!(info.state, RebornAutomationState::Paused | RebornAutomationState::Disabled);
+        let paused = matches!(
+            info.state,
+            RebornAutomationState::Paused | RebornAutomationState::Disabled
+        );
         let finished = info.state == RebornAutomationState::Completed;
         let next = info.next_run_at.filter(|_| !paused && !finished).map(until);
         let last = info.recent_runs.first().cloned();
@@ -271,7 +305,8 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         } else if finished {
             "Done".to_string()
         } else {
-            next.map(|n| format!("Next {n}")).unwrap_or_else(|| "Scheduled".into())
+            next.map(|n| format!("Next {n}"))
+                .unwrap_or_else(|| "Scheduled".into())
         };
         let action = |label: &'static str, glyph: &'static rune::Icon, act: AutomationAction| {
             let id = id.clone();
@@ -281,11 +316,18 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .build(k)
                 .key(format!("routine-{label}-{}", info.automation_id))
         };
-        let run_thread = last.as_ref().and_then(|r| r.thread_id.as_ref()).map(|t| t.to_string());
+        let run_thread = last
+            .as_ref()
+            .and_then(|r| r.thread_id.as_ref())
+            .map(|t| t.to_string());
         let mut head = row()
             .gap(8.)
             .items_center()
-            .child(icon(&icons::CALENDAR, 12.).color(if paused { p.text_faint } else { p.text_muted }))
+            .child(icon(&icons::CALENDAR, 12.).color(if paused {
+                p.text_faint
+            } else {
+                p.text_muted
+            }))
             .child(ui::line(info.name.clone(), SM, p.text).grow(1.).min_w(0.));
         if !finished {
             head = head
@@ -305,7 +347,14 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .radius(8.)
             .hover(p.hover)
             .child(head)
-            .child(ui::line(format!("{status} · {}", schedule(&info.source)), XS, p.text_faint).pl(22.));
+            .child(
+                ui::line(
+                    format!("{status} · {}", schedule(&info.source)),
+                    XS,
+                    p.text_faint,
+                )
+                .pl(22.),
+            );
         if let Some(last) = last {
             let when = jobs::ago(last.submitted_at);
             let label = match last.status {
@@ -324,7 +373,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 line = line
                     .cursor(rune::Cursor::Pointer)
                     .child(icon(&icons::ARROW_RIGHT, 12.).color(p.text_muted))
-                    .on_press(move |s: &mut State| crate::workspace::open_thread(s, thread.clone()));
+                    .on_press(move |s: &mut State| {
+                        crate::workspace::open_thread(s, thread.clone())
+                    });
             }
             card = card.child(line);
         }
@@ -334,7 +385,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
 }
 
 /// Fixture lists for scenes.
-pub(super) fn fixture(x: &mut super::SideState, schedules: Vec<ScheduleInfo>, list: Vec<RebornAutomationInfo>) {
+pub(super) fn fixture(
+    x: &mut super::SideState,
+    schedules: Vec<ScheduleInfo>,
+    list: Vec<RebornAutomationInfo>,
+) {
     x.routines.schedules = schedules;
     x.routines.list = Some(Ok(list));
 }

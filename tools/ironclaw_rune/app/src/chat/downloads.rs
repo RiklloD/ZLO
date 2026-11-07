@@ -73,7 +73,11 @@ pub(crate) fn save(dir: &Path, name: &OsString, bytes: &[u8]) -> std::io::Result
 }
 
 /// [`save`] off the network runtime's worker threads.
-pub(crate) async fn save_async(dir: PathBuf, name: OsString, bytes: Vec<u8>) -> std::io::Result<PathBuf> {
+pub(crate) async fn save_async(
+    dir: PathBuf,
+    name: OsString,
+    bytes: Vec<u8>,
+) -> std::io::Result<PathBuf> {
     tokio::task::spawn_blocking(move || save(&dir, &name, &bytes))
         .await
         .map_err(std::io::Error::other)?

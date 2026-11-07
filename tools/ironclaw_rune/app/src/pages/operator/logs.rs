@@ -2,9 +2,9 @@
 //! newest first, with level and target filters and paging to older lines.
 //! GPUI `pages/operator/logs.rs`.
 
-use crate::pages::common::{empty_state, error_line, loading};
 use crate::pages::common::controls::{Look, Size, button_sized, input, muted, rule, spinner};
-use crate::pages::common::ts::{MONO_XS};
+use crate::pages::common::ts::MONO_XS;
+use crate::pages::common::{empty_state, error_line, loading};
 use ironclaw_gpui_client::product_wire::{RebornLogEntry, RebornLogLevel, RebornOperatorLogsQuery};
 use rune::{Color, El, TextEdit, col, row, text};
 use rune_kit::Kit;

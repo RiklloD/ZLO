@@ -303,14 +303,21 @@ mod mac {
     /// `observe_window_bounds`). The observers live as long as the app.
     pub(super) fn observe(h: raw_window_handle::WindowHandle<'_>) {
         let Some(window) = ns_window(h) else { return };
-        let Some(center_class) = AnyClass::get(c"NSNotificationCenter") else { return };
-        let Some(string) = AnyClass::get(c"NSString") else { return };
+        let Some(center_class) = AnyClass::get(c"NSNotificationCenter") else {
+            return;
+        };
+        let Some(string) = AnyClass::get(c"NSString") else {
+            return;
+        };
         unsafe {
             let center: *mut AnyObject = msg_send![center_class, defaultCenter];
             if center.is_null() {
                 return;
             }
-            for name in [c"NSWindowDidMoveNotification", c"NSWindowDidResizeNotification"] {
+            for name in [
+                c"NSWindowDidMoveNotification",
+                c"NSWindowDidResizeNotification",
+            ] {
                 let name: *mut AnyObject = msg_send![string, stringWithUTF8String: name.as_ptr()];
                 if name.is_null() {
                     continue;
@@ -346,7 +353,12 @@ mod tests {
     use super::*;
 
     fn frame(x: f32) -> Frame {
-        Frame { x, y: 0., w: 800., h: 600. }
+        Frame {
+            x,
+            y: 0.,
+            w: 800.,
+            h: 600.,
+        }
     }
 
     #[test]
@@ -355,7 +367,9 @@ mod tests {
         let written = Arc::new(Mutex::new(Vec::new()));
         let sink = written.clone();
         let worker = std::thread::spawn(move || {
-            debounce(rx, Duration::from_millis(80), move |f| sink.lock().unwrap().push(f))
+            debounce(rx, Duration::from_millis(80), move |f| {
+                sink.lock().unwrap().push(f)
+            })
         });
         // A drag: many frames in quick succession, then a rest.
         for x in 0..20 {

@@ -58,8 +58,7 @@ pub struct WallpaperState {
     painted_light: Option<bool>,
 }
 
-impl WallpaperState {
-}
+impl WallpaperState {}
 
 /// Whether the wallpaper shows at all.
 pub fn enabled(prefs: &Prefs) -> bool {
@@ -111,9 +110,8 @@ pub fn layer_rounded(s: &State, area: &str, radius: f32) -> Option<El> {
     }
     if let Some(image) = &w.image {
         layer = layer.child(
-            picture(image, w.serial).transition(
-                Transition::opacity().springs(SpringPair::new(CROSSFADE, CROSSFADE)),
-            ),
+            picture(image, w.serial)
+                .transition(Transition::opacity().springs(SpringPair::new(CROSSFADE, CROSSFADE))),
         );
     }
     Some(layer)
@@ -260,11 +258,15 @@ impl Job {
 fn paint_now(s: &mut State, generation: u64) {
     let Some(job) = Job::of(s) else { return };
     let light = job.light;
-    jobs::blocking(s, move || job.run(), move |s, (w, h, rgba), _tx| {
-        if s.look.wallpaper.generation == generation {
-            land(s, w, h, rgba, light);
-        }
-    });
+    jobs::blocking(
+        s,
+        move || job.run(),
+        move |s, (w, h, rgba), _tx| {
+            if s.look.wallpaper.generation == generation {
+                land(s, w, h, rgba, light);
+            }
+        },
+    );
 }
 
 fn land(s: &mut State, w: u32, h: u32, rgba: Vec<u8>, light: bool) {
@@ -366,7 +368,9 @@ mod tests {
     #[test]
     fn a_scene_job_paints_the_requested_size() {
         let job = Job {
-            choice: Wallpaper::Scene { name: "night".into() },
+            choice: Wallpaper::Scene {
+                name: "night".into(),
+            },
             effect: "dither".into(),
             contain: false,
             light: false,

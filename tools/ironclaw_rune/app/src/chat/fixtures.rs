@@ -10,7 +10,9 @@ use ironclaw_gpui_client::commands::MenuSources;
 use ironclaw_gpui_client::contract::ProductGateKind;
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::transcript::{AttachmentChip, GateState, QuestionState, Row, ToolStatus};
-use ironclaw_host_api::agent_plan::{QuestionField, QuestionFieldKind, QuestionForm, QuestionOption};
+use ironclaw_host_api::agent_plan::{
+    QuestionField, QuestionFieldKind, QuestionForm, QuestionOption,
+};
 
 use super::{ChatState, flow, question_form};
 use crate::state::{Conn, Page, State};
@@ -49,8 +51,12 @@ fn shell_with(s: &mut State, rows: Vec<Row>, live: bool) {
     s.fixture = true;
     s.conn = Conn::Ready;
     s.page = Page::Chat;
-    s.workspace.titles.remember(THREAD, "Port the frontend to Rune");
-    s.workspace.titles.remember("t2", "Fix the flaky integration test");
+    s.workspace
+        .titles
+        .remember(THREAD, "Port the frontend to Rune");
+    s.workspace
+        .titles
+        .remember("t2", "Fix the flaky integration test");
     let mut chat = ChatState::new(THREAD.into());
     chat.channel = Some("gpui".into());
     fill(&mut chat, rows, live);
@@ -60,14 +66,18 @@ fn shell_with(s: &mut State, rows: Vec<Row>, live: bool) {
 /// Fold the open chat's rows again after a scene filled the extras (area
 /// H), so the transcript gains its tail row as a live chat would.
 pub fn refold(s: &mut State) {
-    let Some(id) = s.chat.as_ref().map(|c| c.thread_id.clone()) else { return };
+    let Some(id) = s.chat.as_ref().map(|c| c.thread_id.clone()) else {
+        return;
+    };
     refold_chat(s, &id);
 }
 
 /// [`refold`] for any chat, the open one or a side chat.
 pub fn refold_chat(s: &mut State, id: &str) {
     let has_tail = super::orchestration::has_tail(s, id);
-    let Some(c) = super::chat_for(s, id) else { return };
+    let Some(c) = super::chat_for(s, id) else {
+        return;
+    };
     let live = c.fixture_run.is_some();
     c.has_tail = has_tail;
     c.items = Rc::new(flow::fold(&c.rows, live, false, has_tail, false));
@@ -88,14 +98,33 @@ pub fn fill(chat: &mut ChatState, rows: Vec<Row>, live: bool) {
 
 fn history() -> Vec<Row> {
     vec![
-        user("msg:1", "Port the chat transcript to Rune and keep the GPUI look."),
+        user(
+            "msg:1",
+            "Port the chat transcript to Rune and keep the GPUI look.",
+        ),
         Row::Thinking {
             key: "think:1".into(),
-            text: "The transcript folds activity into one summary line with a tree under it.".into(),
+            text: "The transcript folds activity into one summary line with a tree under it."
+                .into(),
         },
-        tool("tool:1", "ironclaw.shell", "rg -n \"fn render_row\" tools/ironclaw_gpui", ToolStatus::Completed),
-        tool("tool:2", "ironclaw.read_file", "tools/ironclaw_gpui/app/src/chat.rs", ToolStatus::Completed),
-        tool("tool:3", "mcp.yab-browser.open", "https://github.com/anomalyco/rune", ToolStatus::Failed),
+        tool(
+            "tool:1",
+            "ironclaw.shell",
+            "rg -n \"fn render_row\" tools/ironclaw_gpui",
+            ToolStatus::Completed,
+        ),
+        tool(
+            "tool:2",
+            "ironclaw.read_file",
+            "tools/ironclaw_gpui/app/src/chat.rs",
+            ToolStatus::Completed,
+        ),
+        tool(
+            "tool:3",
+            "mcp.yab-browser.open",
+            "https://github.com/anomalyco/rune",
+            ToolStatus::Failed,
+        ),
         reply(
             "msg:2",
             "Done. The transcript is a **virtualized growth stack** in a scroll viewport that follows its end:\n\n\
@@ -166,7 +195,11 @@ pub fn running(s: &mut State) {
         key: "think:9".into(),
         text: "Two tests fail in pace.rs.".into(),
     });
-    rows.push(reply("text:live", "Running the suite now. So far **two failures** in", true));
+    rows.push(reply(
+        "text:live",
+        "Running the suite now. So far **two failures** in",
+        true,
+    ));
     shell_with(s, rows, true);
     if let Some(c) = s.chat.as_mut() {
         c.composer.replace_text("also check clippy");
@@ -292,7 +325,8 @@ pub fn menu(s: &mut State) {
 /// tests call the reply handlers themselves).
 #[cfg(test)]
 pub(crate) fn test_state() -> State {
-    let spec = rune::AppSpec::<State>::new("test", (100., 100.), crate::placeholder_init, crate::view);
+    let spec =
+        rune::AppSpec::<State>::new("test", (100., 100.), crate::placeholder_init, crate::view);
     let handle = rune::App::new(spec).handle();
     let mut s = State::new(crate::jobs::Rt::new(handle));
     s.prefs = Default::default();

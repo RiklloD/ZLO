@@ -8,7 +8,7 @@
 
 use rune::{Chord, Key, KeyEvent, MenuItem, Shortcut, Tx};
 
-use super::{command, draft, inbox, in_settings};
+use super::{command, draft, in_settings, inbox};
 use crate::state::{Conn, State};
 
 /// One View menu entry: title, chord, action.
@@ -17,13 +17,23 @@ type Binding = (&'static str, &'static str, fn(&mut State, &mut Tx));
 const BINDINGS: &[Binding] = &[
     ("New Thread", "cmd+shift+o", |s, _| new_thread(s)),
     ("Toggle Sidebar", "cmd+b", |s, _| super::toggle_sidebar(s)),
-    ("Toggle Right Pane", "alt+cmd+b", |s, _| toggle_right_pane(s)),
-    ("Toggle Changes and Files", "cmd+e", |s, _| toggle_work_panel(s)),
+    ("Toggle Right Pane", "alt+cmd+b", |s, _| {
+        toggle_right_pane(s)
+    }),
+    ("Toggle Changes and Files", "cmd+e", |s, _| {
+        toggle_work_panel(s)
+    }),
     ("New Side Chat", "alt+cmd+n", |s, _| new_side_chat(s)),
     ("Command Menu…", "cmd+k", |s, _| open_command_menu(s)),
-    ("Model Picker…", "cmd+shift+m", |s, _| crate::chat::model_picker::open(s)),
-    ("Toggle Status Bar", "cmd+shift+s", |s, _| super::toggle_status_bar(s)),
-    ("Toggle Light and Dark", "cmd+shift+y", |s, _| super::toggle_scheme(s)),
+    ("Model Picker…", "cmd+shift+m", |s, _| {
+        crate::chat::model_picker::open(s)
+    }),
+    ("Toggle Status Bar", "cmd+shift+s", |s, _| {
+        super::toggle_status_bar(s)
+    }),
+    ("Toggle Light and Dark", "cmd+shift+y", |s, _| {
+        super::toggle_scheme(s)
+    }),
 ];
 
 /// The app menu's "Quit ZLO" (GPUI `main.rs`) and its chord.
@@ -41,11 +51,9 @@ pub fn menu_items() -> Vec<MenuItem<State>> {
     };
     let quit = with_chord(MenuItem::new(QUIT.0, quit).id("quit"), QUIT.1);
     std::iter::once(quit)
-        .chain(
-            BINDINGS
-                .iter()
-                .map(|(title, chord, action)| with_chord(MenuItem::new(*title, *action).menu("View"), chord)),
-        )
+        .chain(BINDINGS.iter().map(|(title, chord, action)| {
+            with_chord(MenuItem::new(*title, *action).menu("View"), chord)
+        }))
         .collect()
 }
 

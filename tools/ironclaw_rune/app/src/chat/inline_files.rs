@@ -190,7 +190,10 @@ pub fn set_content(composer: &mut TextEdit, text: &str, pills: &[(Range<usize>, 
 /// back into its pill, for edit and resend.
 pub fn restored(text: &str) -> (String, Vec<(Range<usize>, String)>) {
     let (plain, chips) = mentions::restore(text);
-    let pills = chips.into_iter().map(|chip| (chip.range, chip.id)).collect();
+    let pills = chips
+        .into_iter()
+        .map(|chip| (chip.range, chip.id))
+        .collect();
     (plain, pills)
 }
 
@@ -203,7 +206,13 @@ fn printable(text: &str) -> String {
 
 /// The one-line card that sits inside a sent message's text: icon tile and
 /// name, the same look as the full attachment card, at the height of a line.
-pub fn inline_card(s: &State, key: String, glyph: Option<&'static Icon>, title: &str, line_height: f32) -> El {
+pub fn inline_card(
+    s: &State,
+    key: String,
+    glyph: Option<&'static Icon>,
+    title: &str,
+    line_height: f32,
+) -> El {
     let p = &s.palette;
     let tile = (line_height - 6.).max(12.);
     row()
@@ -255,7 +264,10 @@ mod tests {
         edit.insert_pill(b.key.to_string(), "b.txt");
         let staged = vec![a.clone(), b.clone()];
         let (text, files) = outgoing(&edit, &staged);
-        assert_eq!(text, format!("see {} and {}", attachment_anchor(0), attachment_anchor(1)));
+        assert_eq!(
+            text,
+            format!("see {} and {}", attachment_anchor(0), attachment_anchor(1))
+        );
         assert_eq!(files.len(), 2);
 
         let mut edit = TextEdit::new("see ");

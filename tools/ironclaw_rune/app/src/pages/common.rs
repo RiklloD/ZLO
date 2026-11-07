@@ -14,8 +14,8 @@ use rune_kit::{
     Switch,
 };
 
-use crate::design::smooth_scroll::WheelGlide;
 use crate::design::Palette;
+use crate::design::smooth_scroll::WheelGlide;
 use crate::state::State;
 
 /// Zeron's settings column (`widgets::page_column`).
@@ -125,7 +125,8 @@ pub fn page_body(key: &str, content: El) -> El {
         .min_h(0.)
         .scroll(ScrollSpec {
             stick_bottom: false,
-        }).wheel_glide(key)
+        })
+        .wheel_glide(key)
         .child(
             row()
                 .w_full()

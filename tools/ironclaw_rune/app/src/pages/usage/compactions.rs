@@ -3,9 +3,9 @@
 //! shrank and what it cost, so the setting can be judged against the cache
 //! savings above it.
 
+use crate::chat::model_picker::pretty_model;
 use crate::pages::common::controls::{rule, styled};
 use crate::pages::common::ts::{SM, SM_MEDIUM, XS};
-use crate::chat::model_picker::pretty_model;
 use ironclaw_gpui_client::usage::UsageHistory;
 use rune::{El, col, el, row};
 
@@ -31,7 +31,11 @@ pub fn view(p: &Palette, history: &UsageHistory) -> Option<El> {
         if runs.len() == 1 { "run" } else { "runs" },
         format_usd(total),
         format_tokens(saved),
-        if failed > 0 { format!(" · {failed} failed") } else { String::new() },
+        if failed > 0 {
+            format!(" · {failed} failed")
+        } else {
+            String::new()
+        },
     );
     let right = |w: f32, t: El| row().w(w).justify_end().child(t);
     let mut table = col()
@@ -54,7 +58,9 @@ pub fn view(p: &Palette, history: &UsageHistory) -> Option<El> {
     for (ix, run) in runs.iter().enumerate() {
         let when = chrono::DateTime::from_timestamp_millis(run.at).map_or("–".into(), jobs::ago);
         let context = match (run.tokens_before, run.tokens_after) {
-            (Some(before), Some(after)) => format!("{} → {}", format_tokens(before), format_tokens(after)),
+            (Some(before), Some(after)) => {
+                format!("{} → {}", format_tokens(before), format_tokens(after))
+            }
             (Some(before), None) => format!("{} → ?", format_tokens(before)),
             _ => "–".into(),
         };
@@ -66,7 +72,11 @@ pub fn view(p: &Palette, history: &UsageHistory) -> Option<El> {
             .gap(8.0)
             .center_y()
             .child(styled(model, SM, p.text).truncate().shrink())
-            .child(styled(format!("{} · {thread}", run.provider), XS, p.text_faint));
+            .child(styled(
+                format!("{} · {thread}", run.provider),
+                XS,
+                p.text_faint,
+            ));
         if !run.ok {
             middle = middle.child(styled(
                 run.error.clone().unwrap_or_else(|| "failed".into()),
@@ -74,19 +84,21 @@ pub fn view(p: &Palette, history: &UsageHistory) -> Option<El> {
                 p.danger,
             ));
         }
-        table = table.child(rule(p).key(format!("compaction-rule-{ix}"))).child(
-            row()
-                .key(format!("usage-compaction-{ix}"))
-                .w_full()
-                .px(12.0)
-                .py(8.0)
-                .gap(12.0)
-                .center_y()
-                .child(el().w(90.0).child(styled(when, SM, p.text_muted)))
-                .child(middle)
-                .child(right(140.0, styled(context, SM, p.text)))
-                .child(right(70.0, styled(format_usd(run.cost_usd), SM, p.text))),
-        );
+        table = table
+            .child(rule(p).key(format!("compaction-rule-{ix}")))
+            .child(
+                row()
+                    .key(format!("usage-compaction-{ix}"))
+                    .w_full()
+                    .px(12.0)
+                    .py(8.0)
+                    .gap(12.0)
+                    .center_y()
+                    .child(el().w(90.0).child(styled(when, SM, p.text_muted)))
+                    .child(middle)
+                    .child(right(140.0, styled(context, SM, p.text)))
+                    .child(right(70.0, styled(format_usd(run.cost_usd), SM, p.text))),
+            );
     }
     Some(
         col()

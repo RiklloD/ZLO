@@ -43,7 +43,11 @@ pub fn error_line(s: &State, content: impl Into<String>) -> El {
 }
 
 pub fn loading(k: &Kit) -> El {
-    row().w_full().justify_center().py(24.).child(Spinner::new().size(16.).build(k))
+    row()
+        .w_full()
+        .justify_center()
+        .py(24.)
+        .child(Spinner::new().size(16.).build(k))
 }
 
 /// A small group heading inside a tab; add trailing children to it.
@@ -67,7 +71,10 @@ pub fn scroll(key: impl Into<String>, content: El) -> El {
         .w_full()
         .grow(1.)
         .min_h(0.)
-        .scroll(ScrollSpec { stick_bottom: false }).wheel_glide(key)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .wheel_glide(key)
         .child(col().w_full().pb(12.).child(content))
 }
 
@@ -104,13 +111,21 @@ pub fn primary(label: impl Into<String>) -> Button {
 
 /// Busy buttons show the kit's loading look and take no presses.
 pub fn busy(b: Button, loading: bool) -> Button {
-    if loading { b.variant(ButtonVariant::Loading).disabled(true) } else { b }
+    if loading {
+        b.variant(ButtonVariant::Loading).disabled(true)
+    } else {
+        b
+    }
 }
 
 /// gpui-kit's `.selected(true)` on a ghost button: the active fill behind it.
 pub fn selected(s: &State, button: El, on: bool) -> El {
     el().radius(crate::design::CONTROL_RADIUS)
-        .fill(if on { s.palette.active } else { Color::TRANSPARENT })
+        .fill(if on {
+            s.palette.active
+        } else {
+            Color::TRANSPARENT
+        })
         .child(button)
 }
 

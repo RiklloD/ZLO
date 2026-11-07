@@ -33,7 +33,10 @@ enum Op {
     Remove,
     /// Re-read the file and overwrite only these top-level keys of its JSON
     /// object; `full` is written when the file is missing or unreadable.
-    Patch { changes: Map<String, Value>, full: Value },
+    Patch {
+        changes: Map<String, Value>,
+        full: Value,
+    },
 }
 
 enum Msg {
@@ -130,11 +133,16 @@ fn queue(pending: &mut Vec<(PathBuf, Op)>, path: PathBuf, op: Op) {
     let op = match (old, op) {
         // Two patches: the later keys win, the rest of the earlier stay.
         (
-            Op::Patch { changes: mut keys, .. },
+            Op::Patch {
+                changes: mut keys, ..
+            },
             Op::Patch { changes, full },
         ) => {
             keys.extend(changes);
-            Op::Patch { changes: keys, full }
+            Op::Patch {
+                changes: keys,
+                full,
+            }
         }
         (_, op) => op,
     };
@@ -297,7 +305,11 @@ mod tests {
         std::fs::write(&f, r#"{"theme":"gpui","width":1}"#).unwrap();
         let mut changes = Map::new();
         changes.insert("width".into(), Value::from(2));
-        w.patch(f.clone(), changes, serde_json::json!({"theme":"rune","width":2}));
+        w.patch(
+            f.clone(),
+            changes,
+            serde_json::json!({"theme":"rune","width":2}),
+        );
         assert!(w.flush(Duration::from_secs(5)));
         let back: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
         assert_eq!(back, serde_json::json!({"theme":"gpui","width":2}));
@@ -331,10 +343,26 @@ mod tests {
             m.insert(k.into(), Value::from(1));
             m
         };
-        queue(&mut pending, p.clone(), Op::Patch { changes: one("a"), full: Value::Null });
-        queue(&mut pending, p.clone(), Op::Patch { changes: one("b"), full: Value::Null });
+        queue(
+            &mut pending,
+            p.clone(),
+            Op::Patch {
+                changes: one("a"),
+                full: Value::Null,
+            },
+        );
+        queue(
+            &mut pending,
+            p.clone(),
+            Op::Patch {
+                changes: one("b"),
+                full: Value::Null,
+            },
+        );
         assert_eq!(pending.len(), 1);
-        let Op::Patch { changes, .. } = &pending[0].1 else { panic!() };
+        let Op::Patch { changes, .. } = &pending[0].1 else {
+            panic!()
+        };
         assert!(changes.contains_key("a") && changes.contains_key("b"));
     }
 }

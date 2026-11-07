@@ -188,7 +188,11 @@ impl Logos {
     /// The logo's image at `size` points in `color` (ignored for rasters).
     fn image(&self, logo: &Logo, color: Color, size: f32) -> Option<Image> {
         let cache = self.cache.as_ref()?;
-        let hex = if logo.raster { String::new() } else { color.hex() };
+        let hex = if logo.raster {
+            String::new()
+        } else {
+            color.hex()
+        };
         let key = (logo.file, hex, (size * 4.).round() as u32);
         if let Some(image) = self.images.borrow().get(&key) {
             return Some(image.clone());
@@ -294,12 +298,47 @@ mod tests {
     #[test]
     fn every_logo_is_bundled() {
         for id in [
-            "openai", "anthropic", "gemini", "openrouter", "mistral", "deepseek", "groq",
-            "ollama", "xai", "huggingface", "moonshot", "dashscope", "nvidia", "together",
-            "fireworks", "cerebras", "zai", "minimax", "bedrock", "github_copilot", "cloudflare",
-            "venice", "sambanova", "yandex", "deepinfra", "nebius", "novita",
-            "vercel_ai_gateway", "stepfun", "arcee", "upstage", "inception", "kilocode", "meta",
-            "lmstudio", "opencode_zen", "cursor", "grok", "pi", "antigravity", "muse",
+            "openai",
+            "anthropic",
+            "gemini",
+            "openrouter",
+            "mistral",
+            "deepseek",
+            "groq",
+            "ollama",
+            "xai",
+            "huggingface",
+            "moonshot",
+            "dashscope",
+            "nvidia",
+            "together",
+            "fireworks",
+            "cerebras",
+            "zai",
+            "minimax",
+            "bedrock",
+            "github_copilot",
+            "cloudflare",
+            "venice",
+            "sambanova",
+            "yandex",
+            "deepinfra",
+            "nebius",
+            "novita",
+            "vercel_ai_gateway",
+            "stepfun",
+            "arcee",
+            "upstage",
+            "inception",
+            "kilocode",
+            "meta",
+            "lmstudio",
+            "opencode_zen",
+            "cursor",
+            "grok",
+            "pi",
+            "antigravity",
+            "muse",
         ] {
             let logo = logo_for(id).unwrap();
             assert!(FILES.iter().any(|(f, _)| *f == logo.file), "{id}");
@@ -308,7 +347,10 @@ mod tests {
 
     #[test]
     fn monochrome_logos_take_the_tint() {
-        let out = recolor(br#"<svg fill="black"><path fill="currentColor"/></svg>"#, "#ff8a4c");
+        let out = recolor(
+            br#"<svg fill="black"><path fill="currentColor"/></svg>"#,
+            "#ff8a4c",
+        );
         let out = std::str::from_utf8(&out).unwrap();
         assert!(!out.contains("black") && !out.contains("currentColor"));
         assert_eq!(out.matches("#ff8a4c").count(), 2);

@@ -104,7 +104,11 @@ pub(crate) fn is_current(s: &mut State, thread_id: &str, instance: jobs::Instanc
 }
 
 /// [`slot`], only while it is the instance that asked.
-fn slot_of<'a>(s: &'a mut State, thread_id: &str, instance: jobs::Instance) -> Option<&'a mut OrchestrationState> {
+fn slot_of<'a>(
+    s: &'a mut State,
+    thread_id: &str,
+    instance: jobs::Instance,
+) -> Option<&'a mut OrchestrationState> {
     slot(s, thread_id).filter(|o| o.instance == instance)
 }
 
@@ -126,18 +130,24 @@ pub fn refresh(s: &mut State, id: &str) {
     o.loading = true;
     let instance = o.instance;
     // A merge waiting for the next message turns sent once it is.
-    let want_lineage = !o.lineage_loaded || o.lineage.merges_in.iter().any(|m| m.status == "pending");
+    let want_lineage =
+        !o.lineage_loaded || o.lineage.merges_in.iter().any(|m| m.status == "pending");
     let asked = thread_id.clone();
     jobs::run(
         s,
         "orchestration",
         move |c| async move {
-            let (tasks, queue) = tokio::join!(c.thread_tasks(&thread_id), c.thread_queue(&thread_id));
+            let (tasks, queue) =
+                tokio::join!(c.thread_tasks(&thread_id), c.thread_queue(&thread_id));
             let lineage = match want_lineage {
                 true => Some(c.thread_lineage(&thread_id).await),
                 false => None,
             };
-            Ok(Snapshot { tasks: tasks.map(|t| t.tasks), queue, lineage })
+            Ok(Snapshot {
+                tasks: tasks.map(|t| t.tasks),
+                queue,
+                lineage,
+            })
         },
         move |s, result: Result<Snapshot, ClientError>, _| match result {
             Ok(snapshot) => apply_snapshot(s, &asked, instance, snapshot),
@@ -153,7 +163,9 @@ pub fn refresh(s: &mut State, id: &str) {
 
 fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Snapshot) {
     let embedded = crate::chat::embedded(s, asked);
-    let Some(o) = slot_of(s, asked, instance) else { return };
+    let Some(o) = slot_of(s, asked, instance) else {
+        return;
+    };
     let mut reload_timeline = false;
     let (mut load_prefix, mut load_merge_list) = (false, false);
     o.loading = false;
@@ -226,7 +238,9 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
 
 /// A fork shows its source conversation above its own messages.
 fn load_fork_prefix(s: &mut State, id: &str) {
-    let Some(instance) = instance_of(s, id) else { return };
+    let Some(instance) = instance_of(s, id) else {
+        return;
+    };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
@@ -247,7 +261,9 @@ fn load_fork_prefix(s: &mut State, id: &str) {
 
 /// Forks merged back into this thread show where they arrived.
 fn load_merges(s: &mut State, id: &str) {
-    let Some(instance) = instance_of(s, id) else { return };
+    let Some(instance) = instance_of(s, id) else {
+        return;
+    };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
@@ -267,7 +283,9 @@ fn load_merges(s: &mut State, id: &str) {
 }
 
 fn needs_poll(s: &State, id: &str) -> bool {
-    let Some(c) = crate::chat::chat_ref(s, id) else { return false };
+    let Some(c) = crate::chat::chat_ref(s, id) else {
+        return false;
+    };
     let o = &c.orchestration;
     crate::chat::active_run(s, id).is_some()
         || o.queue.external_run().is_some()
@@ -279,7 +297,9 @@ fn needs_poll(s: &State, id: &str) -> bool {
 /// the goal (when its editor is closed) or queued follow-ups. The chat folds
 /// a tail row into its transcript while this holds.
 pub fn has_tail(s: &State, id: &str) -> bool {
-    let Some(c) = crate::chat::chat_ref(s, id) else { return false };
+    let Some(c) = crate::chat::chat_ref(s, id) else {
+        return false;
+    };
     let o = &c.orchestration;
     o.tasks.iter().any(|t| t.status.is_live())
         || (!c.goals.editing() && c.goals.goal.is_some())
@@ -348,7 +368,9 @@ pub fn queue_follow_up(s: &mut State, id: &str, text: String) -> bool {
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
         move |s, result, _| {
             // A closed (or closed and reopened) chat's reply is dropped.
-            let Some(o) = slot_of(s, &asked, instance) else { return };
+            let Some(o) = slot_of(s, &asked, instance) else {
+                return;
+            };
             o.busy = false;
             match result {
                 Ok(queue) => o.queue = queue,
@@ -382,7 +404,9 @@ pub(crate) fn queue_action(s: &mut State, id: &str, action: QueueAction) {
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
         move |s, result, _| {
             // A closed (or closed and reopened) chat's reply is dropped.
-            let Some(o) = slot_of(s, &asked, instance) else { return };
+            let Some(o) = slot_of(s, &asked, instance) else {
+                return;
+            };
             o.busy = false;
             match result {
                 Ok(queue) => o.queue = queue,
@@ -394,14 +418,18 @@ pub(crate) fn queue_action(s: &mut State, id: &str, action: QueueAction) {
 }
 
 pub fn cancel_task(s: &mut State, id: &str, task_id: String) {
-    let Some(instance) = instance_of(s, id) else { return };
+    let Some(instance) = instance_of(s, id) else {
+        return;
+    };
     let thread_id = id.to_string();
     jobs::run(
         s,
         "orchestration",
         move |c| async move { c.cancel_task(&task_id).await },
         move |s, result, _| {
-            let Some(o) = slot_of(s, &thread_id, instance) else { return };
+            let Some(o) = slot_of(s, &thread_id, instance) else {
+                return;
+            };
             match result {
                 Ok(view) => {
                     if let Some(task) = o.tasks.iter_mut().find(|t| t.task_id == view.task_id) {
@@ -430,14 +458,19 @@ pub fn fork(s: &mut State, id: &str, at_run: Option<u32>) {
         s,
         "orchestration",
         move |c| async move {
-            let options = ForkOptions { run: at_run, ..ForkOptions::default() };
+            let options = ForkOptions {
+                run: at_run,
+                ..ForkOptions::default()
+            };
             c.fork_thread(&thread_id, &options).await
         },
         move |s, result, _| {
             // The fork opens as the main chat, from a side chat too (GPUI
             // `OpenThread` bubbles up to the window); a chat closed since
             // asking drops it, as GPUI's dropped view does.
-            let Some(o) = slot_of(s, &asked, instance) else { return };
+            let Some(o) = slot_of(s, &asked, instance) else {
+                return;
+            };
             o.busy = false;
             match result {
                 Ok(forked) => crate::workspace::open_thread(s, forked.fork_thread_id),
@@ -470,7 +503,9 @@ pub(crate) fn merge_back(s: &mut State, id: &str) {
                 .and_then(|id| crate::workspace::thread_title(s, id))
                 .unwrap_or_else(|| "the original thread".into());
             // A closed (or closed and reopened) chat's reply is dropped.
-            let Some(o) = slot_of(s, &asked, instance) else { return };
+            let Some(o) = slot_of(s, &asked, instance) else {
+                return;
+            };
             o.busy = false;
             match result {
                 Ok(merged) => {
@@ -496,7 +531,9 @@ pub(crate) fn toggle_queue(s: &mut State, id: &str) {
 
 pub(crate) fn add_queued(s: &mut State, id: &str) {
     let Some(o) = slot(s, id) else { return };
-    let Some(input) = o.queue_input.as_mut() else { return };
+    let Some(input) = o.queue_input.as_mut() else {
+        return;
+    };
     let text = input.text.trim().to_string();
     if text.is_empty() || o.busy {
         return;
@@ -551,8 +588,7 @@ pub fn fixture() -> OrchestrationState {
         "childThreadId": "t9",
         "createdAt": now - 200_000,
         "startedAt": now - 185_000,
-    }))
-    ;
+    }));
     let waiting: Option<TaskView> = fixture_value(serde_json::json!({
         "taskId": "task-2",
         "title": "Write the parity checklist",
@@ -561,8 +597,7 @@ pub fn fixture() -> OrchestrationState {
         "parentThreadId": "t1",
         "createdAt": now - 900_000,
         "limitResetAt": now + 725_000,
-    }))
-    ;
+    }));
     let queue: QueueDoc = fixture_value(serde_json::json!({
         "held": true,
         "holdReason": "stopped",
@@ -620,7 +655,11 @@ mod tests {
     use crate::chat::fixtures::{close_side_chat, test_state, with_side_chat};
 
     fn snapshot() -> Snapshot {
-        Snapshot { tasks: Ok(Vec::new()), queue: Ok(fixture().queue), lineage: None }
+        Snapshot {
+            tasks: Ok(Vec::new()),
+            queue: Ok(fixture().queue),
+            lineage: None,
+        }
     }
 
     fn instance(s: &mut crate::state::State, id: &str) -> jobs::Instance {
@@ -666,7 +705,6 @@ mod tests {
         assert_eq!(countdown(725_000, 5_000), "in 12 min");
     }
 
-
     #[test]
     fn a_reopened_chat_does_not_double_the_poll() {
         // A running turn: the extras poll. Close and reopen the same thread.
@@ -675,11 +713,17 @@ mod tests {
         let id = s.chat.as_ref().map(|c| c.thread_id.clone()).expect("chat");
         let old = slot(&mut s, &id).map(|o| o.instance).expect("extras");
         crate::chat::fixtures::running(&mut s);
-        assert_eq!(s.chat.as_ref().map(|c| c.thread_id.clone()), Some(id.clone()));
+        assert_eq!(
+            s.chat.as_ref().map(|c| c.thread_id.clone()),
+            Some(id.clone())
+        );
         let new = slot(&mut s, &id).map(|o| o.instance).expect("extras");
         assert_ne!(old, new);
         assert!(needs_poll(&s, &id));
-        assert!(!tick(&mut s, id.clone(), old), "the closed chat's loop keeps polling");
+        assert!(
+            !tick(&mut s, id.clone(), old),
+            "the closed chat's loop keeps polling"
+        );
         assert!(tick(&mut s, id, new));
     }
 }

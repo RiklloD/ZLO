@@ -14,7 +14,13 @@ use rune::TextEdit;
 
 use crate::state::{Conn, Page, State};
 
-pub(crate) fn row(id: &str, title: &str, profile: &str, state: InboxState, minutes_ago: i64) -> InboxRow {
+pub(crate) fn row(
+    id: &str,
+    title: &str,
+    profile: &str,
+    state: InboxState,
+    minutes_ago: i64,
+) -> InboxRow {
     InboxRow {
         thread_id: id.into(),
         title: Some(title.into()),
@@ -51,25 +57,67 @@ fn base(s: &mut State) {
 
 fn inbox() -> InboxListResponse {
     let now = Utc::now().timestamp_millis();
-    let mut working = row("t-work", "Run the integration suite", "work", InboxState::Working, 2);
+    let mut working = row(
+        "t-work",
+        "Run the integration suite",
+        "work",
+        InboxState::Working,
+        2,
+    );
     working.status = Some(InboxStatus::Working);
     working.working_since = Some(now - 153_000);
-    let mut needs = row("t-needs", "Approve the deploy plan", "default", InboxState::Inbox, 4);
+    let mut needs = row(
+        "t-needs",
+        "Approve the deploy plan",
+        "default",
+        InboxState::Inbox,
+        4,
+    );
     needs.status = Some(InboxStatus::NeedsInput);
-    let mut done = row("t-done", "Summarise yesterday's PRs", "default", InboxState::Inbox, 35);
+    let mut done = row(
+        "t-done",
+        "Summarise yesterday's PRs",
+        "default",
+        InboxState::Inbox,
+        35,
+    );
     done.status = Some(InboxStatus::Done);
-    let mut pinned = row("t-pin", "Port the frontend to Rune", "work", InboxState::Pinned, 90);
+    let mut pinned = row(
+        "t-pin",
+        "Port the frontend to Rune",
+        "work",
+        InboxState::Pinned,
+        90,
+    );
     pinned.worktree_branch = Some("feature/rune/workspace-port".into());
-    let mut snoozed = row("t-snooze", "Reply to the design review", "default", InboxState::Snoozed, 300);
+    let mut snoozed = row(
+        "t-snooze",
+        "Reply to the design review",
+        "default",
+        InboxState::Snoozed,
+        300,
+    );
     snoozed.snooze_until = Some(now + 3 * 3_600_000);
-    let mut settled = row("t-settled", "Fix the flaky integration test", "work", InboxState::Settled, 2000);
+    let mut settled = row(
+        "t-settled",
+        "Fix the flaky integration test",
+        "work",
+        InboxState::Settled,
+        2000,
+    );
     settled.settled_at = Some(now - 86_400_000);
     InboxListResponse {
         rows: vec![
             pinned,
             needs,
             done,
-            row("t-plain", "Draft the release notes", "default", InboxState::Inbox, 180),
+            row(
+                "t-plain",
+                "Draft the release notes",
+                "default",
+                InboxState::Inbox,
+                180,
+            ),
             working,
             snoozed,
             settled,
@@ -120,13 +168,20 @@ pub fn fixture_inbox(s: &mut State) {
     s.workspace.inbox.filters_open = true;
     s.workspace.inbox.snooze_menu = Some("t-plain".into());
     s.workspace.inbox.unread.insert("t-plain".into());
-    s.workspace.drafts_fixture("Sketch the onboarding flow", Some("work"));
+    s.workspace
+        .drafts_fixture("Sketch the onboarding flow", Some("work"));
 }
 
 /// A parent with nested subagents, its list unfolded.
 pub fn fixture_inbox_subagents(s: &mut State) {
     fixture_shell(s);
-    let mut parent = row("t-parent", "Ship the workspace port", "work", InboxState::Inbox, 1);
+    let mut parent = row(
+        "t-parent",
+        "Ship the workspace port",
+        "work",
+        InboxState::Inbox,
+        1,
+    );
     parent.status = Some(InboxStatus::Background);
     let kid = |id: &str, title: &str, status: Option<InboxStatus>, parent: &str| {
         let mut r = row(id, title, "work", InboxState::Inbox, 1);
@@ -136,10 +191,30 @@ pub fn fixture_inbox_subagents(s: &mut State) {
     };
     let mut rows = vec![
         parent,
-        kid("t-a", "Port inbox.rs", Some(InboxStatus::Working), "t-parent"),
-        kid("t-b", "Port command.rs", Some(InboxStatus::NeedsInput), "t-parent"),
-        kid("t-a1", "Write the subagent tests", Some(InboxStatus::Failed), "t-a"),
-        kid("t-c", "Port context.rs", Some(InboxStatus::Done), "t-parent"),
+        kid(
+            "t-a",
+            "Port inbox.rs",
+            Some(InboxStatus::Working),
+            "t-parent",
+        ),
+        kid(
+            "t-b",
+            "Port command.rs",
+            Some(InboxStatus::NeedsInput),
+            "t-parent",
+        ),
+        kid(
+            "t-a1",
+            "Write the subagent tests",
+            Some(InboxStatus::Failed),
+            "t-a",
+        ),
+        kid(
+            "t-c",
+            "Port context.rs",
+            Some(InboxStatus::Done),
+            "t-parent",
+        ),
     ];
     rows.append(&mut s.workspace.inbox.list.rows);
     s.workspace.inbox.list.rows = rows;
@@ -182,7 +257,8 @@ pub fn fixture_command_menu(s: &mut State) {
 pub fn fixture_draft(s: &mut State) {
     fixture_shell(s);
     s.chat = None;
-    s.workspace.drafts_fixture("Plan the Rune port of the settings pages", Some("work"));
+    s.workspace
+        .drafts_fixture("Plan the Rune port of the settings pages", Some("work"));
     super::draft::open(s);
     let caret = s.workspace.draft.as_ref().map_or(0, |d| d.input.text.len());
     if let Some(d) = s.workspace.draft.as_mut() {
@@ -235,21 +311,39 @@ pub fn fixture_draft_mention(s: &mut State) {
     if let Some(d) = s.workspace.draft.as_mut() {
         let len = d.input.text.len();
         d.input.set_caret(len);
-        let files = ["tools/ironclaw_rune/app/src/chat/menu.rs", "tools/ironclaw_gpui/app/src/chat/menu.rs", "crates/product/ironclaw_webui/frontend/src/menu.ts", "docs/internal/menus.md"];
-        d.menu.fixture_files(&root, files.iter().map(|f| f.to_string()).collect(), "men");
+        let files = [
+            "tools/ironclaw_rune/app/src/chat/menu.rs",
+            "tools/ironclaw_gpui/app/src/chat/menu.rs",
+            "crates/product/ironclaw_webui/frontend/src/menu.ts",
+            "docs/internal/menus.md",
+        ];
+        d.menu
+            .fixture_files(&root, files.iter().map(|f| f.to_string()).collect(), "men");
     }
 }
 
 /// A sidebar thread dragged over the new-thread composer.
 pub fn fixture_thread_drag_draft(s: &mut State) {
     fixture_draft(s);
-    super::thread_drag::fixture(s, "t-pin", "Rune port plan", [790., 440.], [424., 380., 720., 130.]);
+    super::thread_drag::fixture(
+        s,
+        "t-pin",
+        "Rune port plan",
+        [790., 440.],
+        [424., 380., 720., 130.],
+    );
 }
 
 /// A sidebar thread dragged over the open chat.
 pub fn fixture_thread_drag(s: &mut State) {
     crate::chat::fixtures::chat(s);
-    super::thread_drag::fixture(s, "t-pin", "Rune port plan", [760., 380.], [250., 0., 1030., 790.]);
+    super::thread_drag::fixture(
+        s,
+        "t-pin",
+        "Rune port plan",
+        [760., 380.],
+        [250., 0., 1030., 790.],
+    );
 }
 
 /// The status bar with a filling context window and its banner.

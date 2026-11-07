@@ -14,7 +14,7 @@ use ironclaw_host_api::agent_plan::{
     QuestionAnswer, QuestionField, QuestionFieldKind, QuestionForm, QuestionValue,
 };
 use rune::{El, TextEdit, Tx, col, icon, row, text};
-use rune_kit::{Button, ControlSize, ButtonVariant, Kit, TextInput};
+use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextInput};
 
 use super::{ChatState, chat_for, flow, glyphs, orphan_edit, set_error};
 use crate::jobs;
@@ -132,7 +132,9 @@ pub(crate) fn sync_drafts(c: &mut ChatState) {
                 } => d.clone(),
                 _ => String::new(),
             };
-            draft.inputs.insert(field.id.clone(), TextEdit::new(default));
+            draft
+                .inputs
+                .insert(field.id.clone(), TextEdit::new(default));
         }
         c.questions.by_gate.insert(gate, draft);
     }
@@ -172,7 +174,15 @@ fn set_bool(s: &mut State, thread: &str, gate: &str, field: &str, value: bool) {
 }
 
 /// Send the form's answers (`answer`) or dismiss it.
-fn send_question(s: &mut State, thread: &str, run: String, gate: String, form: &QuestionForm, answer: bool, tx: &mut Tx) {
+fn send_question(
+    s: &mut State,
+    thread: &str,
+    run: String,
+    gate: String,
+    form: &QuestionForm,
+    answer: bool,
+    tx: &mut Tx,
+) {
     let Some(c) = chat_for(s, thread) else { return };
     let reply = if answer {
         let Some(draft) = c.questions.by_gate.get_mut(&gate) else {
@@ -259,10 +269,11 @@ pub(crate) fn render_question(
             row()
                 .gap(8.)
                 .center_y()
-                .child(
-                    icon(&glyphs::CIRCLE_QUESTION_MARK, 14.)
-                        .color(if open { p.warning } else { p.text_muted }),
-                )
+                .child(icon(&glyphs::CIRCLE_QUESTION_MARK, 14.).color(if open {
+                    p.warning
+                } else {
+                    p.text_muted
+                }))
                 .child(
                     text(match &form.source {
                         Some(source) => format!("{source} asks"),
@@ -273,13 +284,25 @@ pub(crate) fn render_question(
                 ),
         );
     if let Some(message) = &form.message {
-        card = card.child(text(message.clone()).font(body).color(p.text).wrap().selectable(true));
+        card = card.child(
+            text(message.clone())
+                .font(body)
+                .color(p.text)
+                .wrap()
+                .selectable(true),
+        );
     }
     for (ix, field) in form.fields.iter().enumerate() {
-        card = card.child(render_field(s, chat, key, ix, gate_ref, field, draft, open, k));
+        card = card.child(render_field(
+            s, chat, key, ix, gate_ref, field, draft, open, k,
+        ));
     }
     if let Some(error) = draft.and_then(|d| d.error.clone()) {
-        card = card.child(text(error).font(flow::type_at(s, 12., 16., 400.)).color(p.danger));
+        card = card.child(
+            text(error)
+                .font(flow::type_at(s, 12., 16., 400.))
+                .color(p.danger),
+        );
     }
     let thread = chat.thread_id.clone();
     let actions = match state {
@@ -301,7 +324,15 @@ pub(crate) fn render_question(
                     small_button("Dismiss", ButtonVariant::Ghost)
                         .help("The agent reads that you declined to answer")
                         .on_press_tx(move |s: &mut State, tx| {
-                            send_question(s, &thread2, run2.clone(), gate2.clone(), &form2, false, tx)
+                            send_question(
+                                s,
+                                &thread2,
+                                run2.clone(),
+                                gate2.clone(),
+                                &form2,
+                                false,
+                                tx,
+                            )
                         })
                         .build(k)
                         .key(format!("{key}-dismiss")),
@@ -357,10 +388,20 @@ fn render_field(
     } else {
         field.label.clone()
     };
-    title = title.child(text(label).font(flow::type_at(s, 13., 19., 400.)).color(p.text).wrap());
+    title = title.child(
+        text(label)
+            .font(flow::type_at(s, 13., 19., 400.))
+            .color(p.text)
+            .wrap(),
+    );
     column = column.child(title);
     if let Some(description) = &field.description {
-        column = column.child(text(description.clone()).font(small).color(p.text_muted).wrap());
+        column = column.child(
+            text(description.clone())
+                .font(small)
+                .color(p.text_muted)
+                .wrap(),
+        );
     }
     let thread = chat.thread_id.clone();
     match &field.kind {

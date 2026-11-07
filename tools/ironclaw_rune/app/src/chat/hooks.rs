@@ -10,7 +10,10 @@ use ironclaw_gpui_client::orchestration::MergedFork;
 use ironclaw_gpui_client::wire::TimelineMessage;
 use rune::{TextEdit, Tx};
 
-use super::{actions, approval_mode, chat_for, chat_ref, composer, load_timeline, refresh_rows, set_error, snapshot};
+use super::{
+    actions, approval_mode, chat_for, chat_ref, composer, load_timeline, refresh_rows, set_error,
+    snapshot,
+};
 use crate::state::State;
 
 /// The open chat's thread id.
@@ -40,13 +43,20 @@ pub fn voice_composer<'a>(s: &'a State, composer: &crate::voice::Composer) -> Op
     match composer {
         Composer::Chat(id) => chat_ref(s, id).map(|c| &c.composer),
         Composer::Draft => s.workspace.draft.as_ref().map(|d| &d.input),
-        Composer::Quick => s.workspace.quick.is_open().then_some(&s.workspace.quick.input),
+        Composer::Quick => s
+            .workspace
+            .quick
+            .is_open()
+            .then_some(&s.workspace.quick.input),
     }
 }
 
 /// [`voice_composer`], mutable: voice inserts committed words at the caret
 /// and shows the still-changing tail as the field's preedit.
-pub fn voice_composer_mut<'a>(s: &'a mut State, composer: &crate::voice::Composer) -> Option<&'a mut TextEdit> {
+pub fn voice_composer_mut<'a>(
+    s: &'a mut State,
+    composer: &crate::voice::Composer,
+) -> Option<&'a mut TextEdit> {
     use crate::voice::Composer;
     match composer {
         Composer::Chat(id) => chat_for(s, id).map(|c| &mut c.composer),
@@ -115,7 +125,9 @@ pub fn embedded(s: &State, id: &str) -> bool {
 
 /// `id`'s composer text.
 pub fn composer_text(s: &State, id: &str) -> String {
-    chat_ref(s, id).map(|c| c.composer.text.clone()).unwrap_or_default()
+    chat_ref(s, id)
+        .map(|c| c.composer.text.clone())
+        .unwrap_or_default()
 }
 
 /// Put `text` into `id`'s composer (caret at its end) and note the draft.

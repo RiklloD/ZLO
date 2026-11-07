@@ -18,12 +18,16 @@ pub const SEMIBOLD: f32 = 600.;
 
 /// Text at `size` points in the UI face.
 pub fn t(s: impl Into<String>, size: f32, color: Color) -> El {
-    text(s.into()).font(TextStyle::new(size, REGULAR)).color(color)
+    text(s.into())
+        .font(TextStyle::new(size, REGULAR))
+        .color(color)
 }
 
 /// Text at `size` and `weight`.
 pub fn tw(s: impl Into<String>, size: f32, weight: f32, color: Color) -> El {
-    text(s.into()).font(TextStyle::new(size, weight)).color(color)
+    text(s.into())
+        .font(TextStyle::new(size, weight))
+        .color(color)
 }
 
 pub fn dot(color: Color, size: f32) -> El {
@@ -46,6 +50,24 @@ pub fn ghost_icon(
         .variant(IconButtonVariant::Ghost)
         .control_size(size)
         .label(help)
+        .help(help)
+        .on_press(on_press)
+        .build(k)
+}
+
+/// [`ghost_icon`] whose accessible name differs from its tooltip.
+pub fn ghost_icon_named(
+    k: &Kit,
+    i: &'static Icon,
+    name: &str,
+    help: &str,
+    size: ControlSize,
+    on_press: impl Fn(&mut State) + 'static,
+) -> El {
+    IconButton::new(i)
+        .variant(IconButtonVariant::Ghost)
+        .control_size(size)
+        .label(name)
         .help(help)
         .on_press(on_press)
         .build(k)
@@ -106,7 +128,13 @@ pub fn draft_wash(p: &Palette) -> Color {
 }
 
 /// A filter chip: rounded, accent-washed when on.
-pub fn chip(p: &Palette, key: String, label: &str, on: bool, f: impl Fn(&mut State) + 'static) -> El {
+pub fn chip(
+    p: &Palette,
+    key: String,
+    label: &str,
+    on: bool,
+    f: impl Fn(&mut State) + 'static,
+) -> El {
     row()
         .key(key)
         .h(24.)
@@ -114,7 +142,11 @@ pub fn chip(p: &Palette, key: String, label: &str, on: bool, f: impl Fn(&mut Sta
         .center_y()
         .radius(12.)
         .border(1., if on { p.accent.alpha(0.5) } else { p.border })
-        .fill(if on { p.accent_wash } else { Color::TRANSPARENT })
+        .fill(if on {
+            p.accent_wash
+        } else {
+            Color::TRANSPARENT
+        })
         .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
         .role("button")
@@ -141,7 +173,11 @@ pub fn floating(p: &Palette, content: El, radius: f32) -> El {
         .radius(radius)
         .fill(p.surface_overlay)
         .border(1., p.border_strong)
-        .shadow(12., 32., Color::BLACK.alpha(if p.light { 0.1 } else { 0.4 }))
+        .shadow(
+            12.,
+            32.,
+            Color::BLACK.alpha(if p.light { 0.1 } else { 0.4 }),
+        )
 }
 
 /// A thin horizontal rule.
@@ -154,12 +190,15 @@ pub fn rule(p: &Palette) -> El {
 /// `.on_edit(..)`, `.on_submit(..)` and `.on_input_change(..)` on the
 /// returned field before wrapping it with [`grow_box`].
 pub fn plain_area(edit: &rune::TextEdit, size: f32, placeholder: &str, p: &Palette) -> El {
-    rune::text_input(edit, TextStyle::new(size, REGULAR).lh((size * 1.45).round()))
-        .key("input")
-        .w_full()
-        .color(p.text)
-        .placeholder(placeholder.to_string(), p.text_faint)
-        .caret(p.text, p.accent.alpha(0.3))
+    rune::text_input(
+        edit,
+        TextStyle::new(size, REGULAR).lh((size * 1.45).round()),
+    )
+    .key("input")
+    .w_full()
+    .color(p.text)
+    .placeholder(placeholder.to_string(), p.text_faint)
+    .caret(p.text, p.accent.alpha(0.3))
 }
 
 /// The scroll box that grows `field` between `min` and `max` lines.

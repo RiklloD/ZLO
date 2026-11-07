@@ -76,7 +76,9 @@ pub fn drag(s: &mut State, id: &str, title: &str, d: &Drag, tx: &mut Tx) {
             tx.live_only();
         }
         Phase::Move => {
-            let Some(dragged) = state.dragged.as_mut() else { return };
+            let Some(dragged) = state.dragged.as_mut() else {
+                return;
+            };
             let was_live = dragged.live;
             dragged.at = at;
             dragged.live |= d.dx.abs() > SLOP || d.dy.abs() > SLOP;
@@ -85,7 +87,9 @@ pub fn drag(s: &mut State, id: &str, title: &str, d: &Drag, tx: &mut Tx) {
             }
         }
         Phase::Up => {
-            let Some(dragged) = state.dragged.take() else { return };
+            let Some(dragged) = state.dragged.take() else {
+                return;
+            };
             if !dragged.live {
                 return;
             }
@@ -143,7 +147,12 @@ pub fn drop_at(s: &mut State, dragged: Dragged) {
 
 /// The live drag's target, for the views' highlight.
 fn hovered(s: &State) -> Option<Target> {
-    let dragged = s.workspace.thread_drag.dragged.as_ref().filter(|d| d.live)?;
+    let dragged = s
+        .workspace
+        .thread_drag
+        .dragged
+        .as_ref()
+        .filter(|d| d.live)?;
     target_at(s, dragged.at)
 }
 
@@ -174,7 +183,12 @@ pub fn saw_draft(s: &mut State, r: [f32; 4], tx: &mut Tx) {
 /// The card under the pointer while a thread is dragged (GPUI
 /// `DraggedThread::render`), for the shell's overlay layer.
 pub fn ghost(s: &State) -> Option<El> {
-    let dragged = s.workspace.thread_drag.dragged.as_ref().filter(|d| d.live)?;
+    let dragged = s
+        .workspace
+        .thread_drag
+        .dragged
+        .as_ref()
+        .filter(|d| d.live)?;
     let p = &s.palette;
     let [x, y] = dragged.at;
     Some(
@@ -313,7 +327,10 @@ mod tests {
     #[test]
     fn a_drag_onto_the_target_drops_there() {
         let mut rt = runtime();
-        assert_eq!(rt.state.workspace.thread_drag.draft, Some([200., 150., 160., 100.]));
+        assert_eq!(
+            rt.state.workspace.thread_drag.draft,
+            Some([200., 150., 160., 100.])
+        );
         rt.pointer_move(20., 20.);
         rt.pointer_down(20., 20.);
         step(&mut rt);
@@ -323,7 +340,10 @@ mod tests {
         rt.pointer_move(250., 200.);
         step(&mut rt);
         let dragged = rt.state.workspace.thread_drag.dragged.clone();
-        assert_eq!(dragged.as_ref().map(|d| (d.id.as_str(), d.live)), Some(("t2", true)));
+        assert_eq!(
+            dragged.as_ref().map(|d| (d.id.as_str(), d.live)),
+            Some(("t2", true))
+        );
         assert!(rt.find("thread-drag-ghost").is_some());
         assert!(over_draft(&rt.state));
         if let Some(d) = rt.state.workspace.draft.as_mut() {
@@ -333,7 +353,13 @@ mod tests {
         step(&mut rt);
         assert!(rt.state.workspace.thread_drag.dragged.is_none());
         assert!(rt.find("thread-drag-ghost").is_none());
-        assert!(rt.state.workspace.draft.as_ref().is_some_and(|d| d.input.focused));
+        assert!(
+            rt.state
+                .workspace
+                .draft
+                .as_ref()
+                .is_some_and(|d| d.input.focused)
+        );
         assert_eq!(rt.state.page, Page::Draft, "the row was not pressed");
     }
 
@@ -375,7 +401,13 @@ mod tests {
         }
         rt.pointer_up(120., 280.);
         step(&mut rt);
-        assert!(rt.state.workspace.draft.as_ref().is_some_and(|d| !d.input.focused));
+        assert!(
+            rt.state
+                .workspace
+                .draft
+                .as_ref()
+                .is_some_and(|d| !d.input.focused)
+        );
         assert_eq!(rt.state.page, Page::Draft);
     }
 }

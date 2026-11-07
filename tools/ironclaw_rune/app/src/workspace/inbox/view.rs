@@ -10,9 +10,7 @@ use rune::{Color, Cx, El, ScrollSpec, col, el, row};
 use rune_kit::{ControlSize, Kit, Placement, TextInput};
 
 use super::super::ui::{self, MEDIUM, SM, XS, t, tw};
-use super::{
-    SETTLED_PAGE, shelves,
-};
+use super::{SETTLED_PAGE, shelves};
 use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
 use crate::icons;
@@ -30,19 +28,17 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
     let p = &s.palette;
     let inbox = &s.workspace.inbox;
     let query = inbox.query();
-    let active = (s.page == Page::Chat)
-        .then(|| active_id(s))
-        .flatten();
+    let active = (s.page == Page::Chat).then(|| active_id(s)).flatten();
     let sh = shelves(s);
     let now = Utc::now().timestamp_millis();
     let mut list: Vec<El> = Vec::new();
     // Message text is searched too; say so while older chats are indexed.
     if !query.is_empty() && s.workspace.message_search.indexing(&query) {
-        list.push(
-            el().px(12.)
-                .py(4.)
-                .child(t("Searching older chats…", design::SIDEBAR_META_SIZE, p.text_faint)),
-        );
+        list.push(el().px(12.).py(4.).child(t(
+            "Searching older chats…",
+            design::SIDEBAR_META_SIZE,
+            p.text_faint,
+        )));
     }
     let badge = |id: &str| {
         inbox
@@ -59,14 +55,16 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
         let is_active = active == Some(row.thread_id.as_str());
         list.push(card(s, &sh, row, is_active, badge(&row.thread_id), now, k));
     }
-    if sh.main.is_empty() && sh.pinned.is_empty() && sh.working.is_empty() && inbox.list.rows.is_empty()
+    if sh.main.is_empty()
+        && sh.pinned.is_empty()
+        && sh.working.is_empty()
+        && inbox.list.rows.is_empty()
     {
-        list.push(
-            el().key("inbox-empty")
-                .px(8.)
-                .py(12.)
-                .child(t("No conversations yet.", XS, p.text_faint)),
-        );
+        list.push(el().key("inbox-empty").px(8.).py(12.).child(t(
+            "No conversations yet.",
+            XS,
+            p.text_faint,
+        )));
     }
     // Like t3code: Working, Snoozed and Settled sit at the bottom of the
     // sidebar and unfold downward, scrolling with the list. Working keeps
@@ -75,7 +73,13 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
     if !sh.working.is_empty() {
         pushed = true;
         list.push(el().key("shelf-gap").grow(1.0).min_h(8.));
-        list.push(fold(p, "working", "Working", sh.working.len(), sh.working_open));
+        list.push(fold(
+            p,
+            "working",
+            "Working",
+            sh.working.len(),
+            sh.working_open,
+        ));
         if sh.working_open {
             for row in &sh.working {
                 let is_active = active == Some(row.thread_id.as_str());
@@ -113,9 +117,14 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
                 list.push(slim(s, &sh, row, is_active, now, k));
             }
             if items.len() > limit {
-                list.push(ui::ghost_button(k, "Show more", Some(&icons::CHEVRON_DOWN), |s| {
-                    s.workspace.inbox.settled_limit += SETTLED_PAGE;
-                }));
+                list.push(ui::ghost_button(
+                    k,
+                    "Show more",
+                    Some(&icons::CHEVRON_DOWN),
+                    |s| {
+                        s.workspace.inbox.settled_limit += SETTLED_PAGE;
+                    },
+                ));
             }
         }
     }
@@ -124,7 +133,9 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
             k,
             col()
                 .w(design::SIDEBAR_WIDTH - 16.)
-                .modal(true, |s: &mut State| s.workspace.inbox.new_menu_open = false)
+                .modal(true, |s: &mut State| {
+                    s.workspace.inbox.new_menu_open = false
+                })
                 .child(profile_picker(s, k)),
             "new-thread",
             Placement::BottomEnd,
@@ -146,7 +157,10 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
             .w_full()
             .grow(1.0)
             .min_h(0.0)
-            .scroll(ScrollSpec { stick_bottom: false }).wheel_glide("inbox-scroll")
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .wheel_glide("inbox-scroll")
             .child(
                 col()
                     .key("inbox-list")
@@ -168,7 +182,10 @@ fn header(s: &State, k: &Kit) -> El {
         .plain()
         .leading_icon(&icons::SEARCH)
         .leading_icon_size(16.)
-        .text_style(rune::TextStyle::new(design::SIDEBAR_TITLE_SIZE, ui::REGULAR))
+        .text_style(rune::TextStyle::new(
+            design::SIDEBAR_TITLE_SIZE,
+            ui::REGULAR,
+        ))
         .on_edit(|s: &mut State| &mut s.workspace.inbox.search)
         .on_change(|s: &mut State, _| super::search_changed(s))
         .build(k);
@@ -185,9 +202,10 @@ fn header(s: &State, k: &Kit) -> El {
             selected_bg(
                 &s.palette,
                 filter_on,
-                ui::ghost_icon(
+                ui::ghost_icon_named(
                     k,
                     &icons::LIST_FILTER,
+                    "Filters",
                     "Filter by profile, model or state",
                     ControlSize::Large,
                     |s| s.workspace.inbox.filters_open = !s.workspace.inbox.filters_open,
@@ -199,9 +217,13 @@ fn header(s: &State, k: &Kit) -> El {
             selected_bg(
                 &s.palette,
                 inbox.new_menu_open,
-                ui::ghost_icon(k, &icons::SQUARE_PEN, "New thread", ControlSize::Large, |s| {
-                    s.workspace.inbox.new_menu_open = !s.workspace.inbox.new_menu_open
-                }),
+                ui::ghost_icon(
+                    k,
+                    &icons::SQUARE_PEN,
+                    "New thread",
+                    ControlSize::Large,
+                    |s| s.workspace.inbox.new_menu_open = !s.workspace.inbox.new_menu_open,
+                ),
             )
             .key("new-thread"),
         )
@@ -218,7 +240,14 @@ fn filters(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let i = &s.workspace.inbox;
     let group = |label: &str| el().pt(4.).child(tw(label, XS, MEDIUM, p.text_faint));
-    let wrap = |chips: Vec<El>| row().w_full().min_w(0.0).flex_wrap().gap(4.).children(chips);
+    let wrap = |chips: Vec<El>| {
+        row()
+            .w_full()
+            .min_w(0.0)
+            .flex_wrap()
+            .gap(4.)
+            .children(chips)
+    };
     let profiles: Vec<El> = i
         .list
         .profiles
@@ -227,11 +256,17 @@ fn filters(s: &State, k: &Kit) -> El {
         .map(|(ix, profile)| {
             let id = profile.profile_id.clone();
             let on = i.profile.as_deref() == Some(id.as_str());
-            ui::chip(p, format!("f-profile-{ix}"), &profile.display_name, on, move |s| {
-                let pick = Some(id.clone());
-                let f = &mut s.workspace.inbox.profile;
-                *f = if *f == pick { None } else { pick };
-            })
+            ui::chip(
+                p,
+                format!("f-profile-{ix}"),
+                &profile.display_name,
+                on,
+                move |s| {
+                    let pick = Some(id.clone());
+                    let f = &mut s.workspace.inbox.profile;
+                    *f = if *f == pick { None } else { pick };
+                },
+            )
         })
         .collect();
     let models: Vec<El> = i
@@ -277,9 +312,12 @@ fn filters(s: &State, k: &Kit) -> El {
                 .justify_between()
                 .center_y()
                 .child(group("Profile"))
-                .child(ui::ghost_button(k, "New profile", Some(&icons::PLUS), |s| {
-                    super::new_profile(s)
-                })),
+                .child(ui::ghost_button(
+                    k,
+                    "New profile",
+                    Some(&icons::PLUS),
+                    super::new_profile,
+                )),
         )
         .child(wrap(profiles));
     if !models.is_empty() {
@@ -334,13 +372,27 @@ pub fn profile_picker(s: &State, k: &Kit) -> El {
                 .center_y()
                 .radius(design::CONTROL_RADIUS)
                 .cursor(rune::Cursor::Pointer)
-                .fill(if highlighted { p.accent_wash } else { Color::TRANSPARENT })
+                .fill(if highlighted {
+                    p.accent_wash
+                } else {
+                    Color::TRANSPARENT
+                })
                 .hover(p.hover)
-                .child(profile_mark(p, &profile.profile_id, &profile.display_name, 1.))
+                .child(profile_mark(
+                    p,
+                    &profile.profile_id,
+                    &profile.display_name,
+                    1.,
+                ))
                 .child(
-                    el().grow(1.0)
-                        .min_w(0.0)
-                        .child(t(profile.display_name.clone(), SM, if highlighted { p.text } else { p.text_muted }).truncate()),
+                    el().grow(1.0).min_w(0.0).child(
+                        t(
+                            profile.display_name.clone(),
+                            SM,
+                            if highlighted { p.text } else { p.text_muted },
+                        )
+                        .truncate(),
+                    ),
                 );
             if let Some(branch) = profile.git_branch.clone() {
                 r = r.child(branch_label(p, &branch));
@@ -358,11 +410,18 @@ pub fn profile_picker(s: &State, k: &Kit) -> El {
             .w_full()
             .padding(4.)
             .gap(1.)
-            .child(el().px(8.).py(4.).child(tw("Start in profile", XS, MEDIUM, p.text_faint)))
+            .child(
+                el().px(8.)
+                    .py(4.)
+                    .child(tw("Start in profile", XS, MEDIUM, p.text_faint)),
+            )
             .children(rows)
-            .child(ui::ghost_button(k, "New profile", Some(&icons::PLUS), |s| {
-                super::new_profile(s)
-            })),
+            .child(ui::ghost_button(
+                k,
+                "New profile",
+                Some(&icons::PLUS),
+                super::new_profile,
+            )),
         12.,
     )
 }
@@ -381,10 +440,18 @@ fn fold(p: &Palette, key: &'static str, label: &'static str, count: usize, open:
         .cursor(rune::Cursor::Pointer)
         .hover_group()
         .child(tw(label, design::SIDEBAR_META_SIZE + 1., MEDIUM, p.text_muted).group_color(p.text))
-        .child(t(count.to_string(), design::SIDEBAR_META_SIZE + 1., p.text_faint))
+        .child(t(
+            count.to_string(),
+            design::SIDEBAR_META_SIZE + 1.,
+            p.text_faint,
+        ))
         .child(el().grow(1.0))
         .child(ui::glyph(
-            if open { &icons::CHEVRON_DOWN } else { &icons::CHEVRON_RIGHT },
+            if open {
+                &icons::CHEVRON_DOWN
+            } else {
+                &icons::CHEVRON_RIGHT
+            },
             12.,
             p.text_faint,
         ))
@@ -424,20 +491,27 @@ fn new_draft_card(s: &State, k: &Kit) -> Option<El> {
         .gap(7.)
         .center_y()
         .child(draft_mark(p))
-        .child(profile_mark(p, &profile_id, &name, if active { 1. } else { 0. }))
-        .child(el().grow(1.0).min_w(36.).child(t(name, design::SIDEBAR_META_SIZE, p.text_muted).truncate()));
+        .child(profile_mark(
+            p,
+            &profile_id,
+            &name,
+            if active { 1. } else { 0. },
+        ))
+        .child(
+            el().grow(1.0)
+                .min_w(36.)
+                .child(t(name, design::SIDEBAR_META_SIZE, p.text_muted).truncate()),
+        );
     if let Some(b) = branch {
         meta = meta.child(branch_label(p, &b));
     }
-    meta = meta.child(
-        el().group_opacity(0., 1.).child(ui::ghost_icon(
-            k,
-            &icons::CLOSE,
-            "Discard draft",
-            ControlSize::Mini,
-            draft::discard_new_draft,
-        )),
-    );
+    meta = meta.child(el().group_opacity(0., 1.).child(ui::ghost_icon(
+        k,
+        &icons::CLOSE,
+        "Discard draft",
+        ControlSize::Mini,
+        draft::discard_new_draft,
+    )));
     Some(
         col()
             .key("row-new-draft")

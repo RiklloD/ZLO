@@ -134,7 +134,10 @@ fn decodes(ext: &str) -> bool {
 }
 
 pub(super) fn is_image(ext: &str) -> bool {
-    matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" | "tiff")
+    matches!(
+        ext,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" | "tiff"
+    )
 }
 
 /// Fence names for common extensions; anything else is plain text.
@@ -200,7 +203,10 @@ fn render(s: &State, k: &Kit, opened: &Opened, key: &str) -> El {
             "{} is too large to show here. Open it in its app.",
             crate::jobs::size(*size)
         )),
-        Preview::Binary(size) => note(format!("Binary file, {}. Open it in its app.", crate::jobs::size(*size))),
+        Preview::Binary(size) => note(format!(
+            "Binary file, {}. Open it in its app.",
+            crate::jobs::size(*size)
+        )),
         Preview::Native => crate::native_view::surface(crate::native_view::Slot::Preview),
         Preview::Image(pixels, aspect) => el()
             .key(format!("{key}-image"))
@@ -212,10 +218,12 @@ fn render(s: &State, k: &Kit, opened: &Opened, key: &str) -> El {
                 None => text.clone(),
                 Some(lang) => fenced(lang, text),
             };
-            let mut col = col()
-                .w_full()
-                .gap(8.)
-                .child(Markdown::new(&source).selectable(true).build(k).key(format!("side-preview:{key}")));
+            let mut col = col().w_full().gap(8.).child(
+                Markdown::new(&source)
+                    .selectable(true)
+                    .build(k)
+                    .key(format!("side-preview:{key}")),
+            );
             if *cut {
                 col = col.child(ui::line("Showing the first 256 KB.", XS, p.text_faint));
             }
@@ -231,37 +239,59 @@ pub(super) fn body(s: &State, k: &Kit, opened: &Opened, key: &str) -> El {
     if matches!(opened.preview, Preview::Native) {
         return ui::fill_col().child(render(s, k, opened, &file));
     }
-    ui::scroll(key.to_string(), el().w_full().padding(12.).child(render(s, k, opened, &file)))
+    ui::scroll(
+        key.to_string(),
+        el().w_full()
+            .padding(12.)
+            .child(render(s, k, opened, &file)),
+    )
 }
 
 /// Back, the file name, then Open and Reveal for the local copy.
-pub(super) fn toolbar(s: &State, k: &Kit, opened: &Opened, key: &str, on_back: fn(&mut State)) -> El {
+pub(super) fn toolbar(
+    s: &State,
+    k: &Kit,
+    opened: &Opened,
+    key: &str,
+    on_back: fn(&mut State),
+) -> El {
     let p = &s.palette;
     let open = opened.path.clone();
     let reveal = opened.path.clone();
-    col().w_full().child(
-        row()
-            .w_full()
-            .px(8.)
-            .py(4.)
-            .gap(4.)
-            .items_center()
-            .child(ui::ibtn(&icons::CHEVRON_LEFT, "Back").on_press(on_back).build(k).key(format!("{key}-back")))
-            .child(ui::line(opened.title.clone(), SM_MED, p.text).grow(1.).min_w(0.))
-            .child(
-                ui::ibtn(&icons::EXTERNAL_LINK, "Open in its app")
-                    .on_press(move |_: &mut State| ui::open_path(&open, false))
-                    .build(k)
-                    .key(format!("{key}-open")),
-            )
-            .child(
-                ui::ibtn(&icons::FOLDER, "Show in Finder")
-                    .on_press(move |_: &mut State| ui::open_path(&reveal, true))
-                    .build(k)
-                    .key(format!("{key}-reveal")),
-            ),
-    )
-    .child(el().w_full().h(1.).fill(p.border))
+    col()
+        .w_full()
+        .child(
+            row()
+                .w_full()
+                .px(8.)
+                .py(4.)
+                .gap(4.)
+                .items_center()
+                .child(
+                    ui::ibtn(&icons::CHEVRON_LEFT, "Back")
+                        .on_press(on_back)
+                        .build(k)
+                        .key(format!("{key}-back")),
+                )
+                .child(
+                    ui::line(opened.title.clone(), SM_MED, p.text)
+                        .grow(1.)
+                        .min_w(0.),
+                )
+                .child(
+                    ui::ibtn(&icons::EXTERNAL_LINK, "Open in its app")
+                        .on_press(move |_: &mut State| ui::open_path(&open, false))
+                        .build(k)
+                        .key(format!("{key}-open")),
+                )
+                .child(
+                    ui::ibtn(&icons::FOLDER, "Show in Finder")
+                        .on_press(move |_: &mut State| ui::open_path(&reveal, true))
+                        .build(k)
+                        .key(format!("{key}-reveal")),
+                ),
+        )
+        .child(el().w_full().h(1.).fill(p.border))
 }
 
 #[cfg(test)]

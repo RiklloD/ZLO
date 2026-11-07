@@ -22,14 +22,16 @@ const ROTATE_BYTES: u64 = 4 * 1024 * 1024;
 pub fn init() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("IRONCLAW_DESKTOP_LOG")
         .unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new(
-                "warn,zlo_rune=info,ironclaw_gpui_client=info",
-            )
+            tracing_subscriber::EnvFilter::new("warn,zlo_rune=info,ironclaw_gpui_client=info")
         });
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false);
-    let file = if rune::is_headless() { None } else { open_desktop_log() };
+    let file = if rune::is_headless() {
+        None
+    } else {
+        open_desktop_log()
+    };
     match file {
         Some(file) => builder
             .with_writer(std::io::stderr.and(Mutex::new(file)))

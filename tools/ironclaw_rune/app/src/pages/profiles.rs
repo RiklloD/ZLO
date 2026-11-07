@@ -8,12 +8,19 @@
 //!
 //! Other areas call [`new_profile`] (the inbox's New profile button).
 
+mod fixtures;
 mod pickers;
 
-use crate::pages::common::{block_fill, empty_state, error_line, glyph, group_header, page_body, rows_card};
-use crate::pages::common::controls::{Look, header_with, keyed_refresh, keyed_setting_row, press_button, styled};
-use crate::pages::common::ts::{SM, SM_MEDIUM, TITLE, XS, XS_SEMIBOLD};
+pub use fixtures::{fixture_editor, fixture_list, fixture_pickers};
+
 use crate::design::kit::hover_wash;
+use crate::pages::common::controls::{
+    Look, header_with, keyed_refresh, keyed_setting_row, press_button, styled,
+};
+use crate::pages::common::ts::{SM, SM_MEDIUM, TITLE, XS, XS_SEMIBOLD};
+use crate::pages::common::{
+    block_fill, empty_state, error_line, glyph, group_header, page_body, rows_card,
+};
 use ironclaw_gpui_client::orchestration::PickerPrefs;
 use ironclaw_gpui_client::profiles::{HermesImportResponse, ProfileInfo, ProfileSettings};
 use rune::{Color, Cursor, Cx, El, TextEdit, col, el, row};
@@ -77,9 +84,16 @@ impl ProfilesState {
     fn fill(&mut self) {
         let profile = self.selected_profile().cloned();
         let s = profile.as_ref().map(|p| &p.settings);
-        self.id.replace_text(profile.as_ref().map(|p| p.profile_id.clone()).unwrap_or_default());
-        self.name.replace_text(s.map(|s| s.display_name.clone()).unwrap_or_default());
-        self.soul.replace_text(s.map(|s| s.soul.clone()).unwrap_or_default());
+        self.id.replace_text(
+            profile
+                .as_ref()
+                .map(|p| p.profile_id.clone())
+                .unwrap_or_default(),
+        );
+        self.name
+            .replace_text(s.map(|s| s.display_name.clone()).unwrap_or_default());
+        self.soul
+            .replace_text(s.map(|s| s.soul.clone()).unwrap_or_default());
     }
 }
 
@@ -145,7 +159,10 @@ fn load_catalog(s: &mut State) {
                         .filter(|e| e.key.starts_with("tool."))
                         .filter_map(|e| {
                             // silent-ok: a row the gateway shapes differently is skipped.
-                            serde_json::from_value::<ironclaw_gpui_client::wire::ToolPermission>(e.value).ok()
+                            serde_json::from_value::<ironclaw_gpui_client::wire::ToolPermission>(
+                                e.value,
+                            )
+                            .ok()
                         })
                         .map(|t| (t.name, t.description))
                         .collect();
@@ -164,8 +181,11 @@ fn load_catalog(s: &mut State) {
             let ps = &mut s.pages.profiles;
             match result {
                 Ok(list) => {
-                    let mut skills: Vec<(String, String)> =
-                        list.skills.into_iter().map(|s| (s.name, s.description)).collect();
+                    let mut skills: Vec<(String, String)> = list
+                        .skills
+                        .into_iter()
+                        .map(|s| (s.name, s.description))
+                        .collect();
                     skills.sort();
                     ps.catalog.skills = skills;
                 }
@@ -220,7 +240,9 @@ fn save(s: &mut State) {
     }
     let settings = ps.settings(ps.selected_profile().map(|p| &p.settings));
     let existing = ps.selected.clone();
-    let id = existing.clone().unwrap_or_else(|| ps.id.text.trim().to_string());
+    let id = existing
+        .clone()
+        .unwrap_or_else(|| ps.id.text.trim().to_string());
     if id.is_empty() || settings.display_name.is_empty() {
         ps.error = Some("A profile needs an id and a display name.".into());
         return;
@@ -371,13 +393,17 @@ fn render_row(s: &State, k: &Kit, p_info: &ProfileInfo) -> El {
     if let Some(branch) = &p_info.git_branch {
         meta.push(format!("on {branch}"));
     }
-    if let Some(at) = p_info.last_used_at.and_then(chrono::DateTime::from_timestamp_millis) {
+    if let Some(at) = p_info
+        .last_used_at
+        .and_then(chrono::DateTime::from_timestamp_millis)
+    {
         meta.push(format!("used {}", jobs::when(at)));
     }
-    let mut name_row = row()
-        .gap(8.0)
-        .center_y()
-        .child(styled(p_info.settings.display_name.clone(), SM_MEDIUM, p.text).truncate().shrink());
+    let mut name_row = row().gap(8.0).center_y().child(
+        styled(p_info.settings.display_name.clone(), SM_MEDIUM, p.text)
+            .truncate()
+            .shrink(),
+    );
     if p_info.is_default {
         name_row = name_row.child(Badge::new("Default").build(k));
     }
@@ -408,9 +434,15 @@ fn render_row(s: &State, k: &Kit, p_info: &ProfileInfo) -> El {
         // Shown on hover: start a thread without opening the profile.
         .child(
             el().group_opacity(0.0, 1.0).child(
-                press_button(k, "profile-thread", "New thread", Look::Ghost, Some(&icons::PLUS), false, move |s: &mut State| {
-                    new_thread(s, thread_id.clone())
-                })
+                press_button(
+                    k,
+                    "profile-thread",
+                    "New thread",
+                    Look::Ghost,
+                    Some(&icons::PLUS),
+                    false,
+                    move |s: &mut State| new_thread(s, thread_id.clone()),
+                )
                 .label("New thread on this profile")
                 .hover_alone(),
             ),
@@ -421,9 +453,17 @@ fn render_row(s: &State, k: &Kit, p_info: &ProfileInfo) -> El {
 /// The list: profiles that ran, then the ones that never did.
 fn render_list(s: &State, k: &Kit) -> El {
     let p = &s.palette;
-    let (used, unused): (Vec<_>, Vec<_>) = s.pages.profiles.items.iter().partition(|p| p.last_used_at.is_some());
+    let (used, unused): (Vec<_>, Vec<_>) = s
+        .pages
+        .profiles
+        .items
+        .iter()
+        .partition(|p| p.last_used_at.is_some());
     let mut list = col().key("profiles-list").w_full();
-    for (key, title, group) in [("used", "Recently used", used), ("unused", "Not used yet", unused)] {
+    for (key, title, group) in [
+        ("used", "Recently used", used),
+        ("unused", "Not used yet", unused),
+    ] {
         if group.is_empty() {
             continue;
         }
@@ -446,9 +486,15 @@ fn folder_row(s: &State, k: &Kit) -> El {
     };
     let mut control = row().gap(4.0).center_y();
     if ps.picks.folder.is_some() {
-        control = control.child(press_button(k, "profile-folder-reset", "Use default", Look::Ghost, None, false, |s: &mut State| {
-            s.pages.profiles.picks.folder = None
-        }));
+        control = control.child(press_button(
+            k,
+            "profile-folder-reset",
+            "Use default",
+            Look::Ghost,
+            None,
+            false,
+            |s: &mut State| s.pages.profiles.picks.folder = None,
+        ));
     }
     control = control.child(
         rune_kit::Button::new("Choose…")
@@ -464,7 +510,8 @@ fn folder_row(s: &State, k: &Kit) -> El {
 
 /// A picker control sized for the right side of a setting row.
 fn picker(s: &State, k: &Kit, layer: &mut Vec<El>, menu: Menu, summary: String) -> El {
-    el().w(CONTROL_WIDTH).child(pickers::trigger(s, k, layer, menu, summary))
+    el().w(CONTROL_WIDTH)
+        .child(pickers::trigger(s, k, layer, menu, summary))
 }
 
 /// "All tools" for an empty set, else "3 tools allowed".
@@ -481,15 +528,16 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
     let ps = &s.pages.profiles;
     let profile = ps.selected_profile();
     let creating = ps.selected.is_none();
-    let field = |edit: &TextEdit, placeholder: &str, key: &str, access: fn(&mut State) -> &mut TextEdit| {
-        TextInput::new(edit)
-            .width(Some(CONTROL_WIDTH))
-            .placeholder(placeholder)
-            .label(placeholder)
-            .on_edit(access)
-            .build(k)
-            .key(key.to_string())
-    };
+    let field =
+        |edit: &TextEdit, placeholder: &str, key: &str, access: fn(&mut State) -> &mut TextEdit| {
+            TextInput::new(edit)
+                .width(Some(CONTROL_WIDTH))
+                .placeholder(placeholder)
+                .label(placeholder)
+                .on_edit(access)
+                .build(k)
+                .key(key.to_string())
+        };
 
     let mut general = Vec::new();
     if creating {
@@ -498,9 +546,12 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             "row-id",
             "Id",
             Some("Lowercase, used as the folder name. It cannot change later."),
-            field(&ps.id, "profile-id (lowercase, used as folder name)", "profile-id", |s| {
-                &mut s.pages.profiles.id
-            }),
+            field(
+                &ps.id,
+                "profile-id (lowercase, used as folder name)",
+                "profile-id",
+                |s| &mut s.pages.profiles.id,
+            ),
         ));
     }
     general.push(keyed_setting_row(
@@ -508,7 +559,9 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         "row-name",
         "Display name",
         None,
-        field(&ps.name, "Display name", "profile-name", |s| &mut s.pages.profiles.name),
+        field(&ps.name, "Display name", "profile-name", |s| {
+            &mut s.pages.profiles.name
+        }),
     ));
 
     let model = [
@@ -534,7 +587,13 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             "row-memory",
             "Supermemory container",
             Some("Long-term memory this profile reads and writes."),
-            picker(s, k, layer, Menu::Memory, ps.picks.memory.clone().unwrap_or_else(|| "None".into())),
+            picker(
+                s,
+                k,
+                layer,
+                Menu::Memory,
+                ps.picks.memory.clone().unwrap_or_else(|| "None".into()),
+            ),
         ),
     ];
     let capabilities = [
@@ -543,7 +602,13 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             "row-tools",
             "Tools",
             Some("Limit the tools this profile can call."),
-            picker(s, k, layer, Menu::Tools, count_summary(ps.picks.tools.len(), "All tools", "tool", "allowed")),
+            picker(
+                s,
+                k,
+                layer,
+                Menu::Tools,
+                count_summary(ps.picks.tools.len(), "All tools", "tool", "allowed"),
+            ),
         ),
         keyed_setting_row(
             p,
@@ -555,7 +620,12 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
                 k,
                 layer,
                 Menu::Skills,
-                count_summary(ps.picks.hidden_skills.len(), "None hidden", "skill", "hidden"),
+                count_summary(
+                    ps.picks.hidden_skills.len(),
+                    "None hidden",
+                    "skill",
+                    "hidden",
+                ),
             ),
         ),
         keyed_setting_row(
@@ -563,28 +633,59 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             "row-mcp",
             "MCP servers",
             Some("Servers this profile can reach."),
-            picker(s, k, layer, Menu::Mcp, count_summary(ps.picks.mcp.len(), "All MCP servers", "server", "enabled")),
+            picker(
+                s,
+                k,
+                layer,
+                Menu::Mcp,
+                count_summary(ps.picks.mcp.len(), "All MCP servers", "server", "enabled"),
+            ),
         ),
     ];
-    let soul = el().key("profile-soul").w_full().padding(12.0).radius(12.0).fill(block_fill(p)).child(
-        TextArea::new(&ps.soul)
-            .width(None)
-            .auto_grow(1, 24)
-            .placeholder("SOUL.md: who this profile is and how it works")
-            .label("SOUL.md")
-            .on_edit(|s: &mut State| &mut s.pages.profiles.soul)
-            .build(k),
-    );
+    let soul = el()
+        .key("profile-soul")
+        .w_full()
+        .padding(12.0)
+        .radius(12.0)
+        .fill(block_fill(p))
+        .child(
+            TextArea::new(&ps.soul)
+                .width(None)
+                .auto_grow(1, 24)
+                .placeholder("SOUL.md: who this profile is and how it works")
+                .label("SOUL.md")
+                .on_edit(|s: &mut State| &mut s.pages.profiles.soul)
+                .build(k),
+        );
 
     let can_delete = profile.is_some_and(|p| !p.is_default);
-    let mut footer = row().key("profile-footer").w_full().pt(24.0).gap(8.0).center_y();
+    let mut footer = row()
+        .key("profile-footer")
+        .w_full()
+        .pt(24.0)
+        .gap(8.0)
+        .center_y();
     if can_delete {
         footer = footer.child(if ps.confirm_delete {
-            press_button(k, "profile-delete-confirm", "Archive this profile?", Look::Danger, None, false, delete)
+            press_button(
+                k,
+                "profile-delete-confirm",
+                "Archive this profile?",
+                Look::Danger,
+                None,
+                false,
+                delete,
+            )
         } else {
-            press_button(k, "profile-delete", "Archive", Look::Ghost, None, false, |s: &mut State| {
-                s.pages.profiles.confirm_delete = true
-            })
+            press_button(
+                k,
+                "profile-delete",
+                "Archive",
+                Look::Ghost,
+                None,
+                false,
+                |s: &mut State| s.pages.profiles.confirm_delete = true,
+            )
         });
     }
     footer = footer.child(el().grow(1.0));
@@ -592,7 +693,15 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         footer = footer.child(styled(n.clone(), XS, p.text_muted));
     }
     footer = footer
-        .child(press_button(k, "profile-cancel", if creating { "Cancel" } else { "Done" }, Look::Ghost, None, false, back))
+        .child(press_button(
+            k,
+            "profile-cancel",
+            if creating { "Cancel" } else { "Done" },
+            Look::Ghost,
+            None,
+            false,
+            back,
+        ))
         .child(press_button(
             k,
             "profile-save",
@@ -613,11 +722,17 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(group_header(p, "Workspace", None).key("g-workspace"))
         .child(rows_card(p, workspace).key("c-workspace"))
         .child(
-            group_header(p, "Capabilities", Some("Skills, keys and MCP servers are shared; a profile only narrows them."))
-                .key("g-capabilities"),
+            group_header(
+                p,
+                "Capabilities",
+                Some("Skills, keys and MCP servers are shared; a profile only narrows them."),
+            )
+            .key("g-capabilities"),
         )
         .child(rows_card(p, capabilities).key("c-capabilities"))
-        .child(group_header(p, "SOUL.md", Some("Who this profile is and how it works.")).key("g-soul"))
+        .child(
+            group_header(p, "SOUL.md", Some("Who this profile is and how it works.")).key("g-soul"),
+        )
         .child(soul)
         .child(footer)
 }
@@ -626,7 +741,9 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
 fn render_detail_header(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let profile = s.pages.profiles.selected_profile();
-    let title = profile.map(|p| p.settings.display_name.clone()).unwrap_or_else(|| "New profile".into());
+    let title = profile
+        .map(|p| p.settings.display_name.clone())
+        .unwrap_or_else(|| "New profile".into());
     let back_link = row()
         .key("profiles-back")
         .role("button")
@@ -643,7 +760,10 @@ fn render_detail_header(s: &State, k: &Kit) -> El {
     if let Some(pi) = profile {
         top = top.child(avatar(&pi.profile_id, &pi.settings.display_name));
     }
-    let mut titles = col().grow(1.0).min_w(0.0).child(styled(title, TITLE, p.text).truncate());
+    let mut titles = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .child(styled(title, TITLE, p.text).truncate());
     if let Some(pi) = profile {
         titles = titles.child(styled(
             format!(
@@ -669,13 +789,20 @@ fn render_detail_header(s: &State, k: &Kit) -> El {
             move |s: &mut State| new_thread(s, id.clone()),
         ));
     }
-    col().key("profile-detail-header").w_full().child(back_link).child(top)
+    col()
+        .key("profile-detail-header")
+        .w_full()
+        .child(back_link)
+        .child(top)
 }
 
 /// A profile's initials on a tint picked from its id, so each profile keeps
 /// its color across launches.
 fn avatar(id: &str, name: &str) -> El {
-    let hue = id.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b))) % 360;
+    let hue = id
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+        % 360;
     let tint = hsl(hue as f32 / 360., 0.5, 0.6);
     let initials: String = name
         .split_whitespace()
@@ -715,7 +842,11 @@ fn import_summary(report: &HermesImportResponse) -> String {
     let mut out = if report.imported.is_empty() {
         "Nothing new to import.".to_string()
     } else {
-        format!("Imported {}: {}.", report.imported.len(), report.imported.join(", "))
+        format!(
+            "Imported {}: {}.",
+            report.imported.len(),
+            report.imported.join(", ")
+        )
     };
     let skipped: Vec<String> = report
         .skipped
@@ -742,15 +873,36 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
         let actions = row()
             .gap(4.0)
             .center_y()
-            .child(press_button(k, "profiles-import", "Import from Hermes", Look::Ghost, None, ps.importing, import))
+            .child(press_button(
+                k,
+                "profiles-import",
+                "Import from Hermes",
+                Look::Ghost,
+                None,
+                ps.importing,
+                import,
+            ))
             .child(keyed_refresh(k, "refresh-profiles", refresh))
-            .child(press_button(k, "profile-new", "New profile", Look::Primary, Some(&icons::PLUS), false, new_profile));
-        let mut b = col().w_full().child(header_with(p, "Profiles", vec![actions]));
+            .child(press_button(
+                k,
+                "profile-new",
+                "New profile",
+                Look::Primary,
+                Some(&icons::PLUS),
+                false,
+                new_profile,
+            ));
+        let mut b = col()
+            .w_full()
+            .child(header_with(p, "Profiles", vec![actions]));
         if let Some(e) = &ps.error {
             b = b.child(error_line(p, e));
         }
         if let Some(n) = &ps.notice {
-            b = b.child(el().px(8.0).child(styled(n.clone(), SM, p.text_muted).wrap()));
+            b = b.child(
+                el().px(8.0)
+                    .child(styled(n.clone(), SM, p.text_muted).wrap()),
+            );
         }
         if ps.loaded && ps.items.is_empty() {
             b = b.child(empty_state(p, "No profiles yet."));
@@ -758,85 +910,4 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
         b.child(render_list(s, k))
     };
     page_body("profiles-page", body)
-}
-
-// --- fixtures (scenes.rs) ---
-
-fn fixture_profile(id: &str, name: &str, used_hours_ago: Option<i64>, threads: u64) -> ProfileInfo {
-    let now = chrono::Utc::now().timestamp_millis();
-    ProfileInfo {
-        profile_id: id.into(),
-        settings: ProfileSettings {
-            display_name: name.into(),
-            soul: format!("You are {name}. Work carefully, explain briefly."),
-            ..ProfileSettings::default()
-        },
-        is_default: id == "default",
-        effective_folder: format!("~/.ironclaw/profiles/{id}"),
-        git_branch: None,
-        thread_count: threads,
-        last_used_at: used_hours_ago.map(|h| now - h * 3_600_000),
-        created_at: now - 30 * 86_400_000,
-        updated_at: now - 86_400_000,
-    }
-}
-
-fn fixture_catalog(ps: &mut ProfilesState) {
-    let provider = |id: &str, name: &str, models: &[&str]| ironclaw_gpui_client::orchestration::RouteProvider {
-        provider: id.into(),
-        name: name.into(),
-        runtime: id.into(),
-        authenticated: true,
-        models: models.iter().map(|m| m.to_string()).collect(),
-        ..Default::default()
-    };
-    ps.catalog.providers = vec![
-        provider("claude_cli", "Claude", &["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"]),
-        provider("codex", "Codex", &["gpt-5.1-codex", "gpt-5.1"]),
-    ];
-    ps.catalog.tools = vec![
-        ("shell.exec".into(), "Run a shell command".into()),
-        ("files.read".into(), "Read a file".into()),
-        ("files.write".into(), "Write a file".into()),
-        ("web.fetch".into(), "Fetch a URL".into()),
-    ];
-    ps.catalog.skills = vec![("deploy".into(), "Ship to staging".into())];
-    ps.catalog.mcp = vec![("github".into(), "GitHub".into()), ("linear".into(), "Linear".into())];
-}
-
-/// The list: recently used and never used profiles, an import notice.
-pub fn fixture_list(s: &mut State) {
-    let ps = &mut s.pages.profiles;
-    fixture_catalog(ps);
-    let mut work = fixture_profile("work", "Work", Some(2), 14);
-    work.settings.default_provider = Some("claude_cli".into());
-    work.settings.default_model = Some("claude-opus-4-5".into());
-    work.git_branch = Some("rune-port".into());
-    let mut research = fixture_profile("research", "Deep Research", Some(30), 3);
-    research.settings.default_provider = Some("gemini".into());
-    ps.items = vec![
-        work,
-        research,
-        fixture_profile("default", "Default", Some(80), 52),
-        fixture_profile("home", "Home Lab", None, 0),
-    ];
-    ps.last_used = Some("work".into());
-    ps.loaded = true;
-    ps.notice = Some("Imported 1: home. Skipped: coder (already exists).".into());
-}
-
-/// The editor on "Work" with the tools checklist open.
-pub fn fixture_pickers(s: &mut State) {
-    fixture_list(s);
-    select(s, Some("work".into()));
-    let ps = &mut s.pages.profiles;
-    ps.picks.tools.insert("files.read".into());
-    ps.picks.tools.insert("old.tool".into());
-    ps.menu = Some(Menu::Tools);
-}
-
-/// The editor on "Work", no menu open.
-pub fn fixture_editor(s: &mut State) {
-    fixture_list(s);
-    select(s, Some("work".into()));
 }

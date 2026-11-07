@@ -28,13 +28,16 @@
 
 use ironclaw_gpui_client::ClientError;
 use ironclaw_gpui_client::inbox::{
-    GoalCheckAction, GoalCheckRecord, GoalCheckSpec, GoalCheckStatus, GoalRecord, GoalStatus, ThreadGoalResponse,
+    GoalCheckAction, GoalCheckRecord, GoalCheckSpec, GoalCheckStatus, GoalRecord, GoalStatus,
+    ThreadGoalResponse,
 };
 use rune::{El, Icon, TextEdit, col, el, row};
 use rune_kit::{Kit, TextInput};
 
 use crate::chat::ChatState;
-use crate::chat::extras_ui::{ICON_XS, XS, ghost_button, ghost_icon, ico, spinner, txt, txt_medium};
+use crate::design::kit::compact::{
+    ICON_XS, XS, ghost_button, ghost_icon, ico, spinner, txt, txt_medium,
+};
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -59,7 +62,10 @@ impl GoalsState {
                 && g.check.as_ref().is_some_and(|c| {
                     matches!(
                         c.status,
-                        GoalCheckStatus::NotRun | GoalCheckStatus::Pending | GoalCheckStatus::Running | GoalCheckStatus::Failed
+                        GoalCheckStatus::NotRun
+                            | GoalCheckStatus::Pending
+                            | GoalCheckStatus::Running
+                            | GoalCheckStatus::Failed
                     )
                 })
         })
@@ -70,7 +76,12 @@ impl GoalsState {
         self.goal
             .as_ref()
             .and_then(|g| g.check.as_ref())
-            .is_some_and(|c| matches!(c.status, GoalCheckStatus::Pending | GoalCheckStatus::Running))
+            .is_some_and(|c| {
+                matches!(
+                    c.status,
+                    GoalCheckStatus::Pending | GoalCheckStatus::Running
+                )
+            })
     }
 
     pub fn editing(&self) -> bool {
@@ -85,7 +96,10 @@ pub enum GoalCommand {
     Clear,
     Set(String),
     /// Set the check, and the objective when one is given.
-    SetChecked { objective: Option<String>, check: GoalCheckSpec },
+    SetChecked {
+        objective: Option<String>,
+        check: GoalCheckSpec,
+    },
     ClearCheck,
     /// A malformed `--check`; the message says why.
     Invalid(String),
@@ -102,7 +116,7 @@ pub fn goal_command(text: &str) -> Option<GoalCommand> {
         let objective = objective.strip_prefix("set ").unwrap_or(objective).trim();
         let objective = (!objective.is_empty()).then(|| objective.to_string());
         if args.trim() == "off" && objective.is_none() {
-        return Some(GoalCommand::ClearCheck);
+            return Some(GoalCommand::ClearCheck);
         }
         return Some(match parse_check(args) {
             Ok(check) => GoalCommand::SetChecked { objective, check },
@@ -124,7 +138,7 @@ fn split_flag<'a>(text: &'a str, flag: &str) -> Option<(&'a str, &'a str)> {
         let end = at + flag.len();
         let after_ok = end == text.len() || text[end..].starts_with(char::is_whitespace);
         if before_ok && after_ok {
-        return Some((&text[..at], &text[end..]));
+            return Some((&text[..at], &text[end..]));
         }
         from = end;
     }
@@ -138,7 +152,9 @@ fn parse_check(args: &str) -> Result<GoalCheckSpec, String> {
     let (command, mut rest) = match args.chars().next() {
         Some(quote @ ('"' | '\'')) => {
             let body = &args[1..];
-            let close = body.find(quote).ok_or_else(|| format!("--check: missing closing {quote}"))?;
+            let close = body
+                .find(quote)
+                .ok_or_else(|| format!("--check: missing closing {quote}"))?;
             (body[..close].to_string(), &body[close + 1..])
         }
         _ => {
@@ -153,7 +169,11 @@ fn parse_check(args: &str) -> Result<GoalCheckSpec, String> {
     if command.trim().is_empty() {
         return Err("--check needs a command, e.g. /goal tests pass --check \"cargo test\"".into());
     }
-    let mut spec = GoalCheckSpec { command: command.trim().to_string(), max_attempts: None, timeout_secs: None };
+    let mut spec = GoalCheckSpec {
+        command: command.trim().to_string(),
+        max_attempts: None,
+        timeout_secs: None,
+    };
     loop {
         rest = rest.trim_start();
         if rest.is_empty() {
@@ -168,7 +188,9 @@ fn parse_check(args: &str) -> Result<GoalCheckSpec, String> {
             .parse::<u64>()
             .map_err(|_| format!("{flag}: {value} is not a number"))?;
         match flag {
-            "--attempts" => spec.max_attempts = Some(u32::try_from(number).map_err(|e| e.to_string())?),
+            "--attempts" => {
+                spec.max_attempts = Some(u32::try_from(number).map_err(|e| e.to_string())?)
+            }
             "--timeout" => spec.timeout_secs = Some(number),
             other => return Err(format!("unknown option {other}")),
         }
@@ -189,12 +211,28 @@ fn check_chip(check: &GoalCheckRecord) -> (String, Option<&'static Icon>, Tone) 
     match check.status {
         GoalCheckStatus::NotRun => ("Check not run".into(), None, Tone::Muted),
         GoalCheckStatus::Pending => ("Check queued".into(), None, Tone::Muted),
-        GoalCheckStatus::AwaitingApproval => ("Check needs approval".into(), Some(&icons::CIRCLE_ALERT), Tone::Warn),
+        GoalCheckStatus::AwaitingApproval => (
+            "Check needs approval".into(),
+            Some(&icons::CIRCLE_ALERT),
+            Tone::Warn,
+        ),
         GoalCheckStatus::Running => ("Checking…".into(), None, Tone::Muted),
-        GoalCheckStatus::Passed => ("Check passed".into(), Some(&icons::CIRCLE_CHECK), Tone::Good),
-        GoalCheckStatus::Failed => (format!("Check failed {n}/{max}"), Some(&icons::CIRCLE_X), Tone::Warn),
+        GoalCheckStatus::Passed => (
+            "Check passed".into(),
+            Some(&icons::CIRCLE_CHECK),
+            Tone::Good,
+        ),
+        GoalCheckStatus::Failed => (
+            format!("Check failed {n}/{max}"),
+            Some(&icons::CIRCLE_X),
+            Tone::Warn,
+        ),
         GoalCheckStatus::NeedsYou => (
-            if n >= max { format!("Needs you · failed {n}/{max}") } else { "Needs you".into() },
+            if n >= max {
+                format!("Needs you · failed {n}/{max}")
+            } else {
+                "Needs you".into()
+            },
             Some(&icons::CIRCLE_ALERT),
             Tone::Warn,
         ),
@@ -210,7 +248,11 @@ fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut GoalsState> {
 
 /// [`slot`], only while the chat extras `instance` that asked still shows
 /// it: a chat closed and reopened on the same thread is a new instance.
-fn slot_of<'a>(s: &'a mut State, thread_id: &str, instance: jobs::Instance) -> Option<&'a mut GoalsState> {
+fn slot_of<'a>(
+    s: &'a mut State,
+    thread_id: &str,
+    instance: jobs::Instance,
+) -> Option<&'a mut GoalsState> {
     if !crate::chat::orchestration::is_current(s, thread_id, instance) {
         return None;
     }
@@ -220,7 +262,9 @@ fn slot_of<'a>(s: &'a mut State, thread_id: &str, instance: jobs::Instance) -> O
 /// Read the goal once per thread open, and again while its check can still
 /// move (each orchestration refresh asks).
 pub fn load(s: &mut State, id: &str) {
-    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else { return };
+    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else {
+        return;
+    };
     let Some(g) = slot(s, id) else { return };
     let thread_id = id.to_string();
     if g.reading || (g.loaded && !g.check_can_move()) {
@@ -234,7 +278,9 @@ pub fn load(s: &mut State, id: &str) {
         "goal",
         move |c| async move { c.thread_goal(&thread_id).await },
         move |s, result, _| {
-            let Some(g) = slot_of(s, &asked, instance) else { return };
+            let Some(g) = slot_of(s, &asked, instance) else {
+                return;
+            };
             g.reading = false;
             match result {
                 Ok(doc) => g.goal = doc.goal,
@@ -247,8 +293,15 @@ pub fn load(s: &mut State, id: &str) {
     );
 }
 
-fn apply_goal(s: &mut State, asked: &str, instance: jobs::Instance, result: Result<ThreadGoalResponse, ClientError>) {
-    let Some(g) = slot_of(s, asked, instance) else { return };
+fn apply_goal(
+    s: &mut State,
+    asked: &str,
+    instance: jobs::Instance,
+    result: Result<ThreadGoalResponse, ClientError>,
+) {
+    let Some(g) = slot_of(s, asked, instance) else {
+        return;
+    };
     match result {
         Ok(doc) => {
             g.goal = doc.goal;
@@ -261,33 +314,50 @@ fn apply_goal(s: &mut State, asked: &str, instance: jobs::Instance, result: Resu
 }
 
 fn write_goal(s: &mut State, id: &str, objective: Option<String>, status: Option<GoalStatus>) {
-    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else { return };
+    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else {
+        return;
+    };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
         "goal",
-        move |c| async move { c.set_thread_goal(&thread_id, objective.as_deref(), status).await },
+        move |c| async move {
+            c.set_thread_goal(&thread_id, objective.as_deref(), status)
+                .await
+        },
         move |s, result, _| apply_goal(s, &asked, instance, result),
     );
 }
 
 /// Set (or with `None` remove) the check, and the objective if given.
-fn write_goal_check(s: &mut State, id: &str, objective: Option<String>, check: Option<GoalCheckSpec>) {
-    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else { return };
+fn write_goal_check(
+    s: &mut State,
+    id: &str,
+    objective: Option<String>,
+    check: Option<GoalCheckSpec>,
+) {
+    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else {
+        return;
+    };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
         "goal",
-        move |c| async move { c.set_thread_goal_check(&thread_id, objective.as_deref(), check.as_ref()).await },
+        move |c| async move {
+            c.set_thread_goal_check(&thread_id, objective.as_deref(), check.as_ref())
+                .await
+        },
         move |s, result, _| apply_goal(s, &asked, instance, result),
     );
 }
 
 /// `revision` is the check the strip showed when it was clicked.
 fn goal_check_action(s: &mut State, id: &str, action: GoalCheckAction, revision: u64) {
-    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else { return };
+    let Some(instance) = crate::chat::orchestration::instance_of(s, id) else {
+        return;
+    };
     let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
@@ -310,7 +380,9 @@ pub fn run_command(s: &mut State, id: &str, command: GoalCommand) {
         GoalCommand::Edit => edit_goal(s, id, false),
         GoalCommand::Clear => write_goal(s, id, None, None),
         GoalCommand::Set(objective) => write_goal(s, id, Some(objective), None),
-        GoalCommand::SetChecked { objective, check } => write_goal_check(s, id, objective, Some(check)),
+        GoalCommand::SetChecked { objective, check } => {
+            write_goal_check(s, id, objective, Some(check))
+        }
         GoalCommand::ClearCheck => write_goal_check(s, id, None, None),
         GoalCommand::Invalid(_) => {}
     }
@@ -321,7 +393,8 @@ fn edit_goal(s: &mut State, id: &str, check: bool) {
     let Some(g) = slot(s, id) else { return };
     let goal = g.goal.as_ref();
     let current = if check {
-        goal.and_then(|g| g.check.as_ref()).map(|c| c.command.clone())
+        goal.and_then(|g| g.check.as_ref())
+            .map(|c| c.command.clone())
     } else {
         goal.map(|g| g.objective.clone())
     }
@@ -366,7 +439,11 @@ pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     let p = &s.palette;
     let muted = p.text_muted;
     if let Some(edit) = &g.editor {
-        let i = if g.editing_check { &icons::SQUARE_TERMINAL } else { &icons::TARGET };
+        let i = if g.editing_check {
+            &icons::SQUARE_TERMINAL
+        } else {
+            &icons::TARGET
+        };
         let placeholder = if g.editing_check {
             "Command that verifies the goal, e.g. cargo test (empty removes the check)"
         } else {
@@ -397,7 +474,14 @@ pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
                             .key("goal-input"),
                     ),
                 )
-                .child(ghost_button(k, "goal-cancel", "Cancel", None, false, move |s| close_editor(s, &cancel_id))),
+                .child(ghost_button(
+                    k,
+                    "goal-cancel",
+                    "Cancel",
+                    None,
+                    false,
+                    move |s| close_editor(s, &cancel_id),
+                )),
         );
     }
     let goal = g.goal.as_ref()?;
@@ -427,16 +511,37 @@ pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
         }
         chip.child(txt(label, XS, color))
     });
-    let check_label = check.map(|c| format!(", check `{}`: {}", c.command, check_chip(c).0)).unwrap_or_default();
+    let check_label = check
+        .map(|c| format!(", check `{}`: {}", c.command, check_chip(c).0))
+        .unwrap_or_default();
     // The last line of a failed run, under the strip.
     let tail = check
-        .filter(|c| matches!(c.status, GoalCheckStatus::Failed | GoalCheckStatus::NeedsYou))
+        .filter(|c| {
+            matches!(
+                c.status,
+                GoalCheckStatus::Failed | GoalCheckStatus::NeedsYou
+            )
+        })
         .and_then(|c| c.output_tail.as_deref())
         .and_then(|t| t.lines().rev().find(|l| !l.trim().is_empty()))
-        .map(|line| format!("`{}` → {}", check.map(|c| c.command.as_str()).unwrap_or(""), line.trim()));
-    let can_run = check.is_some_and(|c| !matches!(c.status, GoalCheckStatus::Pending | GoalCheckStatus::Running));
+        .map(|line| {
+            format!(
+                "`{}` → {}",
+                check.map(|c| c.command.as_str()).unwrap_or(""),
+                line.trim()
+            )
+        });
+    let can_run = check.is_some_and(|c| {
+        !matches!(
+            c.status,
+            GoalCheckStatus::Pending | GoalCheckStatus::Running
+        )
+    });
     let can_stop = check.is_some_and(|c| {
-        !matches!(c.status, GoalCheckStatus::Passed | GoalCheckStatus::Running | GoalCheckStatus::Stopped)
+        !matches!(
+            c.status,
+            GoalCheckStatus::Passed | GoalCheckStatus::Running | GoalCheckStatus::Stopped
+        )
     }) && !done;
     let has_check = check.is_some();
     // What "Run check now" approves: the check drawn here, not whatever the
@@ -446,33 +551,70 @@ pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     let mut actions = row().gap(1.).center_y().group_opacity(0., 1.);
     if can_run {
         let id = id.clone();
-        actions = actions.child(ghost_icon(k, "goal-check-run", &icons::PLAY, "Run check now", move |s| {
-            goal_check_action(s, &id, GoalCheckAction::RunNow, shown_revision)
-        }));
+        actions = actions.child(ghost_icon(
+            k,
+            "goal-check-run",
+            &icons::PLAY,
+            "Run check now",
+            move |s| goal_check_action(s, &id, GoalCheckAction::RunNow, shown_revision),
+        ));
     }
     if can_stop {
         let id = id.clone();
-        actions = actions.child(ghost_icon(k, "goal-check-stop", &icons::SQUARE, "Stop retrying", move |s| {
-            goal_check_action(s, &id, GoalCheckAction::StopRetrying, shown_revision)
-        }));
+        actions = actions.child(ghost_icon(
+            k,
+            "goal-check-stop",
+            &icons::SQUARE,
+            "Stop retrying",
+            move |s| goal_check_action(s, &id, GoalCheckAction::StopRetrying, shown_revision),
+        ));
     }
-    let edit_check = if has_check { "Edit check" } else { "Add a check" };
+    let edit_check = if has_check {
+        "Edit check"
+    } else {
+        "Add a check"
+    };
     let (check_id, edit_id, done_id, clear_id) = (id.clone(), id.clone(), id.clone(), id);
     actions = actions
-        .child(ghost_icon(k, "goal-check-edit", &icons::SQUARE_TERMINAL, edit_check, move |s| {
-            edit_goal(s, &check_id, true)
-        }))
-        .child(ghost_icon(k, "goal-edit", &icons::PENCIL, "Edit goal", move |s| edit_goal(s, &edit_id, false)))
+        .child(ghost_icon(
+            k,
+            "goal-check-edit",
+            &icons::SQUARE_TERMINAL,
+            edit_check,
+            move |s| edit_goal(s, &check_id, true),
+        ))
+        .child(ghost_icon(
+            k,
+            "goal-edit",
+            &icons::PENCIL,
+            "Edit goal",
+            move |s| edit_goal(s, &edit_id, false),
+        ))
         .child(ghost_icon(
             k,
             "goal-done",
             if done { &icons::UNDO_2 } else { &icons::CHECK },
             if done { "Pursue again" } else { "Mark done" },
-            move |s| write_goal(s, &done_id, None, Some(if done { GoalStatus::Active } else { GoalStatus::Done })),
+            move |s| {
+                write_goal(
+                    s,
+                    &done_id,
+                    None,
+                    Some(if done {
+                        GoalStatus::Active
+                    } else {
+                        GoalStatus::Done
+                    }),
+                )
+            },
         ))
-        .child(ghost_icon(k, "goal-clear", &icons::CLOSE, "Clear goal", move |s| {
-            write_goal(s, &clear_id, None, None)
-        }));
+        .child(ghost_icon(
+            k,
+            "goal-clear",
+            &icons::CLOSE,
+            "Clear goal",
+            move |s| write_goal(s, &clear_id, None, None),
+        ));
 
     let mut strip = row()
         .key("goal-strip")
@@ -482,9 +624,22 @@ pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
         .h(28.)
         .gap(4.)
         .center_y()
-        .child(el().w(24.).center().child(ico(&icons::TARGET, ICON_XS, accent)))
-        .child(txt_medium(title, XS, if passed { p.success } else { p.text }))
-        .child(txt(goal.objective.clone(), XS, muted).truncate().grow(1.).min_w(0.));
+        .child(
+            el().w(24.)
+                .center()
+                .child(ico(&icons::TARGET, ICON_XS, accent)),
+        )
+        .child(txt_medium(
+            title,
+            XS,
+            if passed { p.success } else { p.text },
+        ))
+        .child(
+            txt(goal.objective.clone(), XS, muted)
+                .truncate()
+                .grow(1.)
+                .min_w(0.),
+        );
     // A side-pane chat is too narrow for title, objective and chip on one
     // line: the chip drops below, so the objective keeps its room.
     let narrow = chat.embedded;
@@ -534,7 +689,9 @@ pub fn fixture() -> GoalsState {
                 status: GoalCheckStatus::Failed,
                 attempts: 2,
                 exit_code: Some(101),
-                output_tail: Some("running 12 tests\ntest result: FAILED. 11 passed; 1 failed\n".into()),
+                output_tail: Some(
+                    "running 12 tests\ntest result: FAILED. 11 passed; 1 failed\n".into(),
+                ),
                 ran_at: None,
             }),
         }),
@@ -562,11 +719,18 @@ mod tests {
     fn a_goal_reply_lands_in_its_own_chat_and_is_dropped_once_that_chat_closed() {
         let mut s = test_state();
         with_side_chat(&mut s, "sc2");
-        let doc = || ThreadGoalResponse { thread_id: "sc2".into(), goal: fixture().goal };
-        let inst = crate::chat::orchestration::instance_of(&mut s, "sc2").expect("side chat extras");
+        let doc = || ThreadGoalResponse {
+            thread_id: "sc2".into(),
+            goal: fixture().goal,
+        };
+        let inst =
+            crate::chat::orchestration::instance_of(&mut s, "sc2").expect("side chat extras");
         apply_goal(&mut s, "sc2", inst, Ok(doc()));
         assert!(chat_ref(&s, "sc2").is_some_and(|c| c.goals.goal.is_some()));
-        assert!(chat_ref(&s, "t1").is_some_and(|c| c.goals.goal.is_none()), "the open chat's goal is its own");
+        assert!(
+            chat_ref(&s, "t1").is_some_and(|c| c.goals.goal.is_none()),
+            "the open chat's goal is its own"
+        );
         close_side_chat(&mut s);
         apply_goal(&mut s, "sc2", inst, Ok(doc()));
         apply_goal(&mut s, "sc2", inst, Err(ClientError::Config("gone".into())));
@@ -582,14 +746,25 @@ mod tests {
         let old = crate::chat::orchestration::instance_of(&mut s, "sc2").expect("extras");
         close_side_chat(&mut s);
         with_side_chat(&mut s, "sc2");
-        let doc = ThreadGoalResponse { thread_id: "sc2".into(), goal: fixture().goal };
+        let doc = ThreadGoalResponse {
+            thread_id: "sc2".into(),
+            goal: fixture().goal,
+        };
         apply_goal(&mut s, "sc2", old, Ok(doc));
         apply_goal(&mut s, "sc2", old, Err(ClientError::Config("late".into())));
         let side = chat_ref(&s, "sc2").expect("reopened side chat");
         assert!(side.goals.goal.is_none(), "the old chat's goal never lands");
         assert!(side.error.is_none(), "nor its error");
         let new = crate::chat::orchestration::instance_of(&mut s, "sc2").expect("extras");
-        apply_goal(&mut s, "sc2", new, Ok(ThreadGoalResponse { thread_id: "sc2".into(), goal: fixture().goal }));
+        apply_goal(
+            &mut s,
+            "sc2",
+            new,
+            Ok(ThreadGoalResponse {
+                thread_id: "sc2".into(),
+                goal: fixture().goal,
+            }),
+        );
         assert!(chat_ref(&s, "sc2").is_some_and(|c| c.goals.goal.is_some()));
     }
 
@@ -597,8 +772,14 @@ mod tests {
     fn goal_commands_parse_like_t3() {
         assert_eq!(goal_command("/goal"), Some(GoalCommand::Edit));
         assert_eq!(goal_command(" /goal clear "), Some(GoalCommand::Clear));
-        assert_eq!(goal_command("/goal set ship the inbox"), Some(GoalCommand::Set("ship the inbox".into())));
-        assert_eq!(goal_command("/goal ship it"), Some(GoalCommand::Set("ship it".into())));
+        assert_eq!(
+            goal_command("/goal set ship the inbox"),
+            Some(GoalCommand::Set("ship the inbox".into()))
+        );
+        assert_eq!(
+            goal_command("/goal ship it"),
+            Some(GoalCommand::Set("ship it".into()))
+        );
         assert_eq!(goal_command("/goals"), None);
         assert_eq!(goal_command("set a /goal"), None);
     }
@@ -606,7 +787,11 @@ mod tests {
     fn checked(objective: Option<&str>, command: &str) -> GoalCommand {
         GoalCommand::SetChecked {
             objective: objective.map(str::to_string),
-            check: GoalCheckSpec { command: command.into(), max_attempts: None, timeout_secs: None },
+            check: GoalCheckSpec {
+                command: command.into(),
+                max_attempts: None,
+                timeout_secs: None,
+            },
         }
     }
 
@@ -616,33 +801,59 @@ mod tests {
             goal_command(r#"/goal tests pass --check "cargo test -p foo""#),
             Some(checked(Some("tests pass"), "cargo test -p foo"))
         );
-        assert_eq!(goal_command("/goal lint clean --check 'npm run lint'"), Some(checked(Some("lint clean"), "npm run lint")));
-        assert_eq!(goal_command("/goal green --check make check"), Some(checked(Some("green"), "make check")));
-        assert_eq!(goal_command(r#"/goal --check "cargo test""#), Some(checked(None, "cargo test")));
-        assert_eq!(goal_command("/goal --check off"), Some(GoalCommand::ClearCheck));
+        assert_eq!(
+            goal_command("/goal lint clean --check 'npm run lint'"),
+            Some(checked(Some("lint clean"), "npm run lint"))
+        );
+        assert_eq!(
+            goal_command("/goal green --check make check"),
+            Some(checked(Some("green"), "make check"))
+        );
+        assert_eq!(
+            goal_command(r#"/goal --check "cargo test""#),
+            Some(checked(None, "cargo test"))
+        );
+        assert_eq!(
+            goal_command("/goal --check off"),
+            Some(GoalCommand::ClearCheck)
+        );
         assert_eq!(
             goal_command(r#"/goal ok --check "cargo test" --attempts 3 --timeout 300s"#),
             Some(GoalCommand::SetChecked {
                 objective: Some("ok".into()),
-                check: GoalCheckSpec { command: "cargo test".into(), max_attempts: Some(3), timeout_secs: Some(300) },
+                check: GoalCheckSpec {
+                    command: "cargo test".into(),
+                    max_attempts: Some(3),
+                    timeout_secs: Some(300)
+                },
             })
         );
         assert_eq!(
             goal_command("/goal x --check cargo test --attempts 2"),
             Some(GoalCommand::SetChecked {
                 objective: Some("x".into()),
-                check: GoalCheckSpec { command: "cargo test".into(), max_attempts: Some(2), timeout_secs: None },
+                check: GoalCheckSpec {
+                    command: "cargo test".into(),
+                    max_attempts: Some(2),
+                    timeout_secs: None
+                },
             })
         );
         // `--checks` inside the objective is not the flag.
-        assert_eq!(goal_command("/goal add --checks to CI"), Some(GoalCommand::Set("add --checks to CI".into())));
+        assert_eq!(
+            goal_command("/goal add --checks to CI"),
+            Some(GoalCommand::Set("add --checks to CI".into()))
+        );
         for bad in [
             r#"/goal x --check "cargo test"#,
             "/goal x --check",
             r#"/goal x --check "a" --attempts many"#,
             r#"/goal x --check "a" --verbose 1"#,
         ] {
-            assert!(matches!(goal_command(bad), Some(GoalCommand::Invalid(_))), "{bad}");
+            assert!(
+                matches!(goal_command(bad), Some(GoalCommand::Invalid(_))),
+                "{bad}"
+            );
         }
     }
 

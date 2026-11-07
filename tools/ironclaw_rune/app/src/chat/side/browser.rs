@@ -11,7 +11,7 @@ use rune::{El, TextEdit, col, icon, row};
 use rune_kit::{Kit, TextInput};
 
 use super::ui::{self, SM};
-use super::{Tab, side_of, side, side_mut, side_total, tab_shown, thread_id};
+use super::{Tab, side, side_mut, side_of, side_total, tab_shown, thread_id};
 use crate::icons;
 use crate::jobs;
 use crate::native_view::{self, Slot, Source, WebCommand, WebState};
@@ -99,7 +99,10 @@ fn step(s: &mut State, thread: &str, generation: jobs::Generation) -> Option<Dur
     let loading = state.as_ref().is_some_and(|s| s.loading);
     let x = side_of(s, thread)?;
     // The field follows the page unless the person is typing in it.
-    if let Some(url) = state.as_ref().map(|w| w.url.clone()).filter(|u| !u.is_empty())
+    if let Some(url) = state
+        .as_ref()
+        .map(|w| w.url.clone())
+        .filter(|u| !u.is_empty())
         && !x.browser.input.focused
         && x.browser.input.text != url
     {
@@ -113,7 +116,9 @@ fn step(s: &mut State, thread: &str, generation: jobs::Generation) -> Option<Dur
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
-    let Some(x) = side(s) else { return ui::loading(k) };
+    let Some(x) = side(s) else {
+        return ui::loading(k);
+    };
     let state = x.browser.shown.clone().unwrap_or_default();
     let url = page();
     let nav = |key: &str, i: &'static rune::Icon, tip: &str, on: bool, cmd: WebCommand| {
@@ -130,12 +135,30 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .py(4.)
         .gap(4.)
         .items_center()
-        .child(nav("web-back", &icons::ARROW_LEFT, "Back", state.back, WebCommand::Back))
-        .child(nav("web-forward", &icons::ARROW_RIGHT, "Forward", state.forward, WebCommand::Forward))
+        .child(nav(
+            "web-back",
+            &icons::ARROW_LEFT,
+            "Back",
+            state.back,
+            WebCommand::Back,
+        ))
+        .child(nav(
+            "web-forward",
+            &icons::ARROW_RIGHT,
+            "Forward",
+            state.forward,
+            WebCommand::Forward,
+        ))
         .child(if state.loading {
             nav("web-stop", &icons::CLOSE, "Stop", true, WebCommand::Stop)
         } else {
-            nav("web-reload", &icons::REFRESH_CW, "Reload", open_url.is_some(), WebCommand::Reload)
+            nav(
+                "web-reload",
+                &icons::REFRESH_CW,
+                "Reload",
+                open_url.is_some(),
+                WebCommand::Reload,
+            )
         })
         .child(
             row().grow(1.).min_w(0.).child(
@@ -220,7 +243,9 @@ fn address(text: &str) -> Option<String> {
     let query: String = text
         .bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             b' ' => "+".into(),
             _ => format!("%{b:02X}"),
         })
@@ -262,17 +287,32 @@ mod tests {
         let (_, second) = loop_of(&s);
         assert_ne!(first, second);
         assert!(step(&mut s, "t1", first).is_none());
-        assert!(step(&mut s, "t2", first).is_none(), "an older loop on this thread ends too");
+        assert!(
+            step(&mut s, "t2", first).is_none(),
+            "an older loop on this thread ends too"
+        );
         assert_eq!(loop_of(&s), (true, second), "the running loop is untouched");
         assert!(step(&mut s, "t2", second).is_some());
     }
 
     #[test]
     fn addresses_resolve_like_a_browser_bar() {
-        assert_eq!(address("localhost:3000").as_deref(), Some("http://localhost:3000"));
-        assert_eq!(address("127.0.0.1:8080/x").as_deref(), Some("http://127.0.0.1:8080/x"));
-        assert_eq!(address("docs.rs/gpui").as_deref(), Some("https://docs.rs/gpui"));
-        assert_eq!(address("file:///tmp/a.html").as_deref(), Some("file:///tmp/a.html"));
+        assert_eq!(
+            address("localhost:3000").as_deref(),
+            Some("http://localhost:3000")
+        );
+        assert_eq!(
+            address("127.0.0.1:8080/x").as_deref(),
+            Some("http://127.0.0.1:8080/x")
+        );
+        assert_eq!(
+            address("docs.rs/gpui").as_deref(),
+            Some("https://docs.rs/gpui")
+        );
+        assert_eq!(
+            address("file:///tmp/a.html").as_deref(),
+            Some("file:///tmp/a.html")
+        );
         assert_eq!(
             address("rust lifetimes").as_deref(),
             Some("https://duckduckgo.com/?q=rust+lifetimes")

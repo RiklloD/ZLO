@@ -126,11 +126,12 @@ pub fn keyed_setting_row(
     description: Option<&str>,
     control: El,
 ) -> El {
-    let mut left = col()
-        .grow(1.0)
-        .min_w(160.)
-        .gap(1.)
-        .child(sized_label(title, super::SM, 500., p.text));
+    let mut left =
+        col()
+            .grow(1.0)
+            .min_w(160.)
+            .gap(1.)
+            .child(sized_label(title, super::SM, 500., p.text));
     if let Some(d) = description {
         left = left.child(
             text(d)
@@ -153,7 +154,9 @@ pub fn keyed_setting_row(
 
 /// A 1 px rule in the border colour, softened (between rows).
 pub fn hairline(p: &Palette) -> El {
-    el().h(1.).fill(p.border.alpha(p.border.a * 0.6)).a11y_hidden()
+    el().h(1.)
+        .fill(p.border.alpha(p.border.a * 0.6))
+        .a11y_hidden()
 }
 
 /// A full-strength 1 px rule, GPUI's `border_t_1`.

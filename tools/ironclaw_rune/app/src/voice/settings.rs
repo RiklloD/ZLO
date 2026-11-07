@@ -36,20 +36,38 @@ pub(super) fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>
         .iter()
         .position(|(k, _)| *k == prefs.hotkey)
         .unwrap_or(0);
-    let keys = segmented(s, k, "voice-key", &key_labels, key_ix, !prefs.hotkey_enabled, |s, ix| {
-        super::update_prefs(s, |p| p.hotkey = HOTKEYS[ix].0.into())
-    });
+    let keys = segmented(
+        s,
+        k,
+        "voice-key",
+        &key_labels,
+        key_ix,
+        !prefs.hotkey_enabled,
+        |s, ix| super::update_prefs(s, |p| p.hotkey = HOTKEYS[ix].0.into()),
+    );
     let pace_ix = closest(PACES.iter().map(|(v, _)| *v), prefs.speech_rate);
-    let pace = segmented(s, k, "voice-pace", &PACES.map(|(_, l)| l), pace_ix, false, |s, ix| {
-        super::update_prefs(s, |p| p.speech_rate = PACES[ix].0)
-    });
+    let pace = segmented(
+        s,
+        k,
+        "voice-pace",
+        &PACES.map(|(_, l)| l),
+        pace_ix,
+        false,
+        |s, ix| super::update_prefs(s, |p| p.speech_rate = PACES[ix].0),
+    );
     let pause_ix = closest(
         PAUSES.iter().map(|(v, _)| *v as f32),
         prefs.silence_ms as f32,
     );
-    let pause = segmented(s, k, "voice-pause", &PAUSES.map(|(_, l)| l), pause_ix, false, |s, ix| {
-        super::update_prefs(s, |p| p.silence_ms = PAUSES[ix].0)
-    });
+    let pause = segmented(
+        s,
+        k,
+        "voice-pause",
+        &PAUSES.map(|(_, l)| l),
+        pause_ix,
+        false,
+        |s, ix| super::update_prefs(s, |p| p.silence_ms = PAUSES[ix].0),
+    );
     let access = if s.voice.authorized {
         text("Allowed")
             .key("voice-allowed")
@@ -242,7 +260,13 @@ fn fixture_preview(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         .radius(16.)
         .fill(p.surface_card)
         .child(chips)
-        .child(super::ui::composer_controls(s, k, layer, &preview.composer, thread))
+        .child(super::ui::composer_controls(
+            s,
+            k,
+            layer,
+            &preview.composer,
+            thread,
+        ))
 }
 
 /// The index of the option nearest `value`.
@@ -284,7 +308,10 @@ fn page_body(key: &'static str, content: El) -> El {
         .w_full()
         .h_full()
         .min_h(0.)
-        .scroll(ScrollSpec { stick_bottom: false }).wheel_glide(key)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .wheel_glide(key)
         .child(
             row()
                 .w_full()
@@ -297,12 +324,11 @@ fn page_body(key: &'static str, content: El) -> El {
 }
 
 fn header(s: &State, title: &'static str) -> El {
-    row()
-        .justify_between()
-        .items_center()
-        .px(8.)
-        .pb(8.)
-        .child(text(title).font(TextStyle::new(20., 500.)).color(s.palette.text))
+    row().justify_between().items_center().px(8.).pb(8.).child(
+        text(title)
+            .font(TextStyle::new(20., 500.))
+            .color(s.palette.text),
+    )
 }
 
 /// A settings group's label: 32 px above the group, an optional line of
@@ -318,7 +344,12 @@ fn group_header(s: &State, title: &'static str, note: Option<&'static str>) -> E
             .color(p.text),
     );
     if let Some(note) = note {
-        out = out.child(text(note).font(TextStyle::new(12., 400.)).color(p.text_muted).wrap());
+        out = out.child(
+            text(note)
+                .font(TextStyle::new(12., 400.))
+                .color(p.text_muted)
+                .wrap(),
+        );
     }
     out
 }
@@ -338,7 +369,11 @@ fn rows_card(s: &State, key: &'static str, rows: Vec<El>) -> El {
     let mut card = col().key(key).w_full().radius(12.).fill(block_fill(s));
     for (ix, r) in rows.into_iter().enumerate() {
         if ix > 0 {
-            card = card.child(el().mx(16.).h(1.).fill(s.palette.border.alpha(0.6 * s.palette.border.a)));
+            card = card.child(
+                el().mx(16.)
+                    .h(1.)
+                    .fill(s.palette.border.alpha(0.6 * s.palette.border.a)),
+            );
         }
         card = card.child(r);
     }
@@ -347,13 +382,18 @@ fn rows_card(s: &State, key: &'static str, rows: Vec<El>) -> El {
 
 /// One setting: a 14 px medium title and a 12 px muted description on the
 /// left, the control on the right, at least 60 px tall.
-fn setting_row(s: &State, label: &'static str, description: Option<&'static str>, control: El) -> El {
+fn setting_row(
+    s: &State,
+    label: &'static str,
+    description: Option<&'static str>,
+    control: El,
+) -> El {
     let p = &s.palette;
-    let mut left = col().grow(1.).min_w(160.).gap(1.).child(
-        text(label)
-            .font(TextStyle::new(14., 500.))
-            .color(p.text),
-    );
+    let mut left = col()
+        .grow(1.)
+        .min_w(160.)
+        .gap(1.)
+        .child(text(label).font(TextStyle::new(14., 500.)).color(p.text));
     if let Some(d) = description {
         left = left.child(
             text(d)

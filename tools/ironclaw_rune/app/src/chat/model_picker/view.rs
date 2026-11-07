@@ -6,14 +6,14 @@ use rune::{Color, Cx, El, Key, Modifier, Phase, TextEdit, col, el, row};
 use rune_kit::{Kit, Placement, TextInput, popover, scrim};
 
 use super::{
-    ModelPickerState, NATIVE, Rail, Slot, cycle_rail, edit_prefs, effort_label, hidden_summary, pick,
-    pick_effort, pretty_model, reorder, toggle_provider,
+    ModelPickerState, NATIVE, Rail, Slot, cycle_rail, edit_prefs, effort_label, hidden_summary,
+    pick, pick_effort, pretty_model, reorder, toggle_provider,
 };
-use crate::design::smooth_scroll::WheelGlide;
 use crate::design::kit::compact::{
     ICON_SM, ICON_XS, SM, XS, ghost_icon, ico, panel_surface, spacer, spinner, txt, txt_medium,
 };
 use crate::design::kit::shortcut_badge;
+use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::State;
@@ -66,7 +66,13 @@ pub fn pills_for(s: &State, slot: Slot, _cx: &mut Cx<State>, k: &Kit, layer: &mu
         .fill(if m.open { p.active } else { Color::TRANSPARENT })
         .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
-        .child(provider_mark(s, brand.as_deref(), &runtime, provider.as_deref().unwrap_or(NATIVE), 14.));
+        .child(provider_mark(
+            s,
+            brand.as_deref(),
+            &runtime,
+            provider.as_deref().unwrap_or(NATIVE),
+            14.,
+        ));
     if !m.compact {
         pill = pill.child(txt(label.clone(), SM, ink));
     }
@@ -87,11 +93,23 @@ pub fn pills_for(s: &State, slot: Slot, _cx: &mut Cx<State>, k: &Kit, layer: &mu
     let (placement, gap) = placement(m);
     if m.open {
         let closing = slot.clone();
-        layer.push(scrim("model-scrim", move |s: &mut State| close(s, &closing)));
+        layer.push(scrim("model-scrim", move |s: &mut State| {
+            close(s, &closing)
+        }));
         let popover = model_popover(s, m, &slot, k);
-        layer.push(popover::anchored(k, popover, &slot.key("model-pill"), placement, gap));
+        layer.push(popover::anchored(
+            k,
+            popover,
+            &slot.key("model-pill"),
+            placement,
+            gap,
+        ));
     }
-    let mut out = row().key(slot.key("model-pills")).gap(2.).center_y().child(pill);
+    let mut out = row()
+        .key(slot.key("model-pills"))
+        .gap(2.)
+        .center_y()
+        .child(pill);
     if let Some(effort) = effort_pill(s, m, &slot, k, layer) {
         out = out.child(effort);
     }
@@ -126,10 +144,17 @@ fn search_key(s: &mut State, slot: &Slot, ev: &rune::KeyEvent) -> bool {
             true
         }
         Key::Command(c) if !ev.mods.ctrl && !ev.mods.alt && !ev.mods.shift => {
-            let Some(ix) = c.to_digit(10).filter(|d| (1..=9).contains(d)).map(|d| d as usize - 1) else {
+            let Some(ix) = c
+                .to_digit(10)
+                .filter(|d| (1..=9).contains(d))
+                .map(|d| d as usize - 1)
+            else {
                 return false;
             };
-            let (order, recent) = (s.prefs.provider_order.clone(), s.prefs.recent_models.clone());
+            let (order, recent) = (
+                s.prefs.provider_order.clone(),
+                s.prefs.recent_models.clone(),
+            );
             let picked = slot.get(s).and_then(|m| m.nth_pick(ix, &order, &recent));
             if let Some((provider, model)) = picked {
                 pick(s, slot.clone(), provider, model);
@@ -142,7 +167,10 @@ fn search_key(s: &mut State, slot: &Slot, ev: &rune::KeyEvent) -> bool {
         }
         // ⌘ held here numbers models; releases pass through so a badge
         // shown before the picker opened still clears.
-        Key::Modifier { modifier: Modifier::SuperLeft | Modifier::SuperRight, .. } => {
+        Key::Modifier {
+            modifier: Modifier::SuperLeft | Modifier::SuperRight,
+            ..
+        } => {
             if let Some(m) = slot.get_mut(s) {
                 m.cmd_held = ev.mods.cmd;
             }
@@ -173,18 +201,30 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
     let tab = |key: &str, i: &'static rune::Icon, rail: Rail, tip: &str| {
         let on = m.rail == rail;
         let slot = slot.clone();
-        rail_item(key.into(), ico(i, ICON_SM, p.text), on, tip.into()).on_press(move |s: &mut State| {
-            if let Some(m) = slot.get_mut(s) {
-                m.rail = rail.clone();
-            }
-        })
+        rail_item(key.into(), ico(i, ICON_SM, p.text), on, tip.into()).on_press(
+            move |s: &mut State| {
+                if let Some(m) = slot.get_mut(s) {
+                    m.rail = rail.clone();
+                }
+            },
+        )
     };
     let mut rail = col()
         .key("model-rail-items")
         .padding(4.)
         .gap(4.)
-        .child(tab("rail-favorites", &icons::STAR, Rail::Favorites, "Favorites"))
-        .child(tab("rail-all", &icons::LAYOUT_GRID, Rail::All, "All providers"));
+        .child(tab(
+            "rail-favorites",
+            &icons::STAR,
+            Rail::Favorites,
+            "Favorites",
+        ))
+        .child(tab(
+            "rail-all",
+            &icons::LAYOUT_GRID,
+            Rail::All,
+            "All providers",
+        ));
     for provider in m.ordered_providers(order) {
         let hidden = m.prefs.provider_hidden(&provider.provider);
         if hidden && !m.show_hidden {
@@ -197,7 +237,13 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
             provider.name,
             if hidden { "show" } else { "hide" }
         );
-        let mark = provider_mark(s, provider.brand.as_deref(), &provider.runtime, &provider.provider, 18.);
+        let mark = provider_mark(
+            s,
+            provider.brand.as_deref(),
+            &provider.runtime,
+            &provider.provider,
+            18.,
+        );
         let mut item = rail_item(format!("rail-{key}"), mark, on, tip);
         if hidden {
             item = item.opacity(0.4);
@@ -205,7 +251,11 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
         if let Some((dragged, dy)) = &m.rail_drag
             && *dragged == key
         {
-            item = item.offset(0., *dy).raise().fill(p.active).shadow(4., 12., Color::BLACK.alpha(0.3));
+            item = item.offset(0., *dy).raise().fill(p.active).shadow(
+                4.,
+                12.,
+                Color::BLACK.alpha(0.3),
+            );
         }
         let (k1, k2, k3, k4) = (key.clone(), key.clone(), key.clone(), key);
         let (s1, s2, s3, s4) = (slot.clone(), slot.clone(), slot.clone(), slot.clone());
@@ -216,7 +266,9 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                 }
             })
             .on_double_press(move |s: &mut State| toggle_provider(s, s2.clone(), k2.clone()))
-            .on_secondary_press(move |s: &mut State, _, _| toggle_provider(s, s3.clone(), k3.clone()))
+            .on_secondary_press(move |s: &mut State, _, _| {
+                toggle_provider(s, s3.clone(), k3.clone())
+            })
             .on_drag(move |s: &mut State, d, _| rail_drag(s, &s4, &k4, d)),
         );
     }
@@ -274,7 +326,10 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                 .key("model-list")
                 .grow(1.)
                 .min_h(0.)
-                .scroll(rune::ScrollSpec { stick_bottom: false }).wheel_glide("model-list")
+                .scroll(rune::ScrollSpec {
+                    stick_bottom: false,
+                })
+                .wheel_glide("model-list")
                 .child(rows),
         );
     if hidden > 0 {
@@ -314,7 +369,10 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                     .key("model-rail")
                     .min_h(0.)
                     .h_full()
-                    .scroll(rune::ScrollSpec { stick_bottom: false }).wheel_glide("model-rail")
+                    .scroll(rune::ScrollSpec {
+                        stick_bottom: false,
+                    })
+                    .wheel_glide("model-rail")
                     .child(rail),
             )
             .child(el().w(1.).h_full().fill(p.border))
@@ -353,8 +411,11 @@ fn rail_drag(s: &mut State, slot: &Slot, key: &str, d: &mut rune::Drag) {
                 .filter(|p| m.show_hidden || !m.prefs.provider_hidden(&p.provider))
                 .map(|p| p.provider.clone())
                 .collect();
-            let Some(from) = visible.iter().position(|p| p == key) else { return };
-            let to = (from as f32 + (travel / RAIL_STEP).round()).clamp(0., (visible.len() - 1) as f32) as usize;
+            let Some(from) = visible.iter().position(|p| p == key) else {
+                return;
+            };
+            let to = (from as f32 + (travel / RAIL_STEP).round())
+                .clamp(0., (visible.len() - 1) as f32) as usize;
             if let Some(target) = visible.get(to).cloned()
                 && to != from
             {
@@ -374,7 +435,10 @@ fn group_header(
     title: String,
     provider: Option<&RouteProvider>,
 ) -> El {
-    let key = provider.map_or_else(|| format!("group-{title}"), |pv| format!("group-{}", pv.provider));
+    let key = provider.map_or_else(
+        || format!("group-{title}"),
+        |pv| format!("group-{}", pv.provider),
+    );
     let header = row()
         .key(key)
         .px(8.)
@@ -383,11 +447,17 @@ fn group_header(
         .gap(4.)
         .center_y()
         .child(txt_medium(title, XS, p.text_faint).truncate().grow(1.));
-    let Some(provider) = provider else { return header };
+    let Some(provider) = provider else {
+        return header;
+    };
     let pk = provider.provider.clone();
     let slot = slot.clone();
     let hidden = m.prefs.provider_hidden(&pk);
-    let tip = if hidden { "Show this provider" } else { "Hide this provider" };
+    let tip = if hidden {
+        "Show this provider"
+    } else {
+        "Hide this provider"
+    };
     let button = ghost_icon(
         k,
         format!("hide-provider-{pk}"),
@@ -395,10 +465,10 @@ fn group_header(
         tip,
         move |s: &mut State| toggle_provider(s, slot.clone(), pk.clone()),
     );
-    header
-        .hover_group()
-        .h(30.)
-        .child(el().group_opacity(if hidden { 1. } else { 0. }, 1.).child(button))
+    header.hover_group().h(30.).child(
+        el().group_opacity(if hidden { 1. } else { 0. }, 1.)
+            .child(button),
+    )
 }
 
 /// One pickable model, with hover actions to star and hide it.
@@ -427,7 +497,10 @@ fn model_row(
     } else {
         Some(provider.name.clone())
     };
-    let mut text_col = col().grow(1.).min_w(0.).child(txt(title.clone(), SM, p.text).truncate());
+    let mut text_col = col()
+        .grow(1.)
+        .min_w(0.)
+        .child(txt(title.clone(), SM, p.text).truncate());
     if let Some(line) = subtitle {
         text_col = text_col.child(txt(line, XS, p.text_faint).truncate());
     }
@@ -438,7 +511,11 @@ fn model_row(
     let star = ghost_icon(
         k,
         format!("fav-{id}"),
-        if favorite { &icons::STAR_FILL } else { &icons::STAR },
+        if favorite {
+            &icons::STAR_FILL
+        } else {
+            &icons::STAR
+        },
         if favorite { "Unstar" } else { "Star" },
         move |s: &mut State| {
             let (p, m) = (fav_p.clone(), fav_m.clone());
@@ -469,7 +546,13 @@ fn model_row(
         // The row under the pointer reads stronger than the current one.
         .fill(if on { p.hover } else { Color::TRANSPARENT })
         .hover(p.active)
-        .child(provider_mark(s, provider.brand.as_deref(), &provider.runtime, &provider.provider, 16.))
+        .child(provider_mark(
+            s,
+            provider.brand.as_deref(),
+            &provider.runtime,
+            &provider.provider,
+            16.,
+        ))
         .child(text_col);
     if hidden {
         r = r.opacity(0.45);
@@ -480,23 +563,42 @@ fn model_row(
     r.child(
         row()
             .gap(2.)
-            .child(el().group_opacity(if favorite { 1. } else { 0. }, 1.).child(star))
+            .child(
+                el().group_opacity(if favorite { 1. } else { 0. }, 1.)
+                    .child(star),
+            )
             .child(el().group_opacity(0., 1.).child(hide)),
     )
     // A fixed check column, so picking never shifts the labels.
-    .child(if on { ico(&icons::CHECK, ICON_SM, p.text) } else { spacer(16.) }.w(16.))
+    .child(
+        if on {
+            ico(&icons::CHECK, ICON_SM, p.text)
+        } else {
+            spacer(16.)
+        }
+        .w(16.),
+    )
     .on_press(move |s: &mut State| pick(s, pick_slot.clone(), pv.clone(), md.clone()))
 }
 
 /// The thinking pill, when the current model has levels.
-fn effort_pill(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
+fn effort_pill(
+    s: &State,
+    m: &ModelPickerState,
+    slot: &Slot,
+    k: &Kit,
+    layer: &mut Vec<El>,
+) -> Option<El> {
     let model = m.current_model().unwrap_or("default");
     let efforts = m.efforts_of(m.current_provider(), model).to_vec();
     if efforts.is_empty() {
         return None;
     }
     let p = &s.palette;
-    let label = m.effort.as_deref().map_or_else(|| "Default".to_string(), effort_label);
+    let label = m
+        .effort
+        .as_deref()
+        .map_or_else(|| "Default".to_string(), effort_label);
     let ink = if m.effort_open { p.text } else { p.text_muted };
     let mut pill = row()
         .key(slot.key("effort-pill"))
@@ -508,12 +610,18 @@ fn effort_pill(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit, layer: &mu
         .h(PILL_H)
         .center_y()
         .radius(design::CONTROL_RADIUS)
-        .fill(if m.effort_open { p.active } else { Color::TRANSPARENT })
+        .fill(if m.effort_open {
+            p.active
+        } else {
+            Color::TRANSPARENT
+        })
         .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
         .child(ico(&icons::SPARKLES, ICON_XS, ink));
     if !m.compact {
-        pill = pill.child(txt(label.clone(), SM, ink)).child(ico(&icons::CHEVRON_DOWN, ICON_XS, ink));
+        pill =
+            pill.child(txt(label.clone(), SM, ink))
+                .child(ico(&icons::CHEVRON_DOWN, ICON_XS, ink));
     } else if !m.effort_open {
         pill = pill.help(format!("Thinking: {label}"));
     }
@@ -527,9 +635,17 @@ fn effort_pill(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit, layer: &mu
     if m.effort_open {
         let (placement, gap) = placement(m);
         let closing = slot.clone();
-        layer.push(scrim("effort-scrim", move |s: &mut State| close(s, &closing)));
+        layer.push(scrim("effort-scrim", move |s: &mut State| {
+            close(s, &closing)
+        }));
         let popover = effort_popover(p, m, slot, &efforts);
-        layer.push(popover::anchored(k, popover, &slot.key("effort-pill"), placement, gap));
+        layer.push(popover::anchored(
+            k,
+            popover,
+            &slot.key("effort-pill"),
+            placement,
+            gap,
+        ));
     }
     Some(pill)
 }
@@ -551,7 +667,14 @@ fn effort_popover(p: &Palette, m: &ModelPickerState, slot: &Slot, efforts: &[Str
             .fill(if on { p.hover } else { Color::TRANSPARENT })
             .hover(p.active)
             .child(txt(title, SM, p.text).grow(1.))
-            .child(if on { ico(&icons::CHECK, ICON_SM, p.text) } else { spacer(16.) }.w(16.))
+            .child(
+                if on {
+                    ico(&icons::CHECK, ICON_SM, p.text)
+                } else {
+                    spacer(16.)
+                }
+                .w(16.),
+            )
             .on_press(move |s: &mut State| pick_effort(s, slot.clone(), value.clone()))
     };
     let mut rows = col()
@@ -560,17 +683,32 @@ fn effort_popover(p: &Palette, m: &ModelPickerState, slot: &Slot, efforts: &[Str
         .label("Thinking")
         .w(180.)
         .padding(4.)
-        .child(el().px(8.).pt(4.).pb(4.).child(txt_medium("Thinking", XS, p.text_faint)))
+        .child(
+            el().px(8.)
+                .pt(4.)
+                .pb(4.)
+                .child(txt_medium("Thinking", XS, p.text_faint)),
+        )
         .child(item("effort-default".into(), "Default".into(), None));
     for effort in efforts {
-        rows = rows.child(item(format!("effort-{effort}"), effort_label(effort), Some(effort.clone())));
+        rows = rows.child(item(
+            format!("effort-{effort}"),
+            effort_label(effort),
+            Some(effort.clone()),
+        ));
     }
     panel_surface(p, rows)
 }
 
 /// A provider's logo; `brand` (the vendor behind a runtime row) wins, then
 /// the provider, then the runtime. Falls back to a letter tile.
-pub fn provider_mark(s: &State, brand: Option<&str>, runtime: &str, provider: &str, size: f32) -> El {
+pub fn provider_mark(
+    s: &State,
+    brand: Option<&str>,
+    runtime: &str,
+    provider: &str,
+    size: f32,
+) -> El {
     let ids: Vec<&str> = [brand, Some(provider), Some(runtime)]
         .into_iter()
         .flatten()

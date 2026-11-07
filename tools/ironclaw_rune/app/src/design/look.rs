@@ -53,7 +53,9 @@ pub struct LookState {
 /// Once, from `App::init`, before the first frame.
 pub fn start(s: &mut State) {
     let handle = s.rt.handle.clone();
-    s.look.logos.start(std::sync::Arc::new(move || handle.wake()));
+    s.look
+        .logos
+        .start(std::sync::Arc::new(move || handle.wake()));
     wallpaper::rotate(s);
 }
 

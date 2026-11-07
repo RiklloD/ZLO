@@ -1,9 +1,9 @@
 //! Operator → Setup: what is configured. Providers and models are added
 //! and switched on the Providers page (GPUI `pages/operator/setup.rs`).
 
-use crate::pages::common::{Tone, card, error_line, glyph};
 use crate::pages::common::controls::{muted, outlined_tag, spinner};
 use crate::pages::common::ts::{BODY_SEMIBOLD, SM_MEDIUM};
+use crate::pages::common::{Tone, card, error_line, glyph};
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorSetupResponse, RebornOperatorSetupStatus, RebornOperatorSetupStepStatus,
 };

@@ -48,7 +48,9 @@ fn settled_gates_fold_into_the_work_and_open_ones_do_not() {
     };
     let rows = vec![
         tool("a", "ironclaw.shell"),
-        gate(GateState::Closed(Some(GateDecision::Approve { always: false }))),
+        gate(GateState::Closed(Some(GateDecision::Approve {
+            always: false,
+        }))),
         tool("b", "ironclaw.shell"),
     ];
     assert_eq!(fold(&rows, false, false, false, false).len(), 1);
@@ -79,8 +81,14 @@ fn a_late_latest_page_never_replaces_a_history_load() {
     // Load 1 asks for the latest page; a search hit then sets the floor and
     // load 2 pages back to it.
     c.history_floor = Some("msg:old".into());
-    assert!(accept_timeline(&mut c, 2, Some("msg:old")), "the history load lands");
-    assert!(!accept_timeline(&mut c, 1, None), "the delayed latest page is dropped");
+    assert!(
+        accept_timeline(&mut c, 2, Some("msg:old")),
+        "the history load lands"
+    );
+    assert!(
+        !accept_timeline(&mut c, 1, None),
+        "the delayed latest page is dropped"
+    );
     // Same floor: a page asked before one already shown is dropped too.
     assert!(accept_timeline(&mut c, 4, Some("msg:old")));
     assert!(!accept_timeline(&mut c, 3, Some("msg:old")));
@@ -114,12 +122,20 @@ fn every_live_fold_asks_the_run_clock_again() {
     }
     let mut s = super::fixtures::test_state();
     super::fixtures::running(&mut s);
-    let id = s.chat.as_ref().map(|c| c.thread_id.clone()).expect("open chat");
+    let id = s
+        .chat
+        .as_ref()
+        .map(|c| c.thread_id.clone())
+        .expect("open chat");
     let mut rt = Runtime::new(s, blank, (100., 100.), Env::new(true, 1.));
     let fold = |rt: &mut Runtime<State>| {
         let id = id.clone();
         rt.update(move |s, tx| super::sync_items(s, &id, tx));
-        rt.state.chat.as_ref().and_then(|c| c.run_started).expect("a live run has a start")
+        rt.state
+            .chat
+            .as_ref()
+            .and_then(|c| c.run_started)
+            .expect("a live run has a start")
     };
     assert!(fold(&mut rt).elapsed().as_secs() < 30, "first seen now");
     // The inbox then reports the backend's turn start, 90 s ago: the next

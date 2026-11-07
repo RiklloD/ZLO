@@ -4,9 +4,12 @@
 
 pub mod fixtures;
 
-use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
-use crate::pages::common::controls::{Look, Size, button_sized, header_with, icon_button_sized, input, outlined_tag, refresh_icon, rule, spinner};
+use crate::pages::common::controls::{
+    Look, Size, button_sized, header_with, icon_button_sized, input, outlined_tag, refresh_icon,
+    rule, spinner,
+};
 use crate::pages::common::ts::{BODY_SEMIBOLD, SM_MEDIUM, XS};
+use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
 use std::collections::HashMap;
 
 use ironclaw_gpui_client::product_wire::{RebornSkillInfo, RebornSkillSourceKind};

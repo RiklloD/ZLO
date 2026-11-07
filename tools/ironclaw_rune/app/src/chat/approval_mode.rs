@@ -158,7 +158,9 @@ fn pick(s: &mut State, id: &str, mode: Option<ApprovalMode>) {
             c.update_profile(&profile_id, &info.settings).await
         },
         move |s, result, _| {
-            let Some(c) = chat_for(s, &thread) else { return };
+            let Some(c) = chat_for(s, &thread) else {
+                return;
+            };
             c.approval.busy = false;
             // silent-ok: a failed save keeps the stored mode on the pill (jobs logs it).
             if let Ok(info) = result {
@@ -206,7 +208,8 @@ fn menu(pill: &ApprovalPill, current: Option<ApprovalMode>) -> PopupMenu {
         };
         m = m.item(PopupItem::new(key(mode), title).checked(current == mode));
     }
-    m.separator().item(PopupItem::new("hint", hint).enabled(false))
+    m.separator()
+        .item(PopupItem::new("hint", hint).enabled(false))
 }
 
 /// The pill after the model pill; nothing until the profile is known.

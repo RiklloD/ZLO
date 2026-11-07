@@ -31,15 +31,24 @@ fn base(s: &mut State, side: Option<Tab>, work: Option<Tab>, edit: impl FnOnce(&
     s.fixture = true;
     s.conn = Conn::Ready;
     s.page = Page::Chat;
-    s.workspace.titles.remember("t1", "Port the frontend to Rune");
-    s.workspace.titles.remember("t2", "Fix the flaky integration test");
+    s.workspace
+        .titles
+        .remember("t1", "Port the frontend to Rune");
+    s.workspace
+        .titles
+        .remember("t2", "Fix the flaky integration test");
     let mut chat = crate::chat::ChatState::new("t1".into());
     let data = DATA.with(|d| d.borrow_mut().take()).unwrap_or_default();
     // A running tool means a live turn, as the stream would report it.
-    let live = data
-        .rows
-        .iter()
-        .any(|r| matches!(r, Row::Tool { status: ToolStatus::Running, .. }));
+    let live = data.rows.iter().any(|r| {
+        matches!(
+            r,
+            Row::Tool {
+                status: ToolStatus::Running,
+                ..
+            }
+        )
+    });
     crate::chat::fixtures::fill(&mut chat, data.rows, live);
     chat.orchestration.tasks = data.tasks;
     edit(&mut chat.side);
@@ -57,7 +66,9 @@ fn base(s: &mut State, side: Option<Tab>, work: Option<Tab>, edit: impl FnOnce(&
 /// the temp folder so scenes read real `git` output.
 fn repo() -> Option<PathBuf> {
     let tmp = std::env::temp_dir();
-    let dir = std::fs::canonicalize(&tmp).unwrap_or(tmp).join("zlo-rune-side-fixture");
+    let dir = std::fs::canonicalize(&tmp)
+        .unwrap_or(tmp)
+        .join("zlo-rune-side-fixture");
     if dir.join(".git").exists() {
         return Some(dir);
     }
@@ -84,13 +95,23 @@ fn repo() -> Option<PathBuf> {
     git(&["add", "-A"])?;
     git(&["commit", "-q", "-m", "Start the project"])?;
     git(&["checkout", "-q", "-b", "feature"])?;
-    write("src/lib.rs", "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n")?;
+    write(
+        "src/lib.rs",
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+    )?;
     git(&["add", "-A"])?;
     git(&["commit", "-q", "-m", "Add the library"])?;
     git(&["checkout", "-q", "main"])?;
     write("README.md", "# Fixture\n\nA small project, with docs.\n")?;
     git(&["commit", "-q", "-am", "Document the project"])?;
-    git(&["merge", "-q", "--no-ff", "feature", "-m", "Merge the library"])?;
+    git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "feature",
+        "-m",
+        "Merge the library",
+    ])?;
     write(
         "src/main.rs",
         "fn main() {\n    let sum = fixture::add(2, 3);\n    println!(\"hello, {sum}\");\n}\n",
@@ -145,7 +166,11 @@ pub fn changes(s: &mut State) {
             },
         ];
         changes::fixture(x, "main", changes, PATCH, Some(PATCH));
-        changes::fixture_comment(x, 2, "Name this `total`; `sum` shadows the iterator method.");
+        changes::fixture_comment(
+            x,
+            2,
+            "Name this `total`; `sum` shadows the iterator method.",
+        );
     });
 }
 
@@ -173,11 +198,20 @@ pub fn console(s: &mut State) {
         x.console.lines = vec![
             (console::Kind::Command, "git log --oneline -3".into()),
             (console::Kind::Out, "7ac5538 ZLO on Rune: foundation".into()),
-            (console::Kind::Out, "89a6065 fix(claude): identify headless runs".into()),
-            (console::Kind::Out, "18c3b01 Voice: push-to-talk on by default".into()),
+            (
+                console::Kind::Out,
+                "89a6065 fix(claude): identify headless runs".into(),
+            ),
+            (
+                console::Kind::Out,
+                "18c3b01 Voice: push-to-talk on by default".into(),
+            ),
             (console::Kind::Info, "Done in 0.1 s".into()),
             (console::Kind::Command, "cargo test -q".into()),
-            (console::Kind::Err, "error[E0425]: cannot find value `sum` in this scope".into()),
+            (
+                console::Kind::Err,
+                "error[E0425]: cannot find value `sum` in this scope".into(),
+            ),
             (console::Kind::Info, "Exited with 101 after 4.2 s".into()),
         ];
     });
@@ -220,8 +254,18 @@ pub fn activity(s: &mut State) {
     set_data(FixtureData {
         rows: vec![
             user("u1", "Find why the integration test is flaky"),
-            tool("t1", "Read tests/integration/turns.rs", ToolStatus::Completed, None),
-            tool("t2", "Run cargo test -p ironclaw_turns", ToolStatus::Failed, Some("exit 101")),
+            tool(
+                "t1",
+                "Read tests/integration/turns.rs",
+                ToolStatus::Completed,
+                None,
+            ),
+            tool(
+                "t2",
+                "Run cargo test -p ironclaw_turns",
+                ToolStatus::Failed,
+                Some("exit 101"),
+            ),
             Row::RunNotice {
                 key: "n1".into(),
                 run_id: "run-0".into(),
@@ -230,7 +274,12 @@ pub fn activity(s: &mut State) {
                 retryable: false,
             },
             user("u2", "Clean the build and rerun it"),
-            tool("t3", "Search for `wait_for_status`", ToolStatus::Completed, None),
+            tool(
+                "t3",
+                "Search for `wait_for_status`",
+                ToolStatus::Completed,
+                None,
+            ),
             gate("g1", "Run a shell command", GateState::Open),
             tool("t4", "Write src/fix.rs", ToolStatus::Running, None),
         ],
@@ -271,15 +320,16 @@ pub fn agents(s: &mut State) {
 
 pub fn routines(s: &mut State) {
     let now = chrono::Utc::now();
-    let schedule: Option<ironclaw_gpui_client::schedules::ScheduleInfo> = serde_json::from_value(serde_json::json!({
-        "id": "s1", "title": "Morning inbox digest", "prompt": "Summarize my inbox",
-        "schedule": {"type": "cron", "cron": "0 8 * * *"}, "describe": "Every day at 08:00",
-        "enabled": true, "threadId": "t1",
-        "nextRunAt": (now + chrono::Duration::minutes(95)).timestamp_millis(),
-        "lastRunAt": (now - chrono::Duration::hours(22)).timestamp_millis()
-    }))
-    .map_err(|e| tracing::warn!(error = %e, "fixture schedule"))
-    .ok();
+    let schedule: Option<ironclaw_gpui_client::schedules::ScheduleInfo> =
+        serde_json::from_value(serde_json::json!({
+            "id": "s1", "title": "Morning inbox digest", "prompt": "Summarize my inbox",
+            "schedule": {"type": "cron", "cron": "0 8 * * *"}, "describe": "Every day at 08:00",
+            "enabled": true, "threadId": "t1",
+            "nextRunAt": (now + chrono::Duration::minutes(95)).timestamp_millis(),
+            "lastRunAt": (now - chrono::Duration::hours(22)).timestamp_millis()
+        }))
+        .map_err(|e| tracing::warn!(error = %e, "fixture schedule"))
+        .ok();
     let automation: Option<ironclaw_gpui_client::product_wire::RebornAutomationInfo> =
         serde_json::from_value(serde_json::json!({
             "automation_id": "r1", "name": "Weekly dependency audit",
@@ -290,7 +340,11 @@ pub fn routines(s: &mut State) {
         .map_err(|e| tracing::warn!(error = %e, "fixture automation"))
         .ok();
     base(s, Some(Tab::Routines), None, |x| {
-        routines::fixture(x, schedule.into_iter().collect(), automation.into_iter().collect());
+        routines::fixture(
+            x,
+            schedule.into_iter().collect(),
+            automation.into_iter().collect(),
+        );
     });
 }
 
@@ -330,7 +384,9 @@ fn session_with(s: &mut State, card: bool, picker: bool) {
         rows: vec![user("u1", "Port the side pane")],
         tasks: Vec::new(),
     });
-    s.prefs.side_chats.insert("t1".into(), vec!["sc1".into(), "sc2".into()]);
+    s.prefs
+        .side_chats
+        .insert("t1".into(), vec!["sc1".into(), "sc2".into()]);
     base(s, Some(Tab::SideChat), None, |x| {
         x.folder = Some(PathBuf::from("/Users/you/code/zlo"));
         let mut chat = crate::chat::ChatState::new("sc2".into());

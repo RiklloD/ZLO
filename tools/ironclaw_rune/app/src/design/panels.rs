@@ -59,7 +59,6 @@ pub fn glyph(key: &str, open: bool, right: bool, size: f32, color: Color) -> El 
     };
     el().key(key.to_string())
         .size(size, size)
-        
         .a11y_hidden()
         .child(frame(s, color))
         .child(panel)
@@ -72,7 +71,6 @@ pub fn card_glyph(key: &str, open: bool, size: f32, color: Color) -> El {
     let side = if open { 6. } else { 4.5 } * s;
     el().key(key.to_string())
         .size(size, size)
-        
         .a11y_hidden()
         .child(frame(s, color))
         .child(
@@ -90,8 +88,14 @@ pub fn card_glyph(key: &str, open: bool, size: f32, color: Color) -> El {
 /// caller adds `.on_press(..)`.
 pub fn toggle(s: &State, key: &str, open: bool, right: bool, label: &str) -> El {
     let p = &s.palette;
-    let g = glyph(&format!("{key}-glyph"), open, right, GLYPH_SIZE, p.text_muted)
-        .group_color(p.text);
+    let g = glyph(
+        &format!("{key}-glyph"),
+        open,
+        right,
+        GLYPH_SIZE,
+        p.text_muted,
+    )
+    .group_color(p.text);
     toggle_with(s, key, label, g)
 }
 
@@ -110,7 +114,6 @@ pub fn toggle_with(s: &State, key: &str, label: &str, glyph: El) -> El {
         .label(label.to_string())
         .help(label.to_string())
         .size(TOGGLE_SIZE, TOGGLE_SIZE)
-        
         .radius(7.)
         .center()
         .cursor(rune::Cursor::Pointer)
@@ -121,4 +124,3 @@ pub fn toggle_with(s: &State, key: &str, label: &str, glyph: El) -> El {
         .no_window_drag()
         .child(glyph)
 }
-

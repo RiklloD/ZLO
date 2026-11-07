@@ -362,7 +362,9 @@ pub fn submission_accepted(
     run: Option<String>,
     composer: Composer,
 ) {
-    bound(s, sub, thread, composer, |turn| turn.accepted(sub, thread, run));
+    bound(s, sub, thread, composer, |turn| {
+        turn.accepted(sub, thread, run)
+    });
 }
 
 /// Talk mode's message waits in `thread`'s queue behind `behind`.
@@ -373,7 +375,9 @@ pub fn submission_queued(
     behind: Option<String>,
     composer: Composer,
 ) {
-    bound(s, sub, thread, composer, |turn| turn.queued(sub, thread, behind));
+    bound(s, sub, thread, composer, |turn| {
+        turn.queued(sub, thread, behind)
+    });
 }
 
 fn bound(
@@ -384,7 +388,9 @@ fn bound(
     bind: impl FnOnce(&mut turn::PendingTurn) -> Option<turn::Answer>,
 ) {
     let alive = |s: &State, t: &Target| t.thread.is_some() && t.alive(s);
-    let Some(e) = s.voice.engine.as_mut() else { return };
+    let Some(e) = s.voice.engine.as_mut() else {
+        return;
+    };
     if !e.turn.waits_for(sub) {
         return;
     }
@@ -410,8 +416,7 @@ pub fn submission_refused(s: &mut State, sub: Submission, why: &str) {
         && e.turn.refused(sub)
     {
         let why = why.to_string();
-        s.rt
-            .handle
+        s.rt.handle
             .update(move |s, _| session::send(s, Input::SendRefused(why)));
     }
 }
@@ -443,8 +448,7 @@ pub fn run_ended(s: &mut State, thread: &str, run: Option<&str>, completed: bool
         return;
     }
     if reads {
-        s.rt
-            .handle
+        s.rt.handle
             .update(move |s, _| session::send(s, Input::ReadAloud(spoken)));
     }
 }
@@ -568,7 +572,10 @@ pub mod fixtures {
     /// Talk mode still waits on `sub` (it was neither refused nor answered).
     #[cfg(test)]
     pub fn waits_for(s: &State, sub: Submission) -> bool {
-        s.voice.engine.as_ref().is_some_and(|e| e.turn.waits_for(sub))
+        s.voice
+            .engine
+            .as_ref()
+            .is_some_and(|e| e.turn.waits_for(sub))
     }
 
     pub fn dictation_off() -> (&'static str, Option<PrivacyPane>) {

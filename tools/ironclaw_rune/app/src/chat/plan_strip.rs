@@ -103,7 +103,11 @@ pub fn view(s: &State, chat: &ChatState) -> Option<El> {
                 .justify_center()
                 .child(icon(&glyphs::LIST_CHECKS, 12.).color(p.text_muted)),
         )
-        .child(text("Plan").font(flow::type_at(s, 12., 16., 500.)).color(p.text))
+        .child(
+            text("Plan")
+                .font(flow::type_at(s, 12., 16., 500.))
+                .color(p.text),
+        )
         .child(
             text(summary)
                 .font(small)
@@ -123,11 +127,7 @@ pub fn view(s: &State, chat: &ChatState) -> Option<El> {
             )
             .color(p.text_muted),
         );
-    let mut strip = col()
-        .key("plan-strip")
-        .role("status")
-        .w_full()
-        .child(head);
+    let mut strip = col().key("plan-strip").role("status").w_full().child(head);
     if open {
         let mut list = col()
             .key("plan-list")

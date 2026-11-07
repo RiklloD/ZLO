@@ -67,12 +67,11 @@ pub(super) fn bar(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         Conn::Connecting => (p.warning, "Connecting".to_string()),
         Conn::Failed { .. } => (p.danger, "Disconnected".to_string()),
         Conn::Ready => {
-            let host = s
-                .rt
-                .backend
-                .as_ref()
-                .map(|b| b.client().connection().base_url.clone())
-                .unwrap_or_else(|| "127.0.0.1".into());
+            let host =
+                s.rt.backend
+                    .as_ref()
+                    .map(|b| b.client().connection().base_url.clone())
+                    .unwrap_or_else(|| "127.0.0.1".into());
             let host = host
                 .trim_start_matches("http://")
                 .trim_start_matches("https://")

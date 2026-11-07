@@ -203,7 +203,11 @@ pub(super) fn line(s: &State, tree: &Tree, row_data: &InboxRow, compact: bool) -
     let p = &s.palette;
     let open = open(s, &row_data.thread_id);
     let root = row_data.thread_id.clone();
-    let noun = if sum.total == 1 { "subagent" } else { "subagents" };
+    let noun = if sum.total == 1 {
+        "subagent"
+    } else {
+        "subagents"
+    };
     let mut parts: Vec<(String, Color)> = Vec::new();
     if sum.needs_you > 0 {
         parts.push((format!("{} needs you", sum.needs_you), p.warning));
@@ -233,22 +237,40 @@ pub(super) fn line(s: &State, tree: &Tree, row_data: &InboxRow, compact: bool) -
         .flex_wrap()
         .cursor(rune::Cursor::Pointer)
         .hover_group()
-        .child(icon(
-            if open { &icons::CHEVRON_DOWN } else { &icons::CHEVRON_RIGHT },
-            12.,
+        .child(
+            icon(
+                if open {
+                    &icons::CHEVRON_DOWN
+                } else {
+                    &icons::CHEVRON_RIGHT
+                },
+                12.,
+            )
+            .color(p.text_faint),
         )
-        .color(p.text_faint))
         .child(icon(&icons::BOT, 12.).color(p.text_muted))
         .child(
-            text(if compact { sum.total.to_string() } else { label })
-                .font(rune::TextStyle::new(size, 400.))
-                .color(p.text_muted)
-                .group_color(p.text),
+            text(if compact {
+                sum.total.to_string()
+            } else {
+                label
+            })
+            .font(rune::TextStyle::new(size, 400.))
+            .color(p.text_muted)
+            .group_color(p.text),
         );
     for (part, color) in parts {
         line = line
-            .child(text("·").font(rune::TextStyle::new(size, 400.)).color(p.text_faint))
-            .child(text(part).font(rune::TextStyle::new(size, 400.)).color(color));
+            .child(
+                text("·")
+                    .font(rune::TextStyle::new(size, 400.))
+                    .color(p.text_faint),
+            )
+            .child(
+                text(part)
+                    .font(rune::TextStyle::new(size, 400.))
+                    .color(color),
+            );
     }
     // The line sits inside the card: opening the list must not also open
     // the parent thread (the innermost press wins).
@@ -290,7 +312,14 @@ pub(super) fn list(s: &State, tree: &Tree, row_data: &InboxRow, now: i64, k: &Ki
     )
 }
 
-fn subagent_row(s: &State, row_data: &InboxRow, depth: usize, active: bool, now: i64, k: &Kit) -> El {
+fn subagent_row(
+    s: &State,
+    row_data: &InboxRow,
+    depth: usize,
+    active: bool,
+    now: i64,
+    k: &Kit,
+) -> El {
     let p = &s.palette;
     let id = row_data.thread_id.clone();
     let settled = row_data.state == InboxState::Settled;
@@ -329,7 +358,11 @@ fn subagent_row(s: &State, row_data: &InboxRow, depth: usize, active: bool, now:
             .gap(4.)
             .center_y()
             .child(icon(&icons::CHECK, 12.).color(p.text_faint))
-            .child(text("Settled").font(rune::TextStyle::new(12., 400.)).color(p.text_faint))
+            .child(
+                text("Settled")
+                    .font(rune::TextStyle::new(12., 400.))
+                    .color(p.text_faint),
+            )
     } else {
         view::status_label(s, row_data, active, now)
     };
@@ -345,7 +378,11 @@ fn subagent_row(s: &State, row_data: &InboxRow, depth: usize, active: bool, now:
         .center_y()
         .radius(design::ROW_RADIUS)
         .cursor(rune::Cursor::Pointer)
-        .fill(if active { crate::workspace::ui::selected_wash(p) } else { Color::TRANSPARENT })
+        .fill(if active {
+            crate::workspace::ui::selected_wash(p)
+        } else {
+            Color::TRANSPARENT
+        })
         .hover(crate::workspace::ui::hover_wash(p))
         .hover_group()
         .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
@@ -360,13 +397,14 @@ fn subagent_row(s: &State, row_data: &InboxRow, depth: usize, active: bool, now:
             ),
         )
         .child(
-            el().child(row().center_y().group_opacity(1., 0.).child(end)).child(
-                row()
-                    .pin(None, Some(0.), Some(0.), Some(0.))
-                    .center_y()
-                    .group_opacity(0., 1.)
-                    .child(action),
-            ),
+            el().child(row().center_y().group_opacity(1., 0.).child(end))
+                .child(
+                    row()
+                        .pin(None, Some(0.), Some(0.), Some(0.))
+                        .center_y()
+                        .group_opacity(0., 1.)
+                        .child(action),
+                ),
         )
 }
 

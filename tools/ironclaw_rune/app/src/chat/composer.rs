@@ -75,7 +75,8 @@ pub fn composer_card(
     if let Some(access) = access {
         pills = pills.child(access);
     }
-    col().key(key.to_string())
+    col()
+        .key(key.to_string())
         .w_full()
         .max_w(super::content_width(s))
         .radius(design::BUBBLE_RADIUS)
@@ -108,7 +109,14 @@ pub fn composer_card(
 /// Zeron's round controls: a 28 px circle; Send and Stop are a flat accent
 /// tile with soft corners that sinks into a neutral wash when idle, so an
 /// empty composer has no bright spot.
-pub fn round_button(s: &State, id: &str, glyph: &'static Icon, filled: bool, label: &str, _k: &Kit) -> El {
+pub fn round_button(
+    s: &State,
+    id: &str,
+    glyph: &'static Icon,
+    filled: bool,
+    label: &str,
+    _k: &Kit,
+) -> El {
     let p = &s.palette;
     let wash = if p.light {
         Color::BLACK.alpha(0.08)
@@ -147,7 +155,13 @@ pub fn round_button(s: &State, id: &str, glyph: &'static Icon, filled: bool, lab
 
 /// An attachment card, the one look for staged and sent files: an icon
 /// tile, the name, and a muted second line (folder, size or type).
-pub fn attachment_card(s: &State, key: String, glyph: &'static Icon, title: &str, subtitle: Option<String>) -> El {
+pub fn attachment_card(
+    s: &State,
+    key: String,
+    glyph: &'static Icon,
+    title: &str,
+    subtitle: Option<String>,
+) -> El {
     let p = &s.palette;
     let mut words = col().min_w(0.).child(
         text(title.to_string())
@@ -267,7 +281,9 @@ pub(crate) fn view(
     );
     // The new-thread composer flies down to this dock (GPUI `design/dock.rs`).
     match chat.embedded {
-        false => card.matched(design::motion::COMPOSER_MATCH).motion(design::motion::DOCK),
+        false => card
+            .matched(design::motion::COMPOSER_MATCH)
+            .motion(design::motion::DOCK),
         true => card,
     }
 }
@@ -289,7 +305,9 @@ fn on_key(s: &mut State, id: &str, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let Some(name) = MenuKeyName::of(ev) else {
         return false;
     };
-    let Some(c) = chat_for(s, id) else { return false };
+    let Some(c) = chat_for(s, id) else {
+        return false;
+    };
     match c.menu.key(name, &mut c.composer, tx) {
         MenuKey::Handled => {
             on_change(s, id);
@@ -308,7 +326,9 @@ fn on_key(s: &mut State, id: &str, ev: &KeyEvent, tx: &mut Tx) -> bool {
 /// and the draft is noted.
 pub(crate) fn on_change(s: &mut State, id: &str) {
     // Lines picked in the Changes tab are offered as an `@` selection.
-    let selection = super::is_main(s, id).then(|| super::side::changes_selection(s)).flatten();
+    let selection = super::is_main(s, id)
+        .then(|| super::side::changes_selection(s))
+        .flatten();
     let Some(c) = chat_for(s, id) else { return };
     c.menu.selection = selection;
     c.menu.reset();

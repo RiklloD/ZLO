@@ -34,7 +34,14 @@ thread_local! {
 }
 
 /// An assistant reply: Markdown, with each visual block drawn in its place.
-pub(crate) fn reply(s: &State, thread: &str, key: &str, text: &str, streaming: bool, k: &Kit) -> El {
+pub(crate) fn reply(
+    s: &State,
+    thread: &str,
+    key: &str,
+    text: &str,
+    streaming: bool,
+    k: &Kit,
+) -> El {
     let segments = segments(text, streaming);
     if let [Segment::Text(_)] = segments.as_slice() {
         return prose(s, thread, key, text, streaming, k);
@@ -92,7 +99,11 @@ pub(crate) fn prose(s: &State, thread: &str, id: &str, text: &str, streaming: bo
     Markdown::new(text)
         .style(markdown_style(s, k))
         .streaming(streaming)
-        .reveal(if streaming { rune::edge::WORD_FADE.word_fade } else { 0. })
+        .reveal(if streaming {
+            rune::edge::WORD_FADE.word_fade
+        } else {
+            0.
+        })
         .selectable(true)
         .on_link_tx(move |s: &mut State, href: &str, tx: &mut rune::Tx| {
             let external = tx.mods().cmd;
@@ -104,7 +115,8 @@ pub(crate) fn prose(s: &State, thread: &str, id: &str, text: &str, streaming: bo
 
 fn card_frame(s: &State, key: String) -> El {
     let p = &s.palette;
-    col().key(key)
+    col()
+        .key(key)
         .w_full()
         .gap(8.)
         .padding(12.)
@@ -131,7 +143,8 @@ fn pending(s: &State, id: &str, k: &Kit) -> El {
 /// A spec that doesn't hold: why, then the block as the agent wrote it.
 fn invalid(s: &State, thread: &str, id: &str, error: &str, source: &str, k: &Kit) -> El {
     let p = &s.palette;
-    col().key(format!("{id}-invalid"))
+    col()
+        .key(format!("{id}-invalid"))
         .gap(4.)
         .child(
             text(format!("Couldn't draw this visual: {error}"))
@@ -139,7 +152,14 @@ fn invalid(s: &State, thread: &str, id: &str, error: &str, source: &str, k: &Kit
                 .color(p.warning)
                 .wrap(),
         )
-        .child(prose(s, thread, id, &format!("```json\n{source}\n```"), false, k))
+        .child(prose(
+            s,
+            thread,
+            id,
+            &format!("```json\n{source}\n```"),
+            false,
+            k,
+        ))
 }
 
 fn card(s: &State, id: &str, v: &Visual) -> El {
@@ -248,7 +268,8 @@ fn axis(s: &State, lo: f64, hi: f64, unit: Option<&str>, height: f32) -> El {
             .font(flow::type_at(s, 10., 12., 400.))
             .color(p.text_faint)
     };
-    col().w(AXIS_WIDTH)
+    col()
+        .w(AXIS_WIDTH)
         .h(height)
         .justify_between()
         .pr(6.)
@@ -284,26 +305,49 @@ fn bars(s: &State, id: &str, x: &[String], series: &Series, unit: Option<&str>) 
     let (lo, hi) = span(series.values.iter().copied());
     let fill = color(p, 0);
     let plot_h = CHART_HEIGHT - 20.;
-    let mut columns = row().key(format!("{id}-bars")).grow(1.).h(plot_h).gap(4.).items_end();
+    let mut columns = row()
+        .key(format!("{id}-bars"))
+        .grow(1.)
+        .h(plot_h)
+        .gap(4.)
+        .items_end();
     for (i, (label, value)) in x.iter().zip(series.values.iter()).enumerate() {
         let h = ((value.max(0.) - lo.max(0.)) / (hi - lo)) as f32 * plot_h;
         columns = columns.child(
-            col().key(format!("{id}-bar-{i}"))
+            col()
+                .key(format!("{id}-bar-{i}"))
                 .grow(1.)
                 .h_full()
                 .justify_end()
-                .help(format!("{label} · {}: {}", series.name, exact(*value, unit)))
+                .help(format!(
+                    "{label} · {}: {}",
+                    series.name,
+                    exact(*value, unit)
+                ))
                 .child(el().w_full().h(h.max(1.)).radius(3.).fill(fill)),
         );
     }
-    col().w_full()
+    col()
+        .w_full()
         .h(CHART_HEIGHT)
-        .child(row().w_full().child(axis(s, lo, hi, unit, plot_h)).child(columns))
+        .child(
+            row()
+                .w_full()
+                .child(axis(s, lo, hi, unit, plot_h))
+                .child(columns),
+        )
         .child(x_labels(s, x))
 }
 
 /// Line or area series over one x axis; several series share the axis.
-fn plot(s: &State, id: &str, x: &[String], series: &[Series], unit: Option<&str>, filled: bool) -> El {
+fn plot(
+    s: &State,
+    id: &str,
+    x: &[String],
+    series: &[Series],
+    unit: Option<&str>,
+    filled: bool,
+) -> El {
     let p = &s.palette;
     let (lo, hi) = span(series.iter().flat_map(|s| s.values.iter().copied()));
     let plot_h = CHART_HEIGHT - 20.;
@@ -322,7 +366,12 @@ fn plot(s: &State, id: &str, x: &[String], series: &[Series], unit: Option<&str>
     let mut shape = Shape::new();
     for (si, s_) in series.iter().enumerate() {
         let c = color(p, si);
-        let points: Vec<[f32; 2]> = s_.values.iter().enumerate().map(|(i, v)| at(i, *v)).collect();
+        let points: Vec<[f32; 2]> = s_
+            .values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| at(i, *v))
+            .collect();
         if filled && points.len() > 1 {
             let mut area = points.clone();
             area.push([points[points.len() - 1][0], plot_h]);
@@ -337,8 +386,12 @@ fn plot(s: &State, id: &str, x: &[String], series: &[Series], unit: Option<&str>
             shape = shape.stroke_path(&path, 2., LineCap::Round, c);
         }
     }
-    let line = canvas(shape.view_box(width, plot_h)).key(format!("{id}-plot")).grow(1.).h(plot_h);
-    col().w_full()
+    let line = canvas(shape.view_box(width, plot_h))
+        .key(format!("{id}-plot"))
+        .grow(1.)
+        .h(plot_h);
+    col()
+        .w_full()
         .h(CHART_HEIGHT)
         .help(
             series
@@ -350,7 +403,12 @@ fn plot(s: &State, id: &str, x: &[String], series: &[Series], unit: Option<&str>
                 .collect::<Vec<_>>()
                 .join(" · "),
         )
-        .child(row().w_full().child(axis(s, lo, hi, unit, plot_h)).child(line))
+        .child(
+            row()
+                .w_full()
+                .child(axis(s, lo, hi, unit, plot_h))
+                .child(line),
+        )
         .child(x_labels(s, x))
 }
 
@@ -363,7 +421,11 @@ fn pie(s: &State, id: &str, x: &[String], series: &Series, unit: Option<&str>) -
     let mut start = -std::f32::consts::FRAC_PI_2;
     let mut legend = col().grow(1.).min_w(0.).gap(4.);
     for (i, (label, value)) in x.iter().zip(series.values.iter()).enumerate() {
-        let share = if total > 0. { value.max(0.) / total } else { 0. };
+        let share = if total > 0. {
+            value.max(0.) / total
+        } else {
+            0.
+        };
         let sweep = share as f32 * std::f32::consts::TAU;
         // A small gap between wedges, as gpui-component's pad angle.
         let pad = if sweep > 0.04 { 0.01 } else { 0. };
@@ -389,10 +451,15 @@ fn pie(s: &State, id: &str, x: &[String], series: &Series, unit: Option<&str>) -
                 .help(format!("{label}: {}", exact(*value, unit))),
         );
     }
-    row().w_full()
+    row()
+        .w_full()
         .gap(16.)
         .center_y()
-        .child(canvas(shape).key(format!("{id}-pie")).size(PIE_HEIGHT, PIE_HEIGHT))
+        .child(
+            canvas(shape)
+                .key(format!("{id}-pie"))
+                .size(PIE_HEIGHT, PIE_HEIGHT),
+        )
         .child(legend)
 }
 
@@ -423,11 +490,7 @@ fn table(s: &State, columns: &[String], rows: &[Vec<String>]) -> El {
     let p = &s.palette;
     let line = |key: String, cells: &[String], head: bool| {
         let font = flow::type_at(s, 12., 16., if head { 500. } else { 400. });
-        let mut r = row()
-            .key(key)
-            .w_full()
-            .py(6.)
-            .border(0., p.border);
+        let mut r = row().key(key).w_full().py(6.).border(0., p.border);
         for (i, c) in cells.iter().enumerate() {
             r = r.child(
                 text(c.clone())
@@ -441,7 +504,8 @@ fn table(s: &State, columns: &[String], rows: &[Vec<String>]) -> El {
                     .selectable(true),
             );
         }
-        col().w_full()
+        col()
+            .w_full()
             .child(r)
             .child(el().w_full().h(1.).fill(p.border))
     };

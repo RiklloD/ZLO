@@ -43,7 +43,7 @@ pub(crate) mod ui;
 // Voice (area F) and SnapShot (area F) call these.
 #[allow(unused_imports)]
 pub use draft::{
-    ComposerTarget, composer_edit, send as send_draft, start_in_profile, stage_snapshot,
+    ComposerTarget, composer_edit, send as send_draft, stage_snapshot, start_in_profile,
     voice_composer,
 };
 pub use inbox::title_of as row_title;
@@ -324,7 +324,8 @@ pub fn open_thread_at(s: &mut State, thread_id: String, message_id: String) {
     open_thread(s, thread_id.clone());
     if active_id(s) == Some(thread_id.as_str()) {
         // The chat scrolls to it once its timeline holds it.
-        s.rt.handle.update(move |s, tx| crate::chat::reveal_message(s, message_id, tx));
+        s.rt.handle
+            .update(move |s, tx| crate::chat::reveal_message(s, message_id, tx));
     }
 }
 
@@ -344,7 +345,13 @@ pub fn show(s: &mut State, page: Page) {
     }
     if page == Page::Providers {
         // The orchestrator catalog (CLI agents) is read through any thread.
-        let catalog = s.workspace.inbox.list.rows.first().map(|r| r.thread_id.clone());
+        let catalog = s
+            .workspace
+            .inbox
+            .list
+            .rows
+            .first()
+            .map(|r| r.thread_id.clone());
         crate::pages::providers::set_catalog_thread(s, catalog);
     }
     s.page = page;
@@ -466,7 +473,11 @@ pub fn delete_thread(s: &mut State, thread_id: String) {
             if result.is_err() {
                 return;
             }
-            s.workspace.inbox.list.rows.retain(|t| t.thread_id != thread_id);
+            s.workspace
+                .inbox
+                .list
+                .rows
+                .retain(|t| t.thread_id != thread_id);
             if active_id(s) == Some(thread_id.as_str()) {
                 s.chat = None;
                 match s.workspace.inbox.first_open() {
@@ -522,14 +533,20 @@ fn start_polling(s: &mut State) {
     s.workspace.timers.unread = Some(now + UNREAD_POLL);
     if !s.workspace.session_import_launched {
         s.workspace.session_import_launched = true;
-        session_import_tick(s, ironclaw_gpui_client::session_import::ImportTrigger::Launch);
+        session_import_tick(
+            s,
+            ironclaw_gpui_client::session_import::ImportTrigger::Launch,
+        );
         s.workspace.timers.session_import = Some(now + SESSION_RESCAN);
     }
 }
 
 /// First-launch session import, then the periodic rescan request (the
 /// backend skips a pass that is not due).
-fn session_import_tick(s: &mut State, trigger: ironclaw_gpui_client::session_import::ImportTrigger) {
+fn session_import_tick(
+    s: &mut State,
+    trigger: ironclaw_gpui_client::session_import::ImportTrigger,
+) {
     jobs::run(
         s,
         "session import",
@@ -560,7 +577,10 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     }
     if due(s.workspace.timers.session_import) {
         s.workspace.timers.session_import = Some(now + SESSION_RESCAN);
-        session_import_tick(s, ironclaw_gpui_client::session_import::ImportTrigger::Background);
+        session_import_tick(
+            s,
+            ironclaw_gpui_client::session_import::ImportTrigger::Background,
+        );
     }
     if due(s.workspace.timers.inbox) {
         s.workspace.timers.inbox = None;
@@ -576,13 +596,23 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     }
     changed |= message_search::poll(s);
     let t = &s.workspace.timers;
-    let next = [t.unread, t.status, t.inbox, t.wake, t.tick, t.session_import]
-        .into_iter()
-        .flatten()
-        .chain(s.workspace.message_search.due())
-        .min();
+    let next = [
+        t.unread,
+        t.status,
+        t.inbox,
+        t.wake,
+        t.tick,
+        t.session_import,
+    ]
+    .into_iter()
+    .flatten()
+    .chain(s.workspace.message_search.due())
+    .min();
     if let Some(next) = next {
-        tx.wake_after(next.saturating_duration_since(now).max(Duration::from_millis(5)));
+        tx.wake_after(
+            next.saturating_duration_since(now)
+                .max(Duration::from_millis(5)),
+        );
     }
     changed
 }
@@ -688,7 +718,6 @@ pub fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     shell::view(s, cx)
 }
-
 
 // Cross-area API: thread titles, window focus and the unread badge, as the
 // chat, side pane and pages call them.

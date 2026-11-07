@@ -1,8 +1,11 @@
 //! Providers page rendering (GPUI `ProvidersView`'s `render_*` methods).
 
-use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
-use crate::pages::common::controls::{Look, Size, button_sized, header_with, icon_button_sized, input, muted, open_url, outlined_tag, refresh_icon, rule, section_title, spinner, spinner_line};
+use crate::pages::common::controls::{
+    Look, Size, button_sized, header_with, icon_button_sized, input, muted, open_url, outlined_tag,
+    refresh_icon, rule, section_title, spinner, spinner_line,
+};
 use crate::pages::common::ts::{BODY_SEMIBOLD, MONO_XS, SM, SM_MEDIUM, XS, XS_MEDIUM};
+use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
 use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView};
 use ironclaw_gpui_client::orchestration::RouteProvider;
 use ironclaw_gpui_client::task_models::TaskModelChoice;
@@ -10,8 +13,8 @@ use rune::{Cx, El, col, el, row, text};
 use rune_kit::Kit;
 
 use super::catalog::{KNOWN_CLIS, Kind, display_name, kind_of};
-use crate::design::brands::provider_logo;
 use super::{CODEX_ADAPTER, Models, ProvidersState, Tab, connected, task_choices};
+use crate::design::brands::provider_logo;
 use crate::icons;
 use crate::state::State;
 
@@ -255,7 +258,9 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
             .w_full()
             .gap(12.)
             .center_y()
-            .child(provider_logo(s, &[pv.id.as_str(), pv.adapter.as_str()],
+            .child(provider_logo(
+                s,
+                &[pv.id.as_str(), pv.adapter.as_str()],
                 LOGO,
             ))
             .child(
@@ -567,7 +572,9 @@ fn render_tile(s: &State, ix: usize, pv: &LlmProviderView) -> El {
                 .w_full()
                 .gap(8.)
                 .center_y()
-                .child(provider_logo(s, &[pv.id.as_str(), pv.adapter.as_str()],
+                .child(provider_logo(
+                    s,
+                    &[pv.id.as_str(), pv.adapter.as_str()],
                     TILE_LOGO,
                 ))
                 .child(
@@ -744,7 +751,9 @@ fn render_cli(s: &State, k: &Kit) -> El {
             } else {
                 outlined_tag(p, Tone::Warning, "Not detected")
             };
-            rows.push(cli_row(s, k,
+            rows.push(cli_row(
+                s,
+                k,
                 CliRow {
                     id: known.runtime.into(),
                     logo_ids: vec![known.runtime.to_string()],
@@ -777,7 +786,9 @@ fn render_cli(s: &State, k: &Kit) -> El {
                 .then_some(known.login)
                 .flatten()
                 .map(|c| ("Sign in", c));
-            rows.push(cli_row(s, k,
+            rows.push(cli_row(
+                s,
+                k,
                 CliRow {
                     id: r.provider.clone(),
                     logo_ids: vec![r.provider.clone(), r.runtime.clone()],

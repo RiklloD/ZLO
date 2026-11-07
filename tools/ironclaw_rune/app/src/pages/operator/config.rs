@@ -5,9 +5,11 @@
 //! No "Validate" button: the gateway's validate route has no effective-config
 //! service behind it and answers "not wired yet" for every key.
 
-use crate::pages::common::{Tone, empty_state, error_line, loading};
-use crate::pages::common::controls::{Look, Size, button_sized, input, muted, outlined_tag, rule, spinner};
+use crate::pages::common::controls::{
+    Look, Size, button_sized, input, muted, outlined_tag, rule, spinner,
+};
 use crate::pages::common::ts::{MONO_XS, SM_MEDIUM};
+use crate::pages::common::{Tone, empty_state, error_line, loading};
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorConfigEntry, RebornOperatorConfigListResponse,
 };

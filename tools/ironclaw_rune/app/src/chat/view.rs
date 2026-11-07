@@ -46,7 +46,12 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let main = column(s, chat, cx, k, layer);
     // The column grows and may shrink to nothing, so the docks keep their
     // widths at the right edge.
-    let mut out = row().key("chat-root").w_full().h_full().min_h(0.).child(main);
+    let mut out = row()
+        .key("chat-root")
+        .w_full()
+        .h_full()
+        .min_h(0.)
+        .child(main);
     for dock in super::side::docks(s, cx, k, layer) {
         out = out.child(dock);
     }
@@ -54,7 +59,13 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
 }
 
 /// One chat's column: what a side chat draws inside its pane too.
-pub(crate) fn column(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
+pub(crate) fn column(
+    s: &State,
+    chat: &ChatState,
+    cx: &mut Cx<State>,
+    k: &Kit,
+    layer: &mut Vec<El>,
+) -> El {
     let p = &s.palette;
     let running = chat.running_run().is_some();
     let id = chat.thread_id.clone();
@@ -143,7 +154,8 @@ pub(crate) fn column(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, l
     if !items.is_empty() {
         let selected = chat.menu.selected(items.len());
         let pick_id = id.clone();
-        let on_pick: menu::OnPick = std::rc::Rc::new(move |s: &mut State, item, tx| pick_item(s, &pick_id, item, tx));
+        let on_pick: menu::OnPick =
+            std::rc::Rc::new(move |s: &mut State, item, tx| pick_item(s, &pick_id, item, tx));
         main = main.child(centered(s, menu::render(s, &items, selected, on_pick)));
     }
     main.child(
@@ -160,13 +172,19 @@ pub(crate) fn column(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, l
 
 /// `body` in the reading column, centered in the chat.
 fn centered(s: &State, body: El) -> El {
-    row().w_full()
+    row()
+        .w_full()
         .justify_center()
         .px(16.)
         .child(el().w_full().max_w(super::content_width(s)).child(body))
 }
 
-fn pick_item(s: &mut State, id: &str, item: &ironclaw_gpui_client::commands::MenuItem, tx: &mut Tx) {
+fn pick_item(
+    s: &mut State,
+    id: &str,
+    item: &ironclaw_gpui_client::commands::MenuItem,
+    tx: &mut Tx,
+) {
     let Some(c) = chat_for(s, id) else { return };
     if let menu::MenuKey::Command(command) = menu::pick(item, &mut c.composer) {
         super::actions::pick_command(s, id, &command, tx);
@@ -201,7 +219,8 @@ fn jump_button(s: &State, chat: &ChatState) -> El {
                 .color(p.text_muted),
         );
     }
-    row().pin(Some(0.), None, Some(0.), Some(12.))
+    row()
+        .pin(Some(0.), None, Some(0.), Some(12.))
         .justify_center()
         .child(pill.on_press_tx(move |s: &mut State, tx| {
             if let Some(c) = chat_for(s, &id) {
@@ -238,7 +257,13 @@ fn reserve_height(chat: &ChatState) -> f32 {
     (chat.list_height - turn - below).max(0.)
 }
 
-fn transcript(s: &State, chat: &ChatState, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
+fn transcript(
+    s: &State,
+    chat: &ChatState,
+    _cx: &mut Cx<State>,
+    k: &Kit,
+    _layer: &mut Vec<El>,
+) -> El {
     let items = chat.items.clone();
     let id = chat.thread_id.clone();
     let turn_start = items
@@ -270,7 +295,13 @@ fn transcript(s: &State, chat: &ChatState, _cx: &mut Cx<State>, k: &Kit, _layer:
         let top = flow::top_gap(ix.checked_sub(1).map(|i| &items[i]), item);
         let last = ix + 1 == items.len();
         let body = match item {
-            Item::Row(row_ @ Row::Assistant { key, text, streaming: false }) => rows::with_actions(
+            Item::Row(
+                row_ @ Row::Assistant {
+                    key,
+                    text,
+                    streaming: false,
+                },
+            ) => rows::with_actions(
                 chat,
                 key,
                 text,
@@ -279,9 +310,22 @@ fn transcript(s: &State, chat: &ChatState, _cx: &mut Cx<State>, k: &Kit, _layer:
                 rows::render_row(s, chat, row_, k),
                 k,
             ),
-            Item::Row(row_ @ Row::User { key, text, pending: false, .. }) if !text.is_empty() => {
-                rows::with_actions(chat, key, text, true, None, rows::render_row(s, chat, row_, k), k)
-            }
+            Item::Row(
+                row_ @ Row::User {
+                    key,
+                    text,
+                    pending: false,
+                    ..
+                },
+            ) if !text.is_empty() => rows::with_actions(
+                chat,
+                key,
+                text,
+                true,
+                None,
+                rows::render_row(s, chat, row_, k),
+                k,
+            ),
             // The bubble's own key: text that turns into narration keeps its
             // element, so it neither re-parses nor fades in again.
             Item::Row(Row::Narration { text, .. }) => {
@@ -295,11 +339,17 @@ fn transcript(s: &State, chat: &ChatState, _cx: &mut Cx<State>, k: &Kit, _layer:
                 state,
             }) => question_form::render_question(s, chat, key, run_id, gate_ref, form, *state, k),
             Item::Row(row_) => rows::render_row(s, chat, row_, k),
-            Item::Activity { key, rows: group, live } => {
+            Item::Activity {
+                key,
+                rows: group,
+                live,
+            } => {
                 let open = chat.activity_open(key, *live);
                 flow::render_activity(s, &id, key, group, *live, open, &chat.toggles, &outputs, k)
             }
-            Item::Pending { stopping } => super::pending::render_pending(s, *stopping, chat.run_started, seed, k),
+            Item::Pending { stopping } => {
+                super::pending::render_pending(s, *stopping, chat.run_started, seed, k)
+            }
             Item::Tail => super::orchestration::tail(s, chat, k).unwrap_or_else(el),
             Item::Reserve => el().h(reserve_h),
         };
@@ -319,7 +369,9 @@ fn transcript(s: &State, chat: &ChatState, _cx: &mut Cx<State>, k: &Kit, _layer:
             let (thread, key) = (id.clone(), key.clone());
             line = line.on_layout_tx(move |s: &mut State, r, tx| {
                 let h = r[3];
-                let Some(c) = chat_for(s, &thread) else { return };
+                let Some(c) = chat_for(s, &thread) else {
+                    return;
+                };
                 let old = c.turn_heights.insert(key.clone(), h);
                 if old.is_some_and(|o| (o - h).abs() <= 0.5) {
                     tx.live_only();
@@ -335,14 +387,18 @@ fn transcript(s: &State, chat: &ChatState, _cx: &mut Cx<State>, k: &Kit, _layer:
         stack = stack.child(line);
     }
     let (layout_id, far_id) = (id.clone(), id.clone());
-    col().key(transcript_key(&id))
+    col()
+        .key(transcript_key(&id))
         .w_full()
         .h_full()
         .min_h(0.)
-        .scroll(ScrollSpec { stick_bottom: true }).wheel_glide(transcript_key(&id))
+        .scroll(ScrollSpec { stick_bottom: true })
+        .wheel_glide(transcript_key(&id))
         .scroll_edge_fade(24.)
         .on_layout_tx(move |s: &mut State, r, tx| {
-            let Some(c) = chat_for(s, &layout_id) else { return };
+            let Some(c) = chat_for(s, &layout_id) else {
+                return;
+            };
             let [_, y, w, h] = r;
             if (c.list_height - h).abs() <= 0.5 && c.outline.viewport == [y, w, h] {
                 tx.live_only();

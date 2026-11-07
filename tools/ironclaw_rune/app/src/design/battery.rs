@@ -16,8 +16,8 @@
 
 use std::time::Duration;
 
-use rune::time::Instant;
 use rune::Tx;
+use rune::time::Instant;
 
 use super::prefs::Prefs;
 

@@ -15,9 +15,9 @@ mod logs;
 mod setup;
 mod status;
 
-use crate::pages::common::{glyph, page_body};
 use crate::pages::common::controls::{Look, Size, button_sized, header_with, muted, refresh_icon};
 use crate::pages::common::ts::{BODY_SEMIBOLD, SM};
+use crate::pages::common::{glyph, page_body};
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorConfigDiagnostic, RebornOperatorConfigDiagnosticSeverity,
 };

@@ -21,9 +21,14 @@ pub(super) fn annotation(s: &State, k: &Kit, a: &Annotation) -> El {
         .radius(8.)
         .fill(p.surface_raised)
         .border(1., p.accent.alpha(0.4));
-    if let Some(ix) = a.id.strip_prefix("finding-").and_then(|n| n.parse::<usize>().ok()) {
+    if let Some(ix) =
+        a.id.strip_prefix("finding-")
+            .and_then(|n| n.parse::<usize>().ok())
+    {
         let findings = codex::findings(s);
-        let Some((_, f)) = findings.get(ix) else { return el() };
+        let Some((_, f)) = findings.get(ix) else {
+            return el();
+        };
         let tint = codex::priority_color(f.priority, p);
         let mut body = col().gap(2.).child(
             row()
@@ -36,7 +41,10 @@ pub(super) fn annotation(s: &State, k: &Kit, a: &Annotation) -> El {
         }
         return base.border(1., tint.alpha(0.5)).child(body);
     }
-    if let Some(id) = a.id.strip_prefix("comment-").and_then(|n| n.parse::<u64>().ok()) {
+    if let Some(id) =
+        a.id.strip_prefix("comment-")
+            .and_then(|n| n.parse::<u64>().ok())
+    {
         let text = side(s)
             .and_then(|x| x.changes.comments.iter().find(|c| c.id == id))
             .map(|c| c.text.clone())
@@ -91,12 +99,23 @@ pub(super) fn annotation(s: &State, k: &Kit, a: &Annotation) -> El {
                         .build(k)
                         .key("comment-cancel"),
                 )
-                .child(ui::primary("Comment").on_press(save_draft).build(k).key("comment-save")),
+                .child(
+                    ui::primary("Comment")
+                        .on_press(save_draft)
+                        .build(k)
+                        .key("comment-save"),
+                ),
         )
 }
 
 /// A fixture: the working diff from a patch, as a refresh would land it.
-pub(in crate::chat::side) fn fixture(x: &mut SideState, branch: &str, changes: Vec<git::Change>, patch: &str, turn: Option<&str>) {
+pub(in crate::chat::side) fn fixture(
+    x: &mut SideState,
+    branch: &str,
+    changes: Vec<git::Change>,
+    patch: &str,
+    turn: Option<&str>,
+) {
     let state = &mut x.changes;
     state.loaded = true;
     state.branch = git::Branch {
@@ -133,6 +152,10 @@ pub(in crate::chat::side) fn fixture_comment(x: &mut SideState, line: u32, text:
         text: text.into(),
     });
     if let Some(diff) = state.diff.as_mut() {
-        diff.set_annotations(vec![Annotation::new(0, at, format!("comment-{}", state.next_comment))]);
+        diff.set_annotations(vec![Annotation::new(
+            0,
+            at,
+            format!("comment-{}", state.next_comment),
+        )]);
     }
 }

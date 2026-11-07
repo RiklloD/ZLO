@@ -29,7 +29,9 @@ fn elapsed(task: &TaskView) -> Option<String> {
     if start <= 0 {
         return None;
     }
-    let end = task.finished_at.unwrap_or_else(|| Utc::now().timestamp_millis());
+    let end = task
+        .finished_at
+        .unwrap_or_else(|| Utc::now().timestamp_millis());
     let secs = ((end - start) / 1000).max(0);
     Some(match secs {
         s if s < 60 => format!("{s} s"),
@@ -41,7 +43,11 @@ fn elapsed(task: &TaskView) -> Option<String> {
 /// The status dot: a soft pulse while the task is live (GPUI `kit::status_dot`).
 fn status_dot(color: Color, live: bool) -> El {
     let d = ui::dot(color, 8.);
-    if live { d.looping(rune::LoopSpec::opacity(1.2, 0.0, 0.45, 1.0)) } else { d }
+    if live {
+        d.looping(rune::LoopSpec::opacity(1.2, 0.0, 0.45, 1.0))
+    } else {
+        d
+    }
 }
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
@@ -84,7 +90,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ");
-        let title = if task.title.is_empty() { "Untitled task".to_string() } else { task.title.clone() };
+        let title = if task.title.is_empty() {
+            "Untitled task".to_string()
+        } else {
+            task.title.clone()
+        };
         let mut head = row()
             .gap(8.)
             .items_center()
@@ -119,7 +129,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .child(head)
             .child(ui::line(meta, XS, p.text_faint).pl(16.));
         if let Some(note) = note {
-            let ink = if task.status == TaskStatus::Failed { p.danger } else { p.text_muted };
+            let ink = if task.status == TaskStatus::Failed {
+                p.danger
+            } else {
+                p.text_muted
+            };
             card = card.child(ui::para(note, XS, ink).max_lines(3).pl(16.));
         }
         list = list.child(card);
@@ -146,7 +160,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .child(icon(&icons::GIT_FORK, 12.).color(p.text_faint))
                     .child(ui::line(label, XS, p.text_faint))
                     .child(ui::line(title, SM, p.text).grow(1.).min_w(0.))
-                    .on_press(move |s: &mut State| crate::workspace::open_thread(s, thread.clone())),
+                    .on_press(move |s: &mut State| {
+                        crate::workspace::open_thread(s, thread.clone())
+                    }),
             );
         }
     }

@@ -3,9 +3,9 @@
 //! is live. Read-only — the framework switch is boot configuration and
 //! per-hook enablement has no backend yet. Port of GPUI `pages/hooks.rs`.
 
-use crate::pages::common::{Tone, empty_state, error_line, page_body};
 use crate::pages::common::controls::{header_with, outlined_tag, refresh_icon, rule, spinner};
 use crate::pages::common::ts::{SM, SM_MEDIUM, XS};
+use crate::pages::common::{Tone, empty_state, error_line, page_body};
 use ironclaw_gpui_client::hooks_catalog::{
     HookCatalog, HookCatalogEntry, HookSource, HookTrustClassView,
 };

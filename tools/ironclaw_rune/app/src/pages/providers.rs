@@ -14,7 +14,6 @@ mod catalog;
 pub mod fixtures;
 mod view;
 
-
 use std::collections::HashMap;
 
 use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView, UserModelCatalog};
@@ -121,7 +120,13 @@ fn st(s: &mut State) -> &mut ProvidersState {
 /// The page became visible: load on first visit, refresh after.
 pub fn opened(s: &mut State) {
     // The orchestrator catalog (CLI agents) is read through any thread.
-    let catalog = s.workspace.inbox.list.rows.first().map(|r| r.thread_id.clone());
+    let catalog = s
+        .workspace
+        .inbox
+        .list
+        .rows
+        .first()
+        .map(|r| r.thread_id.clone());
     set_catalog_thread(s, catalog);
     refresh(s);
 }

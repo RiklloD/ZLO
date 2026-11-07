@@ -66,10 +66,12 @@ pub fn attach_thread(s: &mut State, id: &str, other_id: String, title: String) {
         "chat",
         move |c| async move { c.thread_attachment(&other_id, &title, &limits).await },
         move |s, result, _| {
-            let Some(c) = chat_for(s, &thread) else { return };
-            let staged = result.map_err(|e| e.to_string()).and_then(|file| {
-                attachments::check(&file, &c.staged, &c.limits).map(|()| file)
-            });
+            let Some(c) = chat_for(s, &thread) else {
+                return;
+            };
+            let staged = result
+                .map_err(|e| e.to_string())
+                .and_then(|file| attachments::check(&file, &c.staged, &c.limits).map(|()| file));
             match staged {
                 Ok(file) => {
                     c.error = None;
@@ -126,14 +128,18 @@ pub fn attach(s: &mut State, id: &str, paths: Vec<PathBuf>) {
         },
         move |s, results, _| {
             let Ok(results) = results else { return };
-            let Some(c) = chat_for(s, &thread) else { return };
+            let Some(c) = chat_for(s, &thread) else {
+                return;
+            };
             let mut problems = Vec::new();
             let mut files: Vec<StagedFile> = Vec::new();
             for result in results {
                 // Path files have no limit; only uploads are checked.
                 let mut staged = c.staged.clone();
                 staged.extend(files.iter().cloned());
-                match result.and_then(|file| attachments::check(&file, &staged, &c.limits).map(|()| file)) {
+                match result
+                    .and_then(|file| attachments::check(&file, &staged, &c.limits).map(|()| file))
+                {
                     Ok(file) => files.push(file),
                     Err(problem) => problems.push(problem),
                 }
@@ -154,7 +160,8 @@ pub(crate) fn open_attachment(s: &mut State, id: &str, chip: AttachmentChip) {
     let dir = super::downloads::dir_for("attachment", &[id, &message_id, &chip.id]);
     let attachment = chip.id.clone();
     open_fetched(s, id, dir, &chip.filename, move |c| async move {
-        c.attachment_bytes(&thread_id, &message_id, &attachment).await
+        c.attachment_bytes(&thread_id, &message_id, &attachment)
+            .await
     });
 }
 
@@ -199,7 +206,12 @@ pub fn open_with_system(path: &Path) {
 }
 
 /// A command without arguments runs at once; others get `/name ` to finish.
-pub(crate) fn pick_command(s: &mut State, id: &str, command: &RebornProductCommandInfo, tx: &mut Tx) {
+pub(crate) fn pick_command(
+    s: &mut State,
+    id: &str,
+    command: &RebornProductCommandInfo,
+    tx: &mut Tx,
+) {
     let Some(c) = chat_for(s, id) else { return };
     if takes_arguments(command) {
         c.composer.replace_text(format!("/{} ", command.name));
@@ -224,7 +236,9 @@ fn run_command(s: &mut State, id: &str, text: String) {
         "chat",
         move |c| async move { c.execute_command(&req, &line).await },
         move |s, result, tx| {
-            let Some(c) = chat_for(s, &thread_id) else { return };
+            let Some(c) = chat_for(s, &thread_id) else {
+                return;
+            };
             let effect = result.as_ref().ok().and_then(|o| o.effect.clone());
             c.transcript
                 .push_command(&text, result.map_err(|e| e.to_string()));
@@ -346,7 +360,9 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
                     if let Some(sub) = voice {
                         super::steer::report_voice(s, &thread_id, sub, &ack, None);
                     }
-                    let Some(c) = chat_for(s, &thread_id) else { return };
+                    let Some(c) = chat_for(s, &thread_id) else {
+                        return;
+                    };
                     c.transcript.ack_pending_user(pending);
                     if let Some(notice) = ack.notice.filter(|n| !n.trim().is_empty()) {
                         c.error = Some(notice);
@@ -359,7 +375,9 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
                     if let Some(sub) = voice {
                         crate::voice::submission_refused(s, sub, &e.to_string());
                     }
-                    let Some(c) = chat_for(s, &thread_id) else { return };
+                    let Some(c) = chat_for(s, &thread_id) else {
+                        return;
+                    };
                     c.transcript.drop_pending_user(pending);
                     if let Some(r) = c.reserve.as_mut() {
                         r.held = false;
@@ -429,9 +447,19 @@ pub(crate) fn retry(s: &mut State, id: &str, run: String) {
 
 /// Approve or decline a gate. The card shows "waiting for IronClaw to
 /// confirm" until the stream closes it; a failure gives it its buttons back.
-pub(crate) fn resolve_gate(s: &mut State, id: &str, run: String, gate_ref: String, decision: GateDecision, tx: &mut Tx) {
+pub(crate) fn resolve_gate(
+    s: &mut State,
+    id: &str,
+    run: String,
+    gate_ref: String,
+    decision: GateDecision,
+    tx: &mut Tx,
+) {
     let Some(c) = chat_for(s, id) else { return };
-    if c.reject.as_ref().is_some_and(|editor| editor.gate_ref == gate_ref) {
+    if c.reject
+        .as_ref()
+        .is_some_and(|editor| editor.gate_ref == gate_ref)
+    {
         c.reject = None;
     }
     c.transcript.mark_gate_resolving(&gate_ref, decision);
@@ -480,14 +508,19 @@ pub(crate) fn open_link(s: &mut State, id: &str, href: &str, external: bool, tx:
 /// ↑ in an empty composer brings back the last message to edit and resend
 /// (MonoCode's edit-last-turn recall, without the rewind).
 pub(crate) fn recall_last(s: &mut State, id: &str) -> bool {
-    let Some(c) = chat_for(s, id) else { return false };
+    let Some(c) = chat_for(s, id) else {
+        return false;
+    };
     if !c.composer.text.is_empty() {
         return false;
     }
     let Some(last) = c.rows.iter().rev().find_map(|r| match r {
         Row::User {
             text, attachments, ..
-        } => Some(ironclaw_gpui_client::transcript::readable(text, attachments)),
+        } => Some(ironclaw_gpui_client::transcript::readable(
+            text,
+            attachments,
+        )),
         _ => None,
     }) else {
         return false;
@@ -507,7 +540,12 @@ pub(crate) fn record_draft(s: &mut State, id: &str) {
         .into_iter()
         .filter_map(|(range, id)| {
             let shown = text.get(range.clone())?.to_string();
-            Some(crate::drafts::DraftToken { range, id, label: shown.clone(), text: shown })
+            Some(crate::drafts::DraftToken {
+                range,
+                id,
+                label: shown.clone(),
+                text: shown,
+            })
         })
         .collect();
     let draft = crate::drafts::Draft {
@@ -527,12 +565,18 @@ mod tests {
     fn a_failed_send_restores_only_into_an_empty_composer() {
         let mut c = super::super::ChatState::new("t1".into());
         let error = restore_failed(&mut c, "first try", &[], Vec::new(), "boom".into());
-        assert_eq!((c.composer.text.as_str(), error.as_str()), ("first try", "boom"));
+        assert_eq!(
+            (c.composer.text.as_str(), error.as_str()),
+            ("first try", "boom")
+        );
 
         let mut c = super::super::ChatState::new("t1".into());
         c.composer.replace_text("typed since");
         let error = restore_failed(&mut c, "first try", &[], Vec::new(), "boom".into());
-        assert_eq!(c.composer.text, "typed since", "what was typed since survives");
+        assert_eq!(
+            c.composer.text, "typed since",
+            "what was typed since survives"
+        );
         assert!(error.contains("\u{201c}first try\u{201d}"), "{error}");
     }
 
@@ -543,6 +587,9 @@ mod tests {
         let c = chat_for(&mut s, "t1").expect("chat");
         let _ = restore_failed(c, "first try", &[], Vec::new(), "boom".into());
         record_draft(&mut s, "t1");
-        assert_eq!(crate::drafts::restore(&s, "t1").map(|d| d.text), Some("first try".into()));
+        assert_eq!(
+            crate::drafts::restore(&s, "t1").map(|d| d.text),
+            Some("first try".into())
+        );
     }
 }

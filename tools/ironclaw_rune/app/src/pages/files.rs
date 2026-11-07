@@ -248,7 +248,8 @@ fn render_list(s: &State) -> El {
         .min_h(0.)
         .scroll(ScrollSpec {
             stick_bottom: false,
-        }).wheel_glide("file-list")
+        })
+        .wheel_glide("file-list")
         .child(list.children(rows))
 }
 
@@ -311,7 +312,8 @@ fn render_preview(s: &State, k: &Kit) -> El {
         .min_h(0.)
         .scroll(ScrollSpec {
             stick_bottom: false,
-        }).wheel_glide(format!("file-preview-{path}"))
+        })
+        .wheel_glide(format!("file-preview-{path}"))
         .child(
             col()
                 .w_full()

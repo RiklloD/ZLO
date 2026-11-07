@@ -78,14 +78,21 @@ fn working_glyph(p: &Palette) -> El {
     let gap = cell / 2.;
     let dot = |i: usize| {
         let c = crate::design::rgb(TINTS[i % 3]);
-        el().size(cell, cell).radius(1.5).fill(c).looping(rune::LoopSpec {
-            period: 1.2,
-            delay: i as f64 * 0.3,
-            kind: rune::LoopKind::Opacity { low: 0.35, high: 1. },
-        })
+        el().size(cell, cell)
+            .radius(1.5)
+            .fill(c)
+            .looping(rune::LoopSpec {
+                period: 1.2,
+                delay: i as f64 * 0.3,
+                kind: rune::LoopKind::Opacity {
+                    low: 0.35,
+                    high: 1.,
+                },
+            })
     };
     let _ = p;
-    col().key("working-glyph")
+    col()
+        .key("working-glyph")
         .gap(gap)
         .child(row().gap(gap).child(dot(0)).child(dot(1)))
         .child(row().gap(gap).child(dot(3)).child(dot(2)))

@@ -105,11 +105,7 @@ pub fn blocking<T: Send + 'static>(
 /// Run `f` on the UI thread after `delay`. For polls and retries; check in
 /// `f` that the state still wants it (a [`Generation`] does that cheaply).
 /// For per-frame or debounce timing prefer `tx.wake_after` plus `poll`.
-pub fn after(
-    s: &State,
-    delay: Duration,
-    f: impl FnOnce(&mut State, &mut Tx) + Send + 'static,
-) {
+pub fn after(s: &State, delay: Duration, f: impl FnOnce(&mut State, &mut Tx) + Send + 'static) {
     let handle = s.rt.handle.clone();
     std::thread::spawn(move || {
         std::thread::sleep(delay);
@@ -158,7 +154,6 @@ impl Default for Instance {
         Self(Generation::unique())
     }
 }
-
 
 /// "just now", "5 min ago", "3 h ago", then a local date.
 pub fn ago(at: DateTime<Utc>) -> String {

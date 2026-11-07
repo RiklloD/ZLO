@@ -180,8 +180,20 @@ pub fn floating(st: &Style, p: &Palette) -> Plate {
         p.surface_overlay
     };
     let mut shadows = vec![
-        shadow(black((if p.light { 0.1 } else { 0.4 }) * e), 12., 32., -8., false),
-        shadow(black((if p.light { 0.05 } else { 0.2 }) * e), 2., 6., 0., false),
+        shadow(
+            black((if p.light { 0.1 } else { 0.4 }) * e),
+            12.,
+            32.,
+            -8.,
+            false,
+        ),
+        shadow(
+            black((if p.light { 0.05 } else { 0.2 }) * e),
+            2.,
+            6.,
+            0.,
+            false,
+        ),
     ];
     if !p.light {
         shadows.push(shadow(white(0.06), 1., 0., 0., true));
@@ -206,8 +218,20 @@ pub fn glass(st: &Style, p: &Palette) -> Plate {
         gradient: None,
         rim: if p.light { white(0.55) } else { white(0.08) },
         shadows: vec![
-            shadow(black((if p.light { 0.08 } else { 0.32 }) * e), 10., 28., -10., false),
-            shadow(black((if p.light { 0.04 } else { 0.16 }) * e), 1., 3., 0., false),
+            shadow(
+                black((if p.light { 0.08 } else { 0.32 }) * e),
+                10.,
+                28.,
+                -10.,
+                false,
+            ),
+            shadow(
+                black((if p.light { 0.04 } else { 0.16 }) * e),
+                1.,
+                3.,
+                0.,
+                false,
+            ),
         ],
         hover: Color::TRANSPARENT,
     }
@@ -424,7 +448,11 @@ impl Button {
             .center_y()
             .radius(st.control_radius)
             .motion(st.slide);
-        b = if self.full { b.w_full() } else { b.justify_center() };
+        b = if self.full {
+            b.w_full()
+        } else {
+            b.justify_center()
+        };
         b = if icon_only { b.w(height) } else { b.px(pad) };
         if let Some(a) = self.aria.clone().or_else(|| self.label.clone()) {
             b = b.label(a);
@@ -434,19 +462,32 @@ impl Button {
             Variant::Primary => accent(&st, p).apply(b),
             Variant::Secondary => {
                 let plate = neutral(&st, p, 0.6);
-                let rim = if self.selected { p.accent.alpha(0.6) } else { plate.rim };
+                let rim = if self.selected {
+                    p.accent.alpha(0.6)
+                } else {
+                    plate.rim
+                };
                 plate.apply(b).border(1., rim)
             }
             Variant::Outline => b
                 .border(
                     1.,
-                    if self.selected { p.accent } else { p.border_strong },
+                    if self.selected {
+                        p.accent
+                    } else {
+                        p.border_strong
+                    },
                 )
-                .fill(if self.selected { p.active } else { Color::TRANSPARENT })
+                .fill(if self.selected {
+                    p.active
+                } else {
+                    Color::TRANSPARENT
+                })
                 .hover(p.hover),
             Variant::Ghost => {
                 let wash = self.selected && !self.pill;
-                b.fill(if wash { p.active } else { Color::TRANSPARENT }).hover(p.hover)
+                b.fill(if wash { p.active } else { Color::TRANSPARENT })
+                    .hover(p.hover)
             }
             Variant::Danger => b
                 .border(1., p.danger.alpha(0.3))
@@ -499,7 +540,11 @@ impl Button {
 /// text does not inherit colour.
 pub fn row_ink(s: &State, active: bool) -> (Color, Color) {
     let p = &s.palette;
-    if active { (p.text, p.text) } else { (p.text.alpha(0.8), p.text) }
+    if active {
+        (p.text, p.text)
+    } else {
+        (p.text.alpha(0.8), p.text)
+    }
 }
 
 /// A sidebar or list row with a fading hover wash and a selection that
@@ -516,8 +561,16 @@ pub fn row(s: &State, key: &str, active: bool) -> El {
         .px(8.)
         .center_y()
         .radius(8.)
-        .fill(if active { selected_wash(p) } else { Color::TRANSPARENT })
-        .hover(if active { Color::TRANSPARENT } else { hover_wash(p) })
+        .fill(if active {
+            selected_wash(p)
+        } else {
+            Color::TRANSPARENT
+        })
+        .hover(if active {
+            Color::TRANSPARENT
+        } else {
+            hover_wash(p)
+        })
         .hover_motion(st.hover, st.hover)
         .hover_group()
         .cursor(Cursor::Pointer)
@@ -537,7 +590,11 @@ pub fn pill_row(s: &State, key: &str, active: bool) -> El {
         .px(8.)
         .center_y()
         .radius(8.)
-        .hover(if active { Color::TRANSPARENT } else { hover_wash(p) })
+        .hover(if active {
+            Color::TRANSPARENT
+        } else {
+            hover_wash(p)
+        })
         .hover_motion(st.hover, st.hover)
         .hover_group()
         .cursor(Cursor::Pointer)
@@ -577,7 +634,11 @@ pub fn segmented(
     const INSET: f32 = 2.;
     let p = &s.palette;
     let st = Style::of(&s.prefs);
-    let knob_fill = if p.light { p.surface_raised } else { white(0.12) };
+    let knob_fill = if p.light {
+        p.surface_raised
+    } else {
+        white(0.12)
+    };
     let mut knob = el()
         .key(format!("{key}-knob"))
         .absolute(INSET + selected as f32 * SEG_W, INSET)
@@ -639,7 +700,11 @@ pub fn chip(s: &State, key: &str, label: &str, on: bool) -> El {
         .py(2.)
         .radius(999.)
         .border(1., if on { p.accent.alpha(0.8) } else { p.border })
-        .fill(if on { p.accent_wash } else { Color::TRANSPARENT })
+        .fill(if on {
+            p.accent_wash
+        } else {
+            Color::TRANSPARENT
+        })
         .hover(p.hover)
         .press(p.hover)
         .hover_motion(st.hover, st.hover)
@@ -677,7 +742,11 @@ pub fn shortcut_badge(s: &State, index: usize) -> El {
 pub fn popover(s: &State, key: &str, content: El) -> El {
     let st = Style::of(&s.prefs);
     floating(&st, &s.palette)
-        .apply(content.key(key.to_string()).radius(st.panel_radius.clamp(6., 12.)))
+        .apply(
+            content
+                .key(key.to_string())
+                .radius(st.panel_radius.clamp(6., 12.)),
+        )
         .transition(motion::pop(-6.))
 }
 
@@ -688,12 +757,19 @@ pub fn card(s: &State) -> El {
     let st = Style::of(&s.prefs);
     let mut plate = neutral(&st, &s.palette, 0.5);
     plate.hover = Color::TRANSPARENT;
-    plate.apply(col().gap(8.).padding(12.).radius(st.panel_radius.clamp(4., 12.)))
+    plate.apply(
+        col()
+            .gap(8.)
+            .padding(12.)
+            .radius(st.panel_radius.clamp(4., 12.)),
+    )
 }
 
 /// Plain text the pointer can select and ⌘C can copy (GPUI `ui::selectable`).
 pub fn selectable(k: &rune_kit::Kit, content: impl Into<String>) -> El {
-    text(content.into()).selectable(true).selection_color(k.selection())
+    text(content.into())
+        .selectable(true)
+        .selection_color(k.selection())
 }
 
 /// One line of run activity (thinking, tool call, skill activation): the
@@ -717,12 +793,18 @@ pub fn activity_line(
         .fill(p.hover)
         .border(1., p.border)
         .child(icon(glyph, 12.).color(p.text_muted));
-    let mut lines = col().key(format!("{key}-lines")).grow(1.).min_w(0.).pt(3.).gap(2.).child(
-        selectable(&k, title)
-            .key(format!("{key}-title"))
-            .font(font(st.text(XS), MEDIUM))
-            .color(p.text),
-    );
+    let mut lines = col()
+        .key(format!("{key}-lines"))
+        .grow(1.)
+        .min_w(0.)
+        .pt(3.)
+        .gap(2.)
+        .child(
+            selectable(&k, title)
+                .key(format!("{key}-title"))
+                .font(font(st.text(XS), MEDIUM))
+                .color(p.text),
+        );
     if let Some(detail) = detail {
         // Folded to one paragraph so the three-line clamp holds.
         let folded = detail.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -735,5 +817,10 @@ pub fn activity_line(
                 .max_lines(3),
         );
     }
-    rune::row().key(key.to_string()).gap(8.).items_start().child(tile).child(lines)
+    rune::row()
+        .key(key.to_string())
+        .gap(8.)
+        .items_start()
+        .child(tile)
+        .child(lines)
 }

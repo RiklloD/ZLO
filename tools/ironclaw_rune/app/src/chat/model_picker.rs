@@ -119,7 +119,11 @@ pub struct ModelPickerState {
 
 /// A list group: title, its provider (`None`: no hide button), and the
 /// `(provider, model)` rows under it.
-pub(crate) type Group<'a> = (String, Option<&'a RouteProvider>, Vec<(&'a RouteProvider, String)>);
+pub(crate) type Group<'a> = (
+    String,
+    Option<&'a RouteProvider>,
+    Vec<(&'a RouteProvider, String)>,
+);
 
 impl ModelPickerState {
     /// A picker for `thread_id` (`None`: the new-thread screen), reading the
@@ -196,7 +200,9 @@ impl ModelPickerState {
     }
 
     pub(crate) fn current_provider(&self) -> &str {
-        self.current.as_ref().map_or(NATIVE, |(provider, _)| provider)
+        self.current
+            .as_ref()
+            .map_or(NATIVE, |(provider, _)| provider)
     }
 
     /// The efforts `model` on `provider` takes; empty when it has no knob.
@@ -210,7 +216,12 @@ impl ModelPickerState {
     /// The providers in the user's order; ones not in it keep the catalog's.
     pub(crate) fn ordered_providers<'a>(&'a self, order: &[String]) -> Vec<&'a RouteProvider> {
         let mut providers: Vec<&RouteProvider> = self.providers().iter().collect();
-        providers.sort_by_key(|p| order.iter().position(|id| *id == p.provider).unwrap_or(usize::MAX));
+        providers.sort_by_key(|p| {
+            order
+                .iter()
+                .position(|id| *id == p.provider)
+                .unwrap_or(usize::MAX)
+        });
         providers
     }
 
@@ -282,7 +293,11 @@ impl ModelPickerState {
     /// The `(provider, model)` pairs the list shows, in order, grouped under
     /// a header each. A `None` provider is a group with no hide button
     /// (favorites, recents).
-    pub(crate) fn groups<'a>(&'a self, order: &[String], recent: &[(String, String)]) -> Vec<Group<'a>> {
+    pub(crate) fn groups<'a>(
+        &'a self,
+        order: &[String],
+        recent: &[(String, String)],
+    ) -> Vec<Group<'a>> {
         let query = self.search.text.trim().to_lowercase();
         let ordered = self.ordered_providers(order);
         let matches = |provider: &RouteProvider, model: &str| {
@@ -311,8 +326,9 @@ impl ModelPickerState {
                 .iter()
                 .filter_map(|(provider, model)| {
                     let p = self.providers().iter().find(|p| p.provider == *provider)?;
-                    (!self.prefs.provider_hidden(provider) && !self.prefs.model_hidden(provider, model))
-                        .then(|| (p, model.clone()))
+                    (!self.prefs.provider_hidden(provider)
+                        && !self.prefs.model_hidden(provider, model))
+                    .then(|| (p, model.clone()))
                 })
                 .collect();
             groups.push(("Recent".into(), None, picks));
@@ -339,7 +355,12 @@ impl ModelPickerState {
     }
 
     /// The `ix`th pickable row, as ⌘1..⌘9 counts them.
-    pub(crate) fn nth_pick(&self, ix: usize, order: &[String], recent: &[(String, String)]) -> Option<(String, String)> {
+    pub(crate) fn nth_pick(
+        &self,
+        ix: usize,
+        order: &[String],
+        recent: &[(String, String)],
+    ) -> Option<(String, String)> {
         self.groups(order, recent)
             .into_iter()
             .flat_map(|(_, _, picks)| picks)
@@ -351,7 +372,9 @@ impl ModelPickerState {
 /// Bind the picker of the chat showing `id` (main or side chat) to its
 /// thread and read the route. Called once per chat start.
 pub fn start(s: &mut State, id: &str) {
-    let Some(chat) = crate::chat::chat_for(s, id) else { return };
+    let Some(chat) = crate::chat::chat_for(s, id) else {
+        return;
+    };
     let compact = chat.model_picker.compact;
     chat.model_picker = ModelPickerState::new(Some(id.to_string()), None);
     chat.model_picker.compact = compact;
@@ -372,7 +395,9 @@ pub fn open(s: &mut State) {
 /// picker's catalog thread.
 pub fn load(s: &mut State, slot: Slot) {
     let Some(p) = slot.get_mut(s) else { return };
-    let Some(thread_id) = p.catalog_thread.clone() else { return };
+    let Some(thread_id) = p.catalog_thread.clone() else {
+        return;
+    };
     let own = p.thread_id.is_some();
     let generation = p.generation.bump();
     jobs::run(
@@ -381,7 +406,9 @@ pub fn load(s: &mut State, slot: Slot) {
         move |c| async move { c.thread_route(&thread_id).await },
         move |s, result, _| {
             let recent = s.prefs.recent_models.clone();
-            let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else { return };
+            let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else {
+                return;
+            };
             // silent-ok: an older gateway has no route; the pill stays hidden.
             let Ok(route) = result else { return };
             if own {
@@ -422,7 +449,9 @@ pub fn set_profile(s: &mut State, slot: Slot, profile_id: String) {
             // silent-ok: an unreadable profile leaves the recent pick on the pill.
             let Ok(info) = result else { return };
             let st = info.settings;
-            p.profile_pick = st.default_provider.map(|pv| (pv, st.default_model.unwrap_or_default()));
+            p.profile_pick = st
+                .default_provider
+                .map(|pv| (pv, st.default_model.unwrap_or_default()));
             if !p.touched {
                 p.current = p.default_pick(&recent);
             }
@@ -434,7 +463,9 @@ pub(crate) fn pick_effort(s: &mut State, slot: Slot, effort: Option<String>) {
     let Some(p) = slot.get_mut(s) else { return };
     p.effort_open = false;
     let previous = std::mem::replace(&mut p.effort, effort.clone());
-    let Some(thread_id) = p.thread_id.clone() else { return };
+    let Some(thread_id) = p.thread_id.clone() else {
+        return;
+    };
     let generation = p.generation;
     let wire = effort.unwrap_or_else(|| "default".into());
     jobs::run(
@@ -463,7 +494,10 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
     p.open = false;
     p.cmd_held = false;
     // The effort carries over when the new model takes the same level.
-    let effort = p.effort.clone().filter(|e| p.efforts_of(&provider, &model).contains(e));
+    let effort = p
+        .effort
+        .clone()
+        .filter(|e| p.efforts_of(&provider, &model).contains(e));
     let Some(thread_id) = p.thread_id.clone() else {
         p.touched = true;
         p.current = Some((provider, model));
@@ -479,9 +513,14 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
     jobs::run(
         s,
         "model picker",
-        move |c| async move { c.set_thread_route(&thread_id, &pv, &md, effort.as_deref()).await },
+        move |c| async move {
+            c.set_thread_route(&thread_id, &pv, &md, effort.as_deref())
+                .await
+        },
         move |s, result, _| {
-            let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else { return };
+            let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else {
+                return;
+            };
             p.busy = false;
             match result {
                 Ok(change) => {
@@ -507,7 +546,9 @@ pub(crate) fn edit_prefs(s: &mut State, slot: Slot, edit: impl FnOnce(&mut Picke
     if p.prefs.favorites.is_empty() && p.rail == Rail::Favorites {
         p.rail = Rail::All;
     }
-    let Some(thread_id) = p.catalog_thread.clone() else { return };
+    let Some(thread_id) = p.catalog_thread.clone() else {
+        return;
+    };
     let prefs = p.prefs.clone();
     jobs::run(
         s,
@@ -534,7 +575,11 @@ pub(crate) fn toggle_provider(s: &mut State, slot: Slot, key: String) {
 pub(crate) fn reorder(s: &mut State, slot: Slot, dragged: &str, target: &str) {
     let order_pref = s.prefs.provider_order.clone();
     let Some(p) = slot.get(s) else { return };
-    let mut order: Vec<String> = p.ordered_providers(&order_pref).iter().map(|p| p.provider.clone()).collect();
+    let mut order: Vec<String> = p
+        .ordered_providers(&order_pref)
+        .iter()
+        .map(|p| p.provider.clone())
+        .collect();
     let (Some(from), Some(to)) = (
         order.iter().position(|p| p == dragged),
         order.iter().position(|p| p == target),
@@ -553,14 +598,21 @@ pub(crate) fn cycle_rail(s: &mut State, slot: Slot, forward: bool) {
     let mut tabs = p.rail_tabs(&order);
     let n = tabs.len();
     let at = tabs.iter().position(|r| *r == p.rail).unwrap_or(0);
-    let next = if forward { (at + 1) % n } else { (at + n - 1) % n };
+    let next = if forward {
+        (at + 1) % n
+    } else {
+        (at + n - 1) % n
+    };
     p.rail = tabs.swap_remove(next);
 }
 
 /// The thread's pick as `(provider, model)`; no model is the default.
 fn route_pick(route: &ThreadRoute) -> Option<(String, String)> {
     let provider = route.provider.clone().unwrap_or_else(|| NATIVE.into());
-    Some((provider, route.model.clone().unwrap_or_else(|| "default".into())))
+    Some((
+        provider,
+        route.model.clone().unwrap_or_else(|| "default".into()),
+    ))
 }
 
 /// The footer's restore toggle: "Show hidden (2 providers, 25 models)".
@@ -607,22 +659,27 @@ pub fn pretty_model(id: &str) -> String {
             }
         }
     }
-    if out.is_empty() { id.to_string() } else { out.join(" ") }
+    if out.is_empty() {
+        id.to_string()
+    } else {
+        out.join(" ")
+    }
 }
 
 /// A picker with a small catalog, for the headless scenes.
 pub fn fixture() -> ModelPickerState {
     use ironclaw_gpui_client::orchestration::PickerModel;
-    let provider = |id: &str, name: &str, runtime: &str, models: &[&str], efforts: &[&str]| RouteProvider {
-        provider: id.into(),
-        name: name.into(),
-        runtime: runtime.into(),
-        authenticated: id != "openrouter",
-        models: models.iter().map(|m| m.to_string()).collect(),
-        efforts: efforts.iter().map(|m| m.to_string()).collect(),
-        model_efforts: Default::default(),
-        brand: None,
-    };
+    let provider =
+        |id: &str, name: &str, runtime: &str, models: &[&str], efforts: &[&str]| RouteProvider {
+            provider: id.into(),
+            name: name.into(),
+            runtime: runtime.into(),
+            authenticated: id != "openrouter",
+            models: models.iter().map(|m| m.to_string()).collect(),
+            efforts: efforts.iter().map(|m| m.to_string()).collect(),
+            model_efforts: Default::default(),
+            brand: None,
+        };
     let route = ThreadRoute {
         thread_id: "t1".into(),
         runtime: "claude-cli".into(),
@@ -639,8 +696,20 @@ pub fn fixture() -> ModelPickerState {
                 &["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
                 &["low", "medium", "high", "xhigh"],
             ),
-            provider("codex", "Codex", "codex", &["gpt-6.1-sol", "gpt-6.1-mini"], &["minimal", "high"]),
-            provider("openrouter", "OpenRouter", NATIVE, &["deepseek/deepseek-v4"], &[]),
+            provider(
+                "codex",
+                "Codex",
+                "codex",
+                &["gpt-6.1-sol", "gpt-6.1-mini"],
+                &["minimal", "high"],
+            ),
+            provider(
+                "openrouter",
+                "OpenRouter",
+                NATIVE,
+                &["deepseek/deepseek-v4"],
+                &[],
+            ),
         ],
         picker: PickerPrefs {
             hidden_providers: Vec::new(),
@@ -660,7 +729,10 @@ pub fn fixture() -> ModelPickerState {
 /// with its picker's popover (or the thinking menu) open.
 pub fn scene(s: &mut State, effort: bool) {
     crate::scenes::chat(s);
-    s.prefs.recent_models = vec![("anthropic".into(), "claude-opus-5-5".into()), ("codex".into(), "gpt-6.1-sol".into())];
+    s.prefs.recent_models = vec![
+        ("anthropic".into(), "claude-opus-5-5".into()),
+        ("codex".into(), "gpt-6.1-sol".into()),
+    ];
     if let Some(c) = s.chat.as_mut() {
         c.model_picker = fixture();
         if effort {
@@ -671,13 +743,14 @@ pub fn scene(s: &mut State, effort: bool) {
     }
 }
 
-
 // The new-thread screen's picker (area B's `workspace/draft.rs`).
 
 /// The draft screen picked a profile: a fresh picker reading the catalog
 /// through `catalog_thread`, on that profile's default.
 pub fn draft_set_profile(s: &mut State, profile: String, catalog_thread: Option<String>) {
-    let Some(d) = s.workspace.draft.as_mut() else { return };
+    let Some(d) = s.workspace.draft.as_mut() else {
+        return;
+    };
     if d.picker.catalog_thread.is_none() {
         d.picker = ModelPickerState::new(None, catalog_thread);
     }
@@ -708,7 +781,10 @@ mod tests {
 
     #[test]
     fn the_hidden_footer_counts_both_kinds() {
-        assert_eq!(hidden_summary(3, 25), "Show hidden (3 providers, 25 models)");
+        assert_eq!(
+            hidden_summary(3, 25),
+            "Show hidden (3 providers, 25 models)"
+        );
         assert_eq!(hidden_summary(1, 0), "Show hidden (1 provider)");
     }
 
@@ -723,6 +799,9 @@ mod tests {
     fn model_ids_read_like_names() {
         assert_eq!(pretty_model("claude-opus-5-5"), "Claude Opus 5.5");
         assert_eq!(pretty_model("gpt-6.1-sol"), "GPT 6.1 Sol");
-        assert_eq!(pretty_model("anthropic/claude-haiku-5-5"), "Claude Haiku 5.5");
+        assert_eq!(
+            pretty_model("anthropic/claude-haiku-5-5"),
+            "Claude Haiku 5.5"
+        );
     }
 }

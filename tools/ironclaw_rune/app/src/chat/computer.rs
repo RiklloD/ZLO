@@ -40,8 +40,8 @@ use ironclaw_gpui_client::computer_use::{
 };
 use rune::{Pixels, Tx};
 
-use crate::permissions;
 use crate::jobs::{self, Generation};
+use crate::permissions;
 use crate::state::State;
 
 pub use view::view;
@@ -86,7 +86,10 @@ impl Glide {
         let t = (elapsed.as_secs_f32() / GLIDE.as_secs_f32()).min(1.);
         let e = 1. - (1. - t).powi(3);
         let lerp = |a: f32, b: f32| a + (b - a) * e;
-        ((lerp(self.from.0, self.to.0), lerp(self.from.1, self.to.1)), t < 1.)
+        (
+            (lerp(self.from.0, self.to.0), lerp(self.from.1, self.to.1)),
+            t < 1.,
+        )
     }
 }
 
@@ -194,7 +197,8 @@ impl Drop for ComputerState {
             let thread_id = self.thread_id.clone();
             let viewer = self.viewer.clone();
             let _detached = backend.spawn(move |c| async move {
-                c.computer_control(&thread_id, ComputerControl::HandBack, &viewer).await
+                c.computer_control(&thread_id, ComputerControl::HandBack, &viewer)
+                    .await
             });
         }
     }
@@ -228,14 +232,20 @@ fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut ComputerState> 
 }
 
 /// The share, only while the chat (and the `start`) that asked is current.
-fn same<'a>(s: &'a mut State, thread_id: &str, generation: Generation) -> Option<&'a mut ComputerState> {
+fn same<'a>(
+    s: &'a mut State,
+    thread_id: &str,
+    generation: Generation,
+) -> Option<&'a mut ComputerState> {
     slot(s, thread_id).filter(|cu| cu.generation == generation)
 }
 
 /// Bind the share of the chat showing `id` to it and start polling the state.
 pub fn start(s: &mut State, id: &str) {
     let backend = s.rt.backend.clone();
-    let Some(chat) = crate::chat::chat_for(s, id) else { return };
+    let Some(chat) = crate::chat::chat_for(s, id) else {
+        return;
+    };
     let cu = &mut chat.computer;
     cu.thread_id = chat.thread_id.clone();
     cu.backend = backend;
@@ -245,7 +255,9 @@ pub fn start(s: &mut State, id: &str) {
 }
 
 fn poll_state(s: &mut State, thread_id: String, generation: Generation) {
-    let Some(cu) = same(s, &thread_id, generation) else { return };
+    let Some(cu) = same(s, &thread_id, generation) else {
+        return;
+    };
     let viewer = cu.viewer.clone();
     jobs::run(
         s,
@@ -266,7 +278,9 @@ fn poll_state(s: &mut State, thread_id: String, generation: Generation) {
                     }
                 }
             }
-            let Some(cu) = same(s, &thread_id, generation) else { return };
+            let Some(cu) = same(s, &thread_id, generation) else {
+                return;
+            };
             let delay = if !cu.enabled {
                 POLL_OFF
             } else if !active {
@@ -282,9 +296,15 @@ fn poll_state(s: &mut State, thread_id: String, generation: Generation) {
 }
 
 fn apply(s: &mut State, thread_id: &str, generation: Generation, state: WireState) {
-    let Some(cu) = same(s, thread_id, generation) else { return };
+    let Some(cu) = same(s, thread_id, generation) else {
+        return;
+    };
     cu.enabled = state.enabled;
-    cu.missing = if state.enabled { permissions::missing() } else { Vec::new() };
+    cu.missing = if state.enabled {
+        permissions::missing()
+    } else {
+        Vec::new()
+    };
     if state.now > 0 {
         cu.skew_ms = now_ms() - state.now;
     }
@@ -307,7 +327,9 @@ fn apply(s: &mut State, thread_id: &str, generation: Generation, state: WireStat
 impl ComputerState {
     /// The windows shown, front first.
     fn apps(&self) -> Vec<ComputerApp> {
-        let Some(session) = &self.session else { return Vec::new() };
+        let Some(session) = &self.session else {
+            return Vec::new();
+        };
         let mut apps: Vec<ComputerApp> = session.apps.iter().take(MAX_CARDS).cloned().collect();
         if let Some((window, front)) = self.pinned
             && apps.first().is_some_and(|a| a.window_id == front)
@@ -384,15 +406,21 @@ fn sync_cards(s: &mut State, id: &str) {
 /// when the card stops fetching.
 fn fetch(s: &mut State, thread_id: String, generation: Generation, window: u32) {
     let active = crate::workspace::window_active(s);
-    let Some(cu) = same(s, &thread_id, generation) else { return };
-    let Some(card) = cu.cards.get_mut(&window) else { return };
+    let Some(cu) = same(s, &thread_id, generation) else {
+        return;
+    };
+    let Some(card) = cu.cards.get_mut(&window) else {
+        return;
+    };
     if card.mode == Mode::Off {
         card.fetching = false;
         return;
     }
     if !active {
         // Nobody is watching: no capture until the window is back.
-        jobs::after(s, Duration::from_secs(1), move |s, _| fetch(s, thread_id, generation, window));
+        jobs::after(s, Duration::from_secs(1), move |s, _| {
+            fetch(s, thread_id, generation, window)
+        });
         return;
     }
     let mode = card.mode;
@@ -409,15 +437,22 @@ fn fetch(s: &mut State, thread_id: String, generation: Generation, window: u32) 
             let decoded = match &answer {
                 FrameAnswer::Frame(frame) => {
                     let jpeg = frame.jpeg.clone();
-                    tokio::task::spawn_blocking(move || decode(&jpeg)).await.ok().flatten()
+                    tokio::task::spawn_blocking(move || decode(&jpeg))
+                        .await
+                        .ok()
+                        .flatten()
                 }
                 _ => None,
             };
             Ok((answer, decoded))
         },
         move |s, result, _| {
-            let Some(cu) = same(s, &thread_id, generation) else { return };
-            let Some(card) = cu.cards.get_mut(&window) else { return };
+            let Some(cu) = same(s, &thread_id, generation) else {
+                return;
+            };
+            let Some(card) = cu.cards.get_mut(&window) else {
+                return;
+            };
             let pause = match result {
                 Ok((FrameAnswer::Frame(frame), decoded)) => {
                     card.backoff = Duration::from_secs(1);
@@ -450,7 +485,9 @@ fn fetch(s: &mut State, thread_id: String, generation: Generation, window: u32) 
                 }
             };
             match pause {
-                Some(pause) => jobs::after(s, pause, move |s, _| fetch(s, thread_id, generation, window)),
+                Some(pause) => jobs::after(s, pause, move |s, _| {
+                    fetch(s, thread_id, generation, window)
+                }),
                 None => fetch(s, thread_id, generation, window),
             }
         },
@@ -470,7 +507,9 @@ fn control(s: &mut State, id: &str, action: ComputerControl) {
         s,
         "computer use",
         move |c| async move { c.computer_control(&thread_id, action, &viewer).await },
-        move |s, result, _| control_landed(s, &asked, generation, owner, action, result.map(|_| ())),
+        move |s, result, _| {
+            control_landed(s, &asked, generation, owner, action, result.map(|_| ()))
+        },
     );
 }
 
@@ -527,7 +566,10 @@ fn hand_back(s: &State, thread_id: String, viewer: String) {
     jobs::run(
         s,
         "computer use",
-        move |c| async move { c.computer_control(&thread_id, ComputerControl::HandBack, &viewer).await },
+        move |c| async move {
+            c.computer_control(&thread_id, ComputerControl::HandBack, &viewer)
+                .await
+        },
         |_, _, _| {},
     );
 }
@@ -540,7 +582,11 @@ fn stop(s: &mut State, id: &str) {
 
 fn take_over_or_back(s: &mut State, id: &str) {
     let Some(cu) = slot(s, id) else { return };
-    let action = if cu.mine { ComputerControl::HandBack } else { ComputerControl::TakeOver };
+    let action = if cu.mine {
+        ComputerControl::HandBack
+    } else {
+        ComputerControl::TakeOver
+    };
     control(s, id, action);
 }
 
@@ -576,13 +622,21 @@ fn follow_pointer(card: &mut Card, session: &ComputerSession, window: u32, skew_
     card.pointer_seq = p.seq;
     let fresh = now_ms() - skew_ms - p.at < FRESH_MS;
     let from = card.glide.map_or(to, |g| g.at().0);
-    card.glide = Some(Glide { from: if first || !fresh { to } else { from }, to, started: Instant::now() });
+    card.glide = Some(Glide {
+        from: if first || !fresh { to } else { from },
+        to,
+        started: Instant::now(),
+    });
     if first || !fresh {
         return;
     }
     if p.kind.contains("click") {
         let right = p.kind == "right_click";
-        card.ripples.push(Ripple { at: to, starts: Instant::now() + GLIDE, right });
+        card.ripples.push(Ripple {
+            at: to,
+            starts: Instant::now() + GLIDE,
+            right,
+        });
         if p.kind == "double_click" {
             card.ripples.push(Ripple {
                 at: to,
@@ -597,7 +651,11 @@ fn follow_pointer(card: &mut Card, session: &ComputerSession, window: u32, skew_
         let end = (x2 as f32, y2 as f32);
         card.trail = Some((to, end, Instant::now()));
         // The cursor follows the drag once it reached the start.
-        card.glide = Some(Glide { from: to, to: end, started: Instant::now() + GLIDE });
+        card.glide = Some(Glide {
+            from: to,
+            to: end,
+            started: Instant::now() + GLIDE,
+        });
     }
 }
 
@@ -634,11 +692,19 @@ pub fn fixture(thread_id: &str) -> ComputerState {
         title: title.into(),
         width: Some(1440),
         height: Some(900),
-        capture: ComputerCapture { method: Some("window".into()), error: None, frame_age: Some(age) },
+        capture: ComputerCapture {
+            method: Some("window".into()),
+            error: None,
+            frame_age: Some(age),
+        },
     };
     let session = ComputerSession {
         thread_id: thread_id.into(),
-        apps: vec![app(11, "Safari", "IronClaw docs", 1.), app(12, "Notes", "Port plan", 12.), app(13, "Terminal", "zsh", 90.)],
+        apps: vec![
+            app(11, "Safari", "IronClaw docs", 1.),
+            app(12, "Notes", "Port plan", 12.),
+            app(13, "Terminal", "zsh", 90.),
+        ],
         inflight: 1,
         label: "Clicking “Install”".into(),
         status: None,
@@ -653,7 +719,11 @@ pub fn fixture(thread_id: &str) -> ComputerState {
             seq: 7,
             at: now - 10_000,
         }),
-        typing: Some(ComputerTyping { text: "rune port".into(), at: now, window_id: Some(11) }),
+        typing: Some(ComputerTyping {
+            text: "rune port".into(),
+            at: now,
+            window_id: Some(11),
+        }),
         last_activity: now,
         ended: false,
         last_failure: None,
@@ -669,10 +739,15 @@ pub fn fixture(thread_id: &str) -> ComputerState {
         card.mode = if ix == 0 { Mode::Live } else { Mode::Still };
         if ix == 0 {
             card.pointer_seq = 7;
-            card.glide = Some(Glide { from: (0.42, 0.36), to: (0.42, 0.36), started: Instant::now() });
+            card.glide = Some(Glide {
+                from: (0.42, 0.36),
+                to: (0.42, 0.36),
+                started: Instant::now(),
+            });
             // A grey test picture, so the scene shows image placement.
             let (w, h) = (16u32, 10u32);
-            card.pixels.set(w, h, [40u8, 44, 52, 255].repeat((w * h) as usize));
+            card.pixels
+                .set(w, h, [40u8, 44, 52, 255].repeat((w * h) as usize));
             card.natural = (1440, 900);
             card.has_image = true;
         }
@@ -702,7 +777,11 @@ mod tests {
     use crate::jobs::Generation;
 
     fn wire() -> WireState {
-        WireState { enabled: false, now: 0, sessions: fixture("sc2").session.clone().into_iter().collect() }
+        WireState {
+            enabled: false,
+            now: 0,
+            sessions: fixture("sc2").session.clone().into_iter().collect(),
+        }
     }
 
     #[test]
@@ -714,12 +793,14 @@ mod tests {
         }
         apply(&mut s, "sc2", Generation::default(), wire());
         assert!(chat_ref(&s, "sc2").is_some_and(|c| c.computer.session.is_some()));
-        assert!(chat_ref(&s, "t1").is_some_and(|c| c.computer.session.is_none()), "the open chat's share is its own");
+        assert!(
+            chat_ref(&s, "t1").is_some_and(|c| c.computer.session.is_none()),
+            "the open chat's share is its own"
+        );
         close_side_chat(&mut s);
         apply(&mut s, "sc2", Generation::default(), wire());
         assert!(chat_ref(&s, "t1").is_some_and(|c| c.computer.session.is_none()));
     }
-
 
     fn open_chat(s: &mut State, id: &str) {
         s.chat = Some(crate::chat::ChatState::new(id.into()));
@@ -735,7 +816,10 @@ mod tests {
         open_chat(&mut s, "A");
         start(&mut s, "A");
         let new = slot(&mut s, "A").map(|cu| cu.generation).expect("share");
-        assert!(same(&mut s, "A", old).is_none(), "the old poll loop would run beside the new one");
+        assert!(
+            same(&mut s, "A", old).is_none(),
+            "the old poll loop would run beside the new one"
+        );
         assert!(same(&mut s, "A", new).is_some());
     }
 
@@ -744,15 +828,31 @@ mod tests {
         let mut s = crate::chat::fixtures::test_state();
         open_chat(&mut s, "A");
         start(&mut s, "A");
-        let (generation, viewer) = slot(&mut s, "A").map(|cu| (cu.generation, cu.viewer.clone())).expect("share");
+        let (generation, viewer) = slot(&mut s, "A")
+            .map(|cu| (cu.generation, cu.viewer.clone()))
+            .expect("share");
         // Take Over is pending; the chat closes (its Drop sees `mine == false`).
         open_chat(&mut s, "B");
-        control_landed(&mut s, "A", generation, viewer.clone(), ComputerControl::TakeOver, Ok(()));
+        control_landed(
+            &mut s,
+            "A",
+            generation,
+            viewer.clone(),
+            ComputerControl::TakeOver,
+            Ok(()),
+        );
         let sent = HANDED_BACK.with(|h| h.borrow_mut().drain(..).collect::<Vec<_>>());
         assert_eq!(sent, vec![("A".to_string(), viewer)]);
 
         // A failed one, or a hand back, needs nothing.
-        control_landed(&mut s, "A", generation, "v".into(), ComputerControl::HandBack, Ok(()));
+        control_landed(
+            &mut s,
+            "A",
+            generation,
+            "v".into(),
+            ComputerControl::HandBack,
+            Ok(()),
+        );
         assert!(HANDED_BACK.with(|h| h.borrow().is_empty()));
     }
 }

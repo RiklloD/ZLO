@@ -55,11 +55,19 @@ fn list_dir(dir: &Path) -> Result<Vec<Entry>, String> {
             }
         })
         .collect();
-    out.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out.sort_by(|a, b| {
+        b.dir
+            .cmp(&a.dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     Ok(out)
 }
 
-type Listed = (Vec<(PathBuf, Result<Vec<Entry>, String>)>, HashSet<String>, HashMap<String, char>);
+type Listed = (
+    Vec<(PathBuf, Result<Vec<Entry>, String>)>,
+    HashSet<String>,
+    HashMap<String, char>,
+);
 
 /// Reload the open folders and the git marks.
 pub(super) fn refresh(s: &mut State) {
@@ -181,7 +189,9 @@ fn close_preview(s: &mut State) {
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
-    let Some(x) = side(s) else { return ui::loading(k) };
+    let Some(x) = side(s) else {
+        return ui::loading(k);
+    };
     if let Some(opened) = x.project.opened.as_ref() {
         let attach = opened.path.clone();
         return ui::fill_col()
@@ -197,7 +207,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             )
             .child(preview::body(s, k, opened, "project-preview"));
     }
-    let Some(root) = x.folder.clone() else { return ui::loading(k) };
+    let Some(root) = x.folder.clone() else {
+        return ui::loading(k);
+    };
     if let Some(e) = x.project.error.clone() {
         return ui::error_line(s, e);
     }
@@ -231,7 +243,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         let path = entry.path.clone();
         let dir = entry.dir;
         let glyph = if dir {
-            if expanded { &icons::FOLDER_OPEN } else { &icons::FOLDER }
+            if expanded {
+                &icons::FOLDER_OPEN
+            } else {
+                &icons::FOLDER
+            }
         } else {
             &icons::FILE
         };
@@ -241,7 +257,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .pl(6. + depth as f32 * 12.)
             .gap(6.)
             .child(icon(glyph, 12.).color(p.text_faint))
-            .child(if ignored && !show_ignored { name.opacity(0.6) } else { name });
+            .child(if ignored && !show_ignored {
+                name.opacity(0.6)
+            } else {
+                name
+            });
         if dirty_dir {
             line = line.child(ui::dot(p.warning, 5.));
         }
@@ -265,8 +285,16 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(ui::grow())
         .child(
             ui::ibtn(
-                if show_ignored { &icons::EYE } else { &icons::EYE_OFF },
-                if show_ignored { "Hide ignored files" } else { "Show ignored files" },
+                if show_ignored {
+                    &icons::EYE
+                } else {
+                    &icons::EYE_OFF
+                },
+                if show_ignored {
+                    "Hide ignored files"
+                } else {
+                    "Show ignored files"
+                },
             )
             .on_press(|s: &mut State| {
                 if let Some(x) = side_mut(s) {
@@ -289,7 +317,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .build(k)
                 .key("project-refresh"),
         );
-    ui::fill_col().child(bar).child(ui::scroll("project-tree", list))
+    ui::fill_col()
+        .child(bar)
+        .child(ui::scroll("project-tree", list))
 }
 
 /// Visible rows under `dir`: its entries, and the open folders' below them.
@@ -299,7 +329,9 @@ fn walk(x: &SideState, dir: &Path, depth: usize, rows: &mut Vec<(Entry, usize)>)
         return;
     };
     for entry in entries {
-        if !state.show_ignored && repo_rel(x, &entry.path).is_some_and(|r| state.ignored.contains(&r)) {
+        if !state.show_ignored
+            && repo_rel(x, &entry.path).is_some_and(|r| state.ignored.contains(&r))
+        {
             continue;
         }
         rows.push((entry.clone(), depth));

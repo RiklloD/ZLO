@@ -1,7 +1,7 @@
 //! Compact chat controls (model picker, goals, orchestration, computer
 //! use): text at the GPUI app's sizes, icons, small ghost and variant
 //! buttons, a tinted spinner and the composer-matched popover surface.
-//! Moved here from `chat/extras_ui.rs`; the `⌘N` badge is [`super::shortcut_badge`].
+//! Compact chat-extras widgets; the `⌘N` badge is [`super::shortcut_badge`].
 
 use rune::{Color, El, Icon, Shadow, TextStyle, el, icon, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};

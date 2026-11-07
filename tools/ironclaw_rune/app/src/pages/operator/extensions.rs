@@ -3,9 +3,9 @@
 //! per group; a blank secret keeps the stored value. GPUI
 //! `pages/operator/extensions.rs`.
 
-use crate::pages::common::{Tone, card, empty_state, error_line, loading};
 use crate::pages::common::controls::{Look, Size, button_sized, input, muted, outlined_tag};
 use crate::pages::common::ts::{BODY_SEMIBOLD, XS, XS_MEDIUM};
+use crate::pages::common::{Tone, card, empty_state, error_line, loading};
 use ironclaw_gpui_client::ClientError;
 use ironclaw_gpui_client::operator::AdminConfigGroup;
 use rune::{El, TextEdit, col, row, text};

@@ -132,7 +132,8 @@ pub(super) fn search(s: &mut State, query: &str) {
 
 /// A pending request came due: send it. True when the view should re-run.
 pub(super) fn poll(s: &mut State) -> bool {
-    let due = matches!(&s.workspace.message_search.pending, Some((at, ..)) if *at <= Instant::now());
+    let due =
+        matches!(&s.workspace.message_search.pending, Some((at, ..)) if *at <= Instant::now());
     if !due {
         return false;
     }

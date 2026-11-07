@@ -115,4 +115,3 @@ impl State {
         self.palette = design::resolve(&self.prefs, self.system_dark);
     }
 }
-

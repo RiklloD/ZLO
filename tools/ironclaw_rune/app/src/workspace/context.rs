@@ -336,7 +336,11 @@ pub(super) fn meter(s: &State, value: String, k: &Kit, layer: &mut Vec<El>) -> E
 
 fn popover(s: &State) -> El {
     let p = &s.palette;
-    let head = el().px(8.).pt(4.).pb(4.).child(tw("Context window", XS, MEDIUM, p.text_faint));
+    let head = el()
+        .px(8.)
+        .pt(4.)
+        .pb(4.)
+        .child(tw("Context window", XS, MEDIUM, p.text_faint));
     let Some(report) = report(s) else {
         let note = match (&s.workspace.context.error, s.workspace.context.loading) {
             (Some(e), _) => e.clone(),
@@ -380,19 +384,22 @@ fn popover(s: &State) -> El {
             .px(8.)
             .gap(8.)
             .center_y()
-            .child(el().size(8., 8.).radius(2.).fill(category_color(c.category)))
+            .child(
+                el().size(8., 8.)
+                    .radius(2.)
+                    .fill(category_color(c.category)),
+            )
             .child(
                 el().grow(1.0)
                     .min_w(0.0)
                     .child(t(category_label(c.category), XS, p.text_muted).truncate()),
             )
             .child(t(tokens(c.tokens), XS, p.text))
-            .child(
-                row()
-                    .w(40.)
-                    .justify_end()
-                    .child(t(format!("{:.0}%", percent(c.tokens, report.used)), XS, p.text_faint)),
-            )
+            .child(row().w(40.).justify_end().child(t(
+                format!("{:.0}%", percent(c.tokens, report.used)),
+                XS,
+                p.text_faint,
+            )))
     });
     let owners = report.tool_owners.iter().take(TOP_OWNERS).map(|o| {
         row()
@@ -404,7 +411,12 @@ fn popover(s: &State) -> El {
                     .child(t(owner_label(&o.owner), XS, p.text_muted).truncate()),
             )
             .child(t(format!("{} tools", o.tools), XS, p.text_faint))
-            .child(row().w(48.).justify_end().child(t(tokens(o.tokens), XS, p.text)))
+            .child(
+                row()
+                    .w(48.)
+                    .justify_end()
+                    .child(t(tokens(o.tokens), XS, p.text)),
+            )
     });
     let mut body = col()
         .key("context-pop")
@@ -421,14 +433,22 @@ fn popover(s: &State) -> El {
         .children(rows);
     if !report.tool_owners.is_empty() {
         body = body
-            .child(el().px(8.).pt(4.).child(tw("Largest tool owners", XS, MEDIUM, p.text_faint)))
+            .child(
+                el().px(8.)
+                    .pt(4.)
+                    .child(tw("Largest tool owners", XS, MEDIUM, p.text_faint)),
+            )
             .children(owners);
     }
     body = body.child(
         col()
             .mt(4.)
             .child(ui::rule(p))
-            .child(el().px(8.).pt(6.).child(t(source_label(report.source), XS, p.text_faint))),
+            .child(
+                el().px(8.)
+                    .pt(6.)
+                    .child(t(source_label(report.source), XS, p.text_faint)),
+            ),
     );
     if report.compact_prompt.is_none() && report.auto_compacts {
         body = body.child(el().px(8.).child(t(
@@ -446,8 +466,7 @@ pub(super) fn banner(s: &State, k: &Kit) -> Option<El> {
     let id = active_id(s)?;
     let level = level_of(s.workspace.telemetry.as_ref());
     if level == ContextLevel::Normal
-        || s
-            .workspace
+        || s.workspace
             .context
             .dismissed
             .contains(&(id.to_string(), level_key(level)))
@@ -488,7 +507,12 @@ pub(super) fn banner(s: &State, k: &Kit) -> Option<El> {
         line = line.child(ui::small_button(k, "Compact now", busy, compact_now));
     }
     line = line
-        .child(ui::small_button(k, "New thread from summary", busy, new_from_summary))
+        .child(ui::small_button(
+            k,
+            "New thread from summary",
+            busy,
+            new_from_summary,
+        ))
         .child(ui::ghost_icon(
             k,
             &icons::CLOSE,

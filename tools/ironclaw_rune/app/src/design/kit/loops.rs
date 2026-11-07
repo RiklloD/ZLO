@@ -108,7 +108,12 @@ pub fn shimmer_text(s: &State, key: &str, label: &str, font: TextStyle) -> El {
     let p = &s.palette;
     el().key(key.to_string())
         .label(label.to_string())
-        .child(text(label.to_string()).font(font).color(p.text_faint).single_line())
+        .child(
+            text(label.to_string())
+                .font(font)
+                .color(p.text_faint)
+                .single_line(),
+        )
         .child(
             text(label.to_string())
                 .key(format!("{key}-lit"))

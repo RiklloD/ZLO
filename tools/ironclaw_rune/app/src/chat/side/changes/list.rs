@@ -7,8 +7,8 @@ use rune_kit::Kit;
 
 use super::super::ui::{self, XS};
 use super::{ChangesState, confirmed, git_action, jump};
-use crate::design::smooth_scroll::WheelGlide;
 use crate::chat::side::git;
+use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::state::State;
 
@@ -70,7 +70,9 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
                 .disabled(busy)
                 .on_press(move |s: &mut State| {
                     let paths = vec![path.clone()];
-                    git_action(s, "stage", move |repo| git::unstage(repo, &paths).map(|()| None))
+                    git_action(s, "stage", move |repo| {
+                        git::unstage(repo, &paths).map(|()| None)
+                    })
                 })
                 .build(k)
                 .key(format!("unstage-{}", change.path))
@@ -79,8 +81,16 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
             row()
                 .child(
                     ui::ibtn(
-                        if armed { &icons::TRIANGLE_ALERT } else { &icons::UNDO_2 },
-                        if armed { "Click again to discard" } else { "Discard changes" },
+                        if armed {
+                            &icons::TRIANGLE_ALERT
+                        } else {
+                            &icons::UNDO_2
+                        },
+                        if armed {
+                            "Click again to discard"
+                        } else {
+                            "Discard changes"
+                        },
                     )
                     .label("Discard changes")
                     .variant(if armed {
@@ -94,7 +104,9 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
                             return;
                         }
                         let change = c.clone();
-                        git_action(s, "discard", move |repo| git::discard(repo, &change).map(|()| None))
+                        git_action(s, "discard", move |repo| {
+                            git::discard(repo, &change).map(|()| None)
+                        })
                     })
                     .build(k)
                     .key(format!("discard-{}", change.path)),
@@ -104,7 +116,9 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
                         .disabled(busy)
                         .on_press(move |s: &mut State| {
                             let paths = vec![stage_path.clone()];
-                            git_action(s, "stage", move |repo| git::stage(repo, &paths).map(|()| None))
+                            git_action(s, "stage", move |repo| {
+                                git::stage(repo, &paths).map(|()| None)
+                            })
                         })
                         .build(k)
                         .key(format!("stage-{}", change.path)),
@@ -128,7 +142,17 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
         .gap(4.)
         .items_center()
         .cursor(rune::Cursor::Pointer)
-        .child(icon(if hidden { &icons::CHEVRON_RIGHT } else { &icons::CHEVRON_DOWN }, 12.).color(p.text_muted))
+        .child(
+            icon(
+                if hidden {
+                    &icons::CHEVRON_RIGHT
+                } else {
+                    &icons::CHEVRON_DOWN
+                },
+                12.,
+            )
+            .color(p.text_muted),
+        )
         .child(ui::line(
             format!("{count} changed file{}", if count == 1 { "" } else { "s" }),
             XS,
@@ -145,14 +169,24 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
     let mut list = col().w_full().px(4.);
     if !staged.is_empty() {
         let all = staged.iter().map(|c| c.path.clone()).collect();
-        list = list.child(section(format!("Staged · {}", staged.len()), "unstage-all", all, false));
+        list = list.child(section(
+            format!("Staged · {}", staged.len()),
+            "unstage-all",
+            all,
+            false,
+        ));
         for c in &staged {
             list = list.child(change_row(c, true));
         }
     }
     if !unstaged.is_empty() {
         let all = unstaged.iter().map(|c| c.path.clone()).collect();
-        list = list.child(section(format!("Changes · {}", unstaged.len()), "stage-all", all, true));
+        list = list.child(section(
+            format!("Changes · {}", unstaged.len()),
+            "stage-all",
+            all,
+            true,
+        ));
         for c in &unstaged {
             list = list.child(change_row(c, false));
         }
@@ -162,7 +196,10 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
             .key("changes-list")
             .w_full()
             .max_h(220.)
-            .scroll(ScrollSpec { stick_bottom: false }).wheel_glide("changes-list")
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .wheel_glide("changes-list")
             .child(list),
     )
 }

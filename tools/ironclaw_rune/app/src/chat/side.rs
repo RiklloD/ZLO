@@ -209,7 +209,10 @@ impl Tab {
 
     /// Tabs that read the project folder.
     fn coding(self) -> bool {
-        matches!(self, Tab::Files | Tab::Changes | Tab::History | Tab::Console)
+        matches!(
+            self,
+            Tab::Files | Tab::Changes | Tab::History | Tab::Console
+        )
     }
 }
 
@@ -233,7 +236,10 @@ impl SideChat {
 
 /// The open chat's side chat when it shows `thread_id` (`chat::chat_for`
 /// finds embedded chats through this).
-pub fn side_chat_mut<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut crate::chat::ChatState> {
+pub fn side_chat_mut<'a>(
+    s: &'a mut State,
+    thread_id: &str,
+) -> Option<&'a mut crate::chat::ChatState> {
     s.chat
         .as_mut()?
         .side
@@ -717,11 +723,29 @@ mod tests {
     #[test]
     fn chat_links_find_their_tab() {
         let file = |p: &str| Link::File(p.into());
-        assert_eq!(link_target("/workspace/ten_words.pdf"), file("/workspace/ten_words.pdf"));
-        assert_eq!(link_target("./out/My%20deck.pptx"), file("/workspace/out/My deck.pptx"));
-        assert_eq!(link_target("https://docs.rs"), Link::Web("https://docs.rs".into()));
-        assert_eq!(link_target("mailto:a@b.c"), Link::Other("mailto:a@b.c".into()));
-        assert_eq!(link_target("/tmp/a%20b.txt"), Link::Local("/tmp/a b.txt".into()));
-        assert_eq!(link_target("file:///tmp/a.txt"), Link::Local("/tmp/a.txt".into()));
+        assert_eq!(
+            link_target("/workspace/ten_words.pdf"),
+            file("/workspace/ten_words.pdf")
+        );
+        assert_eq!(
+            link_target("./out/My%20deck.pptx"),
+            file("/workspace/out/My deck.pptx")
+        );
+        assert_eq!(
+            link_target("https://docs.rs"),
+            Link::Web("https://docs.rs".into())
+        );
+        assert_eq!(
+            link_target("mailto:a@b.c"),
+            Link::Other("mailto:a@b.c".into())
+        );
+        assert_eq!(
+            link_target("/tmp/a%20b.txt"),
+            Link::Local("/tmp/a b.txt".into())
+        );
+        assert_eq!(
+            link_target("file:///tmp/a.txt"),
+            Link::Local("/tmp/a.txt".into())
+        );
     }
 }

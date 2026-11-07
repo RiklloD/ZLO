@@ -1,8 +1,10 @@
 //! Inspector rendering (GPUI `InspectorPanel`'s `render_*` methods).
 
-use crate::pages::common::{Tone, card, empty_state, error_line, glyph};
-use crate::pages::common::controls::{Look, Size, button_sized, muted, outlined_tag, rule, spinner};
+use crate::pages::common::controls::{
+    Look, Size, button_sized, muted, outlined_tag, rule, spinner,
+};
 use crate::pages::common::ts::{MONO_XS, SM, SM_MEDIUM, XS, XS_MEDIUM};
+use crate::pages::common::{Tone, card, empty_state, error_line, glyph};
 use ironclaw_gpui_client::operator::InspectorRun;
 use ironclaw_gpui_client::operator::inspector::{
     DiagnosticActivityKind, InspectorModelCallStatus, ToolExecutionStatus,
@@ -65,7 +67,8 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
             .max_h(220.)
             .scroll(ScrollSpec {
                 stick_bottom: false,
-            }).wheel_glide("inspect-threads")
+            })
+            .wheel_glide("inspect-threads")
             .children(threads),
     );
     if panel.thread.is_some() {
@@ -405,7 +408,8 @@ fn render_prompt(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
                         .max_h(PROMPT_MAX_HEIGHT)
                         .scroll(ScrollSpec {
                             stick_bottom: false,
-                        }).wheel_glide("inspector-prompt")
+                        })
+                        .wheel_glide("inspector-prompt")
                         .child(code_block(p, body)),
                 ),
             )

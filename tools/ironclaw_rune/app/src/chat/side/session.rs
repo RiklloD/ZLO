@@ -33,7 +33,10 @@ pub fn new_side_chat(s: &mut State) {
         return;
     }
     if bridge::rows(s).is_empty() {
-        bridge::set_error(s, "Send a message first: a side chat starts from this conversation.".into());
+        bridge::set_error(
+            s,
+            "Send a message first: a side chat starts from this conversation.".into(),
+        );
         return;
     }
     if let Some(x) = side_mut(s) {
@@ -60,7 +63,9 @@ pub fn new_side_chat(s: &mut State) {
                 let key = parent.clone();
                 s.update_prefs(|p| p.side_chats.entry(key).or_default().push(child));
             }
-            let Some(x) = super::side_of(s, &parent) else { return };
+            let Some(x) = super::side_of(s, &parent) else {
+                return;
+            };
             x.chat_busy = false;
             match result {
                 Ok(forked) => open(s, forked.fork_thread_id),
@@ -109,7 +114,9 @@ pub(super) fn restore(s: &mut State) {
     if s.prefs.side_tab != Tab::SideChat.id() {
         return;
     }
-    let Some(id) = chats(s).into_iter().next() else { return };
+    let Some(id) = chats(s).into_iter().next() else {
+        return;
+    };
     let chat = SideChat::new(s, id.clone());
     if let Some(x) = side_mut(s) {
         x.chat = Some(chat);
@@ -120,7 +127,9 @@ pub(super) fn restore(s: &mut State) {
 /// The side chat tab's body.
 pub(super) fn chat_view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     match side(s).and_then(|x| x.chat.as_ref()) {
-        Some(chat) => ui::fill_col().child(crate::chat::embedded_view(s, &chat.state, cx, k, layer)),
+        Some(chat) => {
+            ui::fill_col().child(crate::chat::embedded_view(s, &chat.state, cx, k, layer))
+        }
         None => ui::empty(s, "No side chat open."),
     }
 }
@@ -133,7 +142,9 @@ pub(super) fn chat_actions(s: &State) -> El {
         return el();
     };
     let id = chat.thread_id.clone();
-    let title = bridge::title(s, &id).filter(|t| t != "Side chat").unwrap_or_default();
+    let title = bridge::title(s, &id)
+        .filter(|t| t != "Side chat")
+        .unwrap_or_default();
     row()
         .grow(1.)
         .min_w(0.)
@@ -168,15 +179,21 @@ pub(super) fn toggle(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
     let Some(x) = side(s) else { return el() };
     let open = x.session_open;
     let ink = if open { p.text } else { p.text_muted };
-    let mut toggle = super::dock::toggle(s, TOGGLE_KEY, open, "Session and side chats", card_glyph(ink))
-        .on_press(|s: &mut State| {
-            let Some(x) = side_mut(s) else { return };
-            x.session_open = !x.session_open;
-            if x.session_open {
-                let ids = chats(s);
-                bridge::ensure_titles(s, ids);
-            }
-        });
+    let mut toggle = super::dock::toggle(
+        s,
+        TOGGLE_KEY,
+        open,
+        "Session and side chats",
+        card_glyph(ink),
+    )
+    .on_press(|s: &mut State| {
+        let Some(x) = side_mut(s) else { return };
+        x.session_open = !x.session_open;
+        if x.session_open {
+            let ids = chats(s);
+            bridge::ensure_titles(s, ids);
+        }
+    });
     if bridge::side_chat_running(s) || x.chat_busy {
         toggle = toggle.child(ui::dot(p.accent, 6.).absolute(19., 3.));
     }
@@ -212,7 +229,11 @@ fn card(s: &State, k: &Kit) -> El {
             .radius(crate::design::PANEL_RADIUS)
             .fill(p.surface_overlay)
             .border(1., p.border)
-            .shadow(8., 24., Color::BLACK.alpha(if p.light { 0.12 } else { 0.35 }))
+            .shadow(
+                8.,
+                24.,
+                Color::BLACK.alpha(if p.light { 0.12 } else { 0.35 }),
+            )
     };
     let line = |key: String, glyph: &'static rune::Icon, content: String, live: bool| {
         row()
@@ -224,10 +245,18 @@ fn card(s: &State, k: &Kit) -> El {
             .items_center()
             .radius(8.)
             .child(icon(glyph, 15.).color(if live { p.text_muted } else { p.text_faint }))
-            .child(ui::line(content, SM, if live { p.text } else { p.text_faint }).grow(1.).min_w(0.))
+            .child(
+                ui::line(content, SM, if live { p.text } else { p.text_faint })
+                    .grow(1.)
+                    .min_w(0.),
+            )
     };
     let action = |e: El, enabled: bool| {
-        if enabled { e.role("button").cursor(Cursor::Pointer).hover(p.hover) } else { e }
+        if enabled {
+            e.role("button").cursor(Cursor::Pointer).hover(p.hover)
+        } else {
+            e
+        }
     };
     let hint = |content: &str| ui::line(content.to_string(), XS, p.text_faint);
 
@@ -280,17 +309,21 @@ fn card(s: &State, k: &Kit) -> El {
     // Side chats.
     let open_id = x.chat.as_ref().map(|c| c.thread_id.clone());
     let running = bridge::side_chat_running(s);
-    let mut list = col().child(
-        el().px(8.)
-            .pt(8.)
-            .pb(4.)
-            .child(ui::line("SIDE CHATS", rune::tok::TextStyle::new(12., 600.), p.text_faint)),
-    );
+    let mut list = col().child(el().px(8.).pt(8.).pb(4.).child(ui::line(
+        "SIDE CHATS",
+        rune::tok::TextStyle::new(12., 600.),
+        p.text_faint,
+    )));
     for (ix, id) in chats(s).into_iter().enumerate() {
         let shown = open_id.as_deref() == Some(id.as_str());
         let name = bridge::title(s, &id).unwrap_or_else(|| "Side chat".into());
         let mut item = action(
-            line(format!("session-side-chat-{ix}"), &icons::MESSAGES_SQUARE, name.clone(), true),
+            line(
+                format!("session-side-chat-{ix}"),
+                &icons::MESSAGES_SQUARE,
+                name.clone(),
+                true,
+            ),
             true,
         )
         .label(format!("Open side chat {name}"));
@@ -305,7 +338,12 @@ fn card(s: &State, k: &Kit) -> El {
     let can_fork = !bridge::rows(s).is_empty();
     let busy = x.chat_busy;
     let mut new_chat = action(
-        line("session-new-side-chat".into(), &icons::PLUS, "New side chat".into(), can_fork && !busy),
+        line(
+            "session-new-side-chat".into(),
+            &icons::PLUS,
+            "New side chat".into(),
+            can_fork && !busy,
+        ),
         can_fork && !busy,
     )
     .label("New side chat");
@@ -318,7 +356,12 @@ fn card(s: &State, k: &Kit) -> El {
         new_chat = new_chat.on_press(new_side_chat);
     }
     let mut fork = action(
-        line("session-fork".into(), &icons::GIT_FORK, "Fork chat".into(), can_fork),
+        line(
+            "session-fork".into(),
+            &icons::GIT_FORK,
+            "Fork chat".into(),
+            can_fork,
+        ),
         can_fork,
     )
     .label("Fork chat");

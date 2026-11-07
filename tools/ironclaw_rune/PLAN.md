@@ -143,7 +143,9 @@ scrolling). `bundle.sh` has its own Rune version here (`ZLO Rune.app`).
 | Integration | done: all areas wired; builds clean under clippy `-D warnings`, 191 tests |
 | Parity review | done: `PARITY_REVIEW.md` (of 121 GPUI files: 96 parity, 19 minor gaps, 3 major, 2 missing) |
 | P0 + all eight P1 fixes | merged (07.11.2026) |
-| P2 polish (4 of 15 open: 6, 7, 10, 15), live test from `ZLO Rune.app` | open |
+| P2 polish | done (07.11.2026): all 15 items fixed; #15 is a GPUI-side spec note (see "Known inaccuracy in the shared spec") |
+| Cleanup | done: dead-code warnings on (0 warnings), `cargo fmt` clean, no `PORT-STUB`s |
+| Live test from `ZLO Rune.app` | open (see "Manual checks") |
 
 ## Integration checklist (collected from area reports)
 
@@ -171,7 +173,6 @@ No `PORT-STUB` markers remain (`rg -n PORT-STUB app/src` is empty).
 - [x] B: `look::wallpaper_layer` in window/conversation/sidebar, `look::reshuffle` on a new draft (B merge).
 - [ ] B: keep `s.palette`/`s.system_dark` current on a live appearance change; drop G's `LookState::preview` fixture hook. Needs a live window to check.
 - [x] D: `look::reload(s)` after wallpaper/theme changes (Appearance).
-- [ ] All areas: replace remaining local helpers (letter tiles) with `design::kit`/`design::motion` (`common_stub.rs`, `c_widgets.rs`, `extras_ui.rs` done in 5e12d99d7); composers share `.matched(COMPOSER_MATCH)` (rows `.motion(ROW_RESORT)` and the dock tab pill are done).
 - [x] Foundation: `prefs.translucent` → transparent window at launch (`main.rs`, `design::styles::set_window_translucent`), system material on the shell root; turning it on mid-session takes effect at the next launch (Appearance says so). Live check under "Manual checks".
 - [x] B: session import after connecting (`workspace::start_polling` ticks it and the rescan; D's `session_import::schedule` is not needed); titles API is one (`crate::titles`).
 - [x] A: `chat::approval_mode_changed` (D and E callers).

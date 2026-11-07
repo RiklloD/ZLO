@@ -8,7 +8,7 @@
 
 use ironclaw_gpui_client::GateDecision;
 use rune::{El, KeyEvent, TextEdit, Tx, el, row};
-use rune_kit::{Button, ControlSize, ButtonVariant, Kit, TextInput};
+use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextInput};
 
 use super::{ChatState, actions, chat_for, orphan_edit, set_error};
 use crate::jobs;
@@ -85,8 +85,18 @@ fn reject_edit<'a>(s: &'a mut State, thread: &str) -> &'a mut TextEdit {
 }
 
 /// The card's "Reject with feedback…" button.
-pub(crate) fn reject_button(chat: &ChatState, key: &str, run_id: &str, gate_ref: &str, k: &Kit) -> El {
-    let (run, gate, thread) = (run_id.to_string(), gate_ref.to_string(), chat.thread_id.clone());
+pub(crate) fn reject_button(
+    chat: &ChatState,
+    key: &str,
+    run_id: &str,
+    gate_ref: &str,
+    k: &Kit,
+) -> El {
+    let (run, gate, thread) = (
+        run_id.to_string(),
+        gate_ref.to_string(),
+        chat.thread_id.clone(),
+    );
     Button::new("Reject with feedback…")
         .variant(ButtonVariant::Ghost)
         .control_size(ControlSize::Regular)
@@ -125,7 +135,9 @@ pub(crate) fn render_reject_editor(chat: &ChatState, gate_ref: &str, k: &Kit) ->
                             }
                             false
                         })
-                        .on_submit(move |s: &mut State, tx: &mut Tx| submit_reject(s, &submit_thread, tx))
+                        .on_submit(move |s: &mut State, tx: &mut Tx| {
+                            submit_reject(s, &submit_thread, tx)
+                        })
                         .build(k),
                 ),
             )

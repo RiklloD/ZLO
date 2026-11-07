@@ -17,8 +17,8 @@ mod submit;
 use std::path::PathBuf;
 
 use ironclaw_gpui_client::attachments::{self, StagedFile};
-use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
 use ironclaw_gpui_client::commands::MenuItem;
+use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
 use rune::{Color, Cx, El, FileDialogOptions, KeyEvent, TextEdit, Tx, col, el, row};
 use rune_kit::{Kit, Placement};
 
@@ -27,9 +27,9 @@ use submit::{Origin, Submission, send_with, submit};
 
 use super::inbox::{self, view::profile_picker};
 use super::ui::{self, SEMIBOLD, SM, XS, t, tw};
+use crate::chat::inline_files;
 use crate::chat::menu::{self, ComposerMenu, MenuKey, MenuKeyName};
 use crate::chat::model_picker::ModelPickerState;
-use crate::chat::inline_files;
 use crate::design::{self, motion, prefs::Wallpaper};
 use crate::drafts;
 use crate::icons;
@@ -155,7 +155,13 @@ pub(super) fn open(s: &mut State) {
     }
     // A kept draft re-reads its profile: its default may have changed. The
     // model catalog is per user; any thread can read it.
-    let catalog = s.workspace.inbox.list.rows.first().map(|r| r.thread_id.clone());
+    let catalog = s
+        .workspace
+        .inbox
+        .list
+        .rows
+        .first()
+        .map(|r| r.thread_id.clone());
     if let Some(profile) = s.workspace.draft.as_ref().map(|d| d.profile.clone()) {
         crate::chat::model_picker::draft_set_profile(s, profile, catalog);
     }
@@ -173,7 +179,11 @@ fn load_menu(s: &mut State, generation: Generation) {
         "draft menu",
         |c| menu::load(c, false),
         move |s, result, _| {
-            let draft = s.workspace.draft.as_mut().filter(|d| d.generation == generation);
+            let draft = s
+                .workspace
+                .draft
+                .as_mut()
+                .filter(|d| d.generation == generation);
             if let (Ok(sources), Some(draft)) = (result, draft) {
                 draft.menu.sources = std::rc::Rc::new(sources);
             }
@@ -250,7 +260,13 @@ pub(super) fn quick_send(s: &mut State, text: String, voice: Option<crate::voice
 pub fn start_in_profile(s: &mut State, profile: String) {
     s.workspace.inbox.new_menu_open = false;
     open(s);
-    let catalog = s.workspace.inbox.list.rows.first().map(|r| r.thread_id.clone());
+    let catalog = s
+        .workspace
+        .inbox
+        .list
+        .rows
+        .first()
+        .map(|r| r.thread_id.clone());
     crate::chat::model_picker::draft_set_profile(s, profile.clone(), catalog);
     if let Some(draft) = s.workspace.draft.as_mut() {
         draft.profile = profile;
@@ -279,7 +295,12 @@ pub(super) fn record(s: &mut State) {
         .into_iter()
         .filter_map(|(range, id)| {
             let shown = text.get(range.clone())?.to_string();
-            Some(drafts::DraftToken { range, id, label: shown.clone(), text: shown })
+            Some(drafts::DraftToken {
+                range,
+                id,
+                label: shown.clone(),
+                text: shown,
+            })
         })
         .collect();
     let saved = drafts::Draft {
@@ -433,8 +454,13 @@ pub(super) fn attach_thread(s: &mut State, id: String, title: String) {
 
 pub(super) fn profile_name(s: &State) -> String {
     let id = s.workspace.draft.as_ref().map(|d| d.profile.as_str());
-    id.and_then(|id| s.workspace.inbox.profile(id).map(|p| p.display_name.clone()))
-        .unwrap_or_else(|| "Default".into())
+    id.and_then(|id| {
+        s.workspace
+            .inbox
+            .profile(id)
+            .map(|p| p.display_name.clone())
+    })
+    .unwrap_or_else(|| "Default".into())
 }
 
 /// A round composer button (GPUI `chat::round_button`): filled with the
@@ -524,7 +550,16 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .cursor(rune::Cursor::Pointer)
         .hover_group()
         .child(
-            t(name, SM, if draft.menu_open { p.text } else { p.text_muted }).group_color(p.text),
+            t(
+                name,
+                SM,
+                if draft.menu_open {
+                    p.text
+                } else {
+                    p.text_muted
+                },
+            )
+            .group_color(p.text),
         )
         .child(ui::glyph(&icons::CHEVRON_DOWN, 12., p.text_faint))
         .on_press(|s: &mut State| {
@@ -604,7 +639,13 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             .child(el().grow(1.0))
             .child(place)
             .child(attach_button)
-            .child(crate::voice::ui::composer_controls(s, k, layer, &ComposerTarget::Draft, None))
+            .child(crate::voice::ui::composer_controls(
+                s,
+                k,
+                layer,
+                &ComposerTarget::Draft,
+                None,
+            ))
             .child(send_button),
     );
     // The hero card sits mid-screen, so the menu opens below it, as wide.
@@ -612,10 +653,13 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     if !items.is_empty() {
         let selected = draft.menu.selected(items.len());
         let on_pick: menu::OnPick = std::rc::Rc::new(|s: &mut State, item, _tx| pick_item(s, item));
-        let width = cx.layout_size("draft-composer").map_or(HERO_WIDTH, |[w, _]| w);
+        let width = cx
+            .layout_size("draft-composer")
+            .map_or(HERO_WIDTH, |[w, _]| w);
         layer.push(rune_kit::popover::anchored(
             k,
-            el().w(width).child(menu::render(s, &items, selected, on_pick)),
+            el().w(width)
+                .child(menu::render(s, &items, selected, on_pick)),
             "draft-composer",
             Placement::Bottom,
             8.,
@@ -681,7 +725,9 @@ mod tests {
     #[test]
     fn voice_picks_the_open_quick_composer_first() {
         let chat = || Some(ComposerTarget::Chat("t1".into()));
-        for (window_active, open_quick) in [(true, true), (true, false), (false, true), (false, false)] {
+        for (window_active, open_quick) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
             assert_eq!(
                 pick_voice_composer(true, window_active, chat(), open_quick),
                 VoicePick::Composer(ComposerTarget::Quick)
@@ -705,10 +751,22 @@ mod tests {
     fn a_key_press_from_another_app_opens_the_quick_composer() {
         // The window is behind another app, or shows a page with no composer.
         let chat = Some(ComposerTarget::Chat("t1".into()));
-        assert_eq!(pick_voice_composer(false, false, chat.clone(), true), VoicePick::OpenQuick);
-        assert_eq!(pick_voice_composer(false, true, None, true), VoicePick::OpenQuick);
+        assert_eq!(
+            pick_voice_composer(false, false, chat.clone(), true),
+            VoicePick::OpenQuick
+        );
+        assert_eq!(
+            pick_voice_composer(false, true, None, true),
+            VoicePick::OpenQuick
+        );
         // A mic click or a barge-in never opens it.
-        assert_eq!(pick_voice_composer(false, false, chat, false), VoicePick::Nothing);
-        assert_eq!(pick_voice_composer(false, true, None, false), VoicePick::Nothing);
+        assert_eq!(
+            pick_voice_composer(false, false, chat, false),
+            VoicePick::Nothing
+        );
+        assert_eq!(
+            pick_voice_composer(false, true, None, false),
+            VoicePick::Nothing
+        );
     }
 }

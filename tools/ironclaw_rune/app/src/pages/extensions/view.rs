@@ -1,8 +1,11 @@
 //! Extensions page rendering (GPUI `ExtensionsView`'s `render_*` methods).
 
-use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
-use crate::pages::common::controls::{Look, Size, button_sized, header_with, icon_button_sized, input, open_url, outlined_tag, refresh_icon, rule, section_title, spinner_line};
+use crate::pages::common::controls::{
+    Look, Size, button_sized, header_with, icon_button_sized, input, open_url, outlined_tag,
+    refresh_icon, rule, section_title, spinner_line,
+};
 use crate::pages::common::ts::{BODY_SEMIBOLD, SM, SM_MEDIUM, XS, XS_MEDIUM};
+use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
 use ironclaw_gpui_client::extension_state::LifecyclePublicState;
 use ironclaw_gpui_client::product_wire::{
     RebornExtensionCredentialSetup, RebornExtensionRegistryEntry,

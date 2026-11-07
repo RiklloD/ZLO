@@ -13,14 +13,24 @@ use crate::workspace::fixtures as ws;
 pub type Scene = (&'static str, fn(&mut State));
 
 pub const SCENES: &[Scene] = &[
-    ("appearance", |s| page_with(s, Page::Appearance, crate::pages::settings::fixture)),
+    ("appearance", |s| {
+        page_with(s, Page::Appearance, crate::pages::settings::fixture)
+    }),
     ("appearance-translucent", |s| {
         page_with(s, Page::Appearance, crate::pages::settings::fixture);
         // Headless renders draw the shell's translucent fills (no material).
         s.prefs.translucent = true;
     }),
-    ("automation-form", |s| page_with(s, Page::Automations, crate::pages::automations::fixture_form)),
-    ("automations", |s| page_with(s, Page::Automations, crate::pages::automations::fixture)),
+    ("automation-form", |s| {
+        page_with(
+            s,
+            Page::Automations,
+            crate::pages::automations::fixture_form,
+        )
+    }),
+    ("automations", |s| {
+        page_with(s, Page::Automations, crate::pages::automations::fixture)
+    }),
     ("chat", crate::chat::fixtures::chat),
     ("chat-gate", crate::chat::fixtures::gate),
     ("chat-menu", crate::chat::fixtures::menu),
@@ -35,7 +45,9 @@ pub const SCENES: &[Scene] = &[
     ("draft-files", ws::fixture_draft_files),
     ("draft-mention", ws::fixture_draft_mention),
     ("extensions", crate::pages::extensions::fixtures::extensions),
-    ("files", |s| page_with(s, Page::Files, crate::pages::files::fixture)),
+    ("files", |s| {
+        page_with(s, Page::Files, crate::pages::files::fixture)
+    }),
     ("goals", crate::chat::goals::scene),
     ("hooks", crate::pages::hooks::fixture_hooks),
     ("inbox", ws::fixture_inbox),
@@ -44,33 +56,63 @@ pub const SCENES: &[Scene] = &[
     ("kit-gallery-light", gallery::fixture_kit_gallery_light),
     ("look-wallpaper-ascii", gallery::fixture_wallpaper_ascii),
     ("look-wallpaper-dither", gallery::fixture_wallpaper_dither),
-    ("look-wallpaper-dither-full", gallery::fixture_wallpaper_dither_full),
-    ("look-wallpaper-halftone", gallery::fixture_wallpaper_halftone),
-    ("look-wallpaper-scanlines", gallery::fixture_wallpaper_scanlines),
+    (
+        "look-wallpaper-dither-full",
+        gallery::fixture_wallpaper_dither_full,
+    ),
+    (
+        "look-wallpaper-halftone",
+        gallery::fixture_wallpaper_halftone,
+    ),
+    (
+        "look-wallpaper-scanlines",
+        gallery::fixture_wallpaper_scanlines,
+    ),
     ("look-wallpaper-scene", gallery::fixture_wallpaper_scene),
     ("memory", memory),
     ("memory-draft", memory_draft),
     ("memory-supermemory", memory_supermemory),
-    ("model-picker", |s| crate::chat::model_picker::scene(s, false)),
-    ("model-picker-effort", |s| crate::chat::model_picker::scene(s, true)),
-    ("notifications", |s| page_with(s, Page::Notifications, crate::pages::notifications::fixture)),
+    ("model-picker", |s| {
+        crate::chat::model_picker::scene(s, false)
+    }),
+    ("model-picker-effort", |s| {
+        crate::chat::model_picker::scene(s, true)
+    }),
+    ("notifications", |s| {
+        page_with(s, Page::Notifications, crate::pages::notifications::fixture)
+    }),
     ("operator", crate::pages::operator::fixtures::status),
     ("operator-config", crate::pages::operator::fixtures::config),
-    ("operator-extensions", crate::pages::operator::fixtures::extension_config),
-    ("operator-inspector", crate::pages::operator::fixtures::inspector),
+    (
+        "operator-extensions",
+        crate::pages::operator::fixtures::extension_config,
+    ),
+    (
+        "operator-inspector",
+        crate::pages::operator::fixtures::inspector,
+    ),
     ("operator-logs", crate::pages::operator::fixtures::logs),
     ("operator-setup", crate::pages::operator::fixtures::setup),
     ("orchestration", crate::chat::orchestration::scene),
-    ("permissions", |s| page_with(s, Page::Permissions, crate::pages::settings::fixture)),
+    ("permissions", |s| {
+        page_with(s, Page::Permissions, crate::pages::settings::fixture)
+    }),
     ("profile-editor", profile_editor),
     ("profile-pickers", profile_pickers),
     ("profiles", profiles),
-    ("projects", |s| page_with(s, Page::Projects, crate::pages::projects::fixture)),
+    ("projects", |s| {
+        page_with(s, Page::Projects, crate::pages::projects::fixture)
+    }),
     ("providers", crate::pages::providers::fixtures::providers),
-    ("providers-catalog", crate::pages::providers::fixtures::catalog),
+    (
+        "providers-catalog",
+        crate::pages::providers::fixtures::catalog,
+    ),
     ("providers-cli", crate::pages::providers::fixtures::cli),
     ("quick-composer", ws::fixture_quick),
-    ("settings", |s| page_with(s, Page::Settings, crate::pages::settings::fixture)),
+    ("settings", |s| {
+        page_with(s, Page::Settings, crate::pages::settings::fixture)
+    }),
     ("settings-nav", ws::fixture_settings_nav),
     ("shell", ws::fixture_shell),
     ("side-activity", crate::chat::side::fixtures::activity),
@@ -83,14 +125,22 @@ pub const SCENES: &[Scene] = &[
     ("side-outputs", crate::chat::side::fixtures::outputs),
     ("side-routines", crate::chat::side::fixtures::routines),
     ("side-session", crate::chat::side::fixtures::session),
-    ("side-session-picker", crate::chat::side::fixtures::session_picker),
+    (
+        "side-session-picker",
+        crate::chat::side::fixtures::session_picker,
+    ),
     ("skills", crate::pages::skills::fixtures::skills),
-    ("skills-editor", crate::pages::skills::fixtures::skills_editor),
+    (
+        "skills-editor",
+        crate::pages::skills::fixtures::skills_editor,
+    ),
     ("snapshot-chip", snapshot_chip),
     ("status-bar", ws::fixture_status_bar),
     ("thread-drag", ws::fixture_thread_drag),
     ("thread-drag-draft", ws::fixture_thread_drag_draft),
-    ("traces", |s| page_with(s, Page::Traces, crate::pages::settings::fixture)),
+    ("traces", |s| {
+        page_with(s, Page::Traces, crate::pages::settings::fixture)
+    }),
     ("usage", usage),
     ("usage-compactions", usage_compactions),
     ("usage-history", usage_history),
@@ -115,8 +165,12 @@ fn shell(s: &mut State) {
     s.fixture = true;
     s.conn = Conn::Ready;
     s.page = Page::Chat;
-    s.workspace.titles.remember("t1", "Port the frontend to Rune");
-    s.workspace.titles.remember("t2", "Fix the flaky integration test");
+    s.workspace
+        .titles
+        .remember("t1", "Port the frontend to Rune");
+    s.workspace
+        .titles
+        .remember("t2", "Fix the flaky integration test");
 }
 
 fn page(s: &mut State, page: Page) {

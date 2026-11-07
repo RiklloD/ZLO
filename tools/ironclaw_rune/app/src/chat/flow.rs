@@ -12,7 +12,9 @@ use std::collections::HashMap;
 
 use ironclaw_gpui_client::GateDecision;
 use ironclaw_gpui_client::transcript::{CliBody, GateState, QuestionState, Row, ToolStatus};
-use rune::{Color, El, Icon, LineCap, Path, Shape, TextStyle, Transition, canvas, col, el, icon, row, text};
+use rune::{
+    Color, El, Icon, LineCap, Path, Shape, TextStyle, Transition, canvas, col, el, icon, row, text,
+};
 use rune_kit::{Kit, RollingText};
 
 use crate::design::Palette;
@@ -506,7 +508,11 @@ fn rail(leaf: &Leaf, last: bool, p: &Palette) -> El {
     let mid = TREE_ROW_HEIGHT / 2.;
     let tint = if leaf.failed { p.danger } else { p.text_muted };
     let x = TRUNK_X + 0.5;
-    let trunk_end = if last { mid - BEND_RADIUS } else { TREE_ROW_HEIGHT };
+    let trunk_end = if last {
+        mid - BEND_RADIUS
+    } else {
+        TREE_ROW_HEIGHT
+    };
     let shape = Shape::new()
         .line([x, 0.], [x, trunk_end], 1., LineCap::Butt, color)
         .stroke_path(
@@ -520,7 +526,11 @@ fn rail(leaf: &Leaf, last: bool, p: &Palette) -> El {
         );
     el().w(GUTTER_WIDTH)
         .h(TREE_ROW_HEIGHT)
-        .child(canvas(shape).size(GUTTER_WIDTH, TREE_ROW_HEIGHT).absolute(0., 0.))
+        .child(
+            canvas(shape)
+                .size(GUTTER_WIDTH, TREE_ROW_HEIGHT)
+                .absolute(0., 0.),
+        )
         .child(
             icon(leaf.icon, ICON_SIZE)
                 .color(tint)
@@ -555,7 +565,10 @@ pub fn render_activity(
             .looping(rune::LoopSpec {
                 period: 1.6,
                 delay: 0.,
-                kind: rune::LoopKind::Opacity { low: 0.55, high: 1. },
+                kind: rune::LoopKind::Opacity {
+                    low: 0.55,
+                    high: 1.,
+                },
             })
     } else {
         RollingText::new(format!("{key}-title"), label.clone())
@@ -565,7 +578,11 @@ pub fn render_activity(
     };
     let chevron = icon(&icons::CHEVRON_DOWN, 13.)
         .color(p.text_muted)
-        .rotate(if open { 0. } else { -std::f32::consts::FRAC_PI_2 });
+        .rotate(if open {
+            0.
+        } else {
+            -std::f32::consts::FRAC_PI_2
+        });
     let header = row()
         .key(format!("{key}-head"))
         .role("button")
@@ -599,7 +616,10 @@ pub fn render_activity(
         .filter_map(|r| leaf(r).map(|l| (r, l)))
         .collect();
     let count = parts.len();
-    let mut tree = col().key(format!("{key}-tree")).w_full().transition(rise(4.));
+    let mut tree = col()
+        .key(format!("{key}-tree"))
+        .w_full()
+        .transition(rise(4.));
     for (ix, (row, mut leaf)) in parts.into_iter().enumerate() {
         let row_key = row.key();
         let open_key = format!("leaf:{row_key}");
@@ -648,11 +668,11 @@ fn tree_row(
         .grow(1.)
         .gap(8.)
         .center_y()
-        .child(
-            text(leaf.label.clone())
-                .font(small)
-                .color(if leaf.running { p.text } else { tint }),
-        );
+        .child(text(leaf.label.clone()).font(small).color(if leaf.running {
+            p.text
+        } else {
+            tint
+        }));
     // An opened row shows its text once, below; the label line keeps only
     // the verb.
     if !leaf.detail.is_empty() && !expanded {
@@ -693,11 +713,12 @@ fn tree_row(
     // beside it unless this is the last row.
     let mut gutter = el().w(GUTTER_WIDTH + TEXT_GAP).self_stretch();
     if !last {
-        gutter = gutter.child(
-            el().w(1.)
-                .fill(rail_color(p))
-                .pin(Some(TRUNK_X), Some(0.), None, Some(0.)),
-        );
+        gutter = gutter.child(el().w(1.).fill(rail_color(p)).pin(
+            Some(TRUNK_X),
+            Some(0.),
+            None,
+            Some(0.),
+        ));
     }
     let mut body_col = col().grow(1.).min_w(0.).pb(8.).gap(4.);
     if let Some(body) = &leaf.body {
@@ -713,7 +734,8 @@ fn tree_row(
     if let Some(output) = &leaf.output {
         body_col = body_col.child(output_tail(s, output, leaf.running));
     }
-    col().key(format!("{key}-leafbox"))
+    col()
+        .key(format!("{key}-leafbox"))
         .w_full()
         .child(line)
         .child(
