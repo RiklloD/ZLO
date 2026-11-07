@@ -173,11 +173,11 @@ below: `voice/session.rs` (quick composer voice target), `pages/memory.rs`
 
 ### Known gaps after integration
 
-- Side chats are full chats for transcript, stream, gates, composer and
-  approvals, but the extras (H) and docks (S) are the open chat's: a side
-  chat has no model picker pill, goal, queue (⌥Enter sends into the running
-  turn instead), fork-from-message or computer share. GPUI side chats had
-  their own; making H's modules thread-id based would lift this.
+- Side chats are full chats, extras (H) included: H's modules address a
+  chat by thread id (`chat::chat_for`, `model_picker::Slot::Chat`), so a
+  side chat has its own model picker, goal, queue (⌥Enter), fork and
+  computer share (fixed in ad52f3c35). The docks (S) stay the open chat's,
+  as in GPUI.
 - The voice target for the quick composer (see above).
 - `#![allow(dead_code)]` in `main.rs` still hides unused port items; drop it
   once the parity review is through.
