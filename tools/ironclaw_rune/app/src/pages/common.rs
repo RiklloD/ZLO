@@ -86,7 +86,11 @@ pub fn block_fill(p: &Palette) -> Color {
 /// Related settings in one block: 12 px radius, the wash fill, hairlines
 /// between rows inset 16 px.
 pub fn rows_card(p: &Palette, rows: impl IntoIterator<Item = El>) -> El {
-    let mut card = col().w_full().radius(12.).fill(block_fill(p)).clip_rounded(12.);
+    let mut card = col()
+        .w_full()
+        .radius(12.)
+        .fill(block_fill(p))
+        .clip_rounded(12.);
     for (ix, r) in rows.into_iter().enumerate() {
         if ix > 0 {
             card = card.child(
@@ -111,7 +115,12 @@ pub fn setting_row(p: &Palette, title: &str, description: Option<&str>, control:
         .gap(1.)
         .child(label(title, SM, 500., p.text));
     if let Some(d) = description {
-        left = left.child(text(d).font(font(XS, 400.).lh(18.)).color(p.text_muted).wrap());
+        left = left.child(
+            text(d)
+                .font(font(XS, 400.).lh(18.))
+                .color(p.text_muted)
+                .wrap(),
+        );
     }
     row()
         .key(format!("setting-{title}"))
@@ -132,7 +141,9 @@ pub fn page_body(key: &str, content: El) -> El {
         .w_full()
         .h_full()
         .min_h(0.)
-        .scroll(ScrollSpec { stick_bottom: false })
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
         .child(
             row()
                 .w_full()
@@ -165,7 +176,9 @@ pub fn notice_line(msg: &str, color: Color) -> El {
 
 /// The ghost refresh icon every page header carries.
 pub fn refresh_button(k: &Kit, on_press: impl Fn(&mut State) + 'static) -> El {
-    icon_button(&crate::icons::REFRESH_CW, "Refresh").on_press(on_press).build(k)
+    icon_button(&crate::icons::REFRESH_CW, "Refresh")
+        .on_press(on_press)
+        .build(k)
 }
 
 /// GPUI `ui::card`: the neutral raised plate (a faint lit fill, a hairline
@@ -214,6 +227,8 @@ pub fn tag(p: &Palette, s: &str, tone: Tone) -> El {
 /// GPUI button flavours.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Btn {
+    /// GPUI's default button: the neutral raised plate.
+    Secondary,
     Primary,
     Ghost,
     Outline,
@@ -225,6 +240,7 @@ pub enum Btn {
 pub fn button(s: &str, kind: Btn) -> Button {
     Button::new(s)
         .variant(match kind {
+            Btn::Secondary => ButtonVariant::Neutral,
             Btn::Primary => ButtonVariant::Submit,
             Btn::Ghost => ButtonVariant::Ghost,
             Btn::Outline => ButtonVariant::Outline,
@@ -236,6 +252,15 @@ pub fn button(s: &str, kind: Btn) -> Button {
 /// GPUI `.xsmall()`.
 pub fn button_xs(s: &str, kind: Btn) -> Button {
     button(s, kind).control_size(ControlSize::Small)
+}
+
+/// GPUI `Button::loading(on)`: the kit's loading look, not pressable.
+pub fn loading(b: Button, on: bool) -> Button {
+    if on {
+        b.variant(ButtonVariant::Loading).disabled(true)
+    } else {
+        b
+    }
 }
 
 /// A primary button while `on`, else ghost (the pages' choice chips).
@@ -280,19 +305,21 @@ pub fn segmented(
     disabled: bool,
     on_pick: impl Fn(&mut State, usize, &mut Tx) + Clone + 'static,
 ) -> El {
-    let mut seg = SegmentedControl::new(labels, Some(selected)).width(Some(54. * labels.len() as f32));
-    if disabled {
+    // GPUI drew 54 px segments; the kit's font needs more, so each fits its widest label.
+    let mut seg = SegmentedControl::new(labels, Some(selected)).fit();
+    let seg = if disabled {
         for i in 0..labels.len() {
             seg = seg.segment_state(i, rune_kit::State::Disabled);
         }
-        seg.build(k).dim(0.5)
+        seg.build(k)
     } else {
         seg.on_pick(on_pick).build(k)
-    }
+    };
+    // A row keeps it at its own width inside stretching columns.
+    row().child(seg)
 }
 
 /// An icon at `size` in `color`.
 pub fn glyph(i: &'static rune::Icon, size: f32, color: Color) -> El {
     icon(i, size).color(color)
 }
-

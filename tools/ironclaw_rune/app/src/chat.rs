@@ -57,3 +57,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, _k: &Kit, _layer: &mut Vec<El>) -> E
     };
     col().w_full().h_full().center().child(text(label).color(p.text_muted))
 }
+
+// PORT-STUB(area A): GPUI `chat::approval_mode::changed`: the global
+// auto-approve switch changed; approval pills re-read it.
+pub fn approval_mode_changed(_s: &mut State) {}

@@ -9,6 +9,7 @@ mod chat;
 mod design;
 mod icons;
 mod jobs;
+mod login_item;
 mod native_view;
 mod pages;
 mod scenes;

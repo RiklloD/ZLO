@@ -8,8 +8,27 @@
 use crate::state::{Conn, Page, State};
 
 pub const SCENES: &[(&str, fn(&mut State))] = &[
+    ("automation-form", |s| page(s, Page::Automations, crate::pages::automations::fixture_form)),
+    ("automations", |s| page(s, Page::Automations, crate::pages::automations::fixture)),
+    ("appearance", |s| page(s, Page::Appearance, crate::pages::settings::fixture)),
+    ("files", |s| page(s, Page::Files, crate::pages::files::fixture)),
+    ("notifications", |s| page(s, Page::Notifications, crate::pages::notifications::fixture)),
+    ("permissions", |s| page(s, Page::Permissions, crate::pages::settings::fixture)),
+    ("projects", |s| page(s, Page::Projects, crate::pages::projects::fixture)),
+    ("settings", |s| page(s, Page::Settings, crate::pages::settings::fixture)),
     ("shell", shell),
+    ("traces", |s| page(s, Page::Traces, crate::pages::settings::fixture)),
 ];
+
+/// A page scene: the shell, then `fill` puts the page's fixture data in.
+fn page(s: &mut State, page: Page, fill: fn(&mut State)) {
+    shell(s);
+    // Default preferences, not the user's file: scenes look the same anywhere.
+    s.prefs = Default::default();
+    s.palette = crate::design::resolve(&s.prefs, true);
+    s.page = page;
+    fill(s);
+}
 
 /// The window with a few threads and nothing open.
 fn shell(s: &mut State) {

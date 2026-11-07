@@ -234,3 +234,20 @@ fn sidebar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     }
     list
 }
+
+// PORT-STUB(area B): GPUI `titles::ensure`: fetch titles for these thread
+// ids in the background. The stub knows only the inbox rows.
+pub fn titles_ensure(_s: &mut State, _thread_ids: Vec<String>) {}
+
+// PORT-STUB(area B): GPUI `titles::get`, a known conversation title.
+pub fn title_of(s: &State, thread_id: &str) -> Option<String> {
+    s.workspace
+        .threads
+        .iter()
+        .find(|(id, title)| id == thread_id && !title.is_empty())
+        .map(|(_, title)| title.clone())
+}
+
+// PORT-STUB(area B): GPUI `PageEvent::Unread(n)`: the notifications page's
+// unread count, for the sidebar badge.
+pub fn set_unread(_s: &mut State, _count: usize) {}
