@@ -9,9 +9,10 @@ use rune_kit::{ControlSize, Kit};
 use crate::design::{self, Palette, motion};
 use crate::icons;
 use crate::state::State;
+use crate::workspace::inbox::subagents::Tree;
 use crate::workspace::inbox::{
-    Shelves, branch_tail, mark, settle, settle_blocker, short_age, snooze_presets, subagents,
-    title_of, wake_label,
+    branch_tail, mark, settle, settle_blocker, short_age, snooze_presets, subagents, title_of,
+    wake_label,
 };
 use crate::workspace::ui::{self, SEMIBOLD, XS, t, tw};
 use crate::workspace::{message_search, thread_drag};
@@ -22,7 +23,7 @@ use super::selected_bg;
 /// hover actions pin, snooze, settle. No model readout: the profile names it.
 pub(super) fn card(
     s: &State,
-    sh: &Shelves<'_>,
+    tree: &Tree,
     row_data: &InboxRow,
     active: bool,
     jump: Option<usize>,
@@ -194,7 +195,7 @@ pub(super) fn card(
     if let Some(snippet) = message_snippet(s, row_data) {
         card = card.child(snippet);
     }
-    if let Some(line) = subagents::line(s, &sh.tree, row_data, false) {
+    if let Some(line) = subagents::line(s, tree, row_data, false) {
         card = card.child(line);
     }
     // A resorted row glides to its new place (GPUI `flip::ROW_SECS`).
@@ -206,7 +207,7 @@ pub(super) fn card(
     if menu_open {
         out = out.child(snooze_menu(p, &id));
     }
-    if let Some(list) = subagents::list(s, &sh.tree, row_data, now, k) {
+    if let Some(list) = subagents::list(s, tree, row_data, now, k) {
         out = out.child(list);
     }
     out
@@ -270,7 +271,7 @@ fn snooze_menu(p: &Palette, thread_id: &str) -> El {
 /// Slim row for Snoozed and Settled: dimmed mark, title, wake or age.
 pub(super) fn slim(
     s: &State,
-    sh: &Shelves<'_>,
+    tree: &Tree,
     row_data: &InboxRow,
     active: bool,
     now: i64,
@@ -377,8 +378,8 @@ pub(super) fn slim(
             ),
         )
         .child(el().child(when).child(buttons));
-    let line = subagents::line(s, &sh.tree, row_data, true);
-    let list = subagents::list(s, &sh.tree, row_data, now, k);
+    let line = subagents::line(s, tree, row_data, true);
+    let list = subagents::list(s, tree, row_data, now, k);
     if line.is_none() {
         return slim;
     }

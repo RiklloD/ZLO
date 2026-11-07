@@ -4,7 +4,7 @@
 
 use crate::pages::common::controls::{Look, Size, button_sized, input, muted, rule, spinner};
 use crate::pages::common::ts::MONO_XS;
-use crate::pages::common::{empty_state, error_line, loading};
+use crate::pages::common::{empty_state, error_line, loading, page_body_virtual};
 use ironclaw_gpui_client::product_wire::{RebornLogEntry, RebornLogLevel, RebornOperatorLogsQuery};
 use rune::{Color, El, TextEdit, col, row, text};
 use rune_kit::Kit;
@@ -182,7 +182,67 @@ pub(super) fn log_row(p: &Palette, entry: &RebornLogEntry) -> El {
         .child(rule(p))
 }
 
-pub fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
+/// The Logs tab's page: one virtual list whose first row is the page's head
+/// and the tab's controls, then a row per log line (only the lines near the
+/// viewport are built; "Load older" keeps appending pages of 100), then
+/// "Load older".
+pub fn page(panel: &LogsPanel, k: &Kit) -> El {
+    let lines = panel.entries.len();
+    let older = panel.next_cursor.is_some();
+    let count = 1 + lines + usize::from(older);
+    let kit = k.clone();
+    page_body_virtual(
+        "operator-page",
+        count,
+        44.,
+        move |s, i| match i {
+            0 => "logs-head".into(),
+            i if i <= lines => panel_of(s)
+                .and_then(|p| p.entries.get(i - 1))
+                .map_or_else(String::new, |e| format!("log-{}", e.id)),
+            _ => "logs-older".into(),
+        },
+        move |s, i| {
+            let Some(panel) = panel_of(s) else {
+                return col();
+            };
+            match i {
+                0 => col()
+                    .w_full()
+                    .pb(8.)
+                    .child(super::top(s, &kit))
+                    .child(view(s, &kit, panel).key("operator-panel-Logs")),
+                i if i <= lines => match panel.entries.get(i - 1) {
+                    Some(e) => log_row(&s.palette, e),
+                    None => col(),
+                },
+                _ => older_button(&kit, panel).map_or_else(col, |b| col().pt(8.).child(b)),
+            }
+        },
+    )
+}
+
+fn panel_of(s: &State) -> Option<&LogsPanel> {
+    s.pages.operator.logs.as_ref()
+}
+
+fn older_button(k: &Kit, panel: &LogsPanel) -> Option<El> {
+    let cursor = panel.next_cursor.clone()?;
+    Some(
+        row().child(
+            loading(
+                button_sized("Load older", Look::Ghost, Size::Small)
+                    .on_press(move |s: &mut State| load(s, Some(cursor.clone()))),
+                panel.loading,
+            )
+            .build(k)
+            .key("older-logs"),
+        ),
+    )
+}
+
+/// The tab's controls above the lines: level, target, run, source, state.
+fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
     let p = &s.palette;
     let levels = row().gap(2.).children(LEVELS.iter().map(|(level, label)| {
         let level = *level;
@@ -240,24 +300,6 @@ pub fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
     }
     if panel.loaded && panel.entries.is_empty() && panel.error.is_none() {
         c = c.child(empty_state(p, "No log lines match."));
-    }
-    c = c.child(
-        col()
-            .w_full()
-            .children(panel.entries.iter().map(|e| log_row(p, e))),
-    );
-    if let Some(cursor) = panel.next_cursor.clone() {
-        c = c.child(
-            row().child(
-                loading(
-                    button_sized("Load older", Look::Ghost, Size::Small)
-                        .on_press(move |s: &mut State| load(s, Some(cursor.clone()))),
-                    panel.loading,
-                )
-                .build(k)
-                .key("older-logs"),
-            ),
-        );
     }
     c
 }

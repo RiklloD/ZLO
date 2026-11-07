@@ -34,7 +34,7 @@ pub(super) mod view;
 
 pub(super) use labels::{branch_tail, short_age, wake_label};
 pub(super) use row_menu::{open_row_menu, settle_blocker, snooze_presets};
-pub(super) use shelves::{Shelves, jump_target, shelves};
+pub(super) use shelves::{jump_target, shelves};
 
 /// Poll period while a row is working.
 const POLL: Duration = Duration::from_secs(5);

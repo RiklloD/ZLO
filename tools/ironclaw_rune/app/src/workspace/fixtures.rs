@@ -172,6 +172,40 @@ pub fn fixture_inbox(s: &mut State) {
         .drafts_fixture("Sketch the onboarding flow", Some("work"));
 }
 
+/// A long history: 20 inbox cards, 30 snoozed and 950 settled threads,
+/// every settled one shown (Show more pressed until the end).
+pub fn fixture_inbox_long(s: &mut State) {
+    fixture_shell(s);
+    let now = Utc::now().timestamp_millis();
+    let profiles = ["default", "work"];
+    let mut rows = Vec::new();
+    for i in 0..1000usize {
+        let (state, ago) = match i {
+            0..20 => (InboxState::Inbox, 5 + i as i64 * 7),
+            20..50 => (InboxState::Snoozed, 300 + i as i64),
+            _ => (InboxState::Settled, 2000 + i as i64 * 30),
+        };
+        let mut r = row(
+            &format!("t-long-{i}"),
+            &format!(
+                "Thread {i}: tidy the {} module",
+                ["chat", "inbox", "shell", "picker"][i % 4]
+            ),
+            profiles[i % 2],
+            state,
+            ago,
+        );
+        match state {
+            InboxState::Snoozed => r.snooze_until = Some(now + 3_600_000),
+            InboxState::Settled => r.settled_at = Some(r.last_activity_at),
+            _ => {}
+        }
+        rows.push(r);
+    }
+    s.workspace.inbox.list.rows = rows;
+    s.workspace.inbox.settled_limit = 1000;
+}
+
 /// A parent with nested subagents, its list unfolded.
 pub fn fixture_inbox_subagents(s: &mut State) {
     fixture_shell(s);

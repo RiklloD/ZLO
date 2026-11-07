@@ -143,6 +143,49 @@ pub fn page_body(key: &str, content: El) -> El {
         )
 }
 
+/// [`page_body`] for a page that ends in a long list: the page is one
+/// virtual list of `count` rows, row `i` keyed `key(s, i)` and built by
+/// `build(s, i)` only while it is near the viewport (row 0 is usually the
+/// page's head). Each row sits in the page's centred column; rows carry
+/// their own vertical spacing.
+pub fn page_body_virtual(
+    page_key: &str,
+    count: usize,
+    estimate: f32,
+    key: impl Fn(&State, usize) -> String + 'static,
+    build: impl Fn(&State, usize) -> El + 'static,
+) -> El {
+    col()
+        .key(page_key.to_string())
+        .w_full()
+        .h_full()
+        .min_h(0.)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .wheel_glide(page_key)
+        .child(
+            col()
+                .key("page-rows")
+                .w_full()
+                .growth(rune::GrowthSpec::default())
+                .virtual_rows(
+                    count,
+                    estimate,
+                    move |s: &State, i| key(s, i).into(),
+                    move |s: &State, i| {
+                        row()
+                            .w_full()
+                            .justify_center()
+                            .px(40.)
+                            .pt(if i == 0 { 28. } else { 0. })
+                            .pb(if i + 1 == count { 48. } else { 0. })
+                            .child(col().w_full().max_w(PAGE_MAX_WIDTH).child(build(s, i)))
+                    },
+                ),
+        )
+}
+
 /// A quiet centered line for empty lists and placeholders.
 pub fn empty_state(p: &Palette, msg: impl Into<String>) -> El {
     row()

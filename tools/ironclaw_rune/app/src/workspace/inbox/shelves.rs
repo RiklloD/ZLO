@@ -47,8 +47,7 @@ pub(in crate::workspace) fn shelves(s: &State) -> Shelves<'_> {
         .collect();
     // Subagents fold under their parent; the rest of the list is the
     // top-level threads only.
-    let owned: Vec<InboxRow> = rows.iter().map(|r| (*r).clone()).collect();
-    let tree = subagents::Tree::new(&owned);
+    let tree = subagents::Tree::new(rows.iter().copied());
     let rows: Vec<&InboxRow> = rows
         .into_iter()
         .filter(|r| !tree.is_nested(&r.thread_id))

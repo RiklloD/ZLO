@@ -3,131 +3,27 @@
 //! menu, the new-thread draft card, the cards, the shelves and their slim
 //! rows.
 
-use chrono::Utc;
 use ironclaw_gpui_client::inbox::{InboxProfile, InboxState};
 use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
-use rune::{Color, Cx, El, ScrollSpec, col, el, row};
+use rune::{Color, Cx, El, col, el, row};
 use rune_kit::{ControlSize, Kit, Placement, TextInput};
 
 use super::super::ui::{self, MEDIUM, SM, XS, t, tw};
-use super::{SETTLED_PAGE, shelves};
-use crate::design::smooth_scroll::WheelGlide;
+
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::{Page, State};
-use crate::workspace::{active_id, draft};
+use crate::workspace::draft;
 
+mod list;
 mod rows;
 
 pub(in crate::workspace) use rows::{branch_label, draft_mark, profile_mark, status_label};
-use rows::{card, slim};
 
 /// The sidebar's thread list with its header. `layer` takes the profile
 /// menu, which floats over the list so no row moves.
 pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
-    let p = &s.palette;
     let inbox = &s.workspace.inbox;
-    let query = inbox.query();
-    let active = (s.page == Page::Chat).then(|| active_id(s)).flatten();
-    let sh = shelves(s);
-    let now = Utc::now().timestamp_millis();
-    let mut list: Vec<El> = Vec::new();
-    // Message text is searched too; say so while older chats are indexed.
-    if !query.is_empty() && s.workspace.message_search.indexing(&query) {
-        list.push(el().px(12.).py(4.).child(t(
-            "Searching older chats…",
-            design::SIDEBAR_META_SIZE,
-            p.text_faint,
-        )));
-    }
-    let badge = |id: &str| {
-        inbox
-            .cmd_held
-            .then(|| sh.jump.iter().position(|j| j == id))
-            .flatten()
-    };
-    // A new-thread draft sits on top until it is sent, then a rule.
-    if let Some(card) = new_draft_card(s, k) {
-        list.push(card);
-        list.push(el().key("draft-rule").mx(12.).my(6.).h(1.).fill(p.border));
-    }
-    for row in sh.pinned.iter().chain(sh.main.iter()) {
-        let is_active = active == Some(row.thread_id.as_str());
-        list.push(card(s, &sh, row, is_active, badge(&row.thread_id), now, k));
-    }
-    if sh.main.is_empty()
-        && sh.pinned.is_empty()
-        && sh.working.is_empty()
-        && inbox.list.rows.is_empty()
-    {
-        list.push(el().key("inbox-empty").px(8.).py(12.).child(t(
-            "No conversations yet.",
-            XS,
-            p.text_faint,
-        )));
-    }
-    // Like t3code: Working, Snoozed and Settled sit at the bottom of the
-    // sidebar and unfold downward, scrolling with the list. Working keeps
-    // full cards; the parked shelves use slim rows.
-    let mut pushed = false;
-    if !sh.working.is_empty() {
-        pushed = true;
-        list.push(el().key("shelf-gap").grow(1.0).min_h(8.));
-        list.push(fold(
-            p,
-            "working",
-            "Working",
-            sh.working.len(),
-            sh.working_open,
-        ));
-        if sh.working_open {
-            for row in &sh.working {
-                let is_active = active == Some(row.thread_id.as_str());
-                list.push(card(s, &sh, row, is_active, badge(&row.thread_id), now, k));
-            }
-        }
-    }
-    let sections = [
-        (
-            "snoozed",
-            "Snoozed",
-            &sh.snoozed,
-            inbox.show_snoozed || sh.unfold,
-            usize::MAX,
-        ),
-        (
-            "settled",
-            "Settled",
-            &sh.settled,
-            inbox.show_settled || sh.unfold,
-            inbox.settled_limit,
-        ),
-    ];
-    for (key, label, items, open, limit) in sections {
-        if items.is_empty() {
-            continue;
-        }
-        if !std::mem::replace(&mut pushed, true) {
-            list.push(el().key("shelf-gap").grow(1.0).min_h(8.));
-        }
-        list.push(fold(p, key, label, items.len(), open));
-        if open {
-            for row in items.iter().take(limit) {
-                let is_active = active == Some(row.thread_id.as_str());
-                list.push(slim(s, &sh, row, is_active, now, k));
-            }
-            if items.len() > limit {
-                list.push(ui::ghost_button(
-                    k,
-                    "Show more",
-                    Some(&icons::CHEVRON_DOWN),
-                    |s| {
-                        s.workspace.inbox.settled_limit += SETTLED_PAGE;
-                    },
-                ));
-            }
-        }
-    }
     if inbox.new_menu_open {
         layer.push(rune_kit::popover::anchored(
             k,
@@ -151,27 +47,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
     if inbox.filters_open {
         column = column.child(filters(s, k));
     }
-    column.child(
-        col()
-            .key("inbox-scroll")
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .wheel_glide("inbox-scroll")
-            .child(
-                col()
-                    .key("inbox-list")
-                    .w_full()
-                    .min_h(0.0)
-                    .px(8.)
-                    .pb(8.)
-                    .gap(4.)
-                    .children(list),
-            ),
-    )
+    column.child(list::list(s, k))
 }
 
 fn header(s: &State, k: &Kit) -> El {
@@ -427,7 +303,13 @@ pub fn profile_picker(s: &State, k: &Kit) -> El {
     )
 }
 
-fn fold(p: &Palette, key: &'static str, label: &'static str, count: usize, open: bool) -> El {
+pub(super) fn fold(
+    p: &Palette,
+    key: &'static str,
+    label: &'static str,
+    count: usize,
+    open: bool,
+) -> El {
     // Neutral headings: color belongs to the rows' real states.
     row()
         .key(format!("fold-{key}"))
@@ -456,7 +338,10 @@ fn fold(p: &Palette, key: &'static str, label: &'static str, count: usize, open:
             12.,
             p.text_faint,
         ))
-        .on_press(move |s: &mut State| {
+        // The header holds its place while its rows grow open or shut
+        // under it (a growth list lands rows at once otherwise).
+        .on_press_tx(move |s: &mut State, tx| {
+            tx.keep_on_screen(format!("fold-{key}"));
             let i = &mut s.workspace.inbox;
             match key {
                 "working" => i.show_working = !i.show_working,
@@ -468,7 +353,7 @@ fn fold(p: &Palette, key: &'static str, label: &'static str, count: usize, open:
 
 /// The unsent new-thread draft as a card: pen, the profile it was started
 /// in, its first line. A click reopens the new-thread screen.
-fn new_draft_card(s: &State, k: &Kit) -> Option<El> {
+pub(super) fn new_draft_card(s: &State, k: &Kit) -> Option<El> {
     let (line, saved_profile) = crate::drafts::preview(s, crate::drafts::NEW_THREAD)?;
     let p = &s.palette;
     let active = s.page == Page::Draft;

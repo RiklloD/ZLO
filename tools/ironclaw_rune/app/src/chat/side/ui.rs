@@ -4,7 +4,7 @@
 //! replace these at integration.
 
 use rune::tok::TextStyle;
-use rune::{Color, El, Icon, ScrollSpec, col, el, row, text};
+use rune::{Color, El, GrowthSpec, Icon, ScrollSpec, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Spinner};
 
 use crate::design::smooth_scroll::WheelGlide;
@@ -94,6 +94,48 @@ pub fn scroll(key: impl Into<String>, content: El) -> El {
         })
         .wheel_glide(key)
         .child(col().w_full().pb(12.).child(content))
+}
+
+/// [`scroll`] over a long list as Rune virtual rows: `count` rows, row `i`
+/// keyed `key(s, i)` and built by `build(s, i)` only while it is near the
+/// viewport. Rows carry their own spacing (no stack gap); the last one gets
+/// the column's bottom room.
+pub fn virtual_scroll(
+    scroll_key: impl Into<String>,
+    count: usize,
+    estimate: f32,
+    key: impl Fn(&State, usize) -> String + 'static,
+    build: impl Fn(&State, usize) -> El + 'static,
+) -> El {
+    let scroll_key: String = scroll_key.into();
+    col()
+        .key(scroll_key.clone())
+        .w_full()
+        .grow(1.)
+        .min_h(0.)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .wheel_glide(scroll_key)
+        .child(
+            col()
+                .key("rows")
+                .w_full()
+                .growth(GrowthSpec::default())
+                .virtual_rows(
+                    count,
+                    estimate,
+                    move |s: &State, i| key(s, i).into(),
+                    move |s: &State, i| {
+                        let row = build(s, i);
+                        if i + 1 == count {
+                            col().w_full().pb(12.).child(row)
+                        } else {
+                            row
+                        }
+                    },
+                ),
+        )
 }
 
 /// A column that fills the rest of a tab (`v_flex().flex_1().min_h_0()`).
