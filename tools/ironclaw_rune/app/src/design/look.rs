@@ -111,3 +111,8 @@ pub fn wallpaper_layer_rounded(s: &State, area: &str, radius: f32) -> Option<El>
 pub fn fixture_wallpaper(s: &mut State, size: (u32, u32)) {
     wallpaper::paint_blocking(s, size);
 }
+
+/// Any input reached the window. The battery saver reads Rune's own input
+/// clock (`rune::last_input`), so there is nothing to record; kept so the
+/// workspace's input hooks have one place to report to.
+pub fn input(_s: &mut State) {}

@@ -60,7 +60,19 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let Some(c) = &s.chat else {
         return col().w_full().h_full().center().child(text("No thread open").color(p.text_muted));
     };
-    extras_preview(s, c, cx, k, layer)
+    // PORT-STUB(area A): the real chat lays out conversation + side docks.
+    let mut out = row().w_full().h_full().min_h(0.).child(
+        col()
+            .grow(1.)
+            .min_w(0.)
+            .h_full()
+            .min_h(0.)
+            .child(extras_preview(s, c, cx, k, layer)),
+    );
+    for dock in side::docks(s, cx, k, layer) {
+        out = out.child(dock);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -205,3 +217,30 @@ pub fn stop_run(_s: &mut State) {}
 // PORT-STUB(area A): GPUI `chat::approval_mode::changed`: the global
 // auto-approve switch changed; approval pills re-read it.
 pub fn approval_mode_changed(_s: &mut State) {}
+// PORT-STUB(area A): focus the open chat's composer when nothing else holds
+// focus (GPUI `Workspace::restore_composer` → `ChatView::composer().focus`).
+pub fn focus_composer(_s: &mut State) {}
+
+// PORT-STUB(area A): scroll the open chat to `message_id` (a message-search
+// hit; GPUI `ChatView::reveal_message`).
+pub fn reveal_message(_s: &mut State, _message_id: String) {}
+
+// PORT-STUB(area A): send the new-thread screen's first message in the chat
+// just opened (GPUI `ChatView::send_text(content, files, voice)`).
+pub fn send_text(
+    _s: &mut State,
+    _content: String,
+    _files: Vec<ironclaw_gpui_client::attachments::StagedFile>,
+) {
+}
+
+// PORT-STUB(area A): the open thread's titlebar actions at the breadcrumb's
+// right end (GPUI `ChatView::render_titlebar_actions`).
+pub fn titlebar_actions(
+    _s: &State,
+    _cx: &mut Cx<State>,
+    _k: &Kit,
+    _layer: &mut Vec<El>,
+) -> Option<El> {
+    None
+}

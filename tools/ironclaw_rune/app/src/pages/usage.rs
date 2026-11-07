@@ -514,3 +514,8 @@ mod tests {
         assert_eq!(short_countdown(now + 14 * 60_000 + 30_000), Some("15m".into()));
     }
 }
+
+/// Refresh the shared usage report (the status bar's name for [`refresh`]).
+pub fn refresh_report(s: &mut State, force: bool) {
+    refresh(s, force);
+}

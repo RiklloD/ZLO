@@ -542,7 +542,7 @@ fn fixture_value<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Option
 /// panel open, plus the goal.
 pub fn scene(s: &mut State) {
     crate::scenes::chat(s);
-    s.workspace.threads.push(("t9".into(), "Port the side pane".into()));
+    s.workspace.titles.remember("t9", "Port the side pane");
     if let Some(c) = s.chat.as_mut() {
         c.orchestration = fixture();
         c.goals = crate::chat::goals::fixture();

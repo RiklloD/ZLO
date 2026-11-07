@@ -4,23 +4,35 @@
 //! A from-scratch port of the GPUI app (`tools/ironclaw_gpui/app`), which is
 //! left untouched. Same gateway client, same preferences file, same
 //! behaviour; see `../../PLAN.md` for the port plan and conventions.
+//!
+//! Opening the app starts the gateway's launchd job and quitting (⌘Q) stops
+//! it (`service.rs`). Closing the window keeps the app and the gateway
+//! running; clicking the Dock icon brings the window back. The app finds the
+//! gateway and its token on its own; see
+//! `ironclaw_gpui_client::Connection::discover`.
 
+mod alerts;
 mod chat;
 mod design;
+mod drafts;
 mod icons;
 mod jobs;
 mod login_item;
+mod logs;
 mod native_view;
 mod pages;
 mod permissions;
+mod run_clock;
 mod scenes;
 mod service;
 mod snapshot;
 mod state;
+mod titles;
 mod voice;
+mod window_state;
 mod workspace;
 
-use rune::{App, AppSpec, Cx, El, KeyEvent, Tx};
+use rune::{App, AppSpec, Chrome, Cx, El, KeyEvent, Tx};
 
 use crate::state::State;
 
@@ -34,19 +46,26 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 
 fn poll(s: &mut State, _clock: f64, tx: &mut Tx) -> bool {
     let mut changed = workspace::poll(s, tx);
-    changed |= design::look::poll(s, tx);
     changed |= chat::poll(s, tx);
     changed |= voice::poll(s, tx);
     changed |= snapshot::poll(s, tx);
-    // Area S: show, place and hide the native previews (QuickLook, WebKit).
+    changed |= design::look::poll(s, tx);
+    // Show, place and hide the native previews (QuickLook, WebKit).
     changed |= native_view::poll(s, tx);
     changed
+}
+
+/// Window focus: the workspace (refreshes, composer focus) and the battery
+/// saver (reduced motion while unfocused).
+fn window_focus(s: &mut State, focused: bool, tx: &mut Tx) {
+    workspace::window_focus(s, focused, tx);
+    design::look::on_focus(s, focused, tx);
 }
 
 fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.is_command('q') && !ev.mods.shift {
         tracing::debug!("quit requested");
-        service::stop();
+        workspace::on_close(s, tx);
         tx.quit();
         return true;
     }
@@ -54,15 +73,10 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "ironclaw_rune=info".into()),
-        )
-        .init();
+    logs::init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "ZLO (Rune) started");
     // ZLO owns the local backend's lifetime: started at launch, stopped on
-    // quit (area F, `service.rs`). Headless scenes and scripts leave it be.
+    // quit (`service.rs`). Headless scenes and scripts leave it be.
     let headless = rune::is_headless();
     if !headless {
         service::start();
@@ -77,20 +91,37 @@ fn main() {
         scenes: scenes::SCENES,
         ..AppSpec::new("ZLO", (1280.0, 820.0), placeholder_init, view)
     };
-    let app = App::new(spec);
-    let handle = app.handle();
-    let app = app
-        .init(move || {
-            let mut s = State::new(jobs::Rt::new(handle));
-            design::look::start(&mut s);
-            workspace::start(&mut s);
-            s
+    // Content runs under a transparent titlebar; the sidebar keeps its top
+    // strip free (`.window_drag()`) so the window still drags from it.
+    let mut app = App::new(spec)
+        .chrome(Chrome {
+            full_size_content: true,
+            traffic_lights: Some((16.0, 17.0)),
+            drag_regions: true,
         })
-        .on_focus(design::look::on_focus)
         .keep_running()
-        // Area S: native previews sit beside the window's content view.
-        .on_window(native_view::on_window)
+        // ⌘ held alone shows the sidebar's ⌘N badges.
+        .modifier_keys()
+        .on_focus(window_focus)
+        .on_close(workspace::on_close)
+        .on_window(|window| {
+            window_state::created(window);
+            // Native previews sit beside the window's content view.
+            native_view::on_window(window);
+        })
         .on_reopen(|_, has_visible, _| has_visible);
+    for item in workspace::menu_items() {
+        app = app.menu_item(item);
+    }
+    let (app, quick) = workspace::quick::install(app);
+    let handle = app.handle();
+    let app = app.init(move || {
+        let mut s = State::new(jobs::Rt::new(handle));
+        workspace::quick::attach(&mut s, quick);
+        design::look::start(&mut s);
+        workspace::start(&mut s);
+        s
+    });
     app.run();
     if !headless {
         service::stop();

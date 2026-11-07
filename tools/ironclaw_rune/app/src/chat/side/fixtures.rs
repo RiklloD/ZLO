@@ -75,10 +75,8 @@ fn base(s: &mut State, side: Option<Tab>, work: Option<Tab>, edit: impl FnOnce(&
     s.fixture = true;
     s.conn = Conn::Ready;
     s.page = Page::Chat;
-    s.workspace.threads = vec![
-        ("t1".into(), "Port the frontend to Rune".into()),
-        ("t2".into(), "Fix the flaky integration test".into()),
-    ];
+    s.workspace.titles.remember("t1", "Port the frontend to Rune");
+    s.workspace.titles.remember("t2", "Fix the flaky integration test");
     let mut chat = crate::chat::ChatState::new("t1".into());
     edit(&mut chat.side);
     s.chat = Some(chat);

@@ -7,17 +7,24 @@
 
 use crate::design::gallery;
 use crate::state::{Conn, Page, State};
+use crate::workspace::fixtures as ws;
 
 pub const SCENES: &[(&str, fn(&mut State))] = &[
     ("appearance", |s| page_with(s, Page::Appearance, crate::pages::settings::fixture)),
     ("automation-form", |s| page_with(s, Page::Automations, crate::pages::automations::fixture_form)),
     ("automations", |s| page_with(s, Page::Automations, crate::pages::automations::fixture)),
+    ("command-menu", ws::fixture_command_menu),
     ("computer", |s| crate::chat::computer::scene(s, false)),
     ("computer-big", |s| crate::chat::computer::scene(s, true)),
+    ("context-meter", ws::fixture_context_meter),
+    ("disconnected", ws::fixture_disconnected),
+    ("draft", ws::fixture_draft),
     ("extensions", crate::pages::extensions::fixtures::extensions),
     ("files", |s| page_with(s, Page::Files, crate::pages::files::fixture)),
     ("goals", crate::chat::goals::scene),
     ("hooks", crate::pages::hooks::fixture_hooks),
+    ("inbox", ws::fixture_inbox),
+    ("inbox-subagents", ws::fixture_inbox_subagents),
     ("kit-gallery", gallery::fixture_kit_gallery),
     ("kit-gallery-light", gallery::fixture_kit_gallery_light),
     ("look-wallpaper-ascii", gallery::fixture_wallpaper_ascii),
@@ -47,8 +54,10 @@ pub const SCENES: &[(&str, fn(&mut State))] = &[
     ("providers", crate::pages::providers::fixtures::providers),
     ("providers-catalog", crate::pages::providers::fixtures::catalog),
     ("providers-cli", crate::pages::providers::fixtures::cli),
+    ("quick-composer", ws::fixture_quick),
     ("settings", |s| page_with(s, Page::Settings, crate::pages::settings::fixture)),
-    ("shell", shell),
+    ("settings-nav", ws::fixture_settings_nav),
+    ("shell", ws::fixture_shell),
     ("side-activity", crate::chat::side::fixtures::activity),
     ("side-agents", crate::chat::side::fixtures::agents),
     ("side-changes", crate::chat::side::fixtures::changes),
@@ -61,6 +70,7 @@ pub const SCENES: &[(&str, fn(&mut State))] = &[
     ("side-session", crate::chat::side::fixtures::session),
     ("skills", crate::pages::skills::fixtures::skills),
     ("snapshot-chip", snapshot_chip),
+    ("status-bar", ws::fixture_status_bar),
     ("traces", |s| page_with(s, Page::Traces, crate::pages::settings::fixture)),
     ("usage", usage),
     ("usage-compactions", usage_compactions),
@@ -86,10 +96,8 @@ fn shell(s: &mut State) {
     s.fixture = true;
     s.conn = Conn::Ready;
     s.page = Page::Chat;
-    s.workspace.threads = vec![
-        ("t1".into(), "Port the frontend to Rune".into()),
-        ("t2".into(), "Fix the flaky integration test".into()),
-    ];
+    s.workspace.titles.remember("t1", "Port the frontend to Rune");
+    s.workspace.titles.remember("t2", "Fix the flaky integration test");
 }
 
 fn page(s: &mut State, page: Page) {

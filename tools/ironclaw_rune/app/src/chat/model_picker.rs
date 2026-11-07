@@ -722,3 +722,59 @@ mod tests {
         assert_eq!(pretty_model("anthropic/claude-haiku-5-5"), "Claude Haiku 5.5");
     }
 }
+
+// The new-thread screen's picker (area B's `workspace/draft.rs`).
+
+/// The draft screen's picker, in `s.workspace.draft`. A failed pick shows
+/// as the draft's error; a change needs nothing (the thread does not exist
+/// yet, the pick applies when it is created).
+pub const DRAFT: Slot = Slot {
+    get: |s| s.workspace.draft.as_ref().map(|d| &d.picker),
+    get_mut: |s| s.workspace.draft.as_mut().map(|d| &mut d.picker),
+    event: |s, event| {
+        if let (PickerEvent::Failed(message), Some(d)) = (event, s.workspace.draft.as_mut()) {
+            d.error = Some(message);
+        }
+    },
+};
+
+/// The draft screen picked a profile: a fresh picker reading the catalog
+/// through `catalog_thread`, on that profile's default.
+pub fn draft_set_profile(s: &mut State, profile: String, catalog_thread: Option<String>) {
+    let Some(d) = s.workspace.draft.as_mut() else { return };
+    if d.picker.catalog_thread.is_none() {
+        d.picker = ModelPickerState::new(None, catalog_thread);
+    }
+    set_profile(s, DRAFT, profile);
+}
+
+/// The draft screen's model and thinking pills.
+pub fn draft_pill(
+    s: &State,
+    cx: &mut rune::Cx<State>,
+    k: &rune_kit::Kit,
+    layer: &mut Vec<rune::El>,
+) -> rune::El {
+    pills_for(s, DRAFT, cx, k, layer)
+}
+
+pub fn pending(picker: &ModelPickerState) -> Option<(String, String)> {
+    picker.pending()
+}
+
+pub fn pending_effort(picker: &ModelPickerState) -> Option<String> {
+    picker.pending_effort()
+}
+
+/// Esc: close whichever picker is open (chat or draft). True when one was.
+pub fn close_open(s: &mut State) -> bool {
+    for slot in [CHAT, DRAFT] {
+        if let Some(p) = (slot.get_mut)(s)
+            && p.is_open()
+        {
+            p.close();
+            return true;
+        }
+    }
+    false
+}

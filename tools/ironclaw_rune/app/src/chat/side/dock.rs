@@ -27,7 +27,7 @@ const SLOT: f32 = TOGGLE + 16.;
 // PORT-STUB(area B): reads the workspace's `main` key; keep it or hand the
 // viewport width in.
 fn viewport(cx: &Cx<State>) -> f32 {
-    cx.window_layout("main").map_or(1280., |r| r[0] + r[2] + 8.)
+    cx.window_layout("window").map_or(1280., |r| r[2])
 }
 
 /// `dock`'s width at rest: saved or default, or widened, leaving the

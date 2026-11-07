@@ -121,8 +121,7 @@ fn st(s: &mut State) -> &mut ProvidersState {
 /// The page became visible: load on first visit, refresh after.
 pub fn opened(s: &mut State) {
     // The orchestrator catalog (CLI agents) is read through any thread.
-    // PORT-STUB(area B): read the first inbox row once the inbox port lands.
-    let catalog = s.workspace.threads.first().map(|(id, _)| id.clone());
+    let catalog = s.workspace.inbox.list.rows.first().map(|r| r.thread_id.clone());
     set_catalog_thread(s, catalog);
     refresh(s);
 }
