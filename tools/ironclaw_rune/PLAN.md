@@ -124,8 +124,8 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 | Area | State |
 |---|---|
 | 0 | done |
-| E, F, H, G, D, C, S | merged (07.11.2026) |
-| A B | in progress |
+| E, F, H, G, D, C, S, B | merged (07.11.2026) |
+| A | in progress |
 
 ## Integration checklist (collected from area reports)
 
@@ -155,5 +155,7 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 - [ ] A: `side::init` after open, `side::docks` in the layout, `side::on_turn_started/ended`, `side::open_link`, `side::adopt_folder`, `changes::on_cli_report` when CLI diff/review change.
 - [ ] B: `side::titlebar_actions`, ⌥⌘B/⌘E/⌥⌘N, `side::dock_widths` for the wallpaper area, `s.native.covered` while overlays show; real viewport width for `side/dock.rs::viewport`.
 - [ ] Live test: native views (QuickLook, WKWebView) in a real window.
+- [x] B merge: stubs B wrote into F/G/H/E files replaced by adapters onto the real APIs (`model_picker::DRAFT` slot, `draft_set_profile`, `close_open`; `look::wallpaper_layer`, `Style::panel_alpha`, `kit::claw_mark`; `voice::Composer` is `ComposerTarget`; usage `peak`); `workspace::{window_active, thread_title, title_of, ensure_titles, titles_ensure, set_unread}` on B's titles; placeholder `s.workspace.threads` gone.
+- [ ] B: `side::titlebar_actions` in the breadcrumb, `s.native.covered` while overlays show; system notifications and window-frame restore untested live; `workspace/inbox{,/view}.rs` over 800 lines.
 - [ ] Clippy: `SCENES` type complexity in `scenes.rs`.
 - [ ] Interaction tests (`rune::Runtime`) for voice controls and settings.
