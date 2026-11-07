@@ -80,6 +80,7 @@ fn main() {
     let headless = rune::is_headless();
     if !headless {
         service::start();
+        service::stop_on_terminate();
     }
 
     let spec = AppSpec::<State> {

@@ -87,6 +87,54 @@ pub fn start() {
 /// SIGTERM the backend without waiting: its graceful shutdown drains open
 /// streams, and this app's streams close only once it exits. A backend that
 /// is still around at the next launch is stopped by `stop_stale`.
+/// GPUI stopped the backend from its quit hook (`on_app_quit`). Rune's
+/// `App::run` does not return when AppKit terminates the app itself (Quit
+/// from the Dock, AppleScript `quit`, logout), so `main`'s stop after `run`
+/// never ran and the backend was left to exit on its own a minute later.
+/// Observe `NSApplicationWillTerminateNotification` too: it stops the
+/// backend and flushes queued saves on every way out. Call once at launch
+/// on the main thread.
+#[cfg(target_os = "macos")]
+pub fn stop_on_terminate() {
+    use block2::RcBlock;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    let (Some(center_class), Some(string)) = (
+        AnyClass::get(c"NSNotificationCenter"),
+        AnyClass::get(c"NSString"),
+    ) else {
+        return;
+    };
+    // SAFETY: plain Foundation calls on the main thread; the block matches
+    // `void (^)(NSNotification *)` and the center copies and keeps it.
+    unsafe {
+        let center: *mut AnyObject = msg_send![center_class, defaultCenter];
+        let name: *mut AnyObject = msg_send![
+            string,
+            stringWithUTF8String: c"NSApplicationWillTerminateNotification".as_ptr()
+        ];
+        if center.is_null() || name.is_null() {
+            return;
+        }
+        let block = RcBlock::new(|_note: *mut AnyObject| {
+            crate::persist::global().flush(Duration::from_secs(3));
+            stop();
+        });
+        let nil: *mut AnyObject = std::ptr::null_mut();
+        let _observer: *mut AnyObject = msg_send![
+            center,
+            addObserverForName: name,
+            object: nil,
+            queue: nil,
+            usingBlock: &*block
+        ];
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn stop_on_terminate() {}
+
 pub fn stop() {
     let sup = supervisor();
     sup.stopping.store(true, Ordering::SeqCst);
