@@ -485,11 +485,20 @@ pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
         .child(el().w(24.).center().child(ico(&icons::TARGET, ICON_XS, accent)))
         .child(txt_medium(title, XS, if passed { p.success } else { p.text }))
         .child(txt(goal.objective.clone(), XS, muted).truncate().grow(1.).min_w(0.));
-    if let Some(chip) = chip {
-        strip = strip.child(chip);
+    // A side-pane chat is too narrow for title, objective and chip on one
+    // line: the chip drops below, so the objective keeps its room.
+    let narrow = chat.embedded;
+    let mut below = None;
+    match chip {
+        Some(chip) if narrow => below = Some(el().key("goal-check-line").pl(28.).child(chip)),
+        Some(chip) => strip = strip.child(chip),
+        None => {}
     }
     strip = strip.child(actions);
     let mut out = col().key("goal").child(strip);
+    if let Some(line) = below {
+        out = out.child(line);
+    }
     if let Some(line) = tail {
         out = out.child(
             el().pl(28.).child(
