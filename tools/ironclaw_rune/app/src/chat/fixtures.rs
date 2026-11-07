@@ -60,8 +60,14 @@ fn shell_with(s: &mut State, rows: Vec<Row>, live: bool) {
 /// Fold the open chat's rows again after a scene filled the extras (area
 /// H), so the transcript gains its tail row as a live chat would.
 pub fn refold(s: &mut State) {
-    let has_tail = super::orchestration::has_tail(s);
-    let Some(c) = s.chat.as_mut() else { return };
+    let Some(id) = s.chat.as_ref().map(|c| c.thread_id.clone()) else { return };
+    refold_chat(s, &id);
+}
+
+/// [`refold`] for any chat, the open one or a side chat.
+pub fn refold_chat(s: &mut State, id: &str) {
+    let has_tail = super::orchestration::has_tail(s, id);
+    let Some(c) = super::chat_for(s, id) else { return };
     let live = c.fixture_run.is_some();
     c.has_tail = has_tail;
     c.items = Rc::new(flow::fold(&c.rows, live, false, has_tail, false));
@@ -278,5 +284,40 @@ pub fn menu(s: &mut State) {
             ..Default::default()
         });
         c.composer.replace_text("/");
+    }
+}
+
+/// A bare state for unit tests: default preferences, no gateway, and a
+/// handle to an app that never runs (async replies queue and go nowhere;
+/// tests call the reply handlers themselves).
+#[cfg(test)]
+pub(crate) fn test_state() -> State {
+    let spec = rune::AppSpec::<State>::new("test", (100., 100.), crate::placeholder_init, crate::view);
+    let handle = rune::App::new(spec).handle();
+    let mut s = State::new(crate::jobs::Rt::new(handle));
+    s.prefs = Default::default();
+    s
+}
+
+/// The open chat `t1` with side chat `side_id` in its right pane.
+#[cfg(test)]
+pub(crate) fn with_side_chat(s: &mut State, side_id: &str) {
+    s.page = Page::Chat;
+    let mut main = ChatState::new(THREAD.into());
+    let mut side = ChatState::new(side_id.into());
+    side.embedded = true;
+    side.composer.focused = false;
+    main.side.chat = Some(super::side::SideChat {
+        thread_id: side_id.into(),
+        state: Box::new(side),
+    });
+    s.chat = Some(main);
+}
+
+/// Close the open chat's side chat, as its close button does.
+#[cfg(test)]
+pub(crate) fn close_side_chat(s: &mut State) {
+    if let Some(c) = s.chat.as_mut() {
+        c.side.chat = None;
     }
 }

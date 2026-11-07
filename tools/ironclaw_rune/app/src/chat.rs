@@ -26,6 +26,7 @@ mod file_links;
 pub mod flow;
 mod glyphs;
 pub mod goals;
+mod hooks;
 pub mod inline_files;
 pub mod menu;
 pub mod model_picker;
@@ -63,6 +64,11 @@ use crate::jobs::{self, Generation};
 use crate::state::State;
 
 pub use flow::Item;
+pub use hooks::{
+    active_run, approval_mode_changed, composer_text, embedded, focus_composer, focus_composer_of, open_error,
+    reload_timeline, set_composer_text, set_fork_prefix, set_merges, stage_snapshot, stop_run, voice_composer,
+    voice_composer_mut, voice_press_enter, with_tx,
+};
 pub use view::view;
 
 const TIMELINE_LIMIT: u32 = 200;
@@ -355,12 +361,13 @@ fn start(s: &mut State, id: &str) {
     load_timeline(s, id);
     actions::load_commands(s, id);
     approval_mode::load(s, id);
-    // The extras (area H) and the docks (area S) belong to the open chat;
-    // a side chat inside its pane has none of its own.
+    // Every chat, main or side, has its own extras (area H), as each GPUI
+    // `ChatView` owned its picker, orchestration and screen share; the docks
+    // (area S) belong to the open chat only.
+    orchestration::opened(s, id);
+    model_picker::start(s, id);
+    computer::start(s, id);
     if is_main(s, id) {
-        orchestration::opened(s);
-        model_picker::start(s);
-        computer::start(s);
         side::init(s);
     }
 }
@@ -370,12 +377,9 @@ pub(crate) fn is_main(s: &State, id: &str) -> bool {
     s.chat.as_ref().is_some_and(|c| c.thread_id == id)
 }
 
-/// Re-read the orchestration state when `id` is the open chat (its tasks,
-/// queue, goal and lineage).
+/// Re-read `id`'s orchestration state (its tasks, queue, goal and lineage).
 pub(crate) fn refresh_extras(s: &mut State, id: &str) {
-    if is_main(s, id) {
-        orchestration::refresh(s);
-    }
+    orchestration::refresh(s, id);
 }
 
 /// The thread's live event stream: a task on the network runtime forwards
@@ -498,15 +502,13 @@ fn on_stream(s: &mut State, id: &str, generation: Generation, batch: Vec<StreamM
     }
     // A run end or reload can move tasks and the queue; a run start only
     // needs the slow poll armed.
-    if is_main(s, id) {
-        if reload || ended.is_some() {
-            orchestration::refresh(s);
-        } else {
-            orchestration::ensure_poll(s);
-        }
-        if ended.is_some() {
-            side::on_turn_ended(s);
-        }
+    if reload || ended.is_some() {
+        orchestration::refresh(s, id);
+    } else {
+        orchestration::ensure_poll(s, id);
+    }
+    if ended.is_some() && is_main(s, id) {
+        side::on_turn_ended(s);
     }
     // Stopping a run is the person's own doing; no alert for that.
     if let Some(end @ (RunEnd::Completed | RunEnd::Failed)) = ended {
@@ -534,7 +536,7 @@ pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) {
 /// pending row while a run is live, the tail and the reserve.
 pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) {
     let reduced = s.prefs.reduce_motion == "on";
-    let has_tail = is_main(s, id) && orchestration::has_tail(s);
+    let has_tail = orchestration::has_tail(s, id);
     let Some(c) = chat_for(s, id) else { return };
     c.has_tail = has_tail;
     let run = c.running_run();
@@ -652,6 +654,8 @@ fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         sync_items(s, id, tx);
         changed = true;
     }
+    // Computer use's cursor glides, ripples and trails.
+    changed |= computer::poll(s, id, tx);
     let Some(c) = chat_for(s, id) else {
         return changed;
     };
@@ -717,163 +721,6 @@ pub fn report_error(s: &mut State, id: &str, message: impl Into<String>) {
 /// `ChatState` with this.
 pub fn embedded_view(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     view::column(s, chat, cx, k, layer)
-}
-
-// ── Hooks other areas call ─────────────────────────────────────────────
-//
-// The chat extras (area H) and the side pane (area S) work on the open
-// chat (`s.chat`), so their hooks take no thread id; the voice (F) and
-// workspace (B) hooks route by composer or act on the open chat too.
-
-/// The open chat's thread id.
-fn open_id(s: &State) -> Option<String> {
-    s.chat.as_ref().map(|c| c.thread_id.clone())
-}
-
-/// Run `f` with a `Tx` for the open chat, on the next turn of the UI loop
-/// (for callers that have none; it re-finds the chat by id, so a chat that
-/// closed meanwhile is left alone).
-pub(crate) fn with_tx(s: &State, f: impl FnOnce(&mut State, &str, &mut Tx) + Send + 'static) {
-    let Some(id) = open_id(s) else { return };
-    s.rt.handle.update(move |s, tx| {
-        if is_main(s, &id) {
-            f(s, &id, tx);
-        }
-    });
-}
-
-/// The composer field voice dictates into, if that composer exists now:
-/// `Chat(id)` is the open chat's (or its side chat's) composer, `Draft`
-/// the new-thread screen's. The quick composer's field lives in its own
-/// window's state, out of reach here (voice types there with
-/// `workspace::quick::insert_text`).
-pub fn voice_composer<'a>(s: &'a State, composer: &crate::voice::Composer) -> Option<&'a TextEdit> {
-    use crate::voice::Composer;
-    match composer {
-        Composer::Chat(id) => chat_ref(s, id).map(|c| &c.composer),
-        Composer::Draft => s.workspace.draft.as_ref().map(|d| &d.input),
-        Composer::Quick => None,
-    }
-}
-
-/// [`voice_composer`], mutable: voice inserts committed words at the caret
-/// and shows the still-changing tail as the field's preedit.
-pub fn voice_composer_mut<'a>(s: &'a mut State, composer: &crate::voice::Composer) -> Option<&'a mut TextEdit> {
-    use crate::voice::Composer;
-    match composer {
-        Composer::Chat(id) => chat_for(s, id).map(|c| &mut c.composer),
-        Composer::Draft => crate::workspace::composer_edit(s, composer),
-        Composer::Quick => None,
-    }
-}
-
-/// Send what `composer` holds, exactly as pressing Enter in it does. Each
-/// send handler takes talk mode's claim (`voice::take_submission`) and
-/// reports what became of it.
-pub fn voice_press_enter(s: &mut State, composer: &crate::voice::Composer, tx: &mut Tx) {
-    use crate::voice::Composer;
-    match composer {
-        Composer::Chat(id) => {
-            let id = id.clone();
-            actions::send(s, &id, tx);
-        }
-        Composer::Draft => crate::workspace::send_draft(s),
-        Composer::Quick => {}
-    }
-}
-
-/// A SnapShot finished (area F): the workspace decides where it lands
-/// (`workspace::stage_snapshot`), and for the open thread calls this, which
-/// stages it in the open chat's composer. An `Err` becomes its error line.
-pub fn stage_snapshot(s: &mut State, snap: Result<crate::snapshot::Snapshot, String>) {
-    let Some(id) = open_id(s) else {
-        if let Err(e) = snap {
-            tracing::warn!(error = %e, "SnapShot failed with no chat open");
-        }
-        return;
-    };
-    snapshot::stage_snapshot(s, &id, snap);
-}
-
-/// Show `message` in the open chat's error line (GPUI `ChatView::set_error`).
-pub fn open_error(s: &mut State, message: impl Into<String>) {
-    match open_id(s) {
-        Some(id) => set_error(s, &id, message),
-        None => tracing::warn!(error = %message.into(), "chat error with no chat open"),
-    }
-}
-
-/// Re-read the open chat's timeline.
-pub fn reload_timeline(s: &mut State) {
-    if let Some(id) = open_id(s) {
-        load_timeline(s, &id);
-    }
-}
-
-/// The run streaming in the open chat (IronClaw's loop), if any.
-pub fn active_run(s: &State) -> Option<String> {
-    let c = s.chat.as_ref()?;
-    c.transcript
-        .active_run()
-        .or(c.fixture_run.as_deref())
-        .map(str::to_string)
-}
-
-/// The open chat is a side chat drawn in a pane. The open chat never is:
-/// side chats live in `side::SideChat`, and the extras only see `s.chat`.
-pub fn embedded(s: &State) -> bool {
-    s.chat.as_ref().is_some_and(|c| c.embedded)
-}
-
-/// The open chat's composer text.
-pub fn composer_text(s: &State) -> String {
-    s.chat.as_ref().map(|c| c.composer.text.clone()).unwrap_or_default()
-}
-
-/// Put `text` into the open chat's composer (caret at its end) and note
-/// the draft.
-pub fn set_composer_text(s: &mut State, text: String) {
-    let Some(c) = s.chat.as_mut() else { return };
-    c.composer.replace_text(text);
-    let id = c.thread_id.clone();
-    composer::on_change(s, &id);
-}
-
-/// A fork's source conversation, shown above its own messages.
-pub fn set_fork_prefix(s: &mut State, prefix: Vec<ironclaw_gpui_client::wire::TimelineMessage>) {
-    let Some(c) = s.chat.as_mut() else { return };
-    c.transcript.set_prefix(prefix);
-    with_tx(s, refresh_rows);
-}
-
-/// Forks merged back into this thread, shown where they arrived.
-pub fn set_merges(s: &mut State, merges: Vec<ironclaw_gpui_client::orchestration::MergedFork>) {
-    let Some(c) = s.chat.as_mut() else { return };
-    c.transcript.set_merges(merges);
-    with_tx(s, refresh_rows);
-}
-
-/// Stop the open chat's turn (computer use's Stop does this too).
-pub fn stop_run(s: &mut State) {
-    with_tx(s, actions::stop);
-}
-
-/// The global auto-approve switch changed (Settings, Profiles): the
-/// approval pills of the open chat and its side chat re-read it (GPUI
-/// `approval_mode::changed`).
-pub fn approval_mode_changed(s: &mut State) {
-    approval_mode::changed(s);
-}
-
-/// Focus the open chat's composer (the window came back, a picker closed,
-/// the thread was opened again).
-pub fn focus_composer(s: &mut State) {
-    if s.page != crate::state::Page::Chat {
-        return;
-    }
-    if let Some(c) = s.chat.as_mut() {
-        c.composer.focused = true;
-    }
 }
 
 /// The open thread's titlebar actions at the breadcrumb's right end: the

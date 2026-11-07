@@ -25,17 +25,24 @@
 //!
 //! # Entry points
 //!
-//! - `start(s)`: after `chat::open`, binds the chat's picker to its thread and
-//!   loads the route (area A calls it; the chat stub already does).
-//! - `pills(s, cx, k, layer) -> El`: the model and thinking pills for the open
-//!   chat's composer, popovers pushed into `layer`.
-//! - `open(s)`: ⇧⌘M (area B, `workspace::on_key`) toggles the open chat's picker.
+//! Every chat has its own picker, the open one and each side chat (GPUI:
+//! each `ChatView` owned a `ModelPicker`): [`Slot::Chat`] finds it by thread
+//! id through `chat::chat_for`, so a reply for a closed chat is dropped.
+//!
+//! - `start(s, id)`: after a chat starts, binds its picker to its thread and
+//!   loads the route (area A calls it).
+//! - `pills(s, id, cx, k, layer) -> El`: the model and thinking pills for
+//!   `id`'s composer, popovers pushed into `layer`.
+//! - `open(s)`: ⇧⌘M (area B, `workspace::on_key`) toggles the focused chat's
+//!   picker (`focused_slot`: the side chat's while its composer has focus
+//!   or its picker is open); `close_open(s)` is Esc.
 //! - `model_label(&ModelPickerState) -> String`, `pretty_model(id)`,
 //!   `provider_mark(..)` for other views.
 //! - The draft screen (area B) keeps its own `ModelPickerState::new(None,
 //!   catalog_thread)` and renders it with `view::pills_for(s, Slot { .. }, ..)`;
 //!   `pending()`, `pending_effort()`, `set_profile(..)` read and steer it.
 
+mod slot;
 mod view;
 
 use ironclaw_gpui_client::orchestration::{PickerPrefs, RouteChange, RouteProvider, ThreadRoute};
@@ -46,6 +53,7 @@ use crate::state::State;
 
 // `pills_for` and `provider_mark` are for the draft screen (area B) and other views.
 #[allow(unused_imports)]
+pub use slot::{DRAFT, FixedSlot, Slot, close_open, focused_slot};
 pub use view::{pills, pills_for, provider_mark};
 
 /// IronClaw's own loop; its first model is the profile's.
@@ -59,22 +67,6 @@ pub enum PickerEvent {
     Changed(RouteChange),
     Failed(String),
 }
-
-/// How handlers find a picker again from the root state, and where its
-/// events go. The chat's is [`CHAT`]; the draft screen passes its own.
-#[derive(Clone, Copy)]
-pub struct Slot {
-    pub get: fn(&State) -> Option<&ModelPickerState>,
-    pub get_mut: fn(&mut State) -> Option<&mut ModelPickerState>,
-    pub event: fn(&mut State, PickerEvent),
-}
-
-/// The open chat's picker.
-pub const CHAT: Slot = Slot {
-    get: |s| s.chat.as_ref().map(|c| &c.model_picker),
-    get_mut: |s| s.chat.as_mut().map(|c| &mut c.model_picker),
-    event: chat_event,
-};
 
 /// The rail tab: starred models, every provider, or one provider.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -356,20 +348,20 @@ impl ModelPickerState {
     }
 }
 
-/// Bind the open chat's picker to its thread and read the route. Called
-/// once per `chat::open`.
-pub fn start(s: &mut State) {
-    let Some(chat) = s.chat.as_mut() else { return };
-    let id = chat.thread_id.clone();
+/// Bind the picker of the chat showing `id` (main or side chat) to its
+/// thread and read the route. Called once per chat start.
+pub fn start(s: &mut State, id: &str) {
+    let Some(chat) = crate::chat::chat_for(s, id) else { return };
     let compact = chat.model_picker.compact;
-    chat.model_picker = ModelPickerState::new(Some(id), None);
+    chat.model_picker = ModelPickerState::new(Some(id.to_string()), None);
     chat.model_picker.compact = compact;
-    load(s, CHAT);
+    load(s, Slot::chat(id));
 }
 
-/// ⇧⌘M: toggle the open chat's picker. Area B wires the shortcut.
+/// ⇧⌘M: toggle the focused chat's picker. Area B wires the shortcut.
 pub fn open(s: &mut State) {
-    if let Some(p) = (CHAT.get_mut)(s)
+    let Some(slot) = focused_slot(s) else { return };
+    if let Some(p) = slot.get_mut(s)
         && (p.route.as_ref().is_some_and(|r| !r.providers.is_empty()) || p.current.is_some())
     {
         p.toggle();
@@ -379,7 +371,7 @@ pub fn open(s: &mut State) {
 /// Read the route (catalog, preferences, the thread's pick) through the
 /// picker's catalog thread.
 pub fn load(s: &mut State, slot: Slot) {
-    let Some(p) = (slot.get_mut)(s) else { return };
+    let Some(p) = slot.get_mut(s) else { return };
     let Some(thread_id) = p.catalog_thread.clone() else { return };
     let own = p.thread_id.is_some();
     let generation = p.generation.bump();
@@ -389,7 +381,7 @@ pub fn load(s: &mut State, slot: Slot) {
         move |c| async move { c.thread_route(&thread_id).await },
         move |s, result, _| {
             let recent = s.prefs.recent_models.clone();
-            let Some(p) = (slot.get_mut)(s).filter(|p| p.generation == generation) else { return };
+            let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else { return };
             // silent-ok: an older gateway has no route; the pill stays hidden.
             let Ok(route) = result else { return };
             if own {
@@ -412,7 +404,7 @@ pub fn load(s: &mut State, slot: Slot) {
 /// The new-thread screen's profile: show its default model unless the user
 /// already picked one.
 pub fn set_profile(s: &mut State, slot: Slot, profile_id: String) {
-    let Some(p) = (slot.get_mut)(s) else { return };
+    let Some(p) = slot.get_mut(s) else { return };
     p.profile_req = Some(profile_id.clone());
     let asked = profile_id.clone();
     jobs::run(
@@ -421,7 +413,7 @@ pub fn set_profile(s: &mut State, slot: Slot, profile_id: String) {
         move |c| async move { c.profile(&profile_id).await },
         move |s, result, _| {
             let recent = s.prefs.recent_models.clone();
-            let Some(p) = (slot.get_mut)(s) else { return };
+            let Some(p) = slot.get_mut(s) else { return };
             // Opening the draft asks for the last-used profile, then the
             // picked one: only the latest request may set the pill.
             if p.profile_req.as_deref() != Some(asked.as_str()) {
@@ -439,7 +431,7 @@ pub fn set_profile(s: &mut State, slot: Slot, profile_id: String) {
 }
 
 pub(crate) fn pick_effort(s: &mut State, slot: Slot, effort: Option<String>) {
-    let Some(p) = (slot.get_mut)(s) else { return };
+    let Some(p) = slot.get_mut(s) else { return };
     p.effort_open = false;
     let previous = std::mem::replace(&mut p.effort, effort.clone());
     let Some(thread_id) = p.thread_id.clone() else { return };
@@ -451,10 +443,10 @@ pub(crate) fn pick_effort(s: &mut State, slot: Slot, effort: Option<String>) {
         move |c| async move { c.set_thread_effort(&thread_id, &wire).await },
         move |s, result, _| {
             if let Err(e) = result {
-                if let Some(p) = (slot.get_mut)(s).filter(|p| p.generation == generation) {
+                if let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) {
                     p.effort = previous;
                 }
-                (slot.event)(s, PickerEvent::Failed(e.to_string()));
+                slot.event(s, PickerEvent::Failed(e.to_string()));
             }
         },
     );
@@ -467,7 +459,7 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
         p.recent_models.insert(0, recent);
         p.recent_models.truncate(RECENTS);
     });
-    let Some(p) = (slot.get_mut)(s) else { return };
+    let Some(p) = slot.get_mut(s) else { return };
     p.open = false;
     p.cmd_held = false;
     // The effort carries over when the new model takes the same level.
@@ -489,7 +481,7 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
         "model picker",
         move |c| async move { c.set_thread_route(&thread_id, &pv, &md, effort.as_deref()).await },
         move |s, result, _| {
-            let Some(p) = (slot.get_mut)(s).filter(|p| p.generation == generation) else { return };
+            let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else { return };
             p.busy = false;
             match result {
                 Ok(change) => {
@@ -500,9 +492,9 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
                             route.fresh = route.fresh && change.moved != "in_place";
                         }
                     }
-                    (slot.event)(s, PickerEvent::Changed(change));
+                    slot.event(s, PickerEvent::Changed(change));
                 }
-                Err(e) => (slot.event)(s, PickerEvent::Failed(e.to_string())),
+                Err(e) => slot.event(s, PickerEvent::Failed(e.to_string())),
             }
         },
     );
@@ -510,7 +502,7 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
 
 /// Apply a preference change locally, then save the whole document.
 pub(crate) fn edit_prefs(s: &mut State, slot: Slot, edit: impl FnOnce(&mut PickerPrefs)) {
-    let Some(p) = (slot.get_mut)(s) else { return };
+    let Some(p) = slot.get_mut(s) else { return };
     edit(&mut p.prefs);
     if p.prefs.favorites.is_empty() && p.rail == Rail::Favorites {
         p.rail = Rail::All;
@@ -523,14 +515,14 @@ pub(crate) fn edit_prefs(s: &mut State, slot: Slot, edit: impl FnOnce(&mut Picke
         move |c| async move { c.set_model_picker(&thread_id, &prefs).await },
         move |s, result, _| {
             if let Err(e) = result {
-                (slot.event)(s, PickerEvent::Failed(e.to_string()));
+                slot.event(s, PickerEvent::Failed(e.to_string()));
             }
         },
     );
 }
 
 pub(crate) fn toggle_provider(s: &mut State, slot: Slot, key: String) {
-    if let Some(p) = (slot.get_mut)(s)
+    if let Some(p) = slot.get_mut(s)
         && p.rail == Rail::Provider(key.clone())
     {
         p.rail = Rail::All;
@@ -541,7 +533,7 @@ pub(crate) fn toggle_provider(s: &mut State, slot: Slot, key: String) {
 /// Move `dragged` into `target`'s place in the rail and the list.
 pub(crate) fn reorder(s: &mut State, slot: Slot, dragged: &str, target: &str) {
     let order_pref = s.prefs.provider_order.clone();
-    let Some(p) = (slot.get)(s) else { return };
+    let Some(p) = slot.get(s) else { return };
     let mut order: Vec<String> = p.ordered_providers(&order_pref).iter().map(|p| p.provider.clone()).collect();
     let (Some(from), Some(to)) = (
         order.iter().position(|p| p == dragged),
@@ -557,26 +549,12 @@ pub(crate) fn reorder(s: &mut State, slot: Slot, dragged: &str, target: &str) {
 /// Step to the next (or previous) rail tab, in the order the rail shows.
 pub(crate) fn cycle_rail(s: &mut State, slot: Slot, forward: bool) {
     let order = s.prefs.provider_order.clone();
-    let Some(p) = (slot.get_mut)(s) else { return };
+    let Some(p) = slot.get_mut(s) else { return };
     let mut tabs = p.rail_tabs(&order);
     let n = tabs.len();
     let at = tabs.iter().position(|r| *r == p.rail).unwrap_or(0);
     let next = if forward { (at + 1) % n } else { (at + n - 1) % n };
     p.rail = tabs.swap_remove(next);
-}
-
-/// The chat's reaction to its picker (GPUI `ChatView`'s `PickerEvent` subscription).
-fn chat_event(s: &mut State, event: PickerEvent) {
-    match event {
-        PickerEvent::Changed(change) => {
-            // A fork opens the new thread; a switch (same thread, new
-            // runtime) moves the live stream and gains the timeline marker;
-            // an in-place change only gains the marker.
-            let Some(id) = s.chat.as_ref().map(|c| c.thread_id.clone()) else { return };
-            crate::chat::picker_changed(s, &id, change.fork_thread_id, &change.moved);
-        }
-        PickerEvent::Failed(message) => crate::chat::open_error(s, message),
-    }
 }
 
 /// The thread's pick as `(provider, model)`; no model is the default.
@@ -696,19 +674,6 @@ pub fn scene(s: &mut State, effort: bool) {
 
 // The new-thread screen's picker (area B's `workspace/draft.rs`).
 
-/// The draft screen's picker, in `s.workspace.draft`. A failed pick shows
-/// as the draft's error; a change needs nothing (the thread does not exist
-/// yet, the pick applies when it is created).
-pub const DRAFT: Slot = Slot {
-    get: |s| s.workspace.draft.as_ref().map(|d| &d.picker),
-    get_mut: |s| s.workspace.draft.as_mut().map(|d| &mut d.picker),
-    event: |s, event| {
-        if let (PickerEvent::Failed(message), Some(d)) = (event, s.workspace.draft.as_mut()) {
-            d.error = Some(message);
-        }
-    },
-};
-
 /// The draft screen picked a profile: a fresh picker reading the catalog
 /// through `catalog_thread`, on that profile's default.
 pub fn draft_set_profile(s: &mut State, profile: String, catalog_thread: Option<String>) {
@@ -735,19 +700,6 @@ pub fn pending(picker: &ModelPickerState) -> Option<(String, String)> {
 
 pub fn pending_effort(picker: &ModelPickerState) -> Option<String> {
     picker.pending_effort()
-}
-
-/// Esc: close whichever picker is open (chat or draft). True when one was.
-pub fn close_open(s: &mut State) -> bool {
-    for slot in [CHAT, DRAFT] {
-        if let Some(p) = (slot.get_mut)(s)
-            && p.is_open()
-        {
-            p.close();
-            return true;
-        }
-    }
-    false
 }
 
 #[cfg(test)]

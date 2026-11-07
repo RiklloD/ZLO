@@ -332,13 +332,12 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
     if text.is_empty() && files.is_empty() {
         return refuse(s, "There was nothing to send.", voice);
     }
-    // The goal belongs to the open chat (area H), not a side chat.
+    // Each chat, side chats too, has its own goal (area H).
     if files.is_empty()
-        && super::is_main(s, id)
         && let Some(command) = goals::goal_command(&text)
     {
         refuse(s, "That ran as a command, not a message.", voice);
-        return goals::run_command(s, command);
+        return goals::run_command(s, id, command);
     }
     if files.is_empty() && match_command(&text, &c.menu.sources.commands).is_some() {
         refuse(s, "That ran as a command, not a message.", voice);

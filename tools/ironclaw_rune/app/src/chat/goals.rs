@@ -14,13 +14,17 @@
 //!
 //! # Entry points
 //!
+//! Every chat has its own goal, the open one and each side chat (GPUI: each
+//! `ChatView` read its own); functions take the chat's thread id and find
+//! it with `chat::chat_for`, so a reply for a closed chat goes nowhere.
+//!
 //! - `goal_command(text) -> Option<GoalCommand>`: area A's composer asks this
 //!   on send; `Some` means the line is a `/goal` command, then it calls
-//!   `run_command(s, command)` instead of sending.
-//! - `load(s)`: read the goal (orchestration's refresh calls it).
-//! - `view(s, k) -> Option<El>`: the strip (or the editor); orchestration
-//!   places it (`orchestration::composer` while editing, `orchestration::tail`
-//!   otherwise).
+//!   `run_command(s, id, command)` instead of sending.
+//! - `load(s, id)`: read the goal (orchestration's refresh calls it).
+//! - `view(s, chat, k) -> Option<El>`: the strip (or the editor);
+//!   orchestration places it (`orchestration::composer` while editing,
+//!   `orchestration::tail` otherwise).
 
 use ironclaw_gpui_client::ClientError;
 use ironclaw_gpui_client::inbox::{
@@ -29,6 +33,7 @@ use ironclaw_gpui_client::inbox::{
 use rune::{El, Icon, TextEdit, col, el, row};
 use rune_kit::{Kit, TextInput};
 
+use crate::chat::ChatState;
 use crate::chat::extras_ui::{ICON_XS, XS, ghost_button, ghost_icon, ico, spinner, txt, txt_medium};
 use crate::icons;
 use crate::jobs;
@@ -97,7 +102,7 @@ pub fn goal_command(text: &str) -> Option<GoalCommand> {
         let objective = objective.strip_prefix("set ").unwrap_or(objective).trim();
         let objective = (!objective.is_empty()).then(|| objective.to_string());
         if args.trim() == "off" && objective.is_none() {
-            return Some(GoalCommand::ClearCheck);
+        return Some(GoalCommand::ClearCheck);
         }
         return Some(match parse_check(args) {
             Ok(check) => GoalCommand::SetChecked { objective, check },
@@ -119,7 +124,7 @@ fn split_flag<'a>(text: &'a str, flag: &str) -> Option<(&'a str, &'a str)> {
         let end = at + flag.len();
         let after_ok = end == text.len() || text[end..].starts_with(char::is_whitespace);
         if before_ok && after_ok {
-            return Some((&text[..at], &text[end..]));
+        return Some((&text[..at], &text[end..]));
         }
         from = end;
     }
@@ -197,19 +202,17 @@ fn check_chip(check: &GoalCheckRecord) -> (String, Option<&'static Icon>, Tone) 
     }
 }
 
-fn slot(s: &mut State) -> Option<(&mut GoalsState, String)> {
-    s.chat.as_mut().map(|c| (&mut c.goals, c.thread_id.clone()))
-}
-
-/// Run `done` only while the chat that asked is still open.
-fn same_thread<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut GoalsState> {
-    s.chat.as_mut().filter(|c| c.thread_id == thread_id).map(|c| &mut c.goals)
+/// The goal of the chat showing `thread_id` (main or side), only while that
+/// chat is still open.
+fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut GoalsState> {
+    crate::chat::chat_for(s, thread_id).map(|c| &mut c.goals)
 }
 
 /// Read the goal once per thread open, and again while its check can still
 /// move (each orchestration refresh asks).
-pub fn load(s: &mut State) {
-    let Some((g, thread_id)) = slot(s) else { return };
+pub fn load(s: &mut State, id: &str) {
+    let Some(g) = slot(s, id) else { return };
+    let thread_id = id.to_string();
     if g.reading || (g.loaded && !g.check_can_move()) {
         return;
     }
@@ -221,7 +224,7 @@ pub fn load(s: &mut State) {
         "goal",
         move |c| async move { c.thread_goal(&thread_id).await },
         move |s, result, _| {
-            let Some(g) = same_thread(s, &asked) else { return };
+            let Some(g) = slot(s, &asked) else { return };
             g.reading = false;
             match result {
                 Ok(doc) => g.goal = doc.goal,
@@ -229,26 +232,26 @@ pub fn load(s: &mut State) {
                 // orchestrator has not seen yet both mean "no goal".
                 Err(e) => tracing::debug!(error = %e, "thread goal read failed"),
             }
-            crate::chat::orchestration::ensure_poll(s);
+            crate::chat::orchestration::ensure_poll(s, &asked);
         },
     );
 }
 
 fn apply_goal(s: &mut State, asked: &str, result: Result<ThreadGoalResponse, ClientError>) {
-    let Some(g) = same_thread(s, asked) else { return };
+    let Some(g) = slot(s, asked) else { return };
     match result {
         Ok(doc) => {
             g.goal = doc.goal;
             g.editor = None;
             g.editing_check = false;
         }
-        Err(e) => crate::chat::open_error(s, e.to_string()),
+        Err(e) => crate::chat::report_error(s, asked, e.to_string()),
     }
-    crate::chat::orchestration::ensure_poll(s);
+    crate::chat::orchestration::ensure_poll(s, asked);
 }
 
-fn write_goal(s: &mut State, objective: Option<String>, status: Option<GoalStatus>) {
-    let Some((_, thread_id)) = slot(s) else { return };
+fn write_goal(s: &mut State, id: &str, objective: Option<String>, status: Option<GoalStatus>) {
+    let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
@@ -259,8 +262,8 @@ fn write_goal(s: &mut State, objective: Option<String>, status: Option<GoalStatu
 }
 
 /// Set (or with `None` remove) the check, and the objective if given.
-fn write_goal_check(s: &mut State, objective: Option<String>, check: Option<GoalCheckSpec>) {
-    let Some((_, thread_id)) = slot(s) else { return };
+fn write_goal_check(s: &mut State, id: &str, objective: Option<String>, check: Option<GoalCheckSpec>) {
+    let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
@@ -271,8 +274,8 @@ fn write_goal_check(s: &mut State, objective: Option<String>, check: Option<Goal
 }
 
 /// `revision` is the check the strip showed when it was clicked.
-fn goal_check_action(s: &mut State, action: GoalCheckAction, revision: u64) {
-    let Some((_, thread_id)) = slot(s) else { return };
+fn goal_check_action(s: &mut State, id: &str, action: GoalCheckAction, revision: u64) {
+    let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
@@ -284,25 +287,25 @@ fn goal_check_action(s: &mut State, action: GoalCheckAction, revision: u64) {
 
 /// Act on a `/goal` line from the composer. A malformed one stays in the
 /// composer so it can be fixed; the rest clear it.
-pub fn run_command(s: &mut State, command: GoalCommand) {
+pub fn run_command(s: &mut State, id: &str, command: GoalCommand) {
     if let GoalCommand::Invalid(message) = &command {
-        crate::chat::open_error(s, message.clone());
+        crate::chat::report_error(s, id, message.clone());
         return;
     }
-    crate::chat::set_composer_text(s, String::new());
+    crate::chat::set_composer_text(s, id, String::new());
     match command {
-        GoalCommand::Edit => edit_goal(s, false),
-        GoalCommand::Clear => write_goal(s, None, None),
-        GoalCommand::Set(objective) => write_goal(s, Some(objective), None),
-        GoalCommand::SetChecked { objective, check } => write_goal_check(s, objective, Some(check)),
-        GoalCommand::ClearCheck => write_goal_check(s, None, None),
+        GoalCommand::Edit => edit_goal(s, id, false),
+        GoalCommand::Clear => write_goal(s, id, None, None),
+        GoalCommand::Set(objective) => write_goal(s, id, Some(objective), None),
+        GoalCommand::SetChecked { objective, check } => write_goal_check(s, id, objective, Some(check)),
+        GoalCommand::ClearCheck => write_goal_check(s, id, None, None),
         GoalCommand::Invalid(_) => {}
     }
 }
 
 /// Open the editor on the objective, or on the check command.
-fn edit_goal(s: &mut State, check: bool) {
-    let Some((g, _)) = slot(s) else { return };
+fn edit_goal(s: &mut State, id: &str, check: bool) {
+    let Some(g) = slot(s, id) else { return };
     let goal = g.goal.as_ref();
     let current = if check {
         goal.and_then(|g| g.check.as_ref()).map(|c| c.command.clone())
@@ -318,8 +321,8 @@ fn edit_goal(s: &mut State, check: bool) {
 
 /// Enter in the editor: save the objective, or the check command (empty
 /// removes the check, keeping its attempts and timeout otherwise).
-fn submit_editor(s: &mut State) {
-    let Some((g, _)) = slot(s) else { return };
+fn submit_editor(s: &mut State, id: &str) {
+    let Some(g) = slot(s, id) else { return };
     let Some(edit) = &g.editor else { return };
     let text = edit.text.trim().to_string();
     if g.editing_check {
@@ -329,24 +332,24 @@ fn submit_editor(s: &mut State) {
             max_attempts: keep.map(|c| c.max_attempts),
             timeout_secs: keep.map(|c| c.timeout_secs),
         });
-        write_goal_check(s, None, spec);
+        write_goal_check(s, id, None, spec);
     } else if !text.is_empty() {
-        write_goal(s, Some(text), None);
+        write_goal(s, id, Some(text), None);
     }
 }
 
-fn editor_edit(s: &mut State) -> &mut TextEdit {
-    match s.chat.as_mut().and_then(|c| c.goals.editor.as_mut()) {
+fn editor_edit<'a>(s: &'a mut State, id: &str) -> &'a mut TextEdit {
+    match slot(s, id).and_then(|g| g.editor.as_mut()) {
         Some(edit) => edit,
         // A late edit after the editor closed lands in a scratch field.
-        None => Box::leak(Box::default()),
+        None => crate::chat::orphan_edit(),
     }
 }
 
 /// The goal strip, or its editor while open (GPUI `render_goal`).
-pub fn view(s: &State, k: &Kit) -> Option<El> {
-    let chat = s.chat.as_ref()?;
+pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     let g = &chat.goals;
+    let id = chat.thread_id.clone();
     let p = &s.palette;
     let muted = p.text_muted;
     if let Some(edit) = &g.editor {
@@ -356,6 +359,7 @@ pub fn view(s: &State, k: &Kit) -> Option<El> {
         } else {
             "What should this thread achieve?"
         };
+        let (edit_id, submit_id, key_id, cancel_id) = (id.clone(), id.clone(), id.clone(), id);
         return Some(
             row()
                 .key("goal-editor")
@@ -367,11 +371,11 @@ pub fn view(s: &State, k: &Kit) -> Option<El> {
                         TextInput::new(edit)
                             .placeholder(placeholder)
                             .width(None)
-                            .on_edit(editor_edit)
-                            .on_submit(|s: &mut State, _| submit_editor(s))
-                            .on_key(|s: &mut State, ev, _| {
+                            .on_edit(move |s: &mut State| editor_edit(s, &edit_id))
+                            .on_submit(move |s: &mut State, _| submit_editor(s, &submit_id))
+                            .on_key(move |s: &mut State, ev, _| {
                                 if ev.key == rune::Key::Escape {
-                                    close_editor(s);
+                                    close_editor(s, &key_id);
                                     return true;
                                 }
                                 false
@@ -380,7 +384,7 @@ pub fn view(s: &State, k: &Kit) -> Option<El> {
                             .key("goal-input"),
                     ),
                 )
-                .child(ghost_button(k, "goal-cancel", "Cancel", None, false, close_editor)),
+                .child(ghost_button(k, "goal-cancel", "Cancel", None, false, move |s| close_editor(s, &cancel_id))),
         );
     }
     let goal = g.goal.as_ref()?;
@@ -428,27 +432,34 @@ pub fn view(s: &State, k: &Kit) -> Option<El> {
 
     let mut actions = row().gap(1.).center_y().group_opacity(0., 1.);
     if can_run {
+        let id = id.clone();
         actions = actions.child(ghost_icon(k, "goal-check-run", &icons::PLAY, "Run check now", move |s| {
-            goal_check_action(s, GoalCheckAction::RunNow, shown_revision)
+            goal_check_action(s, &id, GoalCheckAction::RunNow, shown_revision)
         }));
     }
     if can_stop {
+        let id = id.clone();
         actions = actions.child(ghost_icon(k, "goal-check-stop", &icons::SQUARE, "Stop retrying", move |s| {
-            goal_check_action(s, GoalCheckAction::StopRetrying, shown_revision)
+            goal_check_action(s, &id, GoalCheckAction::StopRetrying, shown_revision)
         }));
     }
     let edit_check = if has_check { "Edit check" } else { "Add a check" };
+    let (check_id, edit_id, done_id, clear_id) = (id.clone(), id.clone(), id.clone(), id);
     actions = actions
-        .child(ghost_icon(k, "goal-check-edit", &icons::SQUARE_TERMINAL, edit_check, |s| edit_goal(s, true)))
-        .child(ghost_icon(k, "goal-edit", &icons::PENCIL, "Edit goal", |s| edit_goal(s, false)))
+        .child(ghost_icon(k, "goal-check-edit", &icons::SQUARE_TERMINAL, edit_check, move |s| {
+            edit_goal(s, &check_id, true)
+        }))
+        .child(ghost_icon(k, "goal-edit", &icons::PENCIL, "Edit goal", move |s| edit_goal(s, &edit_id, false)))
         .child(ghost_icon(
             k,
             "goal-done",
             if done { &icons::UNDO_2 } else { &icons::CHECK },
             if done { "Pursue again" } else { "Mark done" },
-            move |s| write_goal(s, None, Some(if done { GoalStatus::Active } else { GoalStatus::Done })),
+            move |s| write_goal(s, &done_id, None, Some(if done { GoalStatus::Active } else { GoalStatus::Done })),
         ))
-        .child(ghost_icon(k, "goal-clear", &icons::CLOSE, "Clear goal", |s| write_goal(s, None, None)));
+        .child(ghost_icon(k, "goal-clear", &icons::CLOSE, "Clear goal", move |s| {
+            write_goal(s, &clear_id, None, None)
+        }));
 
     let mut strip = row()
         .key("goal-strip")
@@ -479,8 +490,8 @@ pub fn view(s: &State, k: &Kit) -> Option<El> {
     Some(out)
 }
 
-fn close_editor(s: &mut State) {
-    if let Some((g, _)) = slot(s) {
+fn close_editor(s: &mut State, id: &str) {
+    if let Some(g) = slot(s, id) {
         g.editor = None;
         g.editing_check = false;
     }
@@ -522,6 +533,23 @@ pub fn scene(s: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::chat_ref;
+    use crate::chat::fixtures::{close_side_chat, test_state, with_side_chat};
+
+    #[test]
+    fn a_goal_reply_lands_in_its_own_chat_and_is_dropped_once_that_chat_closed() {
+        let mut s = test_state();
+        with_side_chat(&mut s, "sc2");
+        let doc = || ThreadGoalResponse { thread_id: "sc2".into(), goal: fixture().goal };
+        apply_goal(&mut s, "sc2", Ok(doc()));
+        assert!(chat_ref(&s, "sc2").is_some_and(|c| c.goals.goal.is_some()));
+        assert!(chat_ref(&s, "t1").is_some_and(|c| c.goals.goal.is_none()), "the open chat's goal is its own");
+        close_side_chat(&mut s);
+        apply_goal(&mut s, "sc2", Ok(doc()));
+        apply_goal(&mut s, "sc2", Err(ClientError::Config("gone".into())));
+        let main = chat_ref(&s, "t1");
+        assert!(main.is_some_and(|c| c.goals.goal.is_none() && c.error.is_none()));
+    }
 
     #[test]
     fn goal_commands_parse_like_t3() {

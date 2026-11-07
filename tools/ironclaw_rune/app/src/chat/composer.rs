@@ -251,12 +251,8 @@ pub(crate) fn view(
         .child(attach)
         .child(voice)
         .child(send);
-    // The model picker (area H) is the open chat's; a side chat runs on
-    // the model it was forked with.
-    let picker = match chat.embedded {
-        false => super::model_picker::pills(s, cx, k, layer),
-        true => el(),
-    };
+    // Each chat's own model picker (area H); a side chat's is compact.
+    let picker = super::model_picker::pills(s, &chat.thread_id, cx, k, layer);
     let access = super::approval_mode::pill(s, chat, k);
     // Keyed by thread: a side chat's composer sits beside this one.
     composer_card(

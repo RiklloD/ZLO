@@ -14,7 +14,7 @@ use ironclaw_gpui_client::schedules::{
 use rune::{El, TextEdit, col, row};
 use rune_kit::{Kit, TextArea, TextInput};
 
-use crate::chat::model_picker::{self, ModelPickerState, PickerEvent, Slot};
+use crate::chat::model_picker::{self, FixedSlot, ModelPickerState, PickerEvent, Slot};
 use crate::jobs::{self, Generation};
 use crate::pages::common::{
     BASE, Btn, SM, XS, button, button_xs, card, choice, label, loading, para, segmented, switch,
@@ -75,7 +75,7 @@ pub struct Form {
 
 /// Where the form's model picker lives, and where its events go: a failed
 /// pick shows as the form's save error (GPUI `PickerEvent::Failed`).
-const FORM_PICKER: Slot = Slot {
+const FORM_PICKER: Slot = Slot::Fixed(FixedSlot {
     get: |s| s.pages.automations.form.as_ref()?.picker.as_ref(),
     get_mut: |s| s.pages.automations.form.as_mut()?.picker.as_mut(),
     event: |s, event| {
@@ -83,7 +83,7 @@ const FORM_PICKER: Slot = Slot {
             form.errors.save = Some(message);
         }
     },
-};
+});
 
 /// "Mon 3 Nov, 09:00" in this Mac's zone.
 fn local_time(ms: i64) -> String {

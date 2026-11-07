@@ -11,6 +11,7 @@ use super::{
     Card, ComputerState, RIPPLE, TYPING_MS, click_card, close_big, now_ms, permissions, slot, stop,
     take_over_or_back, toggle_hidden,
 };
+use crate::chat::ChatState;
 use crate::chat::extras_ui::{XS, ghost_button, ghost_icon, txt, variant_button};
 use crate::design::{Palette, rgb};
 use crate::icons;
@@ -140,6 +141,7 @@ struct CardGeometry {
 
 /// One card. `big` is the enlarged view: clicking it closes it.
 fn card_view(
+    id: &str,
     cu: &ComputerState,
     app: &ComputerApp,
     session: &ComputerSession,
@@ -236,7 +238,10 @@ fn card_view(
         .cursor(rune::Cursor::Pointer)
         .role("button")
         .label(format!("{} window", app.app))
-        .on_press(move |s: &mut State| if big { close_big(s) } else { click_card(s, window, front) });
+        .on_press({
+            let id = id.to_string();
+            move |s: &mut State| if big { close_big(s, &id) } else { click_card(s, &id, window, front) }
+        });
     if front {
         out = out.child(stage);
     } else {
@@ -247,7 +252,8 @@ fn card_view(
 
 /// Computer use cannot act until ZLO has both permissions; say so before
 /// the agent tries, with one button that asks macOS.
-fn permissions_card(p: &Palette, cu: &ComputerState, k: &Kit) -> El {
+fn permissions_card(p: &Palette, id: &str, cu: &ComputerState, k: &Kit) -> El {
+    let (allow_id, later_id) = (id.to_string(), id.to_string());
     let names: Vec<&str> = cu.missing.iter().map(|m| m.label()).collect();
     let screen = cu.missing.contains(&permissions::Permission::ScreenRecording);
     col()
@@ -275,13 +281,13 @@ fn permissions_card(p: &Palette, cu: &ComputerState, k: &Kit) -> El {
         .child(
             row()
                 .gap(8.)
-                .child(variant_button(k, "cu-allow", "Allow", None, ButtonVariant::Submit, false, |s| {
-                    if let Some(cu) = slot(s) {
+                .child(variant_button(k, "cu-allow", "Allow", None, ButtonVariant::Submit, false, move |s| {
+                    if let Some(cu) = slot(s, &allow_id) {
                         permissions::request(&cu.missing);
                     }
                 }))
-                .child(ghost_button(k, "cu-later", "Later", None, false, |s| {
-                    if let Some(cu) = slot(s) {
+                .child(ghost_button(k, "cu-later", "Later", None, false, move |s| {
+                    if let Some(cu) = slot(s, &later_id) {
                         cu.permissions_hidden = true;
                     }
                 })),
@@ -290,11 +296,12 @@ fn permissions_card(p: &Palette, cu: &ComputerState, k: &Kit) -> El {
 
 /// The stack, pinned to the top right of its parent; the enlarged card
 /// goes into `layer`.
-pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
-    let cu = &s.chat.as_ref()?.computer;
+pub fn view(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
+    let cu = &chat.computer;
+    let id = chat.thread_id.as_str();
     let p = &s.palette;
     if !cu.missing.is_empty() && !cu.permissions_hidden {
-        return Some(permissions_card(p, cu, k));
+        return Some(permissions_card(p, id, cu, k));
     }
     let session = cu.session.as_ref().filter(|_| !cu.hidden)?;
     let status = status_of(cu, session);
@@ -307,7 +314,7 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Opti
         let top = STAGE_H / 2. + ix as f32 * 10. - h / 2.;
         let geometry = CardGeometry { w, h, scale };
         deck = deck.child(
-            card_view(cu, app, session, geometry, ix == 0, false).pin(None, Some(top), Some(right), None),
+            card_view(id, cu, app, session, geometry, ix == 0, false).pin(None, Some(top), Some(right), None),
         );
     }
     let mut dot = el().size(7., 7.).radius(3.5).fill(rgb(status.dot));
@@ -331,13 +338,17 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Opti
         .child(dot)
         .child(txt(cu.note.clone().unwrap_or(status.text), XS, p.text).truncate().grow(1.).min_w(0.));
     if !session.ended {
+        let stop_id = id.to_string();
         bar = bar.child(
-            ghost_button(k, "cu-stop", "Stop", Some(&icons::SQUARE), false, stop)
+            ghost_button(k, "cu-stop", "Stop", Some(&icons::SQUARE), false, move |s| stop(s, &stop_id))
                 .help("Stop the agent now (also stops this conversation's turn)"),
         );
     }
     if !held_elsewhere {
-        let take = ghost_button(k, "cu-take", if cu.mine { "Hand back" } else { "Take over" }, None, false, take_over_or_back)
+        let take_id = id.to_string();
+        let take = ghost_button(k, "cu-take", if cu.mine { "Hand back" } else { "Take over" }, None, false, move |s| {
+            take_over_or_back(s, &take_id)
+        })
             .help(if cu.mine {
                 "Give the computer back to the agent"
             } else {
@@ -345,7 +356,10 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Opti
             });
         bar = bar.child(if cu.mine { el().radius(6.).fill(p.active).child(take) } else { take });
     }
-    bar = bar.child(ghost_icon(k, "cu-hide", &icons::CLOSE, "Hide the screen share (stops capturing)", toggle_hidden));
+    let hide_id = id.to_string();
+    bar = bar.child(ghost_icon(k, "cu-hide", &icons::CLOSE, "Hide the screen share (stops capturing)", move |s| {
+        toggle_hidden(s, &hide_id)
+    }));
 
     if let Some(app) = cu.big.and_then(|w| apps.iter().find(|a| a.window_id == w)) {
         let [vw, vh] = cx.layout_size("kit-root").unwrap_or([1280., 820.]);
@@ -359,8 +373,11 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Opti
                 .h_full()
                 .center()
                 .fill(Color::BLACK.alpha(0.6))
-                .on_press(close_big)
-                .child(card_view(cu, app, session, geometry, true, true)),
+                .on_press({
+                    let id = id.to_string();
+                    move |s: &mut State| close_big(s, &id)
+                })
+                .child(card_view(id, cu, app, session, geometry, true, true)),
         );
     }
     Some(

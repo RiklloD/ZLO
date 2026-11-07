@@ -16,6 +16,11 @@ fn open(s: &State) -> Option<&ChatState> {
     s.chat.as_ref()
 }
 
+/// The open chat's thread id.
+fn open_id(s: &State) -> Option<String> {
+    open(s).map(|c| c.thread_id.clone())
+}
+
 /// The open chat's transcript rows, oldest first (GPUI `ChatView::rows`).
 pub fn rows(s: &State) -> &[Row] {
     open(s).map_or(&[], |c| c.rows.as_slice())
@@ -28,12 +33,15 @@ pub fn running(s: &State) -> bool {
 
 /// Stop the open chat's running run (GPUI `ChatView::stop`).
 pub fn stop(s: &mut State) {
-    chat::stop_run(s);
+    if let Some(id) = open_id(s) {
+        chat::stop_run(s, &id);
+    }
 }
 
 /// Answer an approval or question gate (GPUI `ChatView::resolve_gate`).
 pub fn resolve_gate(s: &mut State, run_id: String, gate_ref: String, decision: GateDecision) {
-    chat::with_tx(s, move |s, id, tx| {
+    let Some(id) = open_id(s) else { return };
+    chat::with_tx(s, &id, move |s, id, tx| {
         chat::actions::resolve_gate(s, id, run_id, gate_ref, decision, tx)
     });
 }
@@ -124,28 +132,38 @@ pub fn lineage(s: &State) -> Option<&Lineage> {
 
 /// Cancel a delegated task (GPUI `ChatView::cancel_task`).
 pub fn cancel_task(s: &mut State, task_id: String) {
-    chat::orchestration::cancel_task(s, task_id);
+    if let Some(id) = open_id(s) {
+        chat::orchestration::cancel_task(s, &id, task_id);
+    }
 }
 
 /// Fork the open conversation (GPUI `ChatView::fork(None)`).
 pub fn fork(s: &mut State) {
-    chat::orchestration::fork(s, None);
+    if let Some(id) = open_id(s) {
+        chat::orchestration::fork(s, &id, None);
+    }
 }
 
 /// Re-read the orchestration state now (GPUI `ChatView::refresh_orchestration`).
 pub fn refresh_orchestration(s: &mut State) {
-    chat::orchestration::refresh(s);
+    if let Some(id) = open_id(s) {
+        chat::orchestration::refresh(s, &id);
+    }
 }
 
-/// The computer-use share has a session, and whether its screen shows
-/// (GPUI `computer.has_session()`, `!computer.hidden()`).
+/// The open chat's computer-use share has a session, and whether its
+/// screen shows (GPUI `computer.has_session()`, `!computer.hidden()`).
 pub fn computer_share(s: &State) -> Option<bool> {
-    chat::computer::has_session(s).then(|| !chat::computer::hidden(s))
+    let id = open_id(s)?;
+    chat::computer::has_session(s, &id).then(|| !chat::computer::hidden(s, &id))
 }
 
-/// Show or hide the computer-use screen share (GPUI `share.toggle_hidden`).
+/// Show or hide the open chat's computer-use screen share (GPUI
+/// `share.toggle_hidden`).
 pub fn toggle_computer(s: &mut State) {
-    chat::computer::toggle_hidden(s);
+    if let Some(id) = open_id(s) {
+        chat::computer::toggle_hidden(s, &id);
+    }
 }
 
 /// A thread's title from the shared title cache (GPUI `titles::get`).

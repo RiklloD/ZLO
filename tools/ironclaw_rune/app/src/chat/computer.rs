@@ -15,13 +15,19 @@
 //!
 //! # Entry points
 //!
-//! - `start(s)`: after `chat::open` (the chat stub already calls it).
-//! - `poll(s, tx) -> bool`: from `chat::poll`, drives the cursor animation.
-//! - `view(s, cx, k, layer) -> Option<El>`: the stack, pinned to the top right of
-//!   its parent (area A puts it in the chat pane's relative container); the
-//!   enlarged card goes into `layer`.
-//! - `has_session(s)`, `hidden(s)`, `toggle_hidden(s)`: the side pane's
-//!   screen-share button (area S).
+//! Every chat has its own share, the open one and each side chat (GPUI:
+//! each `ChatView` owned a `ComputerShare`); functions take the chat's
+//! thread id and find it with `chat::chat_for`, so a poll or a frame for a
+//! chat that closed meanwhile goes nowhere (and dropping the share hands a
+//! taken-over desktop back).
+//!
+//! - `start(s, id)`: after a chat starts.
+//! - `poll(s, id, tx) -> bool`: from `chat::poll`, drives the cursor animation.
+//! - `view(s, chat, cx, k, layer) -> Option<El>`: the stack, pinned to the
+//!   top right of its parent (area A puts it in the chat pane's relative
+//!   container); the enlarged card goes into `layer`.
+//! - `has_session(s, id)`, `hidden(s, id)`, `toggle_hidden(s, id)`: the side
+//!   pane's screen-share button (area S).
 
 mod view;
 
@@ -215,23 +221,21 @@ fn decode(jpeg: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     Some((rgba.width(), rgba.height(), rgba.into_raw()))
 }
 
-fn slot(s: &mut State) -> Option<&mut ComputerState> {
-    s.chat.as_mut().map(|c| &mut c.computer)
+/// The share of the chat showing `thread_id` (main or side), while that
+/// chat is open.
+fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut ComputerState> {
+    crate::chat::chat_for(s, thread_id).map(|c| &mut c.computer)
 }
 
 /// The share, only while the chat (and the `start`) that asked is current.
 fn same<'a>(s: &'a mut State, thread_id: &str, generation: Generation) -> Option<&'a mut ComputerState> {
-    s.chat
-        .as_mut()
-        .filter(|c| c.thread_id == thread_id)
-        .map(|c| &mut c.computer)
-        .filter(|cu| cu.generation == generation)
+    slot(s, thread_id).filter(|cu| cu.generation == generation)
 }
 
-/// Bind the share to the open chat and start polling the state.
-pub fn start(s: &mut State) {
+/// Bind the share of the chat showing `id` to it and start polling the state.
+pub fn start(s: &mut State, id: &str) {
     let backend = s.rt.backend.clone();
-    let Some(chat) = s.chat.as_mut() else { return };
+    let Some(chat) = crate::chat::chat_for(s, id) else { return };
     let cu = &mut chat.computer;
     cu.thread_id = chat.thread_id.clone();
     cu.backend = backend;
@@ -297,7 +301,7 @@ fn apply(s: &mut State, thread_id: &str, generation: Generation, state: WireStat
         cu.mine = false; // released elsewhere (Stop, or another viewer)
     }
     cu.session = session;
-    sync_cards(s);
+    sync_cards(s, thread_id);
 }
 
 impl ComputerState {
@@ -320,25 +324,25 @@ impl ComputerState {
     }
 }
 
-/// The agent is (or just was) driving apps in this conversation.
-pub fn has_session(s: &State) -> bool {
-    s.chat.as_ref().is_some_and(|c| c.computer.session.is_some() || c.computer.mine)
+/// The agent is (or just was) driving apps in `id`'s conversation.
+pub fn has_session(s: &State, id: &str) -> bool {
+    crate::chat::chat_ref(s, id).is_some_and(|c| c.computer.session.is_some() || c.computer.mine)
 }
 
-pub fn hidden(s: &State) -> bool {
-    s.chat.as_ref().is_some_and(|c| c.computer.hidden)
+pub fn hidden(s: &State, id: &str) -> bool {
+    crate::chat::chat_ref(s, id).is_some_and(|c| c.computer.hidden)
 }
 
-pub fn toggle_hidden(s: &mut State) {
-    if let Some(cu) = slot(s) {
+pub fn toggle_hidden(s: &mut State, id: &str) {
+    if let Some(cu) = slot(s, id) {
         cu.hidden = !cu.hidden;
     }
-    sync_cards(s);
+    sync_cards(s, id);
 }
 
 /// Cards follow the windows; each holds a live, still or no fetch.
-fn sync_cards(s: &mut State) {
-    let Some(cu) = slot(s) else { return };
+fn sync_cards(s: &mut State, id: &str) {
+    let Some(cu) = slot(s, id) else { return };
     let visible = !cu.hidden && cu.session.is_some();
     let apps = if visible { cu.apps() } else { Vec::new() };
     let keep: Vec<u32> = apps.iter().map(|a| a.window_id).collect();
@@ -453,8 +457,8 @@ fn fetch(s: &mut State, thread_id: String, generation: Generation, window: u32) 
     );
 }
 
-fn control(s: &mut State, action: ComputerControl) {
-    let Some(cu) = slot(s) else { return };
+fn control(s: &mut State, id: &str, action: ComputerControl) {
+    let Some(cu) = slot(s, id) else { return };
     if cu.busy {
         return;
     }
@@ -475,7 +479,7 @@ fn control(s: &mut State, action: ComputerControl) {
                         ComputerControl::TakeOver => cu.mine = true,
                         ComputerControl::HandBack | ComputerControl::Stop => cu.mine = false,
                     }
-                    sync_cards(s);
+                    sync_cards(s, &asked);
                 }
                 Err(e) => {
                     cu.note = Some(
@@ -493,33 +497,33 @@ fn control(s: &mut State, action: ComputerControl) {
     );
 }
 
-fn stop(s: &mut State) {
-    control(s, ComputerControl::Stop);
+fn stop(s: &mut State, id: &str) {
+    control(s, id, ComputerControl::Stop);
     // The Hermes viewer also interrupts the whole turn.
-    crate::chat::stop_run(s);
+    crate::chat::stop_run(s, id);
 }
 
-fn take_over_or_back(s: &mut State) {
-    let Some(cu) = slot(s) else { return };
+fn take_over_or_back(s: &mut State, id: &str) {
+    let Some(cu) = slot(s, id) else { return };
     let action = if cu.mine { ComputerControl::HandBack } else { ComputerControl::TakeOver };
-    control(s, action);
+    control(s, id, action);
 }
 
-fn click_card(s: &mut State, window: u32, front: bool) {
-    let Some(cu) = slot(s) else { return };
+fn click_card(s: &mut State, id: &str, window: u32, front: bool) {
+    let Some(cu) = slot(s, id) else { return };
     if front {
         cu.big = Some(window);
     } else if let Some(first) = cu.apps().first() {
         cu.pinned = Some((window, first.window_id));
     }
-    sync_cards(s);
+    sync_cards(s, id);
 }
 
-fn close_big(s: &mut State) {
-    if let Some(cu) = slot(s) {
+fn close_big(s: &mut State, id: &str) {
+    if let Some(cu) = slot(s, id) {
         cu.big = None;
     }
-    sync_cards(s);
+    sync_cards(s, id);
 }
 
 /// Glide the card's cursor to the session's pointer when it targets this
@@ -563,8 +567,8 @@ fn follow_pointer(card: &mut Card, session: &ComputerSession, window: u32, skew_
 }
 
 /// Expire finished animations; keep drawing while any runs.
-pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
-    let Some(cu) = slot(s) else { return false };
+pub fn poll(s: &mut State, id: &str, tx: &mut Tx) -> bool {
+    let Some(cu) = slot(s, id) else { return false };
     if cu.hidden || cu.session.is_none() {
         return false;
     }
@@ -651,5 +655,32 @@ pub fn scene(s: &mut State, big: bool) {
         if big {
             c.computer.big = Some(11);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WireState, apply, fixture};
+    use crate::chat::fixtures::{close_side_chat, test_state, with_side_chat};
+    use crate::chat::{chat_for, chat_ref};
+    use crate::jobs::Generation;
+
+    fn wire() -> WireState {
+        WireState { enabled: false, now: 0, sessions: fixture("sc2").session.clone().into_iter().collect() }
+    }
+
+    #[test]
+    fn a_poll_lands_in_its_own_chat_and_is_dropped_once_that_chat_closed() {
+        let mut s = test_state();
+        with_side_chat(&mut s, "sc2");
+        if let Some(c) = chat_for(&mut s, "sc2") {
+            c.computer.thread_id = "sc2".into();
+        }
+        apply(&mut s, "sc2", Generation::default(), wire());
+        assert!(chat_ref(&s, "sc2").is_some_and(|c| c.computer.session.is_some()));
+        assert!(chat_ref(&s, "t1").is_some_and(|c| c.computer.session.is_none()), "the open chat's share is its own");
+        close_side_chat(&mut s);
+        apply(&mut s, "sc2", Generation::default(), wire());
+        assert!(chat_ref(&s, "t1").is_some_and(|c| c.computer.session.is_none()));
     }
 }

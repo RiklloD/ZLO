@@ -697,10 +697,8 @@ fn switch_marker(s: &State, words: &str) -> El {
         .child(rule())
 }
 
-/// Fork the conversation from run `at_run` (area H's orchestration, which
-/// works on the open chat; a side chat's rows offer no fork).
+/// Fork the conversation from run `at_run` (area H's orchestration; a
+/// side chat's fork opens as the main chat, as in GPUI).
 fn fork(s: &mut State, thread: &str, at_run: Option<u32>) {
-    if super::is_main(s, thread) {
-        super::orchestration::fork(s, at_run);
-    }
+    super::orchestration::fork(s, thread, at_run);
 }

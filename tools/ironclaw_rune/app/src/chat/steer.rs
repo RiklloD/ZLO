@@ -210,12 +210,8 @@ pub(crate) fn send_after_turn(s: &mut State, id: &str, tx: &mut Tx) {
         );
         return;
     }
-    // The queue is the open chat's (area H); a side chat's ⌥Enter joins
-    // its running turn instead.
-    if !super::is_main(s, id) {
-        return actions::send(s, id, tx);
-    }
-    if super::orchestration::queue_follow_up(s, text)
+    // Every chat, side chats too, has its own queue (area H).
+    if super::orchestration::queue_follow_up(s, id, text)
         && let Some(c) = chat_for(s, id)
     {
         c.composer.clear();
