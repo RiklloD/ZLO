@@ -63,7 +63,7 @@ pub fn pills_for(s: &State, slot: Slot, _cx: &mut Cx<State>, k: &Kit, layer: &mu
         .fill(if m.open { p.active } else { Color::TRANSPARENT })
         .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
-        .child(provider_mark(p, brand.as_deref(), &runtime, provider.as_deref().unwrap_or(NATIVE), 14.));
+        .child(provider_mark(s, brand.as_deref(), &runtime, provider.as_deref().unwrap_or(NATIVE), 14.));
     if !m.compact {
         pill = pill.child(txt(label.clone(), SM, ink));
     }
@@ -190,7 +190,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
             provider.name,
             if hidden { "show" } else { "hide" }
         );
-        let mark = provider_mark(p, provider.brand.as_deref(), &provider.runtime, &provider.provider, 18.);
+        let mark = provider_mark(s, provider.brand.as_deref(), &provider.runtime, &provider.provider, 18.);
         let mut item = rail_item(format!("rail-{key}"), mark, on, tip);
         if hidden {
             item = item.opacity(0.4);
@@ -224,7 +224,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
         for (provider, model) in picks {
             let badge = (m.cmd_held && shown < 9).then_some(shown);
             shown += 1;
-            rows = rows.child(model_row(p, m, slot, k, provider, model, badge));
+            rows = rows.child(model_row(s, m, slot, k, provider, model, badge));
         }
     }
     if shown == 0 {
@@ -393,7 +393,7 @@ fn group_header(
 
 /// One pickable model, with hover actions to star and hide it.
 fn model_row(
-    p: &Palette,
+    s: &State,
     m: &ModelPickerState,
     slot: Slot,
     k: &Kit,
@@ -401,6 +401,7 @@ fn model_row(
     model: String,
     badge: Option<usize>,
 ) -> El {
+    let p = &s.palette;
     let on = m.current_provider() == provider.provider && m.current_model() == Some(model.as_str());
     let favorite = m.prefs.favorite(&provider.provider, &model);
     let hidden = m.prefs.model_hidden(&provider.provider, &model);
@@ -457,7 +458,7 @@ fn model_row(
         // The row under the pointer reads stronger than the current one.
         .fill(if on { p.hover } else { Color::TRANSPARENT })
         .hover(p.active)
-        .child(provider_mark(p, provider.brand.as_deref(), &provider.runtime, &provider.provider, 16.))
+        .child(provider_mark(s, provider.brand.as_deref(), &provider.runtime, &provider.provider, 16.))
         .child(text_col);
     if hidden {
         r = r.opacity(0.45);
@@ -552,21 +553,13 @@ fn effort_popover(p: &Palette, m: &ModelPickerState, slot: Slot, efforts: &[Stri
     panel_surface(p, rows)
 }
 
-/// A provider's logo; `brand` (the vendor behind a runtime row) wins. Falls
-/// back to a letter tile.
-// PORT-STUB(area G): use `design::brands::provider_logo(&[brand, provider, runtime], size)`
-// once the brand logos are ported; until then every provider shows its letter tile.
-pub fn provider_mark(p: &Palette, brand: Option<&str>, runtime: &str, provider: &str, size: f32) -> El {
-    let id = brand.unwrap_or(if provider.is_empty() { runtime } else { provider });
-    let letter = id
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_ascii_uppercase().to_string())
-        .unwrap_or_else(|| "?".into());
-    el().size(size, size)
-        .center()
-        .radius(size / 2.)
-        .border(1., p.accent.alpha(0.5))
-        .fill(p.accent.alpha(0.12))
-        .child(txt_medium(letter, (size * 0.55).round(), p.accent))
+/// A provider's logo; `brand` (the vendor behind a runtime row) wins, then
+/// the provider, then the runtime. Falls back to a letter tile.
+pub fn provider_mark(s: &State, brand: Option<&str>, runtime: &str, provider: &str, size: f32) -> El {
+    let ids: Vec<&str> = [brand, Some(provider), Some(runtime)]
+        .into_iter()
+        .flatten()
+        .filter(|id| !id.is_empty())
+        .collect();
+    crate::design::brands::provider_logo(s, &ids, size)
 }

@@ -308,8 +308,8 @@ pub(crate) fn mention_roots(s: &mut State, id: &str, text: &str) -> Vec<String> 
     let Some(root) = mention_root(s, id) else {
         return Vec::new();
     };
-    if super::is_main(s, id) && super::side::folder(s).is_none() {
-        super::side::set_folder(s, root.clone(), true);
+    if super::is_main(s, id) {
+        super::side::adopt_folder(s, root.clone());
     }
     vec![root.to_string_lossy().into_owned()]
 }

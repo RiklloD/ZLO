@@ -12,7 +12,6 @@
 
 mod catalog;
 pub mod fixtures;
-mod logos;
 mod view;
 
 use std::collections::HashMap;

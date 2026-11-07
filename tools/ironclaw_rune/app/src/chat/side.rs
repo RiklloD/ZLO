@@ -67,11 +67,10 @@ mod ui;
 
 pub mod fixtures;
 
-// Entry points for areas A and B (see the module docs); unused until they wire them.
-#[allow(unused_imports)]
-pub use dock::{docks, dock_widths, titlebar_actions, view, work_view};
-#[allow(unused_imports)]
-pub use session::{new_side_chat, new_side_chat_allowed};
+// Entry points for areas A and B (see the module docs).
+pub use changes::on_cli_report;
+pub use dock::{docks, titlebar_actions};
+pub use session::new_side_chat;
 
 pub(crate) const WIDTH_MIN: f32 = 260.;
 pub(crate) const WIDTH_MAX: f32 = 900.;

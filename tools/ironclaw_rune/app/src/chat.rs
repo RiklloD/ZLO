@@ -456,6 +456,9 @@ fn on_stream(s: &mut State, id: &str, generation: Generation, batch: Vec<StreamM
     if c.stream_gen != generation {
         return;
     }
+    // The CLI agent's turn diff and review, to tell the Changes tab (area
+    // S) when either moves.
+    let cli_before = (c.transcript.cli_turn_diff().cloned(), c.transcript.cli_review().cloned());
     let mut changed = false;
     let mut ended = None;
     let mut reload = false;
@@ -486,6 +489,12 @@ fn on_stream(s: &mut State, id: &str, generation: Generation, batch: Vec<StreamM
     }
     if changed {
         refresh_rows(s, id, tx);
+    }
+    let cli_moved = chat_ref(s, id).is_some_and(|c| {
+        (c.transcript.cli_turn_diff(), c.transcript.cli_review()) != (cli_before.0.as_ref(), cli_before.1.as_ref())
+    });
+    if cli_moved && is_main(s, id) {
+        side::on_cli_report(s);
     }
     // A run end or reload can move tasks and the queue; a run start only
     // needs the slow poll armed.

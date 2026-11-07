@@ -21,11 +21,8 @@ use crate::state::State;
 const TOGGLE: f32 = 28.;
 const SLOT: f32 = TOGGLE + 16.;
 
-/// The window's width, read from the main column's last layout (it reaches
-/// the window's right edge). The first frame has none and assumes the
-/// default window.
-// PORT-STUB(area B): reads the workspace's `main` key; keep it or hand the
-// viewport width in.
+/// The window's width, read from the workspace shell's `window` element's
+/// last layout. The first frame has none and assumes the default window.
 fn viewport(cx: &Cx<State>) -> f32 {
     cx.window_layout("window").map_or(1280., |r| r[2])
 }

@@ -124,38 +124,60 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 | Area | State |
 |---|---|
 | 0 | done |
-| E, F, H, G, D, C, S, B | merged (07.11.2026) |
-| A | in progress |
+| E, F, H, G, D, C, S, B, A | merged (07.11.2026) |
+| Integration | in progress: everything builds and renders wired; open items below |
 
 ## Integration checklist (collected from area reports)
 
-- [ ] B: call `voice::start(s)` and `snapshot::start(s)` from `workspace::start`; "Try again" on the connection screen calls `crate::service::start()` first.
-- [ ] A/B: fill `chat.rs` PORT-STUBs `voice_composer`, `voice_composer_mut`, `voice_press_enter`, `stage_snapshot` (Chat → A, Draft/Quick → B); send handlers call `voice::take_submission` and report accepted/queued/refused; `voice::run_ended` on run end.
-- [ ] B: quick composer first in `voice/session.rs::resolve` (PORT-STUB).
-- [ ] D: replace local page helpers in `pages/usage/common_stub.rs` and `voice/settings.rs` with `pages::common`.
-- [ ] G: `design::brands::provider_logo` in profiles pickers; shared hover/row/floating helpers; mono font for the memory editor.
-- [ ] H: `chat::model_picker::pretty_model` in `common_stub.rs`.
-- [ ] A: `chat::approval_mode::{CHOICES, label, key, changed}` in profiles.
-- [ ] A: replace H's `extras_preview` placeholder column in `chat.rs` with the real chat, keeping its calls (`orchestration::tail/composer`, `computer::view`, `model_picker::pills`); fill H's hooks in `chat.rs` (`set_error`, `resubscribe`, `reload_timeline`, `active_run`, `embedded`, `composer_text`, `set_composer_text`, `set_fork_prefix`, `set_merges`, `stop_run`); `/goal` via `goals::goal_command`/`run_command`; `orchestration::refresh` on run end.
-- [ ] B: `workspace::{thread_title, ensure_titles, window_active}` (H stubs); ⇧⌘M → `model_picker::open`; draft screen uses `ModelPickerState::new/load/pills_for`.
-- [ ] F→H: `computer.rs` local `permissions` stub → `crate::permissions`.
-- [ ] G: `model_picker::provider_mark` logos; fold `chat/extras_ui.rs` into `design::kit`; enable `App::modifier_keys()` for ⌘-digit badges.
-- [ ] B: `look::wallpaper_layer(s, area)` as the last child of window/conversation/sidebar/pane; `look::reshuffle` on new chat; keep `s.palette`/`s.system_dark` current on appearance change; drop G's `LookState::preview` fixture hook once the shell places the wallpaper.
-- [ ] D: `look::reload(s)` after wallpaper/theme changes; pickers from `wallpaper::AREAS`, `paint::SCENES`, `paint::EFFECTS`.
-- [ ] All areas: replace local helpers (`common_stub.rs`, `chat/extras_ui.rs`, letter tiles) with `design::kit`, `design::brands::provider_logo`, `design::motion`; composers share `.matched(COMPOSER_MATCH)` (dock), rows `.motion(ROW_RESORT)` (flip).
-- [ ] Foundation: transparent window when `prefs.translucent` so the system material shows.
-- [ ] B: call `pages::settings::session_import::schedule(s)` after connecting; implement D's stubs `workspace::{titles_ensure, title_of, set_unread}` together with H's `thread_title/ensure_titles` (one API).
-- [ ] A: `chat::approval_mode_changed` (D and E stubs).
-- [ ] C, E, F: move local page helpers to `pages::common` (now merged).
-- [ ] Kit: primary buttons use the accent (rune-kit `Submit` renders white); `design::kit::button(..).primary()` is the reference.
-- [ ] Foundation: `prefs.translucent` toggles the window transparency (Appearance only saves the pref).
-- [ ] C: `pages/c_widgets.rs` → `pages::common` + `design::kit`; `pages/providers/logos.rs` → `design::brands`; Providers' catalog thread from the real inbox (B); mono font for the SKILL.md editor.
-- [ ] A: a failed run's Logs button calls `pages::operator::show_run_logs(s, run_id)`.
-- [ ] S: wire `chat/side/bridge.rs` (A: rows, running, stop, gates, composer, timeline, CLI diff/review, side chat view; H: model label, tasks, lineage, fork, orchestration refresh, computer share; B: titles); `pub use changes::on_cli_report` in `side.rs`; drop `side/fixtures.rs::chat_view` and the scene-only `Page::Chat` branch in `workspace.rs`.
-- [ ] A: `side::init` after open, `side::docks` in the layout, `side::on_turn_started/ended`, `side::open_link`, `side::adopt_folder`, `changes::on_cli_report` when CLI diff/review change.
-- [ ] B: `side::titlebar_actions`, ⌥⌘B/⌘E/⌥⌘N, `side::dock_widths` for the wallpaper area, `s.native.covered` while overlays show; real viewport width for `side/dock.rs::viewport`.
-- [ ] Live test: native views (QuickLook, WKWebView) in a real window.
-- [x] B merge: stubs B wrote into F/G/H/E files replaced by adapters onto the real APIs (`model_picker::DRAFT` slot, `draft_set_profile`, `close_open`; `look::wallpaper_layer`, `Style::panel_alpha`, `kit::claw_mark`; `voice::Composer` is `ComposerTarget`; usage `peak`); `workspace::{window_active, thread_title, title_of, ensure_titles, titles_ensure, set_unread}` on B's titles; placeholder `s.workspace.threads` gone.
-- [ ] B: `side::titlebar_actions` in the breadcrumb, `s.native.covered` while overlays show; system notifications and window-frame restore untested live; `workspace/inbox{,/view}.rs` over 800 lines.
-- [ ] Clippy: `SCENES` type complexity in `scenes.rs`.
-- [ ] Interaction tests (`rune::Runtime`) for voice controls and settings.
+Ticked items are done and checked in code; open ones say why.
+
+- [x] B: `voice::start(s)` and `snapshot::start(s)` from `workspace::start`; "Try again" calls `crate::service::start()` first (B merge).
+- [x] A/B: `chat::{voice_composer, voice_composer_mut, voice_press_enter, stage_snapshot}` on A's state (Chat → the open chat or its side chat, Draft → B's new-thread field); chat and draft send handlers take `voice::take_submission` and report accepted/queued/refused (the draft's claim rides into `chat::send_text`); `voice::run_ended` on run end. SnapShot routes through `workspace::stage_snapshot` (settings → threads, draft or chat).
+- [ ] B: quick composer first in `voice/session.rs::resolve` (PORT-STUB kept). The quick composer's `TextEdit` lives in its own window's state (`QuickState`, another `AppHandle`), so `voice_composer{,_mut}` cannot hand it out; live dictation with a preedit there needs the field moved into `State` (or a voice target that edits through `AppHandle::update`). Decision for B/F.
+- [ ] D: local page helpers in `pages/usage/common_stub.rs` and `voice/settings.rs` → `pages::common` (refactor only; behaviour is right).
+- [x] G: `design::brands::provider_logo` in profiles pickers, usage history and Providers (`pages/providers/logos.rs` deleted).
+- [ ] G: shared hover/row/floating helpers; mono font for the memory and SKILL.md editors (PORT-STUB in `pages/memory.rs`): rune-kit's `TextArea` takes no text style, so this needs a Rune change.
+- [x] H: `chat::model_picker::pretty_model` in `common_stub.rs`; `provider_mark` in the profiles pickers.
+
+Remaining `PORT-STUB` markers (`rg -n PORT-STUB app/src`), each an open item
+below: `voice/session.rs` (quick composer voice target), `pages/memory.rs`
+(mono editor font needs Rune), `pages/usage/common_stub.rs` and
+`pages/c_widgets.rs` (helper consolidation into `pages::common` and
+`design::kit`).
+- [x] A: `chat::approval_mode::{CHOICES, label, key}` in profiles pickers; `approval_mode_changed` from Profiles and Settings.
+- [x] A: H's `extras_preview` gone; the real column keeps `orchestration::{composer, tail, tail_summary}`, `computer::view`, `model_picker::pills`; H's hooks (`open_error` for `set_error`, `reload_timeline`, `active_run`, `embedded`, `composer_text`, `set_composer_text`, `set_fork_prefix`, `set_merges`, `stop_run`; picker changes via `chat::picker_changed`); `/goal` via `goals::goal_command`/`run_command`; `orchestration::refresh` on run end and `ensure_poll` otherwise; `orchestration::has_tail` folds the tail row.
+- [x] B: `workspace::{thread_title, ensure_titles, window_active}`; ⇧⌘M → `model_picker::open`; the draft screen uses `model_picker::DRAFT` (B merge).
+- [x] F→H: `computer.rs` uses `crate::permissions`.
+- [x] G: `model_picker::provider_mark` draws `design::brands::provider_logo`; `App::modifier_keys()` is on (`main.rs`).
+- [ ] G: fold `chat/extras_ui.rs` into `design::kit` (refactor only).
+- [x] B: `look::wallpaper_layer` in window/conversation/sidebar, `look::reshuffle` on a new draft (B merge).
+- [ ] B: keep `s.palette`/`s.system_dark` current on a live appearance change; drop G's `LookState::preview` fixture hook. Needs a live window to check.
+- [x] D: `look::reload(s)` after wallpaper/theme changes (Appearance).
+- [ ] All areas: replace remaining local helpers (`common_stub.rs`, `pages/c_widgets.rs`, `chat/extras_ui.rs`, letter tiles) with `design::kit`/`design::motion`; composers share `.matched(COMPOSER_MATCH)`, rows `.motion(ROW_RESORT)`. Refactor; PORT-STUB notes in `common_stub.rs` and `c_widgets.rs` mark the spots.
+- [ ] Foundation: `prefs.translucent` → transparent window so the system material shows (Appearance only saves the pref). Needs a live window.
+- [x] B: session import after connecting (`workspace::start_polling` ticks it and the rescan; D's `session_import::schedule` is not needed); titles API is one (`crate::titles`).
+- [x] A: `chat::approval_mode_changed` (D and E callers).
+- [ ] C, E, F: move local page helpers to `pages::common` (refactor only).
+- [ ] Kit: primary buttons use the accent (rune-kit `Submit` renders white; the chat's own cards show it); `design::kit::button(..).primary()` is the reference.
+- [ ] C: `pages/c_widgets.rs` → `pages::common` + `design::kit`; Providers' catalog thread from the real inbox is done (`workspace::show`); mono SKILL.md editor (see G).
+- [x] A: a failed run's Logs button → `workspace::open_run_logs` → `pages::operator::show_run_logs`.
+- [x] S: `chat/side/bridge.rs` wired to the real chat (rows, running, stop, gates, reject editor, composer insert, attach, CLI diff/review, timeline, profile), H (model label, tasks, lineage, cancel, fork, refresh, computer share) and titles; `pub use changes::on_cli_report`; `side/fixtures.rs::chat_view` gone (side scenes fill the real chat).
+- [x] A: `side::init` after open, `side::docks` beside a `.grow(1).min_w(0)` column, `side::on_turn_started/ended`, `side::open_link`, `side::adopt_folder` from mention roots, `side::on_cli_report` when the CLI diff or review moves. Side chats: `side::SideChat` owns an embedded `ChatState` (`chat::build_side_chat` + `start_side_chat`), drawn with `chat::embedded_view`.
+- [x] B: `side::titlebar_actions` in the breadcrumb (via `chat::titlebar_actions`), ⌥⌘B/⌘E/⌥⌘N; `side/dock.rs::viewport` reads the shell's `window` layout.
+- [ ] B: `s.native.covered` while overlays show; `side::dock_widths` for the wallpaper area. Need a live window to see native views.
+- [ ] Live test: native views (QuickLook, WKWebView), system notifications, window-frame restore, voice and SnapShot in a real window.
+- [x] B merge: stubs B wrote into F/G/H/E files replaced by adapters onto the real APIs.
+- [ ] B: `workspace/inbox{,/view}.rs` over 800 lines (split).
+- [x] Clippy: `SCENES` uses a `Scene` type alias; `cargo clippy --all-targets -- -D warnings` is clean.
+- [ ] Interaction tests (`rune::Runtime`) for voice controls, settings and the chat composer.
+
+### Known gaps after integration
+
+- Side chats are full chats for transcript, stream, gates, composer and
+  approvals, but the extras (H) and docks (S) are the open chat's: a side
+  chat has no model picker pill, goal, queue (⌥Enter sends into the running
+  turn instead), fork-from-message or computer share. GPUI side chats had
+  their own; making H's modules thread-id based would lift this.
+- The voice target for the quick composer (see above).
+- `#![allow(dead_code)]` in `main.rs` still hides unused port items; drop it
+  once the parity review is through.

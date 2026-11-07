@@ -12,7 +12,8 @@ use ironclaw_gpui_client::usage::{
 };
 use rune::{Color, El, TextStyle, col, el, row};
 
-use super::common_stub::{LG_SEMIBOLD, SM, SM_MEDIUM, XS, label, pretty_model, provider_logo, rule};
+use crate::state::State;
+use super::common_stub::{LG_SEMIBOLD, SM, SM_MEDIUM, XS, label, pretty_model, rule};
 use crate::design::{self, Palette, rgb};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +119,8 @@ fn dot(color: Color, size: f32) -> El {
 }
 
 /// The Cost or Tokens view of `history`; `loading` dims the figure.
-pub fn view(p: &Palette, history: &UsageHistory, metric: Metric, loading: bool) -> El {
+pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) -> El {
+    let p = &s.palette;
     let mut total = Sum::default();
     let mut by_provider: BTreeMap<&str, (Sum, u32)> = BTreeMap::new();
     let mut by_model: BTreeMap<(&str, &str), Sum> = BTreeMap::new();
@@ -191,7 +193,7 @@ pub fn view(p: &Palette, history: &UsageHistory, metric: Metric, loading: bool) 
                                 .min_w(0.0)
                                 .shrink()
                                 .child(dot(provider_color(provider), 8.0))
-                                .child(provider_logo(p, &[provider], 14.0))
+                                .child(crate::design::brands::provider_logo(s, &[provider], 14.0))
                                 .child(
                                     label(label_of(&history.sources, provider).to_string(), SM, p.text)
                                         .truncate()

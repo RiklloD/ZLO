@@ -11,7 +11,7 @@ use rune::{Color, Cursor, El, FileDialogOptions, ScrollSpec, Tx, col, el, row};
 use rune_kit::{Kit, Placement, TextInput};
 
 use super::super::usage::common_stub::{
-    SM, XS, floating, glyph, hairline, kit_row, label, pretty_model, provider_logo,
+    SM, XS, floating, glyph, hairline, kit_row, label, pretty_model,
 };
 use super::ProfilesState;
 use crate::design::{self, Palette};
@@ -119,25 +119,7 @@ struct Choice {
     detail: String,
 }
 
-// PORT-STUB(area A): use crate::chat::approval_mode::{CHOICES, label, key}.
-/// Menu order, shared with the composer's approval pill.
-const APPROVAL_CHOICES: [Option<ApprovalMode>; 3] = [Some(ApprovalMode::FullAccess), Some(ApprovalMode::AskFirst), None];
-
-fn approval_label(mode: Option<ApprovalMode>) -> &'static str {
-    match mode {
-        Some(ApprovalMode::FullAccess) => "Full access",
-        Some(ApprovalMode::AskFirst) => "Ask first",
-        None => "Follow global setting",
-    }
-}
-
-fn approval_key(mode: Option<ApprovalMode>) -> &'static str {
-    match mode {
-        Some(ApprovalMode::FullAccess) => "full-access",
-        Some(ApprovalMode::AskFirst) => "ask-first",
-        None => "global",
-    }
-}
+use crate::chat::approval_mode::{CHOICES as APPROVAL_CHOICES, key as approval_key, label as approval_label};
 
 fn pr(s: &mut State) -> &mut ProfilesState {
     &mut s.pages.profiles
@@ -291,14 +273,9 @@ fn model_popover(s: &State, k: &Kit) -> El {
     for rp in providers {
         let id = rp.provider.clone();
         let on = rail.as_deref() == Some(id.as_str());
-        let brand: Vec<&str> = match rp.brand.as_deref() {
-            Some(b) => vec![b, &rp.provider, &rp.runtime],
-            None => vec![&rp.provider, &rp.runtime],
-        };
         rail_rows = rail_rows.child(
             kit_row(p, format!("rail-{id}"), on)
-                // PORT-STUB(area H): chat::model_picker::provider_mark (brand logos).
-                .child(provider_logo(p, &brand, 14.0))
+                .child(crate::chat::model_picker::provider_mark(s, rp.brand.as_deref(), &rp.runtime, &rp.provider, 14.0))
                 .child(label(rp.name.clone(), SM, p.text).truncate().grow(1.0).min_w(0.0))
                 .on_press(move |s: &mut State| pr(s).rail = Some(id.clone())),
         );

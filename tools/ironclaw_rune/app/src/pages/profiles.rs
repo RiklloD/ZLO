@@ -267,8 +267,9 @@ fn save(s: &mut State) {
 }
 
 /// GPUI `chat::approval_mode::changed`: every approval pill reloads.
-/// PORT-STUB(area A): call crate::chat::approval_mode::changed(s).
-fn approval_mode_changed(_s: &mut State) {}
+fn approval_mode_changed(s: &mut State) {
+    crate::chat::approval_mode_changed(s);
+}
 
 fn delete(s: &mut State) {
     let ps = &mut s.pages.profiles;

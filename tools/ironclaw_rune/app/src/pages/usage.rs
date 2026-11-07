@@ -236,7 +236,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         }
         let body = match (&u.history, &u.history_error) {
             (Some((d, history)), _) => history::view(
-                p,
+                s,
                 history,
                 metric,
                 u.history_in_flight || *d != days,

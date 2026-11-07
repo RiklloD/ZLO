@@ -7,7 +7,7 @@ use rune::{Cx, El, col, el, row, text};
 use rune_kit::Kit;
 
 use super::catalog::{KNOWN_CLIS, Kind, display_name, kind_of};
-use super::logos::provider_logo;
+use crate::design::brands::provider_logo;
 use super::{CODEX_ADAPTER, Models, ProvidersState, Tab, connected, task_choices};
 use crate::icons;
 use crate::pages::c_widgets::{
@@ -21,7 +21,7 @@ const TILE_WIDTH: f32 = 196.;
 const LOGO: f32 = 22.;
 const TILE_LOGO: f32 = 20.;
 
-pub fn page(s: &State, cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
+pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let ps = &s.pages.providers;
     let actions = vec![
@@ -36,7 +36,7 @@ pub fn page(s: &State, cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El 
         .map(|llm| {
             connected(llm)
                 .into_iter()
-                .map(|(ix, provider)| render_provider(s, cx, k, ix, provider))
+                .map(|(ix, provider)| render_provider(s, k, ix, provider))
                 .collect()
         })
         .unwrap_or_default();
@@ -64,8 +64,8 @@ pub fn page(s: &State, cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El 
         .child(section_title(p, "Add a provider", 24.))
         .child(render_tabs(s, k))
         .child(col().w_full().pt(12.).child(match ps.tab {
-            Tab::Accounts => render_accounts(s, cx, k),
-            Tab::Cli => render_cli(s, cx, k),
+            Tab::Accounts => render_accounts(s, k),
+            Tab::Cli => render_cli(s, k),
         }));
     page_body("providers-page", body)
 }
@@ -160,7 +160,7 @@ fn render_task_models(s: &State, k: &Kit) -> El {
     card
 }
 
-fn render_provider(s: &State, cx: &Cx<State>, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
+fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
     let p = &s.palette;
     let ps = &s.pages.providers;
     let usable = pv.api_key_set || !pv.api_key_required;
@@ -257,10 +257,7 @@ fn render_provider(s: &State, cx: &Cx<State>, k: &Kit, ix: usize, pv: &LlmProvid
             .w_full()
             .gap(12.)
             .center_y()
-            .child(provider_logo(
-                s,
-                cx,
-                &[pv.id.as_str(), pv.adapter.as_str()],
+            .child(provider_logo(s, &[pv.id.as_str(), pv.adapter.as_str()],
                 LOGO,
             ))
             .child(
@@ -549,7 +546,7 @@ fn render_tabs(s: &State, k: &Kit) -> El {
         )
 }
 
-fn render_tile(s: &State, cx: &Cx<State>, ix: usize, pv: &LlmProviderView) -> El {
+fn render_tile(s: &State, ix: usize, pv: &LlmProviderView) -> El {
     let p = &s.palette;
     let open = s.pages.providers.adding.as_deref() == Some(pv.id.as_str());
     let provider = pv.clone();
@@ -572,10 +569,7 @@ fn render_tile(s: &State, cx: &Cx<State>, ix: usize, pv: &LlmProviderView) -> El
                 .w_full()
                 .gap(8.)
                 .center_y()
-                .child(provider_logo(
-                    s,
-                    cx,
-                    &[pv.id.as_str(), pv.adapter.as_str()],
+                .child(provider_logo(s, &[pv.id.as_str(), pv.adapter.as_str()],
                     TILE_LOGO,
                 ))
                 .child(
@@ -604,7 +598,7 @@ fn matches(query: &str, pv: &LlmProviderView) -> bool {
         || pv.description.to_lowercase().contains(query)
 }
 
-fn render_accounts(s: &State, cx: &Cx<State>, k: &Kit) -> El {
+fn render_accounts(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let ps = &s.pages.providers;
     let Some(llm) = ps.llm.as_ref() else {
@@ -620,7 +614,7 @@ fn render_accounts(s: &State, cx: &Cx<State>, k: &Kit) -> El {
             .enumerate()
             .filter(|(_, pv)| !(pv.active || pv.api_key_set) && kind_of(&pv.id) == kind)
             .filter(|(_, pv)| matches(&query, pv))
-            .map(|(ix, pv)| render_tile(s, cx, ix, pv))
+            .map(|(ix, pv)| render_tile(s, ix, pv))
             .collect();
         if tiles.is_empty() {
             continue;
@@ -644,7 +638,7 @@ fn render_accounts(s: &State, cx: &Cx<State>, k: &Kit) -> El {
     }
     let mut c = col().w_full().gap(16.);
     if let Some((ix, pv)) = open {
-        c = c.child(render_provider(s, cx, k, ix, pv));
+        c = c.child(render_provider(s, k, ix, pv));
     }
     if groups.is_empty() {
         c = c.child(empty_state(p, "No provider matches."));
@@ -676,7 +670,7 @@ struct CliRow {
     remove: Option<(String, bool)>,
 }
 
-fn cli_row(s: &State, cx: &Cx<State>, k: &Kit, r: CliRow) -> El {
+fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
     let p = &s.palette;
     let ids: Vec<&str> = r.logo_ids.iter().map(String::as_str).collect();
     let hidden = r.remove.as_ref().is_some_and(|(_, h)| *h);
@@ -705,7 +699,7 @@ fn cli_row(s: &State, cx: &Cx<State>, k: &Kit, r: CliRow) -> El {
         .w_full()
         .gap(12.)
         .center_y()
-        .child(provider_logo(s, cx, &ids, LOGO))
+        .child(provider_logo(s, &ids, LOGO))
         .child(info)
         .child(r.status);
     if let Some((provider, hidden)) = r.remove {
@@ -728,7 +722,7 @@ fn cli_row(s: &State, cx: &Cx<State>, k: &Kit, r: CliRow) -> El {
     if hidden { c.opacity(0.6) } else { c }
 }
 
-fn render_cli(s: &State, cx: &Cx<State>, k: &Kit) -> El {
+fn render_cli(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let ps = &s.pages.providers;
     let runtimes = ps.runtimes.clone().unwrap_or_default();
@@ -752,10 +746,7 @@ fn render_cli(s: &State, cx: &Cx<State>, k: &Kit) -> El {
             } else {
                 tag(p, Tone::Warning, "Not detected")
             };
-            rows.push(cli_row(
-                s,
-                cx,
-                k,
+            rows.push(cli_row(s, k,
                 CliRow {
                     id: known.runtime.into(),
                     logo_ids: vec![known.runtime.to_string()],
@@ -788,10 +779,7 @@ fn render_cli(s: &State, cx: &Cx<State>, k: &Kit) -> El {
                 .then_some(known.login)
                 .flatten()
                 .map(|c| ("Sign in", c));
-            rows.push(cli_row(
-                s,
-                cx,
-                k,
+            rows.push(cli_row(s, k,
                 CliRow {
                     id: r.provider.clone(),
                     logo_ids: vec![r.provider.clone(), r.runtime.clone()],

@@ -255,46 +255,5 @@ pub fn glyph(i: &'static rune::Icon, size: f32, color: Color) -> El {
     icon(i, size).color(color).a11y_hidden()
 }
 
-/// GPUI `chat::model_picker::pretty_model`: "claude-opus-4-5" → "Claude
-/// Opus 4.5". PORT-STUB(area H): use crate::chat::model_picker::pretty_model.
-pub(crate) fn pretty_model(id: &str) -> String {
-    let tail = id.rsplit('/').next().unwrap_or(id);
-    let mut out: Vec<String> = Vec::new();
-    for part in tail.split(['-', '_']) {
-        if part.is_empty() {
-            continue;
-        }
-        let numeric = part.chars().all(|c| c.is_ascii_digit() || c == '.');
-        match out.last_mut() {
-            Some(last) if numeric && last.chars().all(|c| c.is_ascii_digit() || c == '.') => {
-                last.push('.');
-                last.push_str(part);
-            }
-            _ if part.eq_ignore_ascii_case("gpt") => out.push("GPT".into()),
-            _ => {
-                let mut chars = part.chars();
-                let first = chars.next().map(|c| c.to_ascii_uppercase());
-                out.push(first.into_iter().chain(chars).collect());
-            }
-        }
-    }
-    if out.is_empty() { id.to_string() } else { out.join(" ") }
-}
+pub(crate) use crate::chat::model_picker::pretty_model;
 
-/// GPUI `design::brands::provider_logo`'s fallback, a letter tile.
-/// PORT-STUB(area G): use design::brands::provider_logo (the real logos).
-pub(crate) fn provider_logo(p: &Palette, ids: &[&str], size: f32) -> El {
-    let letter = ids
-        .first()
-        .and_then(|id| id.chars().find(|c| c.is_alphanumeric()))
-        .map(|c| c.to_ascii_uppercase().to_string())
-        .unwrap_or_else(|| "?".into());
-    row()
-        .w(size)
-        .h(size)
-        .center()
-        .radius(size / 4.0)
-        .fill(p.surface_raised)
-        .child(label(letter, TextStyle::new(size * 0.62, 600.0), p.text_muted))
-        .a11y_hidden()
-}

@@ -34,6 +34,7 @@ use ironclaw_gpui_client::computer_use::{
 };
 use rune::{Pixels, Tx};
 
+use crate::permissions;
 use crate::jobs::{self, Generation};
 use crate::state::State;
 
@@ -191,32 +192,6 @@ impl Drop for ComputerState {
             });
         }
     }
-}
-
-// PORT-STUB(area F): replace with `crate::permissions` (GPUI `permissions.rs`)
-// once ported: `missing()` asks macOS, `request(..)` prompts. Until then
-// nothing is reported missing.
-mod permissions {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Permission {
-        Accessibility,
-        ScreenRecording,
-    }
-
-    impl Permission {
-        pub fn label(self) -> &'static str {
-            match self {
-                Self::Accessibility => "Accessibility",
-                Self::ScreenRecording => "Screen Recording",
-            }
-        }
-    }
-
-    pub fn missing() -> Vec<Permission> {
-        Vec::new()
-    }
-
-    pub fn request(_missing: &[Permission]) {}
 }
 
 fn now_ms() -> i64 {
