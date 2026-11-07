@@ -1018,40 +1018,6 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Link, link_target};
-
-    #[test]
-    fn chat_links_find_their_tab() {
-        let file = |p: &str| Link::File(p.into());
-        assert_eq!(
-            link_target("/workspace/ten_words.pdf"),
-            file("/workspace/ten_words.pdf")
-        );
-        assert_eq!(
-            link_target("./out/My%20deck.pptx"),
-            file("/workspace/out/My deck.pptx")
-        );
-        assert_eq!(
-            link_target("https://docs.rs"),
-            Link::Web("https://docs.rs".into())
-        );
-        assert_eq!(
-            link_target("mailto:a@b.c"),
-            Link::Other("mailto:a@b.c".into())
-        );
-        assert_eq!(
-            link_target("/tmp/a%20b.txt"),
-            Link::Local("/tmp/a b.txt".into())
-        );
-        assert_eq!(
-            link_target("file:///tmp/a.txt"),
-            Link::Local("/tmp/a.txt".into())
-        );
-    }
-}
-
 pub(super) fn dock_open(dock: Dock, cx: &App) -> bool {
     match dock {
         Dock::Work => Prefs::of(cx).work_open,
@@ -1130,4 +1096,38 @@ fn scroll(
         .overflow_y_scrollbar()
         .id((id, "scroll"))
         .pb_3()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Link, link_target};
+
+    #[test]
+    fn chat_links_find_their_tab() {
+        let file = |p: &str| Link::File(p.into());
+        assert_eq!(
+            link_target("/workspace/ten_words.pdf"),
+            file("/workspace/ten_words.pdf")
+        );
+        assert_eq!(
+            link_target("./out/My%20deck.pptx"),
+            file("/workspace/out/My deck.pptx")
+        );
+        assert_eq!(
+            link_target("https://docs.rs"),
+            Link::Web("https://docs.rs".into())
+        );
+        assert_eq!(
+            link_target("mailto:a@b.c"),
+            Link::Other("mailto:a@b.c".into())
+        );
+        assert_eq!(
+            link_target("/tmp/a%20b.txt"),
+            Link::Local("/tmp/a b.txt".into())
+        );
+        assert_eq!(
+            link_target("file:///tmp/a.txt"),
+            Link::Local("/tmp/a.txt".into())
+        );
+    }
 }

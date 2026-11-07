@@ -25,7 +25,8 @@ use objc2::sel;
 
 use super::coordinator::Purpose;
 use super::engine::{
-    PrivacyPane, SpeechSynthesizer, SpeechToText, SttConfig, SttEvent, SttFailure, SttSink,
+    DICTATION_OFF, PrivacyPane, SpeechSynthesizer, SpeechToText, SttConfig, SttEvent, SttFailure,
+    SttSink,
 };
 
 unsafe extern "C" {
@@ -469,9 +470,11 @@ fn classify(error: *mut AnyObject) -> (Option<String>, bool) {
     if benign && (domain.contains("Assistant") || domain.contains("Speech")) {
         return (None, false);
     }
-    // Siri & Dictation off, or recognition not allowed.
-    let fatal = matches!(code, 1700) || (domain.contains("LSR") && code == 201);
-    (Some(error_text(error)), fatal)
+    // Siri & Dictation off (1700, LSR 201): fatal, and say how to fix it.
+    if code == 1700 || (domain.contains("LSR") && code == 201) {
+        return (Some(DICTATION_OFF.into()), true);
+    }
+    (Some(error_text(error)), false)
 }
 
 fn error_text(error: *mut AnyObject) -> String {

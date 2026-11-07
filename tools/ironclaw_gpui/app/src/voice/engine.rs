@@ -46,7 +46,13 @@ pub(crate) struct SttFailure {
 pub(crate) enum PrivacyPane {
     Microphone,
     SpeechRecognition,
+    /// Keyboard → Dictation: Apple's recognizer refuses to run while it
+    /// is off, on-device or not.
+    Dictation,
 }
+
+/// What the person sees when macOS Dictation is off.
+pub(crate) const DICTATION_OFF: &str = "Voice needs Dictation: System Settings → Keyboard.";
 
 impl PrivacyPane {
     pub fn url(self) -> &'static str {
@@ -57,6 +63,7 @@ impl PrivacyPane {
             Self::SpeechRecognition => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
             }
+            Self::Dictation => "x-apple.systempreferences:com.apple.Keyboard-Settings.extension",
         }
     }
 
@@ -64,7 +71,13 @@ impl PrivacyPane {
         match self {
             Self::Microphone => "Microphone",
             Self::SpeechRecognition => "Speech Recognition",
+            Self::Dictation => "Dictation",
         }
+    }
+
+    /// The pane that fixes the problem `message` describes, if one does.
+    pub fn for_message(message: &str) -> Option<Self> {
+        (message == DICTATION_OFF).then_some(Self::Dictation)
     }
 }
 

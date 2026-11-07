@@ -82,7 +82,7 @@ pub(crate) struct VoicePrefs {
 impl Default for VoicePrefs {
     fn default() -> Self {
         Self {
-            hotkey_enabled: false,
+            hotkey_enabled: true,
             hotkey: "right_alt".into(),
             auto_send: false,
             on_device_only: true,
@@ -645,7 +645,8 @@ fn run(effect: Effect, cx: &mut App) {
             cx.global_mut::<Voice>().target = target;
         }
         Effect::Notice(text) => {
-            cx.global_mut::<Voice>().notice = Some(Notice { text, pane: None });
+            let pane = PrivacyPane::for_message(&text);
+            cx.global_mut::<Voice>().notice = Some(Notice { text, pane });
         }
     }
 }
@@ -1061,9 +1062,18 @@ mod tests {
     }
 
     #[test]
-    fn defaults_keep_everything_off() {
+    fn dictation_off_points_at_the_keyboard_pane() {
+        assert_eq!(
+            PrivacyPane::for_message(engine::DICTATION_OFF),
+            Some(PrivacyPane::Dictation)
+        );
+        assert_eq!(PrivacyPane::for_message("Microphone access is off."), None);
+    }
+
+    #[test]
+    fn defaults_turn_on_only_push_to_talk() {
         let p = VoicePrefs::default();
-        assert!(!p.hotkey_enabled && !p.wake_enabled && !p.read_aloud && !p.auto_send);
+        assert!(p.hotkey_enabled && !p.wake_enabled && !p.read_aloud && !p.auto_send);
         assert!(p.on_device_only);
         assert_eq!(p.hotkey, "right_alt");
         assert!(!wake_on(&p));
