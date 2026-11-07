@@ -362,18 +362,65 @@ mod platform {
 /// Whether OS-keychain access should be suppressed.
 ///
 /// - why: real keychain pops a macOS auth dialog / blocks on a locked Linux
-///   Secret Service, which derails `cargo test`
+///   Secret Service, which derails `cargo test`. On macOS every rebuild gives
+///   the test binary a new ad-hoc code signature, so "Always Allow" never
+///   sticks and the prompt comes back on every build.
 /// - triggers: `cfg!(test)` (this crate's unit tests) OR
 ///   `IRONCLAW_DISABLE_OS_KEYCHAIN` env (integration/e2e/CI, and the
-///   compiled binary under test, which links the non-`cfg(test)` lib)
+///   compiled binary under test, which links the non-`cfg(test)` lib) OR the
+///   running executable is a cargo-built test harness (see
+///   [`running_as_cargo_test_harness`]), so no integration suite can prompt
+///   even when it forgets the env var
+/// - opt back in: `IRONCLAW_DISABLE_OS_KEYCHAIN=0` (or `false`/`no`/`off`)
+///   re-enables the keychain for the env and test-harness triggers
 /// - effect: lookups report "no key present", writes fail closed — callers
 ///   fall through to their next key source as if the keychain were empty
 fn os_keychain_suppressed() -> bool {
-    cfg!(test) || std::env::var_os("IRONCLAW_DISABLE_OS_KEYCHAIN").is_some()
+    if cfg!(test) {
+        return true;
+    }
+    match std::env::var_os("IRONCLAW_DISABLE_OS_KEYCHAIN") {
+        Some(value) => !env_value_is_falsey(&value),
+        None => running_as_cargo_test_harness(),
+    }
 }
 
-const SUPPRESSED_MESSAGE: &str =
-    "OS keychain access suppressed (cfg!(test) or IRONCLAW_DISABLE_OS_KEYCHAIN)";
+fn env_value_is_falsey(value: &std::ffi::OsStr) -> bool {
+    matches!(
+        value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+/// Whether the current process is a cargo-built test harness.
+///
+/// `cargo test` and `cargo nextest` run integration/unit test binaries out of
+/// `<target-dir>/<profile>/deps/`, and that profile dir always holds cargo's
+/// `.fingerprint/` bookkeeping. `cargo run` binaries live one level up (in
+/// `<profile>/` itself) and installed binaries live nowhere near a
+/// `.fingerprint/` dir, so neither is affected.
+fn running_as_cargo_test_harness() -> bool {
+    static IS_HARNESS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IS_HARNESS.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .is_some_and(|exe| is_cargo_test_harness_path(&exe))
+    })
+}
+
+fn is_cargo_test_harness_path(exe: &std::path::Path) -> bool {
+    let Some(deps) = exe.parent() else {
+        return false;
+    };
+    if deps.file_name() != Some(std::ffi::OsStr::new("deps")) {
+        return false;
+    }
+    deps.parent()
+        .is_some_and(|profile| profile.join(".fingerprint").is_dir())
+}
+
+const SUPPRESSED_MESSAGE: &str = "OS keychain access suppressed (cfg!(test), \
+     IRONCLAW_DISABLE_OS_KEYCHAIN, or running as a cargo test harness)";
 
 pub async fn get_master_key() -> Result<Vec<u8>, SecretError> {
     if os_keychain_suppressed() {
@@ -626,5 +673,40 @@ mod tests {
             delete_master_key().await,
             Err(SecretError::KeychainError(_))
         ));
+    }
+
+    #[test]
+    fn falsey_env_values_opt_back_in() {
+        for value in ["0", "false", "FALSE", " no ", "off"] {
+            assert!(env_value_is_falsey(std::ffi::OsStr::new(value)), "{value}");
+        }
+        for value in ["1", "true", "yes", ""] {
+            assert!(!env_value_is_falsey(std::ffi::OsStr::new(value)), "{value}");
+        }
+    }
+
+    // edge: the harness check must catch `target/<profile>/deps/<bin>` and
+    // leave `cargo run` binaries and installed binaries alone.
+    #[test]
+    fn cargo_test_harness_path_detection() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("target/debug");
+        std::fs::create_dir_all(profile.join("deps")).unwrap();
+        std::fs::create_dir_all(profile.join(".fingerprint")).unwrap();
+
+        assert!(is_cargo_test_harness_path(
+            &profile.join("deps/product_live_adapters-0123abcd")
+        ));
+        assert!(!is_cargo_test_harness_path(&profile.join("ironclaw")));
+
+        let installed = root.path().join("opt/deps");
+        std::fs::create_dir_all(&installed).unwrap();
+        assert!(!is_cargo_test_harness_path(&installed.join("ironclaw")));
+    }
+
+    // The binary running this very test lives in `target/<profile>/deps/`.
+    #[test]
+    fn this_test_binary_is_detected_as_a_harness() {
+        assert!(running_as_cargo_test_harness());
     }
 }

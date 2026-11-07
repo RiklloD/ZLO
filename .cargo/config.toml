@@ -17,3 +17,13 @@ git-fetch-with-cli = true   # git deps fetch via the git CLI, which retries too
 # it is the source of the framing-reset / unexpected-eof flakes above. Slightly
 # slower cold downloads, far fewer spurious failures.
 multiplexing = false
+
+# macOS dev builds: re-sign `cargo run` binaries with a stable identity before
+# launching them, so an OS keychain "Always Allow" survives rebuilds. No-op
+# unless IRONCLAW_CODESIGN_IDENTITY is set (e.g. in ~/.cargo/config.toml [env]).
+# See scripts/dev/codesign-dev-binary.sh.
+[target.aarch64-apple-darwin]
+runner = "scripts/dev/cargo-macos-runner.sh"
+
+[target.x86_64-apple-darwin]
+runner = "scripts/dev/cargo-macos-runner.sh"
