@@ -161,15 +161,13 @@ Ticked items are done and checked in code; open ones say why.
 - [x] H: `chat::model_picker::pretty_model` in `common_stub.rs`; `provider_mark` in the profiles pickers.
 
 No `PORT-STUB` markers remain (`rg -n PORT-STUB app/src` is empty).
-`chat/extras_ui.rs` is a one-line re-export of `design::kit::compact` kept for
-`chat.rs`, `chat/goals.rs` and `chat/orchestration/view.rs`; point those at
-`design::kit::compact` and delete it.
+The `chat/extras_ui.rs` shim is gone; its users import `design::kit::compact`.
 - [x] A: `chat::approval_mode::{CHOICES, label, key}` in profiles pickers; `approval_mode_changed` from Profiles and Settings.
 - [x] A: H's `extras_preview` gone; the real column keeps `orchestration::{composer, tail, tail_summary}`, `computer::view`, `model_picker::pills`; H's hooks (`open_error` for `set_error`, `reload_timeline`, `active_run`, `embedded`, `composer_text`, `set_composer_text`, `set_fork_prefix`, `set_merges`, `stop_run`; picker changes via `chat::picker_changed`); `/goal` via `goals::goal_command`/`run_command`; `orchestration::refresh` on run end and `ensure_poll` otherwise; `orchestration::has_tail` folds the tail row.
 - [x] B: `workspace::{thread_title, ensure_titles, window_active}`; ⇧⌘M → `model_picker::open`; the draft screen uses `model_picker::DRAFT` (B merge).
 - [x] F→H: `computer.rs` uses `crate::permissions`.
 - [x] G: `model_picker::provider_mark` draws `design::brands::provider_logo`; `App::modifier_keys()` is on (`main.rs`).
-- [x] G: `chat/extras_ui.rs` folded into `design::kit::compact` (5e12d99d7; the re-export shim above is the leftover).
+- [x] G: `chat/extras_ui.rs` folded into `design::kit::compact` (5e12d99d7; shim removed in 1c3043a61).
 - [x] B: `look::wallpaper_layer` in window/conversation/sidebar, `look::reshuffle` on a new draft (B merge).
 - [ ] B: keep `s.palette`/`s.system_dark` current on a live appearance change; drop G's `LookState::preview` fixture hook. Needs a live window to check.
 - [x] D: `look::reload(s)` after wallpaper/theme changes (Appearance).
