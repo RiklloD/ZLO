@@ -87,7 +87,7 @@ Rules:
 ## Areas
 
 Each area is one delegate in its own worktree (branch `rune-port/<area>`),
-merged back by the integrator. GPUI paths are under `tools/ironclaw_gpui/app/src/`.
+merged back by the integrator. (Git cannot create `rune-port/<area>` beside a `rune-port` branch, so area branches are `rune-port-<area>`.) GPUI paths are under `tools/ironclaw_gpui/app/src/`.
 
 | Area | GPUI files (lines) | Rune files |
 |---|---|---|
@@ -124,4 +124,5 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 | Area | State |
 |---|---|
 | 0 | done |
-| A B C D E F G H S | in progress |
+| E | merged (07.11.2026) |
+| A B C D F G H S | in progress |
