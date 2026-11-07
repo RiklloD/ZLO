@@ -4,6 +4,9 @@
 //! Console from the connection screen. (GPUI `logs.rs`; the GPUI app keeps
 //! `desktop.log`, so the two apps never interleave lines in one file.)
 //!
+//! Headless runs (`--snap`, `--tree`, `--script`) log to stderr only, so a
+//! scene render never lands in the person's log file.
+//!
 //! `IRONCLAW_DESKTOP_LOG` overrides the filter (`RUST_LOG` syntax).
 
 use std::fs::{self, File, OpenOptions};
@@ -26,7 +29,8 @@ pub fn init() {
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false);
-    match open_desktop_log() {
+    let file = if rune::is_headless() { None } else { open_desktop_log() };
+    match file {
         Some(file) => builder
             .with_writer(std::io::stderr.and(Mutex::new(file)))
             .init(),

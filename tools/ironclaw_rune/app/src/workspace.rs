@@ -47,7 +47,7 @@ pub use draft::{
     voice_composer,
 };
 pub use inbox::title_of as row_title;
-pub use keys::{menu_items, on_close};
+pub use keys::{menu_items, on_close, quit};
 
 /// The inbox has no live stream, so the badge polls. One tiny request.
 const UNREAD_POLL: Duration = Duration::from_secs(15);
@@ -115,6 +115,10 @@ pub struct WorkspaceState {
     pub thread_drag: thread_drag::ThreadDrag,
     /// The window is the key window (GPUI `window.is_window_active()`).
     pub window_active: bool,
+    /// A text field held the caret when the window was last in front
+    /// (noted by the view, `shell::note_field_focus`), so coming back
+    /// leaves focus there instead of moving it to the composer.
+    pub field_focused: std::cell::Cell<bool>,
     /// The thread whose delete is being confirmed.
     pub confirm_delete: Option<String>,
     pub timers: Timers,
@@ -146,6 +150,7 @@ impl Default for WorkspaceState {
             sidebar_drag: None,
             thread_drag: Default::default(),
             window_active: true,
+            field_focused: Default::default(),
             confirm_delete: None,
             timers: Timers::default(),
             quick_fixture: false,
@@ -654,12 +659,25 @@ pub fn window_focus(s: &mut State, focused: bool, _tx: &mut Tx) {
     // Back in front: catch up on whatever finished meanwhile.
     if focused {
         inbox::refresh(s);
-        crate::chat::focus_composer(s);
-        if s.page == Page::Draft
-            && let Some(d) = s.workspace.draft.as_mut()
-        {
-            d.input.focused = true;
+        restore_composer(s);
+    }
+}
+
+/// Keep the composer ready to type (GPUI `restore_composer`): on a chat or
+/// the draft, focus it when nothing else holds focus. Another field (the
+/// URL bar, a search box, the command menu, a side chat) keeps its focus.
+fn restore_composer(s: &mut State) {
+    if s.workspace.command.is_some() || s.workspace.field_focused.get() {
+        return;
+    }
+    match s.page {
+        Page::Chat => crate::chat::focus_composer(s),
+        Page::Draft => {
+            if let Some(d) = s.workspace.draft.as_mut() {
+                d.input.focused = true;
+            }
         }
+        _ => {}
     }
 }
 

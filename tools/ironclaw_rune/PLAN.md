@@ -143,7 +143,7 @@ scrolling). `bundle.sh` has its own Rune version here (`ZLO Rune.app`).
 | Integration | done: all areas wired; builds clean under clippy `-D warnings`, 191 tests |
 | Parity review | done: `PARITY_REVIEW.md` (of 121 GPUI files: 96 parity, 19 minor gaps, 3 major, 2 missing) |
 | P0 + all eight P1 fixes | merged (07.11.2026) |
-| P2 polish (12 of 15 open), live test from `ZLO Rune.app` | open |
+| P2 polish (4 of 15 open: 6, 7, 10, 15), live test from `ZLO Rune.app` | open |
 
 ## Integration checklist (collected from area reports)
 
@@ -197,12 +197,24 @@ No `PORT-STUB` markers remain (`rg -n PORT-STUB app/src` is empty).
   window; the row adds "Takes effect when ZLO next opens." Relaunch: the
   desktop shows blurred through the sidebar and, fainter, the panel. Turn
   it off: the window turns opaque at once.
+- **Window frame saved as it changes:** move and resize the window, wait a
+  second, then check `~/Library/Application Support/ZLO/window.json` holds
+  the new frame (top-left origin). Enter full screen and quit: the next
+  launch reopens at the last windowed frame. Force-quit after a move: the
+  frame is still the moved one.
+- **Quit ZLO:** the app menu shows "Quit ZLO ⌘Q"; picking it (and ⌘Q)
+  saves drafts and the frame, quits, and stops the backend's launchd job.
+- **Quick composer placement:** ⇧⌘Space opens the card centred, a fifth of
+  the way down the primary screen (as GPUI), not 180 pt from the top.
+- **Composer refocus:** click into the side pane's Browser address field,
+  switch to another app and back: the caret stays in the address field.
+  With nothing focused, coming back puts it in the composer.
 - **Wheel glide:** with a notched mouse, one tick in the transcript, the
   inbox and a settings page glides about 40 pt over ~0.2 s, and a fast spin
   is one motion; a trackpad still tracks the fingers 1:1; ⌘ + wheel is not
   smoothed.
 - [x] B merge: stubs B wrote into F/G/H/E files replaced by adapters onto the real APIs.
-- [ ] B: `workspace/inbox{,/view}.rs` over 800 lines (split).
+- [x] B: `workspace/inbox{,/view}.rs` split below 800 lines (`inbox/{row_menu,labels,shelves}.rs`, `inbox/view/rows.rs`).
 - [x] Clippy: `SCENES` uses a `Scene` type alias; `cargo clippy --all-targets -- -D warnings` is clean.
 - [ ] Interaction tests (`rune::Runtime`) for voice controls, settings and the chat composer.
 

@@ -26,21 +26,35 @@ const BINDINGS: &[Binding] = &[
     ("Toggle Light and Dark", "cmd+shift+y", |s, _| super::toggle_scheme(s)),
 ];
 
-/// The native View menu, for `App::menu_item`.
+/// The app menu's "Quit ZLO" (GPUI `main.rs`) and its chord.
+const QUIT: (&str, &str) = ("Quit ZLO", "cmd+q");
+
+/// The native menus, for `App::menu_item`: "Quit ZLO" in the app menu, then
+/// the View menu.
 pub fn menu_items() -> Vec<MenuItem<State>> {
-    BINDINGS
-        .iter()
-        .map(|(title, chord, action)| {
-            let item = MenuItem::new(*title, *action).menu("View");
-            match chord.parse::<Shortcut>() {
-                Ok(shortcut) => item.key_equivalent(shortcut),
-                Err(e) => {
-                    tracing::warn!(%chord, error = %e, "menu shortcut did not parse");
-                    item
-                }
-            }
-        })
+    let with_chord = |item: MenuItem<State>, chord: &str| match chord.parse::<Shortcut>() {
+        Ok(shortcut) => item.key_equivalent(shortcut),
+        Err(e) => {
+            tracing::warn!(%chord, error = %e, "menu shortcut did not parse");
+            item
+        }
+    };
+    let quit = with_chord(MenuItem::new(QUIT.0, quit).id("quit"), QUIT.1);
+    std::iter::once(quit)
+        .chain(
+            BINDINGS
+                .iter()
+                .map(|(title, chord, action)| with_chord(MenuItem::new(*title, *action).menu("View"), chord)),
+        )
         .collect()
+}
+
+/// ⌘Q and "Quit ZLO": write the window frame and pending saves (flushed),
+/// then quit; `main` stops the backend once the app loop ends.
+pub fn quit(s: &mut State, tx: &mut Tx) {
+    tracing::debug!("quit requested");
+    on_close(s, tx);
+    tx.quit();
 }
 
 /// `App::on_close`: before the window goes (the close button, ⌘Q, Quit from
@@ -132,7 +146,7 @@ mod tests {
 
     #[test]
     fn every_binding_parses_as_a_chord_and_a_shortcut() {
-        for (title, chord, _) in BINDINGS {
+        for (title, chord) in BINDINGS.iter().map(|(t, c, _)| (*t, *c)).chain([QUIT]) {
             assert!(Chord::parse(chord).is_ok(), "{title}: {chord}");
             assert!(chord.parse::<Shortcut>().is_ok(), "{title}: {chord}");
         }

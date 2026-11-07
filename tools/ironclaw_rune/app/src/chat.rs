@@ -461,10 +461,20 @@ pub(crate) fn load_timeline(s: &mut State, id: &str) {
                     // Server-set titles reach the sidebar.
                     crate::workspace::thread_updated(s);
                 }
+                Err(e) if superseded_timeline(c, asked, loaded_floor.as_deref()) => {
+                    tracing::debug!(thread_id = %thread_id, error = %e, "dropped a superseded timeline error");
+                }
                 Err(e) => set_error(s, &thread_id, e.to_string()),
             }
         },
     );
+}
+
+/// Whether timeline load `asked` back to `floor` was overtaken: the floor
+/// moved since, or a later load was asked. Its failure is then not the
+/// thread's to show; the newer load decides.
+fn superseded_timeline(c: &ChatState, asked: u64, floor: Option<&str>) -> bool {
+    c.history_floor.as_deref() != floor || asked < c.timeline_asked
 }
 
 /// Whether a timeline page asked as load `asked` back to `floor` may
@@ -567,12 +577,13 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) {
     let live = run.is_some();
     let stopping = c.transcript.is_stopping();
     if live || stopping {
-        if c.run_started.is_none() {
-            let sent = c.transcript.last_prompt_sent_ms();
-            let at = crate::run_clock::start(s, id, run.as_deref(), sent);
-            if let Some(c) = chat_for(s, id) {
-                c.run_started = Some(at);
-            }
+        // Every live fold asks again (GPUI `chat.rs` does too): the
+        // backend's turn start may have arrived since, and a run id that
+        // arrived after the send is noted against the clock.
+        let sent = c.transcript.last_prompt_sent_ms();
+        let at = crate::run_clock::start(s, id, run.as_deref(), sent);
+        if let Some(c) = chat_for(s, id) {
+            c.run_started = Some(at);
         }
     } else if c.run_started.take().is_some() {
         crate::run_clock::end(s, id);

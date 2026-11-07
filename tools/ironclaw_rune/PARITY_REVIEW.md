@@ -333,8 +333,16 @@ Each item is sized for one focused fix.
    GPUI's single gliding pill (`.motion(PILL)`), the other `flip::` user.
 4. Call `run_clock::start` on every live fold, not only the first
    (`chat.rs:544`; GPUI `chat.rs:930-937`).
+   **FIXED in af6531a85**: `sync_items` asks the clock on every live fold, so a
+   backend turn start that arrives later wins (test
+   `every_live_fold_asks_the_run_clock_again`).
 5. Record the window frame as it changes, not only in `on_close`
    (`workspace/keys.rs:49`; GPUI `main.rs:136`).
+   **FIXED in 6e16b9d08**: `window_state` observes `NSWindowDidMove`/`DidResize`,
+   records each windowed frame (full screen keeps the last) and writes it
+   after 500 ms of rest through `persist::global()`; quit writes the last
+   one again before the flush (tests for the debounce and full screen; live
+   check in PLAN "Manual checks").
 6. Use the accent for kit primary buttons (Approve, Save and so on), and fold
    `pages/c_widgets.rs`, `pages/usage/common_stub.rs` and `chat/extras_ui.rs`
    into `design::kit`/`pages::common` (the remaining PORT-STUBs).
@@ -352,8 +360,15 @@ Each item is sized for one focused fix.
    `skills-editor`).
 8. Refocus the composer on window focus only when nothing else has focus
    (`workspace.rs:644-660`; GPUI `restore_composer`, `workspace.rs:670`).
+   **FIXED in 6e16b9d08**: the shell view notes, while the window is in front,
+   whether any text field holds the caret (`cx.caret("kit-root")`);
+   `restore_composer` skips when one did or ⌘K is open (Runtime test in
+   `workspace/shell.rs`).
 9. Guard the browser poll `tick` with the thread that started it
    (`chat/side/browser.rs:69-91`).
+   **FIXED in 6e16b9d08**: each loop carries its thread and a fresh
+   `Generation`; `step` ends a tick of another thread or an older loop
+   without touching the running one (test).
 10. Restore three accessibility labels: "Filters" (`workspace/inbox/view.rs:186`),
     "Remove document" (memory archive) and "New thread on this profile"
     (profiles row).
@@ -362,11 +377,37 @@ Each item is sized for one focused fix.
     which was another delegate's file during this pass.
 11. Restore the draft copy "A new thread is still being created; try again."
     (`workspace/draft.rs:223`).
+    **FIXED in 6e16b9d08**: `draft/submit.rs::refusal` gives GPUI's three
+    refusals, including "There is no new-thread screen to send from." (test).
 12. Add a "Quit ZLO" app-menu item (GPUI `main.rs:92`).
+    **FIXED in 6e16b9d08**: app-menu item with ⌘Q runs `workspace::quit` (frame,
+    drafts and every queued save flushed, then quit; `main` stops the
+    backend after the loop), the same path as ⌘Q in `on_key`. Live check.
 13. Place the quick composer a fifth of the way down the screen, not 180 px
     from the top (`workspace/quick.rs:192-195`).
+    **FIXED in 6e16b9d08**: margin = primary screen height / 5
+    (`window_state::primary_screen_height`, 180 when unknown; test). Live check.
 14. Split `workspace/inbox.rs` and `workspace/inbox/view.rs`, which are over
     800 lines (PLAN rule 5).
+    **FIXED in 5a5ebcc46**: `inbox/{row_menu,labels,shelves}.rs` and
+    `inbox/view/rows.rs` (cards, slim rows, status); no behaviour change.
 15. PARITY.md, shared with GPUI: either call `run_operator_setup` from the
     Setup panel or mark `operator.run_setup` as read-only. Do the same for
     `get_user_model_preference` (`model_preference` is unused in both apps).
+
+### Loose ends from the last review
+
+- **FIXED in af6531a85**: goal replies (`chat/goals.rs`) and the remaining
+  orchestration replies (fork prefix, merges, queue, cancel, fork, merge
+  back) check the chat-extras `jobs::Instance`, so a chat closed and
+  reopened on the same thread never takes an old reply (test
+  `a_goal_reply_of_a_closed_chat_skips_the_reopened_one`).
+- **FIXED in af6531a85**: a superseded timeline load (floor moved, or a later load
+  asked) keeps its error to the log (`superseded_timeline`, test).
+- **FIXED in ee2e833ad**: in a side-pane chat the goal strip puts its check chip on
+  its own line, so the objective keeps its room (`side-session` scene).
+- **FIXED in 6e16b9d08**: headless runs log to stderr only (`logs.rs`), and
+  `persist::global()` drops every save under `cfg!(test)` or
+  `rune::is_headless()`, so scenes, scripts and tests never write the real
+  `prefs.json`, drafts or `window.json` (test
+  `tests_and_headless_runs_never_write_the_real_files`).

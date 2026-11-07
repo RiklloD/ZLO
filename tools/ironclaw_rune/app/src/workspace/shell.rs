@@ -35,6 +35,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         design::resolve(&s.prefs, dark)
     };
+    note_field_focus(s, cx);
     let k = design::kit(&p);
     let mut layer: Vec<El> = Vec::new();
     let body = match &s.conn {
@@ -79,6 +80,17 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     // The thread-drag card floats too, but must not hide the previews.
     layer.extend(super::thread_drag::ghost(s));
     rune_kit::root(root, layer)
+}
+
+/// While the window is in front, note whether any text field (the
+/// composer, an overlay's field, a side chat's) holds the caret; the
+/// rune-kit root wraps the shell and its overlays. A refocus reads it
+/// (`workspace::restore_composer`); while in the back it keeps the value
+/// from before the window lost focus.
+fn note_field_focus(s: &State, cx: &Cx<State>) {
+    if s.workspace.window_active {
+        s.workspace.field_focused.set(cx.caret("kit-root").is_some());
+    }
 }
 
 /// Launch screen while the gateway boots: the claw mark breathing on the
@@ -670,5 +682,60 @@ mod tests {
         rt.update(|s, _| s.workspace.confirm_delete = Some("t-pin".into()));
         rt.frame(1. / 60.);
         assert!(rt.state.native.covered(), "a dialog covers them too");
+    }
+
+    #[test]
+    fn a_refocused_window_moves_focus_to_the_composer_only_when_no_field_had_it() {
+        let mut rt = runtime(crate::chat::fixtures::chat);
+        let composer = |rt: &Runtime<State>| rt.state.chat.as_ref().is_some_and(|c| c.composer.focused);
+
+        // The composer holds the caret while the window is in front.
+        rt.update(|s, _| {
+            if let Some(c) = s.chat.as_mut() {
+                c.composer.focused = true;
+            }
+        });
+        rt.frame(1. / 60.);
+        rt.frame(1. / 60.);
+        assert!(rt.state.workspace.field_focused.get(), "the view notes a focused field");
+
+        // Nothing holds focus: back in front, the composer takes it.
+        rt.update(|s, tx| {
+            if let Some(c) = s.chat.as_mut() {
+                c.composer.focused = false;
+            }
+            tx.blur();
+        });
+        rt.frame(1. / 60.);
+        rt.frame(1. / 60.);
+        assert!(!rt.state.workspace.field_focused.get());
+        rt.update(|s, tx| crate::workspace::window_focus(s, false, tx));
+        rt.update(|s, tx| crate::workspace::window_focus(s, true, tx));
+        assert!(composer(&rt), "an unfocused window refocuses the composer");
+
+        // Another field had focus (the URL bar, say): it keeps it.
+        rt.update(|s, tx| {
+            if let Some(c) = s.chat.as_mut() {
+                c.composer.focused = false;
+            }
+            s.workspace.field_focused.set(true);
+            crate::workspace::window_focus(s, false, tx);
+        });
+        rt.frame(1. / 60.);
+        rt.update(|s, tx| crate::workspace::window_focus(s, true, tx));
+        assert!(!composer(&rt), "the other field keeps focus");
+
+        // The command menu keeps it too.
+        rt.update(|s, tx| {
+            s.workspace.field_focused.set(false);
+            crate::workspace::window_focus(s, false, tx);
+            s.workspace.command = Some(crate::workspace::command::CommandMenu {
+                input: rune::TextEdit::new(""),
+                selected: 0,
+                opened: 1,
+            });
+        });
+        rt.update(|s, tx| crate::workspace::window_focus(s, true, tx));
+        assert!(!composer(&rt));
     }
 }

@@ -10,6 +10,10 @@
 //! or the new file, never a torn one. A failed write stays queued and is
 //! retried, and [`Writer::flush`] waits for everything queued before it
 //! (quit uses it).
+//!
+//! Headless runs (`--snap`, `--tree`, `--script`) and unit tests get a
+//! writer that drops every save, so they never touch the person's real
+//! `prefs.json`, drafts or window frame.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -41,7 +45,8 @@ enum Msg {
 
 #[derive(Clone)]
 pub struct Writer {
-    tx: Sender<Msg>,
+    /// `None`: a writer that drops every save ([`Writer::discard`]).
+    tx: Option<Sender<Msg>>,
 }
 
 impl Writer {
@@ -54,11 +59,27 @@ impl Writer {
         if let Err(e) = spawned {
             tracing::warn!("could not start the file writer: {e}");
         }
-        Self { tx }
+        Self { tx: Some(tx) }
+    }
+
+    /// A writer that writes nothing; its flush always succeeds at once.
+    pub fn discard() -> Self {
+        Self { tx: None }
+    }
+
+    /// Whether saves through this writer are dropped.
+    pub fn discards(&self) -> bool {
+        self.tx.is_none()
     }
 
     fn send(&self, msg: Msg) {
-        if self.tx.send(msg).is_err() {
+        let Some(tx) = &self.tx else {
+            if let Msg::Flush(reply) = msg {
+                let _ = reply.send(true);
+            }
+            return;
+        };
+        if tx.send(msg).is_err() {
             tracing::warn!("the file writer is gone; a save was lost");
         }
     }
@@ -86,10 +107,16 @@ impl Writer {
     }
 }
 
-/// The app's one writer.
+/// The app's one writer; a discarding one in headless runs and tests.
 pub fn global() -> &'static Writer {
     static WRITER: OnceLock<Writer> = OnceLock::new();
-    WRITER.get_or_init(Writer::spawn)
+    WRITER.get_or_init(|| {
+        if cfg!(test) || rune::is_headless() {
+            Writer::discard()
+        } else {
+            Writer::spawn()
+        }
+    })
 }
 
 /// Queue `op` for `path`, collapsing it into a queued op for the same path.
@@ -279,6 +306,18 @@ mod tests {
         assert!(w.flush(Duration::from_secs(5)));
         let back: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
         assert_eq!(back, serde_json::json!({"theme":"rune"}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tests_and_headless_runs_never_write_the_real_files() {
+        assert!(global().discards());
+        let dir = temp("discard");
+        let f = dir.join("prefs.json");
+        global().write(f.clone(), b"{}".to_vec());
+        global().patch(f.clone(), Map::new(), serde_json::json!({"theme":"rune"}));
+        assert!(global().flush(Duration::from_secs(1)));
+        assert!(!f.exists(), "a discarding writer wrote a file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

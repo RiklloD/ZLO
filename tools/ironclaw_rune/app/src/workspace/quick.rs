@@ -178,12 +178,12 @@ pub fn toggle(s: &mut State) {
         q.synced = Synced::of(&q.input);
         q.seen_active = false;
     });
-    // Spotlight's spot: centred, near the top of the screen.
+    // Spotlight's spot: centred, a fifth of the way down the screen.
     q.place(
         DisplayTarget::Primary,
         OverlayPlacement::Edge {
             edge: ScreenEdge::Top,
-            margin: 180.,
+            margin: top_margin(crate::window_state::primary_screen_height()),
             align: Align::Center,
             inset: 0.,
         },
@@ -194,6 +194,13 @@ pub fn toggle(s: &mut State) {
     quick.input = TextEdit::new("");
     // Sent again by the next `poll`.
     quick.sent_controls = None;
+}
+
+/// The quick composer's distance from the top of a screen `height` points
+/// tall: a fifth of the way down (GPUI `quick.rs`), or 180 pt when the
+/// screen is unknown.
+fn top_margin(height: Option<f32>) -> f32 {
+    height.filter(|h| *h > 0.).map_or(180., |h| (h / 5.).round())
 }
 
 /// A voice edit of the quick composer's field: run on the mirror now (its
@@ -396,6 +403,13 @@ mod tests {
 
     fn unreachable_main() -> State {
         unreachable!("tests build their own state")
+    }
+
+    #[test]
+    fn the_quick_composer_sits_a_fifth_of_the_way_down() {
+        assert_eq!(top_margin(Some(1117.)), 223.);
+        assert_eq!(top_margin(Some(900.)), 180.);
+        assert_eq!(top_margin(None), 180.);
     }
 
     #[test]

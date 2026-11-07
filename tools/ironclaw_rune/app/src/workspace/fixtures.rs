@@ -14,7 +14,7 @@ use rune::TextEdit;
 
 use crate::state::{Conn, Page, State};
 
-fn row(id: &str, title: &str, profile: &str, state: InboxState, minutes_ago: i64) -> InboxRow {
+pub(crate) fn row(id: &str, title: &str, profile: &str, state: InboxState, minutes_ago: i64) -> InboxRow {
     InboxRow {
         thread_id: id.into(),
         title: Some(title.into()),

@@ -2,18 +2,30 @@
 //! (GPUI `window_state.rs`, same `window.json`, so both apps share it).
 //!
 //! The first launch fills the screen's usable area (everything but the menu
-//! bar and Dock). After that the window reopens where it was left. The file
-//! is written once, on quit.
+//! bar and Dock). After that the window reopens where it was left. As in
+//! GPUI (`observe_window_bounds` → `record`), every move and resize records
+//! the frame (full screen is not a frame to restore); here a record is also
+//! written, once the window has rested for [`QUIET`], through the app's one
+//! ordered writer (`persist.rs`), and quit writes the last one again.
 //!
 //! Rune has no window-frame API (it can resize and place, not report), so on
 //! macOS this reads and sets the `NSWindow` frame itself through the raw
-//! handle Rune hands `App::on_window`. Frames are stored as GPUI did:
-//! top-left origin, points, y growing down from the primary screen's top.
+//! handle Rune hands `App::on_window`, and hears moves and resizes from
+//! `NSWindowDidMoveNotification`/`NSWindowDidResizeNotification`. Frames are
+//! stored as GPUI did: top-left origin, points, y growing down from the
+//! primary screen's top.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+/// How long the frame must rest before it is written (a drag or a live
+/// resize sends many changes).
+const QUIET: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 struct Frame {
@@ -26,6 +38,8 @@ struct Frame {
 thread_local! {
     /// The main window, once Rune created it (UI thread only).
     static WINDOW: RefCell<Option<rune::WindowHandle>> = const { RefCell::new(None) };
+    /// The last windowed frame recorded (GPUI's `Last` global).
+    static LAST: Cell<Option<Frame>> = const { Cell::new(None) };
 }
 
 fn file() -> Option<PathBuf> {
@@ -39,19 +53,82 @@ fn saved() -> Option<Frame> {
 }
 
 /// `App::on_window`: the native window exists; put it where it was left
-/// (or over the screen's usable area on first launch).
+/// (or over the screen's usable area on first launch), then follow its
+/// moves and resizes.
 pub fn created(window: &rune::WindowHandle) {
     WINDOW.with(|w| *w.borrow_mut() = Some(window.clone()));
     #[cfg(target_os = "macos")]
-    if let Err(e) = window.with_raw_handle(|h| mac::restore(h, saved())) {
+    if let Err(e) = window.with_raw_handle(|h| {
+        mac::restore(h, saved());
+        mac::observe(h);
+    }) {
         tracing::debug!("cannot place the window: {e}");
     }
 }
 
-/// Write the window's current frame to disk. Called on quit. Full screen is
-/// not a frame to restore.
+/// Note `frame` as the window's frame and queue it for disk. `None` (full
+/// screen) keeps the last windowed one.
+fn record(frame: Option<Frame>) {
+    let Some(frame) = frame else { return };
+    if LAST.with(|l| l.replace(Some(frame))) == Some(frame) {
+        return;
+    }
+    if let Some(tx) = recorder() {
+        let _ = tx.send(frame);
+    }
+}
+
+/// The debounced writer's input, started on first use.
+fn recorder() -> Option<&'static Sender<Frame>> {
+    static TX: OnceLock<Option<Sender<Frame>>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("zlo-window-frame".into())
+            .spawn(move || debounce(rx, QUIET, write));
+        match spawned {
+            Ok(_) => Some(tx),
+            Err(e) => {
+                tracing::warn!("cannot follow the window frame: {e}");
+                None
+            }
+        }
+    })
+    .as_ref()
+}
+
+/// Hand `write` each frame from `rx` once no newer one came for `quiet`;
+/// the last one is written when the channel closes.
+fn debounce(rx: Receiver<Frame>, quiet: Duration, write: impl Fn(Frame)) {
+    while let Ok(mut frame) = rx.recv() {
+        loop {
+            match rx.recv_timeout(quiet) {
+                Ok(newer) => frame = newer,
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    write(frame);
+                    return;
+                }
+            }
+        }
+        write(frame);
+    }
+}
+
+/// Queue `frame` on the app's ordered writer.
+fn write(frame: Frame) {
+    let Some(file) = file() else { return };
+    match serde_json::to_vec(&frame) {
+        Ok(json) => crate::persist::global().write(file, json),
+        Err(e) => tracing::warn!("could not save the window frame: {e}"),
+    }
+}
+
+/// Write the window's frame now (quit): the current one, or the last
+/// windowed one when it is full screen. `workspace::on_close` flushes the
+/// writer right after.
 pub fn save() {
-    let frame = WINDOW.with(|w| {
+    let current = WINDOW.with(|w| {
         let window = w.borrow().clone()?;
         #[cfg(target_os = "macos")]
         {
@@ -63,19 +140,29 @@ pub fn save() {
             None
         }
     });
-    let (Some(frame), Some(file)) = (frame, file()) else {
-        return;
-    };
-    let written = serde_json::to_vec(&frame)
-        .map_err(std::io::Error::other)
-        .and_then(|json| crate::persist::atomic_write(&file, &json));
-    if let Err(e) = written {
-        tracing::warn!("could not save the window frame: {e}");
+    if let Some(frame) = current {
+        LAST.with(|l| l.set(Some(frame)));
+    }
+    if let Some(frame) = LAST.with(Cell::get) {
+        write(frame);
+    }
+}
+
+/// The primary (menu bar) screen's height in points, when known.
+pub fn primary_screen_height() -> Option<f32> {
+    #[cfg(target_os = "macos")]
+    {
+        mac::primary_height()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }
 
 #[cfg(target_os = "macos")]
 mod mac {
+    use block2::RcBlock;
     use objc2::encode::{Encode, Encoding};
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
@@ -185,7 +272,14 @@ mod mac {
     }
 
     pub(super) fn current(h: raw_window_handle::WindowHandle<'_>) -> Option<Frame> {
-        let window = ns_window(h)?;
+        frame_of(ns_window(h)?)
+    }
+
+    /// `window`'s frame, or `None` in full screen.
+    fn frame_of(window: *mut AnyObject) -> Option<Frame> {
+        if window.is_null() {
+            return None;
+        }
         // NSWindowStyleMaskFullScreen.
         let style: usize = unsafe { msg_send![window, styleMask] };
         if style & (1 << 14) != 0 {
@@ -199,5 +293,87 @@ mod mac {
             w: r.size.w as f32,
             h: r.size.h as f32,
         })
+    }
+
+    pub(super) fn primary_height() -> Option<f32> {
+        Some(screens().first()?.0.size.h as f32)
+    }
+
+    /// Record the frame on every move and resize of the window (GPUI
+    /// `observe_window_bounds`). The observers live as long as the app.
+    pub(super) fn observe(h: raw_window_handle::WindowHandle<'_>) {
+        let Some(window) = ns_window(h) else { return };
+        let Some(center_class) = AnyClass::get(c"NSNotificationCenter") else { return };
+        let Some(string) = AnyClass::get(c"NSString") else { return };
+        unsafe {
+            let center: *mut AnyObject = msg_send![center_class, defaultCenter];
+            if center.is_null() {
+                return;
+            }
+            for name in [c"NSWindowDidMoveNotification", c"NSWindowDidResizeNotification"] {
+                let name: *mut AnyObject = msg_send![string, stringWithUTF8String: name.as_ptr()];
+                if name.is_null() {
+                    continue;
+                }
+                // Posted on the main thread (the window's), with the
+                // window as the object.
+                let block = RcBlock::new(|note: *mut AnyObject| {
+                    if note.is_null() {
+                        return;
+                    }
+                    let window: *mut AnyObject = msg_send![note, object];
+                    super::record(frame_of(window));
+                });
+                let nil: *mut AnyObject = std::ptr::null_mut();
+                let observer: *mut AnyObject = msg_send![
+                    center,
+                    addObserverForName: name,
+                    object: window,
+                    queue: nil,
+                    usingBlock: &*block
+                ];
+                // The center keeps the observer for as long as the app runs.
+                let _ = observer;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    fn frame(x: f32) -> Frame {
+        Frame { x, y: 0., w: 800., h: 600. }
+    }
+
+    #[test]
+    fn a_burst_of_frames_writes_only_the_one_it_rested_on() {
+        let (tx, rx) = mpsc::channel();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let sink = written.clone();
+        let worker = std::thread::spawn(move || {
+            debounce(rx, Duration::from_millis(80), move |f| sink.lock().unwrap().push(f))
+        });
+        // A drag: many frames in quick succession, then a rest.
+        for x in 0..20 {
+            tx.send(frame(x as f32)).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(*written.lock().unwrap(), vec![frame(19.)]);
+        // A later move, cut short by quit: written as the channel closes.
+        tx.send(frame(42.)).unwrap();
+        drop(tx);
+        worker.join().unwrap();
+        assert_eq!(*written.lock().unwrap(), vec![frame(19.), frame(42.)]);
+    }
+
+    #[test]
+    fn full_screen_keeps_the_last_windowed_frame() {
+        record(Some(frame(5.)));
+        record(None);
+        assert_eq!(LAST.with(Cell::get), Some(frame(5.)));
     }
 }
