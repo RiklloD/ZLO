@@ -57,6 +57,11 @@ pub fn run<F, Fut, T>(
     Fut: Future<Output = Result<T, ClientError>> + Send + 'static,
     T: Send + 'static,
 {
+    // A fixture scene's state is not the gateway's: never send its requests
+    // (their replies would be dropped anyway).
+    if s.fixture {
+        return;
+    }
     let handle = s.rt.handle.clone();
     let Some(backend) = s.rt.backend.as_ref() else {
         handle.update(move |s, tx| {

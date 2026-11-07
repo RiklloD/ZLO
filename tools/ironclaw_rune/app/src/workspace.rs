@@ -170,6 +170,14 @@ impl WorkspaceState {
 
 /// Called once from `App::init`, before the first frame.
 pub fn start(s: &mut State) {
+    // Headless runs (scenes, scripts, traces) never touch the user's world:
+    // no gateway connection (a scripted click on a fixture would otherwise
+    // send real requests, e.g. create inbox rows for fixture threads), no
+    // hotkeys, voice monitor, notifications or saved drafts. Scenes set the
+    // state they render themselves.
+    if rune::is_headless() {
+        return;
+    }
     crate::drafts::load(s);
     crate::alerts::install(s.rt.handle.clone());
     crate::snapshot::start(s);
