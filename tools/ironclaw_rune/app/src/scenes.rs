@@ -8,6 +8,12 @@
 use crate::state::{Conn, Page, State};
 
 pub const SCENES: &[(&str, fn(&mut State))] = &[
+    ("computer", |s| crate::chat::computer::scene(s, false)),
+    ("computer-big", |s| crate::chat::computer::scene(s, true)),
+    ("goals", crate::chat::goals::scene),
+    ("model-picker", |s| crate::chat::model_picker::scene(s, false)),
+    ("model-picker-effort", |s| crate::chat::model_picker::scene(s, true)),
+    ("orchestration", crate::chat::orchestration::scene),
     ("shell", shell),
 ];
 
@@ -20,4 +26,11 @@ fn shell(s: &mut State) {
         ("t1".into(), "Port the frontend to Rune".into()),
         ("t2".into(), "Fix the flaky integration test".into()),
     ];
+}
+
+/// The shell with thread `t1` open as an empty chat: the base of the chat
+/// extras' scenes (area H).
+pub fn chat(s: &mut State) {
+    shell(s);
+    s.chat = Some(crate::chat::ChatState::new("t1".into()));
 }
