@@ -27,6 +27,8 @@ use crate::state::State;
 pub const NEW_THREAD: &str = "new";
 
 const SAVE_DELAY: Duration = Duration::from_millis(300);
+/// How long quit waits for queued draft writes.
+const QUIT_WAIT: Duration = Duration::from_secs(3);
 
 /// One inline token in a draft's text: a file card or a mention chip.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +70,8 @@ pub struct Store {
     dirty: HashSet<String>,
     /// Bumped per edit; only the newest delayed save writes.
     generation: u64,
+    /// Tests write here instead of the user's drafts folder.
+    dir: Option<PathBuf>,
 }
 
 impl Store {
@@ -343,46 +347,29 @@ pub fn remove(s: &mut State, key: &str) {
     record(s, key, Draft::text(""));
 }
 
-/// Write the changed drafts: off the UI thread, or right here on quit.
+/// Hand the changed drafts to the app's one ordered writer (`persist`):
+/// writes and deletions of a draft land in the order they were made, each
+/// file is replaced atomically, and a failed write stays queued for a
+/// retry. `now` (quit) also waits for every queued write, earlier ones too.
 pub fn save(s: &mut State, now: bool) {
+    save_with(s, crate::persist::global(), now);
+}
+
+fn save_with(s: &mut State, writer: &crate::persist::Writer, now: bool) {
     let store = &mut s.workspace.drafts;
-    if store.dirty.is_empty() {
-        return;
-    }
-    let keys: Vec<String> = store.dirty.drain().collect();
-    let jobs: Vec<(String, Option<Saved>)> = keys
-        .into_iter()
-        .map(|key| {
-            let saved = store.drafts.get(&key).map(|d| to_saved(&key, d));
-            (key, saved)
-        })
-        .collect();
-    let write = move || {
-        let Some(dir) = dir() else { return };
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            tracing::warn!("could not create the drafts folder: {e}");
-            return;
-        }
-        for (key, saved) in jobs {
+    let dir = store.dir.clone().or_else(dir);
+    if let Some(dir) = dir {
+        for key in store.dirty.drain() {
             let file = file_for(&dir, &key);
-            let result = match saved {
-                Some(saved) => serde_json::to_vec(&saved)
-                    .map_err(std::io::Error::other)
-                    .and_then(|json| std::fs::write(&file, json)),
-                None => match std::fs::remove_file(&file) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    other => other,
-                },
-            };
-            if let Err(e) = result {
-                tracing::warn!("could not save a draft: {e}");
+            match store.drafts.get(&key).map(|d| serde_json::to_vec(&to_saved(&key, d))) {
+                Some(Ok(json)) => writer.write(file, json),
+                Some(Err(e)) => tracing::warn!("could not encode a draft: {e}"),
+                None => writer.remove(file),
             }
         }
-    };
-    if now {
-        write();
-    } else {
-        std::thread::spawn(write);
+    }
+    if now && !writer.flush(QUIT_WAIT) {
+        tracing::warn!("some drafts were not saved before quit");
     }
 }
 
@@ -417,6 +404,31 @@ mod tests {
         assert_eq!(out.text, "see  and @x end");
         assert!(out.files.is_empty() && out.tokens.is_empty());
         assert_eq!(out.profile.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn a_sent_draft_is_not_resurrected_by_an_earlier_save() {
+        let dir = std::env::temp_dir().join(format!("zlo-drafts-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let writer = crate::persist::Writer::spawn();
+        let mut s = crate::state::test_state();
+        s.workspace.drafts.dir = Some(dir.clone());
+        // Many edits each saved, then the send clears the draft; the quit
+        // save waits for all of them.
+        for i in 0..50 {
+            s.workspace.drafts.drafts.insert("t1".into(), Draft::text(format!("draft {i}")));
+            s.workspace.drafts.dirty.insert("t1".into());
+            save_with(&mut s, &writer, false);
+        }
+        s.workspace.drafts.drafts.remove("t1");
+        s.workspace.drafts.dirty.insert("t1".into());
+        s.workspace.drafts.drafts.insert("t2".into(), Draft::text("kept"));
+        s.workspace.drafts.dirty.insert("t2".into());
+        save_with(&mut s, &writer, true);
+        assert!(!file_for(&dir, "t1").exists(), "the sent draft came back");
+        let kept: Saved = serde_json::from_slice(&std::fs::read(file_for(&dir, "t2")).unwrap()).unwrap();
+        assert_eq!(kept.text, "kept");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -47,6 +47,8 @@ pub fn menu_items() -> Vec<MenuItem<State>> {
 /// the menu or the Dock): note the frame and write pending drafts.
 pub fn on_close(s: &mut State, _tx: &mut Tx) {
     crate::window_state::save();
+    // Drafts, then every other queued save (preferences, voice, SnapShot):
+    // the writer is one ordered queue, so this flush waits for all of them.
     crate::drafts::save(s, true);
 }
 

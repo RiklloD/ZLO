@@ -14,6 +14,15 @@ file. **The GPUI app is not touched**: if Rune disappoints, we go back to it.
 - Shared: the GUI-free gateway client `tools/ironclaw_gpui/client` (path
   dependency, unchanged) and the preferences file
   (`~/Library/Application Support/ZLO/prefs.json`, same format).
+  Every save in this app goes through one ordered writer (`app/src/persist.rs`):
+  atomic replace (temp file + rename), latest-wins per file, failed writes
+  retried, and quit (`workspace::on_close`) flushes it. A prefs save re-reads
+  the file and overwrites only the top-level keys this app changed since it
+  last read or wrote them, so a GPUI change to another key survives. What is
+  left is last-writer-wins per key: if both apps change the same key, the
+  later save wins, and the GPUI app itself still writes the whole file (it
+  can put back a key this app changed while it ran). Drafts (`drafts/`, one
+  file each) are last-writer-wins per draft across the two apps.
 - Rune is pinned to `dev` rev `53c7f60f` in `Cargo.toml`. A local checkout for
   reading lives at `~/src/rune` (`crates/rune/README.md` is the API guide,
   `crates/rune-kit/README.md` the components, `examples/` the patterns).

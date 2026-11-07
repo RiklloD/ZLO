@@ -77,21 +77,11 @@ impl SnapshotPrefs {
     }
 
     fn save(&self) {
-        let snapshot = self.clone();
-        std::thread::spawn(move || {
-            let Some(file) = Self::file() else { return };
-            let saved = file
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| {
-                    let json =
-                        serde_json::to_vec_pretty(&snapshot).map_err(std::io::Error::other)?;
-                    std::fs::write(&file, json)
-                });
-            if let Err(e) = saved {
-                tracing::warn!("could not save SnapShot preferences: {e}");
-            }
-        });
+        let Some(file) = Self::file() else { return };
+        match serde_json::to_vec_pretty(self) {
+            Ok(json) => crate::persist::global().write(file, json),
+            Err(e) => tracing::warn!("could not encode SnapShot preferences: {e}"),
+        }
     }
 }
 

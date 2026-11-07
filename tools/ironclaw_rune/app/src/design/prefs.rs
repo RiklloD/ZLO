@@ -148,9 +148,16 @@ impl Prefs {
     /// (version 1, four styles and fifty themes) keeps its layout choices
     /// and moves to the new look: IronClaw's themes and the painted scene.
     pub fn load() -> Self {
-        let mut prefs: Self = Self::file()
+        let raw: Option<serde_json::Value> = Self::file()
             .and_then(|f| std::fs::read(f).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok());
+        // The baseline is the file as read, so keys a migration below
+        // changes (the version among them) count as changed on first save.
+        if let Some(serde_json::Value::Object(keys)) = &raw {
+            *baseline().lock().unwrap_or_else(|e| e.into_inner()) = Some(keys.clone());
+        }
+        let mut prefs: Self = raw
+            .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
         if prefs.version < 3 {
             let fresh = Self::default();
@@ -171,21 +178,60 @@ impl Prefs {
 
     /// Save to disk off the UI thread. Callers edit `State::prefs` in place,
     /// then call this; the view re-runs on its own after the handler.
+    ///
+    /// The file is shared with the GPUI app, so only the keys this app
+    /// changed since it last loaded or saved are written over what is on
+    /// disk (see `persist`); the rest keeps whatever the other app saved.
     pub fn save(&self) {
-        let snapshot = self.clone();
-        std::thread::spawn(move || {
-            let Some(file) = Self::file() else { return };
-            let saved = file
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| {
-                    let json =
-                        serde_json::to_vec_pretty(&snapshot).map_err(std::io::Error::other)?;
-                    std::fs::write(&file, json)
-                });
-            if let Err(e) = saved {
-                tracing::warn!("could not save preferences: {e}");
+        let Some(file) = Self::file() else { return };
+        let new = match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(keys)) => keys,
+            Ok(_) => return,
+            Err(e) => {
+                tracing::warn!("could not encode preferences: {e}");
+                return;
             }
-        });
+        };
+        let changes = {
+            let mut base = baseline().lock().unwrap_or_else(|e| e.into_inner());
+            let changes = changed(base.as_ref(), &new);
+            *base = Some(new.clone());
+            changes
+        };
+        if !changes.is_empty() {
+            crate::persist::global().patch(file, changes, serde_json::Value::Object(new));
+        }
+    }
+}
+
+type Keys = serde_json::Map<String, serde_json::Value>;
+
+/// The preferences as this app last read or wrote them.
+fn baseline() -> &'static std::sync::Mutex<Option<Keys>> {
+    static BASE: std::sync::OnceLock<std::sync::Mutex<Option<Keys>>> = std::sync::OnceLock::new();
+    BASE.get_or_init(Default::default)
+}
+
+/// The top-level keys of `new` that differ from `base` (all without one).
+fn changed(base: Option<&Keys>, new: &Keys) -> Keys {
+    new.iter()
+        .filter(|(k, v)| base.is_none_or(|b| b.get(*k) != Some(*v)))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_changed_keys_are_patched() {
+        let mut prefs = Prefs::default();
+        let serde_json::Value::Object(base) = serde_json::to_value(&prefs).unwrap() else { panic!() };
+        assert_eq!(changed(None, &base).len(), base.len());
+        prefs.conversation_width += 10.;
+        let serde_json::Value::Object(new) = serde_json::to_value(&prefs).unwrap() else { panic!() };
+        let keys: Vec<_> = changed(Some(&base), &new).keys().cloned().collect();
+        assert_eq!(keys, vec!["conversation_width".to_string()]);
     }
 }

@@ -66,15 +66,9 @@ pub fn save() {
     let (Some(frame), Some(file)) = (frame, file()) else {
         return;
     };
-    let written = file
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| {
-            std::fs::write(
-                &file,
-                serde_json::to_vec(&frame).map_err(std::io::Error::other)?,
-            )
-        });
+    let written = serde_json::to_vec(&frame)
+        .map_err(std::io::Error::other)
+        .and_then(|json| crate::persist::atomic_write(&file, &json));
     if let Err(e) = written {
         tracing::warn!("could not save the window frame: {e}");
     }

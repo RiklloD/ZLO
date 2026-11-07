@@ -21,6 +21,7 @@ mod login_item;
 mod logs;
 mod native_view;
 mod pages;
+mod persist;
 mod permissions;
 mod run_clock;
 mod scenes;

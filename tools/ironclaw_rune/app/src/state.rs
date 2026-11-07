@@ -115,3 +115,14 @@ impl State {
         self.palette = design::resolve(&self.prefs, self.system_dark);
     }
 }
+
+/// A state over an app that never runs: background replies are dropped, so
+/// tests call the reply handlers themselves.
+#[cfg(test)]
+pub fn test_state() -> State {
+    fn no_init() -> State {
+        unreachable!("tests build the state themselves")
+    }
+    let app = rune::App::new(rune::AppSpec::new("ZLO test", (1280., 820.), no_init, crate::view));
+    State::new(Rt::new(app.handle()))
+}
