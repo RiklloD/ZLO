@@ -20,3 +20,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, _k: &Kit, _layer: &mut Vec<El>) -> E
         .center()
         .child(text("OperatorState").color(s.palette.text_muted))
 }
+
+// PORT-STUB(area C): open a run's logs (GPUI `OperatorView::show_run_logs`),
+// after `workspace::show(s, Page::Operator)`.
+pub fn show_run_logs(_s: &mut State, _run_id: String) {}

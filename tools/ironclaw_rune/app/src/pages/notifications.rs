@@ -20,3 +20,8 @@ pub fn view(s: &State, _cx: &mut Cx<State>, _k: &Kit, _layer: &mut Vec<El>) -> E
         .center()
         .child(text("NotificationsState").color(s.palette.text_muted))
 }
+
+// PORT-STUB(area D): the unread count changed; reload the list if it was
+// ever opened (GPUI `NotificationsView::refresh`). The page writes
+// `s.workspace.unread` itself where GPUI emitted `PageEvent::Unread`.
+pub fn refresh(_s: &mut State) {}

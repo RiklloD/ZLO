@@ -20,3 +20,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, _k: &Kit, _layer: &mut Vec<El>) -> E
         .center()
         .child(text("ProvidersState").color(s.palette.text_muted))
 }
+
+// PORT-STUB(area C): the thread the orchestrator catalog (CLI agents) is
+// read through (GPUI `ProvidersView::set_catalog_thread`).
+pub fn set_catalog_thread(_s: &mut State, _thread: Option<String>) {}

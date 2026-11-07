@@ -20,3 +20,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, _k: &Kit, _layer: &mut Vec<El>) -> E
         .center()
         .child(text("ProfilesState").color(s.palette.text_muted))
 }
+
+// PORT-STUB(area E): start a new profile (GPUI `ProfilesView::new_profile`),
+// after `workspace::show(s, Page::Profiles)`.
+pub fn new_profile(_s: &mut State) {}

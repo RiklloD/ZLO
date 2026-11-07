@@ -57,3 +57,35 @@ pub fn view(s: &State, _cx: &mut Cx<State>, _k: &Kit, _layer: &mut Vec<El>) -> E
     };
     col().w_full().h_full().center().child(text(label).color(p.text_muted))
 }
+
+// PORT-STUB(area A): focus the open chat's composer when nothing else holds
+// focus (GPUI `Workspace::restore_composer` → `ChatView::composer().focus`).
+pub fn focus_composer(_s: &mut State) {}
+
+// PORT-STUB(area A): scroll the open chat to `message_id` (a message-search
+// hit; GPUI `ChatView::reveal_message`).
+pub fn reveal_message(_s: &mut State, _message_id: String) {}
+
+// PORT-STUB(area A): send the new-thread screen's first message in the chat
+// just opened (GPUI `ChatView::send_text(content, files, voice)`).
+pub fn send_text(
+    _s: &mut State,
+    _content: String,
+    _files: Vec<ironclaw_gpui_client::attachments::StagedFile>,
+) {
+}
+
+// PORT-STUB(area A): the open thread's titlebar actions at the breadcrumb's
+// right end (GPUI `ChatView::render_titlebar_actions`).
+pub fn titlebar_actions(
+    _s: &State,
+    _cx: &mut Cx<State>,
+    _k: &Kit,
+    _layer: &mut Vec<El>,
+) -> Option<El> {
+    None
+}
+
+// PORT-STUB(area A): stage a SnapShot in the open chat's composer (GPUI
+// `ChatView::stage_snapshot`).
+pub fn stage_snapshot(_s: &mut State, _snap: Result<crate::snapshot::Snapshot, String>) {}

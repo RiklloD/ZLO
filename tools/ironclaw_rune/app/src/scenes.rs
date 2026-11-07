@@ -5,19 +5,18 @@
 //! is needed. Keep fixture builders in the owning module
 //! (e.g. `chat::fixtures`) and list them here, one line each, sorted.
 
-use crate::state::{Conn, Page, State};
+use crate::state::State;
+use crate::workspace::fixtures as ws;
 
 pub const SCENES: &[(&str, fn(&mut State))] = &[
-    ("shell", shell),
+    ("command-menu", ws::fixture_command_menu),
+    ("context-meter", ws::fixture_context_meter),
+    ("disconnected", ws::fixture_disconnected),
+    ("draft", ws::fixture_draft),
+    ("inbox", ws::fixture_inbox),
+    ("inbox-subagents", ws::fixture_inbox_subagents),
+    ("quick-composer", ws::fixture_quick),
+    ("settings-nav", ws::fixture_settings_nav),
+    ("shell", ws::fixture_shell),
+    ("status-bar", ws::fixture_status_bar),
 ];
-
-/// The window with a few threads and nothing open.
-fn shell(s: &mut State) {
-    s.fixture = true;
-    s.conn = Conn::Ready;
-    s.page = Page::Chat;
-    s.workspace.threads = vec![
-        ("t1".into(), "Port the frontend to Rune".into()),
-        ("t2".into(), "Fix the flaky integration test".into()),
-    ];
-}
