@@ -12,6 +12,7 @@
 //! (`thread_drag`).
 
 mod snapshot;
+mod submit;
 
 use std::path::PathBuf;
 
@@ -22,6 +23,7 @@ use rune::{Color, Cx, El, FileDialogOptions, KeyEvent, TextEdit, Tx, col, el, ro
 use rune_kit::{Kit, Placement};
 
 pub use snapshot::stage_snapshot;
+use submit::{Origin, Submission, send_with, submit};
 
 use super::inbox::{self, view::profile_picker};
 use super::ui::{self, SEMIBOLD, SM, XS, t, tw};
@@ -229,12 +231,19 @@ fn pick_item(s: &mut State, item: &MenuItem) {
 /// A prompt from the quick composer: the new-thread screen's send, with its
 /// profile and model choice. `voice` is talk mode's claim when it pressed
 /// Enter there (`quick::send` took it and refused an empty send).
+///
+/// It is its own submission: the new-thread draft's text, cards and saved
+/// copy are never touched, whether that draft is sending or not.
 pub(super) fn quick_send(s: &mut State, text: String, voice: Option<crate::voice::Submission>) {
     open(s);
-    if let Some(draft) = s.workspace.draft.as_mut() {
-        draft.input.replace_text(text);
-    }
-    send_with(s, voice);
+    let Some(draft) = s.workspace.draft.as_ref() else {
+        if let Some(sub) = voice {
+            crate::voice::submission_refused(s, sub, "There was nothing to send.");
+        }
+        return;
+    };
+    let submission = Submission::of(s, draft, text, Vec::new(), Vec::new(), Origin::Quick);
+    submit(s, submission, voice);
 }
 
 /// A profile picked in either menu: open the draft screen in it.
@@ -282,100 +291,11 @@ pub(super) fn record(s: &mut State) {
     drafts::record(s, drafts::NEW_THREAD, saved);
 }
 
-/// Create the thread in the chosen profile, apply the model pick, open it
-/// and send the first message there.
 /// Enter on the new-thread screen (voice's Enter too: talk mode's claim on
 /// it rides along into the new chat's first send).
 pub fn send(s: &mut State) {
     let voice = crate::voice::take_submission(s, &ComposerTarget::Draft);
     send_with(s, voice);
-}
-
-/// [`send`] with talk mode's claim already taken (by this screen or the
-/// quick composer).
-fn send_with(s: &mut State, voice: Option<crate::voice::Submission>) {
-    let refuse = |s: &mut State, why: &str| {
-        if let Some(sub) = voice {
-            crate::voice::submission_refused(s, sub, why);
-        }
-    };
-    let worktree_dir = s
-        .prefs
-        .last_project
-        .clone()
-        .map(|p| p.to_string_lossy().into_owned());
-    let Some(draft) = s.workspace.draft.as_mut() else {
-        return refuse(s, "There was nothing to send.");
-    };
-    let (text, files) = inline_files::outgoing(&draft.input, &draft.staged);
-    if text.is_empty() && files.is_empty() {
-        return refuse(s, "There was nothing to send.");
-    }
-    if draft.sending {
-        return refuse(s, "A new thread is already being created.");
-    }
-    let content = draft.input.text.clone();
-    let pills = inline_files::pills(&draft.input);
-    draft.sending = true;
-    draft.error = None;
-    let profile = draft.profile.clone();
-    let pick = crate::chat::model_picker::pending(&draft.picker);
-    let effort = crate::chat::model_picker::pending_effort(&draft.picker);
-    let worktree = draft.worktree.then_some(worktree_dir);
-    jobs::run(
-        s,
-        "new thread",
-        move |c| async move {
-            let id = match c.create_profile_thread(&profile).await {
-                Ok(created) => created.thread_id,
-                // A gateway without profiles creates a plain thread.
-                Err(e) if e.is_not_found() => c.create_thread().await?.thread.thread_id,
-                Err(e) => return Err(e),
-            };
-            match (pick, effort) {
-                (Some((provider, model)), effort) => {
-                    c.set_thread_route(&id, &provider, &model, effort.as_deref())
-                        .await?;
-                }
-                (None, Some(effort)) => {
-                    c.set_thread_effort(&id, &effort).await?;
-                }
-                (None, None) => {}
-            }
-            // Made before the first message, so every turn runs there.
-            if let Some(source) = worktree {
-                c.start_thread_worktree(&id, source.as_deref()).await?;
-            }
-            Ok(id)
-        },
-        move |s, result, tx| match result {
-            Ok(id) => {
-                let files = s
-                    .workspace
-                    .draft
-                    .take()
-                    .map(|d| d.staged)
-                    .unwrap_or_default();
-                drafts::remove(s, drafts::NEW_THREAD);
-                inbox::refresh(s);
-                super::open_thread(s, id.clone());
-                if super::active_id(s) == Some(id.as_str()) {
-                    crate::chat::send_text(s, content, pills, files, voice, tx);
-                } else if let Some(sub) = voice {
-                    crate::voice::submission_refused(s, sub, "The new thread did not open.");
-                }
-            }
-            Err(e) => {
-                if let Some(sub) = voice {
-                    crate::voice::submission_refused(s, sub, &e.to_string());
-                }
-                if let Some(draft) = s.workspace.draft.as_mut() {
-                    draft.sending = false;
-                    draft.error = Some(e.to_string());
-                }
-            }
-        },
-    );
 }
 
 fn pick_files(s: &mut State, tx: &mut Tx) {
