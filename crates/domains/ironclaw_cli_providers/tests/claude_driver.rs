@@ -162,7 +162,12 @@ async fn wait_for(cond: impl Fn() -> bool) {
 async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
     let dir = tempfile::tempdir().unwrap();
     let sink = Arc::new(Recorder::default());
-    let rt = runtime(dir.path(), script(dir.path(), "claude", ANSWER), &sink);
+    let body = ANSWER.replacen(
+        "{ echo",
+        "{ printf 'entrypoint=%s ' \"$CLAUDE_CODE_ENTRYPOINT\"; echo",
+        1,
+    );
+    let rt = runtime(dir.path(), script(dir.path(), "claude", &body), &sink);
     let thread = thread(&rt).await;
     let session = thread.native_session_id.clone().unwrap();
     let args_log = dir.path().join("args.log");
@@ -218,6 +223,7 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
         lines[1]
     );
     for line in &lines {
+        assert!(line.starts_with("entrypoint=ironclaw "), "{line}");
         assert!(line.contains("--tools  --strict-mcp-config"), "{line}");
         assert!(line.contains("--permission-prompts none"), "{line}");
         assert!(line.contains("--model claude-haiku-5-5"), "{line}");

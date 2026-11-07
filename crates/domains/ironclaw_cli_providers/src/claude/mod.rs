@@ -279,6 +279,9 @@ impl ClaudeCliRuntime {
         plan: &TurnPlan<'_>,
     ) -> Command {
         let mut cmd = Command::new(&self.config.binary);
+        // Identify our headless runs instead of inheriting the SDK/host
+        // entrypoint, which Anthropic meters differently on subscription plans.
+        cmd.env("CLAUDE_CODE_ENTRYPOINT", "ironclaw");
         cmd.args([
             "-p",
             "--output-format",
