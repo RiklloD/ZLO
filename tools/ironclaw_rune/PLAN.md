@@ -124,8 +124,8 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 | Area | State |
 |---|---|
 | 0 | done |
-| E, F, H, G | merged (07.11.2026) |
-| A B C D S | in progress |
+| E, F, H, G, D | merged (07.11.2026) |
+| A B C S | in progress |
 
 ## Integration checklist (collected from area reports)
 
@@ -144,5 +144,10 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 - [ ] D: `look::reload(s)` after wallpaper/theme changes; pickers from `wallpaper::AREAS`, `paint::SCENES`, `paint::EFFECTS`.
 - [ ] All areas: replace local helpers (`common_stub.rs`, `chat/extras_ui.rs`, letter tiles) with `design::kit`, `design::brands::provider_logo`, `design::motion`; composers share `.matched(COMPOSER_MATCH)` (dock), rows `.motion(ROW_RESORT)` (flip).
 - [ ] Foundation: transparent window when `prefs.translucent` so the system material shows.
+- [ ] B: call `pages::settings::session_import::schedule(s)` after connecting; implement D's stubs `workspace::{titles_ensure, title_of, set_unread}` together with H's `thread_title/ensure_titles` (one API).
+- [ ] A: `chat::approval_mode_changed` (D and E stubs).
+- [ ] C, E, F: move local page helpers to `pages::common` (now merged).
+- [ ] Kit: primary buttons use the accent (rune-kit `Submit` renders white); `design::kit::button(..).primary()` is the reference.
+- [ ] Foundation: `prefs.translucent` toggles the window transparency (Appearance only saves the pref).
 - [ ] Clippy: `SCENES` type complexity in `scenes.rs`.
 - [ ] Interaction tests (`rune::Runtime`) for voice controls and settings.
