@@ -41,6 +41,8 @@
 //! - `hover_bg(el, s) -> El` (GPUI `smooth_bg`: a fading hover wash)
 //! - `activity_line(s, key, icon, title, detail) -> El`
 //! - `selectable(k, text) -> El` selectable, copyable plain text
+//! - `mono_editor(&edit).label() .rows(min, max) .on_edit(..) .build(k) -> El`
+//!   the multi-line mono editor (memory, SKILL.md)
 //!
 //! Loops (`kit::loops`, frozen by reduced motion / the battery saver):
 //! - `pulse_dots(key, color) -> El`, `gradient_spinner(key, cell) -> El`,
@@ -58,7 +60,10 @@
 //! TextArea, Switch, Badge, Menu, Popover, ...}`.
 
 pub mod compact;
+mod editor;
 mod loops;
+
+pub use editor::mono_editor;
 
 pub use loops::{claw_mark, gradient_spinner, pulse_dots, shimmer_text, status_dot};
 

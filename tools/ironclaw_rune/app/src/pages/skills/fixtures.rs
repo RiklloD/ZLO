@@ -71,3 +71,14 @@ pub fn skills(s: &mut State) {
     );
     sk.confirm_remove = Some("rust-review".into());
 }
+
+/// The skills page with release-notes' SKILL.md open in the mono editor.
+pub fn skills_editor(s: &mut State) {
+    skills(s);
+    let sk = &mut s.pages.skills;
+    sk.notice = None;
+    sk.confirm_remove = None;
+    let text = sk.open.get("release-notes").cloned().flatten().unwrap_or_default();
+    sk.editor_text = rune::TextEdit::new(text);
+    sk.editor = Some("release-notes".into());
+}

@@ -23,9 +23,10 @@ use ironclaw_gpui_client::memory_page::{
     SupermemoryStatus,
 };
 use rune::{Cursor, Cx, El, TextEdit, col, el, row};
-use rune_kit::{Kit, Markdown, TextArea, TextInput};
+use rune_kit::{Kit, Markdown, TextInput};
 
 use self::draft::{Effect, SaveReply, apply_archived, apply_save};
+use crate::design::kit::mono_editor;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -519,11 +520,9 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
             }),
     };
     let body = match &open.editor {
-        // PORT-STUB(area G): GPUI draws the editor in the mono font; kit's
-        // TextArea takes no text style yet.
-        Some(editor) => TextArea::new(editor)
-            .auto_grow(10, 36)
-            .width(None)
+        // GPUI draws the editor in the mono font.
+        Some(editor) => mono_editor(editor)
+            .rows(10, 36)
             .label(format!("Edit {}", doc.path))
             .on_edit(|s: &mut State| match s.pages.memory.open.as_mut().and_then(|o| o.editor.as_mut()) {
                 Some(e) => e,

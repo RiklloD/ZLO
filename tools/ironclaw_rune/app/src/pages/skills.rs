@@ -11,8 +11,9 @@ use std::collections::HashMap;
 
 use ironclaw_gpui_client::product_wire::{RebornSkillInfo, RebornSkillSourceKind};
 use rune::{Cx, El, TextEdit, col, row, text};
-use rune_kit::{Kit, Markdown, Switch, TextArea};
+use rune_kit::{Kit, Markdown, Switch};
 
+use crate::design::kit::mono_editor;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -360,9 +361,8 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
                 .gap(8.)
                 .child(rule(p))
                 .child(
-                    TextArea::new(&sk.editor_text)
-                        .width(None)
-                        .auto_grow(8, 30)
+                    mono_editor(&sk.editor_text)
+                        .rows(8, 30)
                         .label(format!("/{} instructions", x.name))
                         .on_edit(|s: &mut State| &mut s.pages.skills.editor_text)
                         .build(k)
