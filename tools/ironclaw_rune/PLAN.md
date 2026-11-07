@@ -131,7 +131,10 @@ scrolling). `bundle.sh` has its own Rune version here (`ZLO Rune.app`).
 |---|---|
 | 0 | done |
 | E, F, H, G, D, C, S, B, A | merged (07.11.2026) |
-| Integration | in progress: everything builds and renders wired; open items below |
+| Integration | done: all areas wired; builds clean under clippy `-D warnings`, 191 tests |
+| Parity review | done: `PARITY_REVIEW.md` (of 121 GPUI files: 96 parity, 19 minor gaps, 3 major, 2 missing) |
+| P0 + all eight P1 fixes | merged (07.11.2026) |
+| P2 polish (12 of 15 open), live test from `ZLO Rune.app` | open |
 
 ## Integration checklist (collected from area reports)
 
