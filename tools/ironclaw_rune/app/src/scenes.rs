@@ -9,8 +9,12 @@ use crate::design::gallery;
 use crate::state::{Conn, Page, State};
 
 pub const SCENES: &[(&str, fn(&mut State))] = &[
+    ("appearance", |s| page_with(s, Page::Appearance, crate::pages::settings::fixture)),
+    ("automation-form", |s| page_with(s, Page::Automations, crate::pages::automations::fixture_form)),
+    ("automations", |s| page_with(s, Page::Automations, crate::pages::automations::fixture)),
     ("computer", |s| crate::chat::computer::scene(s, false)),
     ("computer-big", |s| crate::chat::computer::scene(s, true)),
+    ("files", |s| page_with(s, Page::Files, crate::pages::files::fixture)),
     ("goals", crate::chat::goals::scene),
     ("kit-gallery", gallery::fixture_kit_gallery),
     ("kit-gallery-light", gallery::fixture_kit_gallery_light),
@@ -25,12 +29,17 @@ pub const SCENES: &[(&str, fn(&mut State))] = &[
     ("memory-supermemory", memory_supermemory),
     ("model-picker", |s| crate::chat::model_picker::scene(s, false)),
     ("model-picker-effort", |s| crate::chat::model_picker::scene(s, true)),
+    ("notifications", |s| page_with(s, Page::Notifications, crate::pages::notifications::fixture)),
     ("orchestration", crate::chat::orchestration::scene),
+    ("permissions", |s| page_with(s, Page::Permissions, crate::pages::settings::fixture)),
     ("profile-editor", profile_editor),
     ("profile-pickers", profile_pickers),
     ("profiles", profiles),
+    ("projects", |s| page_with(s, Page::Projects, crate::pages::projects::fixture)),
+    ("settings", |s| page_with(s, Page::Settings, crate::pages::settings::fixture)),
     ("shell", shell),
     ("snapshot-chip", snapshot_chip),
+    ("traces", |s| page_with(s, Page::Traces, crate::pages::settings::fixture)),
     ("usage", usage),
     ("usage-compactions", usage_compactions),
     ("usage-history", usage_history),
@@ -39,6 +48,16 @@ pub const SCENES: &[(&str, fn(&mut State))] = &[
     ("voice-settings", voice_settings),
     ("voice-talk", voice_talk),
 ];
+
+/// A page scene: the shell, then `fill` puts the page's fixture data in.
+fn page_with(s: &mut State, page: Page, fill: fn(&mut State)) {
+    shell(s);
+    // Default preferences, not the user's file: scenes look the same anywhere.
+    s.prefs = Default::default();
+    s.palette = crate::design::resolve(&s.prefs, true);
+    s.page = page;
+    fill(s);
+}
 
 /// The window with a few threads and nothing open.
 fn shell(s: &mut State) {

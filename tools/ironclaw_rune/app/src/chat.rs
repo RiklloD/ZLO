@@ -202,3 +202,6 @@ pub fn set_merges(_s: &mut State, _merges: Vec<ironclaw_gpui_client::orchestrati
 
 /// Stop the open chat's turn (the computer-use Stop does this too).
 pub fn stop_run(_s: &mut State) {}
+// PORT-STUB(area A): GPUI `chat::approval_mode::changed`: the global
+// auto-approve switch changed; approval pills re-read it.
+pub fn approval_mode_changed(_s: &mut State) {}
