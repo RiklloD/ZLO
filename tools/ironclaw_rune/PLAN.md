@@ -182,7 +182,7 @@ The `chat/extras_ui.rs` shim is gone; its users import `design::kit::compact`.
 - [x] A: `side::init` after open, `side::docks` beside a `.grow(1).min_w(0)` column, `side::on_turn_started/ended`, `side::open_link`, `side::adopt_folder` from mention roots, `side::on_cli_report` when the CLI diff or review moves. Side chats: `side::SideChat` owns an embedded `ChatState` (`chat::build_side_chat` + `start_side_chat`), drawn with `chat::embedded_view`.
 - [x] B: `side::titlebar_actions` in the breadcrumb (via `chat::titlebar_actions`), ⌥⌘B/⌘E/⌥⌘N; `side/dock.rs::viewport` reads the shell's `window` layout.
 - [x] B: native views hide while the overlay layer is non-empty (`native_view::cover` from `workspace/shell.rs`; unit test). Live check under "Manual checks".
-- [ ] B: `side::dock_widths` for the wallpaper area.
+- [x] B: wallpaper areas on their real regions: `chat::view` lays the "conversation" layer over the conversation column and the "pane" layer over the right pane (both reaching up over the breadcrumb, as GPUI's panel-high layers did); without a chat the conversation is the whole panel.
 - [x] Wheel glide: `design::smooth_scroll` (`.wheel_glide(key)` on every vertical viewport) restores GPUI's `smooth_scroll.rs` feel for mouse wheels.
 - [ ] Live test (from `ZLO Rune.app`): native views (QuickLook, WKWebView), system notifications, window-frame restore, voice (including dictation into the quick composer from another app) and SnapShot in a real window.
 

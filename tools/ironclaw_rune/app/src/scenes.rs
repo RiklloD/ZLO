@@ -16,6 +16,19 @@ pub type Scene = (&'static str, fn(&mut State));
 const LARGE_TYPE: f32 = 20.;
 
 pub const SCENES: &[Scene] = &[
+    ("chat-context-banner", crate::chat::fixtures::context_banner),
+    ("chat-long-draft", crate::chat::fixtures::long_draft),
+    ("chat-wallpaper-conversation", |s| {
+        crate::chat::fixtures::wallpaper_area(s, "conversation")
+    }),
+    ("chat-wallpaper-pane", |s| {
+        crate::chat::fixtures::wallpaper_area(s, "pane")
+    }),
+    // The launch screen while the gateway boots (the caption shows late).
+    ("loading", |s| {
+        s.fixture = true;
+        s.conn = crate::state::Conn::Connecting;
+    }),
     ("appearance", |s| {
         page_with(s, Page::Appearance, crate::pages::settings::fixture)
     }),

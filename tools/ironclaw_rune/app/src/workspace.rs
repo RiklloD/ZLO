@@ -193,8 +193,27 @@ pub fn toggle_scheme(s: &mut State) {
     s.update_prefs(|p| p.scheme = if dark { "light" } else { "dark" }.into());
 }
 
-pub fn toggle_sidebar(s: &mut State) {
+/// Fold the sidebar away or bring it back. One spring owns the motion
+/// (GPUI's 240 ms `panels::reveal`): the sidebar, the panel, the transcript
+/// and the composer all move on it.
+///
+/// The transcript rewraps at its new width at once. Its rows would hold
+/// their old heights for a moment and then ease to the new ones well after
+/// the slide; instead the next commit lands them (an instant commit leaves
+/// the running slide alone), and the one after has rows pinned to the end
+/// ride the viewport's bottom edge as the composer rewraps (`follow_edge`),
+/// so nothing moves vertically once the slide is over.
+pub fn toggle_sidebar(s: &mut State, tx: &mut rune::Tx) {
+    tx.motion(crate::design::panels::REVEAL);
+    tx.follow_edge();
     s.update_prefs(|p| p.sidebar_hidden = !p.sidebar_hidden);
+    s.rt.handle.update(|s, tx| {
+        tx.instant();
+        s.rt.handle.update(|_, tx| {
+            tx.motion(crate::design::panels::REVEAL);
+            tx.follow_edge();
+        });
+    });
 }
 
 fn connect(s: &mut State) {

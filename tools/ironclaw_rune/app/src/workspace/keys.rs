@@ -16,7 +16,7 @@ type Binding = (&'static str, &'static str, fn(&mut State, &mut Tx));
 
 const BINDINGS: &[Binding] = &[
     ("New Thread", "cmd+shift+o", |s, _| new_thread(s)),
-    ("Toggle Sidebar", "cmd+b", |s, _| super::toggle_sidebar(s)),
+    ("Toggle Sidebar", "cmd+b", super::toggle_sidebar),
     ("Toggle Right Pane", "alt+cmd+b", |s, _| {
         toggle_right_pane(s)
     }),

@@ -14,7 +14,7 @@
 //! - [`card_glyph`]`(key, open, size, color) -> El`
 //! - [`toggle`]`(s, key, open, right, label) -> El` (caller adds `.on_press`)
 //! - [`toggle_with`]`(s, key, label, glyph) -> El`
-//! - consts [`GLYPH`], [`TOGGLE_SIZE`], [`GLYPH_PX`]
+//! - consts [`GLYPH`], [`REVEAL`], [`TOGGLE_SIZE`], [`GLYPH_PX`]
 
 use rune::{Color, El, Spring, el};
 
@@ -23,6 +23,10 @@ use crate::state::State;
 
 /// Zeron Icons' state morph: 280 ms on `cubic-bezier(.22, 1, .36, 1)`.
 pub const GLYPH: Spring = Spring::new(0.28, 0.0);
+/// A column opening or closing (GPUI `panels::REVEAL`: Zeron's panel clock,
+/// 240 ms). Set on the toggle's commit (`Tx::motion`), so everything the
+/// column moves rides the one curve.
+pub const REVEAL: Spring = Spring::new(0.24, 0.0);
 /// Titlebar button target and its glyph.
 pub const TOGGLE_SIZE: f32 = 28.;
 const GLYPH_SIZE: f32 = 16.;

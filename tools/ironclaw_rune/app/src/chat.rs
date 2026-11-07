@@ -46,6 +46,8 @@ mod visual;
 
 pub mod fixtures;
 #[cfg(test)]
+mod stream_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
@@ -119,6 +121,12 @@ pub struct ChatState {
     pub(crate) turn_heights: HashMap<String, f32>,
     /// Scroll the newest user message to the top on the next item sync.
     pin_next: bool,
+    /// The prompt just sent (its row key) and when: it rises from the
+    /// composer into place (`view::prompt_rise`).
+    pub(crate) rise: Option<(String, Instant)>,
+    /// The view held the newest prompt in place over a reserve correction
+    /// (`view::transcript`), which takes the list off its end.
+    pub(crate) held_prompt: bool,
     /// A history-search hit to scroll to once its message is in the list.
     reveal: Option<String>,
     /// Keep the transcript loaded back to this message (an older hit was
@@ -195,6 +203,8 @@ impl ChatState {
             list_height: 0.,
             turn_heights: HashMap::new(),
             pin_next: false,
+            rise: None,
+            held_prompt: false,
             reveal: None,
             history_floor: None,
             floor_pending: false,
@@ -607,6 +617,15 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) {
         // The reserve keeps exactly the room under the newest prompt, so
         // the end of the list is the prompt at the top.
         tx.scroll_to_bottom(view::transcript_key(id));
+        // MonoCode's prompt rise, once per send (none under reduced motion).
+        c.rise = (!reduced)
+            .then(|| {
+                c.items.iter().rev().find_map(|i| match i {
+                    Item::Row(Row::User { key, .. }) => Some((key.clone(), Instant::now())),
+                    _ => None,
+                })
+            })
+            .flatten();
     }
     try_reveal(s, id, tx);
 }

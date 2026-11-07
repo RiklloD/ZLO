@@ -279,11 +279,11 @@ pub(crate) fn view(
         picker,
         controls,
     );
-    // The new-thread composer flies down to this dock (GPUI `design/dock.rs`).
+    // The new-thread composer flies down to this dock (GPUI `design/dock.rs`)
+    // on the send's own spring (`motion::DOCK`, set on that commit); any
+    // other move rides the commit's curve with the rest of the chat.
     match chat.embedded {
-        false => card
-            .matched(design::motion::COMPOSER_MATCH)
-            .motion(design::motion::DOCK),
+        false => card.matched(design::motion::COMPOSER_MATCH),
         true => card,
     }
 }

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use ironclaw_gpui_client::attachments::{self, StagedFile};
 use ironclaw_gpui_client::commands::MenuItem;
 use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
-use rune::{Color, Cx, El, FileDialogOptions, KeyEvent, TextEdit, Tx, col, el, row};
+use rune::{Cx, El, FileDialogOptions, KeyEvent, TextEdit, Tx, col, el, row};
 use rune_kit::{Kit, Placement};
 
 pub use snapshot::stage_snapshot;
@@ -27,10 +27,10 @@ use submit::{Origin, Submission, send_with, submit};
 
 use super::inbox::{self, view::profile_picker};
 use super::ui::{self, SEMIBOLD, SM, XS, t, tw};
-use crate::chat::inline_files;
 use crate::chat::menu::{self, ComposerMenu, MenuKey, MenuKeyName};
 use crate::chat::model_picker::ModelPickerState;
-use crate::design::{self, motion, prefs::Wallpaper};
+use crate::chat::{composer, inline_files};
+use crate::design::{motion, prefs::Wallpaper};
 use crate::drafts;
 use crate::icons;
 use crate::jobs::{self, Generation};
@@ -463,37 +463,6 @@ pub(super) fn profile_name(s: &State) -> String {
     .unwrap_or_else(|| "Default".into())
 }
 
-/// A round composer button (GPUI `chat::round_button`): filled with the
-/// accent when `ready`.
-fn round_button(
-    p: &design::Palette,
-    key: &str,
-    icon: &'static rune::Icon,
-    ready: bool,
-    label: &str,
-) -> El {
-    row()
-        .key(key.to_string())
-        .role("button")
-        .label(label.to_string())
-        .help(label.to_string())
-        .size(32., 32.)
-        .radius(16.)
-        .center()
-        .cursor(rune::Cursor::Pointer)
-        .fill(if ready { p.accent } else { Color::TRANSPARENT })
-        .hover(if p.light {
-            Color::BLACK.alpha(0.08)
-        } else {
-            Color::WHITE.alpha(0.10)
-        })
-        .child(ui::glyph(
-            icon,
-            16.,
-            if ready { p.on_accent() } else { p.text_muted },
-        ))
-}
-
 pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let Some(draft) = s.workspace.draft.as_ref() else {
@@ -501,11 +470,22 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     };
     let name = profile_name(s);
     let ready = !draft.staged.is_empty() || !draft.input.text.trim().is_empty();
-    let send_button = round_button(p, "draft-send", &icons::ARROW_UP, ready, "Send")
+    // The chat composer's own controls, so the card that flies to the
+    // chat's dock on send is one component.
+    let send_button = composer::round_button(s, "draft-send", &icons::ARROW_UP, ready, "Send", k)
+        .help("Send")
         .opacity(if draft.sending { 0.35 } else { 1. })
         .on_press(send);
-    let attach_button = round_button(p, "draft-attach", &icons::PAPERCLIP, false, "Attach files")
-        .on_press_tx(pick_files);
+    let attach_button = composer::round_button(
+        s,
+        "draft-attach",
+        &icons::PAPERCLIP,
+        false,
+        "Attach files",
+        k,
+    )
+    .help("Attach files")
+    .on_press_tx(pick_files);
     let in_worktree = draft.worktree;
     let place = row()
         .key("draft-worktree")
@@ -585,69 +565,73 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     }
     let snapshots = inline_files::snapshot_keys(s, &draft.staged);
     let input = ui::grow_box(
-        ui::plain_area(&draft.input, 15., "Do anything…", p)
-            .pill_colors(p.hover, Some(p.text))
-            .pill_icon(move |pill| inline_files::pill_icon_for(&snapshots, pill))
-            .on_input_key(on_key)
-            .on_input_paste(|s: &mut State, content, _tx| {
-                let Some(pasted) = inline_files::pasted(content) else {
-                    return false;
-                };
-                paste(s, pasted);
-                true
-            })
-            .on_edit(|s: &mut State| {
-                &mut s
-                    .workspace
-                    .draft
-                    .get_or_insert_with(|| empty_draft(DEFAULT_PROFILE_ID))
-                    .input
-            })
-            .on_input_change(|s: &mut State, _| on_change(s))
-            .on_submit(|s: &mut State, _| send(s)),
-        2,
-        10,
+        // The chat composer's field, type and all.
+        rune::text_input(
+            &draft.input,
+            crate::chat::flow::type_at(s, 14., 22.75, 400.),
+        )
+        .key("composer-input")
+        .w_full()
+        .color(p.text)
+        .placeholder("Do anything…", p.text_faint)
+        .caret(p.text, k.selection())
+        .label("Message")
+        .pill_colors(p.hover, Some(p.text))
+        .pill_icon(move |pill| inline_files::pill_icon_for(&snapshots, pill))
+        .on_input_key(on_key)
+        .on_input_paste(|s: &mut State, content, _tx| {
+            let Some(pasted) = inline_files::pasted(content) else {
+                return false;
+            };
+            paste(s, pasted);
+            true
+        })
+        .on_edit(|s: &mut State| {
+            &mut s
+                .workspace
+                .draft
+                .get_or_insert_with(|| empty_draft(DEFAULT_PROFILE_ID))
+                .input
+        })
+        .on_input_change(|s: &mut State, _| on_change(s))
+        .on_submit(|s: &mut State, _| send(s)),
+        1,
+        8,
     );
     let thread_over = super::thread_drag::over_draft(s);
-    let mut card = col()
-        .key("draft-composer")
-        .matched(motion::COMPOSER_MATCH)
-        .motion(motion::DOCK)
-        .w_full()
-        .max_w(HERO_WIDTH)
-        .padding(12.)
-        .gap(8.)
-        .radius(design::BUBBLE_RADIUS)
-        .fill(p.surface_card)
-        .border(
-            1.,
-            if thread_over {
-                p.accent
-            } else if draft.input.focused {
-                p.border_strong
-            } else {
-                p.border
-            },
-        )
-        .on_drawn_layout_tx(super::thread_drag::saw_draft)
-        .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()));
-    card = card.child(input).child(
-        row()
-            .gap(6.)
-            .center_y()
-            .child(crate::chat::model_picker::draft_pill(s, cx, k, layer))
-            .child(el().grow(1.0))
-            .child(place)
-            .child(attach_button)
-            .child(crate::voice::ui::composer_controls(
-                s,
-                k,
-                layer,
-                &ComposerTarget::Draft,
-                None,
-            ))
-            .child(send_button),
-    );
+    let actions = row()
+        .key("composer-actions")
+        .gap(6.)
+        .center_y()
+        .child(place)
+        .child(attach_button)
+        .child(crate::voice::ui::composer_controls(
+            s,
+            k,
+            layer,
+            &ComposerTarget::Draft,
+            None,
+        ))
+        .child(send_button);
+    // The chat's composer card in its hero form (GPUI `composer_card` with
+    // `compact` false), hero-wide; the chat's docked card is the same one.
+    let mut card = composer::composer_card(
+        s,
+        "draft-composer",
+        draft.input.focused,
+        false,
+        None,
+        input,
+        crate::chat::model_picker::draft_pill(s, cx, k, layer),
+        actions,
+    )
+    .matched(motion::COMPOSER_MATCH)
+    .max_w(HERO_WIDTH)
+    .on_drawn_layout_tx(super::thread_drag::saw_draft)
+    .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()));
+    if thread_over {
+        card = card.border(1., p.accent);
+    }
     // The hero card sits mid-screen, so the menu opens below it, as wide.
     let items = draft.menu.items(&draft.input.text);
     if !items.is_empty() {

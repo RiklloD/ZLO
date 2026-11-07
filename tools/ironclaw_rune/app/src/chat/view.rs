@@ -12,7 +12,9 @@
 
 use ironclaw_gpui_client::StreamStatus;
 use ironclaw_gpui_client::transcript::{PREFIX_KEY, Row};
-use rune::{Cx, El, GrowthSpec, ScrollSpec, Tx, col, el, icon, row, text};
+use rune::{
+    Cx, El, GrowthSpec, ScrollSpec, Spring, SpringPair, Transition, Tx, col, el, icon, row, text,
+};
 use rune_kit::Kit;
 
 use super::{ChatState, Item, chat_for, composer, flow, menu, outline, question_form, rows};
@@ -30,6 +32,9 @@ pub fn row_key(item_key: &str) -> String {
     format!("row:{item_key}")
 }
 
+/// Room each side of a transcript row's reading column.
+const ROW_GUTTER: f32 = 16.;
+
 /// Estimated height of a row the virtual list has not measured yet.
 const ROW_ESTIMATE: f32 = 72.;
 
@@ -44,6 +49,19 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
             .child(text("No thread open").color(s.palette.text_muted));
     };
     let main = column(s, chat, cx, k, layer);
+    // The conversation's wallpaper covers its column, up over the
+    // breadcrumb as GPUI's panel-high layer did; the right pane's covers
+    // the pane (GPUI computed both rects from the dock sizes).
+    let mut conversation = row()
+        .key("conversation")
+        .grow(1.)
+        .min_w(0.)
+        .h_full()
+        .min_h(0.)
+        .child(main);
+    if let Some(over) = crate::design::look::wallpaper_layer(s, "conversation") {
+        conversation = conversation.child(up_to_panel_top(over));
+    }
     // The column grows and may shrink to nothing, so the docks keep their
     // widths at the right edge.
     let mut out = row()
@@ -51,11 +69,35 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
         .w_full()
         .h_full()
         .min_h(0.)
-        .child(main);
-    for dock in super::side::docks(s, cx, k, layer) {
-        out = out.child(dock);
+        .child(conversation);
+    let docks = super::side::docks(s, cx, k, layer);
+    let last = docks.len().saturating_sub(1);
+    for (ix, dock) in docks.into_iter().enumerate() {
+        if ix < last {
+            out = out.child(dock);
+            continue;
+        }
+        // The right pane, at the window's edge.
+        let mut pane = el().key("pane-host").h_full().child(dock);
+        if let Some(over) = crate::design::look::wallpaper_layer(s, "pane") {
+            pane = pane.child(up_to_panel_top(over));
+        }
+        out = out.child(pane);
     }
     out
+}
+
+/// A wallpaper layer over its region of the chat, reaching up over the
+/// breadcrumb to the panel's top as GPUI's panel-high layers did.
+fn up_to_panel_top(over: El) -> El {
+    el().pin(
+        Some(0.),
+        Some(-crate::design::TITLEBAR_HEIGHT),
+        Some(0.),
+        Some(0.),
+    )
+    .inert()
+    .child(over)
 }
 
 /// One chat's column: what a side chat draws inside its pane too.
@@ -230,6 +272,61 @@ fn jump_button(s: &State, chat: &ChatState) -> El {
         }))
 }
 
+/// MonoCode's prompt rise, in seconds: the sent message's climb from the
+/// composer, then the slide-in of the rows after it (GPUI `PROMPT_RISE`,
+/// `PROMPT_FADE`, `PROMPT_RISE_TOTAL`).
+const PROMPT_RISE: f32 = 0.56;
+const PROMPT_FADE: f32 = 0.48;
+const PROMPT_RISE_TOTAL: f32 = 0.88;
+/// The send commit's curve (`actions::send`): the scroll that carries the
+/// new prompt from the composer to the top of the list.
+/// Growth rows take a commit's spring 15 % slower, so this lands the climb
+/// at about [`PROMPT_RISE`].
+pub(crate) const PROMPT_RISE_SPRING: Spring = Spring::new(PROMPT_RISE / 1.15, 0.);
+
+/// The send's entrance for the rows that mount with it. The climb itself is
+/// the layout: the reserve and the scroll to the end carry the prompt from
+/// the composer to the top on [`PROMPT_RISE_SPRING`], so the row only fades
+/// in on the way (no second travel stacked on it). The rows after it (the
+/// working line, the answer's first rows) slide up 10 pt and fade in once
+/// it lands. Reduced motion sets no `rise`.
+fn prompt_rise(
+    chat: &ChatState,
+    ix: usize,
+    turn_start: Option<usize>,
+    item: &Item,
+) -> Option<impl FnOnce(El) -> El> {
+    let (key, at) = chat.rise.as_ref()?;
+    let start = turn_start?;
+    let elapsed = at.elapsed().as_secs_f32();
+    if elapsed >= PROMPT_RISE_TOTAL || ix < start || matches!(item, Item::Reserve) {
+        return None;
+    }
+    let (transition, delay) = if ix == start {
+        if item.key() != key {
+            return None;
+        }
+        (
+            Transition::opacity().springs(SpringPair::with_exit_ratio(
+                Spring::new(PROMPT_FADE, 0.),
+                0.5,
+            )),
+            0.,
+        )
+    } else {
+        (
+            Transition::offset(0., 10.)
+                .combined(Transition::opacity())
+                .springs(SpringPair::with_exit_ratio(
+                    Spring::new(PROMPT_RISE_TOTAL - PROMPT_RISE, 0.),
+                    0.5,
+                )),
+            (PROMPT_RISE - elapsed).max(0.),
+        )
+    };
+    Some(move |line: El| line.transition(transition).enter_delay(delay))
+}
+
 /// The reserve's height: while held, exactly what keeps the newest prompt
 /// at the top of the list and no more. It stays after the run ends (the view
 /// keeps its place, as in Zeron).
@@ -285,10 +382,20 @@ fn transcript(
     let seed = super::pending::seed(&id);
     let outputs = chat.transcript.tool_outputs();
     let reserve_h = reserve_height(chat);
+    // While the reserve keeps room under it, the newest prompt is the turn's
+    // anchor at the top of the list; once the answer fills the room the list
+    // follows its end again.
+    let anchor = turn_start
+        .filter(|_| reserve_h > 0.)
+        .map(|ix| row_key(items[ix].key()));
     let column = super::content_width(s);
+    // The stack is the reading column (plus its gutters), centred in the
+    // viewport: when the panel's width changes (a sidebar slide) the stack
+    // travels as one element and its rows never shift sideways inside it.
     let mut stack = col()
         .key("transcript-rows")
         .w_full()
+        .max_w(column + 2. * ROW_GUTTER)
         .growth(GrowthSpec::default())
         .virtualize(ROW_ESTIMATE);
     for (ix, item) in items.iter().enumerate() {
@@ -354,19 +461,38 @@ fn transcript(
             Item::Reserve => el().h(reserve_h),
         };
         let key = item.key().to_string();
+        // The reading column springs across with its row: a growth row's
+        // children otherwise snap sideways while the row rides the panel's
+        // edge (a sidebar slide), leaping the wrong way and back.
         let mut line = row()
             .key(row_key(&key))
             .w_full()
             .justify_center()
-            .px(16.)
+            .px(ROW_GUTTER)
             .pt(top)
-            .child(el().w_full().max_w(column).min_w(0.).child(body));
+            .animate_layout()
+            .child(
+                el().key("body")
+                    .w_full()
+                    .max_w(column)
+                    .min_w(0.)
+                    .child(body),
+            );
         if last {
             line = line.pb(flow::SPACE_LG + 24.);
         }
+        if let Some(enter) = prompt_rise(chat, ix, turn_start, item) {
+            line = enter(line);
+        }
+        // The sent prompt and the room under it arrive whole: their growth
+        // glides on the spring alone (not paced like streaming text), so
+        // the climb to the top takes the prompt rise's time.
+        if matches!(item, Item::Reserve) || turn_start == Some(ix) {
+            line = line.arrives_whole();
+        }
         // Rows of the newest turn report their height to size the reserve.
         if turn_start.is_some_and(|s| ix >= s) && !matches!(item, Item::Reserve) {
-            let (thread, key) = (id.clone(), key.clone());
+            let (thread, key, anchor) = (id.clone(), key.clone(), anchor.clone());
             line = line.on_layout_tx(move |s: &mut State, r, tx| {
                 let h = r[3];
                 let Some(c) = chat_for(s, &thread) else {
@@ -375,6 +501,23 @@ fn transcript(
                 let old = c.turn_heights.insert(key.clone(), h);
                 if old.is_some_and(|o| (o - h).abs() <= 0.5) {
                     tx.live_only();
+                    return;
+                }
+                // The reserve is sized from these laid-out heights while the
+                // rows show their growing ones: hold the prompt where it is
+                // drawn while both settle, so it never creeps. Once the
+                // answer fills the room the list follows its end instead.
+                match anchor.as_ref().filter(|_| reserve_height(c) > 0.) {
+                    Some(anchor) => {
+                        tx.keep_on_screen(anchor.clone());
+                        c.held_prompt = true;
+                    }
+                    // The answer outgrew the room: back to following the end
+                    // (holding the prompt took the list off it).
+                    None if std::mem::take(&mut c.held_prompt) && !c.far_from_bottom => {
+                        tx.scroll_to_bottom(transcript_key(&thread));
+                    }
+                    None => {}
                 }
             });
         } else if let Item::Row(Row::User { key: user_key, .. }) = item {
@@ -392,6 +535,7 @@ fn transcript(
         .w_full()
         .h_full()
         .min_h(0.)
+        .items_center()
         .scroll(ScrollSpec { stick_bottom: true })
         .wheel_glide(transcript_key(&id))
         .scroll_edge_fade(24.)

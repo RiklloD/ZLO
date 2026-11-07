@@ -331,6 +331,10 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
     c.far_from_bottom = false;
     let running = c.running_run().is_some();
     record_draft(s, id);
+    // MonoCode's prompt rise: the scroll that carries the sent prompt from
+    // the composer to the top of the list (and the composer emptying) runs
+    // on its 560 ms curve; the row itself only fades in (`view::prompt_rise`).
+    tx.motion(super::view::PROMPT_RISE_SPRING);
     super::refresh_rows(s, id, tx);
     // A prompt sent here starts its run's clock now; a steer keeps it.
     if !running {
