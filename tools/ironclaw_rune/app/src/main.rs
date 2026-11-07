@@ -38,6 +38,8 @@ fn poll(s: &mut State, _clock: f64, tx: &mut Tx) -> bool {
     changed |= chat::poll(s, tx);
     changed |= voice::poll(s, tx);
     changed |= snapshot::poll(s, tx);
+    // Area S: show, place and hide the native previews (QuickLook, WebKit).
+    changed |= native_view::poll(s, tx);
     changed
 }
 
@@ -86,6 +88,8 @@ fn main() {
         })
         .on_focus(design::look::on_focus)
         .keep_running()
+        // Area S: native previews sit beside the window's content view.
+        .on_window(native_view::on_window)
         .on_reopen(|_, has_visible, _| has_visible);
     app.run();
     if !headless {

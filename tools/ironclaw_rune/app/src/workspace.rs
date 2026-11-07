@@ -148,6 +148,10 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         }
         Conn::Ready => {
             let main = match s.page {
+                // PORT-STUB(area A): scene-only; drop once `chat::view` lays out the docks.
+                Page::Chat if crate::chat::side::fixtures::active(s) => {
+                    crate::chat::side::fixtures::chat_view(s, cx, &k, &mut layer)
+                }
                 Page::Chat | Page::Draft => crate::chat::view(s, cx, &k, &mut layer),
                 page => crate::pages::view(s, page, cx, &k, &mut layer),
             };
