@@ -234,3 +234,25 @@ fn sidebar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     }
     list
 }
+
+// PORT-STUB(area B): thread titles (GPUI `titles.rs`) and window activity,
+// used by the chat extras (area H). Replace with the real title cache and
+// the window's focus state; keep the names and signatures.
+
+/// A thread's title, if known.
+pub fn thread_title(s: &State, thread_id: &str) -> Option<String> {
+    s.workspace
+        .threads
+        .iter()
+        .find(|(id, _)| id == thread_id)
+        .map(|(_, title)| title.clone())
+        .filter(|t| !t.is_empty())
+}
+
+/// Fetch titles for these threads if they are not known yet (GPUI `titles::ensure`).
+pub fn ensure_titles(_s: &mut State, _thread_ids: Vec<String>) {}
+
+/// The app window is in front (GPUI `cx.active_window().is_some()`).
+pub fn window_active(_s: &State) -> bool {
+    true
+}

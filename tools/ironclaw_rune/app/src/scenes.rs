@@ -8,9 +8,15 @@
 use crate::state::{Conn, Page, State};
 
 pub const SCENES: &[(&str, fn(&mut State))] = &[
+    ("computer", |s| crate::chat::computer::scene(s, false)),
+    ("computer-big", |s| crate::chat::computer::scene(s, true)),
+    ("goals", crate::chat::goals::scene),
     ("memory", memory),
     ("memory-draft", memory_draft),
     ("memory-supermemory", memory_supermemory),
+    ("model-picker", |s| crate::chat::model_picker::scene(s, false)),
+    ("model-picker-effort", |s| crate::chat::model_picker::scene(s, true)),
+    ("orchestration", crate::chat::orchestration::scene),
     ("profile-editor", profile_editor),
     ("profile-pickers", profile_pickers),
     ("profiles", profiles),
@@ -132,4 +138,11 @@ fn snapshot_chip(s: &mut State) {
     voice_settings(s);
     let staged = crate::snapshot::fixtures::staged_pair(s);
     crate::voice::fixtures::preview(s, crate::voice::Composer::Draft, staged);
+}
+
+/// The shell with thread `t1` open as an empty chat: the base of the chat
+/// extras' scenes (area H).
+pub fn chat(s: &mut State) {
+    shell(s);
+    s.chat = Some(crate::chat::ChatState::new("t1".into()));
 }
