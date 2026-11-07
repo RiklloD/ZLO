@@ -15,19 +15,26 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike, Duration as Span, Local, TimeZone, Utc};
+use chrono::Utc;
 use ironclaw_gpui_client::inbox::{
     InboxAction, InboxEngine, InboxListResponse, InboxProfile, InboxRow, InboxState, InboxStatus,
 };
 use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
-use rune::{PopupItem, PopupMenu, TextEdit, Tx};
+use rune::TextEdit;
 
 use super::{active_id, draft};
 use crate::jobs;
 use crate::state::{Page, State};
 
+mod labels;
+mod row_menu;
+mod shelves;
 pub(super) mod subagents;
 pub(super) mod view;
+
+pub(super) use labels::{branch_tail, short_age, wake_label};
+pub(super) use row_menu::{open_row_menu, settle_blocker, snooze_presets};
+pub(super) use shelves::{Shelves, jump_target, shelves};
 
 /// Poll period while a row is working.
 const POLL: Duration = Duration::from_secs(5);
@@ -472,239 +479,6 @@ pub(super) fn toggle_subagents(s: &mut State, root: &str) {
 pub(super) fn search_changed(s: &mut State) {
     let query = s.workspace.inbox.search.text.clone();
     super::message_search::search(s, &query);
-}
-
-/// The right-click menu of an inbox row (a native menu). Every mark goes
-/// through the same calls as the hover buttons; "unread" is the local set.
-pub(super) fn open_row_menu(s: &State, thread_id: &str, at: rune::PointerPress, tx: &mut Tx) {
-    let Some(row) = s.workspace.inbox.row(thread_id) else {
-        return;
-    };
-    let state = row.state;
-    let blocker = settle_blocker(row);
-    let unread = s.workspace.inbox.unread.contains(thread_id);
-    let mut menu = PopupMenu::new().item(PopupItem::new("open", "Open"));
-    menu = match state {
-        InboxState::Snoozed => menu.item(PopupItem::new("wake", "Wake now")),
-        InboxState::Settled => menu.item(PopupItem::new("unsettle", "Un-settle")),
-        _ => {
-            let pin = if state == InboxState::Pinned {
-                PopupItem::new("unpin", "Unpin")
-            } else {
-                PopupItem::new("pin", "Pin")
-            };
-            let snooze = snooze_presets()
-                .into_iter()
-                .fold(PopupMenu::new(), |sub, (label, until)| {
-                    sub.item(PopupItem::new(format!("snooze:{until}"), label))
-                });
-            menu.item(pin)
-                .submenu("Snooze", snooze)
-                .item(PopupItem::new("settle", "Settle").enabled(blocker.is_none()))
-        }
-    };
-    let menu = menu
-        .item(PopupItem::new(
-            "unread",
-            if unread { "Mark as read" } else { "Mark as unread" },
-        ))
-        .separator()
-        .item(PopupItem::new("copy-title", "Copy title"))
-        .item(PopupItem::new("copy-id", "Copy thread ID"))
-        .separator()
-        .item(PopupItem::new("delete", "Delete").enabled(state != InboxState::Working));
-    let id = thread_id.to_string();
-    let title = title_of(row).to_string();
-    tx.popup_menu(menu, at, move |s: &mut State, picked, tx| {
-        let Some(picked) = picked else { return };
-        let id = id.clone();
-        match picked {
-            "open" => super::open_thread(s, id),
-            "wake" => mark(s, id, InboxAction::Wake, None),
-            "unsettle" => mark(s, id, InboxAction::Unsettle, None),
-            "pin" => mark(s, id, InboxAction::Pin, None),
-            "unpin" => mark(s, id, InboxAction::Unpin, None),
-            "settle" => settle(s, id),
-            "unread" => {
-                let set = &mut s.workspace.inbox.unread;
-                if !set.remove(&id) {
-                    set.insert(id);
-                }
-            }
-            "copy-title" => tx.copy(title.clone()),
-            "copy-id" => tx.copy(id),
-            "delete" => s.workspace.confirm_delete = Some(id),
-            other => {
-                if let Some(until) = other
-                    .strip_prefix("snooze:")
-                    .and_then(|u| u.parse::<i64>().ok())
-                {
-                    mark(s, id, InboxAction::Snooze, Some(until));
-                }
-            }
-        }
-    });
-}
-
-/// Why a row can't be settled (t3code refuses live work), or None.
-pub(super) fn settle_blocker(row: &InboxRow) -> Option<&'static str> {
-    match row.status {
-        Some(InboxStatus::Working) => Some("is working"),
-        Some(InboxStatus::NeedsInput) => Some("is waiting on you"),
-        Some(InboxStatus::Background) => Some("has subagents running"),
-        _ => None,
-    }
-}
-
-/// "now", "5m", "3h", "2d", then a date.
-pub(super) fn short_age(at: i64, now: i64) -> String {
-    let secs = (now - at).max(0) / 1000;
-    match secs {
-        s if s < 60 => "now".into(),
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 86_400 => format!("{}h", s / 3600),
-        s if s < 7 * 86_400 => format!("{}d", s / 86_400),
-        _ => Local
-            .timestamp_millis_opt(at)
-            .single()
-            .map_or_else(String::new, |t| t.format("%d.%m.").to_string()),
-    }
-}
-
-/// "14:05" today, "Tue 09:00" later.
-pub(super) fn wake_label(at: i64) -> String {
-    let Some(t) = Local.timestamp_millis_opt(at).single() else {
-        return String::new();
-    };
-    if t.date_naive() == Local::now().date_naive() {
-        t.format("%H:%M").to_string()
-    } else {
-        t.format("%a %H:%M").to_string()
-    }
-}
-
-/// T3's presets: in 1 hour, in 3 hours, this evening (if over an hour
-/// away), tomorrow 09:00, next Monday 09:00.
-pub(super) fn snooze_presets() -> Vec<(String, i64)> {
-    let now = Local::now();
-    let at = |days: i64, hour: u32| {
-        (now.date_naive() + Span::days(days))
-            .and_hms_opt(hour, 0, 0)
-            .and_then(|t| Local.from_local_datetime(&t).single())
-    };
-    let mut out = vec![
-        ("In 1 hour".to_string(), now + Span::hours(1)),
-        ("In 3 hours".to_string(), now + Span::hours(3)),
-    ];
-    if let Some(evening) = at(0, 18).filter(|t| *t - now > Span::hours(1)) {
-        out.push(("This evening, 18:00".into(), evening));
-    }
-    if let Some(tomorrow) = at(1, 9) {
-        out.push(("Tomorrow, 09:00".into(), tomorrow));
-    }
-    let to_monday = (7 - now.weekday().num_days_from_monday() as i64) % 7;
-    let to_monday = if to_monday == 0 { 7 } else { to_monday };
-    if to_monday != 1
-        && let Some(monday) = at(to_monday, 9)
-    {
-        out.push(("Next week, Mon 09:00".into(), monday));
-    }
-    out.into_iter()
-        .map(|(label, t)| (label, t.timestamp_millis()))
-        .collect()
-}
-
-/// A long branch keeps its last path segment, the part that names it:
-/// `feature/team/sidebar-pass` reads `…/sidebar-pass`.
-pub(super) fn branch_tail(branch: &str) -> String {
-    match branch.rsplit_once('/') {
-        Some((_, tail)) if branch.chars().count() > 14 && !tail.is_empty() => format!("…/{tail}"),
-        _ => branch.to_string(),
-    }
-}
-
-/// The visible rows, grouped as the sidebar draws them, plus the ⌘1..⌘9
-/// jump order. Shared by the view and the ⌘N shortcut.
-pub(super) struct Shelves<'a> {
-    pub tree: subagents::Tree,
-    pub pinned: Vec<&'a InboxRow>,
-    pub main: Vec<&'a InboxRow>,
-    pub working: Vec<&'a InboxRow>,
-    pub snoozed: Vec<&'a InboxRow>,
-    pub settled: Vec<&'a InboxRow>,
-    /// Searching or filtering on a parked state unfolds it.
-    pub unfold: bool,
-    pub working_open: bool,
-    /// Thread ids ⌘1..⌘9 open, in the order the cards show.
-    pub jump: Vec<String>,
-}
-
-pub(super) fn shelves(s: &State) -> Shelves<'_> {
-    let inbox = &s.workspace.inbox;
-    let query = inbox.query();
-    let side_chats: std::collections::HashSet<&str> = s
-        .prefs
-        .side_chats
-        .values()
-        .flatten()
-        .map(String::as_str)
-        .collect();
-    let search = &s.workspace.message_search;
-    let rows: Vec<&InboxRow> = inbox
-        .list
-        .rows
-        .iter()
-        .filter(|r| {
-            inbox.matches(r, &query)
-                // A message in the thread matches: the filters still apply.
-                || (search.hit(&query, &r.thread_id).is_some() && inbox.matches(r, ""))
-        })
-        // Side chats live under their parent; a search still finds them.
-        .filter(|r| !query.is_empty() || !side_chats.contains(r.thread_id.as_str()))
-        .collect();
-    // Subagents fold under their parent; the rest of the list is the
-    // top-level threads only.
-    let owned: Vec<InboxRow> = rows.iter().map(|r| (*r).clone()).collect();
-    let tree = subagents::Tree::new(&owned);
-    let rows: Vec<&InboxRow> = rows
-        .into_iter()
-        .filter(|r| !tree.is_nested(&r.thread_id))
-        .collect();
-    let in_state = |st: InboxState| -> Vec<&InboxRow> {
-        rows.iter().copied().filter(|r| r.state == st).collect()
-    };
-    let unfold = !query.is_empty() || inbox.state.is_some();
-    let working_open = inbox.show_working || unfold;
-    let (pinned, main, working) = (
-        in_state(InboxState::Pinned),
-        in_state(InboxState::Inbox),
-        in_state(InboxState::Working),
-    );
-    // ⌘1..⌘9 follow the full cards top to bottom, Working last when its
-    // shelf is open, as t3code numbers its visible threads.
-    let jump = pinned
-        .iter()
-        .chain(main.iter())
-        .chain(working.iter().filter(|_| working_open))
-        .take(9)
-        .map(|r| r.thread_id.clone())
-        .collect();
-    Shelves {
-        tree,
-        snoozed: in_state(InboxState::Snoozed),
-        settled: in_state(InboxState::Settled),
-        pinned,
-        main,
-        working,
-        unfold,
-        working_open,
-        jump,
-    }
-}
-
-/// The thread ⌘N (1-based `n`) opens.
-pub(super) fn jump_target(s: &State, n: usize) -> Option<String> {
-    shelves(s).jump.get(n.checked_sub(1)?).cloned()
 }
 
 #[cfg(test)]
