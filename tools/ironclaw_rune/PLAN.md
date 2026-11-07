@@ -124,5 +124,17 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 | Area | State |
 |---|---|
 | 0 | done |
-| E | merged (07.11.2026) |
-| A B C D F G H S | in progress |
+| E, F | merged (07.11.2026) |
+| A B C D G H S | in progress |
+
+## Integration checklist (collected from area reports)
+
+- [ ] B: call `voice::start(s)` and `snapshot::start(s)` from `workspace::start`; "Try again" on the connection screen calls `crate::service::start()` first.
+- [ ] A/B: fill `chat.rs` PORT-STUBs `voice_composer`, `voice_composer_mut`, `voice_press_enter`, `stage_snapshot` (Chat → A, Draft/Quick → B); send handlers call `voice::take_submission` and report accepted/queued/refused; `voice::run_ended` on run end.
+- [ ] B: quick composer first in `voice/session.rs::resolve` (PORT-STUB).
+- [ ] D: replace local page helpers in `pages/usage/common_stub.rs` and `voice/settings.rs` with `pages::common`.
+- [ ] G: `design::brands::provider_logo` in profiles pickers; shared hover/row/floating helpers; mono font for the memory editor.
+- [ ] H: `chat::model_picker::pretty_model` in `common_stub.rs`.
+- [ ] A: `chat::approval_mode::{CHOICES, label, key, changed}` in profiles.
+- [ ] Clippy: `SCENES` type complexity in `scenes.rs`.
+- [ ] Interaction tests (`rune::Runtime`) for voice controls and settings.
