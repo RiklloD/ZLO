@@ -411,6 +411,7 @@ fn render_row(s: &State, k: &Kit, p_info: &ProfileInfo) -> El {
                 press_button(k, "profile-thread", "New thread", Look::Ghost, Some(&icons::PLUS), false, move |s: &mut State| {
                     new_thread(s, thread_id.clone())
                 })
+                .label("New thread on this profile")
                 .hover_alone(),
             ),
         )

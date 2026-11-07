@@ -517,6 +517,7 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
                 press_icon(k, "memory-archive", &icons::DELETE, "Remove", |s: &mut State| {
                     s.pages.memory.confirm_archive = true
                 })
+                .label("Remove document")
             }),
     };
     let body = match &open.editor {
