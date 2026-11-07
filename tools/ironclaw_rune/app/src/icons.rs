@@ -305,7 +305,7 @@ pub static IMAGE: Icon = Icon {
 pub static INBOX: Icon = Icon {
     name: "inbox",
     view: 24.0,
-    body: r##"<polyline fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="22 12 16 12 14 15 10 15 8 12 2 12" /> <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />"##,
+    body: r##"<path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M22 12 L16 12 L14 15 L10 15 L8 12 L2 12" /> <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />"##,
 };
 /// GPUI `IconName::Info`.
 pub static INFO: Icon = Icon {
@@ -545,7 +545,7 @@ pub static STAR: Icon = Icon {
 pub static STAR_FILL: Icon = Icon {
     name: "star-fill",
     view: 24.0,
-    body: r##"<polygon fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>"##,
+    body: r##"<path fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 2 L15.09 8.26 L22 9.27 L17 14.14 L18.18 21.02 L12 17.77 L5.82 21.02 L7 14.14 L2 9.27 L8.91 8.26 L12 2 Z"/>"##,
 };
 /// GPUI `IconName::Sun`.
 pub static SUN: Icon = Icon {
