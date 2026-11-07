@@ -1,5 +1,8 @@
 //! Inspector rendering (GPUI `InspectorPanel`'s `render_*` methods).
 
+use crate::pages::common::{Tone, card, empty_state, error_line, glyph};
+use crate::pages::common::controls::{Look, Size, button_sized, muted, outlined_tag, rule, spinner};
+use crate::pages::common::ts::{MONO_XS, SM, SM_MEDIUM, XS, XS_MEDIUM};
 use ironclaw_gpui_client::operator::InspectorRun;
 use ironclaw_gpui_client::operator::inspector::{
     DiagnosticActivityKind, InspectorModelCallStatus, ToolExecutionStatus,
@@ -14,10 +17,6 @@ use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{CONTROL_RADIUS, Palette};
 use crate::icons;
 use crate::jobs;
-use crate::pages::c_widgets::{
-    Look, MONO_XS, SM, SM_MEDIUM, Size, Tone, XS, XS_MEDIUM, button, card, empty_state, error_line,
-    glyph, muted, rule, spinner, tag,
-};
 use crate::state::State;
 
 const PROMPT_MAX_HEIGHT: f32 = 420.;
@@ -77,7 +76,7 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
                 Some(at) => jobs::ago(at),
                 None => short_id(&r.id),
             };
-            button(
+            button_sized(
                 label,
                 if selected {
                     Look::Primary
@@ -120,7 +119,7 @@ fn render_toolbar(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
     r = r.child(el().grow(1.));
     if let Some(thread) = panel.thread.clone() {
         r = r.child(
-            button("Open conversation", Look::Ghost, Size::Small)
+            button_sized("Open conversation", Look::Ghost, Size::Small)
                 .icon(&icons::EXTERNAL_LINK)
                 .on_press(move |s: &mut State| crate::workspace::open_thread(s, thread.clone()))
                 .build(k)
@@ -187,7 +186,7 @@ fn render_run(s: &State, k: &Kit, panel: &InspectorPanel, run: &InspectorRun) ->
             .key(format!("call-{ix}"))
             .w_full()
             .child(rule(p))
-            .child(r.child(tag(p, tone, label)))
+            .child(r.child(outlined_tag(p, tone, label)))
     });
     let tools = run.tool_executions.iter().enumerate().map(|(ix, t)| {
         let id = t.activity_id.to_string();
@@ -197,9 +196,9 @@ fn render_run(s: &State, k: &Kit, panel: &InspectorPanel, run: &InspectorRun) ->
             .filter(|(o, _)| *o == id)
             .map(|(_, d)| d);
         let status = match t.status {
-            ToolExecutionStatus::Succeeded => tag(p, Tone::Success, "ok"),
-            ToolExecutionStatus::Failed => tag(p, Tone::Danger, "failed"),
-            ToolExecutionStatus::Started => tag(p, Tone::Secondary, "running"),
+            ToolExecutionStatus::Succeeded => outlined_tag(p, Tone::Success, "ok"),
+            ToolExecutionStatus::Failed => outlined_tag(p, Tone::Danger, "failed"),
+            ToolExecutionStatus::Started => outlined_tag(p, Tone::Secondary, "running"),
         };
         let name = t.capability_name.content().to_string();
         let mut head = row()
@@ -340,7 +339,7 @@ fn tool_detail(p: &Palette, k: &Kit, detail: &ToolDetail) -> El {
 
 fn render_prompt(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
     let p = &s.palette;
-    let load = button(
+    let load = button_sized(
         if panel.prompt.is_some() {
             "Reload prompt"
         } else {

@@ -153,32 +153,31 @@ Ticked items are done and checked in code; open ones say why.
 - [x] A/B: `chat::{voice_composer, voice_composer_mut, voice_press_enter, stage_snapshot}` on A's state (Chat → the open chat or its side chat, Draft → B's new-thread field); chat and draft send handlers take `voice::take_submission` and report accepted/queued/refused (the draft's claim rides into `chat::send_text`); `voice::run_ended` on run end. SnapShot routes through `workspace::stage_snapshot` (settings → threads, draft or chat).
 - [x] B/F: quick composer voice (parity review P1-4). The field stays in the quick window; the main state keeps a mirror the quick window's `poll` updates, voice edits run on the mirror and, as the same edit, on the window's field via `AppHandle::update`; the controls are `voice::ui::draw` over a `Controls` copy the main `poll` sends. `voice/session.rs::resolve` uses `workspace::voice_composer` (quick first, `open_quick` opens it); Enter goes through `quick::send`, which takes talk mode's claim and refuses an empty send. Design notes at the top of `workspace/quick.rs`.
 - [x] Bundle (parity review P1-6): `bundle.sh` → `ZLO Rune.app`, id and login-item label `com.numoh.rune`; Settings, voice and permission copy name ZLO Rune.
-- [ ] D: local page helpers in `pages/usage/common_stub.rs` and `voice/settings.rs` → `pages::common` (refactor only; behaviour is right).
+- [ ] D: local page helpers in `voice/settings.rs` → `pages::common` (refactor only; behaviour is right). `pages/usage/common_stub.rs` is gone (5e12d99d7).
 - [x] G: `design::brands::provider_logo` in profiles pickers, usage history and Providers (`pages/providers/logos.rs` deleted).
-- [ ] G: shared hover/row/floating helpers; mono font for the memory and SKILL.md editors (PORT-STUB in `pages/memory.rs`): rune-kit's `TextArea` takes no text style, so this needs a Rune change.
+- [x] G: shared hover/row/floating helpers (`pages::common::controls`); mono memory and SKILL.md editors via `design::kit::mono_editor` on Rune's core `text_input` (17ba43bd8).
 - [x] H: `chat::model_picker::pretty_model` in `common_stub.rs`; `provider_mark` in the profiles pickers.
 
-Remaining `PORT-STUB` markers (`rg -n PORT-STUB app/src`), each an open item
-below: `pages/memory.rs`
-(mono editor font needs Rune), `pages/usage/common_stub.rs` and
-`pages/c_widgets.rs` (helper consolidation into `pages::common` and
-`design::kit`).
+No `PORT-STUB` markers remain (`rg -n PORT-STUB app/src` is empty).
+`chat/extras_ui.rs` is a one-line re-export of `design::kit::compact` kept for
+`chat.rs`, `chat/goals.rs` and `chat/orchestration/view.rs`; point those at
+`design::kit::compact` and delete it.
 - [x] A: `chat::approval_mode::{CHOICES, label, key}` in profiles pickers; `approval_mode_changed` from Profiles and Settings.
 - [x] A: H's `extras_preview` gone; the real column keeps `orchestration::{composer, tail, tail_summary}`, `computer::view`, `model_picker::pills`; H's hooks (`open_error` for `set_error`, `reload_timeline`, `active_run`, `embedded`, `composer_text`, `set_composer_text`, `set_fork_prefix`, `set_merges`, `stop_run`; picker changes via `chat::picker_changed`); `/goal` via `goals::goal_command`/`run_command`; `orchestration::refresh` on run end and `ensure_poll` otherwise; `orchestration::has_tail` folds the tail row.
 - [x] B: `workspace::{thread_title, ensure_titles, window_active}`; ⇧⌘M → `model_picker::open`; the draft screen uses `model_picker::DRAFT` (B merge).
 - [x] F→H: `computer.rs` uses `crate::permissions`.
 - [x] G: `model_picker::provider_mark` draws `design::brands::provider_logo`; `App::modifier_keys()` is on (`main.rs`).
-- [ ] G: fold `chat/extras_ui.rs` into `design::kit` (refactor only).
+- [x] G: `chat/extras_ui.rs` folded into `design::kit::compact` (5e12d99d7; the re-export shim above is the leftover).
 - [x] B: `look::wallpaper_layer` in window/conversation/sidebar, `look::reshuffle` on a new draft (B merge).
 - [ ] B: keep `s.palette`/`s.system_dark` current on a live appearance change; drop G's `LookState::preview` fixture hook. Needs a live window to check.
 - [x] D: `look::reload(s)` after wallpaper/theme changes (Appearance).
-- [ ] All areas: replace remaining local helpers (`common_stub.rs`, `pages/c_widgets.rs`, `chat/extras_ui.rs`, letter tiles) with `design::kit`/`design::motion`; composers share `.matched(COMPOSER_MATCH)` (rows `.motion(ROW_RESORT)` and the dock tab pill are done). Refactor; PORT-STUB notes in `common_stub.rs` and `c_widgets.rs` mark the spots.
+- [ ] All areas: replace remaining local helpers (letter tiles) with `design::kit`/`design::motion` (`common_stub.rs`, `c_widgets.rs`, `extras_ui.rs` done in 5e12d99d7); composers share `.matched(COMPOSER_MATCH)` (rows `.motion(ROW_RESORT)` and the dock tab pill are done).
 - [x] Foundation: `prefs.translucent` → transparent window at launch (`main.rs`, `design::styles::set_window_translucent`), system material on the shell root; turning it on mid-session takes effect at the next launch (Appearance says so). Live check under "Manual checks".
 - [x] B: session import after connecting (`workspace::start_polling` ticks it and the rescan; D's `session_import::schedule` is not needed); titles API is one (`crate::titles`).
 - [x] A: `chat::approval_mode_changed` (D and E callers).
-- [ ] C, E, F: move local page helpers to `pages::common` (refactor only).
-- [ ] Kit: primary buttons use the accent (rune-kit `Submit` renders white; the chat's own cards show it); `design::kit::button(..).primary()` is the reference.
-- [ ] C: `pages/c_widgets.rs` → `pages::common` + `design::kit`; Providers' catalog thread from the real inbox is done (`workspace::show`); mono SKILL.md editor (see G).
+- [ ] F: move local page helpers to `pages::common` (refactor only; C and E done in 5e12d99d7).
+- [x] Kit: primary buttons use the accent: `design::kit()` sets rune-kit's contrast/submit tokens from the accent (8afe83ba8).
+- [x] C: `pages/c_widgets.rs` → `pages::common` (5e12d99d7); Providers' catalog thread from the real inbox is done (`workspace::show`); mono SKILL.md editor (17ba43bd8).
 - [x] A: a failed run's Logs button → `workspace::open_run_logs` → `pages::operator::show_run_logs`.
 - [x] S: `chat/side/bridge.rs` wired to the real chat (rows, running, stop, gates, reject editor, composer insert, attach, CLI diff/review, timeline, profile), H (model label, tasks, lineage, cancel, fork, refresh, computer share) and titles; `pub use changes::on_cli_report`; `side/fixtures.rs::chat_view` gone (side scenes fill the real chat).
 - [x] A: `side::init` after open, `side::docks` beside a `.grow(1).min_w(0)` column, `side::on_turn_started/ended`, `side::open_link`, `side::adopt_folder` from mention roots, `side::on_cli_report` when the CLI diff or review moves. Side chats: `side::SideChat` owns an embedded `ChatState` (`chat::build_side_chat` + `start_side_chat`), drawn with `chat::embedded_view`.
@@ -216,3 +215,12 @@ below: `pages/memory.rs`
   as in GPUI.
 - `#![allow(dead_code)]` in `main.rs` still hides unused port items; drop it
   once the parity review is through.
+
+### Known inaccuracy in the shared spec (`tools/ironclaw_gpui/PARITY.md`)
+
+`PARITY.md` marks `operator.run_setup` and `get_user_model_preference` done,
+but neither app calls them: `Client::run_operator_setup` and
+`Client::model_preference` have no caller in GPUI or here (the Setup panel only
+reads the state; the model preference is only written). The GPUI app is the
+spec and is not edited from this port, so the line stays wrong there until a
+GPUI change calls them or marks them read-only (parity review P2-15).

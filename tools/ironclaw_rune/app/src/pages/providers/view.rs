@@ -1,5 +1,8 @@
 //! Providers page rendering (GPUI `ProvidersView`'s `render_*` methods).
 
+use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
+use crate::pages::common::controls::{Look, Size, button_sized, header_with, icon_button_sized, input, muted, open_url, outlined_tag, refresh_icon, rule, section_title, spinner, spinner_line};
+use crate::pages::common::ts::{BODY_SEMIBOLD, MONO_XS, SM, SM_MEDIUM, XS, XS_MEDIUM};
 use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView};
 use ironclaw_gpui_client::orchestration::RouteProvider;
 use ironclaw_gpui_client::task_models::TaskModelChoice;
@@ -10,11 +13,6 @@ use super::catalog::{KNOWN_CLIS, Kind, display_name, kind_of};
 use crate::design::brands::provider_logo;
 use super::{CODEX_ADAPTER, Models, ProvidersState, Tab, connected, task_choices};
 use crate::icons;
-use crate::pages::c_widgets::{
-    BODY_SEMIBOLD, Look, MONO_XS, SM, SM_MEDIUM, Size, Tone, XS, XS_MEDIUM, button, card,
-    empty_state, error_line, header, icon_button, input, loading, muted, notice_line, open_url,
-    page_body, refresh_button, rule, section_title, spinner, spinner_line, tag,
-};
 use crate::state::State;
 
 const TILE_WIDTH: f32 = 196.;
@@ -25,7 +23,7 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     let p = &s.palette;
     let ps = &s.pages.providers;
     let actions = vec![
-        refresh_button()
+        refresh_icon()
             .on_press(|s: &mut State| super::refresh(s))
             .build(k)
             .key("refresh-providers"),
@@ -40,12 +38,12 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
                 .collect()
         })
         .unwrap_or_default();
-    let mut body = col().w_full().child(header(p, "Providers", actions));
+    let mut body = col().w_full().child(header_with(p, "Providers", actions));
     if let Some(e) = &ps.error {
         body = body.child(error_line(p, e));
     }
     if let Some(n) = &ps.notice {
-        body = body.child(notice_line(p, n, p.success));
+        body = body.child(notice_line(n, p.success));
     }
     body = body.child(section_title(p, "Connected", 24.));
     body = body.child(if ps.llm.is_none() {
@@ -97,7 +95,7 @@ fn render_task_models(s: &State, k: &Kit) -> El {
                     )),
             )
             .child(
-                button(label, Look::Outline, Size::Small)
+                button_sized(label, Look::Outline, Size::Small)
                     .icon(if ps.titles_open {
                         &icons::CHEVRON_UP
                     } else {
@@ -119,7 +117,7 @@ fn render_task_models(s: &State, k: &Kit) -> El {
         };
         let mut list = col().w_full().gap(8.).pt(8.).child(
             row().child(
-                button("Off", off, Size::Small)
+                button_sized("Off", off, Size::Small)
                     .on_press(|s: &mut State| super::set_title_model(s, None))
                     .build(k)
                     .key("title-model-off"),
@@ -134,7 +132,7 @@ fn render_task_models(s: &State, k: &Kit) -> El {
                     provider_id: provider.clone(),
                     model: model.clone(),
                 };
-                button(
+                button_sized(
                     model,
                     if selected {
                         Look::Primary
@@ -166,7 +164,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
     let usable = pv.api_key_set || !pv.api_key_required;
     let editing = ps.key_editor.as_deref() == Some(pv.id.as_str());
     let status = if pv.active {
-        tag(
+        outlined_tag(
             p,
             Tone::Success,
             format!(
@@ -177,18 +175,18 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
             ),
         )
     } else if pv.api_key_set {
-        tag(p, Tone::Secondary, "Key saved")
+        outlined_tag(p, Tone::Secondary, "Key saved")
     } else if pv.api_key_required {
-        tag(p, Tone::Warning, "Needs key")
+        outlined_tag(p, Tone::Warning, "Needs key")
     } else {
-        tag(p, Tone::Secondary, "No key needed")
+        outlined_tag(p, Tone::Secondary, "No key needed")
     };
 
     let mut actions = row().gap(4.).center_y();
     if pv.can_list_models && usable {
         let provider = pv.clone();
         actions = actions.child(
-            button("Models", Look::Ghost, Size::Small)
+            button_sized("Models", Look::Ghost, Size::Small)
                 .on_press(move |s: &mut State| super::toggle_models(s, provider.clone()))
                 .build(k)
                 .key(format!("models-{ix}")),
@@ -199,7 +197,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
         let running = ps.probes.get(&pv.id).is_some_and(Option::is_none);
         actions = actions.child(
             loading(
-                button("Test", Look::Ghost, Size::Small)
+                button_sized("Test", Look::Ghost, Size::Small)
                     .on_press(move |s: &mut State| super::test_connection(s, provider.clone())),
                 running,
             )
@@ -210,7 +208,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
     if pv.adapter == CODEX_ADAPTER && !pv.active {
         let id = pv.id.clone();
         actions = actions.child(
-            button("Sign in with ChatGPT", Look::Outline, Size::Small)
+            button_sized("Sign in with ChatGPT", Look::Outline, Size::Small)
                 .disabled(ps.codex.is_some())
                 .on_press(move |s: &mut State| super::start_codex(s, id.clone()))
                 .build(k)
@@ -220,7 +218,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
     if pv.accepts_api_key {
         let id = pv.id.clone();
         actions = actions.child(
-            button(
+            button_sized(
                 if pv.api_key_set {
                     "Replace key"
                 } else {
@@ -244,7 +242,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
             "Remove provider"
         };
         actions = actions.child(
-            icon_button(&icons::CLOSE, help, Size::XSmall)
+            icon_button_sized(&icons::CLOSE, help, Size::XSmall)
                 .disabled(pv.active)
                 .on_press(move |s: &mut State| s.pages.providers.confirm_delete = Some(id.clone()))
                 .build(k)
@@ -289,7 +287,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                     .children(list.iter().enumerate().map(|(mix, model)| {
                         let selected = current.as_deref() == Some(model.as_str());
                         let (id, m) = (pv.id.clone(), model.clone());
-                        button(
+                        button_sized(
                             model.clone(),
                             if selected {
                                 Look::Primary
@@ -314,9 +312,9 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                 .gap(8.)
                 .center_y()
                 .child(if *ok {
-                    tag(p, Tone::Success, "Connected")
+                    outlined_tag(p, Tone::Success, "Connected")
                 } else {
-                    tag(p, Tone::Danger, "Failed")
+                    outlined_tag(p, Tone::Danger, "Failed")
                 })
                 .child(text(msg.clone()).font(XS).color(p.text).wrap().grow(1.)),
         );
@@ -339,13 +337,13 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                     .grow(1.),
                 )
                 .child(
-                    button("Remove", Look::Danger, Size::Small)
+                    button_sized("Remove", Look::Danger, Size::Small)
                         .on_press(move |s: &mut State| super::delete_provider(s, id.clone()))
                         .build(k)
                         .key(format!("confirm-delete-{ix}")),
                 )
                 .child(
-                    button("Cancel", Look::Ghost, Size::Small)
+                    button_sized("Cancel", Look::Ghost, Size::Small)
                         .on_press(|s: &mut State| s.pages.providers.confirm_delete = None)
                         .build(k)
                         .key(format!("cancel-delete-{ix}")),
@@ -378,13 +376,13 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                         )
                         .child(rune_kit::Spinner::new().size(12.).build(k))
                         .child(
-                            button("Open page", Look::Ghost, Size::Small)
+                            button_sized("Open page", Look::Ghost, Size::Small)
                                 .on_press_tx(move |_: &mut State, tx| open_url(tx, &uri))
                                 .build(k)
                                 .key(format!("codex-open-{ix}")),
                         )
                         .child(
-                            button("Cancel", Look::Ghost, Size::Small)
+                            button_sized("Cancel", Look::Ghost, Size::Small)
                                 .on_press(|s: &mut State| s.pages.providers.codex = None)
                                 .build(k)
                                 .key(format!("codex-cancel-{ix}")),
@@ -414,13 +412,13 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                     ),
                 )
                 .child(
-                    button("Save", Look::Primary, Size::Small)
+                    button_sized("Save", Look::Primary, Size::Small)
                         .on_press(move |s: &mut State| super::save_key(s, provider.clone()))
                         .build(k)
                         .key(format!("save-key-{ix}")),
                 )
                 .child(
-                    button("Cancel", Look::Ghost, Size::Small)
+                    button_sized("Cancel", Look::Ghost, Size::Small)
                         .on_press(|s: &mut State| s.pages.providers.key_editor = None)
                         .build(k)
                         .key(format!("cancel-key-{ix}")),
@@ -462,7 +460,7 @@ fn render_quick_switch(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
                 .gap(4.)
                 .children(pinned.iter().enumerate().map(|(pix, model)| {
                     let (m, a) = (model.clone(), active.clone());
-                    button(model.clone(), Look::Outline, Size::XSmall)
+                    button_sized(model.clone(), Look::Outline, Size::XSmall)
                         .icon(&icons::CLOSE)
                         .on_press(move |s: &mut State| super::toggle_pin(s, m.clone(), a.clone()))
                         .build(k)
@@ -473,7 +471,7 @@ fn render_quick_switch(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
     if !ps.pin_open {
         c = c.child(
             row().child(
-                button("Add model", Look::Ghost, Size::XSmall)
+                button_sized("Add model", Look::Ghost, Size::XSmall)
                     .icon(&icons::PLUS)
                     .on_press(|s: &mut State| super::open_pin_input(s))
                     .build(k)
@@ -497,7 +495,7 @@ fn render_quick_switch(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
                     ),
                 )
                 .child(
-                    button("Add", Look::Outline, Size::Small)
+                    button_sized("Add", Look::Outline, Size::Small)
                         .on_press(|s: &mut State| super::add_pin(s))
                         .build(k)
                         .key("pin-add"),
@@ -510,7 +508,7 @@ fn render_quick_switch(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
 fn render_tabs(s: &State, k: &Kit) -> El {
     let ps = &s.pages.providers;
     let tab = |key: &'static str, label: &'static str, which: Tab| {
-        button(
+        button_sized(
             label,
             if ps.tab == which {
                 Look::Primary
@@ -688,7 +686,7 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
                 .child(text(label).font(XS).color(p.text_muted))
                 .child(text(cmd).font(MONO_XS).color(p.text).selectable(true))
                 .child(
-                    icon_button(&icons::COPY, "Copy command", Size::XSmall)
+                    icon_button_sized(&icons::COPY, "Copy command", Size::XSmall)
                         .on_press_tx(move |_: &mut State, tx| tx.copy(cmd))
                         .build(k)
                         .key(format!("copy-{}", r.id)),
@@ -704,11 +702,11 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
         .child(r.status);
     if let Some((provider, hidden)) = r.remove {
         let b = if hidden {
-            button("Add back", Look::Outline, Size::XSmall)
+            button_sized("Add back", Look::Outline, Size::XSmall)
                 .on_press(move |s: &mut State| super::toggle_cli_hidden(s, provider.clone()))
                 .build(k)
         } else {
-            icon_button(
+            icon_button_sized(
                 &icons::CLOSE,
                 "Remove from ZLO (the CLI stays installed)",
                 Size::XSmall,
@@ -740,11 +738,11 @@ fn render_cli(s: &State, k: &Kit) -> El {
             .collect();
         if found.is_empty() {
             let status = if known.planned {
-                tag(p, Tone::Secondary, "Driver coming next")
+                outlined_tag(p, Tone::Secondary, "Driver coming next")
             } else if ps.runtimes.is_none() {
-                tag(p, Tone::Secondary, "Unknown")
+                outlined_tag(p, Tone::Secondary, "Unknown")
             } else {
-                tag(p, Tone::Warning, "Not detected")
+                outlined_tag(p, Tone::Warning, "Not detected")
             };
             rows.push(cli_row(s, k,
                 CliRow {
@@ -765,15 +763,15 @@ fn render_cli(s: &State, k: &Kit) -> El {
                 .as_ref()
                 .is_some_and(|pp| pp.provider_hidden(&r.provider));
             let status = if hidden {
-                tag(p, Tone::Secondary, "Removed")
+                outlined_tag(p, Tone::Secondary, "Removed")
             } else if r.authenticated {
-                tag(
+                outlined_tag(
                     p,
                     Tone::Success,
                     format!("Ready · {} models", r.models.len()),
                 )
             } else {
-                tag(p, Tone::Warning, "Not signed in")
+                outlined_tag(p, Tone::Warning, "Not signed in")
             };
             let command = (!r.authenticated)
                 .then_some(known.login)

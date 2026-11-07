@@ -5,7 +5,6 @@
 
 pub mod automations;
 pub mod common;
-pub mod c_widgets;
 pub mod extensions;
 pub mod files;
 pub mod hooks;

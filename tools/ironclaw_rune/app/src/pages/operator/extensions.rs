@@ -3,16 +3,15 @@
 //! per group; a blank secret keeps the stored value. GPUI
 //! `pages/operator/extensions.rs`.
 
+use crate::pages::common::{Tone, card, empty_state, error_line, loading};
+use crate::pages::common::controls::{Look, Size, button_sized, input, muted, outlined_tag};
+use crate::pages::common::ts::{BODY_SEMIBOLD, XS, XS_MEDIUM};
 use ironclaw_gpui_client::ClientError;
 use ironclaw_gpui_client::operator::AdminConfigGroup;
 use rune::{El, TextEdit, col, row, text};
 use rune_kit::Kit;
 
 use crate::jobs;
-use crate::pages::c_widgets::{
-    BODY_SEMIBOLD, Look, Size, Tone, XS, XS_MEDIUM, button, card, empty_state, error_line, input,
-    loading, muted, tag,
-};
 use crate::state::State;
 
 /// One group with an input per field, in field order.
@@ -172,9 +171,9 @@ fn render_group(s: &State, k: &Kit, ix: usize, g: &GroupForm) -> El {
                     .grow(1.),
             )
             .child(if g.group.complete {
-                tag(p, Tone::Success, "Configured")
+                outlined_tag(p, Tone::Success, "Configured")
             } else {
-                tag(p, Tone::Warning, "Needs values")
+                outlined_tag(p, Tone::Warning, "Needs values")
             }),
     );
     if !g.group.description.is_empty() {
@@ -218,7 +217,7 @@ fn render_group(s: &State, k: &Kit, ix: usize, g: &GroupForm) -> El {
     c.child(
         actions.child(
             loading(
-                button("Save", Look::Primary, Size::Small)
+                button_sized("Save", Look::Primary, Size::Small)
                     .on_press(move |s: &mut State| save(s, ix)),
                 g.saving,
             )

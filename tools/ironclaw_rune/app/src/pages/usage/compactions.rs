@@ -3,11 +3,12 @@
 //! shrank and what it cost, so the setting can be judged against the cache
 //! savings above it.
 
+use crate::pages::common::controls::{rule, styled};
+use crate::pages::common::ts::{SM, SM_MEDIUM, XS};
+use crate::chat::model_picker::pretty_model;
 use ironclaw_gpui_client::usage::UsageHistory;
 use rune::{El, col, el, row};
 
-use super::common_stub::{SM, SM_MEDIUM, XS, label, rule};
-use super::common_stub::pretty_model;
 use super::history::{format_tokens, format_usd};
 use crate::design::{self, Palette};
 use crate::jobs;
@@ -45,10 +46,10 @@ pub fn view(p: &Palette, history: &UsageHistory) -> Option<El> {
                 .px(12.0)
                 .py(8.0)
                 .gap(12.0)
-                .child(el().w(90.0).child(label("When", XS, p.text_faint)))
-                .child(el().grow(1.0).child(label("Thread", XS, p.text_faint)))
-                .child(right(140.0, label("Context", XS, p.text_faint)))
-                .child(right(70.0, label("Cost", XS, p.text_faint))),
+                .child(el().w(90.0).child(styled("When", XS, p.text_faint)))
+                .child(el().grow(1.0).child(styled("Thread", XS, p.text_faint)))
+                .child(right(140.0, styled("Context", XS, p.text_faint)))
+                .child(right(70.0, styled("Cost", XS, p.text_faint))),
         );
     for (ix, run) in runs.iter().enumerate() {
         let when = chrono::DateTime::from_timestamp_millis(run.at).map_or("–".into(), jobs::ago);
@@ -64,10 +65,10 @@ pub fn view(p: &Palette, history: &UsageHistory) -> Option<El> {
             .min_w(0.0)
             .gap(8.0)
             .center_y()
-            .child(label(model, SM, p.text).truncate().shrink())
-            .child(label(format!("{} · {thread}", run.provider), XS, p.text_faint));
+            .child(styled(model, SM, p.text).truncate().shrink())
+            .child(styled(format!("{} · {thread}", run.provider), XS, p.text_faint));
         if !run.ok {
-            middle = middle.child(label(
+            middle = middle.child(styled(
                 run.error.clone().unwrap_or_else(|| "failed".into()),
                 XS,
                 p.danger,
@@ -81,18 +82,18 @@ pub fn view(p: &Palette, history: &UsageHistory) -> Option<El> {
                 .py(8.0)
                 .gap(12.0)
                 .center_y()
-                .child(el().w(90.0).child(label(when, SM, p.text_muted)))
+                .child(el().w(90.0).child(styled(when, SM, p.text_muted)))
                 .child(middle)
-                .child(right(140.0, label(context, SM, p.text)))
-                .child(right(70.0, label(format_usd(run.cost_usd), SM, p.text))),
+                .child(right(140.0, styled(context, SM, p.text)))
+                .child(right(70.0, styled(format_usd(run.cost_usd), SM, p.text))),
         );
     }
     Some(
         col()
             .w_full()
             .gap(12.0)
-            .child(label("Idle compactions", SM_MEDIUM, p.text))
-            .child(label(summary, XS, p.text_muted))
+            .child(styled("Idle compactions", SM_MEDIUM, p.text))
+            .child(styled(summary, XS, p.text_muted))
             .child(table),
     )
 }

@@ -20,18 +20,17 @@
 //! - [`level_color`]`(p, pct)`, [`short_countdown`]`(ms)`, [`countdown`]`(ms)`.
 
 mod compactions;
-pub(crate) mod common_stub;
 mod history;
 
+use crate::pages::common::{empty_state, error_line, page_body};
+use crate::pages::common::controls::{header_with, keyed_refresh, rule, styled};
+use crate::pages::common::ts::{BODY_SEMIBOLD, SM, XS};
 use std::time::{Duration, Instant};
 
 use ironclaw_gpui_client::usage::{ProviderUsage, UsageHistory, UsageReport, UsageStatus, UsageWindow};
 use rune::{Color, Cursor, Cx, El, col, el, row};
 use rune_kit::Kit;
 
-use self::common_stub::{
-    BODY_SEMIBOLD, SM, XS, empty_state, error_line, header, label, page_body, refresh_button, rule,
-};
 pub use self::history::Metric;
 use crate::design::{self, Palette};
 use crate::jobs;
@@ -198,7 +197,7 @@ fn segmented<T: Copy + PartialEq + 'static>(
             .py(4.0)
             .radius(6.0)
             .cursor(Cursor::Pointer)
-            .child(label(*name, XS, if on { p.text } else { p.text_muted }))
+            .child(styled(*name, XS, if on { p.text } else { p.text_muted }))
             .on_press(move |s: &mut State| on_pick(s, value));
         if on {
             pill = pill.fill(p.surface_card).shadow(1.0, 2.0, Color::BLACK.alpha(0.12));
@@ -221,7 +220,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     if metric != Metric::Limits {
         actions = actions.child(segmented(p, "usage-period", &PERIODS, days, set_days));
     }
-    actions = actions.child(refresh_button(k, "usage-refresh", move |s: &mut State| {
+    actions = actions.child(keyed_refresh(k, "usage-refresh", move |s: &mut State| {
         let (metric, days) = (s.pages.usage.metric, s.pages.usage.days);
         match metric {
             Metric::Limits => refresh(s, true),
@@ -229,7 +228,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         }
     }));
 
-    let mut page = col().w_full().child(header(p, "Usage", actions));
+    let mut page = col().w_full().child(header_with(p, "Usage", vec![actions]));
     if metric != Metric::Limits {
         if let Some(e) = &u.history_error {
             page = page.child(error_line(p, e));
@@ -302,18 +301,18 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
     let mut title = row()
         .gap(8.0)
         .center_y()
-        .child(label(provider.label.clone(), BODY_SEMIBOLD, p.text));
+        .child(styled(provider.label.clone(), BODY_SEMIBOLD, p.text));
     if let Some(plan) = &provider.plan {
         title = title.child(
             el().px(6.0)
                 .radius(4.0)
                 .fill(p.accent_wash)
-                .child(label(plan.clone(), XS, p.accent_strong)),
+                .child(styled(plan.clone(), XS, p.accent_strong)),
         );
     }
     let mut top = row().w_full().justify_between().center_y().gap(8.0).child(title);
     if let Some(st) = status_text(provider.status) {
-        top = top.child(label(st, XS, p.warning));
+        top = top.child(styled(st, XS, p.warning));
     }
     let mut card = col()
         .key(format!("usage-provider-{ix}"))
@@ -325,23 +324,23 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
         .fill(p.surface_card)
         .child(top);
     if let Some(m) = &provider.message {
-        card = card.child(label(m.clone(), SM, p.text_muted).wrap());
+        card = card.child(styled(m.clone(), SM, p.text_muted).wrap());
     }
     for (wx, w) in provider.windows.iter().enumerate() {
         card = card.child(window_row(p, w, now).key(format!("window-{wx}")));
     }
     let updated = match provider.fetched_at {
-        Some(at) if stale => label(
+        Some(at) if stale => styled(
             format!("Updated {} · may be out of date", jobs::ago(from_millis(at))),
             XS,
             p.warning,
         ),
-        Some(at) => label(format!("Updated {}", jobs::ago(from_millis(at))), XS, p.text_faint),
+        Some(at) => styled(format!("Updated {}", jobs::ago(from_millis(at))), XS, p.text_faint),
         None => el(),
     };
     let mut foot = row().w_full().justify_between().gap(12.0).child(updated);
     if let Some(detail) = &provider.detail {
-        foot = foot.child(label(detail.clone(), XS, p.text_faint).wrap().shrink());
+        foot = foot.child(styled(detail.clone(), XS, p.text_faint).wrap().shrink());
     }
     card.child(foot)
 }
@@ -360,8 +359,8 @@ fn idle_row(p: &Palette, ix: usize, provider: &ProviderUsage) -> El {
         .py(10.0)
         .gap(12.0)
         .items_start()
-        .child(el().w(120.0).child(label(provider.label.clone(), SM, p.text_muted)))
-        .child(el().grow(1.0).min_w(0.0).child(label(why, SM, p.text_faint).wrap()))
+        .child(el().w(120.0).child(styled(provider.label.clone(), SM, p.text_muted)))
+        .child(el().grow(1.0).min_w(0.0).child(styled(why, SM, p.text_faint).wrap()))
 }
 
 fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
@@ -370,9 +369,9 @@ fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
     let elapsed = elapsed_share(window, now);
     // Only overspending earns a caption; the tick shows the rest.
     let ahead = elapsed.and_then(|e| ahead_of_pace(pct, e));
-    let mut right = row().gap(8.0).child(label(format!("{pct:.0}%"), SM, p.text));
+    let mut right = row().gap(8.0).child(styled(format!("{pct:.0}%"), SM, p.text));
     if let Some(r) = resets {
-        right = right.child(label(r, SM, p.text_faint));
+        right = right.child(styled(r, SM, p.text_faint));
     }
     let mut bar = el()
         .key("bar")
@@ -400,12 +399,12 @@ fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
             row()
                 .w_full()
                 .justify_between()
-                .child(label(window.label.clone(), SM, p.text))
+                .child(styled(window.label.clone(), SM, p.text))
                 .child(right),
         )
         .child(bar);
     if let Some(caption) = ahead {
-        c = c.child(label(caption, XS, p.warning));
+        c = c.child(styled(caption, XS, p.warning));
     }
     c
 }

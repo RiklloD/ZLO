@@ -14,19 +14,19 @@
 mod draft;
 mod supermemory;
 
+use crate::pages::common::{block_fill, empty_state, error_line, page_body};
+use crate::pages::common::controls::{Look, header_with, keyed_refresh, press_button, press_icon, styled};
+use crate::pages::common::ts::{BODY_SEMIBOLD, SM, SM_MEDIUM, XS};
 use ironclaw_gpui_client::memory_page::{
     MemoryArchiveOutcome, MemoryDocument, MemoryDocumentEntry, MemoryDocumentKind,
     MemoryPageWriteOutcome, MemorySearchHit, SupermemoryDocumentPage, SupermemoryMemoryHit,
     SupermemoryStatus,
 };
 use rune::{Cursor, Cx, El, TextEdit, col, el, row};
-use rune_kit::{Kit, Markdown, TextArea, TextInput};
+use rune_kit::{Kit, Markdown, TextInput};
 
 use self::draft::{Effect, SaveReply, apply_archived, apply_save};
-use super::usage::common_stub::{
-    BODY_SEMIBOLD, Look, SM, SM_MEDIUM, XS, block_fill, button, empty_state, error_line, header,
-    icon_button, label, page_body, refresh_button,
-};
+use crate::design::kit::mono_editor;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -356,7 +356,7 @@ fn set_tab(s: &mut State, tab: Tab) {
 fn tabs(s: &State, k: &Kit) -> El {
     let tab = |key: &str, title: &str, which: Tab| {
         let look = if s.pages.memory.tab == which { Look::Primary } else { Look::Ghost };
-        button(k, key, title, look, None, false, move |s: &mut State| set_tab(s, which))
+        press_button(k, key, title, look, None, false, move |s: &mut State| set_tab(s, which))
     };
     row()
         .key("memory-tabs")
@@ -400,8 +400,8 @@ fn render_local(s: &State, k: &Kit) -> El {
                 .cursor(Cursor::Pointer)
                 .fill(if active { p.active } else { rune::Color::TRANSPARENT })
                 .hover(p.hover)
-                .child(label(entry.path.clone(), SM, p.text).truncate().grow(1.0).min_w(0.0))
-                .child(label(kind_label(entry.kind), XS, p.text_muted))
+                .child(styled(entry.path.clone(), SM, p.text).truncate().grow(1.0).min_w(0.0))
+                .child(styled(kind_label(entry.kind), XS, p.text_muted))
                 .on_press(move |s: &mut State| open_document(s, path.clone())),
         );
     }
@@ -414,7 +414,7 @@ fn render_local(s: &State, k: &Kit) -> El {
             .on_submit(|s: &mut State, _| run_search(s))
             .build(k)
             .key("memory-search-field"),
-        icon_button(k, "memory-search", &icons::SEARCH, "Search local memory", run_search),
+        press_icon(k, "memory-search", &icons::SEARCH, "Search local memory", run_search),
     );
     let mut c = col().w_full().gap(12.0).child(search);
     if let Some(hits) = &m.hits {
@@ -431,13 +431,13 @@ fn render_local(s: &State, k: &Kit) -> El {
                         .w_full()
                         .py(6.0)
                         .cursor(Cursor::Pointer)
-                        .child(label(hit.path.clone(), SM_MEDIUM, p.text))
+                        .child(styled(hit.path.clone(), SM_MEDIUM, p.text))
                         .child(
-                            label(hit.snippet.chars().take(240).collect::<String>(), XS, p.text_muted).wrap(),
+                            styled(hit.snippet.chars().take(240).collect::<String>(), XS, p.text_muted).wrap(),
                         )
                         .on_press(move |s: &mut State| open_document(s, path.clone())),
                 );
-                h = h.child(super::usage::common_stub::rule(p).key(format!("memory-hit-rule-{ix}")));
+                h = h.child(crate::pages::common::controls::rule(p).key(format!("memory-hit-rule-{ix}")));
             }
             c = c.child(h);
         }
@@ -451,7 +451,7 @@ fn render_local(s: &State, k: &Kit) -> El {
             .on_submit(|s: &mut State, _| create(s))
             .build(k)
             .key("memory-new-field"),
-        button(k, "memory-new", "New", Look::Outline, Some(&icons::PLUS), false, create),
+        press_button(k, "memory-new", "New", Look::Outline, Some(&icons::PLUS), false, create),
     ));
     if m.loaded && m.documents.is_empty() {
         c = c.child(empty_state(p, "No memory documents yet."));
@@ -489,8 +489,8 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
     let actions = match (&open.editor, archived) {
         (Some(_), _) => row()
             .gap(8.0)
-            .child(button(k, "memory-cancel", "Cancel", Look::Ghost, None, false, cancel_edit))
-            .child(button(
+            .child(press_button(k, "memory-cancel", "Cancel", Look::Ghost, None, false, cancel_edit))
+            .child(press_button(
                 k,
                 "memory-save",
                 if open.conflict { "Save anyway" } else { "Save" },
@@ -502,9 +502,9 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
         (None, true) => row(),
         (None, false) => row()
             .gap(8.0)
-            .child(button(k, "memory-edit", "Edit", Look::Outline, None, false, start_edit))
+            .child(press_button(k, "memory-edit", "Edit", Look::Outline, None, false, start_edit))
             .child(if m.confirm_archive {
-                button(
+                press_button(
                     k,
                     "memory-archive-confirm",
                     "Remove (keeps a copy in archive/)",
@@ -514,17 +514,16 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
                     archive,
                 )
             } else {
-                icon_button(k, "memory-archive", &icons::DELETE, "Remove", |s: &mut State| {
+                press_icon(k, "memory-archive", &icons::DELETE, "Remove", |s: &mut State| {
                     s.pages.memory.confirm_archive = true
                 })
+                .label("Remove document")
             }),
     };
     let body = match &open.editor {
-        // PORT-STUB(area G): GPUI draws the editor in the mono font; kit's
-        // TextArea takes no text style yet.
-        Some(editor) => TextArea::new(editor)
-            .auto_grow(10, 36)
-            .width(None)
+        // GPUI draws the editor in the mono font.
+        Some(editor) => mono_editor(editor)
+            .rows(10, 36)
             .label(format!("Edit {}", doc.path))
             .on_edit(|s: &mut State| match s.pages.memory.open.as_mut().and_then(|o| o.editor.as_mut()) {
                 Some(e) => e,
@@ -555,14 +554,14 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
                     col()
                         .grow(1.0)
                         .min_w(0.0)
-                        .child(label(doc.path.clone(), BODY_SEMIBOLD, p.text))
-                        .child(label(provenance, XS, p.text_muted).wrap()),
+                        .child(styled(doc.path.clone(), BODY_SEMIBOLD, p.text))
+                        .child(styled(provenance, XS, p.text_muted).wrap()),
                 )
                 .child(actions),
         );
     if open.conflict {
         card = card.child(
-            label(
+            styled(
                 "This document changed since you opened it (the agent may have \
                  written to it). Your text is kept; Save anyway replaces the \
                  newer version, which stays in the history.",
@@ -578,17 +577,17 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
 pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let m = &s.pages.memory;
-    let actions = refresh_button(k, "refresh-memory", refresh);
+    let actions = keyed_refresh(k, "refresh-memory", refresh);
     let content = match m.tab {
         Tab::Local => render_local(s, k).key("memory-local"),
         Tab::Supermemory => supermemory::render(s, k).key("memory-supermemory"),
     };
-    let mut body = col().w_full().child(header(p, "Memory", actions)).child(tabs(s, k));
+    let mut body = col().w_full().child(header_with(p, "Memory", vec![actions])).child(tabs(s, k));
     if let Some(e) = &m.error {
         body = body.child(error_line(p, e));
     }
     if let Some(n) = &m.notice {
-        body = body.child(el().pb(12.0).child(label(n.clone(), SM, p.text_muted)));
+        body = body.child(el().pb(12.0).child(styled(n.clone(), SM, p.text_muted)));
     }
     page_body("memory-page", body.child(content))
 }

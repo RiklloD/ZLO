@@ -5,6 +5,9 @@
 //! (`/usage/history`), priced at list rates, so cost reads as an API-price
 //! estimate, not a bill.
 
+use crate::pages::common::controls::{rule, styled};
+use crate::pages::common::ts::{LG_SEMIBOLD, SM, SM_MEDIUM, XS};
+use crate::chat::model_picker::pretty_model;
 use std::collections::BTreeMap;
 
 use ironclaw_gpui_client::usage::{
@@ -13,7 +16,6 @@ use ironclaw_gpui_client::usage::{
 use rune::{Color, El, TextStyle, col, el, row};
 
 use crate::state::State;
-use super::common_stub::{LG_SEMIBOLD, SM, SM_MEDIUM, XS, label, pretty_model, rule};
 use crate::design::{self, Palette, rgb};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,7 +145,7 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
         return col()
             .w_full()
             .gap(12.0)
-            .child(label("No token use in this period.", SM, p.text_muted))
+            .child(styled("No token use in this period.", SM, p.text_muted))
             .child(sources_note(p, history));
     }
 
@@ -164,10 +166,10 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
         col()
             .gap(4.0)
             .child(
-                label(figure, TextStyle::new(34.0, 600.0), p.text)
+                styled(figure, TextStyle::new(34.0, 600.0), p.text)
                     .opacity(if loading { 0.55 } else { 1.0 }),
             )
-            .child(label(caption, XS, p.text_muted)),
+            .child(styled(caption, XS, p.text_muted)),
     );
     for (provider, sum, n) in &providers {
         let share = percent(sum.value(metric), whole);
@@ -195,19 +197,19 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
                                 .child(dot(provider_color(provider), 8.0))
                                 .child(crate::design::brands::provider_logo(s, &[provider], 14.0))
                                 .child(
-                                    label(label_of(&history.sources, provider).to_string(), SM, p.text)
+                                    styled(label_of(&history.sources, provider).to_string(), SM, p.text)
                                         .truncate()
                                         .shrink(),
                                 )
-                                .child(label(
+                                .child(styled(
                                     format!("{n} {}", if *n == 1 { "session" } else { "sessions" }),
                                     XS,
                                     p.text_faint,
                                 )),
                         )
-                        .child(label(format_value(sum.value(metric), metric), SM_MEDIUM, p.text)),
+                        .child(styled(format_value(sum.value(metric), metric), SM_MEDIUM, p.text)),
                 )
-                .child(label(detail, XS, p.text_muted)),
+                .child(styled(detail, XS, p.text_muted)),
         );
     }
 
@@ -222,7 +224,7 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
                 .grow(1.0)
                 .min_w(0.0)
                 .gap(12.0)
-                .child(label(
+                .child(styled(
                     match metric {
                         Metric::Cost => "Daily cost",
                         _ => "Daily processed tokens",
@@ -244,14 +246,14 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
             .radius(design::PANEL_RADIUS)
             .border(1.0, p.border)
             .fill(p.surface_card)
-            .child(label(title, XS, p.text_muted))
-            .child(label(value, LG_SEMIBOLD, p.text))
+            .child(styled(title, XS, p.text_muted))
+            .child(styled(value, LG_SEMIBOLD, p.text))
     };
     let totals = col()
         .key("totals")
         .w_full()
         .gap(12.0)
-        .child(label("Totals", SM_MEDIUM, p.text))
+        .child(styled("Totals", SM_MEDIUM, p.text))
         .child(
             row()
                 .w_full()
@@ -292,9 +294,9 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
                 .px(12.0)
                 .py(8.0)
                 .gap(12.0)
-                .child(el().grow(1.0).child(label("Model", XS, p.text_faint)))
-                .child(right(90.0, label("Cost", XS, p.text_faint)))
-                .child(right(90.0, label("Tokens", XS, p.text_faint)))
+                .child(el().grow(1.0).child(styled("Model", XS, p.text_faint)))
+                .child(right(90.0, styled("Cost", XS, p.text_faint)))
+                .child(right(90.0, styled("Tokens", XS, p.text_faint)))
                 .child(el().w(120.0)),
         );
     for (ix, ((provider, model), sum)) in models.iter().enumerate() {
@@ -315,18 +317,18 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
                         .gap(8.0)
                         .center_y()
                         .child(dot(provider_color(provider), 8.0))
-                        .child(label(pretty_model(model), SM, p.text).truncate().shrink())
-                        .child(label(label_of(&history.sources, provider).to_string(), XS, p.text_faint)),
+                        .child(styled(pretty_model(model), SM, p.text).truncate().shrink())
+                        .child(styled(label_of(&history.sources, provider).to_string(), XS, p.text_faint)),
                 )
                 .child(right(
                     90.0,
                     if unpriced {
-                        label("–", SM, p.text_faint)
+                        styled("–", SM, p.text_faint)
                     } else {
-                        label(format_usd(sum.cost), SM, p.text)
+                        styled(format_usd(sum.cost), SM, p.text)
                     },
                 ))
-                .child(right(90.0, label(format_tokens(sum.tokens()), SM, p.text)))
+                .child(right(90.0, styled(format_tokens(sum.tokens()), SM, p.text)))
                 .child(
                     el().w(120.0)
                         .h(6.0)
@@ -340,7 +342,7 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
         .key("breakdown")
         .w_full()
         .gap(12.0)
-        .child(label("Breakdown", SM_MEDIUM, p.text))
+        .child(styled("Breakdown", SM_MEDIUM, p.text))
         .child(table);
 
     let mut out = col().w_full().gap(32.0).child(overview).child(totals).child(breakdown);
@@ -406,9 +408,9 @@ fn daily_chart(
             row()
                 .w_full()
                 .justify_between()
-                .child(label(short_day(&first), XS, p.text_faint))
-                .child(label(format!("peak {}", format_value(peak, metric)), XS, p.text_faint))
-                .child(label(short_day(&last), XS, p.text_faint)),
+                .child(styled(short_day(&first), XS, p.text_faint))
+                .child(styled(format!("peak {}", format_value(peak, metric)), XS, p.text_faint))
+                .child(styled(short_day(&last), XS, p.text_faint)),
         )
 }
 
@@ -453,13 +455,13 @@ fn share_bar(p: &Palette, title: &str, parts: &[(&'static str, f64, Color)], for
                 .gap(6.0)
                 .center_y()
                 .child(dot(*color, 8.0))
-                .child(label(format!("{name} {} · {}", format(*v), percent(*v, whole)), XS, p.text_muted)),
+                .child(styled(format!("{name} {} · {}", format(*v), percent(*v, whole)), XS, p.text_muted)),
         );
     }
     col()
         .w_full()
         .gap(8.0)
-        .child(label(title, XS, p.text_muted))
+        .child(styled(title, XS, p.text_muted))
         .child(bar)
         .child(legend)
 }
@@ -480,7 +482,7 @@ fn sources_note(p: &Palette, history: &UsageHistory) -> El {
         UsagePricingStatus::Unavailable => "Prices unavailable: costs show as unpriced.".into(),
     };
     let mut c = col().w_full().gap(4.0).child(
-        label(format!("{pricing} Read from the CLIs' transcripts in {} ms.", history.scan_ms), XS, p.text_faint)
+        styled(format!("{pricing} Read from the CLIs' transcripts in {} ms.", history.scan_ms), XS, p.text_faint)
             .wrap(),
     );
     for (ix, s) in history.sources.iter().enumerate() {
@@ -492,7 +494,7 @@ fn sources_note(p: &Palette, history: &UsageHistory) -> El {
             s.label,
             s.message.clone().unwrap_or_else(|| "could not be read".into())
         );
-        c = c.child(label(line, XS, p.text_faint).wrap().key(format!("issue-{ix}")));
+        c = c.child(styled(line, XS, p.text_faint).wrap().key(format!("issue-{ix}")));
     }
     c
 }

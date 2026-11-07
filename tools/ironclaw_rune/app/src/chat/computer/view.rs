@@ -12,7 +12,7 @@ use super::{
     take_over_or_back, toggle_hidden,
 };
 use crate::chat::ChatState;
-use crate::chat::extras_ui::{XS, ghost_button, ghost_icon, txt, variant_button};
+use crate::design::kit::compact::{XS, ghost_button, ghost_icon, txt, variant_button};
 use crate::design::{Palette, rgb};
 use crate::icons;
 use crate::state::State;

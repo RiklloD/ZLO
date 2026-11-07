@@ -3,6 +3,9 @@
 //! is live. Read-only — the framework switch is boot configuration and
 //! per-hook enablement has no backend yet. Port of GPUI `pages/hooks.rs`.
 
+use crate::pages::common::{Tone, empty_state, error_line, page_body};
+use crate::pages::common::controls::{header_with, outlined_tag, refresh_icon, rule, spinner};
+use crate::pages::common::ts::{SM, SM_MEDIUM, XS};
 use ironclaw_gpui_client::hooks_catalog::{
     HookCatalog, HookCatalogEntry, HookSource, HookTrustClassView,
 };
@@ -10,10 +13,6 @@ use rune::{Cx, El, col, row, text};
 use rune_kit::Kit;
 
 use crate::jobs;
-use crate::pages::c_widgets::{
-    SM, SM_MEDIUM, Tone, XS, empty_state, error_line, header, page_body, refresh_button, rule,
-    spinner, tag,
-};
 use crate::state::{Conn, Page, State};
 
 #[derive(Default)]
@@ -99,9 +98,9 @@ fn render_hook(s: &State, k: &Kit, hook: &HookCatalogEntry) -> El {
                 .py(8.)
                 .child(info)
                 .child(if hook.enabled {
-                    tag(p, Tone::Success, "On")
+                    outlined_tag(p, Tone::Success, "On")
                 } else {
-                    tag(p, Tone::Secondary, "Off")
+                    outlined_tag(p, Tone::Secondary, "Off")
                 }),
         )
         .child(rule(p))
@@ -111,7 +110,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     let p = &s.palette;
     let h = &s.pages.hooks;
     let actions = vec![
-        refresh_button()
+        refresh_icon()
             .on_press(|s: &mut State| refresh(s))
             .build(k)
             .key("refresh-hooks"),
@@ -138,7 +137,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
             c.children(catalog.hooks.iter().map(|hook| render_hook(s, k, hook)))
         }
     };
-    let mut body = col().w_full().child(header(p, "Hooks", actions));
+    let mut body = col().w_full().child(header_with(p, "Hooks", actions));
     if let Some(e) = &h.error {
         body = body.child(error_line(p, e));
     }

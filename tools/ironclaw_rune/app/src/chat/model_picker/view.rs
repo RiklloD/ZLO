@@ -10,9 +10,10 @@ use super::{
     pick_effort, pretty_model, reorder, toggle_provider,
 };
 use crate::design::smooth_scroll::WheelGlide;
-use crate::chat::extras_ui::{
-    ICON_SM, ICON_XS, SM, XS, ghost_icon, ico, panel_surface, shortcut_badge, spacer, spinner, txt, txt_medium,
+use crate::design::kit::compact::{
+    ICON_SM, ICON_XS, SM, XS, ghost_icon, ico, panel_surface, spacer, spinner, txt, txt_medium,
 };
+use crate::design::kit::shortcut_badge;
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::State;
@@ -474,7 +475,7 @@ fn model_row(
         r = r.opacity(0.45);
     }
     if let Some(ix) = badge {
-        r = r.child(shortcut_badge(p, ix));
+        r = r.child(shortcut_badge(s, ix));
     }
     r.child(
         row()

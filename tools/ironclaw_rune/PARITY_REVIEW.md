@@ -338,8 +338,18 @@ Each item is sized for one focused fix.
 6. Use the accent for kit primary buttons (Approve, Save and so on), and fold
    `pages/c_widgets.rs`, `pages/usage/common_stub.rs` and `chat/extras_ui.rs`
    into `design::kit`/`pages::common` (the remaining PORT-STUBs).
+   **FIXED in 8afe83ba8 and 5e12d99d7**: `design::kit()` sets rune-kit's
+   contrast/submit tokens from `Palette::accent`/`on_accent`, so every Submit
+   and Contrast button (Approve ⌘↵, Save, New profile, Try again, ...) is an
+   accent fill. `c_widgets.rs` and `common_stub.rs` are gone (pages use
+   `pages::common`, `common::ts`, `common::controls`); `chat/extras_ui.rs`
+   moved to `design::kit::compact` and stays only as a one-line re-export for
+   `chat.rs`, `chat/goals.rs` and `chat/orchestration/view.rs`.
 7. Use the mono font in the memory and SKILL.md editors (needs rune-kit
    `TextArea` text styles; `pages/memory.rs:523`).
+   **FIXED in 17ba43bd8**: `design::kit::mono_editor`, the kit field's look on
+   Rune's core `text_input` in the mono family (scenes `memory-draft`,
+   `skills-editor`).
 8. Refocus the composer on window focus only when nothing else has focus
    (`workspace.rs:644-660`; GPUI `restore_composer`, `workspace.rs:670`).
 9. Guard the browser poll `tick` with the thread that started it
@@ -347,6 +357,9 @@ Each item is sized for one focused fix.
 10. Restore three accessibility labels: "Filters" (`workspace/inbox/view.rs:186`),
     "Remove document" (memory archive) and "New thread on this profile"
     (profiles row).
+    **FIXED in 00afa97bc** for "Remove document" and "New thread on this
+    profile". "Filters" is still open: it lives in `workspace/inbox/view.rs`,
+    which was another delegate's file during this pass.
 11. Restore the draft copy "A new thread is still being created; try again."
     (`workspace/draft.rs:223`).
 12. Add a "Quit ZLO" app-menu item (GPUI `main.rs:92`).

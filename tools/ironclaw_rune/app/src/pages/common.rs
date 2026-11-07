@@ -2,8 +2,11 @@
 //! `design/kit.rs` pieces every page uses): the page column, its title row,
 //! settings groups and rows, cards, tags and the small controls the pages
 //! share. Areas C, D and E build their pages from these; keep the API small
-//! and stable. Area G's `design/kit.rs` may replace the control wrappers at
-//! integration.
+//! and stable. [`ts`] holds the text styles, [`controls`] the sized and
+//! keyed controls and the smaller pieces.
+
+pub mod controls;
+pub mod ts;
 
 use rune::{Color, El, ScrollSpec, TextStyle, Tx, col, el, icon, row, text};
 use rune_kit::{
@@ -110,29 +113,7 @@ pub fn rows_card(p: &Palette, rows: impl IntoIterator<Item = El>) -> El {
 /// One setting, Zeron's `card_row`: a 14 px medium title and a 12 px muted
 /// description on the left, the control on the right, at least 60 px tall.
 pub fn setting_row(p: &Palette, title: &str, description: Option<&str>, control: El) -> El {
-    let mut left = col()
-        .grow(1.0)
-        .min_w(160.)
-        .gap(1.)
-        .child(label(title, SM, 500., p.text));
-    if let Some(d) = description {
-        left = left.child(
-            text(d)
-                .font(font(XS, 400.).lh(18.))
-                .color(p.text_muted)
-                .wrap(),
-        );
-    }
-    row()
-        .key(format!("setting-{title}"))
-        .w_full()
-        .min_h(60.)
-        .px(16.)
-        .py(12.)
-        .gap(16.)
-        .center_y()
-        .child(left)
-        .child(col().shrink().child(control))
+    controls::keyed_setting_row(p, &format!("setting-{title}"), title, description, control)
 }
 
 /// Centered, width-capped page body that scrolls.
@@ -322,5 +303,5 @@ pub fn segmented(
 
 /// An icon at `size` in `color`.
 pub fn glyph(i: &'static rune::Icon, size: f32, color: Color) -> El {
-    icon(i, size).color(color)
+    icon(i, size).color(color).a11y_hidden()
 }
