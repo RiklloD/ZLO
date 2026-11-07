@@ -555,6 +555,7 @@ pub fn render_activity(
     let label = summary(rows);
     let small = type_at(s, 12., LABEL_LINE, 400.);
     let toggle_key = key.to_string();
+    let head_key = format!("{key}-head");
     let thread_id = thread.to_string();
     let title = if live {
         // The live group's line breathes while the run works.
@@ -599,12 +600,14 @@ pub fn render_activity(
                 .child(chevron.absolute(TRUNK_X - 6.5, 2.5)),
         )
         .child(el().min_w(0.).shrink().child(title))
-        .on_press(move |s: &mut State| {
+        // The header stays under the pointer while its rows open or shut.
+        .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
             let Some(c) = super::chat_for(s, &thread_id) else {
                 return;
             };
             let now = c.activity_open(&toggle_key, live);
             c.toggles.insert(toggle_key.clone(), !now);
+            tx.keep_on_screen(head_key.clone());
         });
 
     let mut group = col().key(format!("{key}-group")).w_full().child(header);
@@ -694,16 +697,18 @@ fn tree_row(
         .child(words);
     if expandable {
         let thread_id = thread.to_string();
+        let leaf_key = format!("{key}-leaf");
         line = line
             .cursor(rune::Cursor::Pointer)
             .hover(p.hover)
             .radius(design_radius())
-            .on_press(move |s: &mut State| {
+            .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
                 let Some(c) = super::chat_for(s, &thread_id) else {
                     return;
                 };
                 let on = c.toggles.get(&open_key).copied().unwrap_or(expanded);
                 c.toggles.insert(open_key.clone(), !on);
+                tx.keep_on_screen(leaf_key.clone());
             });
     }
     if !expanded || (leaf.body.is_none() && leaf.output.is_none()) {

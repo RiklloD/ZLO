@@ -32,10 +32,18 @@ pub const SCENES: &[Scene] = &[
         page_with(s, Page::Automations, crate::pages::automations::fixture)
     }),
     ("chat", crate::chat::fixtures::chat),
+    ("chat-context-banner", crate::chat::fixtures::context_banner),
     ("chat-gate", crate::chat::fixtures::gate),
+    ("chat-long-draft", crate::chat::fixtures::long_draft),
     ("chat-menu", crate::chat::fixtures::menu),
     ("chat-question", crate::chat::fixtures::question),
     ("chat-running", crate::chat::fixtures::running),
+    ("chat-wallpaper-conversation", |s| {
+        crate::chat::fixtures::wallpaper_area(s, "conversation")
+    }),
+    ("chat-wallpaper-pane", |s| {
+        crate::chat::fixtures::wallpaper_area(s, "pane")
+    }),
     ("command-menu", ws::fixture_command_menu),
     ("computer", |s| crate::chat::computer::scene(s, false)),
     ("computer-big", |s| crate::chat::computer::scene(s, true)),
@@ -54,6 +62,11 @@ pub const SCENES: &[Scene] = &[
     ("inbox-subagents", ws::fixture_inbox_subagents),
     ("kit-gallery", gallery::fixture_kit_gallery),
     ("kit-gallery-light", gallery::fixture_kit_gallery_light),
+    // The launch screen while the gateway boots (the caption shows late).
+    ("loading", |s| {
+        s.fixture = true;
+        s.conn = crate::state::Conn::Connecting;
+    }),
     ("look-wallpaper-ascii", gallery::fixture_wallpaper_ascii),
     ("look-wallpaper-dither", gallery::fixture_wallpaper_dither),
     (

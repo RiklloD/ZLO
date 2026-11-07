@@ -1,5 +1,6 @@
 //! Headless fixture scenes for the chat (PLAN.md rule 6): `chat`,
-//! `chat-running`, `chat-gate`, `chat-question`, `chat-menu`. Each fills the
+//! `chat-running`, `chat-gate`, `chat-question`, `chat-menu`,
+//! `chat-long-draft`, `chat-context-banner`. Each fills the
 //! open chat with rows the way a timeline load would, without a gateway.
 
 use std::rc::Rc;
@@ -204,6 +205,45 @@ pub fn running(s: &mut State) {
     if let Some(c) = s.chat.as_mut() {
         c.composer.replace_text("also check clippy");
     }
+}
+
+/// The finished conversation with a long unsent message in the composer
+/// (about 300 characters, several lines): sidebar and dock motion checks.
+pub fn long_draft(s: &mut State) {
+    chat(s);
+    if let Some(c) = s.chat.as_mut() {
+        c.composer.replace_text(
+            "Before we merge, walk the whole sidebar animation again at the narrow \
+             window widths: open and close it with an empty composer and with this \
+             long message in it, and check that the transcript, the composer and the \
+             sidebar all move on the same curve, with nothing drifting up or down \
+             after the slide has ended.",
+        );
+    }
+}
+
+/// The finished conversation under the context banner (the window at 85 %
+/// of its context): the banner's own checks.
+pub fn context_banner(s: &mut State) {
+    chat(s);
+    s.workspace.telemetry = Some(ironclaw_gpui_client::usage::ThreadTelemetry {
+        context_used: Some(171_000),
+        context_max: Some(200_000),
+        ..Default::default()
+    });
+}
+
+/// The right pane open under a full-strength wallpaper laid over `area`
+/// ("conversation" or "pane"): each covers only its own region.
+pub fn wallpaper_area(s: &mut State, area: &str) {
+    super::side::fixtures::history(s);
+    s.prefs.wallpaper = crate::design::prefs::Wallpaper::Scene {
+        name: "night".into(),
+    };
+    s.prefs.wallpaper_effect = "none".into();
+    s.prefs.wallpaper_area = area.into();
+    s.prefs.wallpaper_opacity = 0.6;
+    crate::design::look::fixture_wallpaper(s, (800, 600));
 }
 
 /// An approval waiting on the person, with its reason, and the reject field

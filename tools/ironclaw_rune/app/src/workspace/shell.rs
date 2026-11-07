@@ -10,7 +10,7 @@ use rune_kit::{ControlSize, Dialog, Kit};
 
 use super::inbox::view as inbox_view;
 use super::ui::{self, MEDIUM, SEMIBOLD, SM, XS, t, tw};
-use super::{active_id, command, context, draft, settings_groups, settings_pages, status};
+use super::{active_id, command, draft, settings_groups, settings_pages, status};
 use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
 use crate::icons;
@@ -18,6 +18,10 @@ use crate::state::{Conn, Page, State};
 
 /// Room the titlebar cluster takes: the traffic lights, then the sidebar
 /// button (GPUI `panels::CLUSTER_END`).
+mod main_area;
+
+use main_area::{chat_shown, main_area};
+
 const TOGGLE_SIZE: f32 = 28.;
 const CLUSTER_END: f32 = design::TRAFFIC_LIGHTS_WIDTH + TOGGLE_SIZE;
 
@@ -95,6 +99,13 @@ fn note_field_focus(s: &State, cx: &Cx<State>) {
     }
 }
 
+/// The loading caption's entrance: hidden 700 ms, then in over 300 ms.
+const CAPTION_IN: &[rune::Beat] = &[
+    rune::Beat::new(0.0).opacity(0.0),
+    rune::Beat::new(0.7).opacity(0.0),
+    rune::Beat::new(1.0),
+];
+
 /// Launch screen while the gateway boots: the claw mark breathing on the
 /// shell, its caption fading in late so a fast start shows no text at all.
 fn loading(s: &State, p: &Palette) -> El {
@@ -111,7 +122,13 @@ fn loading(s: &State, p: &Palette) -> El {
             still: 1.0,
             fps: 30.0,
         }))
-        .child(t("Starting IronClaw", SM, p.text_muted).key("loading-caption"))
+        // GPUI's `fade_in_after`: nothing for 700 ms, then a 300 ms fade, so
+        // a fast connect never shows the line.
+        .child(
+            t("Starting IronClaw", SM, p.text_muted)
+                .key("loading-caption")
+                .sequence(rune::Sequence::new(CAPTION_IN)),
+        )
 }
 
 fn failed(p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>) -> El {
@@ -166,46 +183,6 @@ fn ready(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El
     let shown = !s.prefs.sidebar_hidden || s.workspace.sidebar_drag.is_some();
     let width = sidebar_width(s);
     let drawn = if shown { width } else { 0. };
-    let main = match s.page {
-        Page::Chat => match context::banner(s, k) {
-            Some(banner) if s.chat.is_some() => col().w_full().h_full().child(banner).child(
-                el().w_full()
-                    .grow(1.0)
-                    .min_h(0.0)
-                    .child(crate::chat::view(s, cx, k, layer)),
-            ),
-            _ if s.chat.is_some() => crate::chat::view(s, cx, k, layer),
-            _ => empty(s, p, k),
-        },
-        Page::Draft => draft::view(s, cx, k, layer),
-        // Appearance floats over the chat at 85 % so a pick previews live on
-        // the real thread or new-chat screen.
-        Page::Appearance => {
-            let under = if s.chat.is_some() {
-                crate::chat::view(s, cx, k, layer)
-            } else {
-                empty(s, p, k)
-            };
-            el().w_full()
-                .h_full()
-                .child(
-                    el().pin(Some(0.), Some(0.), Some(0.), Some(0.))
-                        .inert()
-                        .child(under),
-                )
-                .child(
-                    el().pin(Some(0.), Some(0.), Some(0.), Some(0.))
-                        .fill(p.bg.alpha(0.85))
-                        .child(crate::pages::view(s, s.page, cx, k, layer)),
-                )
-        }
-        page => crate::pages::view(s, page, cx, k, layer),
-    };
-    // Replays the entrance on every page or thread switch.
-    let main_key = match (s.page, active_id(s)) {
-        (Page::Chat, Some(id)) => format!("main-chat-{id}"),
-        (page, _) => format!("main-{page:?}"),
-    };
     let mut panel = col()
         .key("panel")
         .grow(1.0)
@@ -214,47 +191,26 @@ fn ready(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El
         .fill(p.bg.alpha(crate::design::styles::Style::of(&s.prefs).panel_alpha))
         .clip_rounded(0.)
         .child(breadcrumb(s, p, drawn, cx, k, layer))
-        .child(
-            el().key(main_key)
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                // Page and thread entrances fade in while rising, as GPUI's
-                // `Style::enter` + `enter_rise` did.
-                .transition({
-                    let st = crate::design::styles::Style::of(&s.prefs);
-                    rune::Transition::opacity()
-                        .combined(rune::Transition::offset(0., st.enter_rise))
-                        .springs(rune::SpringPair::with_exit_ratio(st.enter, 0.5))
-                })
-                .child(main),
-        );
-    for area in ["conversation", "pane"] {
-        if let Some(over) = crate::design::look::wallpaper_layer(s, area) {
-            panel = panel.child(over);
-        }
+        .child(main_area(s, p, cx, k, layer));
+    // The open chat lays the conversation's and the right pane's wallpaper
+    // over its own regions (`chat::view`); without it the conversation is
+    // the whole panel.
+    if !chat_shown(s)
+        && let Some(over) = crate::design::look::wallpaper_layer(s, "conversation")
+    {
+        panel = panel.child(over);
     }
-    let mut shell = row().key("shell").w_full().h_full().min_h(0.0);
-    if shown {
-        let mut sidebar = el()
-            .key("sidebar-clip")
-            .w(width)
-            .h_full()
-            .child(sidebar(s, p, cx, k, layer));
-        if let Some(over) = crate::design::look::wallpaper_layer(s, "sidebar") {
-            sidebar = sidebar.child(over);
-        }
-        shell = shell.child(sidebar).child(sidebar_edge(s, p)).child(
-            // The sidebar/panel hairline; accent while resizing.
-            el().w(1.5)
-                .h_full()
-                .fill(if s.workspace.sidebar_drag.is_some() {
-                    p.accent.alpha(0.6)
-                } else {
-                    p.border_strong
-                }),
-        );
-    }
+    let shell = row()
+        .key("shell")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(sidebar_column(s, p, shown, width, cx, k, layer));
+    let shell = if shown {
+        shell.child(sidebar_edge(s, p))
+    } else {
+        shell
+    };
     // The window's sidebar button sits above both columns, so it never
     // moves when the sidebar folds.
     el().key("ready")
@@ -266,37 +222,75 @@ fn ready(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El
                 .pin(Some(design::TRAFFIC_LIGHTS_WIDTH), Some(0.), None, None)
                 .h(design::TITLEBAR_HEIGHT)
                 .center_y()
-                .child(sidebar_toggle(s, p)),
+                .child(sidebar_toggle(s)),
         )
 }
 
-/// Zeron's sidebar button: folds the left sidebar away or brings it back;
-/// the choice survives a relaunch.
-fn sidebar_toggle(s: &State, p: &Palette) -> El {
+/// The sidebar/panel hairline's width.
+const HAIRLINE: f32 = 1.5;
+
+/// The sidebar as GPUI's `panels::reveal` drew it: always mounted, its
+/// column (with the hairline at its right) pinned at full width to the
+/// right edge of a clip whose width springs between 0 and the column's, so
+/// it slides in and out without rewrapping, fading from 35 %.
+fn sidebar_column(
+    s: &State,
+    p: &Palette,
+    shown: bool,
+    width: f32,
+    cx: &mut Cx<State>,
+    k: &Kit,
+    layer: &mut Vec<El>,
+) -> El {
+    let mut column = el()
+        .key("sidebar-column")
+        .w(width)
+        .h_full()
+        .child(sidebar(s, p, cx, k, layer));
+    if let Some(over) = crate::design::look::wallpaper_layer(s, "sidebar") {
+        column = column.child(over);
+    }
+    let mut slide = row()
+        .key("sidebar-slide")
+        .pin(None, Some(0.), Some(0.), Some(0.))
+        .w(width + HAIRLINE)
+        .ride_trailing()
+        .opacity(if shown { 1. } else { 0.35 })
+        .child(column)
+        .child(
+            // The sidebar/panel hairline; accent while resizing.
+            el().w(HAIRLINE)
+                .h_full()
+                .fill(if s.workspace.sidebar_drag.is_some() {
+                    p.accent.alpha(0.6)
+                } else {
+                    p.border_strong
+                }),
+        );
+    if !shown {
+        slide = slide.inert().a11y_hidden();
+    }
+    el().key("sidebar-clip")
+        .w(if shown { width + HAIRLINE } else { 0. })
+        .h_full()
+        .clip_rounded(0.)
+        .child(slide)
+}
+
+/// Zeron's sidebar button (GPUI `panels::toggle`): the morphing sidebar
+/// glyph, and the titlebar toggles' active fill while the sidebar is open.
+/// Folds the left sidebar away or brings it back; the choice survives a
+/// relaunch.
+fn sidebar_toggle(s: &State) -> El {
     let open = !s.prefs.sidebar_hidden;
     let label = if open { "Hide sidebar" } else { "Show sidebar" };
-    // The glyph: a window outline with its sidebar column filled when open.
-    let glyph = row()
-        .size(16., 13.)
-        .radius(3.)
-        .border(1.4, p.text_muted)
-        .child(el().w(5.).h_full().fill(if open {
-            p.text_muted.alpha(0.6)
+    design::panels::toggle(s, "sidebar-toggle", open, false, label)
+        .fill(if open {
+            s.palette.active
         } else {
             Color::TRANSPARENT
-        }));
-    row()
-        .key("sidebar-toggle")
-        .role("button")
-        .label(label)
-        .help(label)
-        .size(TOGGLE_SIZE, TOGGLE_SIZE)
-        .radius(design::CONTROL_RADIUS)
-        .center()
-        .cursor(Cursor::Pointer)
-        .hover(p.hover)
-        .child(glyph)
-        .on_press(super::toggle_sidebar)
+        })
+        .on_press_tx(|s: &mut State, tx: &mut rune::Tx| super::toggle_sidebar(s, tx))
 }
 
 /// A thin strip on the sidebar's right edge: drag it to resize the sidebar,
@@ -594,35 +588,6 @@ fn breadcrumb(
         strip = strip.child(actions);
     }
     strip
-}
-
-/// No thread open: the mark, a line and one button.
-fn empty(s: &State, p: &Palette, k: &Kit) -> El {
-    col()
-        .key("empty-state")
-        .w_full()
-        .h_full()
-        .center()
-        .gap(16.)
-        .child(crate::design::kit::claw_mark(s))
-        .child(
-            col()
-                .items_center()
-                .gap(6.)
-                .child(tw("What are we building?", 26., SEMIBOLD, p.text))
-                .child(t(
-                    "Start a conversation, or pick one from the sidebar.",
-                    SM,
-                    p.text_muted,
-                )),
-        )
-        .child(
-            rune_kit::Button::new("New thread")
-                .variant(rune_kit::ButtonVariant::Contrast)
-                .icon(&icons::PLUS)
-                .on_press(|s: &mut State| draft::open(s))
-                .build(k),
-        )
 }
 
 /// Deleting from the menu asks first: a right-click misfires more than the

@@ -165,6 +165,10 @@ pub(super) fn submit(s: &mut State, sub: Submission, voice: Option<crate::voice:
                 } else if let Some(sub) = voice {
                     crate::voice::submission_refused(s, sub, "The new thread did not open.");
                 }
+                // The hero composer flies to the chat's dock on its own
+                // spring (GPUI `dock::DOCK_SECS`); only this commit uses it.
+                // Set last: the send's prompt rise asks for its own curve.
+                tx.motion(crate::design::motion::DOCK);
             }
             Err(e) => {
                 if let Some(v) = voice {
