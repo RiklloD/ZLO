@@ -4,6 +4,8 @@ default-members = ["crates/app/ironclaw_cli"]
 exclude = [
     # Standalone GPUI client: its own workspace, kept out of the main build.
     "tools/ironclaw_gpui",
+    # Standalone Rune client (the GPUI app's rewrite): its own workspace too.
+    "tools/ironclaw_rune",
     # Standalone helper binary, `[workspace]`-rooted and never built here (it
     # needs libclang + a C toolchain). Its §5 home is `tools/`, beside the
     # stress harness — WS7 relocated it out of `crates/`, which after the

@@ -1,0 +1,5 @@
+# Rune pins 1.99.1; this workspace follows it, separate from the main
+# IronClaw pin (1.98.0) because it is its own workspace and build.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
