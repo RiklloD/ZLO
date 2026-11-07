@@ -8,7 +8,19 @@
 use crate::state::{Conn, Page, State};
 
 pub const SCENES: &[(&str, fn(&mut State))] = &[
+    ("extensions", crate::pages::extensions::fixtures::extensions),
+    ("hooks", crate::pages::hooks::fixture_hooks),
+    ("operator", crate::pages::operator::fixtures::status),
+    ("operator-config", crate::pages::operator::fixtures::config),
+    ("operator-extensions", crate::pages::operator::fixtures::extension_config),
+    ("operator-inspector", crate::pages::operator::fixtures::inspector),
+    ("operator-logs", crate::pages::operator::fixtures::logs),
+    ("operator-setup", crate::pages::operator::fixtures::setup),
+    ("providers", crate::pages::providers::fixtures::providers),
+    ("providers-catalog", crate::pages::providers::fixtures::catalog),
+    ("providers-cli", crate::pages::providers::fixtures::cli),
     ("shell", shell),
+    ("skills", crate::pages::skills::fixtures::skills),
 ];
 
 /// The window with a few threads and nothing open.

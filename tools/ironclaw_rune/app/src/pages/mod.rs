@@ -4,6 +4,7 @@
 //! owned by area D; until it lands, keep helpers local.
 
 pub mod automations;
+pub mod c_widgets;
 pub mod extensions;
 pub mod files;
 pub mod hooks;
