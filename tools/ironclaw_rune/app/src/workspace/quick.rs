@@ -430,9 +430,10 @@ mod tests {
         assert!(crate::voice::take_submission(&mut s, &Composer::Quick).is_none());
         assert!(crate::voice::fixtures::waits_for(&s, sub));
         assert!(!s.workspace.quick.is_open());
+        // A submission of its own: the new-thread draft is not written over.
         assert_eq!(
             s.workspace.draft.as_ref().map(|d| d.input.text.as_str()),
-            Some("hello")
+            Some("")
         );
     }
 
