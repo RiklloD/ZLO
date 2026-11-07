@@ -124,8 +124,8 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 | Area | State |
 |---|---|
 | 0 | done |
-| E, F, H, G, D | merged (07.11.2026) |
-| A B C S | in progress |
+| E, F, H, G, D, C | merged (07.11.2026) |
+| A B S | in progress |
 
 ## Integration checklist (collected from area reports)
 
@@ -149,5 +149,7 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 - [ ] C, E, F: move local page helpers to `pages::common` (now merged).
 - [ ] Kit: primary buttons use the accent (rune-kit `Submit` renders white); `design::kit::button(..).primary()` is the reference.
 - [ ] Foundation: `prefs.translucent` toggles the window transparency (Appearance only saves the pref).
+- [ ] C: `pages/c_widgets.rs` → `pages::common` + `design::kit`; `pages/providers/logos.rs` → `design::brands`; Providers' catalog thread from the real inbox (B); mono font for the SKILL.md editor.
+- [ ] A: a failed run's Logs button calls `pages::operator::show_run_logs(s, run_id)`.
 - [ ] Clippy: `SCENES` type complexity in `scenes.rs`.
 - [ ] Interaction tests (`rune::Runtime`) for voice controls and settings.
