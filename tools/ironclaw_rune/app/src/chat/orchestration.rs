@@ -247,6 +247,17 @@ fn needs_poll(s: &State) -> bool {
         || c.goals.check_in_flight()
 }
 
+/// Whether [`tail`] has anything to show for the open chat: live subagents,
+/// the goal (when its editor is closed) or queued follow-ups. The chat folds
+/// a tail row into its transcript while this holds.
+pub fn has_tail(s: &State) -> bool {
+    let Some(c) = s.chat.as_ref() else { return false };
+    let o = &c.orchestration;
+    o.tasks.iter().any(|t| t.status.is_live())
+        || (!c.goals.editing() && c.goals.goal.is_some())
+        || !o.queue.items.is_empty()
+}
+
 /// The running turn, streamed (IronClaw's loop) or polled (CLI runtime).
 pub fn running_run(s: &State) -> Option<String> {
     crate::chat::active_run(s).or_else(|| s.chat.as_ref()?.orchestration.queue.external_run().map(str::to_string))
@@ -309,7 +320,7 @@ pub fn queue_follow_up(s: &mut State, text: String) -> bool {
                     if crate::chat::composer_text(s).trim().is_empty() {
                         crate::chat::set_composer_text(s, text);
                     }
-                    crate::chat::set_error(s, e.to_string());
+                    crate::chat::open_error(s, e.to_string());
                 }
             }
             ensure_poll(s);
@@ -335,7 +346,7 @@ pub(crate) fn queue_action(s: &mut State, action: QueueAction) {
             o.busy = false;
             match result {
                 Ok(queue) => o.queue = queue,
-                Err(e) => crate::chat::set_error(s, e.to_string()),
+                Err(e) => crate::chat::open_error(s, e.to_string()),
             }
             ensure_poll(s);
         },
@@ -356,7 +367,7 @@ pub fn cancel_task(s: &mut State, task_id: String) {
                     *slot = view;
                 }
             }
-            Err(e) => crate::chat::set_error(s, e.to_string()),
+            Err(e) => crate::chat::open_error(s, e.to_string()),
         },
     );
 }
@@ -383,7 +394,7 @@ pub fn fork(s: &mut State, at_run: Option<u32>) {
             }
             match result {
                 Ok(forked) => crate::workspace::open_thread(s, forked.fork_thread_id),
-                Err(e) => crate::chat::set_error(s, e.to_string()),
+                Err(e) => crate::chat::open_error(s, e.to_string()),
             }
         },
     );
@@ -418,7 +429,7 @@ pub(crate) fn merge_back(s: &mut State) {
                     o.lineage_loaded = false;
                     refresh(s);
                 }
-                Err(e) => crate::chat::set_error(s, e.to_string()),
+                Err(e) => crate::chat::open_error(s, e.to_string()),
             }
         },
     );
@@ -547,6 +558,7 @@ pub fn scene(s: &mut State) {
         c.orchestration = fixture();
         c.goals = crate::chat::goals::fixture();
     }
+    crate::chat::fixtures::refold(s);
 }
 
 #[cfg(test)]

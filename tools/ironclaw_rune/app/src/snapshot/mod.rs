@@ -239,7 +239,7 @@ pub fn take(s: &mut State) {
         |s, result, _| {
             s.snapshot.busy = false;
             s.rt.handle.open();
-            crate::chat::stage_snapshot(s, result);
+            crate::workspace::stage_snapshot(s, result);
         },
     );
 }

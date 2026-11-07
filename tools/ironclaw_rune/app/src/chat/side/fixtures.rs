@@ -1,20 +1,16 @@
-//! Fixture states for the side pane's headless scenes (`scenes.rs`), and a
-//! scene-only chat column that lays the docks out beside a stand-in
-//! conversation until area A's `chat::view` does.
+//! Fixture states for the side pane's headless scenes (`scenes.rs`). The
+//! docks sit beside area A's real chat column, filled with the scene's rows.
 
 use std::path::PathBuf;
 use std::process::Command;
 
 use ironclaw_gpui_client::transcript::{GateState, Row, ToolStatus};
-use rune::{Cx, El, col, row};
-use rune_kit::Kit;
 
-use super::ui::{self, SM};
 use super::{SideChat, SideState, Tab, changes, console, git, history, outputs, project, routines};
 use crate::state::{Conn, Page, State};
 
-/// Fixture data the bridge's stand-ins read until areas A and H wire the
-/// real chat (rows) and orchestration (tasks).
+/// The scene's conversation rows and orchestrator tasks, set before
+/// [`base`] puts them into the open chat.
 #[derive(Default)]
 pub struct FixtureData {
     pub rows: Vec<Row>,
@@ -22,51 +18,11 @@ pub struct FixtureData {
 }
 
 thread_local! {
-    static DATA: std::cell::RefCell<Option<&'static FixtureData>> = const { std::cell::RefCell::new(None) };
-}
-
-/// The scene's fixture rows and tasks, if a scene set them.
-pub(super) fn data() -> Option<&'static FixtureData> {
-    DATA.with(|d| *d.borrow())
+    static DATA: std::cell::RefCell<Option<FixtureData>> = const { std::cell::RefCell::new(None) };
 }
 
 fn set_data(data: FixtureData) {
-    DATA.with(|d| *d.borrow_mut() = Some(Box::leak(Box::new(data))));
-}
-
-/// The scene's chat column: titlebar strip, stand-in conversation, docks.
-// PORT-STUB(area A): scenes only; `chat::view` lays the docks out for real.
-pub fn chat_view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
-    let p = &s.palette;
-    let titlebar = row()
-        .w_full()
-        .h(crate::design::TITLEBAR_HEIGHT)
-        .items_center()
-        .child(ui::line("Port the frontend to Rune", SM, p.text_muted).pl(16.).grow(1.))
-        .child(super::titlebar_actions(s, cx, k, layer));
-    let conversation = col()
-        .grow(1.)
-        .min_w(0.)
-        .h_full()
-        .center()
-        .child(ui::line("Conversation (area A)", SM, p.text_faint));
-    col()
-        .w_full()
-        .h_full()
-        .child(titlebar)
-        .child(
-            row()
-                .w_full()
-                .grow(1.)
-                .min_h(0.)
-                .child(conversation)
-                .children(super::docks(s, cx, k, layer)),
-        )
-}
-
-/// A scene shows the side pane fixture (and so the scene-only chat column).
-pub fn active(s: &State) -> bool {
-    s.fixture && s.chat.is_some()
+    DATA.with(|d| *d.borrow_mut() = Some(data));
 }
 
 /// The window with a thread open; `edit` fills its side state. Preferences
@@ -78,6 +34,14 @@ fn base(s: &mut State, side: Option<Tab>, work: Option<Tab>, edit: impl FnOnce(&
     s.workspace.titles.remember("t1", "Port the frontend to Rune");
     s.workspace.titles.remember("t2", "Fix the flaky integration test");
     let mut chat = crate::chat::ChatState::new("t1".into());
+    let data = DATA.with(|d| d.borrow_mut().take()).unwrap_or_default();
+    // A running tool means a live turn, as the stream would report it.
+    let live = data
+        .rows
+        .iter()
+        .any(|r| matches!(r, Row::Tool { status: ToolStatus::Running, .. }));
+    crate::chat::fixtures::fill(&mut chat, data.rows, live);
+    chat.orchestration.tasks = data.tasks;
     edit(&mut chat.side);
     s.chat = Some(chat);
     s.prefs.side_open = side.is_some();
@@ -358,8 +322,24 @@ pub fn session(s: &mut State) {
     s.prefs.side_chats.insert("t1".into(), vec!["sc1".into(), "sc2".into()]);
     base(s, Some(Tab::SideChat), None, |x| {
         x.folder = Some(PathBuf::from("/Users/you/code/zlo"));
+        let mut chat = crate::chat::ChatState::new("sc2".into());
+        chat.embedded = true;
+        chat.composer.focused = false;
+        crate::chat::fixtures::fill(
+            &mut chat,
+            vec![
+                user("sc2-u1", "Which test is flaky, in one line?"),
+                Row::Assistant {
+                    key: "sc2-a1".into(),
+                    text: "`turns::resume_after_gate`: it races the approval lease timer.".into(),
+                    streaming: false,
+                },
+            ],
+            false,
+        );
         x.chat = Some(SideChat {
             thread_id: "sc2".into(),
+            state: Box::new(chat),
         });
         x.session_open = true;
     });

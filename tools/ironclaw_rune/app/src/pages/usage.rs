@@ -496,6 +496,12 @@ pub fn fixture_history(s: &mut State, metric: Metric) {
     s.pages.usage.days = 30;
 }
 
+
+/// Refresh the shared usage report (the status bar's name for [`refresh`]).
+pub fn refresh_report(s: &mut State, force: bool) {
+    refresh(s, force);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,9 +519,4 @@ mod tests {
         assert_eq!(countdown(now - 1000), "resetting");
         assert_eq!(short_countdown(now + 14 * 60_000 + 30_000), Some("15m".into()));
     }
-}
-
-/// Refresh the shared usage report (the status bar's name for [`refresh`]).
-pub fn refresh_report(s: &mut State, force: bool) {
-    refresh(s, force);
 }

@@ -36,3 +36,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Dependencies (Rune, wgpu, tokio, ...) build lightly optimized in dev: the
+# unoptimized binary's unwind table outgrew ld's 16 MB compact-unwind limit
+# (a linker warning on every build), and scenes render faster. The app's own
+# crate stays at opt-level 0 for debugging.
+[profile.dev.package."*"]
+opt-level = 1

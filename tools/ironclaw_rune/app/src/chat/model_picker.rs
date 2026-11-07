@@ -569,18 +569,13 @@ pub(crate) fn cycle_rail(s: &mut State, slot: Slot, forward: bool) {
 fn chat_event(s: &mut State, event: PickerEvent) {
     match event {
         PickerEvent::Changed(change) => {
-            if let Some(fork) = change.fork_thread_id {
-                crate::workspace::open_thread(s, fork);
-            } else if change.moved == "switched" {
-                // Same thread, new runtime: its live events come from
-                // elsewhere now, and the timeline gains the marker.
-                crate::chat::resubscribe(s);
-                crate::chat::reload_timeline(s);
-            } else if change.moved == "in_place" {
-                crate::chat::reload_timeline(s);
-            }
+            // A fork opens the new thread; a switch (same thread, new
+            // runtime) moves the live stream and gains the timeline marker;
+            // an in-place change only gains the marker.
+            let Some(id) = s.chat.as_ref().map(|c| c.thread_id.clone()) else { return };
+            crate::chat::picker_changed(s, &id, change.fork_thread_id, &change.moved);
         }
-        PickerEvent::Failed(message) => crate::chat::set_error(s, message),
+        PickerEvent::Failed(message) => crate::chat::open_error(s, message),
     }
 }
 
@@ -698,30 +693,6 @@ pub fn scene(s: &mut State, effort: bool) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{effort_label, hidden_summary, pretty_model};
-
-    #[test]
-    fn the_hidden_footer_counts_both_kinds() {
-        assert_eq!(hidden_summary(3, 25), "Show hidden (3 providers, 25 models)");
-        assert_eq!(hidden_summary(1, 0), "Show hidden (1 provider)");
-    }
-
-    #[test]
-    fn effort_levels_read_like_t3code() {
-        assert_eq!(effort_label("xhigh"), "Extra High");
-        assert_eq!(effort_label("minimal"), "Minimal");
-        assert_eq!(effort_label("max"), "Max");
-    }
-
-    #[test]
-    fn model_ids_read_like_names() {
-        assert_eq!(pretty_model("claude-opus-5-5"), "Claude Opus 5.5");
-        assert_eq!(pretty_model("gpt-6.1-sol"), "GPT 6.1 Sol");
-        assert_eq!(pretty_model("anthropic/claude-haiku-5-5"), "Claude Haiku 5.5");
-    }
-}
 
 // The new-thread screen's picker (area B's `workspace/draft.rs`).
 
@@ -777,4 +748,29 @@ pub fn close_open(s: &mut State) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{effort_label, hidden_summary, pretty_model};
+
+    #[test]
+    fn the_hidden_footer_counts_both_kinds() {
+        assert_eq!(hidden_summary(3, 25), "Show hidden (3 providers, 25 models)");
+        assert_eq!(hidden_summary(1, 0), "Show hidden (1 provider)");
+    }
+
+    #[test]
+    fn effort_levels_read_like_t3code() {
+        assert_eq!(effort_label("xhigh"), "Extra High");
+        assert_eq!(effort_label("minimal"), "Minimal");
+        assert_eq!(effort_label("max"), "Max");
+    }
+
+    #[test]
+    fn model_ids_read_like_names() {
+        assert_eq!(pretty_model("claude-opus-5-5"), "Claude Opus 5.5");
+        assert_eq!(pretty_model("gpt-6.1-sol"), "GPT 6.1 Sol");
+        assert_eq!(pretty_model("anthropic/claude-haiku-5-5"), "Claude Haiku 5.5");
+    }
 }

@@ -104,8 +104,10 @@ mod tests {
     #[test]
     fn the_preference_overrides_the_saver() {
         let saver = BatterySaver::default();
-        let mut prefs = Prefs::default();
-        prefs.reduce_motion = "on".into();
+        let mut prefs = Prefs {
+            reduce_motion: "on".into(),
+            ..Prefs::default()
+        };
         assert!(reduced(&prefs, &saver, false));
         prefs.reduce_motion = "off".into();
         assert!(!reduced(&prefs, &saver, true));

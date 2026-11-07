@@ -242,7 +242,7 @@ fn apply_goal(s: &mut State, asked: &str, result: Result<ThreadGoalResponse, Cli
             g.editor = None;
             g.editing_check = false;
         }
-        Err(e) => crate::chat::set_error(s, e.to_string()),
+        Err(e) => crate::chat::open_error(s, e.to_string()),
     }
     crate::chat::orchestration::ensure_poll(s);
 }
@@ -286,7 +286,7 @@ fn goal_check_action(s: &mut State, action: GoalCheckAction, revision: u64) {
 /// composer so it can be fixed; the rest clear it.
 pub fn run_command(s: &mut State, command: GoalCommand) {
     if let GoalCommand::Invalid(message) = &command {
-        crate::chat::set_error(s, message.clone());
+        crate::chat::open_error(s, message.clone());
         return;
     }
     crate::chat::set_composer_text(s, String::new());
@@ -516,6 +516,7 @@ pub fn scene(s: &mut State) {
     if let Some(c) = s.chat.as_mut() {
         c.goals = fixture();
     }
+    crate::chat::fixtures::refold(s);
 }
 
 #[cfg(test)]

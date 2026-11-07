@@ -198,21 +198,29 @@ pub(super) fn record(s: &mut State) {
 
 /// Create the thread in the chosen profile, apply the model pick, open it
 /// and send the first message there.
-fn send(s: &mut State) {
+/// Enter on the new-thread screen (voice's Enter too: talk mode's claim on
+/// it rides along into the new chat's first send).
+pub fn send(s: &mut State) {
+    let voice = crate::voice::take_submission(s, &ComposerTarget::Draft);
+    let refuse = |s: &mut State, why: &str| {
+        if let Some(sub) = voice {
+            crate::voice::submission_refused(s, sub, why);
+        }
+    };
     let worktree_dir = s
         .prefs
         .last_project
         .clone()
         .map(|p| p.to_string_lossy().into_owned());
     let Some(draft) = s.workspace.draft.as_mut() else {
-        return;
+        return refuse(s, "There was nothing to send.");
     };
     let text = draft.input.text.trim().to_string();
     if text.is_empty() && draft.staged.is_empty() {
-        return;
+        return refuse(s, "There was nothing to send.");
     }
     if draft.sending {
-        return;
+        return refuse(s, "A new thread is already being created.");
     }
     let content = draft.input.text.clone();
     draft.sending = true;
@@ -247,7 +255,7 @@ fn send(s: &mut State) {
             }
             Ok(id)
         },
-        move |s, result, _| match result {
+        move |s, result, tx| match result {
             Ok(id) => {
                 let files = s
                     .workspace
@@ -259,10 +267,15 @@ fn send(s: &mut State) {
                 inbox::refresh(s);
                 super::open_thread(s, id.clone());
                 if super::active_id(s) == Some(id.as_str()) {
-                    crate::chat::send_text(s, content, files);
+                    crate::chat::send_text(s, content, Vec::new(), files, voice, tx);
+                } else if let Some(sub) = voice {
+                    crate::voice::submission_refused(s, sub, "The new thread did not open.");
                 }
             }
             Err(e) => {
+                if let Some(sub) = voice {
+                    crate::voice::submission_refused(s, sub, &e.to_string());
+                }
                 if let Some(draft) = s.workspace.draft.as_mut() {
                     draft.sending = false;
                     draft.error = Some(e.to_string());

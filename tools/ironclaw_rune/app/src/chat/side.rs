@@ -214,10 +214,55 @@ impl Tab {
     }
 }
 
-/// The side chat shown in the right pane. Its chat state is area A's
-/// (`bridge::side_chat_view`); the pane keeps only which thread it is.
+/// The side chat shown in the right pane: an embedded chat (area A's
+/// [`crate::chat::ChatState`], built by `chat::build_side_chat`) with its
+/// own stream, drawn with `chat::embedded_view`. Dropping it closes the
+/// stream.
 pub struct SideChat {
     pub thread_id: String,
+    pub state: Box<crate::chat::ChatState>,
+}
+
+impl SideChat {
+    /// A side chat for `thread_id`; call [`crate::chat::start_side_chat`]
+    /// once it sits in its slot.
+    pub(crate) fn new(s: &State, thread_id: String) -> Self {
+        let state = Box::new(crate::chat::build_side_chat(s, thread_id.clone()));
+        Self { thread_id, state }
+    }
+}
+
+/// The open chat's side chat when it shows `thread_id` (`chat::chat_for`
+/// finds embedded chats through this).
+pub fn side_chat_mut<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut crate::chat::ChatState> {
+    s.chat
+        .as_mut()?
+        .side
+        .chat
+        .as_mut()
+        .filter(|c| c.thread_id == thread_id)
+        .map(|c| &mut *c.state)
+}
+
+/// Read-only [`side_chat_mut`].
+pub fn side_chat<'a>(s: &'a State, thread_id: &str) -> Option<&'a crate::chat::ChatState> {
+    s.chat
+        .as_ref()?
+        .side
+        .chat
+        .as_ref()
+        .filter(|c| c.thread_id == thread_id)
+        .map(|c| &*c.state)
+}
+
+/// The thread ids of the open side chats (at most one).
+pub fn side_chat_ids(s: &State) -> Vec<String> {
+    s.chat
+        .as_ref()
+        .and_then(|c| c.side.chat.as_ref())
+        .map(|c| c.thread_id.clone())
+        .into_iter()
+        .collect()
 }
 
 /// Per-thread dock state, in `ChatState::side`. Open, width and tab live in
@@ -589,7 +634,7 @@ fn body(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, tab: Tab) -
         Tab::Changes => changes::view(s, k),
         Tab::History => history::view(s, k),
         Tab::Console => console::view(s, k),
-        Tab::SideChat => session::chat_view(s, k, layer),
+        Tab::SideChat => session::chat_view(s, cx, k, layer),
     }
 }
 

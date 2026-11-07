@@ -9,10 +9,18 @@ use crate::design::gallery;
 use crate::state::{Conn, Page, State};
 use crate::workspace::fixtures as ws;
 
-pub const SCENES: &[(&str, fn(&mut State))] = &[
+/// One scene: its name and the fixture that fills the state.
+pub type Scene = (&'static str, fn(&mut State));
+
+pub const SCENES: &[Scene] = &[
     ("appearance", |s| page_with(s, Page::Appearance, crate::pages::settings::fixture)),
     ("automation-form", |s| page_with(s, Page::Automations, crate::pages::automations::fixture_form)),
     ("automations", |s| page_with(s, Page::Automations, crate::pages::automations::fixture)),
+    ("chat", crate::chat::fixtures::chat),
+    ("chat-gate", crate::chat::fixtures::gate),
+    ("chat-menu", crate::chat::fixtures::menu),
+    ("chat-question", crate::chat::fixtures::question),
+    ("chat-running", crate::chat::fixtures::running),
     ("command-menu", ws::fixture_command_menu),
     ("computer", |s| crate::chat::computer::scene(s, false)),
     ("computer-big", |s| crate::chat::computer::scene(s, true)),

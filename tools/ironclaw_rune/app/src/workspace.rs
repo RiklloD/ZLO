@@ -42,7 +42,8 @@ pub(crate) mod ui;
 // Voice (area F) and SnapShot (area F) call these.
 #[allow(unused_imports)]
 pub use draft::{
-    ComposerTarget, composer_edit, start_in_profile, stage_snapshot, voice_composer,
+    ComposerTarget, composer_edit, send as send_draft, start_in_profile, stage_snapshot,
+    voice_composer,
 };
 pub use inbox::title_of as row_title;
 pub use keys::{menu_items, on_close};
@@ -313,7 +314,8 @@ pub fn open_thread(s: &mut State, thread_id: String) {
 pub fn open_thread_at(s: &mut State, thread_id: String, message_id: String) {
     open_thread(s, thread_id.clone());
     if active_id(s) == Some(thread_id.as_str()) {
-        crate::chat::reveal_message(s, message_id);
+        // The chat scrolls to it once its timeline holds it.
+        s.rt.handle.update(move |s, tx| crate::chat::reveal_message(s, message_id, tx));
     }
 }
 
@@ -665,16 +667,6 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     shell::view(s, cx)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn friendly_errors_say_what_to_do() {
-        let e = ClientError::Config("no token".into());
-        assert_eq!(friendly(&e), e.to_string());
-    }
-}
 
 // Cross-area API: thread titles, window focus and the unread badge, as the
 // chat, side pane and pages call them.
@@ -707,4 +699,15 @@ pub fn titles_ensure(s: &mut State, thread_ids: impl IntoIterator<Item = String>
 /// The Notifications page counted unread items itself.
 pub fn set_unread(s: &mut State, unread: usize) {
     s.workspace.unread = unread;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn friendly_errors_say_what_to_do() {
+        let e = ClientError::Config("no token".into());
+        assert_eq!(friendly(&e), e.to_string());
+    }
 }

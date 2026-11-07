@@ -13,7 +13,7 @@
 //! reads it back.
 
 use ironclaw_gpui_client::orchestration::ForkOptions;
-use rune::{Align, Color, Cursor, El, Side, col, el, icon, row};
+use rune::{Align, Color, Cursor, Cx, El, Side, col, el, icon, row};
 use rune_kit::Kit;
 
 use super::ui::{self, SM, XS};
@@ -80,10 +80,14 @@ pub fn new_side_chat(s: &mut State) {
 
 /// Show side chat `thread_id` in the right pane.
 pub(super) fn open(s: &mut State, thread_id: String) {
+    let Some(x) = side(s) else { return };
+    let fresh = x.chat.as_ref().map(|c| c.thread_id.as_str()) != Some(thread_id.as_str());
+    let chat = fresh.then(|| SideChat::new(s, thread_id.clone()));
     let Some(x) = side_mut(s) else { return };
     x.session_open = false;
-    if x.chat.as_ref().map(|c| c.thread_id.as_str()) != Some(thread_id.as_str()) {
-        x.chat = Some(SideChat { thread_id });
+    if let Some(chat) = chat {
+        x.chat = Some(chat);
+        crate::chat::start_side_chat(s, &thread_id);
     }
     super::show(s, Tab::SideChat);
 }
@@ -110,17 +114,18 @@ pub(super) fn restore(s: &mut State) {
     if s.prefs.side_tab != Tab::SideChat.id() {
         return;
     }
-    if let Some(id) = chats(s).into_iter().next()
-        && let Some(x) = side_mut(s)
-    {
-        x.chat = Some(SideChat { thread_id: id });
+    let Some(id) = chats(s).into_iter().next() else { return };
+    let chat = SideChat::new(s, id.clone());
+    if let Some(x) = side_mut(s) {
+        x.chat = Some(chat);
+        crate::chat::start_side_chat(s, &id);
     }
 }
 
 /// The side chat tab's body.
-pub(super) fn chat_view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
+pub(super) fn chat_view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     match side(s).and_then(|x| x.chat.as_ref()) {
-        Some(chat) => ui::fill_col().child(bridge::side_chat_view(s, k, layer, &chat.thread_id)),
+        Some(chat) => ui::fill_col().child(crate::chat::embedded_view(s, &chat.state, cx, k, layer)),
         None => ui::empty(s, "No side chat open."),
     }
 }
