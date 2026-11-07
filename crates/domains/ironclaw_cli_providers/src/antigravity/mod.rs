@@ -1065,7 +1065,11 @@ mod tests {
         let opened = loop {
             match events.recv().await.unwrap() {
                 crate::bridge::LiveEvent::GateOpened { gate, .. } => {
-                    assert!(bridge.resolve_gate(thread, &gate.gate_ref, true));
+                    assert!(bridge.resolve_gate(
+                        thread,
+                        &gate.gate_ref,
+                        crate::bridge::GateAnswer::Approve
+                    ));
                     break "approval";
                 }
                 crate::bridge::LiveEvent::QuestionOpened { question, .. } => {

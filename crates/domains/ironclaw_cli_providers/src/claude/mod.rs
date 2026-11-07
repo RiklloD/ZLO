@@ -403,7 +403,9 @@ impl ClaudeCliRuntime {
         // A new turn ends the idle period: no compaction may touch the session.
         self.compactor.preempt(&thread.thread_id).await;
         let plan = TurnPlan {
-            dir: self.session_dir(&thread.thread_id, &session_id, profile).await?,
+            dir: self
+                .session_dir(&thread.thread_id, &session_id, profile)
+                .await?,
             goal,
             effort,
             profile,

@@ -14,14 +14,14 @@ mod connection;
 mod error;
 mod history_calls;
 mod inbox_calls;
-pub mod mentions;
 mod memory_calls;
+pub mod mentions;
 pub mod operator;
 pub mod orchestration;
 mod pages;
 mod profile_calls;
-pub mod schedules;
 pub mod review;
+pub mod schedules;
 mod settings;
 mod stream;
 pub mod transcript;
@@ -45,17 +45,6 @@ pub use ironclaw_product_contracts::orchestration::{
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{
-    inbound_requests,
-    inbox,
-    notification_inbox,
-    operator_llm,
-    package_lifecycle,
-    product_wire,
-    profiles,
-    session_import,
-    task_models,
-    workspace_views,
-    hooks_catalog,
-    memory_page,
-    history,
+    history, hooks_catalog, inbound_requests, inbox, memory_page, notification_inbox, operator_llm,
+    package_lifecycle, product_wire, profiles, session_import, task_models, workspace_views,
 };

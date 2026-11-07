@@ -92,7 +92,8 @@ pub(super) async fn run_compaction(
     mut cancelled: watch::Receiver<bool>,
 ) -> Compacted {
     // An imported terminal session compacts in its own folder, or not at all.
-    let cwd = match crate::workspace::resolve(&super::cwd_file_in(&config.state_dir, session)).await {
+    let cwd = match crate::workspace::resolve(&super::cwd_file_in(&config.state_dir, session)).await
+    {
         Ok(Some(dir)) => dir,
         Ok(None) => config.work_dir.clone(),
         Err(_) => return Compacted::Failed("workspace_unavailable".into()),

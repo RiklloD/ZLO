@@ -27,9 +27,9 @@ mod compact;
 mod fold;
 pub(crate) mod import;
 mod live;
+mod plan;
 mod session;
 mod turn_end;
-mod plan;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -14,13 +14,12 @@ layer = "substrates"
 async-trait = "0.1"
 # Attached pictures go to Claude and Codex inline, base64-encoded.
 base64 = "0.22"
-# Plan updates carry their wall-clock time.
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Plan updates carry their wall-clock time; session import reads transcript
+# and rollout timestamps (RFC 3339).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Wire types for the CLI's stream-json protocol. Pinned exactly to the CLI
 # version the driver is tested against (`claude::EXPECTED_CLI_VERSION`); bump
 # both together, on purpose. Types only: the driver owns process handling.
-# Session import: transcript and rollout timestamps (RFC 3339).
-chrono = { version = "0.4", default-features = false, features = ["std"] }
 claude-codes = { version = "=2.1.302", default-features = false, features = ["types"] }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # Approval reasons are redacted before they reach a card.

@@ -32,6 +32,10 @@ pub async fn run(g: &RebornIntegrationGroup) -> HarnessResult<()> {
         .build()
         .await?;
 
+    // Full access (auto-approve on, flipped by the scenario before this one)
+    // never asks, `ask_each_time` included; this scenario is about Ask first.
+    h.disable_auto_approve().await?;
+
     // Install the explicit AskEachTime override under the same (tenant, user)
     // scope key `require_approval_for_profile_policy` reads `tool_override` under.
     g.capability_harness()

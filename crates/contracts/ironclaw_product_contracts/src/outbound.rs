@@ -1343,6 +1343,7 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 body: String,
                 #[serde(default)]
                 truncated: bool,
+            },
             Plan {
                 id: String,
                 #[serde(default)]
@@ -1450,6 +1451,7 @@ impl<'de> Deserialize<'de> for ProductProjectionItem {
                 invocation_id,
                 body,
                 truncated,
+            },
             Wire::Plan { id, run_id, plan } => ProductProjectionItem::Plan { id, run_id, plan },
             Wire::Question {
                 run_id,
@@ -2091,6 +2093,9 @@ mod tests {
             "id": "diff:r", "kind": "turn_diff",
             "body": "x".repeat(PROJECTION_TEXT_MAX_BYTES + 1)}});
         assert!(serde_json::from_value::<ProductProjectionItem>(oversized).is_err());
+    }
+
+    #[test]
     fn projection_state_round_trips_plan_and_question_items_and_rejects_bad_forms() {
         use ironclaw_host_api::agent_plan::{
             AgentPlan, PlanEntry, PlanEntryStatus, QuestionField, QuestionFieldKind, QuestionForm,

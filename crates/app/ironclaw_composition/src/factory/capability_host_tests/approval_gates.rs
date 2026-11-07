@@ -307,6 +307,9 @@ async fn standalone_ask_each_time_echo_approval_resume_uses_one_shot_lease() {
     let estimate = ResourceEstimate::default();
     let input = serde_json::json!({"message": "hello ask-each-time"});
     let context = echo_spawn_execution_context("standalone-echo-ask-resume", "thread-echo-resume");
+    // Ask first: under full access (global auto-approve on a thread) nothing
+    // asks, `ask_each_time` included, so this lease test turns it off.
+    disable_global_auto_approve(runtime_surfaces, &context).await;
 
     runtime_surfaces
         .tool_permission_overrides_for_test()
@@ -611,7 +614,7 @@ async fn standalone_settings_page_always_allow_policy_skips_next_shell_gate() {
 }
 
 #[tokio::test]
-async fn standalone_yolo_explicit_ask_each_time_still_requires_approval_gate() {
+async fn standalone_yolo_full_access_runs_even_with_explicit_ask_each_time() {
     let dir = tempfile::tempdir().expect("tempdir");
     let host_home = dir.path().join("home");
     std::fs::create_dir_all(&host_home).expect("host home root");
@@ -655,14 +658,16 @@ async fn standalone_yolo_explicit_ask_each_time_still_requires_approval_gate() {
         .await
         .expect("standalone-unrestricted shell invocation resolves");
 
-    let RuntimeCapabilityOutcome::ApprovalRequired(gate) = outcome else {
-        panic!("explicit ask_each_time should override yolo bypass, got {outcome:?}");
-    };
-    assert_eq!(gate.capability_id, capability_id);
+    // Full access never asks: a per-tool `ask_each_time` does not override it
+    // (only a disabled tool still denies).
+    assert!(
+        matches!(outcome, RuntimeCapabilityOutcome::Completed(_)),
+        "full access runs without asking even with ask_each_time, got {outcome:?}"
+    );
     assert_eq!(
         pending_approval_count(runtime_surfaces, &context).await,
-        1,
-        "explicit ask_each_time must create a pending approval"
+        0,
+        "full access must not create a pending approval"
     );
 }
 

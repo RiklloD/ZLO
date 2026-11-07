@@ -2859,11 +2859,15 @@ mod tests {
             invocations: Mutex::new(Vec::new()),
         });
         let mut context = run_context(TurnId::new()).await;
-        let message_ref = ironclaw_turns::AcceptedMessageRef::new("msg:mention")
-            .expect("valid message ref");
+        let message_ref =
+            ironclaw_turns::AcceptedMessageRef::new("msg:mention").expect("valid message ref");
         context.accepted_message_ref = Some(message_ref.clone());
         let mentions = Arc::new(TurnToolMentions::default());
-        mentions.record(&context.scope, &message_ref, "triage these with @GitHub please");
+        mentions.record(
+            &context.scope,
+            &message_ref,
+            "triage these with @GitHub please",
+        );
 
         let advertised = |port: &ToolDisclosureCapabilityPort| -> Vec<String> {
             port.tool_definitions()
@@ -2883,10 +2887,19 @@ mod tests {
             .await
             .expect("visible surface");
         let first = advertised(&port);
-        assert!(first.contains(&"github.search_issues".to_string()), "{first:?}");
-        assert!(first.contains(&"github.create_issue".to_string()), "{first:?}");
+        assert!(
+            first.contains(&"github.search_issues".to_string()),
+            "{first:?}"
+        );
+        assert!(
+            first.contains(&"github.create_issue".to_string()),
+            "{first:?}"
+        );
         assert!(!first.contains(&"githubx.other".to_string()), "{first:?}");
-        assert!(!first.contains(&"fixture.extra_3".to_string()), "surface still defers");
+        assert!(
+            !first.contains(&"fixture.extra_3".to_string()),
+            "surface still defers"
+        );
 
         let mut next_turn = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,

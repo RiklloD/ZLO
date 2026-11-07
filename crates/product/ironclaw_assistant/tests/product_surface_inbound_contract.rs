@@ -445,6 +445,7 @@ fn gate_request(resolution: &str, feedback: Option<String>) -> ProductResolveGat
         always: None,
         credential_ref: None,
         feedback,
+        answer: None,
     }
 }
 

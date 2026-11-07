@@ -406,6 +406,7 @@ fn leaf(row: &Row) -> Option<Leaf> {
             label: "Updated plan".into(),
             detail: super::plan_strip::plan_summary(plan),
             body: None,
+            output: None,
             failed: false,
             running: false,
         },
@@ -431,6 +432,7 @@ fn leaf(row: &Row) -> Option<Leaf> {
                 .map(|f| one_line(&f.label))
                 .unwrap_or_default(),
             body: None,
+            output: None,
             failed: false,
             running: false,
         },

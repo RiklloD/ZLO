@@ -55,6 +55,8 @@ impl HookApprover for CliBridge {
                 HookDecision::Approved
             }
             ToolDecision::Deny(reason) => HookDecision::Denied(reason),
+            // A rejection with feedback is still a denial: the hooks never run.
+            ToolDecision::Rejected(feedback) => HookDecision::Denied(feedback.as_str().to_string()),
         }
     }
 }
@@ -116,7 +118,12 @@ mod tests {
             };
             assert_eq!(gate.tool_name, WORKTREE_SETUP_TOOL);
             assert!(gate.body.as_deref().unwrap_or("").contains("npm install"));
-            assert!(bridge.resolve_gate(&thread, &gate.gate_ref, approved));
+            let answer = if approved {
+                crate::bridge::GateAnswer::Approve
+            } else {
+                crate::bridge::GateAnswer::Decline { feedback: None }
+            };
+            assert!(bridge.resolve_gate(&thread, &gate.gate_ref, answer));
             let decision = asking.await.unwrap();
             if approved {
                 assert_eq!(decision, HookDecision::Approved);
