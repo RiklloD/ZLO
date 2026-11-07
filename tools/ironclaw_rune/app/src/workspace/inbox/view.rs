@@ -38,6 +38,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
             4.,
         ));
     }
+    rows::snooze_menu(s, k, layer);
     let mut column = col()
         .key("inbox")
         .w_full()

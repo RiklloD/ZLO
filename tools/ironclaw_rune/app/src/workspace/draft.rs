@@ -640,14 +640,21 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         let width = cx
             .layout_size("draft-composer")
             .map_or(HERO_WIDTH, |[w, _]| w);
-        layer.push(rune_kit::popover::anchored(
+        menu::popup(
+            s,
             k,
-            el().w(width)
-                .child(menu::render(s, &items, selected, on_pick)),
-            "draft-composer",
-            Placement::Bottom,
-            8.,
-        ));
+            layer,
+            menu::Placing {
+                key: "command-menu",
+                anchor: "draft-composer".into(),
+                side: rune::Side::Bottom,
+                width,
+                menu_of: menu_of(),
+            },
+            &items,
+            selected,
+            on_pick,
+        );
     }
     let mut body = col()
         .key("draft-body")

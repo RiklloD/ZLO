@@ -225,7 +225,7 @@ fn move_selection(s: &mut State, delta: isize, tx: &mut Tx) {
         && count > 0
     {
         menu.selected = (menu.selected as isize + delta).rem_euclid(count as isize) as usize;
-        tx.scroll_into_view(format!("cmdk-row-{}", menu.selected));
+        tx.scroll_into_view(format!("cmdk-line-{}", menu.selected));
     }
 }
 
@@ -287,64 +287,10 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let first_message = entries.iter().position(|e| e.hit.is_some());
     let empty = entries.is_empty();
 
-    let mut rows: Vec<El> = Vec::with_capacity(entries.len() + 1);
-    for (ix, e) in entries.into_iter().enumerate() {
-        if Some(ix) == first_message {
-            rows.push(
-                row()
-                    .key("cmdk-messages")
-                    .h(HEADER_H)
-                    .px(12.)
-                    .pb(4.)
-                    .items_end()
-                    .child(t(
-                        if indexing {
-                            "In messages · indexing older chats…"
-                        } else {
-                            "In messages"
-                        },
-                        XS,
-                        p.text_faint,
-                    )),
-            );
-        }
-        let on = ix == selected;
-        let label = match &e.hit {
-            Some(hit) => message_search::snippet_text(p, hit, 13.).truncate(),
-            None => t(e.title, 13., if on { p.text } else { p.text.alpha(0.82) }).truncate(),
-        };
-        let cmd = e.cmd.clone();
-        rows.push(
-            row()
-                .key(format!("cmdk-row-{ix}"))
-                .role("option")
-                .h(ROW_H)
-                .px(12.)
-                .gap(12.)
-                .center_y()
-                .radius(8.)
-                .cursor(rune::Cursor::Pointer)
-                .fill(if on { p.active } else { Color::TRANSPARENT })
-                .on_hover(move |s: &mut State| {
-                    if let Some(m) = s.workspace.command.as_mut()
-                        && m.selected != ix
-                    {
-                        m.selected = ix;
-                    }
-                })
-                .on_press_tx(move |s: &mut State, tx: &mut Tx| run(s, cmd.clone(), tx))
-                .child(ui::glyph(
-                    e.icon,
-                    16.,
-                    if on { p.text } else { p.text_muted },
-                ))
-                .child(el().grow(1.0).min_w(0.0).child(label))
-                .child(
-                    el().max_w(220.)
-                        .child(t(e.hint, XS, p.text_faint).truncate()),
-                ),
-        );
-    }
+    // Every thread is an entry: the list builds only the rows near its
+    // viewport (Rune virtual rows), keyed by position as before.
+    let count = entries.len();
+    let entries = std::rc::Rc::new(entries);
     let list = col()
         .key("cmdk-list")
         .w_full()
@@ -353,7 +299,33 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
             stick_bottom: false,
         })
         .wheel_glide("cmdk-list")
-        .child(col().w_full().padding(4.).children(rows));
+        .child(
+            col()
+                .key("cmdk-rows")
+                .w_full()
+                .growth(rune::GrowthSpec::default())
+                .virtual_rows(
+                    count,
+                    ROW_H,
+                    |_: &State, ix| format!("cmdk-line-{ix}").into(),
+                    move |s: &State, ix| {
+                        let mut line = col().w_full().px(4.);
+                        if ix == 0 {
+                            line = line.pt(4.);
+                        }
+                        if ix + 1 == count {
+                            line = line.pb(4.);
+                        }
+                        let Some(e) = entries.get(ix) else {
+                            return line;
+                        };
+                        if Some(ix) == first_message {
+                            line = line.child(messages_header(&s.palette, indexing));
+                        }
+                        line.child(entry_row(&s.palette, ix, e, ix == selected))
+                    },
+                ),
+        );
     let input = TextInput::new(&menu.input)
         .width(None)
         .placeholder("Search threads, messages, settings and actions")
@@ -421,6 +393,67 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
                     .modal(true, |s: &mut State| s.workspace.command = None),
             ),
     );
+}
+
+/// "In messages" over the first message hit.
+fn messages_header(p: &crate::design::Palette, indexing: bool) -> El {
+    row()
+        .key("cmdk-messages")
+        .h(HEADER_H)
+        .px(12.)
+        .pb(4.)
+        .items_end()
+        .child(t(
+            if indexing {
+                "In messages · indexing older chats…"
+            } else {
+                "In messages"
+            },
+            XS,
+            p.text_faint,
+        ))
+}
+
+/// One entry: its glyph, its title (a message hit's snippet), its hint.
+fn entry_row(p: &crate::design::Palette, ix: usize, e: &Entry, on: bool) -> El {
+    let label = match &e.hit {
+        Some(hit) => message_search::snippet_text(p, hit, 13.).truncate(),
+        None => t(
+            e.title.clone(),
+            13.,
+            if on { p.text } else { p.text.alpha(0.82) },
+        )
+        .truncate(),
+    };
+    let cmd = e.cmd.clone();
+    row()
+        .key(format!("cmdk-row-{ix}"))
+        .role("option")
+        .h(ROW_H)
+        .px(12.)
+        .gap(12.)
+        .center_y()
+        .radius(8.)
+        .cursor(rune::Cursor::Pointer)
+        .fill(if on { p.active } else { Color::TRANSPARENT })
+        .on_hover(move |s: &mut State| {
+            if let Some(m) = s.workspace.command.as_mut()
+                && m.selected != ix
+            {
+                m.selected = ix;
+            }
+        })
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| run(s, cmd.clone(), tx))
+        .child(ui::glyph(
+            e.icon,
+            16.,
+            if on { p.text } else { p.text_muted },
+        ))
+        .child(el().grow(1.0).min_w(0.0).child(label))
+        .child(
+            el().max_w(220.)
+                .child(t(e.hint.clone(), XS, p.text_faint).truncate()),
+        )
 }
 
 /// Subsequence match: every query character in order. Higher is better: a

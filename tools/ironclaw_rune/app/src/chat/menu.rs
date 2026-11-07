@@ -24,10 +24,9 @@ use ironclaw_gpui_client::mentions::{
 };
 use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
 use ironclaw_gpui_client::{Client, ClientError};
-use rune::{El, Icon, TextEdit, Tx, col, icon, row, text};
+use rune::{El, Icon, TextEdit, Tx, icon};
+use rune_kit::{Kit, PopupItem, PopupList};
 
-use super::flow;
-use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -194,9 +193,8 @@ impl ComposerMenu {
             MenuKeyName::Enter => return pick(&items[self.selected(len)], composer),
             MenuKeyName::Escape => self.dismissed = Some(composer.text.clone()),
         }
-        if matches!(key, MenuKeyName::Up | MenuKeyName::Down) {
-            tx.scroll_into_view(row_key(&items[self.selected(len)]));
-        }
+        // `PopupList` scrolls the highlighted row into view.
+        let _ = tx;
         MenuKey::Handled
     }
 }
@@ -399,83 +397,76 @@ fn row_key(item: &MenuItem) -> String {
     format!("menu-{}-{}", item.section(), item.name())
 }
 
-/// The menu popover, one heading per section. `on_pick` runs on a click.
-pub fn render(s: &State, items: &[MenuItem], selected: usize, on_pick: OnPick) -> El {
+/// Where the menu floats: rune-kit's `PopupList` key, the element it
+/// hangs off (the composer), on which side, and how wide.
+pub struct Placing {
+    pub key: &'static str,
+    pub anchor: String,
+    pub side: rune::Side,
+    pub width: f32,
+    /// The menu, found again from the root (hover moves its highlight).
+    pub menu_of: MenuOf,
+}
+
+/// The `@` `/` menu as rune-kit's `PopupList` over the composer: one row
+/// per item (a mention's kind glyph before it, its description beside it)
+/// and, when sections mix, a dimmed heading row before each. Focus stays in
+/// the composer, whose keys move the highlight (`ComposerMenu::key`); the
+/// pointer moves it too, and a click runs `on_pick`. No scrim: a click
+/// elsewhere (into the composer) leaves it open, as before; Esc closes it.
+pub fn popup(
+    s: &State,
+    k: &Kit,
+    layer: &mut Vec<El>,
+    at: Placing,
+    items: &[MenuItem],
+    selected: usize,
+    on_pick: OnPick,
+) {
+    let menu_of = at.menu_of.clone();
     let p = &s.palette;
-    let sections = items.iter().map(MenuItem::section).collect::<Vec<_>>();
-    // A lone section needs no heading.
     let mixed = mixed(items);
-    let small = flow::type_at(s, 12., 16., 400.);
-    let mut list = col().key("command-menu").w_full().padding(4.);
+    // Popup row → item index (`None` for a heading).
+    let mut rows: Vec<Option<usize>> = Vec::new();
+    let mut entries = Vec::new();
     for (ix, item) in items.iter().enumerate() {
-        if mixed && (ix == 0 || sections[ix - 1] != sections[ix]) {
-            list = list.child(
-                text(item.section())
-                    .key(format!("menu-head-{}", item.section()))
-                    .font(small)
-                    .color(p.text_muted)
-                    .px(8.)
-                    .pt(6.)
-                    .pb(2.),
+        if mixed && (ix == 0 || items[ix - 1].section() != item.section()) {
+            rows.push(None);
+            entries.push(
+                PopupItem::new(format!("head-{}", item.section()), item.section()).disabled(true),
             );
         }
-        let pick = item.clone();
-        let on_pick = on_pick.clone();
-        let mut line = row()
-            .key(row_key(item))
-            .role("button")
-            .label(item.label())
-            .h(30.)
-            .px(8.)
-            .gap(12.)
-            .center_y()
-            .radius(crate::design::CONTROL_RADIUS)
-            .hover(p.hover)
-            .cursor(rune::Cursor::Pointer);
-        if ix == selected {
-            line = line.fill(p.active);
-        }
+        rows.push(Some(ix));
+        let mut entry = PopupItem::new(row_key(item), item.label()).description(item.description());
         if let Some(glyph) = mention_icon(item) {
-            line = line.child(icon(glyph, 12.).color(p.text_muted));
+            entry = entry.leading(icon(glyph, 12.).color(p.text_muted));
         }
-        line = line
-            .child(
-                text(item.label())
-                    .font(flow::type_at(s, 13., 18., 500.))
-                    .color(p.text)
-                    .truncate()
-                    .max_w(320.),
-            )
-            .child(
-                text(item.description().to_string())
-                    .font(small)
-                    .color(p.text_muted)
-                    .truncate()
-                    .min_w(0.)
-                    .grow(1.),
-            )
-            .on_press_tx(move |s: &mut State, tx| on_pick(s, &pick, tx));
-        list = list.child(line);
+        entries.push(entry);
     }
-    col()
-        .key("command-menu-pop")
-        .w_full()
-        .radius(12.)
-        .border(1., p.border)
-        .fill(p.surface_overlay)
-        .shadow(8., 24., rune::Color::BLACK.alpha(0.2))
-        .transition(flow::rise(4.))
-        .child(
-            col()
-                .key("command-menu-scroll")
-                .w_full()
-                .max_h(280.)
-                .scroll(rune::ScrollSpec {
-                    stick_bottom: false,
-                })
-                .wheel_glide("command-menu-scroll")
-                .child(list),
-        )
+    let active = rows.iter().position(|r| *r == Some(selected));
+    let rows = Rc::new(rows);
+    let picks: Rc<Vec<MenuItem>> = Rc::new(items.to_vec());
+    PopupList::new(at.key, at.anchor)
+        .side(at.side)
+        .offset(6.)
+        .width(at.width)
+        .max_height(280.)
+        .padding(4.)
+        .row_radius(crate::design::CONTROL_RADIUS)
+        .items(entries)
+        .active(active)
+        .label("Suggestions")
+        .on_active(move |s: &mut State, row| {
+            if let (Some(Some(ix)), Some(m)) = (rows.get(row), menu_of(s)) {
+                m.index = *ix;
+            }
+        })
+        .on_choose(move |s: &mut State, id: &str, tx| {
+            if let Some(item) = picks.iter().find(|i| row_key(i) == id) {
+                on_pick(s, item, tx);
+            }
+        })
+        .build(k, layer);
 }
 
 /// The leading icon of an `@` mention row.

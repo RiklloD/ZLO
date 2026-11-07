@@ -194,7 +194,26 @@ pub(crate) fn column(
         let pick_id = id.clone();
         let on_pick: menu::OnPick =
             std::rc::Rc::new(move |s: &mut State, item, tx| pick_item(s, &pick_id, item, tx));
-        main = main.child(centered(s, menu::render(s, &items, selected, on_pick)));
+        // Over the composer, as wide as it.
+        let anchor = format!("composer:{id}");
+        let width = cx
+            .layout_size(&anchor)
+            .map_or(super::content_width(s), |[w, _]| w);
+        menu::popup(
+            s,
+            k,
+            layer,
+            menu::Placing {
+                key: "command-menu",
+                anchor,
+                side: rune::Side::Top,
+                width,
+                menu_of: super::composer::menu_of(&id),
+            },
+            &items,
+            selected,
+            on_pick,
+        );
     }
     main.child(
         row()

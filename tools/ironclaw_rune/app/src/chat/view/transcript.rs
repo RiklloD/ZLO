@@ -161,7 +161,7 @@ impl Rows {
                 // A finished reply only changes with its text, its copy
                 // check, its run and the look: keep its parsed Markdown.
                 let version = (text.as_str(), copied, fork, self.look);
-                memo(format!("reply:{key}"), version, || {
+                memo(format!("{key}-group"), version, || {
                     rows::with_actions(
                         chat,
                         key,
