@@ -21,11 +21,18 @@ const TOGGLE_SIZE: f32 = 28.;
 const CLUSTER_END: f32 = design::TRAFFIC_LIGHTS_WIDTH + TOGGLE_SIZE;
 
 pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
-    // Follow the system appearance for the "system" scheme.
-    let p = if design::scheme_is_dark(&s.prefs, cx.system_dark()) == !s.palette.light {
+    // Follow the system appearance. Only the view can read it (`Cx`), so a
+    // change is queued back into the state: `s.system_dark` and
+    // `s.palette` stay current for every reader (⇧⌘Y, pages, wallpaper).
+    // This frame already paints with the new palette.
+    let dark = cx.system_dark();
+    if dark != s.system_dark {
+        s.rt.handle.update(move |s, _| apply_system_dark(s, dark));
+    }
+    let p = if dark == s.system_dark {
         s.palette
     } else {
-        design::resolve(&s.prefs, cx.system_dark())
+        design::resolve(&s.prefs, dark)
     };
     let k = design::kit(&p);
     let mut layer: Vec<El> = Vec::new();
@@ -598,4 +605,20 @@ fn confirm_delete(s: &State, k: &Kit, layer: &mut Vec<El>) {
         )
         .on_close(|s: &mut State| s.workspace.confirm_delete = None)
         .build(k, layer);
+}
+
+/// The system appearance flipped: re-resolve the palette (it matters only
+/// for the "system" scheme, but `system_dark` is always kept true to macOS)
+/// and repaint the wallpaper for the new side.
+fn apply_system_dark(s: &mut State, dark: bool) {
+    if s.system_dark == dark {
+        return;
+    }
+    s.system_dark = dark;
+    let palette = design::resolve(&s.prefs, dark);
+    let flipped = palette.light != s.palette.light;
+    s.palette = palette;
+    if flipped {
+        crate::design::look::reload(s);
+    }
 }
