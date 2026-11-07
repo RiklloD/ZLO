@@ -124,8 +124,8 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 | Area | State |
 |---|---|
 | 0 | done |
-| E, F | merged (07.11.2026) |
-| A B C D G H S | in progress |
+| E, F, H | merged (07.11.2026) |
+| A B C D G S | in progress |
 
 ## Integration checklist (collected from area reports)
 
@@ -136,5 +136,9 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 - [ ] G: `design::brands::provider_logo` in profiles pickers; shared hover/row/floating helpers; mono font for the memory editor.
 - [ ] H: `chat::model_picker::pretty_model` in `common_stub.rs`.
 - [ ] A: `chat::approval_mode::{CHOICES, label, key, changed}` in profiles.
+- [ ] A: replace H's `extras_preview` placeholder column in `chat.rs` with the real chat, keeping its calls (`orchestration::tail/composer`, `computer::view`, `model_picker::pills`); fill H's hooks in `chat.rs` (`set_error`, `resubscribe`, `reload_timeline`, `active_run`, `embedded`, `composer_text`, `set_composer_text`, `set_fork_prefix`, `set_merges`, `stop_run`); `/goal` via `goals::goal_command`/`run_command`; `orchestration::refresh` on run end.
+- [ ] B: `workspace::{thread_title, ensure_titles, window_active}` (H stubs); ⇧⌘M → `model_picker::open`; draft screen uses `ModelPickerState::new/load/pills_for`.
+- [ ] F→H: `computer.rs` local `permissions` stub → `crate::permissions`.
+- [ ] G: `model_picker::provider_mark` logos; fold `chat/extras_ui.rs` into `design::kit`; enable `App::modifier_keys()` for ⌘-digit badges.
 - [ ] Clippy: `SCENES` type complexity in `scenes.rs`.
 - [ ] Interaction tests (`rune::Runtime`) for voice controls and settings.
