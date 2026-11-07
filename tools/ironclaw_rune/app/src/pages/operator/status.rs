@@ -1,6 +1,9 @@
 //! Operator → Status: readiness checks, doctor diagnostics, and the OS
 //! service (GPUI `StatusPanel` in `pages/operator.rs`).
 
+use crate::pages::common::{Tone, card, error_line, loading};
+use crate::pages::common::controls::{Look, Size, button_sized, muted, outlined_tag, rule, spinner};
+use crate::pages::common::ts::{BODY_SEMIBOLD, SM_MEDIUM};
 use ironclaw_gpui_client::ClientError;
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorCommandPlaneResponse, RebornOperatorServiceLifecycleAction,
@@ -13,10 +16,6 @@ use rune_kit::Kit;
 use super::{confirm_row, diagnostic_row, notice_line, section_title};
 use crate::icons;
 use crate::jobs;
-use crate::pages::c_widgets::{
-    BODY_SEMIBOLD, Look, SM_MEDIUM, Size, Tone, button, card, error_line, loading, muted, rule,
-    spinner, tag,
-};
 use crate::state::State;
 
 #[derive(Default)]
@@ -143,7 +142,7 @@ fn render_service(s: &State, k: &Kit) -> El {
             .map(|b| b.client().connection().base_url.to_string())
             .unwrap_or_else(|| "(not connected)".into());
     let stop = loading(
-        button("Stop service", Look::Outline, Size::Small)
+        button_sized("Stop service", Look::Outline, Size::Small)
             .icon(&icons::SQUARE)
             .on_press(|s: &mut State| st(s).confirm_stop = true),
         panel.stopping,
@@ -160,9 +159,9 @@ fn render_service(s: &State, k: &Kit) -> El {
                     .child(text("IronClaw service").font(BODY_SEMIBOLD).color(p.text))
                     .child(muted(p, format!("Gateway answering at {base_url}"))),
             )
-            .child(tag(p, Tone::Success, "Running"))
+            .child(outlined_tag(p, Tone::Success, "Running"))
             .child(
-                button("Check", Look::Ghost, Size::Small)
+                button_sized("Check", Look::Ghost, Size::Small)
                     .on_press(|s: &mut State| {
                         service_action(s, RebornOperatorServiceLifecycleAction::Status)
                     })
@@ -197,10 +196,10 @@ fn render_service(s: &State, k: &Kit) -> El {
                 s,
                 k,
                 "Stop IronClaw? Chats and automations stop, and this app loses its connection. \"Try again\" on the connect screen starts it back up.".into(),
-                button("Stop", Look::Danger, Size::Small).on_press(|s: &mut State| {
+                button_sized("Stop", Look::Danger, Size::Small).on_press(|s: &mut State| {
                     service_action(s, RebornOperatorServiceLifecycleAction::Stop)
                 }),
-                button("Cancel", Look::Ghost, Size::Small)
+                button_sized("Cancel", Look::Ghost, Size::Small)
                     .on_press(|s: &mut State| st(s).confirm_stop = false),
             )
             .key("confirm-stop"),
@@ -213,7 +212,7 @@ fn render_diagnostics(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let panel = &s.pages.operator.status;
     let run = loading(
-        button(
+        button_sized(
             if panel.diagnostics.is_some() {
                 "Run again"
             } else {
@@ -280,11 +279,11 @@ fn check_row(s: &State, c: &RebornOperatorStatusCheck) -> El {
 fn state_tag(s: &State, state: RebornOperatorStatusState) -> El {
     let p = &s.palette;
     match state {
-        RebornOperatorStatusState::Ready => tag(p, Tone::Success, "Ready"),
-        RebornOperatorStatusState::Degraded => tag(p, Tone::Warning, "Degraded"),
-        RebornOperatorStatusState::Blocked => tag(p, Tone::Danger, "Blocked"),
-        RebornOperatorStatusState::NotConfigured => tag(p, Tone::Warning, "Not configured"),
-        RebornOperatorStatusState::Unsupported => tag(p, Tone::Secondary, "No probe"),
+        RebornOperatorStatusState::Ready => outlined_tag(p, Tone::Success, "Ready"),
+        RebornOperatorStatusState::Degraded => outlined_tag(p, Tone::Warning, "Degraded"),
+        RebornOperatorStatusState::Blocked => outlined_tag(p, Tone::Danger, "Blocked"),
+        RebornOperatorStatusState::NotConfigured => outlined_tag(p, Tone::Warning, "Not configured"),
+        RebornOperatorStatusState::Unsupported => outlined_tag(p, Tone::Secondary, "No probe"),
     }
 }
 

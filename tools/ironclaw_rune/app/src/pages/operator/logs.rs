@@ -2,15 +2,15 @@
 //! newest first, with level and target filters and paging to older lines.
 //! GPUI `pages/operator/logs.rs`.
 
+use crate::pages::common::{empty_state, error_line, loading};
+use crate::pages::common::controls::{Look, Size, button_sized, input, muted, rule, spinner};
+use crate::pages::common::ts::{MONO_XS};
 use ironclaw_gpui_client::product_wire::{RebornLogEntry, RebornLogLevel, RebornOperatorLogsQuery};
 use rune::{Color, El, TextEdit, col, row, text};
 use rune_kit::Kit;
 
 use crate::design::Palette;
 use crate::jobs::{self, Generation};
-use crate::pages::c_widgets::{
-    Look, MONO_XS, Size, button, empty_state, error_line, input, loading, muted, rule, spinner,
-};
 use crate::state::State;
 
 const PAGE: u32 = 100;
@@ -191,7 +191,7 @@ pub fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
         } else {
             Look::Ghost
         };
-        button(*label, look, Size::XSmall)
+        button_sized(*label, look, Size::XSmall)
             .on_press(move |s: &mut State| set_level(s, level))
             .build(k)
             .key(format!("log-level-{label}"))
@@ -220,7 +220,7 @@ pub fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
                 .center_y()
                 .child(muted(p, format!("Run {short}…")))
                 .child(
-                    button("All runs", Look::Ghost, Size::XSmall)
+                    button_sized("All runs", Look::Ghost, Size::XSmall)
                         .on_press(|s: &mut State| set_run(s, None))
                         .build(k)
                         .key("clear-run"),
@@ -250,7 +250,7 @@ pub fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
         c = c.child(
             row().child(
                 loading(
-                    button("Load older", Look::Ghost, Size::Small)
+                    button_sized("Load older", Look::Ghost, Size::Small)
                         .on_press(move |s: &mut State| load(s, Some(cursor.clone()))),
                     panel.loading,
                 )

@@ -57,6 +57,7 @@
 //! (Input, Switch, Tag, charts, menus) → `rune::TextEdit` + `rune_kit::{TextInput,
 //! TextArea, Switch, Badge, Menu, Popover, ...}`.
 
+pub mod compact;
 mod loops;
 
 pub use loops::{claw_mark, gradient_spinner, pulse_dots, shimmer_text, status_dot};

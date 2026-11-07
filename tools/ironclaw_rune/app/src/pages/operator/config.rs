@@ -5,6 +5,9 @@
 //! No "Validate" button: the gateway's validate route has no effective-config
 //! service behind it and answers "not wired yet" for every key.
 
+use crate::pages::common::{Tone, empty_state, error_line, loading};
+use crate::pages::common::controls::{Look, Size, button_sized, input, muted, outlined_tag, rule, spinner};
+use crate::pages::common::ts::{MONO_XS, SM_MEDIUM};
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorConfigEntry, RebornOperatorConfigListResponse,
 };
@@ -13,10 +16,6 @@ use rune_kit::Kit;
 
 use super::{confirm_row, diagnostic_row, notice_line, section_title};
 use crate::jobs;
-use crate::pages::c_widgets::{
-    Look, MONO_XS, SM_MEDIUM, Size, Tone, button, empty_state, error_line, input, loading, muted,
-    rule, spinner, tag,
-};
 use crate::state::State;
 
 const VALUE_PREVIEW_CHARS: usize = 120;
@@ -222,14 +221,14 @@ fn render_row(
                 )
                 .child(text(value).font(MONO_XS).color(p.text_muted).truncate()),
         )
-        .child(tag(p, Tone::Secondary, entry.source.clone()));
+        .child(outlined_tag(p, Tone::Secondary, entry.source.clone()));
     if !entry.mutable {
-        head = head.child(tag(p, Tone::Secondary, "Read-only"));
+        head = head.child(outlined_tag(p, Tone::Secondary, "Read-only"));
     }
     if entry.mutable && editing.is_none() {
         let key = entry.key.clone();
         head = head.child(
-            button("Edit", Look::Ghost, Size::XSmall)
+            button_sized("Edit", Look::Ghost, Size::XSmall)
                 .on_press(move |s: &mut State| edit(s, key.clone()))
                 .build(k)
                 .key(format!("edit-key-{ix}")),
@@ -258,7 +257,7 @@ fn render_row(
                 )
                 .child(
                     loading(
-                        button("Save", Look::Primary, Size::Small)
+                        button_sized("Save", Look::Primary, Size::Small)
                             .disabled(editor.confirming)
                             .on_press(|s: &mut State| ask_save(s)),
                         editor.saving,
@@ -267,7 +266,7 @@ fn render_row(
                     .key(format!("save-key-{ix}")),
                 )
                 .child(
-                    button("Cancel", Look::Ghost, Size::Small)
+                    button_sized("Cancel", Look::Ghost, Size::Small)
                         .on_press(|s: &mut State| {
                             if let Some(p) = st(s) {
                                 p.editor = None;
@@ -285,8 +284,8 @@ fn render_row(
                     "Change {}? This is an operator setting and applies to every chat and automation.",
                     editor.key
                 ),
-                button("Change", Look::Danger, Size::Small).on_press(|s: &mut State| save(s)),
-                button("Cancel", Look::Ghost, Size::Small).on_press(|s: &mut State| {
+                button_sized("Change", Look::Danger, Size::Small).on_press(|s: &mut State| save(s)),
+                button_sized("Cancel", Look::Ghost, Size::Small).on_press(|s: &mut State| {
                     if let Some(e) = st(s).and_then(|p| p.editor.as_mut()) {
                         e.confirming = false;
                     }

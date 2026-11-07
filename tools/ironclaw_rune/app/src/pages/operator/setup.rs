@@ -1,6 +1,9 @@
 //! Operator → Setup: what is configured. Providers and models are added
 //! and switched on the Providers page (GPUI `pages/operator/setup.rs`).
 
+use crate::pages::common::{Tone, card, error_line, glyph};
+use crate::pages::common::controls::{muted, outlined_tag, spinner};
+use crate::pages::common::ts::{BODY_SEMIBOLD, SM_MEDIUM};
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorSetupResponse, RebornOperatorSetupStatus, RebornOperatorSetupStepStatus,
 };
@@ -10,9 +13,6 @@ use rune_kit::Kit;
 use super::{diagnostic_row, notice_line, section_title};
 use crate::icons;
 use crate::jobs;
-use crate::pages::c_widgets::{
-    BODY_SEMIBOLD, SM_MEDIUM, Tone, card, error_line, glyph, muted, spinner, tag,
-};
 use crate::state::State;
 
 #[derive(Default)]
@@ -50,9 +50,9 @@ fn render_state(s: &State, k: &Kit, panel: &SetupPanel) -> El {
         return spinner(k);
     };
     let status = match setup.status {
-        RebornOperatorSetupStatus::Complete => tag(p, Tone::Success, "Complete"),
-        RebornOperatorSetupStatus::Incomplete => tag(p, Tone::Warning, "Incomplete"),
-        RebornOperatorSetupStatus::Unsupported => tag(p, Tone::Secondary, "Unsupported"),
+        RebornOperatorSetupStatus::Complete => outlined_tag(p, Tone::Success, "Complete"),
+        RebornOperatorSetupStatus::Incomplete => outlined_tag(p, Tone::Warning, "Incomplete"),
+        RebornOperatorSetupStatus::Unsupported => outlined_tag(p, Tone::Secondary, "Unsupported"),
     };
     let active = match (&setup.active_provider_id, &setup.active_model) {
         (Some(pid), Some(m)) => format!("Active model: {pid} / {m}"),

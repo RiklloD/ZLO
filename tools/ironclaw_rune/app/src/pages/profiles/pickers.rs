@@ -3,6 +3,10 @@
 //! skills, MCP servers, the Supermemory containers profiles use), never
 //! from free text.
 
+use crate::pages::common::{glyph};
+use crate::pages::common::controls::{floating, hairline, hover_row, styled};
+use crate::pages::common::ts::{SM, XS};
+use crate::chat::model_picker::pretty_model;
 use std::collections::BTreeSet;
 
 use ironclaw_gpui_client::orchestration::RouteProvider;
@@ -10,9 +14,6 @@ use ironclaw_gpui_client::profiles::{ApprovalMode, ProfileInfo, ProfileSettings,
 use rune::{Color, Cursor, El, FileDialogOptions, ScrollSpec, Tx, col, el, row};
 use rune_kit::{Kit, Placement, TextInput};
 
-use super::super::usage::common_stub::{
-    SM, XS, floating, glyph, hairline, kit_row, label, pretty_model,
-};
 use super::ProfilesState;
 use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
@@ -221,7 +222,7 @@ pub(super) fn trigger(s: &State, k: &Kit, layer: &mut Vec<El>, menu: Menu, summa
         .border(1.0, if open { p.accent } else { p.border })
         .cursor(Cursor::Pointer)
         .hover(p.hover)
-        .child(label(summary, SM, p.text).truncate().grow(1.0).min_w(0.0))
+        .child(styled(summary, SM, p.text).truncate().grow(1.0).min_w(0.0))
         .child(glyph(&icons::CHEVRON_DOWN, 12.0, p.text_muted))
         .on_press(move |s: &mut State| toggle_menu(s, menu))
 }
@@ -275,9 +276,9 @@ fn model_popover(s: &State, k: &Kit) -> El {
         let id = rp.provider.clone();
         let on = rail.as_deref() == Some(id.as_str());
         rail_rows = rail_rows.child(
-            kit_row(p, format!("rail-{id}"), on)
+            hover_row(p, format!("rail-{id}"), on)
                 .child(crate::chat::model_picker::provider_mark(s, rp.brand.as_deref(), &rp.runtime, &rp.provider, 14.0))
-                .child(label(rp.name.clone(), SM, p.text).truncate().grow(1.0).min_w(0.0))
+                .child(styled(rp.name.clone(), SM, p.text).truncate().grow(1.0).min_w(0.0))
                 .on_press(move |s: &mut State| pr(s).rail = Some(id.clone())),
         );
     }
@@ -439,12 +440,12 @@ fn checklist_popover(s: &State, k: &Kit, menu: Menu, empty_label: &'static str) 
     }) {
         let on = picked.contains(&c.id);
         let id = c.id.clone();
-        let mut text = col().grow(1.0).min_w(0.0).child(label(c.label, SM, p.text).truncate());
+        let mut text = col().grow(1.0).min_w(0.0).child(styled(c.label, SM, p.text).truncate());
         if !c.detail.is_empty() {
-            text = text.child(label(c.detail, XS, p.text_faint).truncate());
+            text = text.child(styled(c.detail, XS, p.text_faint).truncate());
         }
         rows = rows.child(
-            kit_row(p, format!("check-{}-{}", menu as u8, c.id), false)
+            hover_row(p, format!("check-{}-{}", menu as u8, c.id), false)
                 .role("checkbox")
                 .checked(on)
                 .items_start()
@@ -477,10 +478,10 @@ fn checklist_popover(s: &State, k: &Kit, menu: Menu, empty_label: &'static str) 
 
 /// A single-choice row: the label and a tick when picked.
 fn pick_row(p: &Palette, key: String, text: String, on: bool) -> El {
-    let mut r = kit_row(p, key, on)
+    let mut r = hover_row(p, key, on)
         .role("menuitemradio")
         .checked(on)
-        .child(label(text, SM, p.text).truncate().grow(1.0).min_w(0.0));
+        .child(styled(text, SM, p.text).truncate().grow(1.0).min_w(0.0));
     if on {
         r = r.child(glyph(&icons::CHECK, 13.0, p.text_muted));
     }
@@ -504,7 +505,7 @@ fn check_box(p: &Palette, on: bool) -> El {
 }
 
 fn note(p: &Palette, text: &'static str) -> El {
-    el().px(8.0).py(4.0).child(label(text, XS, p.text_faint))
+    el().px(8.0).py(4.0).child(styled(text, XS, p.text_faint))
 }
 
 #[cfg(test)]

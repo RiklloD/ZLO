@@ -14,6 +14,7 @@ mod catalog;
 pub mod fixtures;
 mod view;
 
+
 use std::collections::HashMap;
 
 use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView, UserModelCatalog};
@@ -430,7 +431,7 @@ fn start_codex(s: &mut State, provider_id: String) {
         |c| async move { c.start_codex_login().await },
         move |s, result, tx| match result {
             Ok(start) => {
-                crate::pages::c_widgets::open_url(tx, &start.verification_uri);
+                crate::pages::common::controls::open_url(tx, &start.verification_uri);
                 let p = st(s);
                 p.codex = Some(CodexLogin {
                     provider_id: provider_id.clone(),

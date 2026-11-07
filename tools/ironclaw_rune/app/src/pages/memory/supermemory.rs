@@ -3,6 +3,9 @@
 //! Supermemory account — what was captured there, semantic search, and
 //! deleting a wrong document or forgetting a wrong memory.
 
+use crate::pages::common::{empty_state};
+use crate::pages::common::controls::{Look, press_button, press_icon, press_icon_disabled, rule, styled};
+use crate::pages::common::ts::{BODY_SEMIBOLD, SM, SM_MEDIUM, XS};
 use ironclaw_gpui_client::memory_page::{
     SupermemoryBindingInfo, SupermemoryBindingOrigin, SupermemoryDocumentPage,
     SupermemoryDocumentSummary, SupermemoryMemoryHit, SupermemoryStatus,
@@ -10,10 +13,6 @@ use ironclaw_gpui_client::memory_page::{
 use rune::{El, TextEdit, col, row};
 use rune_kit::{Kit, Spinner, TextInput};
 
-use super::super::usage::common_stub::{
-    BODY_SEMIBOLD, Look, SM, SM_MEDIUM, XS, button, empty_state, icon_button, icon_button_disabled,
-    label, rule,
-};
 use super::{MemoryState, fail, field_row};
 use crate::icons;
 use crate::jobs;
@@ -219,7 +218,7 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
         .chain(m.profiles.iter().map(|(id, name)| (Some(id.clone()), name.clone())));
     for (ix, (id, name)) in choices.enumerate() {
         let look = if m.profile == id { Look::Primary } else { Look::Ghost };
-        profile_picker = profile_picker.child(button(
+        profile_picker = profile_picker.child(press_button(
             k,
             &format!("sm-profile-{ix}"),
             &name,
@@ -240,7 +239,7 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
     for (ix, tag) in containers.into_iter().enumerate() {
         let look = if current.as_deref() == Some(tag.as_str()) { Look::Outline } else { Look::Ghost };
         let t = tag.clone();
-        container_picker = container_picker.child(button(
+        container_picker = container_picker.child(press_button(
             k,
             &format!("sm-container-{ix}"),
             &tag,
@@ -255,7 +254,7 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
         .w_full()
         .gap(12.0)
         .child(profile_picker)
-        .child(label(binding_line(status), SM, p.text_muted).wrap());
+        .child(styled(binding_line(status), SM, p.text_muted).wrap());
     if !status.active {
         return c;
     }
@@ -268,7 +267,7 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
             .on_submit(|s: &mut State, _| run_search(s))
             .build(k)
             .key("sm-search-field"),
-        icon_button(k, "sm-search", &icons::SEARCH, "Search Supermemory", run_search),
+        press_icon(k, "sm-search", &icons::SEARCH, "Search Supermemory", run_search),
     ));
     if let Some(hits) = &m.sm_hits {
         c = c.child(render_hits(s, k, hits, primary.as_deref()));
@@ -306,16 +305,16 @@ fn render_hits(s: &State, k: &Kit, hits: &[SupermemoryMemoryHit], primary: Optio
                 col()
                     .grow(1.0)
                     .min_w(0.0)
-                    .child(label(hit.content.clone(), SM, p.text).wrap())
-                    .child(label(meta, XS, p.text_muted)),
+                    .child(styled(hit.content.clone(), SM, p.text).wrap())
+                    .child(styled(meta, XS, p.text_muted)),
             );
         if can_forget {
             r = r.child(if confirming {
-                button(k, &format!("sm-forget-confirm-{ix}"), "Forget", Look::Danger, None, m.busy, move |s: &mut State| {
+                press_button(k, &format!("sm-forget-confirm-{ix}"), "Forget", Look::Danger, None, m.busy, move |s: &mut State| {
                     forget_remote_memory(s, container.clone(), id.clone())
                 })
             } else {
-                icon_button(k, &format!("sm-forget-{ix}"), &icons::DELETE, "Forget this memory", move |s: &mut State| {
+                press_icon(k, &format!("sm-forget-{ix}"), &icons::DELETE, "Forget this memory", move |s: &mut State| {
                     s.pages.memory.confirm_remote = Some(key.clone())
                 })
             });
@@ -331,7 +330,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
     let mut list = col()
         .key("sm-documents")
         .w_full()
-        .child(col().pt(16.0).pb(4.0).child(label(
+        .child(col().pt(16.0).pb(4.0).child(styled(
             format!("Captured documents in {}", page.container),
             BODY_SEMIBOLD,
             p.text,
@@ -348,11 +347,11 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
             .clone()
             .or(document.custom_id.clone())
             .unwrap_or_else(|| document.id.clone());
-        let mut text_col = col().grow(1.0).min_w(0.0).child(label(title, SM_MEDIUM, p.text).truncate());
+        let mut text_col = col().grow(1.0).min_w(0.0).child(styled(title, SM_MEDIUM, p.text).truncate());
         if let Some(preview) = &document.preview {
-            text_col = text_col.child(label(preview.clone(), XS, p.text_muted).wrap());
+            text_col = text_col.child(styled(preview.clone(), XS, p.text_muted).wrap());
         }
-        text_col = text_col.child(label(
+        text_col = text_col.child(styled(
             format!(
                 "{}{}",
                 document.status.clone().unwrap_or_default(),
@@ -364,7 +363,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
         let mut r = row().key(format!("sm-doc-{}", document.id)).w_full().gap(12.0).py(8.0).child(text_col);
         if writable {
             r = r.child(if confirming {
-                button(
+                press_button(
                     k,
                     &format!("sm-delete-confirm-{ix}"),
                     "Delete from Supermemory",
@@ -374,7 +373,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
                     move |s: &mut State| delete_remote_document(s, id.clone()),
                 )
             } else {
-                icon_button(k, &format!("sm-delete-{ix}"), &icons::DELETE, "Delete document", move |s: &mut State| {
+                press_icon(k, &format!("sm-delete-{ix}"), &icons::DELETE, "Delete document", move |s: &mut State| {
                     s.pages.memory.confirm_remote = Some(key.clone())
                 })
             });
@@ -384,16 +383,16 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
     let total = page.total_pages.unwrap_or(page.page);
     let current_page = page.page;
     let prev = if current_page <= 1 {
-        icon_button_disabled(k, "sm-prev", &icons::CHEVRON_LEFT, "Previous page")
+        press_icon_disabled(k, "sm-prev", &icons::CHEVRON_LEFT, "Previous page")
     } else {
-        icon_button(k, "sm-prev", &icons::CHEVRON_LEFT, "Previous page", move |s: &mut State| {
+        press_icon(k, "sm-prev", &icons::CHEVRON_LEFT, "Previous page", move |s: &mut State| {
             load_page(s, current_page.saturating_sub(1).max(1))
         })
     };
     let next = if current_page >= total {
-        icon_button_disabled(k, "sm-next", &icons::CHEVRON_RIGHT, "Next page")
+        press_icon_disabled(k, "sm-next", &icons::CHEVRON_RIGHT, "Next page")
     } else {
-        icon_button(k, "sm-next", &icons::CHEVRON_RIGHT, "Next page", move |s: &mut State| {
+        press_icon(k, "sm-next", &icons::CHEVRON_RIGHT, "Next page", move |s: &mut State| {
             load_page(s, current_page + 1)
         })
     };
@@ -406,7 +405,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
             .justify_end()
             .center_y()
             .child(prev)
-            .child(label(format!("{current_page} / {total}"), XS, p.text_muted))
+            .child(styled(format!("{current_page} / {total}"), XS, p.text_muted))
             .child(next),
     )
 }

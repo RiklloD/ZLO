@@ -1,5 +1,8 @@
 //! Extensions page rendering (GPUI `ExtensionsView`'s `render_*` methods).
 
+use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
+use crate::pages::common::controls::{Look, Size, button_sized, header_with, icon_button_sized, input, open_url, outlined_tag, refresh_icon, rule, section_title, spinner_line};
+use crate::pages::common::ts::{BODY_SEMIBOLD, SM, SM_MEDIUM, XS, XS_MEDIUM};
 use ironclaw_gpui_client::extension_state::LifecyclePublicState;
 use ironclaw_gpui_client::product_wire::{
     RebornExtensionCredentialSetup, RebornExtensionRegistryEntry,
@@ -11,31 +14,26 @@ use rune_kit::Kit;
 use super::{MCP_AUTH, McpForm, Pairing, Setup};
 use crate::icons;
 use crate::jobs;
-use crate::pages::c_widgets::{
-    BODY_SEMIBOLD, Look, SM, SM_MEDIUM, Size, Tone, XS, XS_MEDIUM, button, card, empty_state,
-    error_line, header, icon_button, input, loading, notice_line, open_url, page_body,
-    refresh_button, rule, section_title, spinner_line, tag,
-};
 use crate::state::State;
 
 pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let ext = &s.pages.extensions;
     let actions = vec![
-        button("MCP server", Look::Outline, Size::Small)
+        button_sized("MCP server", Look::Outline, Size::Small)
             .icon(&icons::PLUS)
             .on_press(|s: &mut State| super::toggle_mcp(s))
             .build(k)
             .key("add-mcp"),
         loading(
-            button("Import bundle", Look::Outline, Size::Small)
+            button_sized("Import bundle", Look::Outline, Size::Small)
                 .help("Upload a tool bundle .zip (operator only)")
                 .on_press_tx(super::import_bundle),
             ext.importing,
         )
         .build(k)
         .key("import-bundle"),
-        refresh_button()
+        refresh_icon()
             .on_press(|s: &mut State| super::refresh(s))
             .build(k)
             .key("refresh-extensions"),
@@ -53,12 +51,12 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         .enumerate()
         .map(|(ix, e)| render_catalog(s, k, ix, e))
         .collect();
-    let mut body = col().w_full().child(header(p, "Extensions", actions));
+    let mut body = col().w_full().child(header_with(p, "Extensions", actions));
     if let Some(e) = &ext.error {
         body = body.child(error_line(p, e));
     }
     if let Some(n) = &ext.notice {
-        body = body.child(notice_line(p, n, p.text_muted));
+        body = body.child(notice_line(n, p.text_muted));
     }
     if let Some(f) = &ext.mcp {
         body = body.child(col().w_full().pb(16.).child(render_mcp(s, k, f)));
@@ -82,11 +80,11 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
             .w_full()
             .gap(8.)
             .center_y()
-            .child(tag(p, Tone::Success, "Connected"))
+            .child(outlined_tag(p, Tone::Success, "Connected"))
             .child(el().grow(1.))
             .child(
                 loading(
-                    button("Disconnect", Look::Outline, Size::Small)
+                    button_sized("Disconnect", Look::Outline, Size::Small)
                         .on_press(|s: &mut State| super::unpair(s)),
                     pr.busy,
                 )
@@ -98,7 +96,7 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
                 let mut actions = row().gap(8.).center_y();
                 if let Some(url) = code.deep_link.clone() {
                     actions = actions.child(
-                        button("Open in chat app", Look::Outline, Size::Small)
+                        button_sized("Open in chat app", Look::Outline, Size::Small)
                             .icon(&icons::EXTERNAL_LINK)
                             .on_press_tx(move |_: &mut State, tx| open_url(tx, &url))
                             .build(k)
@@ -108,7 +106,7 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
                 actions = actions
                     .child(
                         loading(
-                            button("New code", Look::Ghost, Size::Small)
+                            button_sized("New code", Look::Ghost, Size::Small)
                                 .on_press(|s: &mut State| super::mint_pairing(s)),
                             pr.busy,
                         )
@@ -149,7 +147,7 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
                 .child(text("Not connected.").font(SM).color(p.text))
                 .child(
                     loading(
-                        button("Get a pairing code", Look::Primary, Size::Small)
+                        button_sized("Get a pairing code", Look::Primary, Size::Small)
                             .on_press(|s: &mut State| super::mint_pairing(s)),
                         pr.busy,
                     )
@@ -169,7 +167,7 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
         } else {
             Look::Outline
         };
-        button(*label, look, Size::Small)
+        button_sized(*label, look, Size::Small)
             .on_press(move |s: &mut State| {
                 if let Some(f) = s.pages.extensions.mcp.as_mut() {
                     f.auth = ix;
@@ -208,7 +206,7 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
                 .gap(8.)
                 .child(
                     loading(
-                        button("Add server", Look::Primary, Size::Small)
+                        button_sized("Add server", Look::Primary, Size::Small)
                             .on_press(|s: &mut State| super::submit_mcp(s)),
                         form.submitting,
                     )
@@ -216,7 +214,7 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
                     .key("mcp-add"),
                 )
                 .child(
-                    button("Cancel", Look::Ghost, Size::Small)
+                    button_sized("Cancel", Look::Ghost, Size::Small)
                         .on_press(|s: &mut State| super::toggle_mcp(s))
                         .build(k)
                         .key("mcp-cancel"),
@@ -281,7 +279,7 @@ fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
                 label = label.child(text("optional").font(XS).color(p.text_muted));
             }
             if provided {
-                label = label.child(tag(p, Tone::Success, "Saved"));
+                label = label.child(outlined_tag(p, Tone::Success, "Saved"));
             }
             let field = input(edit)
                 .placeholder(placeholder)
@@ -301,7 +299,7 @@ fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
     if !setup.inputs.is_empty() {
         buttons = buttons.child(
             loading(
-                button("Save", Look::Primary, Size::Small)
+                button_sized("Save", Look::Primary, Size::Small)
                     .on_press(|s: &mut State| super::submit_setup(s)),
                 setup.submitting,
             )
@@ -311,7 +309,7 @@ fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
     }
     if needs_browser {
         buttons = buttons.child(
-            button("Sign in via browser", Look::Outline, Size::Small)
+            button_sized("Sign in via browser", Look::Outline, Size::Small)
                 .icon(&icons::EXTERNAL_LINK)
                 .on_press_tx(move |_: &mut State, tx| open_url(tx, &browser))
                 .build(k)
@@ -320,7 +318,7 @@ fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
     }
     if let Some(url) = setup_url {
         buttons = buttons.child(
-            button("Where to get it", Look::Ghost, Size::Small)
+            button_sized("Where to get it", Look::Ghost, Size::Small)
                 .icon(&icons::EXTERNAL_LINK)
                 .on_press_tx(move |_: &mut State, tx| open_url(tx, &url))
                 .build(k)
@@ -344,20 +342,20 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
     let pairing = ext.pairing.as_ref().filter(|x| x.id == id);
     let channel = e.is_channel() && matches!(e.installation_state, LifecyclePublicState::Active);
     let state_tag = match e.installation_state {
-        LifecyclePublicState::Active => tag(p, Tone::Success, "Active"),
-        LifecyclePublicState::SetupNeeded => tag(p, Tone::Warning, "Needs setup"),
-        LifecyclePublicState::Uninstalled => tag(p, Tone::Secondary, "Removed"),
+        LifecyclePublicState::Active => outlined_tag(p, Tone::Success, "Active"),
+        LifecyclePublicState::SetupNeeded => outlined_tag(p, Tone::Warning, "Needs setup"),
+        LifecyclePublicState::Uninstalled => outlined_tag(p, Tone::Secondary, "Removed"),
     };
     let remove_button = if confirming {
         let id = id.clone();
-        button("Remove?", Look::Danger, Size::Small)
+        button_sized("Remove?", Look::Danger, Size::Small)
             .disabled(busy)
             .on_press(move |s: &mut State| super::remove(s, id.clone()))
             .build(k)
             .key(format!("confirm-remove-{ix}"))
     } else {
         let id = id.clone();
-        icon_button(&icons::DELETE, "Remove", Size::Small)
+        icon_button_sized(&icons::DELETE, "Remove", Size::Small)
             .disabled(busy)
             .on_press(move |s: &mut State| s.pages.extensions.confirm_remove = Some(id.clone()))
             .build(k)
@@ -387,7 +385,7 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
     if channel {
         let pair_id = id.clone();
         head = head.child(
-            button(
+            button_sized(
                 if pairing.is_some() {
                     "Close"
                 } else {
@@ -405,7 +403,7 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
     let setup_id = id.clone();
     head = head
         .child(
-            button(
+            button_sized(
                 if setup.is_some() { "Close" } else { "Set up" },
                 Look::Outline,
                 Size::Small,
@@ -470,10 +468,10 @@ fn render_catalog(s: &State, k: &Kit, ix: usize, entry: &RebornExtensionRegistry
                                 .wrap(),
                         ),
                 )
-                .child(tag(p, Tone::Secondary, entry.runtime.clone()))
+                .child(outlined_tag(p, Tone::Secondary, entry.runtime.clone()))
                 .child(
                     loading(
-                        button("Install", Look::Outline, Size::Small)
+                        button_sized("Install", Look::Outline, Size::Small)
                             .on_press(move |s: &mut State| super::install(s, &e)),
                         busy,
                     )

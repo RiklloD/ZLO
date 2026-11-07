@@ -10,16 +10,16 @@
 
 mod pickers;
 
+use crate::pages::common::{block_fill, empty_state, error_line, glyph, group_header, page_body, rows_card};
+use crate::pages::common::controls::{Look, header_with, keyed_refresh, keyed_setting_row, press_button, styled};
+use crate::pages::common::ts::{SM, SM_MEDIUM, TITLE, XS, XS_SEMIBOLD};
+use crate::design::kit::hover_wash;
 use ironclaw_gpui_client::orchestration::PickerPrefs;
 use ironclaw_gpui_client::profiles::{HermesImportResponse, ProfileInfo, ProfileSettings};
 use rune::{Color, Cursor, Cx, El, TextEdit, col, el, row};
 use rune_kit::{Badge, Kit, TextArea, TextInput};
 
 use self::pickers::{Catalog, Menu, Picks};
-use super::usage::common_stub::{
-    Look, SM, SM_MEDIUM, TITLE, XS, XS_SEMIBOLD, block_fill, button, empty_state, error_line, glyph,
-    group_header, header, hover_wash, label, page_body, refresh_button, rows_card, setting_row,
-};
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -377,7 +377,7 @@ fn render_row(s: &State, k: &Kit, p_info: &ProfileInfo) -> El {
     let mut name_row = row()
         .gap(8.0)
         .center_y()
-        .child(label(p_info.settings.display_name.clone(), SM_MEDIUM, p.text).truncate().shrink());
+        .child(styled(p_info.settings.display_name.clone(), SM_MEDIUM, p.text).truncate().shrink());
     if p_info.is_default {
         name_row = name_row.child(Badge::new("Default").build(k));
     }
@@ -403,12 +403,12 @@ fn render_row(s: &State, k: &Kit, p_info: &ProfileInfo) -> El {
                 .min_w(0.0)
                 .gap(1.0)
                 .child(name_row)
-                .child(label(meta.join(" · "), XS, p.text_muted).truncate()),
+                .child(styled(meta.join(" · "), XS, p.text_muted).truncate()),
         )
         // Shown on hover: start a thread without opening the profile.
         .child(
             el().group_opacity(0.0, 1.0).child(
-                button(k, "profile-thread", "New thread", Look::Ghost, Some(&icons::PLUS), false, move |s: &mut State| {
+                press_button(k, "profile-thread", "New thread", Look::Ghost, Some(&icons::PLUS), false, move |s: &mut State| {
                     new_thread(s, thread_id.clone())
                 })
                 .hover_alone(),
@@ -445,7 +445,7 @@ fn folder_row(s: &State, k: &Kit) -> El {
     };
     let mut control = row().gap(4.0).center_y();
     if ps.picks.folder.is_some() {
-        control = control.child(button(k, "profile-folder-reset", "Use default", Look::Ghost, None, false, |s: &mut State| {
+        control = control.child(press_button(k, "profile-folder-reset", "Use default", Look::Ghost, None, false, |s: &mut State| {
             s.pages.profiles.picks.folder = None
         }));
     }
@@ -458,7 +458,7 @@ fn folder_row(s: &State, k: &Kit) -> El {
             .build(k)
             .key("profile-folder-pick"),
     );
-    setting_row(p, "row-folder", "Working folder", Some(shown), control)
+    keyed_setting_row(p, "row-folder", "Working folder", Some(&shown), control)
 }
 
 /// A picker control sized for the right side of a setting row.
@@ -492,7 +492,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
 
     let mut general = Vec::new();
     if creating {
-        general.push(setting_row(
+        general.push(keyed_setting_row(
             p,
             "row-id",
             "Id",
@@ -502,7 +502,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             }),
         ));
     }
-    general.push(setting_row(
+    general.push(keyed_setting_row(
         p,
         "row-name",
         "Display name",
@@ -511,14 +511,14 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
     ));
 
     let model = [
-        setting_row(
+        keyed_setting_row(
             p,
             "row-model",
             "Default model",
             Some("New threads on this profile start here.".into()),
             picker(s, k, layer, Menu::Model, pickers::model_summary(ps)),
         ),
-        setting_row(
+        keyed_setting_row(
             p,
             "row-approval",
             "Approvals",
@@ -528,7 +528,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
     ];
     let workspace = [
         folder_row(s, k),
-        setting_row(
+        keyed_setting_row(
             p,
             "row-memory",
             "Supermemory container",
@@ -537,14 +537,14 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         ),
     ];
     let capabilities = [
-        setting_row(
+        keyed_setting_row(
             p,
             "row-tools",
             "Tools",
             Some("Limit the tools this profile can call.".into()),
             picker(s, k, layer, Menu::Tools, count_summary(ps.picks.tools.len(), "All tools", "tool", "allowed")),
         ),
-        setting_row(
+        keyed_setting_row(
             p,
             "row-skills",
             "Skills",
@@ -557,7 +557,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
                 count_summary(ps.picks.hidden_skills.len(), "None hidden", "skill", "hidden"),
             ),
         ),
-        setting_row(
+        keyed_setting_row(
             p,
             "row-mcp",
             "MCP servers",
@@ -579,20 +579,20 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
     let mut footer = row().key("profile-footer").w_full().pt(24.0).gap(8.0).center_y();
     if can_delete {
         footer = footer.child(if ps.confirm_delete {
-            button(k, "profile-delete-confirm", "Archive this profile?", Look::Danger, None, false, delete)
+            press_button(k, "profile-delete-confirm", "Archive this profile?", Look::Danger, None, false, delete)
         } else {
-            button(k, "profile-delete", "Archive", Look::Ghost, None, false, |s: &mut State| {
+            press_button(k, "profile-delete", "Archive", Look::Ghost, None, false, |s: &mut State| {
                 s.pages.profiles.confirm_delete = true
             })
         });
     }
     footer = footer.child(el().grow(1.0));
     if let Some(n) = &ps.notice {
-        footer = footer.child(label(n.clone(), XS, p.text_muted));
+        footer = footer.child(styled(n.clone(), XS, p.text_muted));
     }
     footer = footer
-        .child(button(k, "profile-cancel", if creating { "Cancel" } else { "Done" }, Look::Ghost, None, false, back))
-        .child(button(
+        .child(press_button(k, "profile-cancel", if creating { "Cancel" } else { "Done" }, Look::Ghost, None, false, back))
+        .child(press_button(
             k,
             "profile-save",
             if creating { "Create profile" } else { "Save" },
@@ -636,15 +636,15 @@ fn render_detail_header(s: &State, k: &Kit) -> El {
         .center_y()
         .cursor(Cursor::Pointer)
         .child(glyph(&icons::CHEVRON_LEFT, 12.0, p.text_muted))
-        .child(label("Profiles", XS, p.text_muted))
+        .child(styled("Profiles", XS, p.text_muted))
         .on_press(back);
     let mut top = row().w_full().px(8.0).gap(12.0).center_y();
     if let Some(pi) = profile {
         top = top.child(avatar(&pi.profile_id, &pi.settings.display_name));
     }
-    let mut titles = col().grow(1.0).min_w(0.0).child(label(title, TITLE, p.text).truncate());
+    let mut titles = col().grow(1.0).min_w(0.0).child(styled(title, TITLE, p.text).truncate());
     if let Some(pi) = profile {
-        titles = titles.child(label(
+        titles = titles.child(styled(
             format!(
                 "{} · {} thread{}",
                 pi.profile_id,
@@ -658,7 +658,7 @@ fn render_detail_header(s: &State, k: &Kit) -> El {
     top = top.child(titles);
     if let Some(pi) = profile {
         let id = pi.profile_id.clone();
-        top = top.child(button(
+        top = top.child(press_button(
             k,
             "profile-detail-thread",
             "New thread",
@@ -688,7 +688,7 @@ fn avatar(id: &str, name: &str) -> El {
         .radius(15.0)
         .center()
         .fill(tint.alpha(0.16))
-        .child(label(initials, XS_SEMIBOLD, tint))
+        .child(styled(initials, XS_SEMIBOLD, tint))
         .a11y_hidden()
 }
 
@@ -741,15 +741,15 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
         let actions = row()
             .gap(4.0)
             .center_y()
-            .child(button(k, "profiles-import", "Import from Hermes", Look::Ghost, None, ps.importing, import))
-            .child(refresh_button(k, "refresh-profiles", refresh))
-            .child(button(k, "profile-new", "New profile", Look::Primary, Some(&icons::PLUS), false, new_profile));
-        let mut b = col().w_full().child(header(p, "Profiles", actions));
+            .child(press_button(k, "profiles-import", "Import from Hermes", Look::Ghost, None, ps.importing, import))
+            .child(keyed_refresh(k, "refresh-profiles", refresh))
+            .child(press_button(k, "profile-new", "New profile", Look::Primary, Some(&icons::PLUS), false, new_profile));
+        let mut b = col().w_full().child(header_with(p, "Profiles", vec![actions]));
         if let Some(e) = &ps.error {
             b = b.child(error_line(p, e));
         }
         if let Some(n) = &ps.notice {
-            b = b.child(el().px(8.0).child(label(n.clone(), SM, p.text_muted).wrap()));
+            b = b.child(el().px(8.0).child(styled(n.clone(), SM, p.text_muted).wrap()));
         }
         if ps.loaded && ps.items.is_empty() {
             b = b.child(empty_state(p, "No profiles yet."));

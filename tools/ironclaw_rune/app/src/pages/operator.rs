@@ -15,6 +15,9 @@ mod logs;
 mod setup;
 mod status;
 
+use crate::pages::common::{glyph, page_body};
+use crate::pages::common::controls::{Look, Size, button_sized, header_with, muted, refresh_icon};
+use crate::pages::common::ts::{BODY_SEMIBOLD, SM};
 use ironclaw_gpui_client::product_wire::{
     RebornOperatorConfigDiagnostic, RebornOperatorConfigDiagnosticSeverity,
 };
@@ -22,9 +25,6 @@ use rune::{Cx, El, TextEdit, col, row, text};
 use rune_kit::{Button, Kit};
 
 use crate::icons;
-use crate::pages::c_widgets::{
-    BODY_SEMIBOLD, Look, SM, Size, button, glyph, header, muted, page_body, refresh_button,
-};
 use crate::state::State;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -128,7 +128,7 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let o = &s.pages.operator;
     let actions = vec![
-        refresh_button()
+        refresh_icon()
             .on_press(|s: &mut State| refresh(s))
             .build(k)
             .key("refresh-operator"),
@@ -138,7 +138,7 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
         .pb(16.)
         .children(TABS.iter().map(|(tab, label)| {
             let tab = *tab;
-            button(
+            button_sized(
                 *label,
                 if o.tab == tab {
                     Look::Primary
@@ -164,7 +164,7 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     };
     let mut body = col()
         .w_full()
-        .child(header(p, "Operator", actions))
+        .child(header_with(p, "Operator", actions))
         .child(tabs);
     if let Some(panel) = panel {
         body = body.child(panel.key(format!("operator-panel-{:?}", o.tab)));

@@ -4,6 +4,9 @@
 
 pub mod fixtures;
 
+use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
+use crate::pages::common::controls::{Look, Size, button_sized, header_with, icon_button_sized, input, outlined_tag, refresh_icon, rule, spinner};
+use crate::pages::common::ts::{BODY_SEMIBOLD, SM_MEDIUM, XS};
 use std::collections::HashMap;
 
 use ironclaw_gpui_client::product_wire::{RebornSkillInfo, RebornSkillSourceKind};
@@ -12,10 +15,6 @@ use rune_kit::{Kit, Markdown, Switch, TextArea};
 
 use crate::icons;
 use crate::jobs;
-use crate::pages::c_widgets::{
-    BODY_SEMIBOLD, Look, SM_MEDIUM, Size, Tone, XS, button, card, empty_state, error_line, header,
-    icon_button, input, loading, notice_line, page_body, refresh_button, rule, spinner, tag,
-};
 use crate::state::State;
 
 /// One catalog hit. Catalog rows are untyped JSON on the wire.
@@ -301,7 +300,7 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
                         .wrap(),
                 ),
         )
-        .child(tag(p, Tone::Secondary, source));
+        .child(outlined_tag(p, Tone::Secondary, source));
     // Built-in skills are read-only; the gateway rejects the toggle for them.
     if x.can_edit {
         let (name, on) = (x.name.clone(), x.auto_activate);
@@ -317,7 +316,7 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
         // The gateway serves skill content only for editable skills.
         let name = x.name.clone();
         head = head.child(
-            button(
+            button_sized(
                 if open.is_some() { "Hide" } else { "View" },
                 Look::Ghost,
                 Size::Small,
@@ -330,7 +329,7 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
     if x.can_edit && matches!(open, Some(Some(_))) && !editing {
         let name = x.name.clone();
         head = head.child(
-            button("Edit", Look::Ghost, Size::Small)
+            button_sized("Edit", Look::Ghost, Size::Small)
                 .on_press(move |s: &mut State| open_editor(s, name.clone()))
                 .build(k)
                 .key(format!("edit-{ix}")),
@@ -339,13 +338,13 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
     if x.can_delete {
         let name = x.name.clone();
         head = head.child(if confirming {
-            button("Remove?", Look::Danger, Size::Small)
+            button_sized("Remove?", Look::Danger, Size::Small)
                 .disabled(busy)
                 .on_press(move |s: &mut State| remove(s, name.clone()))
                 .build(k)
                 .key(format!("confirm-remove-skill-{ix}"))
         } else {
-            icon_button(&icons::DELETE, "Remove skill", Size::Small)
+            icon_button_sized(&icons::DELETE, "Remove skill", Size::Small)
                 .label(format!("Remove {}", x.name))
                 .on_press(move |s: &mut State| st(s).confirm_remove = Some(name.clone()))
                 .build(k)
@@ -375,14 +374,14 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
                         .gap(8.)
                         .justify_end()
                         .child(
-                            button("Cancel", Look::Ghost, Size::Small)
+                            button_sized("Cancel", Look::Ghost, Size::Small)
                                 .on_press(|s: &mut State| st(s).editor = None)
                                 .build(k)
                                 .key(format!("cancel-edit-{ix}")),
                         )
                         .child(
                             loading(
-                                button("Save", Look::Primary, Size::Small)
+                                button_sized("Save", Look::Primary, Size::Small)
                                     .on_press(|s: &mut State| save_editor(s)),
                                 busy,
                             )
@@ -436,10 +435,10 @@ fn render_results(s: &State, k: &Kit) -> Option<El> {
                                     ),
                             )
                             .child(if have {
-                                tag(p, Tone::Success, "Installed")
+                                outlined_tag(p, Tone::Success, "Installed")
                             } else {
                                 loading(
-                                    button("Install", Look::Outline, Size::Small)
+                                    button_sized("Install", Look::Outline, Size::Small)
                                         .on_press(move |s: &mut State| install(s, name.clone())),
                                     busy,
                                 )
@@ -456,17 +455,17 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     let p = &s.palette;
     let sk = &s.pages.skills;
     let actions = vec![
-        refresh_button()
+        refresh_icon()
             .on_press(|s: &mut State| refresh(s))
             .build(k)
             .key("refresh-skills"),
     ];
-    let mut body = col().w_full().child(header(p, "Skills", actions));
+    let mut body = col().w_full().child(header_with(p, "Skills", actions));
     if let Some(e) = &sk.error {
         body = body.child(error_line(p, e));
     }
     if let Some(n) = &sk.notice {
-        body = body.child(notice_line(p, n, p.text_muted));
+        body = body.child(notice_line(n, p.text_muted));
     }
     if let Some(on) = sk.auto_learned {
         body = body.child(
@@ -518,7 +517,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
             )
             .child(
                 loading(
-                    button("Search", Look::Outline, Size::Small)
+                    button_sized("Search", Look::Outline, Size::Small)
                         .icon(&icons::SEARCH)
                         .on_press(|s: &mut State| search(s)),
                     sk.searching,
