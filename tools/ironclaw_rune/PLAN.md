@@ -124,8 +124,8 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 | Area | State |
 |---|---|
 | 0 | done |
-| E, F, H | merged (07.11.2026) |
-| A B C D G S | in progress |
+| E, F, H, G | merged (07.11.2026) |
+| A B C D S | in progress |
 
 ## Integration checklist (collected from area reports)
 
@@ -140,5 +140,9 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 - [ ] B: `workspace::{thread_title, ensure_titles, window_active}` (H stubs); ⇧⌘M → `model_picker::open`; draft screen uses `ModelPickerState::new/load/pills_for`.
 - [ ] F→H: `computer.rs` local `permissions` stub → `crate::permissions`.
 - [ ] G: `model_picker::provider_mark` logos; fold `chat/extras_ui.rs` into `design::kit`; enable `App::modifier_keys()` for ⌘-digit badges.
+- [ ] B: `look::wallpaper_layer(s, area)` as the last child of window/conversation/sidebar/pane; `look::reshuffle` on new chat; keep `s.palette`/`s.system_dark` current on appearance change; drop G's `LookState::preview` fixture hook once the shell places the wallpaper.
+- [ ] D: `look::reload(s)` after wallpaper/theme changes; pickers from `wallpaper::AREAS`, `paint::SCENES`, `paint::EFFECTS`.
+- [ ] All areas: replace local helpers (`common_stub.rs`, `chat/extras_ui.rs`, letter tiles) with `design::kit`, `design::brands::provider_logo`, `design::motion`; composers share `.matched(COMPOSER_MATCH)` (dock), rows `.motion(ROW_RESORT)` (flip).
+- [ ] Foundation: transparent window when `prefs.translucent` so the system material shows.
 - [ ] Clippy: `SCENES` type complexity in `scenes.rs`.
 - [ ] Interaction tests (`rune::Runtime`) for voice controls and settings.
