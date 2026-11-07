@@ -176,6 +176,16 @@ pub fn kit(p: &Palette) -> Kit {
     c.text_faint = p.text_faint;
     c.text_accent = p.accent;
     c.bg_accent = p.accent;
+    // GPUI's kit primary is an accent fill: rune-kit's Submit and Contrast
+    // buttons (and contrast icon buttons, accent badges) read these tokens,
+    // which `from_palette` sets to the inverse ink (a white plate on dark).
+    let on_accent = p.on_accent();
+    c.bg_contrast = p.accent;
+    c.bg_icon_button_contrast = p.accent;
+    c.text_contrast = on_accent;
+    c.icon_contrast = on_accent;
+    c.submit_fg = on_accent;
+    c.submit_icon = on_accent;
     k.radius.sm = CONTROL_RADIUS;
     k
 }
