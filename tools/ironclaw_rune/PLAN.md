@@ -124,8 +124,8 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 | Area | State |
 |---|---|
 | 0 | done |
-| E, F, H, G, D, C | merged (07.11.2026) |
-| A B S | in progress |
+| E, F, H, G, D, C, S | merged (07.11.2026) |
+| A B | in progress |
 
 ## Integration checklist (collected from area reports)
 
@@ -151,5 +151,9 @@ scrolling), `bundle.sh` (a Rune bundle script comes with integration).
 - [ ] Foundation: `prefs.translucent` toggles the window transparency (Appearance only saves the pref).
 - [ ] C: `pages/c_widgets.rs` → `pages::common` + `design::kit`; `pages/providers/logos.rs` → `design::brands`; Providers' catalog thread from the real inbox (B); mono font for the SKILL.md editor.
 - [ ] A: a failed run's Logs button calls `pages::operator::show_run_logs(s, run_id)`.
+- [ ] S: wire `chat/side/bridge.rs` (A: rows, running, stop, gates, composer, timeline, CLI diff/review, side chat view; H: model label, tasks, lineage, fork, orchestration refresh, computer share; B: titles); `pub use changes::on_cli_report` in `side.rs`; drop `side/fixtures.rs::chat_view` and the scene-only `Page::Chat` branch in `workspace.rs`.
+- [ ] A: `side::init` after open, `side::docks` in the layout, `side::on_turn_started/ended`, `side::open_link`, `side::adopt_folder`, `changes::on_cli_report` when CLI diff/review change.
+- [ ] B: `side::titlebar_actions`, ⌥⌘B/⌘E/⌥⌘N, `side::dock_widths` for the wallpaper area, `s.native.covered` while overlays show; real viewport width for `side/dock.rs::viewport`.
+- [ ] Live test: native views (QuickLook, WKWebView) in a real window.
 - [ ] Clippy: `SCENES` type complexity in `scenes.rs`.
 - [ ] Interaction tests (`rune::Runtime`) for voice controls and settings.
