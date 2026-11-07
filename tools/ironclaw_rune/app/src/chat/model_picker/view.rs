@@ -31,14 +31,15 @@ const PILL_H: f32 = 28.;
 /// A rail icon plus the rail's gap: one slot of travel when dragging.
 const RAIL_STEP: f32 = 34.;
 
-/// The open chat's model and thinking pills, popovers into `layer`.
-pub fn pills(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
-    pills_for(s, super::CHAT, cx, k, layer)
+/// The model and thinking pills of the chat showing `thread_id` (the open
+/// chat or a side chat), popovers into `layer`.
+pub fn pills(s: &State, thread_id: &str, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
+    pills_for(s, Slot::chat(thread_id), cx, k, layer)
 }
 
 /// The pills of the picker `slot` finds (the chat's, or the draft screen's).
 pub fn pills_for(s: &State, slot: Slot, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
-    let Some(m) = (slot.get)(s) else { return el() };
+    let Some(m) = slot.get(s) else { return el() };
     if m.route.as_ref().is_none_or(|r| r.providers.is_empty()) && m.current.is_none() {
         return el();
     }
@@ -52,7 +53,7 @@ pub fn pills_for(s: &State, slot: Slot, _cx: &mut Cx<State>, k: &Kit, layer: &mu
         .unwrap_or_default();
     let ink = if m.open { p.text } else { p.text_muted };
     let mut pill = row()
-        .key("model-pill")
+        .key(slot.key("model-pill"))
         .role("button")
         .label(format!("Model: {label}"))
         .expanded(m.open)
@@ -76,25 +77,28 @@ pub fn pills_for(s: &State, slot: Slot, _cx: &mut Cx<State>, k: &Kit, layer: &mu
     if m.compact && !m.open {
         pill = pill.help(label);
     }
+    let toggle = slot.clone();
     let pill = pill.on_press(move |s: &mut State| {
-        if let Some(m) = (slot.get_mut)(s) {
+        if let Some(m) = toggle.get_mut(s) {
             m.toggle();
         }
     });
     let (placement, gap) = placement(m);
     if m.open {
-        layer.push(scrim("model-scrim", move |s: &mut State| close(s, slot)));
-        layer.push(popover::anchored(k, model_popover(s, m, slot, k), "model-pill", placement, gap));
+        let closing = slot.clone();
+        layer.push(scrim("model-scrim", move |s: &mut State| close(s, &closing)));
+        let popover = model_popover(s, m, &slot, k);
+        layer.push(popover::anchored(k, popover, &slot.key("model-pill"), placement, gap));
     }
-    let mut out = row().key("model-pills").gap(2.).center_y().child(pill);
-    if let Some(effort) = effort_pill(s, m, slot, k, layer) {
+    let mut out = row().key(slot.key("model-pills")).gap(2.).center_y().child(pill);
+    if let Some(effort) = effort_pill(s, m, &slot, k, layer) {
         out = out.child(effort);
     }
     out
 }
 
-fn close(s: &mut State, slot: Slot) {
-    if let Some(m) = (slot.get_mut)(s) {
+fn close(s: &mut State, slot: &Slot) {
+    if let Some(m) = slot.get_mut(s) {
         m.close();
     }
 }
@@ -114,10 +118,10 @@ fn placement(m: &ModelPickerState) -> (Placement, f32) {
 
 /// The search field's keys: Ctrl+Tab / Ctrl+Shift+Tab walk the rail, ⌘1..⌘9
 /// pick a row, Escape closes, and holding ⌘ numbers the rows.
-fn search_key(s: &mut State, slot: Slot, ev: &rune::KeyEvent) -> bool {
+fn search_key(s: &mut State, slot: &Slot, ev: &rune::KeyEvent) -> bool {
     match &ev.key {
         Key::Tab if ev.mods.ctrl => {
-            cycle_rail(s, slot, !ev.mods.shift);
+            cycle_rail(s, slot.clone(), !ev.mods.shift);
             true
         }
         Key::Command(c) if !ev.mods.ctrl && !ev.mods.alt && !ev.mods.shift => {
@@ -125,9 +129,9 @@ fn search_key(s: &mut State, slot: Slot, ev: &rune::KeyEvent) -> bool {
                 return false;
             };
             let (order, recent) = (s.prefs.provider_order.clone(), s.prefs.recent_models.clone());
-            let picked = (slot.get)(s).and_then(|m| m.nth_pick(ix, &order, &recent));
+            let picked = slot.get(s).and_then(|m| m.nth_pick(ix, &order, &recent));
             if let Some((provider, model)) = picked {
-                pick(s, slot, provider, model);
+                pick(s, slot.clone(), provider, model);
             }
             true
         }
@@ -138,7 +142,7 @@ fn search_key(s: &mut State, slot: Slot, ev: &rune::KeyEvent) -> bool {
         // ⌘ held here numbers models; releases pass through so a badge
         // shown before the picker opened still clears.
         Key::Modifier { modifier: Modifier::SuperLeft | Modifier::SuperRight, .. } => {
-            if let Some(m) = (slot.get_mut)(s) {
+            if let Some(m) = slot.get_mut(s) {
                 m.cmd_held = ev.mods.cmd;
             }
             false
@@ -147,7 +151,7 @@ fn search_key(s: &mut State, slot: Slot, ev: &rune::KeyEvent) -> bool {
     }
 }
 
-fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
+fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
     let p = &s.palette;
     let order = &s.prefs.provider_order;
     let recent = &s.prefs.recent_models;
@@ -167,8 +171,9 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
     };
     let tab = |key: &str, i: &'static rune::Icon, rail: Rail, tip: &str| {
         let on = m.rail == rail;
+        let slot = slot.clone();
         rail_item(key.into(), ico(i, ICON_SM, p.text), on, tip.into()).on_press(move |s: &mut State| {
-            if let Some(m) = (slot.get_mut)(s) {
+            if let Some(m) = slot.get_mut(s) {
                 m.rail = rail.clone();
             }
         })
@@ -202,15 +207,16 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
             item = item.offset(0., *dy).raise().fill(p.active).shadow(4., 12., Color::BLACK.alpha(0.3));
         }
         let (k1, k2, k3, k4) = (key.clone(), key.clone(), key.clone(), key);
+        let (s1, s2, s3, s4) = (slot.clone(), slot.clone(), slot.clone(), slot.clone());
         rail = rail.child(
             item.on_press(move |s: &mut State| {
-                if let Some(m) = (slot.get_mut)(s) {
+                if let Some(m) = s1.get_mut(s) {
                     m.rail = Rail::Provider(k1.clone());
                 }
             })
-            .on_double_press(move |s: &mut State| toggle_provider(s, slot, k2.clone()))
-            .on_secondary_press(move |s: &mut State, _, _| toggle_provider(s, slot, k3.clone()))
-            .on_drag(move |s: &mut State, d, _| rail_drag(s, slot, &k4, d)),
+            .on_double_press(move |s: &mut State| toggle_provider(s, s2.clone(), k2.clone()))
+            .on_secondary_press(move |s: &mut State, _, _| toggle_provider(s, s3.clone(), k3.clone()))
+            .on_drag(move |s: &mut State, d, _| rail_drag(s, &s4, &k4, d)),
         );
     }
 
@@ -241,6 +247,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
     let hidden_providers = m.prefs.hidden_providers.len();
     let hidden = m.hidden_count();
 
+    let (edit_slot, key_slot, hidden_slot) = (slot.clone(), slot.clone(), slot.clone());
     let search = TextInput::new(&m.search)
         .placeholder("Search models")
         .width(None)
@@ -248,8 +255,8 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
         .leading_icon(&icons::SEARCH)
         .leading_icon_size(14.)
         .plain()
-        .on_edit(move |s: &mut State| search_edit(s, slot))
-        .on_key(move |s: &mut State, ev, _| search_key(s, slot, ev))
+        .on_edit(move |s: &mut State| search_edit(s, &edit_slot))
+        .on_key(move |s: &mut State, ev, _| search_key(s, &key_slot, ev))
         .build(k)
         .key("model-search");
 
@@ -284,7 +291,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
                 .cursor(rune::Cursor::Pointer)
                 .child(txt(label, XS, p.text_faint))
                 .on_press(move |s: &mut State| {
-                    if let Some(m) = (slot.get_mut)(s) {
+                    if let Some(m) = hidden_slot.get_mut(s) {
                         m.show_hidden = !m.show_hidden;
                     }
                 }),
@@ -316,25 +323,25 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit) -> El {
 
 /// The search box's `TextEdit`, wherever the picker lives. A late edit
 /// whose picker has gone lands in a scratch field.
-fn search_edit(s: &mut State, slot: Slot) -> &mut TextEdit {
-    match (slot.get_mut)(s) {
+fn search_edit<'a>(s: &'a mut State, slot: &Slot) -> &'a mut TextEdit {
+    match slot.get_mut(s) {
         Some(m) => &mut m.search,
         None => Box::leak(Box::default()),
     }
 }
 
 /// Drag a rail icon over another to move it there.
-fn rail_drag(s: &mut State, slot: Slot, key: &str, d: &mut rune::Drag) {
+fn rail_drag(s: &mut State, slot: &Slot, key: &str, d: &mut rune::Drag) {
     match d.phase {
         Phase::Down => {}
         Phase::Move => {
-            if let Some(m) = (slot.get_mut)(s) {
+            if let Some(m) = slot.get_mut(s) {
                 m.rail_drag = Some((key.to_string(), d.dy));
             }
         }
         Phase::Up => {
             let order = s.prefs.provider_order.clone();
-            let Some(m) = (slot.get_mut)(s) else { return };
+            let Some(m) = slot.get_mut(s) else { return };
             let travel = m.rail_drag.take().map_or(0., |(_, dy)| dy);
             if d.cancelled() || travel.abs() < RAIL_STEP / 2. {
                 return;
@@ -350,7 +357,7 @@ fn rail_drag(s: &mut State, slot: Slot, key: &str, d: &mut rune::Drag) {
             if let Some(target) = visible.get(to).cloned()
                 && to != from
             {
-                reorder(s, slot, key, &target);
+                reorder(s, slot.clone(), key, &target);
             }
         }
     }
@@ -361,7 +368,7 @@ fn rail_drag(s: &mut State, slot: Slot, key: &str, d: &mut rune::Drag) {
 fn group_header(
     p: &Palette,
     m: &ModelPickerState,
-    slot: Slot,
+    slot: &Slot,
     k: &Kit,
     title: String,
     provider: Option<&RouteProvider>,
@@ -377,6 +384,7 @@ fn group_header(
         .child(txt_medium(title, XS, p.text_faint).truncate().grow(1.));
     let Some(provider) = provider else { return header };
     let pk = provider.provider.clone();
+    let slot = slot.clone();
     let hidden = m.prefs.provider_hidden(&pk);
     let tip = if hidden { "Show this provider" } else { "Hide this provider" };
     let button = ghost_icon(
@@ -384,7 +392,7 @@ fn group_header(
         format!("hide-provider-{pk}"),
         if hidden { &icons::EYE } else { &icons::EYE_OFF },
         tip,
-        move |s: &mut State| toggle_provider(s, slot, pk.clone()),
+        move |s: &mut State| toggle_provider(s, slot.clone(), pk.clone()),
     );
     header
         .hover_group()
@@ -396,7 +404,7 @@ fn group_header(
 fn model_row(
     s: &State,
     m: &ModelPickerState,
-    slot: Slot,
+    slot: &Slot,
     k: &Kit,
     provider: &RouteProvider,
     model: String,
@@ -425,6 +433,7 @@ fn model_row(
     let (fav_p, fav_m) = (provider.provider.clone(), model.clone());
     let (hide_p, hide_m) = (provider.provider.clone(), model.clone());
     let (pv, md) = (provider.provider.clone(), model);
+    let (fav_slot, hide_slot, pick_slot) = (slot.clone(), slot.clone(), slot.clone());
     let star = ghost_icon(
         k,
         format!("fav-{id}"),
@@ -432,7 +441,7 @@ fn model_row(
         if favorite { "Unstar" } else { "Star" },
         move |s: &mut State| {
             let (p, m) = (fav_p.clone(), fav_m.clone());
-            edit_prefs(s, slot, |prefs| prefs.toggle_favorite(&p, &m));
+            edit_prefs(s, fav_slot.clone(), |prefs| prefs.toggle_favorite(&p, &m));
         },
     );
     let hide = ghost_icon(
@@ -442,7 +451,7 @@ fn model_row(
         if hidden { "Show" } else { "Hide" },
         move |s: &mut State| {
             let (p, m) = (hide_p.clone(), hide_m.clone());
-            edit_prefs(s, slot, |prefs| prefs.toggle_model(&p, &m));
+            edit_prefs(s, hide_slot.clone(), |prefs| prefs.toggle_model(&p, &m));
         },
     );
     let mut r = row()
@@ -475,11 +484,11 @@ fn model_row(
     )
     // A fixed check column, so picking never shifts the labels.
     .child(if on { ico(&icons::CHECK, ICON_SM, p.text) } else { spacer(16.) }.w(16.))
-    .on_press(move |s: &mut State| pick(s, slot, pv.clone(), md.clone()))
+    .on_press(move |s: &mut State| pick(s, pick_slot.clone(), pv.clone(), md.clone()))
 }
 
 /// The thinking pill, when the current model has levels.
-fn effort_pill(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
+fn effort_pill(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
     let model = m.current_model().unwrap_or("default");
     let efforts = m.efforts_of(m.current_provider(), model).to_vec();
     if efforts.is_empty() {
@@ -489,7 +498,7 @@ fn effort_pill(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit, layer: &mut
     let label = m.effort.as_deref().map_or_else(|| "Default".to_string(), effort_label);
     let ink = if m.effort_open { p.text } else { p.text_muted };
     let mut pill = row()
-        .key("effort-pill")
+        .key(slot.key("effort-pill"))
         .role("button")
         .label(format!("Thinking: {label}"))
         .expanded(m.effort_open)
@@ -507,23 +516,27 @@ fn effort_pill(s: &State, m: &ModelPickerState, slot: Slot, k: &Kit, layer: &mut
     } else if !m.effort_open {
         pill = pill.help(format!("Thinking: {label}"));
     }
+    let toggle = slot.clone();
     let pill = pill.on_press(move |s: &mut State| {
-        if let Some(m) = (slot.get_mut)(s) {
+        if let Some(m) = toggle.get_mut(s) {
             m.open = false;
             m.effort_open = !m.effort_open;
         }
     });
     if m.effort_open {
         let (placement, gap) = placement(m);
-        layer.push(scrim("effort-scrim", move |s: &mut State| close(s, slot)));
-        layer.push(popover::anchored(k, effort_popover(p, m, slot, &efforts), "effort-pill", placement, gap));
+        let closing = slot.clone();
+        layer.push(scrim("effort-scrim", move |s: &mut State| close(s, &closing)));
+        let popover = effort_popover(p, m, slot, &efforts);
+        layer.push(popover::anchored(k, popover, &slot.key("effort-pill"), placement, gap));
     }
     Some(pill)
 }
 
-fn effort_popover(p: &Palette, m: &ModelPickerState, slot: Slot, efforts: &[String]) -> El {
+fn effort_popover(p: &Palette, m: &ModelPickerState, slot: &Slot, efforts: &[String]) -> El {
     let item = |key: String, title: String, value: Option<String>| {
         let on = m.effort == value;
+        let slot = slot.clone();
         row()
             .key(key)
             .role("button")
@@ -538,7 +551,7 @@ fn effort_popover(p: &Palette, m: &ModelPickerState, slot: Slot, efforts: &[Stri
             .hover(p.active)
             .child(txt(title, SM, p.text).grow(1.))
             .child(if on { ico(&icons::CHECK, ICON_SM, p.text) } else { spacer(16.) }.w(16.))
-            .on_press(move |s: &mut State| pick_effort(s, slot, value.clone()))
+            .on_press(move |s: &mut State| pick_effort(s, slot.clone(), value.clone()))
     };
     let mut rows = col()
         .key("effort-popover")

@@ -13,6 +13,7 @@ use super::{
 use crate::chat::extras_ui::{
     ICON_XS, SM, XS, ghost_button, ghost_icon, ico, spinner, txt, txt_medium, variant_button,
 };
+use crate::chat::ChatState;
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::State;
@@ -26,12 +27,12 @@ fn content_width(s: &State) -> f32 {
 /// strip), the queue's controls, and the goal editor while open. `plan` is
 /// area A's plan strip, drawn first. Work, goals and queued turns live at
 /// the transcript's end ([`tail`]), as in T3 Code's timeline pass.
-pub fn composer(s: &State, k: &Kit, plan: Option<El>) -> Option<El> {
-    let chat = s.chat.as_ref()?;
+pub fn composer(s: &State, chat: &ChatState, k: &Kit, plan: Option<El>) -> Option<El> {
     let o = &chat.orchestration;
-    let goal = chat.goals.editing().then(|| crate::chat::goals::view(s, k)).flatten();
-    let strip = strip(s, o, k);
-    let queue = o.queue_open.then(|| queue_panel(&s.palette, o, k));
+    let id = chat.thread_id.as_str();
+    let goal = chat.goals.editing().then(|| crate::chat::goals::view(s, chat, k)).flatten();
+    let strip = strip(s, chat, k);
+    let queue = o.queue_open.then(|| queue_panel(&s.palette, id, o, k));
     if goal.is_none() && strip.is_none() && queue.is_none() && plan.is_none() {
         return None;
     }
@@ -48,12 +49,12 @@ pub fn composer(s: &State, k: &Kit, plan: Option<El>) -> Option<El> {
 
 /// The transcript's last row, in T3's order: live subagents (work that may
 /// need you), the goal, then queued turns that are not sent yet.
-pub fn tail(s: &State, k: &Kit) -> Option<El> {
-    let chat = s.chat.as_ref()?;
+pub fn tail(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     let o = &chat.orchestration;
-    let frame = frame(&s.palette, o, k);
-    let goal = (!chat.goals.editing()).then(|| crate::chat::goals::view(s, k)).flatten();
-    let queued = queued(s, o, k);
+    let id = chat.thread_id.as_str();
+    let frame = frame(&s.palette, id, o, k);
+    let goal = (!chat.goals.editing()).then(|| crate::chat::goals::view(s, chat, k)).flatten();
+    let queued = queued(s, id, o, k);
     if frame.is_none() && goal.is_none() && queued.is_none() {
         return None;
     }
@@ -62,7 +63,7 @@ pub fn tail(s: &State, k: &Kit) -> Option<El> {
 
 /// Queued follow-ups as unsent messages: dashed, unfilled bubbles on the
 /// sender's side, with Send next and Remove on hover.
-fn queued(s: &State, o: &OrchestrationState, k: &Kit) -> Option<El> {
+fn queued(s: &State, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<El> {
     if o.queue.items.is_empty() {
         return None;
     }
@@ -74,14 +75,14 @@ fn queued(s: &State, o: &OrchestrationState, k: &Kit) -> Option<El> {
     for (ix, item) in o.queue.items.iter().enumerate() {
         let mut actions = row().gap(1.).group_opacity(0., 1.);
         if ix > 0 {
-            let (id, before) = (item.id.clone(), first.clone());
+            let (id, before, chat) = (item.id.clone(), first.clone(), thread.to_string());
             actions = actions.child(ghost_button(k, format!("promote-{id}"), "Send next", None, busy, move |s| {
-                queue_action(s, QueueAction::Reorder { item_id: id.clone(), before_id: before.clone() })
+                queue_action(s, &chat, QueueAction::Reorder { item_id: id.clone(), before_id: before.clone() })
             }));
         }
-        let id = item.id.clone();
+        let (id, chat) = (item.id.clone(), thread.to_string());
         actions = actions.child(ghost_button(k, format!("unqueue-{id}"), "Remove", None, busy, move |s| {
-            queue_action(s, QueueAction::Remove(id.clone()))
+            queue_action(s, &chat, QueueAction::Remove(id.clone()))
         }));
         rows = rows.child(
             col()
@@ -92,15 +93,19 @@ fn queued(s: &State, o: &OrchestrationState, k: &Kit) -> Option<El> {
                 .gap(4.)
                 .role("status")
                 .label(format!("Not sent yet: {}", item.text))
+                // In a full-width row, as the person's own bubbles: the row
+                // shrinks it to a narrow pane (a side chat's).
                 .child(
-                    el().min_w(0.)
-                        .max_w(bubble_max)
-                        .px(16.)
-                        .py(10.)
-                        .radius(design::BUBBLE_RADIUS)
-                        .border(1., p.border_strong)
-                        .border_dash(4., 3.)
-                        .child(txt(item.text.clone(), SM, p.text_muted).wrap().max_lines(4)),
+                    row().w_full().justify_end().child(
+                        el().shrink()
+                            .max_w(bubble_max)
+                            .px(16.)
+                            .py(10.)
+                            .radius(design::BUBBLE_RADIUS)
+                            .border(1., p.border_strong)
+                            .border_dash(4., 3.)
+                            .child(txt(item.text.clone(), SM, p.text_muted).wrap().max_lines(4).shrink()),
+                    ),
                 )
                 .child(
                     row()
@@ -137,8 +142,9 @@ fn text_chip(p: &Palette, key: String, i: &'static Icon, label: impl Into<String
         .child(txt(label, XS, p.text_muted))
 }
 
-fn strip(s: &State, o: &OrchestrationState, k: &Kit) -> Option<El> {
-    let chat = s.chat.as_ref()?;
+fn strip(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
+    let o = &chat.orchestration;
+    let id = chat.thread_id.clone();
     let p = &s.palette;
     let now = Utc::now().timestamp_millis();
     let busy = o.busy;
@@ -163,11 +169,14 @@ fn strip(s: &State, o: &OrchestrationState, k: &Kit) -> Option<El> {
     if let Some(from) = &o.lineage.forked_from {
         let source = from.source_thread.clone();
         // A side chat's pane already names its parent.
-        if !crate::chat::embedded(s) {
+        if !chat.embedded {
             chips.push(link_chip(p, "strip-fork", &icons::COPY, format!("Forked from {}", title_of(&source)), source));
         }
-        let merge = variant_button(k, "merge-back", "Merge back", Some(&icons::UNDO_2), ButtonVariant::Ghost, busy, merge_back)
-            .help("Send what happened here back to the original thread");
+        let merging = id.clone();
+        let merge = variant_button(k, "merge-back", "Merge back", Some(&icons::UNDO_2), ButtonVariant::Ghost, busy, move |s| {
+            merge_back(s, &merging)
+        })
+        .help("Send what happened here back to the original thread");
         chips.push(merge);
     }
 
@@ -196,9 +205,10 @@ fn strip(s: &State, o: &OrchestrationState, k: &Kit) -> Option<El> {
         chips.push(text_chip(p, "strip-held".into(), i, label));
         let interrupted = o.queue.hold_reason == Some(HoldReason::Interrupted);
         let variant = if interrupted { ButtonVariant::Submit } else { ButtonVariant::Ghost };
+        let releasing = id.clone();
         chips.push(
-            variant_button(k, "queue-release", action, Some(&icons::PLAY), variant, busy, |s| {
-                queue_action(s, QueueAction::Release)
+            variant_button(k, "queue-release", action, Some(&icons::PLAY), variant, busy, move |s| {
+                queue_action(s, &releasing, QueueAction::Release)
             })
             .help(if interrupted {
                 "Finish the cut turn, then run the queued follow-ups"
@@ -215,7 +225,10 @@ fn strip(s: &State, o: &OrchestrationState, k: &Kit) -> Option<El> {
             1 => "1 queued follow-up".to_string(),
             n => format!("{n} queued follow-ups"),
         };
-        let toggle = ghost_button(k, "queue-toggle", &label, Some(&icons::INBOX), false, toggle_queue);
+        let toggling = id.clone();
+        let toggle = ghost_button(k, "queue-toggle", &label, Some(&icons::INBOX), false, move |s| {
+            toggle_queue(s, &toggling)
+        });
         // Selected while the panel is open.
         chips.push(if o.queue_open {
             el().radius(design::CONTROL_RADIUS).fill(p.active).child(toggle)
@@ -232,7 +245,7 @@ fn strip(s: &State, o: &OrchestrationState, k: &Kit) -> Option<El> {
 }
 
 /// Live delegated children: title, engine, status, elapsed, open, cancel.
-fn frame(p: &Palette, o: &OrchestrationState, k: &Kit) -> Option<El> {
+fn frame(p: &Palette, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<El> {
     let live: Vec<&TaskView> = o.tasks.iter().filter(|t| t.status.is_live()).collect();
     if live.is_empty() {
         return None;
@@ -258,13 +271,13 @@ fn frame(p: &Palette, o: &OrchestrationState, k: &Kit) -> Option<El> {
             TaskStatus::Running | TaskStatus::Starting => spinner(k, ICON_XS, p.text),
             _ => ico(&icons::PAUSE, ICON_XS, p.text),
         };
-        let task_id = task.task_id.clone();
+        let (task_id, chat) = (task.task_id.clone(), thread.to_string());
         let tip = if cancelling { "Cancelling" } else { "Cancel this subagent and everything it delegated" };
         let cancel = if cancelling {
             spinner(k, ICON_XS, p.text_muted).help(tip)
         } else {
             ghost_icon(k, format!("cancel-{}", task.task_id), &icons::CLOSE, tip, move |s| {
-                cancel_task(s, task_id.clone())
+                cancel_task(s, &chat, task_id.clone())
             })
             .label("Cancel subagent")
         };
@@ -301,10 +314,12 @@ fn frame(p: &Palette, o: &OrchestrationState, k: &Kit) -> Option<El> {
 
 /// The queue's controls: hold or release, clear, and add a follow-up. The
 /// queued turns themselves show at the transcript's end.
-fn queue_panel(p: &Palette, o: &OrchestrationState, k: &Kit) -> El {
+fn queue_panel(p: &Palette, thread: &str, o: &OrchestrationState, k: &Kit) -> El {
     let busy = o.busy;
     let held = o.queue.held;
     let empty = o.queue.items.is_empty();
+    let id = thread.to_string();
+    let hold_id = id.clone();
     let mut header = row()
         .px(8.)
         .pt(4.)
@@ -329,11 +344,12 @@ fn queue_panel(p: &Palette, o: &OrchestrationState, k: &Kit) -> El {
             if held { "Release" } else { "Hold" },
             Some(if held { &icons::PLAY } else { &icons::PAUSE }),
             busy,
-            move |s| queue_action(s, if held { QueueAction::Release } else { QueueAction::Hold }),
+            move |s| queue_action(s, &hold_id, if held { QueueAction::Release } else { QueueAction::Hold }),
         ));
     if !empty {
-        header = header.child(ghost_button(k, "queue-clear", "Clear", None, busy, |s| {
-            queue_action(s, QueueAction::Clear)
+        let clear_id = id.clone();
+        header = header.child(ghost_button(k, "queue-clear", "Clear", None, busy, move |s| {
+            queue_action(s, &clear_id, QueueAction::Clear)
         }));
     }
     let mut panel = col()
@@ -348,6 +364,7 @@ fn queue_panel(p: &Palette, o: &OrchestrationState, k: &Kit) -> El {
         panel = panel.child(el().px(8.).child(txt("Nothing queued.", XS, p.text_muted)));
     }
     if let Some(input) = &o.queue_input {
+        let (edit_id, submit_id, add_id) = (id.clone(), id.clone(), id);
         panel = panel.child(
             row()
                 .gap(8.)
@@ -359,8 +376,8 @@ fn queue_panel(p: &Palette, o: &OrchestrationState, k: &Kit) -> El {
                         TextInput::new(input)
                             .placeholder("Add a follow-up to the queue")
                             .width(None)
-                            .on_edit(queue_edit)
-                            .on_submit(|s: &mut State, _| add_queued(s))
+                            .on_edit(move |s: &mut State| queue_edit(s, &edit_id))
+                            .on_submit(move |s: &mut State, _| add_queued(s, &submit_id))
                             .build(k)
                             .key("queue-input"),
                     ),
@@ -368,17 +385,17 @@ fn queue_panel(p: &Palette, o: &OrchestrationState, k: &Kit) -> El {
                 .child(if busy {
                     el().size(24., 24.)
                 } else {
-                    ghost_icon(k, "queue-add", &icons::PLUS, "Add to the queue", add_queued)
+                    ghost_icon(k, "queue-add", &icons::PLUS, "Add to the queue", move |s| add_queued(s, &add_id))
                 }),
         );
     }
     panel
 }
 
-fn queue_edit(s: &mut State) -> &mut TextEdit {
-    match s.chat.as_mut().and_then(|c| c.orchestration.queue_input.as_mut()) {
+fn queue_edit<'a>(s: &'a mut State, id: &str) -> &'a mut TextEdit {
+    match crate::chat::chat_for(s, id).and_then(|c| c.orchestration.queue_input.as_mut()) {
         Some(edit) => edit,
         // A late edit after the panel closed lands in a scratch field.
-        None => Box::leak(Box::default()),
+        None => crate::chat::orphan_edit(),
     }
 }

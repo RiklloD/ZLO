@@ -314,7 +314,18 @@ pub fn outputs(s: &mut State) {
     });
 }
 
+/// Scene `side-session`: the session card over a side chat that has its
+/// own extras: the compact model pill, a goal and a queued follow-up.
 pub fn session(s: &mut State) {
+    session_with(s, true, false);
+}
+
+/// Scene `side-session-picker`: the side chat's own model picker open.
+pub fn session_picker(s: &mut State) {
+    session_with(s, false, true);
+}
+
+fn session_with(s: &mut State, card: bool, picker: bool) {
     set_data(FixtureData {
         rows: vec![user("u1", "Port the side pane")],
         tasks: Vec::new(),
@@ -337,12 +348,27 @@ pub fn session(s: &mut State) {
             ],
             false,
         );
+        // The side chat's own extras (GPUI: each `ChatView` had them).
+        chat.model_picker = crate::chat::model_picker::fixture();
+        chat.model_picker.thread_id = Some("sc2".into());
+        chat.model_picker.set_compact(true);
+        if picker {
+            chat.model_picker.toggle();
+        }
+        chat.goals = crate::chat::goals::fixture();
+        let mut queue = crate::chat::orchestration::fixture();
+        queue.queue.items.truncate(1);
+        queue.queue.held = false;
+        queue.tasks.clear();
+        queue.queue_open = false;
+        chat.orchestration = queue;
         x.chat = Some(SideChat {
             thread_id: "sc2".into(),
             state: Box::new(chat),
         });
-        x.session_open = true;
+        x.session_open = card;
     });
+    crate::chat::fixtures::refold_chat(s, "sc2");
 }
 
 impl SideState {

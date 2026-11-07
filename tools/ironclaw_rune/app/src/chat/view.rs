@@ -119,10 +119,8 @@ pub(crate) fn column(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, l
     }
     main = main.child(area);
 
-    // The extras (area H) belong to the open chat, not a side chat.
-    if !chat.embedded
-        && let Some(screen) = super::computer::view(s, cx, k, layer)
-    {
+    // Every chat, side chats too, shows its own extras (area H).
+    if let Some(screen) = super::computer::view(s, chat, cx, k, layer) {
         main = main.child(screen);
     }
     if let Some(error) = &chat.error {
@@ -136,13 +134,9 @@ pub(crate) fn column(s: &State, chat: &ChatState, cx: &mut Cx<State>, k: &Kit, l
                 .selectable(true),
         ));
     }
+    // The orchestration panel centres itself and puts the plan first.
     let plan = super::plan_strip::view(s, chat);
-    let panel = match chat.embedded {
-        // The orchestration panel centres itself and puts the plan first.
-        false => super::orchestration::composer(s, k, plan),
-        true => plan.map(|plan| centered(s, plan).pt(8.)),
-    };
-    if let Some(panel) = panel {
+    if let Some(panel) = super::orchestration::composer(s, chat, k, plan) {
         main = main.child(panel);
     }
     let items = chat.menu.items(&chat.composer.text);
@@ -200,7 +194,7 @@ fn jump_button(s: &State, chat: &ChatState) -> El {
         .cursor(rune::Cursor::Pointer)
         .transition(flow::rise(6.))
         .child(icon(&icons::CHEVRON_DOWN, 13.).color(p.text_muted));
-    if let Some(summary) = (!chat.embedded).then(|| super::orchestration::tail_summary(s)).flatten() {
+    if let Some(summary) = super::orchestration::tail_summary(s, &chat.thread_id) {
         pill = pill.child(
             text(summary)
                 .font(flow::type_at(s, 12., 16., 400.))
@@ -306,10 +300,7 @@ fn transcript(s: &State, chat: &ChatState, _cx: &mut Cx<State>, k: &Kit, _layer:
                 flow::render_activity(s, &id, key, group, *live, open, &chat.toggles, &outputs, k)
             }
             Item::Pending { stopping } => super::pending::render_pending(s, *stopping, chat.run_started, seed, k),
-            Item::Tail => (!chat.embedded)
-                .then(|| super::orchestration::tail(s, k))
-                .flatten()
-                .unwrap_or_else(el),
+            Item::Tail => super::orchestration::tail(s, chat, k).unwrap_or_else(el),
             Item::Reserve => el().h(reserve_h),
         };
         let key = item.key().to_string();

@@ -364,8 +364,8 @@ fn dismiss(s: &mut State) -> bool {
     if s.workspace.command.is_some() {
         return false;
     }
+    // Closing a chat's picker hands the keys back to that chat's composer.
     if crate::chat::model_picker::close_open(s) {
-        crate::chat::focus_composer(s);
         return true;
     }
     if in_settings(s) {

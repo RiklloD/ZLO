@@ -298,10 +298,13 @@ Each item is sized for one focused fix.
    (`login_item.rs:9`). Point the copy in `pages/settings.rs:189` and
    `voice/apple.rs:97` at it. Without a bundle, system notifications, voice,
    open-at-login and the permission prompts cannot work in this app.
-7. **Side chats' own extras:** model picker pill, goal, queue,
+7. **FIXED in ad52f3c35.** **Side chats' own extras:** model picker pill, goal, queue,
    fork-from-message, computer share, and Esc closing the side chat's picker
    (PLAN "Known gaps"; GPUI `chat/side/session.rs:148, 173-207`). This means
-   making H's modules work by thread id.
+   making H's modules work by thread id. H's modules now find their chat by
+   thread id (`chat::chat_for`); the picker's `Slot::Chat(id)` gives each
+   chat its own; ⇧⌘M/Esc follow `model_picker::focused_slot`; ⌥Enter queues
+   in a side chat.
 8. **Translucent window.** Make the window transparent when
    `prefs.translucent` is on (GPUI `design/mod.rs` `set_translucent`/`apply_window`;
    Rune `pages/settings/appearance.rs:524` only saves it).

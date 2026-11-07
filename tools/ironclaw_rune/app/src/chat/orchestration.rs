@@ -9,17 +9,23 @@
 //! runs or a child task is live, a slow poll re-reads tasks and queue, and
 //! only while the app window is in front. An idle thread schedules nothing.
 //!
+//! Every chat has its own: the open one and each side chat in its right
+//! pane (GPUI: each `ChatView` owned its `orch`). Functions take the chat's
+//! thread id and find it again with `chat::chat_for`; replies for a chat
+//! that closed meanwhile are dropped.
+//!
 //! # Entry points (area A calls these)
 //!
-//! - `opened(s)`: after `chat::open` (the chat stub already calls it).
-//! - `refresh(s)`: when the stream reports a run end or a timeline reload.
-//! - `ensure_poll(s)`: after a send starts a run.
-//! - `queue_follow_up(s, text) -> bool`: the composer's ⌥Enter.
-//! - `fork(s, at_run: Option<u32>)`, `cancel_task(s, task_id)`.
-//! - `running_run(s) -> Option<String>`, `thread_runtime(s) -> Option<String>`,
-//!   `tail_summary(s) -> Option<String>` (the jump-to-end button).
-//! - Views: `composer(s, k, plan) -> Option<El>` above the composer (pass the
-//!   plan strip in), `tail(s, k) -> Option<El>` as the transcript's last row.
+//! - `opened(s, id)`: after a chat starts.
+//! - `refresh(s, id)`: when the stream reports a run end or a timeline reload.
+//! - `ensure_poll(s, id)`: after a send starts a run.
+//! - `queue_follow_up(s, id, text) -> bool`: the composer's ⌥Enter.
+//! - `fork(s, id, at_run: Option<u32>)`, `cancel_task(s, id, task_id)`.
+//! - `running_run(s, id)`, `thread_runtime(s, id)`, `tail_summary(s, id)`
+//!   (the jump-to-end button).
+//! - Views: `composer(s, chat, k, plan) -> Option<El>` above the composer
+//!   (pass the plan strip in), `tail(s, chat, k) -> Option<El>` as the
+//!   transcript's last row.
 
 mod view;
 
@@ -77,31 +83,29 @@ struct Snapshot {
     lineage: Option<Result<Lineage, ClientError>>,
 }
 
-fn slot(s: &mut State) -> Option<(&mut OrchestrationState, String)> {
-    s.chat.as_mut().map(|c| (&mut c.orchestration, c.thread_id.clone()))
-}
-
-/// The slot, only while the chat that asked is still open.
-fn same_thread<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut OrchestrationState> {
-    s.chat.as_mut().filter(|c| c.thread_id == thread_id).map(|c| &mut c.orchestration)
+/// The orchestration of the chat showing `thread_id` (main or side), only
+/// while that chat is still open.
+fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut OrchestrationState> {
+    crate::chat::chat_for(s, thread_id).map(|c| &mut c.orchestration)
 }
 
 /// The chat opened: read everything once.
-pub fn opened(s: &mut State) {
-    refresh(s);
+pub fn opened(s: &mut State, id: &str) {
+    refresh(s, id);
 }
 
 /// The runtime the thread runs on (`codex`, `claude-cli`, `ironclaw`), once
 /// the orchestrator has seen it.
-pub fn thread_runtime(s: &State) -> Option<String> {
-    s.chat.as_ref()?.orchestration.queue.runtime.clone()
+pub fn thread_runtime(s: &State, id: &str) -> Option<String> {
+    crate::chat::chat_ref(s, id)?.orchestration.queue.runtime.clone()
 }
 
 /// Re-read tasks and queue (and lineage until loaded), and the goal.
 /// Coalesces: a call during a refresh only marks it stale.
-pub fn refresh(s: &mut State) {
-    crate::chat::goals::load(s);
-    let Some((o, thread_id)) = slot(s) else { return };
+pub fn refresh(s: &mut State, id: &str) {
+    crate::chat::goals::load(s, id);
+    let Some(o) = slot(s, id) else { return };
+    let thread_id = id.to_string();
     if o.loading {
         o.stale = true;
         return;
@@ -125,7 +129,7 @@ pub fn refresh(s: &mut State) {
             Ok(snapshot) => apply_snapshot(s, &asked, snapshot),
             Err(e) => {
                 tracing::debug!(error = %e, "orchestration refresh failed");
-                if let Some(o) = same_thread(s, &asked) {
+                if let Some(o) = slot(s, &asked) {
                     o.loading = false;
                 }
             }
@@ -134,8 +138,8 @@ pub fn refresh(s: &mut State) {
 }
 
 fn apply_snapshot(s: &mut State, asked: &str, snap: Snapshot) {
-    let embedded = crate::chat::embedded(s);
-    let Some(o) = same_thread(s, asked) else { return };
+    let embedded = crate::chat::embedded(s, asked);
+    let Some(o) = slot(s, asked) else { return };
     let mut reload_timeline = false;
     let (mut load_prefix, mut load_merge_list) = (false, false);
     o.loading = false;
@@ -192,66 +196,64 @@ fn apply_snapshot(s: &mut State, asked: &str, snap: Snapshot) {
     let stale = std::mem::take(&mut o.stale);
     crate::workspace::ensure_titles(s, related);
     if load_prefix {
-        load_fork_prefix(s);
+        load_fork_prefix(s, asked);
     }
     if load_merge_list {
-        load_merges(s);
+        load_merges(s, asked);
     }
     if reload_timeline {
-        crate::chat::reload_timeline(s);
+        crate::chat::load_timeline(s, asked);
     }
     if stale {
-        refresh(s);
+        refresh(s, asked);
     }
-    ensure_poll(s);
+    ensure_poll(s, asked);
 }
 
 /// A fork shows its source conversation above its own messages.
-fn load_fork_prefix(s: &mut State) {
-    let Some((_, thread_id)) = slot(s) else { return };
+fn load_fork_prefix(s: &mut State, id: &str) {
+    let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
         "orchestration",
         move |c| async move { c.fork_prefix(&thread_id).await },
         move |s, result, _| match result {
-            Ok(prefix) if same_thread(s, &asked).is_some() => crate::chat::set_fork_prefix(s, prefix),
-            Ok(_) => {}
+            Ok(prefix) => crate::chat::set_fork_prefix(s, &asked, prefix),
             Err(e) => tracing::debug!(error = %e, "fork source load failed"),
         },
     );
 }
 
 /// Forks merged back into this thread show where they arrived.
-fn load_merges(s: &mut State) {
-    let Some((_, thread_id)) = slot(s) else { return };
+fn load_merges(s: &mut State, id: &str) {
+    let thread_id = id.to_string();
     let asked = thread_id.clone();
     jobs::run(
         s,
         "orchestration",
         move |c| async move { c.merged_in(&thread_id).await },
         move |s, result, _| match result {
-            Ok(merges) if same_thread(s, &asked).is_some() => crate::chat::set_merges(s, merges),
-            Ok(_) => {}
+            Ok(merges) => crate::chat::set_merges(s, &asked, merges),
             Err(e) => tracing::debug!(error = %e, "merged forks load failed"),
         },
     );
 }
 
-fn needs_poll(s: &State) -> bool {
-    let Some(c) = s.chat.as_ref() else { return false };
+fn needs_poll(s: &State, id: &str) -> bool {
+    let Some(c) = crate::chat::chat_ref(s, id) else { return false };
     let o = &c.orchestration;
-    crate::chat::active_run(s).is_some()
+    crate::chat::active_run(s, id).is_some()
         || o.queue.external_run().is_some()
         || o.tasks.iter().any(|t| t.status.is_live())
         || c.goals.check_in_flight()
 }
 
-/// Whether [`tail`] has anything to show for the open chat: live subagents,
+/// Whether [`tail`] has anything to show for `id`'s chat: live subagents,
 /// the goal (when its editor is closed) or queued follow-ups. The chat folds
 /// a tail row into its transcript while this holds.
-pub fn has_tail(s: &State) -> bool {
-    let Some(c) = s.chat.as_ref() else { return false };
+pub fn has_tail(s: &State, id: &str) -> bool {
+    let Some(c) = crate::chat::chat_ref(s, id) else { return false };
     let o = &c.orchestration;
     o.tasks.iter().any(|t| t.status.is_live())
         || (!c.goals.editing() && c.goals.goal.is_some())
@@ -259,28 +261,29 @@ pub fn has_tail(s: &State) -> bool {
 }
 
 /// The running turn, streamed (IronClaw's loop) or polled (CLI runtime).
-pub fn running_run(s: &State) -> Option<String> {
-    crate::chat::active_run(s).or_else(|| s.chat.as_ref()?.orchestration.queue.external_run().map(str::to_string))
+pub fn running_run(s: &State, id: &str) -> Option<String> {
+    crate::chat::active_run(s, id)
+        .or_else(|| crate::chat::chat_ref(s, id)?.orchestration.queue.external_run().map(str::to_string))
 }
 
 /// Start the slow poll if something is moving. It stops by itself.
-pub fn ensure_poll(s: &mut State) {
-    let moving = needs_poll(s);
-    let Some((o, thread_id)) = slot(s) else { return };
+pub fn ensure_poll(s: &mut State, id: &str) {
+    let moving = needs_poll(s, id);
+    let Some(o) = slot(s, id) else { return };
     if o.polling || !moving {
         return;
     }
     o.polling = true;
-    schedule_tick(s, thread_id);
+    schedule_tick(s, id.to_string());
 }
 
 fn schedule_tick(s: &State, thread_id: String) {
     jobs::after(s, POLL, move |s, _| {
-        if same_thread(s, &thread_id).is_none() {
+        if slot(s, &thread_id).is_none() {
             return;
         }
-        if !needs_poll(s) {
-            if let Some(o) = same_thread(s, &thread_id) {
+        if !needs_poll(s, &thread_id) {
+            if let Some(o) = slot(s, &thread_id) {
                 o.polling = false;
             }
             return;
@@ -288,7 +291,7 @@ fn schedule_tick(s: &State, thread_id: String) {
         // In the background nothing is watching; the next stream event or a
         // later tick catches up.
         if crate::workspace::window_active(s) {
-            refresh(s);
+            refresh(s, &thread_id);
         }
         schedule_tick(s, thread_id);
     });
@@ -298,8 +301,9 @@ fn schedule_tick(s: &State, thread_id: String) {
 /// ⌥Enter). `false` while another queue change is in flight. When the
 /// server refuses it, the text goes back into an empty composer so it is
 /// never lost.
-pub fn queue_follow_up(s: &mut State, text: String) -> bool {
-    let Some((o, thread_id)) = slot(s) else { return false };
+pub fn queue_follow_up(s: &mut State, id: &str, text: String) -> bool {
+    let Some(o) = slot(s, id) else { return false };
+    let thread_id = id.to_string();
     if o.busy {
         return false;
     }
@@ -312,25 +316,26 @@ pub fn queue_follow_up(s: &mut State, text: String) -> bool {
         "orchestration",
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
         move |s, result, _| {
-            let Some(o) = same_thread(s, &asked) else { return };
+            let Some(o) = slot(s, &asked) else { return };
             o.busy = false;
             match result {
                 Ok(queue) => o.queue = queue,
                 Err(e) => {
-                    if crate::chat::composer_text(s).trim().is_empty() {
-                        crate::chat::set_composer_text(s, text);
+                    if crate::chat::composer_text(s, &asked).trim().is_empty() {
+                        crate::chat::set_composer_text(s, &asked, text);
                     }
-                    crate::chat::open_error(s, e.to_string());
+                    crate::chat::report_error(s, &asked, e.to_string());
                 }
             }
-            ensure_poll(s);
+            ensure_poll(s, &asked);
         },
     );
     true
 }
 
-pub(crate) fn queue_action(s: &mut State, action: QueueAction) {
-    let Some((o, thread_id)) = slot(s) else { return };
+pub(crate) fn queue_action(s: &mut State, id: &str, action: QueueAction) {
+    let Some(o) = slot(s, id) else { return };
+    let thread_id = id.to_string();
     if o.busy {
         return;
     }
@@ -342,40 +347,41 @@ pub(crate) fn queue_action(s: &mut State, action: QueueAction) {
         "orchestration",
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
         move |s, result, _| {
-            let Some(o) = same_thread(s, &asked) else { return };
+            let Some(o) = slot(s, &asked) else { return };
             o.busy = false;
             match result {
                 Ok(queue) => o.queue = queue,
-                Err(e) => crate::chat::open_error(s, e.to_string()),
+                Err(e) => crate::chat::report_error(s, &asked, e.to_string()),
             }
-            ensure_poll(s);
+            ensure_poll(s, &asked);
         },
     );
 }
 
-pub fn cancel_task(s: &mut State, task_id: String) {
-    let Some((_, thread_id)) = slot(s) else { return };
+pub fn cancel_task(s: &mut State, id: &str, task_id: String) {
+    let thread_id = id.to_string();
     jobs::run(
         s,
         "orchestration",
         move |c| async move { c.cancel_task(&task_id).await },
         move |s, result, _| match result {
             Ok(view) => {
-                if let Some(o) = same_thread(s, &thread_id)
-                    && let Some(slot) = o.tasks.iter_mut().find(|t| t.task_id == view.task_id)
+                if let Some(o) = slot(s, &thread_id)
+                    && let Some(task) = o.tasks.iter_mut().find(|t| t.task_id == view.task_id)
                 {
-                    *slot = view;
+                    *task = view;
                 }
             }
-            Err(e) => crate::chat::open_error(s, e.to_string()),
+            Err(e) => crate::chat::report_error(s, &thread_id, e.to_string()),
         },
     );
 }
 
 /// Fork the thread into a new one. `at_run`: keep only the history up to
 /// and including run `at_run` (1-based); `None` keeps everything.
-pub fn fork(s: &mut State, at_run: Option<u32>) {
-    let Some((o, thread_id)) = slot(s) else { return };
+pub fn fork(s: &mut State, id: &str, at_run: Option<u32>) {
+    let Some(o) = slot(s, id) else { return };
+    let thread_id = id.to_string();
     if o.busy {
         return;
     }
@@ -389,19 +395,22 @@ pub fn fork(s: &mut State, at_run: Option<u32>) {
             c.fork_thread(&thread_id, &options).await
         },
         move |s, result, _| {
-            if let Some(o) = same_thread(s, &asked) {
+            // The fork opens as the main chat, from a side chat too (GPUI
+            // `OpenThread` bubbles up to the window).
+            if let Some(o) = slot(s, &asked) {
                 o.busy = false;
             }
             match result {
                 Ok(forked) => crate::workspace::open_thread(s, forked.fork_thread_id),
-                Err(e) => crate::chat::open_error(s, e.to_string()),
+                Err(e) => crate::chat::report_error(s, &asked, e.to_string()),
             }
         },
     );
 }
 
-pub(crate) fn merge_back(s: &mut State) {
-    let Some((o, thread_id)) = slot(s) else { return };
+pub(crate) fn merge_back(s: &mut State, id: &str) {
+    let Some(o) = slot(s, id) else { return };
+    let thread_id = id.to_string();
     if o.busy {
         return;
     }
@@ -419,7 +428,7 @@ pub(crate) fn merge_back(s: &mut State) {
                 .and_then(|m| m.target_thread_id.as_deref())
                 .and_then(|id| crate::workspace::thread_title(s, id))
                 .unwrap_or_else(|| "the original thread".into());
-            let Some(o) = same_thread(s, &asked) else { return };
+            let Some(o) = slot(s, &asked) else { return };
             o.busy = false;
             match result {
                 Ok(merged) => {
@@ -427,36 +436,36 @@ pub(crate) fn merge_back(s: &mut State) {
                         format!("Merged into {target}. It arrives there as context once that thread is idle.")
                     }));
                     o.lineage_loaded = false;
-                    refresh(s);
+                    refresh(s, &asked);
                 }
-                Err(e) => crate::chat::open_error(s, e.to_string()),
+                Err(e) => crate::chat::report_error(s, &asked, e.to_string()),
             }
         },
     );
 }
 
-pub(crate) fn toggle_queue(s: &mut State) {
-    let Some((o, _)) = slot(s) else { return };
+pub(crate) fn toggle_queue(s: &mut State, id: &str) {
+    let Some(o) = slot(s, id) else { return };
     o.queue_open = !o.queue_open;
     if o.queue_open && o.queue_input.is_none() {
         o.queue_input = Some(TextEdit::new(""));
     }
 }
 
-pub(crate) fn add_queued(s: &mut State) {
-    let Some((o, _)) = slot(s) else { return };
+pub(crate) fn add_queued(s: &mut State, id: &str) {
+    let Some(o) = slot(s, id) else { return };
     let Some(input) = o.queue_input.as_mut() else { return };
     let text = input.text.trim().to_string();
     if text.is_empty() || o.busy {
         return;
     }
     input.clear();
-    queue_action(s, QueueAction::Add(text));
+    queue_action(s, id, QueueAction::Add(text));
 }
 
 /// A short line for the jump-to-end button: "2 queued", "1 working".
-pub fn tail_summary(s: &State) -> Option<String> {
-    let o = &s.chat.as_ref()?.orchestration;
+pub fn tail_summary(s: &State, id: &str) -> Option<String> {
+    let o = &crate::chat::chat_ref(s, id)?.orchestration;
     let queued = o.queue.items.len();
     let working = o.tasks.iter().filter(|t| t.status.is_live()).count();
     let mut parts = Vec::new();
@@ -563,7 +572,41 @@ pub fn scene(s: &mut State) {
 
 #[cfg(test)]
 mod tests {
-    use super::{countdown, duration};
+    use super::{Snapshot, apply_snapshot, countdown, duration, fixture, queue_follow_up};
+    use crate::chat::chat_ref;
+    use crate::chat::fixtures::{close_side_chat, test_state, with_side_chat};
+
+    fn snapshot() -> Snapshot {
+        Snapshot { tasks: Ok(Vec::new()), queue: Ok(fixture().queue), lineage: None }
+    }
+
+    fn queued(s: &crate::state::State, id: &str) -> usize {
+        chat_ref(s, id).map_or(0, |c| c.orchestration.queue.items.len())
+    }
+
+    #[test]
+    fn a_refresh_lands_in_its_own_chat_and_is_dropped_once_that_chat_closed() {
+        let mut s = test_state();
+        with_side_chat(&mut s, "sc2");
+        apply_snapshot(&mut s, "sc2", snapshot());
+        assert_eq!(queued(&s, "sc2"), 2);
+        assert_eq!(queued(&s, "t1"), 0, "the open chat's queue is its own");
+        close_side_chat(&mut s);
+        apply_snapshot(&mut s, "sc2", snapshot());
+        assert_eq!(queued(&s, "t1"), 0);
+    }
+
+    #[test]
+    fn a_side_chat_queues_into_its_own_thread() {
+        let mut s = test_state();
+        with_side_chat(&mut s, "sc2");
+        assert!(queue_follow_up(&mut s, "sc2", "after this".into()));
+        assert!(chat_ref(&s, "sc2").is_some_and(|c| c.orchestration.busy));
+        assert!(chat_ref(&s, "t1").is_some_and(|c| !c.orchestration.busy));
+        // A closed chat has nothing to queue into.
+        close_side_chat(&mut s);
+        assert!(!queue_follow_up(&mut s, "sc2", "after this".into()));
+    }
 
     #[test]
     fn labels_read_naturally() {

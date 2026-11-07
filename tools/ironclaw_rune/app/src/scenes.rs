@@ -83,6 +83,7 @@ pub const SCENES: &[Scene] = &[
     ("side-outputs", crate::chat::side::fixtures::outputs),
     ("side-routines", crate::chat::side::fixtures::routines),
     ("side-session", crate::chat::side::fixtures::session),
+    ("side-session-picker", crate::chat::side::fixtures::session_picker),
     ("skills", crate::pages::skills::fixtures::skills),
     ("snapshot-chip", snapshot_chip),
     ("status-bar", ws::fixture_status_bar),
