@@ -6943,14 +6943,23 @@ where
         let Some(catalog) = &self.external_tool_catalog else {
             return Ok(None);
         };
-        let state = self
+        // A run this lookup cannot see is not a waiting question: leave the
+        // gate to the normal routing (approval, auth, generic), which answers
+        // with its own error.
+        let state = match self
             .turn_coordinator
             .get_run_state(GetRunStateRequest {
                 scope: scope.clone(),
                 run_id,
             })
             .await
-            .map_err(map_turn_error)?;
+        {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::debug!(error = %error, "native question lookup: run not readable");
+                return Ok(None);
+            }
+        };
         if state.status != TurnStatus::BlockedExternalTool
             || state.gate_ref.as_ref() != Some(gate_ref)
         {

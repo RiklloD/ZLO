@@ -71,6 +71,31 @@ use ironclaw_turns::{
 
 use ironclaw_turns::test_support::{in_memory_agent_turn_runtime, in_memory_loop_checkpoint_store};
 
+// Integration tests link the production secrets crate, so cfg(test) does not
+// suppress its OS keychain access. Give each temporary runtime its own key.
+fn test_local_input(owner: &str, root: std::path::PathBuf) -> RebornHostBindings {
+    std::fs::create_dir_all(&root).expect("create test storage root");
+    let path = root.join(ironclaw_composition::STANDALONE_SECRETS_MASTER_KEY_PATH);
+    if !path.exists() {
+        std::fs::write(&path, ironclaw_secrets::keychain::generate_master_key_hex())
+            .expect("seed test master key");
+    }
+    ironclaw_composition::local_filesystem_build_input(owner, root)
+}
+
+#[test]
+fn local_test_input_seeds_and_preserves_an_isolated_master_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("standalone");
+    let _ = test_local_input("test-owner", root.clone());
+    let path = root.join(ironclaw_composition::STANDALONE_SECRETS_MASTER_KEY_PATH);
+    let key = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(key.len(), 64);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+    let _ = test_local_input("test-owner", root);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), key);
+}
+
 async fn build_runtime_for_test(input: RebornHostBindings) -> RebornRuntime {
     build_reborn_runtime(RebornRuntimeInput::from_build_input(input))
         .await
@@ -438,7 +463,7 @@ async fn visible_capability_request_preserves_custom_provider_trust_decision() {
 #[tokio::test]
 async fn standalone_adapter_gates_builtin_echo_when_global_auto_approve_is_off() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "builtin-echo-owner",
         root.path().join("standalone"),
     ))
@@ -535,7 +560,7 @@ async fn standalone_adapter_gates_builtin_echo_when_global_auto_approve_is_off()
 #[tokio::test]
 async fn standalone_adapter_invokes_builtin_shell_through_product_live_surface() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "builtin-shell-owner",
         root.path().join("standalone"),
     ))
@@ -664,7 +689,7 @@ async fn standalone_adapter_invokes_builtin_shell_through_product_live_surface()
 #[tokio::test]
 async fn standalone_adapter_invokes_extension_scoped_grants_with_loop_driver_principal() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "extension-grant-owner",
         root.path().join("standalone"),
     ))
@@ -767,7 +792,7 @@ async fn standalone_adapter_invokes_extension_scoped_grants_with_loop_driver_pri
 #[tokio::test]
 async fn standalone_adapter_registers_provider_tool_calls_as_run_scoped_inputs() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "provider-tool-owner",
         root.path().join("standalone"),
     ))
@@ -918,7 +943,7 @@ async fn standalone_adapter_registers_provider_tool_calls_as_run_scoped_inputs()
 #[tokio::test]
 async fn standalone_adapter_exposes_skill_install_provider_tool_schema_requires_string_content() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "provider-skill-install-owner",
         root.path().join("standalone"),
     ))
@@ -1019,7 +1044,7 @@ async fn standalone_adapter_exposes_skill_install_provider_tool_schema_requires_
 #[tokio::test]
 async fn adapter_config_can_authorize_non_dispatch_provider_trust_effects() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "read-effect-owner",
         root.path().join("standalone"),
     ))
@@ -1083,11 +1108,7 @@ async fn standalone_adapter_invokes_read_file_with_configured_mounts() {
     let storage_root = root.path().join("standalone");
     std::fs::create_dir_all(storage_root.join("workspace")).unwrap();
     std::fs::write(storage_root.join("workspace/readme.md"), "alpha\nbeta\n").unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
-        "read-file-owner",
-        storage_root,
-    ))
-    .await;
+    let services = build_runtime_for_test(test_local_input("read-file-owner", storage_root)).await;
     let run_context = loop_run_context("read-file").await;
     enable_global_auto_approve_for_run(
         &services,
@@ -1186,7 +1207,7 @@ async fn standalone_adapter_invokes_read_file_with_configured_mounts() {
 #[tokio::test]
 async fn adapter_bundle_maps_authority_resolution_failure_to_host_error() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "authority-failure-owner",
         root.path().join("standalone"),
     ))
@@ -1228,7 +1249,7 @@ async fn adapter_bundle_maps_authority_resolution_failure_to_host_error() {
 #[tokio::test]
 async fn adapter_bundle_wires_required_product_live_components() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "adapter-test-owner",
         root.path().join("standalone"),
     ))
@@ -1277,7 +1298,7 @@ async fn adapter_bundle_wires_required_product_live_components() {
 #[tokio::test]
 async fn adapter_bundle_builds_visible_requests_from_each_run_context() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "multi-run-owner",
         root.path().join("standalone"),
     ))
@@ -1307,7 +1328,7 @@ async fn adapter_bundle_builds_visible_requests_from_each_run_context() {
 #[tokio::test]
 async fn adapter_bundle_resolves_authority_for_each_run_context() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "run-authority-owner",
         root.path().join("standalone"),
     ))
@@ -1360,7 +1381,7 @@ async fn adapter_bundle_resolves_authority_for_each_run_context() {
 #[tokio::test]
 async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "runtime-gate-owner",
         root.path().join("standalone"),
     ))
@@ -1463,7 +1484,7 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
 #[tokio::test]
 async fn model_route_settings_wire_default_and_mission_slots() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "route-settings-owner",
         root.path().join("standalone"),
     ))
@@ -1494,7 +1515,7 @@ async fn model_route_settings_wire_default_and_mission_slots() {
 #[tokio::test]
 async fn model_route_settings_respect_selection_mode_override() {
     let root = tempfile::tempdir().unwrap();
-    let services = build_runtime_for_test(ironclaw_composition::local_filesystem_build_input(
+    let services = build_runtime_for_test(test_local_input(
         "route-selection-mode-owner",
         root.path().join("standalone"),
     ))

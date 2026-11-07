@@ -227,7 +227,7 @@ mod tests {
         transcript(&projects, &app, "6c1e0b4a-0000-4000-8000-000000000001");
 
         let mut surface = OrchestratedProductSurface::new(Arc::new(Empty), engine, None);
-        super::surface::set_importer(
+        crate::orchestration::surface::set_importer(
             &mut surface,
             Arc::new(SessionImporter::new(ImportPaths {
                 claude_projects: projects,
