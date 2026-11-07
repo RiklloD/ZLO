@@ -2,7 +2,7 @@
 //! staged and unstaged files, each with its actions. A row scrolls the diff
 //! to its file.
 
-use rune::{El, ScrollSpec, col, icon, row};
+use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, row};
 use rune_kit::Kit;
 
 use super::super::ui::{self, xs};
@@ -12,16 +12,40 @@ use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::state::State;
 
-pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
+/// One line of the file list.
+#[derive(Clone, Copy)]
+enum Line {
+    /// "Staged · N" (true) or "Changes · N" with its all-button.
+    Section(bool),
+    /// A file: index into `changes`, and whether it is the staged side.
+    File(usize, bool),
+}
+
+fn state_of(s: &State) -> Option<&ChangesState> {
+    super::side(s).map(|x| &x.changes)
+}
+
+fn section(s: &State, k: &Kit, state: &ChangesState, staged_side: bool) -> El {
     let p = &s.palette;
-    let staged: Vec<&git::Change> = state.changes.iter().filter(|c| c.staged()).collect();
-    let unstaged: Vec<&git::Change> = state.changes.iter().filter(|c| c.unstaged()).collect();
-    if staged.is_empty() && unstaged.is_empty() {
-        return col();
-    }
-    let hidden = state.list_hidden;
     let busy = state.busy.is_some();
-    let section = |label: String, key: &'static str, all: Vec<String>, stage: bool| {
+    let all: Vec<String> = state
+        .changes
+        .iter()
+        .filter(|c| {
+            if staged_side {
+                c.staged()
+            } else {
+                c.unstaged()
+            }
+        })
+        .map(|c| c.path.clone())
+        .collect();
+    let (label, key, stage) = if staged_side {
+        (format!("Staged · {}", all.len()), "unstage-all", false)
+    } else {
+        (format!("Changes · {}", all.len()), "stage-all", true)
+    };
+    {
         row()
             .w_full()
             .px(8.)
@@ -46,8 +70,19 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
                     .build(k)
                     .key(key),
             )
-    };
-    let change_row = |change: &git::Change, staged_row: bool| {
+    }
+}
+
+fn change_row(
+    s: &State,
+    k: &Kit,
+    state: &ChangesState,
+    change: &git::Change,
+    staged_row: bool,
+) -> El {
+    let p = &s.palette;
+    let busy = state.busy.is_some();
+    {
         let letter = change.letter();
         let color = match letter {
             'M' => p.warning,
@@ -139,7 +174,17 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
             .child(ui::line(dir, xs(), p.text_faint).grow(1.).min_w(0.))
             .on_press_tx(move |s: &mut State, tx| jump(s, &to, tx))
             .child(actions)
-    };
+    }
+}
+
+pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
+    let p = &s.palette;
+    let any_staged = state.changes.iter().any(|c| c.staged());
+    let any_unstaged = state.changes.iter().any(|c| c.unstaged());
+    if !any_staged && !any_unstaged {
+        return col();
+    }
+    let hidden = state.list_hidden;
     let count = state.changes.len();
     let header = row()
         .key("changes-list-toggle")
@@ -173,31 +218,29 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
     if hidden {
         return header;
     }
-    let mut list = col().w_full().px(4.);
-    if !staged.is_empty() {
-        let all = staged.iter().map(|c| c.path.clone()).collect();
-        list = list.child(section(
-            format!("Staged · {}", staged.len()),
-            "unstage-all",
-            all,
-            false,
-        ));
-        for c in &staged {
-            list = list.child(change_row(c, true));
+    let mut lines = Vec::new();
+    for staged_side in [true, false] {
+        let side: Vec<Line> = state
+            .changes
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                if staged_side {
+                    c.staged()
+                } else {
+                    c.unstaged()
+                }
+            })
+            .map(|(ix, _)| Line::File(ix, staged_side))
+            .collect();
+        if !side.is_empty() {
+            lines.push(Line::Section(staged_side));
+            lines.extend(side);
         }
     }
-    if !unstaged.is_empty() {
-        let all = unstaged.iter().map(|c| c.path.clone()).collect();
-        list = list.child(section(
-            format!("Changes · {}", unstaged.len()),
-            "stage-all",
-            all,
-            true,
-        ));
-        for c in &unstaged {
-            list = list.child(change_row(c, false));
-        }
-    }
+    let lines = std::rc::Rc::new(lines);
+    let (keys, kit) = (lines.clone(), k.clone());
+    let count = lines.len();
     col().w_full().child(header).child(
         col()
             .key("changes-list")
@@ -207,6 +250,46 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
                 stick_bottom: false,
             })
             .wheel_glide("changes-list")
-            .child(list),
+            .child(
+                col()
+                    .key("changes-rows")
+                    .w_full()
+                    .growth(GrowthSpec::default())
+                    .virtual_rows(
+                        count,
+                        26.,
+                        move |s: &State, i| {
+                            let path = |ix: usize| {
+                                state_of(s)
+                                    .and_then(|st| st.changes.get(ix))
+                                    .map_or("", |c| c.path.as_str())
+                            };
+                            match keys.get(i) {
+                                Some(Line::Section(true)) => "section-staged".into(),
+                                Some(Line::Section(false)) | None => "section-changes".into(),
+                                Some(Line::File(ix, staged)) => format!(
+                                    "file-{}-{}",
+                                    if *staged { "s" } else { "u" },
+                                    path(*ix)
+                                )
+                                .into(),
+                            }
+                        },
+                        move |s: &State, i| {
+                            let Some(state) = state_of(s) else {
+                                return el();
+                            };
+                            let line = match lines.get(i) {
+                                Some(Line::Section(staged)) => section(s, &kit, state, *staged),
+                                Some(Line::File(ix, staged)) => match state.changes.get(*ix) {
+                                    Some(c) => change_row(s, &kit, state, c, *staged),
+                                    None => el(),
+                                },
+                                None => el(),
+                            };
+                            col().w_full().px(4.).child(line)
+                        },
+                    ),
+            ),
     )
 }

@@ -641,72 +641,30 @@ fn effort_pill(
             m.effort_open = !m.effort_open;
         }
     });
-    if m.effort_open {
-        let (placement, gap) = placement(m);
-        let closing = slot.clone();
-        layer.push(scrim("effort-scrim", move |s: &mut State| {
-            close(s, &closing)
-        }));
-        let popover = effort_popover(p, m, slot, &efforts);
-        layer.push(popover::anchored(
-            k,
-            popover,
-            &slot.key("effort-pill"),
-            placement,
-            gap,
-        ));
+    // rune-kit's menu: a radio list under its heading; Escape and a press
+    // outside close it, and it holds focus while open.
+    let (placement, gap) = placement(m);
+    let closing = slot.clone();
+    let mut menu = rune_kit::Menu::new(slot.key("effort"))
+        .trigger(pill)
+        .open(m.effort_open)
+        .standard()
+        .placement(placement)
+        .gutter(gap)
+        .min_width(180.)
+        .group_label("Thinking")
+        .on_close(move |s: &mut State| close(s, &closing));
+    let choices = std::iter::once((None, "Default".to_string()))
+        .chain(efforts.iter().map(|e| (Some(e.clone()), effort_label(e))));
+    for (value, title) in choices {
+        let pick = slot.clone();
+        menu = menu.item(
+            rune_kit::MenuItem::new(title)
+                .checked(m.effort == value)
+                .on_select(move |s: &mut State| pick_effort(s, pick.clone(), value.clone())),
+        );
     }
-    Some(pill)
-}
-
-fn effort_popover(p: &Palette, m: &ModelPickerState, slot: &Slot, efforts: &[String]) -> El {
-    let item = |key: String, title: String, value: Option<String>| {
-        let on = m.effort == value;
-        let slot = slot.clone();
-        row()
-            .key(key)
-            .role("button")
-            .label(title.clone())
-            .gap(8.)
-            .px(8.)
-            .py(6.)
-            .center_y()
-            .radius(design::CONTROL_RADIUS)
-            .cursor(rune::Cursor::Pointer)
-            .fill(if on { p.hover } else { Color::TRANSPARENT })
-            .hover(p.active)
-            .child(txt(title, SM, p.text).grow(1.))
-            .child(
-                if on {
-                    ico(&icons::CHECK, ICON_SM, p.text)
-                } else {
-                    spacer(16.)
-                }
-                .w(16.),
-            )
-            .on_press(move |s: &mut State| pick_effort(s, slot.clone(), value.clone()))
-    };
-    let mut rows = col()
-        .key("effort-popover")
-        .role("menu")
-        .label("Thinking")
-        .w(180.)
-        .padding(4.)
-        .child(
-            el().px(8.)
-                .pt(4.)
-                .pb(4.)
-                .child(txt_medium("Thinking", XS, p.text_faint)),
-        )
-        .child(item("effort-default".into(), "Default".into(), None));
-    for effort in efforts {
-        rows = rows.child(item(
-            format!("effort-{effort}"),
-            effort_label(effort),
-            Some(effort.clone()),
-        ));
-    }
-    panel_surface(p, rows)
+    Some(menu.build(k, layer))
 }
 
 /// A provider's logo; `brand` (the vendor behind a runtime row) wins, then

@@ -207,6 +207,30 @@ pub fn running(s: &mut State) {
     }
 }
 
+/// A very long finished conversation (250 turns, 500 messages, Markdown
+/// replies): the virtual transcript's cost check.
+pub fn long(s: &mut State) {
+    let mut rows = Vec::new();
+    for i in 0..250 {
+        rows.push(user(
+            &format!("msg:u{i}"),
+            &format!("Question {i}: how does the transcript keep its place while it grows?"),
+        ));
+        rows.push(reply(
+            &format!("msg:a{i}"),
+            &format!(
+                "Answer {i}. The list is a **growth stack** in a scroll viewport:\n\n\
+                 - only the rows near the viewport are built\n\
+                 - finished rows are kept by `memo`\n\n\
+                 It follows its end while a reply streams, and `scroll_into_view` \
+                 still reaches row {i} from anywhere."
+            ),
+            false,
+        ));
+    }
+    shell_with(s, rows, false);
+}
+
 /// The finished conversation with a long unsent message in the composer
 /// (about 300 characters, several lines): sidebar and dock motion checks.
 pub fn long_draft(s: &mut State) {

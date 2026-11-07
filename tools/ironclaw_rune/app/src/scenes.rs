@@ -54,6 +54,7 @@ pub const SCENES: &[Scene] = &[
     }),
     ("chat", crate::chat::fixtures::chat),
     ("chat-gate", crate::chat::fixtures::gate),
+    ("chat-long", crate::chat::fixtures::long),
     ("chat-large-type", |s| {
         crate::chat::side::fixtures::activity(s);
         s.prefs.ui_font_size = LARGE_TYPE;
@@ -76,6 +77,7 @@ pub const SCENES: &[Scene] = &[
     ("goals", crate::chat::goals::scene),
     ("hooks", crate::pages::hooks::fixture_hooks),
     ("inbox", ws::fixture_inbox),
+    ("inbox-long", ws::fixture_inbox_long),
     ("inbox-subagents", ws::fixture_inbox_subagents),
     ("kit-gallery", gallery::fixture_kit_gallery),
     ("kit-gallery-light", gallery::fixture_kit_gallery_light),

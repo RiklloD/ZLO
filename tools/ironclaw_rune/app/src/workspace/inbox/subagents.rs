@@ -72,11 +72,12 @@ fn rank(row: &InboxRow) -> (u8, i64) {
 }
 
 impl Tree {
-    pub(in crate::workspace) fn new(rows: &[InboxRow]) -> Self {
+    pub(in crate::workspace) fn new<'r>(rows: impl IntoIterator<Item = &'r InboxRow>) -> Self {
+        let rows: Vec<&InboxRow> = rows.into_iter().collect();
         let by_id: HashMap<&str, &InboxRow> =
-            rows.iter().map(|r| (r.thread_id.as_str(), r)).collect();
+            rows.iter().map(|&r| (r.thread_id.as_str(), r)).collect();
         let mut tree = Self::default();
-        for row in rows {
+        for &row in &rows {
             let Some(parent) = row.parent_thread_id.as_deref() else {
                 continue;
             };

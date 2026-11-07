@@ -36,6 +36,7 @@ mod keys;
 mod message_search;
 pub mod quick;
 mod shell;
+mod sidebar_pane;
 mod status;
 pub(crate) mod thread_drag;
 pub(crate) mod ui;
@@ -109,8 +110,9 @@ pub struct WorkspaceState {
     pub telemetry: Option<ThreadTelemetry>,
     /// The context meter's popover, report and banner state.
     pub context: context::ContextMeter,
-    /// Live sidebar width while its edge is dragged; saved on release.
-    pub sidebar_drag: Option<f32>,
+    /// The sidebar pane: its width and whether it shows (the frame's
+    /// `SplitView` drags and peeks it). Prefs mirror it (`persist_sidebar`).
+    pub sidebar: rune_kit::shell::PaneState,
     /// A sidebar thread being dragged onto a chat or the draft.
     pub thread_drag: thread_drag::ThreadDrag,
     /// The window is the key window (GPUI `window.is_window_active()`).
@@ -147,7 +149,7 @@ impl Default for WorkspaceState {
             quick: Default::default(),
             telemetry: None,
             context: Default::default(),
-            sidebar_drag: None,
+            sidebar: rune_kit::shell::PaneState::new(crate::design::SIDEBAR_WIDTH),
             thread_drag: Default::default(),
             window_active: true,
             field_focused: Default::default(),
@@ -201,6 +203,7 @@ pub fn toggle_scheme(s: &mut State) {
     s.update_prefs(|p| p.scheme = if dark { "light" } else { "dark" }.into());
 }
 
+use sidebar_pane::persist_sidebar;
 /// Fold the sidebar away or bring it back. One spring owns the motion
 /// (GPUI's 240 ms `panels::reveal`): the sidebar, the panel, the transcript
 /// and the composer all move on it.
@@ -211,10 +214,13 @@ pub fn toggle_scheme(s: &mut State) {
 /// the running slide alone), and the one after has rows pinned to the end
 /// ride the viewport's bottom edge as the composer rewraps (`follow_edge`),
 /// so nothing moves vertically once the slide is over.
+pub use sidebar_pane::{set_sidebar_open, sidebar_pane};
+
 pub fn toggle_sidebar(s: &mut State, tx: &mut rune::Tx) {
     tx.motion(crate::design::panels::REVEAL);
     tx.follow_edge();
-    s.update_prefs(|p| p.sidebar_hidden = !p.sidebar_hidden);
+    s.workspace.sidebar.toggle();
+    persist_sidebar(s);
     s.rt.handle.update(|s, tx| {
         tx.instant();
         s.rt.handle.update(|_, tx| {
@@ -588,6 +594,8 @@ fn session_import_tick(
 
 /// Runs before every frame: due timers. True when the view should re-run.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
+    // A drag on the sidebar's edge (the frame's grip) lands in the pane.
+    persist_sidebar(s);
     if s.fixture || !matches!(s.conn, Conn::Ready) {
         return false;
     }

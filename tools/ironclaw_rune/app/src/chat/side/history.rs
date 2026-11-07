@@ -245,7 +245,6 @@ fn detail_diff_mut(s: &mut State) -> &mut DiffState {
 }
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
-    let p = &s.palette;
     let Some(x) = side(s) else {
         return ui::loading(k);
     };
@@ -265,49 +264,16 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     }
     let lanes = lanes(x);
     let graph_w = 12. + lanes as f32 * LANE_W;
-    let mut list = col().w_full();
-    for (commit, row_) in commits.iter().zip(&x.history.graph) {
-        let meta = format!(
-            "{} · {} · {}",
-            commit.short(),
-            commit.author,
-            ago(commit.time)
-        );
-        let mut subject = row().gap(4.).items_center();
-        for r in commit.refs.iter().take(2) {
-            subject = subject.child(
-                el().px(4.)
-                    .radius(4.)
-                    .fill(p.accent_wash)
-                    .max_w(110.)
-                    .child(ui::line(r.clone(), tiny(), p.accent)),
-            );
-        }
-        subject = subject.child(
-            ui::line(commit.subject.clone(), xs(), p.text)
-                .shrink()
-                .min_w(0.),
-        );
-        let to_open = commit.clone();
-        list = list.child(
-            row()
-                .key(format!("commit-{}", commit.sha))
-                .w_full()
-                .h(ROW_H)
-                .pr(8.)
-                .gap(4.)
-                .items_center()
-                .hover(p.hover)
-                .cursor(rune::Cursor::Pointer)
-                .child(graph_cell(row_, graph_w, p))
-                .child(col().grow(1.).min_w(0.).child(subject).child(ui::line(
-                    meta,
-                    tiny(),
-                    p.text_faint,
-                )))
-                .on_press(move |s: &mut State| open(s, to_open.clone())),
-        );
-    }
+    let list = ui::virtual_scroll(
+        "history-list",
+        commits.len(),
+        ROW_H,
+        |s, i| {
+            let sha = commits_of(s).and_then(|c| c.get(i)).map(|c| c.sha.as_str());
+            format!("commit-{}", sha.unwrap_or_default())
+        },
+        move |s, i| commit_row(s, i, graph_w),
+    );
     ui::fill_col()
         .child(
             row().w_full().px(8.).justify_end().child(
@@ -318,7 +284,62 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .key("history-refresh"),
             ),
         )
-        .child(ui::scroll("history-list", list))
+        .child(list)
+}
+
+/// The loaded commits, when there are any.
+fn commits_of(s: &State) -> Option<&Vec<git::Commit>> {
+    side(s)?.history.commits.as_ref()?.as_ref().ok()
+}
+
+/// History row `i`: the graph cell, refs, subject and meta line.
+fn commit_row(s: &State, i: usize, graph_w: f32) -> El {
+    let p = &s.palette;
+    let (Some(commit), Some(row_)) = (
+        commits_of(s).and_then(|c| c.get(i)),
+        side(s).and_then(|x| x.history.graph.get(i)),
+    ) else {
+        return el();
+    };
+    let meta = format!(
+        "{} · {} · {}",
+        commit.short(),
+        commit.author,
+        ago(commit.time)
+    );
+    let mut subject = row().gap(4.).items_center();
+    for r in commit.refs.iter().take(2) {
+        subject = subject.child(
+            el().px(4.)
+                .radius(4.)
+                .fill(p.accent_wash)
+                .max_w(110.)
+                .child(ui::line(r.clone(), tiny(), p.accent)),
+        );
+    }
+    subject = subject.child(
+        ui::line(commit.subject.clone(), xs(), p.text)
+            .shrink()
+            .min_w(0.),
+    );
+    let to_open = commit.clone();
+    row()
+        .w_full()
+        .h(ROW_H)
+        .pr(8.)
+        .gap(4.)
+        .items_center()
+        .hover(p.hover)
+        .cursor(rune::Cursor::Pointer)
+        .child(graph_cell(row_, graph_w, p))
+        .child(
+            col()
+                .grow(1.)
+                .min_w(0.)
+                .child(subject)
+                .child(ui::line(meta, tiny(), p.text_faint)),
+        )
+        .on_press(move |s: &mut State| open(s, to_open.clone()))
 }
 
 fn lanes(x: &SideState) -> usize {

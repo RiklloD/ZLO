@@ -124,7 +124,8 @@ pub fn show_run_logs(s: &mut State, run_id: String) {
     logs::set_run(s, Some(run_id));
 }
 
-pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
+/// The page's title, its actions and the tab row.
+fn top(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let o = &s.pages.operator;
     let actions = vec![
@@ -151,21 +152,32 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
             .build(k)
             .key(format!("operator-tab-{label}"))
         }));
+    col()
+        .w_full()
+        .child(header_with(p, "Operator", actions))
+        .child(tabs)
+}
+
+pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
+    let o = &s.pages.operator;
+    // Logs can run to thousands of lines: that tab is one virtual list.
+    if o.tab == Tab::Logs
+        && let Some(panel) = o.logs.as_ref()
+    {
+        return logs::page(panel, k);
+    }
     let panel = match o.tab {
         Tab::Status => Some(status::view(s, k)),
         Tab::Setup => o.setup.as_ref().map(|x| setup::view(s, k, x)),
         Tab::Config => o.config.as_ref().map(|x| config::view(s, k, x)),
         Tab::Extensions => o.extensions.as_ref().map(|x| extensions::view(s, k, x)),
-        Tab::Logs => o.logs.as_ref().map(|x| logs::view(s, k, x)),
+        Tab::Logs => None,
         Tab::Inspector => o
             .inspector
             .as_ref()
             .map(|x| inspector::view(s, cx, k, layer, x)),
     };
-    let mut body = col()
-        .w_full()
-        .child(header_with(p, "Operator", actions))
-        .child(tabs);
+    let mut body = col().w_full().child(top(s, k));
     if let Some(panel) = panel {
         body = body.child(panel.key(format!("operator-panel-{:?}", o.tab)));
     }

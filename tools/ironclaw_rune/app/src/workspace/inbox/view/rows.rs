@@ -9,9 +9,10 @@ use rune_kit::{ControlSize, Kit};
 use crate::design::{self, Palette, motion};
 use crate::icons;
 use crate::state::State;
+use crate::workspace::inbox::subagents::Tree;
 use crate::workspace::inbox::{
-    Shelves, branch_tail, mark, settle, settle_blocker, short_age, snooze_presets, subagents,
-    title_of, wake_label,
+    branch_tail, mark, settle, settle_blocker, short_age, snooze_presets, subagents, title_of,
+    wake_label,
 };
 use crate::workspace::ui::{self, SEMIBOLD, XS, t, tw};
 use crate::workspace::{message_search, thread_drag};
@@ -22,7 +23,7 @@ use super::selected_bg;
 /// hover actions pin, snooze, settle. No model readout: the profile names it.
 pub(super) fn card(
     s: &State,
-    sh: &Shelves<'_>,
+    tree: &Tree,
     row_data: &InboxRow,
     active: bool,
     jump: Option<usize>,
@@ -82,23 +83,27 @@ pub(super) fn card(
                 mark(s, pin_id.clone(), action, None)
             },
         ))
-        .child(selected_bg(
-            p,
-            menu_open,
-            ui::ghost_icon(
-                k,
-                &icons::ALARM_CLOCK,
-                "Snooze",
-                ControlSize::Mini,
-                move |s| {
-                    let menu = &mut s.workspace.inbox.snooze_menu;
-                    *menu = match menu {
-                        Some(open) if *open == snooze_id => None,
-                        _ => Some(snooze_id.clone()),
-                    };
-                },
-            ),
-        ))
+        .child(
+            selected_bg(
+                p,
+                menu_open,
+                ui::ghost_icon(
+                    k,
+                    &icons::ALARM_CLOCK,
+                    "Snooze",
+                    ControlSize::Mini,
+                    move |s| {
+                        let menu = &mut s.workspace.inbox.snooze_menu;
+                        *menu = match menu {
+                            Some(open) if *open == snooze_id => None,
+                            _ => Some(snooze_id.clone()),
+                        };
+                    },
+                ),
+            )
+            // The snooze menu (`snooze_menu`) hangs off this button.
+            .key(format!("{}-trigger", snooze_key(&id))),
+        )
         .child(
             rune_kit::Button::new("Settle")
                 .variant(rune_kit::ButtonVariant::Ghost)
@@ -194,7 +199,7 @@ pub(super) fn card(
     if let Some(snippet) = message_snippet(s, row_data) {
         card = card.child(snippet);
     }
-    if let Some(line) = subagents::line(s, &sh.tree, row_data, false) {
+    if let Some(line) = subagents::line(s, tree, row_data, false) {
         card = card.child(line);
     }
     // A resorted row glides to its new place (GPUI `flip::ROW_SECS`).
@@ -203,10 +208,7 @@ pub(super) fn card(
         .w_full()
         .motion(motion::ROW_RESORT)
         .child(card);
-    if menu_open {
-        out = out.child(snooze_menu(p, &id));
-    }
-    if let Some(list) = subagents::list(s, &sh.tree, row_data, now, k) {
+    if let Some(list) = subagents::list(s, tree, row_data, now, k) {
         out = out.child(list);
     }
     out
@@ -236,41 +238,40 @@ fn message_snippet(s: &State, row_data: &InboxRow) -> Option<El> {
     )
 }
 
-fn snooze_menu(p: &Palette, thread_id: &str) -> El {
-    let items: Vec<El> = snooze_presets()
-        .into_iter()
-        .enumerate()
-        .map(|(ix, (label, until))| {
-            let id = thread_id.to_string();
-            row()
-                .key(format!("snooze-preset-{ix}"))
-                .role("button")
-                .label(label.clone())
-                .px(8.)
-                .py(4.)
-                .radius(design::CONTROL_RADIUS)
-                .cursor(rune::Cursor::Pointer)
-                .hover(p.hover)
-                .child(t(label, XS, p.text))
-                .on_press(move |s: &mut State| {
-                    mark(s, id.clone(), InboxAction::Snooze, Some(until))
-                })
-        })
-        .collect();
-    el().key(format!("snooze-{thread_id}"))
-        .mx(8.)
-        .mb(4.)
-        .child(ui::floating(
-            p,
-            col().w_full().padding(4.).children(items),
-            12.,
-        ))
+/// The snooze menu's key; its button is keyed `{key}-trigger`.
+fn snooze_key(thread_id: &str) -> String {
+    format!("snooze-{thread_id}")
+}
+
+/// The open snooze menu as rune-kit's `Menu`, under its card's alarm
+/// button: one item per preset; Escape or a press outside closes it. Built
+/// from the inbox view (the rows are built lazily, without the overlay
+/// layer); the button keyed `{key}-trigger` anchors it.
+pub(super) fn snooze_menu(s: &State, k: &Kit, layer: &mut Vec<El>) {
+    let Some(id) = s.workspace.inbox.snooze_menu.clone() else {
+        return;
+    };
+    let mut menu = rune_kit::Menu::new(snooze_key(&id))
+        .open(true)
+        .placement(rune_kit::Placement::BottomEnd)
+        .min_width(180.)
+        .on_close(|s: &mut State| s.workspace.inbox.snooze_menu = None);
+    for (label, until) in snooze_presets() {
+        let id = id.clone();
+        menu = menu.item(
+            rune_kit::MenuItem::new(label).on_select(move |s: &mut State| {
+                mark(s, id.clone(), InboxAction::Snooze, Some(until))
+            }),
+        );
+    }
+    // The trigger it returns is a stand-in; the card's button anchors it.
+    let _ = menu.build(k, layer);
 }
 
 /// Slim row for Snoozed and Settled: dimmed mark, title, wake or age.
 pub(super) fn slim(
     s: &State,
-    sh: &Shelves<'_>,
+    tree: &Tree,
     row_data: &InboxRow,
     active: bool,
     now: i64,
@@ -377,8 +378,8 @@ pub(super) fn slim(
             ),
         )
         .child(el().child(when).child(buttons));
-    let line = subagents::line(s, &sh.tree, row_data, true);
-    let list = subagents::list(s, &sh.tree, row_data, now, k);
+    let line = subagents::line(s, tree, row_data, true);
+    let list = subagents::list(s, tree, row_data, now, k);
     if line.is_none() {
         return slim;
     }
