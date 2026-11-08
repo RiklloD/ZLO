@@ -1,6 +1,6 @@
 # ZLO
 
-My personal AI desktop app. Built in Rust for macOS, with a native [GPUI](https://www.gpui.rs/) interface and an [IronClaw](https://github.com/nearai/ironclaw) backend.
+My personal AI desktop app. Built in Rust for macOS, with a native [Rune](https://github.com/anomalyco/rune) interface and an [IronClaw](https://github.com/nearai/ironclaw) backend.
 
 I'm [Lorik](https://github.com/RiklloD). I'm a business student who likes to tinker with tech. I have more ideas than engineering experience, and I work with AI agents to turn those ideas into software I can use. ZLO is the app I'm building around that way of working.
 
@@ -14,7 +14,7 @@ This is my own working setup and a place to try ideas. It isn't a promise of a p
 
 ## What I'm working with
 
-- A native, GPU-rendered Rust interface using GPUI. No Electron and no always-on embedded browser. Browser and document views are created when needed.
+- A native, GPU-rendered Rust interface using Rune. No Electron and no always-on embedded browser. Browser and document views are created when needed.
 - Chats, profiles, model selection, and an orchestrator for delegating work to other agents.
 - Tools, skills, memory, and MCP integrations through the IronClaw backend.
 - Computer use through my fork of the [computer-use engine](https://github.com/RiklloD/hermes-plugin-computer-use-plus).
@@ -34,9 +34,9 @@ Local storage doesn't mean every task stays on the machine. Using a remote model
 
 | Path | What's there |
 | --- | --- |
-| [`tools/ironclaw_gpui/`](tools/ironclaw_gpui/) | The desktop app and its separate Cargo workspace |
-| [`tools/ironclaw_gpui/app/`](tools/ironclaw_gpui/app/) | GPUI interface, native views, preferences, and backend supervision |
-| [`tools/ironclaw_gpui/client/`](tools/ironclaw_gpui/client/) | Typed HTTP client for the desktop |
+| [`tools/ironclaw_rune/`](tools/ironclaw_rune/) | The desktop app and its separate Cargo workspace |
+| [`tools/ironclaw_rune/app/`](tools/ironclaw_rune/app/) | Rune interface, native views, preferences, and backend supervision |
+| [`tools/ironclaw_rune/client/`](tools/ironclaw_rune/client/) | Typed HTTP client for the desktop |
 | [`crates/`](crates/) | IronClaw backend and my extensions to it |
 | [`crates/product/ironclaw_webui/`](crates/product/ironclaw_webui/) | The HTTP gateway used by ZLO |
 | [`AGENTS.md`](AGENTS.md) | Repository rules for working with coding agents |
@@ -62,7 +62,7 @@ This is a macOS development setup, not a cross-platform installer. It needs Xcod
 ```sh
 git clone https://github.com/RiklloD/zlo.git
 cd zlo
-sh tools/ironclaw_gpui/bundle.sh
+sh tools/ironclaw_rune/bundle.sh
 ```
 
 The script builds the backend and desktop, downloads and verifies the pinned computer-use engine, signs the bundle, and installs it to `~/Applications/ZLO.app`. It replaces an existing local installation and quits the app first if it's running. It reopens the app if it was open before the install.
@@ -70,17 +70,17 @@ The script builds the backend and desktop, downloads and verifies the pinned com
 To build the bundle without installing it:
 
 ```sh
-sh tools/ironclaw_gpui/bundle.sh --no-install
+sh tools/ironclaw_rune/bundle.sh --no-install
 ```
 
-The bundle lands at `tools/ironclaw_gpui/target/ZLO.app`.
+The bundle lands at `tools/ironclaw_rune/target/ZLO.app`.
 
 For changes to the desktop workspace:
 
 ```sh
-cd tools/ironclaw_gpui
+cd tools/ironclaw_rune
 cargo check
-cargo clippy -p ironclaw_gpui -p ironclaw_gpui_client --all-targets -- -D warnings
+cargo clippy -p ironclaw_rune -p zlo_client --all-targets -- -D warnings
 ```
 
 Read [`AGENTS.md`](AGENTS.md) and the owning crate's guidance before changing backend code.
@@ -89,7 +89,7 @@ Read [`AGENTS.md`](AGENTS.md) and the owning crate's guidance before changing ba
 
 ZLO is my personal fork of [IronClaw](https://github.com/nearai/ironclaw), built by [NEAR AI](https://github.com/nearai). I built my desktop app on that foundation and continue to change the backend for my own use. The agent runtime, security machinery, and much of this repository come from their work.
 
-The interface uses [GPUI](https://www.gpui.rs/), the Rust UI framework developed for Zed. The computer-use helper comes from [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus).
+The interface uses [Rune](https://github.com/anomalyco/rune). An earlier version of the app was built on [GPUI](https://www.gpui.rs/), the Rust UI framework developed for Zed; it is archived on the `archive/gpui` branch (tag `gpui-final`). The computer-use helper comes from [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus).
 
 This repository is my project, not an official IronClaw or NEAR AI release.
 

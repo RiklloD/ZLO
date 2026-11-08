@@ -12,7 +12,7 @@ use crate::pages::common::ts::{body_semibold, sm_medium, xs};
 use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
 use std::collections::HashMap;
 
-use ironclaw_gpui_client::product_wire::{RebornSkillInfo, RebornSkillSourceKind};
+use zlo_client::product_wire::{RebornSkillInfo, RebornSkillSourceKind};
 use rune::{Cx, El, TextEdit, col, row, text};
 use rune_kit::{Kit, Markdown, Switch};
 

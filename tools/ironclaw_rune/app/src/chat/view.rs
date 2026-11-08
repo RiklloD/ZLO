@@ -10,7 +10,7 @@
 //! at the top of the viewport, so following the end shows the prompt at the
 //! top while its answer streams into the room below.
 
-use ironclaw_gpui_client::StreamStatus;
+use zlo_client::StreamStatus;
 
 use rune::{Cx, El, Tx, col, el, icon, row, text};
 use rune_kit::Kit;
@@ -239,7 +239,7 @@ fn centered(s: &State, body: El) -> El {
 fn pick_item(
     s: &mut State,
     id: &str,
-    item: &ironclaw_gpui_client::commands::MenuItem,
+    item: &zlo_client::commands::MenuItem,
     tx: &mut Tx,
 ) {
     let Some(c) = chat_for(s, id) else { return };

@@ -1,14 +1,14 @@
-//! ZLO on Rune: a native window onto the local IronClaw gateway.
+//! ZLO: a native Rune window onto the local IronClaw gateway.
 //!
-//! A from-scratch port of the GPUI app (`tools/ironclaw_gpui/app`), which is
-//! left untouched. Same gateway client, same preferences file, same
+//! A from-scratch port of the earlier GPUI app, now archived on the
+//! `archive/gpui` branch (tag `gpui-final`). Same preferences file, same
 //! behaviour; see `../../PLAN.md` for the port plan and conventions.
 //!
 //! Opening the app starts the gateway's launchd job and quitting (⌘Q) stops
 //! it (`service.rs`). Closing the window keeps the app and the gateway
 //! running; clicking the Dock icon brings the window back. The app finds the
 //! gateway and its token on its own; see
-//! `ironclaw_gpui_client::Connection::discover`.
+//! `zlo_client::Connection::discover`.
 
 mod alerts;
 mod backdrop;

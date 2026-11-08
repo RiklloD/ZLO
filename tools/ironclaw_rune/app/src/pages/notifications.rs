@@ -2,15 +2,15 @@
 //! recorded for this user, plus which channels deliver them outside the app.
 //! Port of GPUI `pages/notifications.rs`.
 
-use ironclaw_gpui_client::notification_inbox::{
+use zlo_client::notification_inbox::{
     ProductNotification, ProductNotificationAction, ProductNotificationKind,
     ProductNotificationSeverity,
 };
-use ironclaw_gpui_client::product_wire::{
+use zlo_client::product_wire::{
     RebornNotificationSetupStatusResponse, RebornOutboundDeliveryTargetId,
     RebornOutboundDeliveryTargetOption,
 };
-use ironclaw_gpui_client::{Client, ClientError};
+use zlo_client::{Client, ClientError};
 use rune::{Cursor, Cx, El, col, el, row};
 use rune_kit::Kit;
 

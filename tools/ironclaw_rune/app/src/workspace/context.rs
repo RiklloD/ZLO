@@ -9,8 +9,8 @@
 
 use std::collections::HashSet;
 
-use ironclaw_gpui_client::orchestration::ForkOptions;
-use ironclaw_gpui_client::usage::{
+use zlo_client::orchestration::ForkOptions;
+use zlo_client::usage::{
     ContextCategory, ContextLevel, ContextSource, ContextToolOwner, ThreadContextReport,
     ThreadTelemetry,
 };
@@ -532,7 +532,7 @@ pub(super) fn banner(s: &State, k: &Kit) -> Option<El> {
 
 #[cfg(test)]
 mod tests {
-    use ironclaw_gpui_client::usage::ContextCategory;
+    use zlo_client::usage::ContextCategory;
 
     use super::*;
 

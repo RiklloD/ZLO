@@ -6,7 +6,7 @@
 //! rejected call's result, so the agent adapts instead of stopping; it never
 //! turns the decline into an approval.
 
-use ironclaw_gpui_client::GateDecision;
+use zlo_client::GateDecision;
 use rune::{El, KeyEvent, TextEdit, Tx, el, row};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextInput};
 

@@ -27,7 +27,7 @@ use crate::pages::common::ts::{body_semibold, sm, xs};
 use crate::pages::common::{empty_state, error_line, page_body};
 use std::time::{Duration, Instant};
 
-use ironclaw_gpui_client::usage::{
+use zlo_client::usage::{
     ProviderUsage, UsageHistory, UsageReport, UsageStatus, UsageWindow,
 };
 use rune::{Color, Cursor, Cx, El, col, el, row};

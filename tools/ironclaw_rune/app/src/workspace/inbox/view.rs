@@ -3,8 +3,8 @@
 //! menu, the new-thread draft card, the cards, the shelves and their slim
 //! rows.
 
-use ironclaw_gpui_client::inbox::{InboxProfile, InboxState};
-use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
+use zlo_client::inbox::{InboxProfile, InboxState};
+use zlo_client::profiles::DEFAULT_PROFILE_ID;
 use rune::{Color, Cx, El, col, el, row};
 use rune_kit::{ControlSize, Kit, Placement, TextInput};
 

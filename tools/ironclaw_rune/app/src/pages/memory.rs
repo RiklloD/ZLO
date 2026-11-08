@@ -19,7 +19,7 @@ use crate::pages::common::controls::{
 };
 use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs};
 use crate::pages::common::{block_fill, empty_state, error_line, page_body};
-use ironclaw_gpui_client::memory_page::{
+use zlo_client::memory_page::{
     MemoryArchiveOutcome, MemoryDocument, MemoryDocumentEntry, MemoryDocumentKind,
     MemoryPageWriteOutcome, MemorySearchHit, SupermemoryDocumentPage, SupermemoryMemoryHit,
     SupermemoryStatus,
@@ -708,7 +708,7 @@ fn fixture_doc() -> MemoryDocument {
             .into(),
         content_hash: "sha256:fixture".into(),
         word_count: 38,
-        provenance: ironclaw_gpui_client::memory_page::MemoryProvenance {
+        provenance: zlo_client::memory_page::MemoryProvenance {
             version_count: 4,
             last_changed_by: Some("agent".into()),
         },

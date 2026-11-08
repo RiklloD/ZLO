@@ -54,10 +54,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use ironclaw_gpui_client::attachments::StagedFile;
-use ironclaw_gpui_client::transcript::{Row, RunEnd, Transcript};
-use ironclaw_gpui_client::wire::AttachmentLimits;
-use ironclaw_gpui_client::{EventStream, StreamMessage, StreamStatus};
+use zlo_client::attachments::StagedFile;
+use zlo_client::transcript::{Row, RunEnd, Transcript};
+use zlo_client::wire::AttachmentLimits;
+use zlo_client::{EventStream, StreamMessage, StreamStatus};
 use rune::{Cx, El, TextEdit, Tx};
 use rune_kit::Kit;
 
@@ -259,8 +259,8 @@ impl ChatState {
 
     /// The approval card that still waits on the person, newest first.
     pub(crate) fn open_approval(&self) -> Option<(String, String, bool)> {
-        use ironclaw_gpui_client::contract::ProductGateKind;
-        use ironclaw_gpui_client::transcript::GateState;
+        use zlo_client::contract::ProductGateKind;
+        use zlo_client::transcript::GateState;
         self.rows.iter().rev().find_map(|row| match row {
             Row::Gate {
                 run_id,

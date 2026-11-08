@@ -560,7 +560,7 @@ fn submit_pairing(s: &mut State) {
         s,
         "onboarding",
         move |_| async move {
-            Ok::<_, ironclaw_gpui_client::ClientError>(gateway::pair(url, token).await)
+            Ok::<_, zlo_client::ClientError>(gateway::pair(url, token).await)
         },
         |s, result, _| {
             let c = &mut s.onboarding.connect;

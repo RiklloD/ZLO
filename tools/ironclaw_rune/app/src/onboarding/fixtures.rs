@@ -2,8 +2,8 @@
 //! `onboarding-pairing`, `onboarding-agents`, `onboarding-providers`,
 //! `onboarding-projects`, `onboarding-projects-loading`, `onboarding-toast`).
 
-use ironclaw_gpui_client::orchestration::RouteProvider;
-use ironclaw_gpui_client::session_import::{
+use zlo_client::orchestration::RouteProvider;
+use zlo_client::session_import::{
     SessionImportGit, SessionImportProject, SessionImportProjects,
 };
 

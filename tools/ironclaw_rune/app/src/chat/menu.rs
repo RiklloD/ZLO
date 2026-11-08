@@ -3,7 +3,7 @@
 //! `chat/menu.rs`).
 //!
 //! `@` lists mentions first (the Changes selection, files, folders, recent
-//! threads; `ironclaw_gpui_client::mentions`), then tools and skills. A
+//! threads; `zlo_client::mentions`), then tools and skills. A
 //! picked mention becomes an atomic pill in the composer.
 //!
 //! A composer owns a [`ComposerMenu`] and finds it again through a
@@ -15,15 +15,15 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use ironclaw_gpui_client::commands::{
+use zlo_client::commands::{
     MenuItem, MenuSources, complete_mention, menu_matches_with, tab_complete, trigger_token,
 };
-use ironclaw_gpui_client::mentions::{
+use zlo_client::mentions::{
     self, FileIndex, IndexCache, LineRange, MentionContext, MentionKind, RankedPaths, Ranking,
     ThreadEntry,
 };
-use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
-use ironclaw_gpui_client::{Client, ClientError};
+use zlo_client::product_wire::RebornProductCommandInfo;
+use zlo_client::{Client, ClientError};
 use rune::{El, Icon, TextEdit, Tx, icon};
 use rune_kit::{Kit, PopupItem, PopupList};
 
@@ -336,7 +336,7 @@ pub fn rank_in_background(s: &mut State, query: String, menu_of: MenuOf) {
 }
 
 /// Recent threads from the inbox list, newest first.
-fn thread_entries(rows: Vec<ironclaw_gpui_client::inbox::InboxRow>) -> Vec<ThreadEntry> {
+fn thread_entries(rows: Vec<zlo_client::inbox::InboxRow>) -> Vec<ThreadEntry> {
     let mut threads: Vec<ThreadEntry> = rows
         .into_iter()
         .filter_map(|row| {

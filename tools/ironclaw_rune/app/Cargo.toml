@@ -7,11 +7,11 @@ publish.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "zlo-rune"
+name = "zlo"
 path = "src/main.rs"
 
 [dependencies]
-ironclaw_gpui_client.workspace = true
+zlo_client.workspace = true
 ironclaw_host_api.workspace = true
 rune.workspace = true
 rune-kit.workspace = true

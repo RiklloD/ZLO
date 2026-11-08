@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ironclaw_gpui_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
+use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 use rune::{Color, El, col, el, icon, row, text};
 use rune_kit::Kit;
 

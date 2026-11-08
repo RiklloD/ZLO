@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 
-use ironclaw_gpui_client::GateDecision;
-use ironclaw_gpui_client::transcript::{CliBody, GateState, QuestionState, Row, ToolStatus};
+use zlo_client::GateDecision;
+use zlo_client::transcript::{CliBody, GateState, QuestionState, Row, ToolStatus};
 use rune::{
     Color, El, Icon, LineCap, Path, Shape, TextStyle, Transition, canvas, col, el, icon, row, text,
 };

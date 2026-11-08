@@ -14,7 +14,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
-use ironclaw_gpui_client::{Backend, Client, ClientError};
+use zlo_client::{Backend, Client, ClientError};
 use rune::{AppHandle, Tx};
 
 use crate::state::State;

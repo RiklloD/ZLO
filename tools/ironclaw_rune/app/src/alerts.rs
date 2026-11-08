@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ironclaw_gpui_client::notification_inbox::{
+use zlo_client::notification_inbox::{
     ProductNotification, ProductNotificationAction, ProductNotificationKind,
 };
 

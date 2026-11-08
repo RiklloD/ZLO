@@ -1,0 +1,2283 @@
+//! Reconciles the durable timeline with the live projection into the rows a
+//! chat view renders. UI-free so it can be unit-tested.
+//!
+//! The model follows `CONTRACT.md` "Streaming model":
+//! - projection frames are partial: every item is upserted by identity
+//!   (`text:{run}:{call}`, run id, gate ref, invocation id);
+//! - live assistant text is cumulative per model call; the run's trailing
+//!   unflagged call is the streaming bubble, earlier calls and `narration`
+//!   items are activity, like thinking and tool cards;
+//! - once a run reaches a terminal status the durable reply converges into the
+//!   bubble: the app reloads the timeline and the durable message replaces it;
+//! - thinking and narration are live-only state; tool cards are live too,
+//!   but rebuilt from the stored tool-preview rows when the timeline loads,
+//!   so a reopened chat still shows what each run did;
+//! - a message sent while a run works (a steer) sits where it was sent: the
+//!   run's activity before it renders above it, the rest below.
+
+use std::collections::{HashMap, HashSet};
+
+use ironclaw_host_api::agent_plan::{
+    AGENT_PLAN_OUTPUT_KIND, AgentPlan, QUESTION_GATE_REF_PREFIX, QuestionForm,
+};
+use ironclaw_product_contracts::outbound::{
+    CapabilityActivityStatusView, CapabilityActivityView, CapabilityDisplayPreviewView,
+    CliDetailKind, ProductGateKind, ProductProjectionItem,
+};
+
+use crate::api::GateDecision;
+use crate::orchestration::MergedFork;
+use crate::wire::{
+    ATTACHMENTS_ONLY_CONTENT, CommandField, CommandOutcome, MessageKind, MessageStatus,
+    StreamEvent, TimelineMessage, TimelinePage,
+};
+
+mod attached;
+mod reason;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateState {
+    Open,
+    /// The person answered; waiting for the projection to confirm.
+    Resolving(GateDecision),
+    /// The run moved on. The decision is known only when it was made in this
+    /// view: the projection does not carry it, so a reloaded gate has `None`.
+    Closed(Option<GateDecision>),
+}
+
+/// Where a question form stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestionState {
+    Open,
+    /// Sent from this view (`true`: answered, `false`: dismissed); waiting
+    /// for the stream to confirm.
+    Sending(bool),
+    /// The run moved on. How it ended is known only when it was sent here.
+    Closed(Option<bool>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Row {
+    User {
+        key: String,
+        /// The person's words, with `{{attachment:N}}` where they placed
+        /// `attachments[N]` (see [`readable`]).
+        text: String,
+        pending: bool,
+        attachments: Vec<AttachmentChip>,
+    },
+    Assistant {
+        key: String,
+        text: String,
+        streaming: bool,
+    },
+    System {
+        key: String,
+        text: String,
+    },
+    Thinking {
+        key: String,
+        text: String,
+    },
+    Narration {
+        key: String,
+        text: String,
+    },
+    Tool {
+        key: String,
+        title: String,
+        detail: Option<String>,
+        status: ToolStatus,
+        /// Why it ran: what the model said before the call (see `reason`).
+        reason: Option<String>,
+    },
+    Skills {
+        key: String,
+        names: Vec<String>,
+    },
+    WorkSummary {
+        key: String,
+        text: String,
+    },
+    /// Finished delegated tasks the engine handed to this thread. Stored as
+    /// a user-kind message, but the person never typed it.
+    Delegated {
+        key: String,
+        title: String,
+        body: String,
+    },
+    Gate {
+        key: String,
+        run_id: String,
+        gate_ref: String,
+        kind: ProductGateKind,
+        headline: String,
+        body: Option<String>,
+        allow_always: bool,
+        state: GateState,
+        /// Why the agent asked (see `reason`).
+        reason: Option<String>,
+    },
+    RunNotice {
+        key: String,
+        run_id: String,
+        text: String,
+        failed: bool,
+        retryable: bool,
+    },
+    /// A slash command's answer. Local to this view: the gateway does not
+    /// store command results in the timeline.
+    Command {
+        key: String,
+        input: String,
+        title: String,
+        fields: Vec<CommandField>,
+        lines: Vec<String>,
+        failed: bool,
+    },
+    /// The agent updated its plan here (one compact line; the live
+    /// checklist is [`Transcript::plan`]).
+    Plan {
+        key: String,
+        plan: AgentPlan,
+    },
+    /// A question the run waits on, drawn as a form.
+    Question {
+        key: String,
+        run_id: String,
+        gate_ref: String,
+        form: QuestionForm,
+        state: QuestionState,
+    },
+}
+
+/// A file on a user message. `message_id` is set once the gateway stored the
+/// bytes, which is when the file can be opened; `local_path` is the backend's
+/// copy of a file named in the prompt, opened straight from disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentChip {
+    pub message_id: Option<String>,
+    pub id: String,
+    pub filename: String,
+    pub size: Option<u64>,
+    pub local_path: Option<String>,
+}
+
+impl Row {
+    pub fn key(&self) -> &str {
+        match self {
+            Row::User { key, .. }
+            | Row::Assistant { key, .. }
+            | Row::System { key, .. }
+            | Row::Thinking { key, .. }
+            | Row::Narration { key, .. }
+            | Row::Tool { key, .. }
+            | Row::Skills { key, .. }
+            | Row::WorkSummary { key, .. }
+            | Row::Delegated { key, .. }
+            | Row::Gate { key, .. }
+            | Row::RunNotice { key, .. }
+            | Row::Command { key, .. }
+            | Row::Plan { key, .. }
+            | Row::Question { key, .. } => key,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Live {
+    Text {
+        body: String,
+        narration: bool,
+    },
+    Thinking(String),
+    Tool {
+        title: String,
+        detail: Option<String>,
+        status: ToolStatus,
+    },
+    Skills(Vec<String>),
+    WorkSummary(String),
+    Gate {
+        gate_ref: String,
+        kind: ProductGateKind,
+        headline: String,
+        body: Option<String>,
+        allow_always: bool,
+        reason: Option<String>,
+    },
+    Plan(AgentPlan),
+    Question {
+        gate_ref: String,
+        form: QuestionForm,
+        /// The stream closed this one form.
+        closed: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct LiveEntry {
+    run: Option<String>,
+    /// Tick of the last upsert; orders gates against later run statuses.
+    tick: u64,
+    /// Wall-clock ms the entry first appeared; places it around steers.
+    at: i64,
+    item: Live,
+}
+
+#[derive(Debug, Clone)]
+struct RunStatus {
+    status: String,
+    tick: u64,
+    failure: Option<String>,
+    retryable: bool,
+}
+
+/// What the app should do after applying a frame.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Applied {
+    pub changed: bool,
+    /// A run settled: refetch the timeline so the durable reply lands.
+    pub reload_timeline: bool,
+    /// Set once per run, on the frame that first settled it.
+    pub run_ended: Option<RunEnd>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunEnd {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl RunEnd {
+    fn from_status(status: &str) -> Self {
+        match status {
+            "completed" | "succeeded" => Self::Completed,
+            "cancelled" => Self::Cancelled,
+            _ => Self::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Transcript {
+    durable: Vec<TimelineMessage>,
+    order: Vec<String>,
+    live: HashMap<String, LiveEntry>,
+    runs: HashMap<String, RunStatus>,
+    settled: HashSet<String>,
+    /// Answers given in this view, kept after the gate closes for its label.
+    decisions: HashMap<String, GateDecision>,
+    /// Question forms sent from this view: answered (`true`) or dismissed.
+    question_sends: HashMap<String, bool>,
+    pending_user: Vec<PendingUser>,
+    /// Command results, each placed after the last durable message it saw.
+    notes: Vec<(u64, Row)>,
+    latest_run: Option<String>,
+    /// The run whose end was reported last (`Applied::run_ended`).
+    last_settled: Option<String>,
+    /// Stop clicked in this view; shows "Stopping" before the server confirms.
+    stop_requested: Option<String>,
+    tick: u64,
+    /// A fork's source conversation, shown read-only above its own messages.
+    prefix: Vec<TimelineMessage>,
+    /// Forks merged back into this thread, each shown where it arrived.
+    merges: Vec<MergedFork>,
+    /// Live detail a CLI agent reported (Codex): output tails by tool
+    /// invocation, the latest turn diff and review. Live-only, kept while
+    /// the view is open.
+    cli: CliDetails,
+}
+
+/// A bounded live body; `truncated` when the agent's text was cut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliBody {
+    pub run: Option<String>,
+    pub body: String,
+    pub truncated: bool,
+}
+
+/// Output tails a view keeps: the newest rows' only.
+const CLI_OUTPUTS_MAX: usize = 64;
+/// Bytes of one output tail a view keeps (the newest end).
+const CLI_OUTPUT_MAX_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Default)]
+struct CliDetails {
+    /// By tool row key (`tool:{invocation}`). Shared with the renderer:
+    /// cloning is a pointer copy, and a frame copies the map only when the
+    /// renderer still holds the previous one.
+    outputs: std::sync::Arc<HashMap<String, CliBody>>,
+    /// Row keys oldest first, for eviction past [`CLI_OUTPUTS_MAX`].
+    order: std::collections::VecDeque<String>,
+    diff: Option<CliBody>,
+    review: Option<CliBody>,
+}
+
+impl CliDetails {
+    fn put_output(&mut self, key: String, mut body: CliBody) {
+        if body.body.len() > CLI_OUTPUT_MAX_BYTES {
+            let mut cut = body.body.len() - CLI_OUTPUT_MAX_BYTES;
+            while !body.body.is_char_boundary(cut) {
+                cut += 1;
+            }
+            body.body.replace_range(..cut, "");
+            body.truncated = true;
+        }
+        let outputs = std::sync::Arc::make_mut(&mut self.outputs);
+        if outputs.insert(key.clone(), body).is_none() {
+            self.order.push_back(key);
+        }
+        while self.order.len() > CLI_OUTPUTS_MAX {
+            if let Some(old) = self.order.pop_front() {
+                outputs.remove(&old);
+            }
+        }
+    }
+}
+
+/// A message sent from this view that the timeline does not show yet.
+#[derive(Debug)]
+struct PendingUser {
+    id: u64,
+    text: String,
+    /// The gateway accepted the send.
+    acked: bool,
+    chips: Vec<AttachmentChip>,
+    /// Newest durable sequence when it was sent; its server copy is newer.
+    after: Option<u64>,
+}
+
+/// The native agent's checklist capability: its result is a plan, drawn as
+/// the plan strip and a compact line rather than a tool row.
+pub const PLAN_UPDATE_CAPABILITY: &str = "builtin.plan_update";
+
+/// The plan a `builtin.plan_update` preview carries, if it is one.
+fn preview_plan(capability: &str, kind: Option<&str>, preview: Option<&str>) -> Option<AgentPlan> {
+    (capability == PLAN_UPDATE_CAPABILITY && kind == Some(AGENT_PLAN_OUTPUT_KIND))
+        .then(|| serde_json::from_str(preview?).ok()) // silent-ok: a torn preview falls back to a tool row
+        .flatten()
+}
+
+/// Key prefix of the rows a fork shows from its source thread.
+pub const PREFIX_KEY: &str = "src:";
+
+/// A user row's text with each attachment anchor replaced by the file's
+/// name: for places that show plain text (the outline, ↑ to edit).
+pub fn readable(text: &str, chips: &[AttachmentChip]) -> String {
+    use crate::inbound_requests::{AnchoredPart, anchored_parts};
+    anchored_parts(text)
+        .into_iter()
+        .map(|part| match part {
+            AnchoredPart::Text(run) => run,
+            AnchoredPart::Attachment(ix) => chips.get(ix).map_or("", |c| c.filename.as_str()),
+        })
+        .collect()
+}
+
+/// The engine's result-delivery turn (`result_turn_text` in the
+/// orchestrator): a title naming each task, and the results below it.
+fn delegated_result(text: &str) -> Option<(String, String)> {
+    let body = text.strip_prefix("Delegated work finished.")?;
+    let body = body
+        .trim_start()
+        .strip_prefix("Use these results to continue.")
+        .unwrap_or(body)
+        .trim()
+        .to_string();
+    let titles: Vec<&str> = body
+        .lines()
+        .filter(|l| l.starts_with("[T3 delegated task "))
+        .filter_map(|l| l.split('"').nth(1))
+        .collect();
+    let title = match titles.as_slice() {
+        [] => "Delegated work finished".to_string(),
+        list => format!("Delegated work finished: {}", list.join(", ")),
+    };
+    Some((title, body))
+}
+
+/// A message's text as a person reads it: without the attachments-only
+/// marker, the expanded @-mention context, and the context handoff the engine prepends to the first
+/// message sent after a fork or provider switch (`{context}\n\n---\n\n{typed}`).
+fn shown_text(message: &TimelineMessage) -> String {
+    let text = message
+        .content
+        .as_deref()
+        .filter(|c| *c != ATTACHMENTS_ONLY_CONTENT)
+        .unwrap_or_default();
+    // The context the backend expanded from @-mentions is for the agent.
+    let text = if message.kind == MessageKind::User {
+        crate::mentions::strip_mention_context(text)
+    } else {
+        text
+    };
+    if message.kind != MessageKind::User
+        || !(text.starts_with("Context handoff (") || text.starts_with("Merged context from fork"))
+    {
+        return text.to_string();
+    }
+    ["[End of context handoff]", "[End of merged fork context]"]
+        .iter()
+        .filter_map(|end| text.rfind(end).map(|i| i + end.len()))
+        .max()
+        .map_or(text, |i| {
+            text[i..]
+                .trim_start_matches('\n')
+                .trim_start_matches("---")
+                .trim_start()
+        })
+        .to_string()
+}
+
+/// Rows for messages shown from another thread (a fork's source, a merged
+/// fork), keyed under `prefix` so they carry no fork action.
+fn borrowed_rows(messages: &[TimelineMessage], prefix: &str, rows: &mut Vec<Row>) {
+    for message in messages {
+        let key = format!("{prefix}{}", message.message_id);
+        let text = shown_text(message);
+        if text.trim().is_empty() {
+            continue;
+        }
+        rows.push(match message.kind {
+            MessageKind::User => Row::User {
+                key,
+                text,
+                pending: false,
+                attachments: Vec::new(),
+            },
+            MessageKind::Assistant => Row::Assistant {
+                key,
+                text,
+                streaming: false,
+            },
+            _ => Row::System { key, text },
+        });
+    }
+}
+
+/// A thread as Markdown, for handing it to another thread to read:
+/// prompts and answers in order, oldest first.
+pub fn thread_markdown(title: &str, messages: &[TimelineMessage]) -> String {
+    let mut out = format!("# Thread: {title}\n");
+    for m in messages.iter().filter(|m| m.is_visible()) {
+        let who = match m.kind {
+            MessageKind::User => "User",
+            MessageKind::Assistant => "Assistant",
+            _ => continue,
+        };
+        let text = shown_text(m);
+        if !text.trim().is_empty() {
+            out.push_str(&format!("\n## {who}\n\n{}\n", text.trim()));
+        }
+    }
+    out
+}
+
+const TERMINAL: [&str; 5] = [
+    "completed",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "recovery_required",
+];
+
+fn is_terminal(status: &str) -> bool {
+    TERMINAL.contains(&status)
+}
+
+impl Transcript {
+    pub fn set_timeline(&mut self, page: TimelinePage) {
+        let mut messages = page.messages;
+        messages.sort_by_key(|m| m.sequence);
+        // The backend renumbers a steer when the model reads it; show it
+        // when it was sent instead, if every row carries its send time.
+        if messages.iter().all(|m| m.created_at.is_some()) {
+            messages.sort_by_key(|m| m.created_at);
+        }
+        for m in &messages {
+            if m.kind == MessageKind::CapabilityDisplayPreview {
+                self.seed_tool(m);
+            }
+        }
+        self.durable = messages;
+        self.reconcile_pending();
+    }
+
+    /// A stored tool preview becomes a tool card, unless the live stream
+    /// already drew it.
+    fn seed_tool(&mut self, m: &TimelineMessage) {
+        let Some(v) = m
+            .content
+            .as_deref()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
+        else {
+            return;
+        };
+        let field = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        let Some(invocation) = field("invocation_id") else {
+            return;
+        };
+        if let Some(plan) = preview_plan(
+            field("capability_id").as_deref().unwrap_or_default(),
+            field("output_kind").as_deref(),
+            field("output_preview").as_deref(),
+        ) {
+            self.upsert(
+                format!("plan:{invocation}"),
+                m.turn_run_id.clone(),
+                Live::Plan(plan),
+            );
+            if let (Some(entry), Some(at)) = (
+                self.live.get_mut(&format!("plan:{invocation}")),
+                m.created_at,
+            ) {
+                entry.at = at.timestamp_millis();
+            }
+            return;
+        }
+        let key = format!("tool:{invocation}");
+        let status = match field("status").as_deref() {
+            Some("completed") => ToolStatus::Completed,
+            Some("failed" | "killed") => ToolStatus::Failed,
+            _ => ToolStatus::Running,
+        };
+        let detail = field("output_summary").or_else(|| field("input_summary"));
+        // A card the stream drew keeps its place; the stored row settles it
+        // when the stream missed the completion.
+        if let Some(entry) = self.live.get_mut(&key) {
+            if let Live::Tool {
+                detail: old_detail,
+                status: old_status,
+                ..
+            } = &mut entry.item
+                && status != ToolStatus::Running
+            {
+                *old_status = status;
+                if detail.is_some() {
+                    *old_detail = detail;
+                }
+            }
+            return;
+        }
+        let title = field("title")
+            .or_else(|| field("capability_id"))
+            .unwrap_or_else(|| "tool".into());
+        self.upsert_tool(invocation, m.turn_run_id.clone(), title, detail, status);
+        if let (Some(entry), Some(at)) = (self.live.get_mut(&key), m.created_at) {
+            entry.at = at.timestamp_millis();
+        }
+    }
+
+    pub fn set_prefix(&mut self, mut messages: Vec<TimelineMessage>) {
+        messages.retain(TimelineMessage::is_visible);
+        self.prefix = messages;
+    }
+
+    pub fn set_merges(&mut self, mut merges: Vec<MergedFork>) {
+        for m in &mut merges {
+            m.messages.retain(TimelineMessage::is_visible);
+        }
+        self.merges = merges;
+    }
+
+    /// Drop each optimistic message once its server copy is in the timeline.
+    /// Accepting a send is not enough: a CLI runtime writes the person's
+    /// message into history later, and the bubble must not vanish meanwhile.
+    fn reconcile_pending(&mut self) {
+        let mut claimed: HashSet<&str> = HashSet::new();
+        let durable = &self.durable;
+        self.pending_user.retain(|p| {
+            let newer = |m: &&TimelineMessage| {
+                m.kind == MessageKind::User
+                    && p.after.is_none_or(|after| m.sequence > after)
+                    && !claimed.contains(m.message_id.as_str())
+            };
+            let same_text = |m: &&TimelineMessage| {
+                let content = m.content.as_deref().unwrap_or_default();
+                shown_text(m).trim() == p.text.trim()
+                    || (p.text.trim().is_empty() && content == ATTACHMENTS_ONLY_CONTENT)
+            };
+            // Prefer the copy with the same text; once accepted, any newer
+            // message of the person stands for it (the gateway may reword).
+            let found = durable
+                .iter()
+                .filter(newer)
+                .find(same_text)
+                .or_else(|| p.acked.then(|| durable.iter().find(newer)).flatten());
+            match found {
+                Some(m) => {
+                    claimed.insert(m.message_id.as_str());
+                    false
+                }
+                None => true,
+            }
+        });
+    }
+
+    /// Show a message immediately while the send is in flight.
+    pub fn push_pending_user(&mut self, text: &str, files: &[String]) -> u64 {
+        self.tick += 1;
+        let chips = files
+            .iter()
+            .enumerate()
+            .map(|(i, name)| AttachmentChip {
+                message_id: None,
+                id: i.to_string(),
+                filename: name.clone(),
+                size: None,
+                local_path: None,
+            })
+            .collect();
+        self.pending_user.push(PendingUser {
+            id: self.tick,
+            text: text.to_string(),
+            acked: false,
+            chips,
+            after: self.durable.iter().map(|m| m.sequence).max(),
+        });
+        self.tick
+    }
+
+    pub fn ack_pending_user(&mut self, id: u64) {
+        if let Some(entry) = self.pending_user.iter_mut().find(|p| p.id == id) {
+            entry.acked = true;
+        }
+    }
+
+    pub fn drop_pending_user(&mut self, id: u64) {
+        self.pending_user.retain(|p| p.id != id);
+    }
+
+    /// Show a slash command and its answer (or rejection) in the transcript.
+    pub fn push_command(&mut self, input: &str, outcome: Result<CommandOutcome, String>) {
+        self.tick += 1;
+        let (title, fields, lines, failed) = match outcome {
+            Ok(CommandOutcome {
+                result: Some(r), ..
+            }) => (r.title, r.fields, r.lines, false),
+            Ok(CommandOutcome {
+                rejection: Some(r), ..
+            }) => (String::new(), Vec::new(), vec![r.message], true),
+            Ok(_) => (String::new(), Vec::new(), Vec::new(), false),
+            Err(message) => (String::new(), Vec::new(), vec![message], true),
+        };
+        let anchor = self
+            .durable
+            .iter()
+            .filter(|m| m.is_visible())
+            .map(|m| m.sequence)
+            .max()
+            .unwrap_or(0);
+        let row = Row::Command {
+            key: format!("cmd:{}", self.tick),
+            input: input.to_string(),
+            title,
+            fields,
+            lines,
+            failed,
+        };
+        self.notes.push((anchor, row));
+    }
+
+    pub fn mark_gate_resolving(&mut self, gate_ref: &str, decision: GateDecision) {
+        self.decisions.insert(gate_ref.to_string(), decision);
+    }
+
+    pub fn clear_gate_resolving(&mut self, gate_ref: &str) {
+        self.decisions.remove(gate_ref);
+    }
+
+    /// A question form was answered (`true`) or dismissed from this view.
+    pub fn mark_question_sending(&mut self, gate_ref: &str, answered: bool) {
+        self.question_sends.insert(gate_ref.to_string(), answered);
+    }
+
+    /// The send failed: the form opens again.
+    pub fn clear_question_sending(&mut self, gate_ref: &str) {
+        self.question_sends.remove(gate_ref);
+    }
+
+    /// The thread's current plan: the newest one any run reported.
+    pub fn plan(&self) -> Option<&AgentPlan> {
+        self.live
+            .values()
+            .filter_map(|e| match &e.item {
+                Live::Plan(plan) => Some(plan),
+                _ => None,
+            })
+            .max_by_key(|plan| plan.updated_at)
+    }
+
+    /// Unix ms of the newest durable prompt the person sent.
+    pub fn last_prompt_sent_ms(&self) -> Option<i64> {
+        self.durable
+            .iter()
+            .rev()
+            .find(|m| m.kind == MessageKind::User)
+            .and_then(|m| m.created_at)
+            .map(|t| t.timestamp_millis())
+    }
+
+    /// The run the Stop button targets: the latest one not yet terminal.
+    pub fn active_run(&self) -> Option<&str> {
+        let run = self.latest_run.as_deref()?;
+        match self.runs.get(run) {
+            Some(status) if is_terminal(&status.status) => None,
+            _ if self.settled.contains(run) => None,
+            _ => Some(run),
+        }
+    }
+
+    pub fn mark_stop_requested(&mut self, run: &str) {
+        self.stop_requested = Some(run.to_string());
+    }
+
+    /// The cancel POST failed: fall back to the server's view of the run.
+    pub fn clear_stop_requested(&mut self) {
+        self.stop_requested = None;
+    }
+
+    /// Stop was clicked or accepted, but the run has not wound down yet.
+    pub fn is_stopping(&self) -> bool {
+        let Some(run) = self.active_run() else {
+            return false;
+        };
+        self.stop_requested.as_deref() == Some(run)
+            || self
+                .runs
+                .get(run)
+                .is_some_and(|s| s.status == "cancel_requested")
+    }
+
+    /// The streamed output tail of the tool row keyed `row_key`
+    /// (`tool:{invocation}`), when its agent reports one (Codex).
+    pub fn tool_output(&self, row_key: &str) -> Option<&CliBody> {
+        self.cli.outputs.get(row_key)
+    }
+
+    /// The retained output tails, by tool row key (`tool:{invocation}`):
+    /// a shared handle, not a copy.
+    pub fn tool_outputs(&self) -> std::sync::Arc<HashMap<String, CliBody>> {
+        std::sync::Arc::clone(&self.cli.outputs)
+    }
+
+    /// The latest turn diff a CLI agent computed (Codex `turn/diff/updated`).
+    pub fn cli_turn_diff(&self) -> Option<&CliBody> {
+        self.cli.diff.as_ref()
+    }
+
+    /// The latest finished review's findings text (Codex `review/start`).
+    pub fn cli_review(&self) -> Option<&CliBody> {
+        self.cli.review.as_ref()
+    }
+
+    pub fn apply(&mut self, event: &StreamEvent) -> Applied {
+        let mut out = Applied::default();
+        match event {
+            StreamEvent::ProjectionSnapshot { state } | StreamEvent::ProjectionUpdate { state } => {
+                for item in &state.items {
+                    self.apply_item(item, &mut out);
+                }
+            }
+            StreamEvent::Accepted { ack } => {
+                if let Some(run) = &ack.run_id {
+                    self.note_run(run);
+                    out.changed = true;
+                }
+            }
+            StreamEvent::Running { progress } | StreamEvent::CapabilityProgress { progress } => {
+                self.note_run(&progress.turn_run_id.to_string());
+                out.changed = true;
+            }
+            StreamEvent::CapabilityActivity { activity } => {
+                self.upsert_activity(activity);
+                out.changed = true;
+            }
+            StreamEvent::CapabilityDisplayPreview { preview } => {
+                self.upsert_preview(preview);
+                out.changed = true;
+            }
+            StreamEvent::Gate { prompt } => {
+                let run = prompt.turn_run_id.to_string();
+                self.upsert(
+                    format!("gate:{}", prompt.gate_ref),
+                    Some(run),
+                    Live::Gate {
+                        gate_ref: prompt.gate_ref.clone(),
+                        kind: ProductGateKind::Approval,
+                        headline: prompt.headline.clone(),
+                        body: Some(prompt.body.clone()).filter(|b| !b.trim().is_empty()),
+                        allow_always: prompt.allow_always,
+                        reason: None,
+                    },
+                );
+                out.changed = true;
+            }
+            StreamEvent::FinalReply { reply } => {
+                let run = reply.turn_run_id.to_string();
+                // The reply streamed in already: finish that bubble in place,
+                // so the answer keeps its element and never reflows.
+                let key = self
+                    .streamed_reply(&run, &reply.text)
+                    .unwrap_or_else(|| format!("final:{run}"));
+                self.upsert(
+                    key,
+                    Some(run.clone()),
+                    Live::Text {
+                        body: reply.text.clone(),
+                        narration: false,
+                    },
+                );
+                self.settle(&run, RunEnd::Completed, &mut out);
+                out.changed = true;
+            }
+            StreamEvent::Cancelled { .. } | StreamEvent::Failed { .. } => {
+                let end = if matches!(event, StreamEvent::Cancelled { .. }) {
+                    RunEnd::Cancelled
+                } else {
+                    RunEnd::Failed
+                };
+                if let Some(run) = self.latest_run.clone() {
+                    self.settle(&run, end, &mut out);
+                }
+                out.reload_timeline = true;
+                out.changed = true;
+            }
+            StreamEvent::AuthRequired { .. } | StreamEvent::KeepAlive | StreamEvent::Unknown => {}
+        }
+        out
+    }
+
+    fn apply_item(&mut self, item: &ProductProjectionItem, out: &mut Applied) {
+        out.changed = true;
+        match item {
+            ProductProjectionItem::Text {
+                id,
+                run_id,
+                body,
+                narration,
+                ..
+            } => {
+                let run = run_id.map(|r| r.to_string());
+                if let Some(run) = &run {
+                    self.note_run(run);
+                }
+                // A finalized copy keyed by the stored message id lands in
+                // the bubble it streamed into rather than opening a new one.
+                let key = match &run {
+                    Some(run)
+                        if !narration
+                            && !id.starts_with("text:")
+                            && !self.live.contains_key(id) =>
+                    {
+                        self.streamed_reply(run, body).unwrap_or_else(|| id.clone())
+                    }
+                    _ => id.clone(),
+                };
+                self.upsert(
+                    key,
+                    run,
+                    Live::Text {
+                        body: body.clone(),
+                        narration: *narration,
+                    },
+                );
+            }
+            ProductProjectionItem::Thinking { id, run_id, body } => {
+                self.upsert(
+                    id.clone(),
+                    run_id.map(|r| r.to_string()),
+                    Live::Thinking(body.clone()),
+                );
+            }
+            ProductProjectionItem::CapabilityActivity(activity) => self.upsert_activity(activity),
+            ProductProjectionItem::WorkSummary {
+                id, run_id, body, ..
+            } => {
+                self.upsert(
+                    id.clone(),
+                    Some(run_id.to_string()),
+                    Live::WorkSummary(body.clone()),
+                );
+            }
+            ProductProjectionItem::CliDetail {
+                run_id,
+                kind,
+                invocation_id,
+                body,
+                truncated,
+                ..
+            } => {
+                let detail = CliBody {
+                    run: run_id.map(|r| r.to_string()),
+                    body: body.clone(),
+                    truncated: *truncated,
+                };
+                match kind {
+                    CliDetailKind::ToolOutput => {
+                        if let Some(invocation) = invocation_id {
+                            self.cli.put_output(format!("tool:{invocation}"), detail);
+                        }
+                    }
+                    CliDetailKind::TurnDiff => self.cli.diff = Some(detail),
+                    CliDetailKind::Review => self.cli.review = Some(detail),
+                }
+            }
+            ProductProjectionItem::SkillActivation {
+                id,
+                run_id,
+                skill_names,
+                ..
+            } => {
+                self.upsert(
+                    id.clone(),
+                    Some(run_id.to_string()),
+                    Live::Skills(skill_names.clone()),
+                );
+            }
+            ProductProjectionItem::Gate {
+                run_id,
+                gate_kind,
+                gate_ref,
+                headline,
+                body,
+                allow_always,
+                reason,
+                ..
+            } => {
+                self.upsert(
+                    format!("gate:{gate_ref}"),
+                    Some(run_id.to_string()),
+                    Live::Gate {
+                        gate_ref: gate_ref.clone(),
+                        kind: *gate_kind,
+                        headline: headline.clone(),
+                        body: body.clone(),
+                        allow_always: *allow_always,
+                        reason: reason.as_deref().and_then(reason::bounded),
+                    },
+                );
+            }
+            ProductProjectionItem::Plan { id, run_id, plan } => {
+                self.upsert(
+                    id.clone(),
+                    run_id.map(|r| r.to_string()),
+                    Live::Plan(plan.clone()),
+                );
+            }
+            ProductProjectionItem::Question {
+                run_id,
+                gate_ref,
+                form,
+                closed,
+            } => {
+                let key = format!("question:{gate_ref}");
+                // A close never reopens: a late open frame keeps it closed.
+                let was_closed = matches!(
+                    self.live.get(&key).map(|e| &e.item),
+                    Some(Live::Question { closed: true, .. })
+                );
+                self.upsert(
+                    key,
+                    Some(run_id.to_string()),
+                    Live::Question {
+                        gate_ref: gate_ref.clone(),
+                        form: form.clone(),
+                        closed: *closed || was_closed,
+                    },
+                );
+            }
+            ProductProjectionItem::RunStatus {
+                run_id,
+                status,
+                failure_category,
+                failure_summary,
+                retryable,
+            } => {
+                let run = run_id.to_string();
+                self.note_run(&run);
+                self.tick += 1;
+                let failure = failure_summary.clone().or_else(|| {
+                    failure_category
+                        .as_ref()
+                        .map(|f| f.category().replace('_', " "))
+                });
+                self.runs.insert(
+                    run.clone(),
+                    RunStatus {
+                        status: status.clone(),
+                        tick: self.tick,
+                        failure,
+                        retryable: retryable.unwrap_or(false),
+                    },
+                );
+                if is_terminal(status) {
+                    self.settle(&run, RunEnd::from_status(status), out);
+                }
+            }
+        }
+    }
+
+    /// The live, unflagged text of `run` that `reply` finishes: the same
+    /// words, or the start of them. Its key is the bubble the reader watched.
+    fn streamed_reply(&self, run: &str, reply: &str) -> Option<String> {
+        let reply = reply.trim();
+        self.order
+            .iter()
+            .rev()
+            .find_map(|k| {
+                let e = &self.live[k];
+                match &e.item {
+                    Live::Text {
+                        body,
+                        narration: false,
+                    } if e.run.as_deref() == Some(run) => Some((k, body.trim())),
+                    _ => None,
+                }
+            })
+            .filter(|(_, body)| !body.is_empty() && reply.starts_with(body))
+            .map(|(k, _)| k.clone())
+    }
+
+    fn upsert_activity(&mut self, a: &CapabilityActivityView) {
+        // A plan update shows as its plan once the preview lands; only a
+        // failed one keeps a tool row.
+        if a.capability_id.as_str() == PLAN_UPDATE_CAPABILITY
+            && a.status != CapabilityActivityStatusView::Failed
+        {
+            return;
+        }
+        let title = a
+            .subtitle
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| format!("{} {s}", a.capability_id))
+            .unwrap_or_else(|| a.capability_id.to_string());
+        let detail = a.input_summary.clone().or_else(|| a.error_detail.clone());
+        self.upsert_tool(
+            a.invocation_id.to_string(),
+            a.turn_run_id.map(|r| r.to_string()),
+            title,
+            detail,
+            tool_status(a.status),
+        );
+    }
+
+    fn upsert_preview(&mut self, p: &CapabilityDisplayPreviewView) {
+        if let Some(plan) = preview_plan(
+            p.capability_id.as_str(),
+            p.output_kind.as_deref(),
+            p.output_preview.as_deref(),
+        ) {
+            self.upsert(
+                format!("plan:{}", p.invocation_id),
+                p.turn_run_id.map(|r| r.to_string()),
+                Live::Plan(plan),
+            );
+            return;
+        }
+        let detail = p.output_summary.clone().or_else(|| p.input_summary.clone());
+        self.upsert_tool(
+            p.invocation_id.to_string(),
+            p.turn_run_id.map(|r| r.to_string()),
+            p.title.clone(),
+            detail,
+            tool_status(p.status),
+        );
+    }
+
+    fn upsert_tool(
+        &mut self,
+        invocation: String,
+        run: Option<String>,
+        title: String,
+        detail: Option<String>,
+        status: ToolStatus,
+    ) {
+        let key = format!("tool:{invocation}");
+        // A row keeps the first title and detail it showed, so its label
+        // never flips mid-run; a late frame never reopens a finished call.
+        let (title, detail, status) = match self.live.get(&key).map(|e| &e.item) {
+            Some(Live::Tool {
+                title: old_title,
+                detail: old_detail,
+                status: old_status,
+            }) => (
+                // A preview's title beats a bare capability id, once.
+                if old_title.contains('.') && !title.contains('.') {
+                    title
+                } else {
+                    old_title.clone()
+                },
+                // Input while it runs, the output once it is done.
+                if status == ToolStatus::Running {
+                    old_detail.clone().or(detail)
+                } else {
+                    detail.or_else(|| old_detail.clone())
+                },
+                if *old_status != ToolStatus::Running && status == ToolStatus::Running {
+                    *old_status
+                } else {
+                    status
+                },
+            ),
+            _ => (title, detail, status),
+        };
+        self.upsert(
+            key,
+            run,
+            Live::Tool {
+                title,
+                detail,
+                status,
+            },
+        );
+    }
+
+    fn upsert(&mut self, key: String, run: Option<String>, item: Live) {
+        self.tick += 1;
+        let tick = self.tick;
+        // A bare frame (some activity arrives without a run id) belongs to
+        // the run in flight, so it never lands in another run's group.
+        let run = run.or_else(|| {
+            (!self.live.contains_key(&key))
+                .then(|| self.active_run().map(str::to_string))
+                .flatten()
+        });
+        match self.live.get_mut(&key) {
+            Some(entry) => {
+                entry.item = item;
+                entry.tick = tick;
+                if run.is_some() {
+                    entry.run = run;
+                }
+            }
+            None => {
+                self.order.push(key.clone());
+                let at = chrono::Utc::now().timestamp_millis();
+                self.live.insert(
+                    key,
+                    LiveEntry {
+                        run,
+                        tick,
+                        at,
+                        item,
+                    },
+                );
+            }
+        }
+    }
+
+    fn note_run(&mut self, run: &str) {
+        if self.latest_run.as_deref() != Some(run) && !self.settled.contains(run) {
+            self.latest_run = Some(run.to_string());
+        }
+    }
+
+    fn settle(&mut self, run: &str, end: RunEnd, out: &mut Applied) {
+        if self.settled.insert(run.to_string()) {
+            self.last_settled = Some(run.to_string());
+            out.reload_timeline = true;
+            out.run_ended = Some(end);
+        }
+    }
+
+    /// The run whose end `apply` reported last, so a caller can tell which
+    /// run a `run_ended` belongs to.
+    pub fn last_settled_run(&self) -> Option<&str> {
+        self.last_settled.as_deref()
+    }
+
+    pub fn rows(&self) -> Vec<Row> {
+        // Live entries grouped by run, in first-seen order.
+        let mut groups: Vec<(Option<String>, Vec<&str>)> = Vec::new();
+        for key in &self.order {
+            let run = self.live[key].run.clone();
+            // A frame without a run id (some tool activity arrives bare)
+            // belongs to the run it arrived during, not to a trailing
+            // group drawn under the final answer.
+            if run.is_none()
+                && let Some((_, keys)) = groups.last_mut()
+            {
+                keys.push(key);
+                continue;
+            }
+            match groups.iter_mut().find(|(r, _)| *r == run) {
+                Some((_, keys)) => keys.push(key),
+                None => groups.push((run, vec![key])),
+            }
+        }
+
+        let durable_replies: HashMap<&str, &str> = self
+            .durable
+            .iter()
+            .filter(|m| m.kind == MessageKind::Assistant && m.is_visible())
+            .filter_map(|m| Some((m.turn_run_id.as_deref()?, m.content.as_deref()?)))
+            .collect();
+        let durable_reply_runs: HashSet<&str> = durable_replies.keys().copied().collect();
+
+        let mut rows = Vec::new();
+        let mut emitted: HashSet<Option<String>> = HashSet::new();
+        // Activity already drawn above a steer; never drawn twice.
+        let mut shown: HashSet<&str> = HashSet::new();
+        // A run that fails before producing any output has no live group and
+        // no reply; its notice goes right after the user message that started it.
+        let quiet_run = |run: &str| {
+            !durable_reply_runs.contains(run)
+                && !groups.iter().any(|(r, _)| r.as_deref() == Some(run))
+        };
+
+        // A fork's source, keyed apart so its rows carry no fork action.
+        borrowed_rows(&self.prefix, PREFIX_KEY, &mut rows);
+        if !self.prefix.is_empty() {
+            rows.push(Row::System {
+                key: format!("{PREFIX_KEY}divider"),
+                text: "Forked here".into(),
+            });
+        }
+
+        let mut notes = self.notes.iter().peekable();
+        let mut merges = self.merges.iter().peekable();
+        let merge_rows = |merge: &MergedFork, rows: &mut Vec<Row>| {
+            let key = format!("{PREFIX_KEY}merge:{}:", merge.at);
+            rows.push(Row::System {
+                key: format!("{key}head"),
+                text: format!("Merged back from {}", merge.title),
+            });
+            borrowed_rows(&merge.messages, &key, rows);
+            if merge.pending {
+                rows.push(Row::System {
+                    key: format!("{key}tail"),
+                    text: "Goes to the model with your next message".into(),
+                });
+            }
+        };
+        for message in self.durable.iter().filter(|m| m.is_visible()) {
+            while let Some((_, note)) = notes.next_if(|(anchor, _)| *anchor < message.sequence) {
+                rows.push(note.clone());
+            }
+            let sent = message.created_at.map(|t| t.timestamp_millis());
+            while let Some(merge) = merges.next_if(|m| sent.is_some_and(|at| m.at < at)) {
+                merge_rows(merge, &mut rows);
+            }
+            let text = shown_text(message);
+            // A context turn the engine sent on its own: nothing to read.
+            if message.kind == MessageKind::User
+                && text.is_empty()
+                && message.attachments.is_empty()
+            {
+                continue;
+            }
+            let key = format!("msg:{}", message.message_id);
+            if message.kind == MessageKind::User
+                && let Some((title, body)) = delegated_result(&text)
+            {
+                rows.push(Row::Delegated { key, title, body });
+                continue;
+            }
+            match message.kind {
+                MessageKind::User => {
+                    let uploads = message
+                        .attachments
+                        .iter()
+                        .map(|a| AttachmentChip {
+                            message_id: a.storage_key.as_ref().map(|_| message.message_id.clone()),
+                            id: a.id.clone(),
+                            filename: a.filename.clone().unwrap_or_else(|| "attachment".into()),
+                            size: a.size_bytes,
+                            local_path: None,
+                        })
+                        .collect();
+                    let (text, attachments) = attached::split(&text, uploads);
+                    // A run already working when this was sent: what it did
+                    // before goes above the message, the rest below.
+                    if let Some(sent) = sent {
+                        for (run, keys) in &groups {
+                            let Some(r) = run.as_deref() else { continue };
+                            if emitted.contains(run) {
+                                continue;
+                            }
+                            let before: Vec<&str> = keys
+                                .iter()
+                                .copied()
+                                .filter(|k| !shown.contains(k) && self.live[*k].at < sent)
+                                .collect();
+                            if before.is_empty() {
+                                continue;
+                            }
+                            let reply = durable_replies.get(r).copied().or(Some(""));
+                            self.activity_rows(&before, reply, &mut rows);
+                            shown.extend(before);
+                        }
+                    }
+                    rows.push(Row::User {
+                        key,
+                        text,
+                        // Queued until the model reads it.
+                        pending: message.status == MessageStatus::Queued,
+                        attachments,
+                    });
+                    if let Some(run) = message.turn_run_id.as_deref()
+                        && quiet_run(run)
+                        && emitted.insert(Some(run.to_string()))
+                    {
+                        self.notice_row(run, &mut rows);
+                    }
+                }
+                MessageKind::Assistant => {
+                    let run = message.turn_run_id.clone();
+                    let group = groups.iter().find(|(r, _)| run.is_some() && *r == run);
+                    if !emitted.contains(&run)
+                        && let Some((_, keys)) = group
+                    {
+                        let rest: Vec<&str> = keys
+                            .iter()
+                            .copied()
+                            .filter(|k| !shown.contains(k))
+                            .collect();
+                        self.activity_rows(&rest, Some(&text), &mut rows);
+                        emitted.insert(run.clone());
+                    }
+                    // The bubble the reply streamed into keeps its key, so
+                    // the stored copy replaces it in place.
+                    let key = group
+                        .and_then(|(_, keys)| {
+                            keys.iter().find(|k| {
+                                matches!(&self.live[**k].item,
+                                    Live::Text { body, .. } if body.trim() == text.trim())
+                            })
+                        })
+                        .map_or(key, |k| k.to_string());
+                    rows.push(Row::Assistant {
+                        key,
+                        text,
+                        streaming: false,
+                    });
+                    if let Some(run) = &run {
+                        self.notice_row(run, &mut rows);
+                    }
+                }
+                _ => rows.push(Row::System { key, text }),
+            }
+        }
+
+        for merge in merges {
+            merge_rows(merge, &mut rows);
+        }
+        rows.extend(notes.map(|(_, note)| note.clone()));
+        for p in &self.pending_user {
+            rows.push(Row::User {
+                key: format!("pending:{}", p.id),
+                text: p.text.clone(),
+                pending: !p.acked,
+                attachments: p.chips.clone(),
+            });
+        }
+
+        for (run, keys) in &groups {
+            if emitted.contains(run) {
+                continue;
+            }
+            let durable = run.as_deref().and_then(|r| durable_replies.get(r).copied());
+            let rest: Vec<&str> = keys
+                .iter()
+                .copied()
+                .filter(|k| !shown.contains(k))
+                .collect();
+            self.activity_rows(&rest, durable, &mut rows);
+            if let Some(run) = run {
+                self.notice_row(run, &mut rows);
+            }
+        }
+        rows
+    }
+
+    /// Activity for one run. Unless the durable reply already exists, the
+    /// trailing unflagged text becomes the (possibly still streaming) bubble.
+    /// The gateway sends the reply several times (streamed draft, finalized
+    /// item, final-reply frame); live copies of the reply text are dropped.
+    fn activity_rows(&self, keys: &[&str], durable_reply: Option<&str>, rows: &mut Vec<Row>) {
+        let bubble = if durable_reply.is_some() {
+            None
+        } else {
+            keys.iter()
+                .rev()
+                .find(|k| {
+                    matches!(
+                        self.live[**k].item,
+                        Live::Text {
+                            narration: false,
+                            ..
+                        }
+                    )
+                })
+                .copied()
+        };
+        let reply = durable_reply
+            .or_else(|| {
+                bubble.and_then(|k| match &self.live[k].item {
+                    Live::Text { body, .. } => Some(body.as_str()),
+                    _ => None,
+                })
+            })
+            .map(str::trim);
+        // What the model said to the person last before each call: the
+        // reason it shows. A thought already has its own row, so it is never
+        // borrowed as a reason (that drew the same paragraph twice).
+        let mut said: Option<&str> = None;
+        for key in keys {
+            let entry = &self.live[*key];
+            if let Live::Text { body, .. } = &entry.item {
+                said = Some(body.as_str());
+            }
+            let said_reason = || said.and_then(reason::from_said);
+            let row = match &entry.item {
+                // The bubble stays where it arrived: tools that follow it
+                // draw below, as they happened, and it never jumps.
+                Live::Text { body, .. } if Some(*key) == bubble => {
+                    let streaming = entry
+                        .run
+                        .as_deref()
+                        .is_none_or(|r| !self.settled.contains(r));
+                    Row::Assistant {
+                        key: key.to_string(),
+                        text: body.clone(),
+                        streaming,
+                    }
+                }
+                // A final reply frame duplicates the durable reply once it lands.
+                Live::Text { .. } if key.starts_with("final:") => continue,
+                // Any live copy of the reply, flagged as narration or not.
+                // A CLI run's stored reply joins its segments.
+                Live::Text { body, .. }
+                    if Some(body.trim()) == reply
+                        || self.is_durable_reply(entry.run.as_deref(), body)
+                        || (key.contains(":cli:")
+                            && durable_reply.is_some_and(|r| r.contains(body.trim()))) =>
+                {
+                    continue;
+                }
+                Live::Text { body, .. } => Row::Narration {
+                    key: key.to_string(),
+                    text: body.clone(),
+                },
+                Live::Thinking(text) => Row::Thinking {
+                    key: key.to_string(),
+                    text: text.clone(),
+                },
+                Live::Tool {
+                    title,
+                    detail,
+                    status,
+                } => Row::Tool {
+                    key: key.to_string(),
+                    title: title.clone(),
+                    detail: detail.clone(),
+                    status: *status,
+                    reason: said_reason(),
+                },
+                Live::Skills(names) => Row::Skills {
+                    key: key.to_string(),
+                    names: names.clone(),
+                },
+                Live::WorkSummary(text) => Row::WorkSummary {
+                    key: key.to_string(),
+                    text: text.clone(),
+                },
+                Live::Plan(plan) => Row::Plan {
+                    key: key.to_string(),
+                    plan: plan.clone(),
+                },
+                Live::Question {
+                    gate_ref,
+                    form,
+                    closed,
+                } => Row::Question {
+                    key: key.to_string(),
+                    run_id: entry.run.clone().unwrap_or_default(),
+                    gate_ref: gate_ref.clone(),
+                    form: form.clone(),
+                    state: self.question_state(gate_ref, *closed, entry),
+                },
+                Live::Gate {
+                    gate_ref,
+                    kind,
+                    headline,
+                    body,
+                    allow_always,
+                    reason,
+                } => Row::Gate {
+                    key: key.to_string(),
+                    run_id: entry.run.clone().unwrap_or_default(),
+                    gate_ref: gate_ref.clone(),
+                    kind: *kind,
+                    headline: headline.clone(),
+                    body: body.clone(),
+                    allow_always: *allow_always,
+                    state: self.gate_state(gate_ref, entry),
+                    // The CLI bridge already tied each call to what was said
+                    // before it; its `None` means "nothing new", not "guess".
+                    reason: if gate_ref.starts_with("gate:cli-") {
+                        reason.clone()
+                    } else {
+                        reason.clone().or_else(said_reason)
+                    },
+                },
+            };
+            rows.push(row);
+        }
+    }
+
+    /// A live copy of a durable reply of `run`. A steered run replies more
+    /// than once, so the live text may match any one reply, or all of them
+    /// joined (a CLI's live text is cumulative over the run).
+    fn is_durable_reply(&self, run: Option<&str>, body: &str) -> bool {
+        let Some(run) = run else {
+            return false;
+        };
+        let replies: Vec<&str> = self
+            .durable
+            .iter()
+            .filter(|m| m.kind == MessageKind::Assistant && m.turn_run_id.as_deref() == Some(run))
+            .filter_map(|m| m.content.as_deref().map(str::trim))
+            .collect();
+        let body = body.trim();
+        replies.len() > 1 && (replies.contains(&body) || replies.join("\n\n") == body)
+    }
+
+    /// Closed by its own close frame, or by the run's end. A CLI run asks
+    /// several questions at once (`gate:question-*`), so only that form's
+    /// close counts there; a native run parks on one gate at a time, so a
+    /// later non-blocked run status means its gate moved on.
+    fn question_state(&self, gate_ref: &str, closed: bool, entry: &LiveEntry) -> QuestionState {
+        let sent = self.question_sends.get(gate_ref).copied();
+        let superseded = closed
+            || (!gate_ref.starts_with(QUESTION_GATE_REF_PREFIX)
+                && entry
+                    .run
+                    .as_deref()
+                    .and_then(|r| self.runs.get(r))
+                    .is_some_and(|s| s.tick > entry.tick && !s.status.starts_with("blocked")));
+        let settled = entry
+            .run
+            .as_deref()
+            .is_some_and(|r| self.settled.contains(r));
+        match sent {
+            _ if superseded || settled => QuestionState::Closed(sent),
+            Some(answered) => QuestionState::Sending(answered),
+            None => QuestionState::Open,
+        }
+    }
+
+    fn gate_state(&self, gate_ref: &str, entry: &LiveEntry) -> GateState {
+        let decision = self.decisions.get(gate_ref).copied();
+        let superseded = entry
+            .run
+            .as_deref()
+            .and_then(|r| self.runs.get(r))
+            .is_some_and(|s| s.tick > entry.tick && !s.status.starts_with("blocked"));
+        if superseded
+            || entry
+                .run
+                .as_deref()
+                .is_some_and(|r| self.settled.contains(r))
+        {
+            GateState::Closed(decision)
+        } else if let Some(decision) = decision {
+            GateState::Resolving(decision)
+        } else {
+            GateState::Open
+        }
+    }
+
+    fn notice_row(&self, run: &str, rows: &mut Vec<Row>) {
+        let Some(status) = self.runs.get(run) else {
+            return;
+        };
+        let (text, failed) = match status.status.as_str() {
+            "failed" => (
+                status
+                    .failure
+                    .clone()
+                    .map(|f| format!("Run failed: {f}"))
+                    .unwrap_or_else(|| "Run failed".into()),
+                true,
+            ),
+            "cancelled" => ("Stopped".to_string(), false),
+            "recovery_required" => ("Run interrupted; it needs recovery".to_string(), true),
+            _ => return,
+        };
+        rows.push(Row::RunNotice {
+            key: format!("notice:{run}"),
+            run_id: run.to_string(),
+            text,
+            failed,
+            retryable: status.retryable,
+        });
+    }
+}
+
+fn tool_status(status: CapabilityActivityStatusView) -> ToolStatus {
+    match status {
+        CapabilityActivityStatusView::Started | CapabilityActivityStatusView::Running => {
+            ToolStatus::Running
+        }
+        CapabilityActivityStatusView::Completed => ToolStatus::Completed,
+        CapabilityActivityStatusView::Failed | CapabilityActivityStatusView::Killed => {
+            ToolStatus::Failed
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wire::StreamFrame;
+
+    const RUN: &str = "6f1c1c0e-0000-4000-8000-000000000001";
+
+    fn frame(json: serde_json::Value) -> StreamEvent {
+        serde_json::from_value::<StreamFrame>(json)
+            .expect("frame decodes")
+            .event
+    }
+
+    fn text_update(body: &str, narration: bool, call: u32) -> StreamEvent {
+        frame(serde_json::json!({
+            "cursor": "c1", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "text": { "id": format!("text:{RUN}:{call}"), "run_id": RUN,
+                            "body": body, "narration": narration } }
+            ]}
+        }))
+    }
+
+    /// A long-open view keeps the newest output tails only, each bounded,
+    /// and handing them to the renderer copies nothing.
+    #[test]
+    fn output_tails_are_bounded_and_shared_not_copied() {
+        let mut t = Transcript::default();
+        let output = |n: usize, body: String| {
+            frame(serde_json::json!({
+                "cursor": "c", "type": "projection_update",
+                "state": { "thread_id": "t1", "items": [
+                    { "cli_detail": { "id": format!("output:{n}"), "run_id": RUN,
+                        "kind": "tool_output",
+                        "invocation_id": format!("6f1c1c0e-0000-4000-8000-{n:012}"),
+                        "body": body } }
+                ]}
+            }))
+        };
+        for n in 0..(CLI_OUTPUTS_MAX + 6) {
+            t.apply(&output(n, format!("line {n}\n")));
+        }
+        let first = t.tool_outputs();
+        assert_eq!(first.len(), CLI_OUTPUTS_MAX);
+        assert!(
+            t.tool_output("tool:6f1c1c0e-0000-4000-8000-000000000000")
+                .is_none()
+        );
+        assert!(
+            t.tool_output(&format!(
+                "tool:6f1c1c0e-0000-4000-8000-{:012}",
+                CLI_OUTPUTS_MAX + 5
+            ))
+            .is_some()
+        );
+        assert!(std::sync::Arc::ptr_eq(&first, &t.tool_outputs()));
+        // One oversized tail keeps its newest bytes.
+        t.apply(&output(
+            1000,
+            format!("{}tail-end", "x".repeat(3 * CLI_OUTPUT_MAX_BYTES)),
+        ));
+        let big = t
+            .tool_output("tool:6f1c1c0e-0000-4000-8000-000000001000")
+            .unwrap();
+        assert!(big.body.len() <= CLI_OUTPUT_MAX_BYTES && big.truncated);
+        assert!(big.body.ends_with("tail-end"));
+        // The renderer's old handle is untouched by the new frame.
+        assert_eq!(first.len(), CLI_OUTPUTS_MAX);
+        assert!(!first.contains_key("tool:6f1c1c0e-0000-4000-8000-000000001000"));
+    }
+
+    #[test]
+    fn cli_detail_frames_feed_tool_output_turn_diff_and_review() {
+        let inv = "6f1c1c0e-0000-4000-8000-0000000000aa";
+        let mut t = Transcript::default();
+        let applied = t.apply(&frame(serde_json::json!({
+            "cursor": "c9", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "capability_activity": { "invocation_id": inv, "turn_run_id": RUN,
+                    "thread_id": "t1", "capability_id": "cli.shell", "status": "running",
+                    "input_summary": "cargo test", "updated_at": "2026-11-04T00:00:00Z" } },
+                { "cli_detail": { "id": format!("output:{inv}"), "run_id": RUN,
+                    "kind": "tool_output", "invocation_id": inv, "body": "running 3 tests\n" } },
+                { "cli_detail": { "id": format!("diff:{RUN}"), "run_id": RUN,
+                    "kind": "turn_diff", "body": "diff --git a/x b/x\n", "truncated": true } },
+            ]}
+        })));
+        assert!(applied.changed);
+        let row = t
+            .rows()
+            .into_iter()
+            .find(|r| matches!(r, Row::Tool { .. }))
+            .expect("tool row");
+        assert_eq!(
+            t.tool_output(row.key()).map(|o| o.body.as_str()),
+            Some("running 3 tests\n")
+        );
+        let diff = t.cli_turn_diff().unwrap();
+        assert!(diff.truncated && diff.run.as_deref() == Some(RUN));
+        assert!(t.cli_review().is_none());
+        t.apply(&frame(serde_json::json!({
+            "cursor": "c10", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "cli_detail": { "id": format!("review:{RUN}"), "run_id": RUN,
+                    "kind": "review", "body": "No issues found." } }
+            ]}
+        })));
+        assert_eq!(t.cli_review().unwrap().body, "No issues found.");
+    }
+
+    fn status(s: &str) -> StreamEvent {
+        frame(serde_json::json!({
+            "cursor": "c2", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "run_status": { "run_id": RUN, "status": s } }
+            ]}
+        }))
+    }
+
+    fn timeline(reply: Option<&str>) -> TimelinePage {
+        let mut messages = vec![serde_json::json!({
+            "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+            "turn_run_id": RUN, "content": "hi"
+        })];
+        if let Some(reply) = reply {
+            messages.push(serde_json::json!({
+                "message_id": "m2", "sequence": 2, "kind": "assistant", "status": "finalized",
+                "turn_run_id": RUN, "content": reply
+            }));
+        }
+        serde_json::from_value(serde_json::json!({
+            "thread": { "thread_id": "t1" }, "messages": messages
+        }))
+        .expect("timeline decodes")
+    }
+
+    fn items(items: serde_json::Value) -> StreamEvent {
+        frame(serde_json::json!({
+            "cursor": "c3", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": items }
+        }))
+    }
+
+    fn plan_item(id: &str, at: &str, statuses: &[&str]) -> serde_json::Value {
+        let entries: Vec<_> = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, s)| serde_json::json!({"content": format!("step {i}"), "status": s}))
+            .collect();
+        serde_json::json!({"plan": {"id": id, "run_id": RUN,
+            "plan": {"entries": entries, "updated_at": at}}})
+    }
+
+    #[test]
+    fn plan_updates_draw_a_line_each_and_the_newest_is_the_plan() {
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&items(serde_json::json!([plan_item(
+            "plan:1",
+            "2026-11-03T10:00:00Z",
+            &["in_progress", "pending"]
+        )])));
+        t.apply(&items(serde_json::json!([plan_item(
+            "plan:2",
+            "2026-11-03T10:05:00Z",
+            &["completed", "in_progress"]
+        )])));
+        let plan = t.plan().expect("a plan");
+        assert_eq!(plan.progress(), (1, 2));
+        assert_eq!(plan.current().map(|e| e.content.as_str()), Some("step 1"));
+        let lines = t
+            .rows()
+            .iter()
+            .filter(|r| matches!(r, Row::Plan { .. }))
+            .count();
+        assert_eq!(lines, 2, "one compact line per update");
+    }
+
+    #[test]
+    fn a_reopened_native_thread_reads_its_plan_from_the_stored_preview() {
+        let plan = serde_json::json!({"entries": [
+            {"content": "Look", "status": "completed"},
+            {"content": "Fix", "status": "in_progress"}
+        ], "updated_at": "2026-11-03T10:00:00Z"});
+        let preview = serde_json::json!({
+            "invocation_id": "i9", "capability_id": "builtin.plan_update",
+            "status": "completed", "title": "plan_update",
+            "output_kind": "agent_plan", "output_preview": plan.to_string()
+        })
+        .to_string();
+        let page = serde_json::json!({ "thread": { "thread_id": "t1" }, "messages": [
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "fix it" },
+            { "message_id": "p1", "sequence": 2, "kind": "capability_display_preview",
+              "status": "finalized", "turn_run_id": RUN, "content": preview },
+        ]});
+        let mut t = Transcript::default();
+        t.set_timeline(serde_json::from_value(page).unwrap());
+        assert_eq!(t.plan().map(AgentPlan::progress), Some((1, 2)));
+        let rows = t.rows();
+        assert!(rows.iter().any(|r| matches!(r, Row::Plan { .. })));
+        assert!(
+            !rows.iter().any(|r| matches!(r, Row::Tool { .. })),
+            "no raw tool row for a plan update"
+        );
+    }
+
+    fn question_item(gate: &str, closed: bool) -> serde_json::Value {
+        serde_json::json!({"question": {
+            "run_id": RUN, "gate_ref": gate, "closed": closed,
+            "form": {"fields": [{"id": "q", "label": "Go?", "required": true,
+                "kind": {"type": "choice", "options": [{"label": "Yes"}]}}]}
+        }})
+    }
+
+    fn question_states(t: &Transcript) -> Vec<(String, QuestionState)> {
+        t.rows()
+            .iter()
+            .filter_map(|r| match r {
+                Row::Question {
+                    gate_ref, state, ..
+                } => Some((gate_ref.clone(), *state)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Review finding 3: closing one form closes that form only.
+    #[test]
+    fn closing_one_question_leaves_the_others_and_an_approval_open() {
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&items(serde_json::json!([
+            question_item("gate:question-a", false),
+            question_item("gate:question-b", false),
+            {"gate": {"run_id": RUN, "gate_kind": "approval", "gate_ref": "gate:cli-1",
+                      "headline": "Allow Bash?"}}
+        ])));
+        t.mark_question_sending("gate:question-a", true);
+        t.apply(&items(serde_json::json!([question_item(
+            "gate:question-a",
+            true
+        )])));
+        assert_eq!(
+            question_states(&t),
+            vec![
+                (
+                    "gate:question-a".to_string(),
+                    QuestionState::Closed(Some(true))
+                ),
+                ("gate:question-b".to_string(), QuestionState::Open),
+            ]
+        );
+        let gate = t.rows().iter().find_map(|r| match r {
+            Row::Gate { state, .. } => Some(*state),
+            _ => None,
+        });
+        assert_eq!(gate, Some(GateState::Open), "the approval still asks");
+    }
+
+    #[test]
+    fn a_question_is_a_form_until_answered_and_the_run_moves_on() {
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&items(serde_json::json!([{"question": {
+            "run_id": RUN, "gate_ref": "gate:question-1",
+            "form": {"fields": [{"id": "q", "label": "Go?", "required": true,
+                "kind": {"type": "choice", "options": [{"label": "Yes"}]}}]}
+        }}])));
+        let state = |t: &Transcript| {
+            t.rows().iter().find_map(|r| match r {
+                Row::Question { state, form, .. } => {
+                    assert_eq!(form.fields[0].label, "Go?");
+                    Some(*state)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(state(&t), Some(QuestionState::Open));
+        t.mark_question_sending("gate:question-1", true);
+        assert_eq!(state(&t), Some(QuestionState::Sending(true)));
+        t.apply(&status("running"));
+        assert_eq!(
+            state(&t),
+            Some(QuestionState::Sending(true)),
+            "a run status names no form; only its own close does"
+        );
+        t.apply(&items(serde_json::json!([question_item(
+            "gate:question-1",
+            true
+        )])));
+        assert_eq!(state(&t), Some(QuestionState::Closed(Some(true))));
+        t.apply(&status("completed"));
+        assert_eq!(state(&t), Some(QuestionState::Closed(Some(true))));
+    }
+
+    #[test]
+    fn reopened_chat_shows_stored_tools_around_a_steer_and_result_cards() {
+        let preview = |id: &str, title: &str| {
+            serde_json::json!({ "invocation_id": id, "capability_id": "builtin.read_file",
+                                "status": "completed", "title": title })
+            .to_string()
+        };
+        let at = |s: u32| format!("2026-10-29T18:{s:02}:00Z");
+        let page = serde_json::json!({ "thread": { "thread_id": "t1" }, "messages": [
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "review it", "created_at": at(10) },
+            { "message_id": "p1", "sequence": 2, "kind": "capability_display_preview",
+              "status": "finalized", "turn_run_id": RUN, "content": preview("i1", "Read a"),
+              "created_at": at(11) },
+            { "message_id": "p2", "sequence": 3, "kind": "capability_display_preview",
+              "status": "finalized", "turn_run_id": RUN, "content": preview("i2", "Read b"),
+              "created_at": at(13) },
+            // Sent at :12, renumbered when the model read it after "Read b".
+            { "message_id": "m2", "sequence": 4, "kind": "user", "status": "submitted",
+              "turn_run_id": RUN, "content": "give feedback now", "created_at": at(12) },
+            { "message_id": "m3", "sequence": 5, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "Here it is.", "created_at": at(14) },
+            { "message_id": "m4", "sequence": 6, "kind": "user", "status": "submitted",
+              "content": "Delegated work finished. Use these results to continue.\n\n[T3 delegated task completed] \"Review page\" — task t\n\nLooks good.",
+              "created_at": at(15) },
+        ]});
+        let mut t = Transcript::default();
+        t.set_timeline(serde_json::from_value(page).expect("timeline decodes"));
+        let labels: Vec<String> = t
+            .rows()
+            .iter()
+            .map(|r| match r {
+                Row::User { text, .. } => format!("user:{text}"),
+                Row::Tool { title, .. } => format!("tool:{title}"),
+                Row::Assistant { text, .. } => format!("reply:{text}"),
+                Row::Delegated { title, .. } => format!("result:{title}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "user:review it",
+                "tool:Read a",
+                "user:give feedback now",
+                "tool:Read b",
+                "reply:Here it is.",
+                "result:Delegated work finished: Review page",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stored_result_settles_a_card_whose_completion_was_missed() {
+        let mut t = Transcript::default();
+        t.upsert_tool(
+            "i1".into(),
+            Some(RUN.into()),
+            "Read a".into(),
+            Some("path: a".into()),
+            ToolStatus::Running,
+        );
+        let preview = serde_json::json!({ "invocation_id": "i1", "status": "completed",
+            "title": "Read a", "output_summary": "12 lines" })
+        .to_string();
+        t.set_timeline(
+            serde_json::from_value(serde_json::json!({ "thread": { "thread_id": "t1" },
+                "messages": [{ "message_id": "p1", "sequence": 1,
+                    "kind": "capability_display_preview", "status": "finalized",
+                    "turn_run_id": RUN, "content": preview }] }))
+            .expect("timeline decodes"),
+        );
+        assert!(t.rows().iter().any(|r| matches!(r,
+            Row::Tool { status: ToolStatus::Completed, detail: Some(d), .. } if d == "12 lines")));
+    }
+
+    #[test]
+    fn streaming_text_converges_into_durable_reply() {
+        let mut t = Transcript::default();
+        t.set_timeline(timeline(None));
+        t.apply(&status("running"));
+        t.apply(&text_update("Hel", false, 1));
+        t.apply(&text_update("Hello", false, 1));
+
+        let rows = t.rows();
+        assert!(
+            matches!(&rows[1], Row::Assistant { text, streaming: true, .. } if text == "Hello")
+        );
+        assert_eq!(t.active_run(), Some(RUN));
+
+        // The live gateway re-sends the reply as a finalized item keyed by
+        // the durable message id; it must not show up as a second copy.
+        t.apply(&frame(serde_json::json!({
+            "cursor": "c3", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "text": { "id": "m2", "run_id": RUN, "body": "Hello", "finalized": true } }
+            ]}
+        })));
+        let no_narration = |rows: &[Row]| !rows.iter().any(|r| matches!(r, Row::Narration { .. }));
+        assert!(
+            no_narration(&t.rows()),
+            "reply copies must not render as narration"
+        );
+
+        let applied = t.apply(&status("completed"));
+        assert!(applied.reload_timeline);
+        assert_eq!(t.active_run(), None);
+
+        t.set_timeline(timeline(Some("Hello")));
+        let rows = t.rows();
+        assert!(
+            no_narration(&rows),
+            "reply copies must not render as narration"
+        );
+        let replies: Vec<_> = rows
+            .iter()
+            .filter(|r| matches!(r, Row::Assistant { .. }))
+            .collect();
+        assert_eq!(
+            replies.len(),
+            1,
+            "live bubble must yield to the durable reply"
+        );
+        assert!(matches!(
+            replies[0],
+            Row::Assistant {
+                streaming: false,
+                ..
+            }
+        ));
+    }
+
+    /// Captured from a live gateway with no LLM configured: the run fails
+    /// before producing any output, so only run_status frames arrive.
+    #[test]
+    fn run_failing_before_output_still_shows_notice() {
+        let mut t = Transcript::default();
+        t.set_timeline(timeline(None));
+        t.apply(&status("running"));
+        t.apply(&frame(serde_json::json!({
+            "cursor": "c4", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "run_status": { "run_id": RUN, "status": "failed",
+                                  "failure_category": "model_credentials_unavailable",
+                                  "failure_summary": "Check the provider API key.",
+                                  "retryable": true } }
+            ]}
+        })));
+        let rows = t.rows();
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(&rows[0], Row::User { .. }));
+        assert!(matches!(
+            &rows[1],
+            Row::RunNotice { text, failed: true, retryable: true, .. }
+                if text.contains("Check the provider API key.")
+        ));
+    }
+
+    /// Captured from a live gateway: Stop pressed during the thinking phase.
+    #[test]
+    fn cancelled_run_releases_stop_button() {
+        let mut t = Transcript::default();
+        t.set_timeline(timeline(None));
+        for s in ["queued", "running", "cancel_requested"] {
+            t.apply(&status(s));
+        }
+        assert_eq!(t.active_run(), Some(RUN));
+        assert!(t.is_stopping());
+        t.apply(&status("cancelled"));
+        assert_eq!(t.active_run(), None);
+        assert!(!t.is_stopping());
+    }
+
+    /// The click alone shows "Stopping"; a failed POST reverts it.
+    #[test]
+    fn stop_click_shows_stopping_before_the_server_confirms() {
+        let mut t = Transcript::default();
+        t.set_timeline(timeline(None));
+        t.apply(&status("running"));
+        assert!(!t.is_stopping());
+        t.mark_stop_requested(RUN);
+        assert!(t.is_stopping());
+        t.clear_stop_requested();
+        assert!(!t.is_stopping());
+        t.mark_stop_requested(RUN);
+        t.apply(&status("cancelled"));
+        assert!(!t.is_stopping());
+    }
+
+    #[test]
+    fn earlier_model_calls_render_as_activity_not_bubbles() {
+        let mut t = Transcript::default();
+        t.apply(&text_update("Let me check.", false, 1));
+        t.apply(&text_update("Done.", false, 2));
+        let rows = t.rows();
+        assert!(matches!(&rows[0], Row::Narration { text, .. } if text == "Let me check."));
+        assert!(matches!(&rows[1], Row::Assistant { text, .. } if text == "Done."));
+    }
+
+    fn tool(status: &str) -> StreamEvent {
+        frame(serde_json::json!({
+            "cursor": "c4", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "capability_activity": {
+                    "invocation_id": "6f1c1c0e-0000-4000-8000-0000000000aa",
+                    "turn_run_id": RUN, "capability_id": "ironclaw.shell",
+                    "status": status, "input_summary": "ls",
+                    "updated_at": "2026-10-28T00:00:00Z" } }
+            ]}
+        }))
+    }
+
+    /// Text, a tool, then the same text flagged as narration: the order
+    /// and the text's key hold at every step, and no thought becomes a
+    /// tool's reason.
+    #[test]
+    fn streamed_text_keeps_its_place_and_key_around_tools() {
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&frame(serde_json::json!({
+            "cursor": "c0", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "thinking": { "id": "th1", "run_id": RUN, "body": "Plan the listing." } }
+            ]}
+        })));
+        t.apply(&text_update("Let me look.", false, 0));
+        t.apply(&tool("running"));
+        let order = |t: &Transcript| {
+            t.rows()
+                .iter()
+                .map(|r| r.key().to_string())
+                .collect::<Vec<_>>()
+        };
+        let tool_key = "tool:6f1c1c0e-0000-4000-8000-0000000000aa";
+        let text_key = format!("text:{RUN}:0");
+        let want = vec!["th1".to_string(), text_key.clone(), tool_key.to_string()];
+        assert_eq!(order(&t), want);
+        t.apply(&text_update("Let me look.", true, 0));
+        assert_eq!(order(&t), want);
+        assert!(
+            t.rows()
+                .iter()
+                .all(|r| !matches!(r, Row::Tool { reason: Some(r), .. } if r.contains("Plan")))
+        );
+
+        // A late running frame never reopens the finished call.
+        t.apply(&tool("completed"));
+        t.apply(&tool("running"));
+        assert!(t.rows().iter().any(|r| matches!(
+            r,
+            Row::Tool {
+                status: ToolStatus::Completed,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn run_end_is_reported_once() {
+        let mut t = Transcript::default();
+        assert_eq!(t.apply(&status("running")).run_ended, None);
+        assert_eq!(
+            t.apply(&status("completed")).run_ended,
+            Some(RunEnd::Completed)
+        );
+        assert_eq!(t.apply(&status("completed")).run_ended, None);
+        let mut t = Transcript::default();
+        assert_eq!(t.apply(&status("failed")).run_ended, Some(RunEnd::Failed));
+    }
+
+    #[test]
+    fn the_settled_run_is_named() {
+        let mut t = Transcript::default();
+        assert_eq!(t.last_settled_run(), None);
+        t.apply(&status("running"));
+        assert_eq!(t.last_settled_run(), None, "running is not settled");
+        t.apply(&status("completed"));
+        assert_eq!(t.last_settled_run(), Some(RUN));
+    }
+
+    #[test]
+    fn gate_closes_when_run_moves_on() {
+        let mut t = Transcript::default();
+        t.apply(&frame(serde_json::json!({
+            "cursor": "c3", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "gate": { "run_id": RUN, "gate_kind": "approval", "gate_ref": "g1",
+                            "headline": "Run shell?", "allow_always": true } }
+            ]}
+        })));
+        assert!(matches!(
+            t.rows()[0],
+            Row::Gate {
+                state: GateState::Open,
+                ..
+            }
+        ));
+        let approve = GateDecision::Approve { always: false };
+        t.mark_gate_resolving("g1", approve);
+        assert!(matches!(
+            t.rows()[0],
+            Row::Gate {
+                state: GateState::Resolving(d),
+                ..
+            } if d == approve
+        ));
+        t.apply(&status("running"));
+        assert!(matches!(
+            t.rows()[0],
+            Row::Gate {
+                state: GateState::Closed(Some(d)),
+                ..
+            } if d == approve
+        ));
+    }
+
+    #[test]
+    fn a_sent_message_stays_until_the_timeline_has_its_copy() {
+        let user = |rows: &[Row]| {
+            rows.iter()
+                .filter(|r| matches!(r, Row::User { .. }))
+                .count()
+        };
+        let mut t = Transcript::default();
+        t.set_timeline(timeline(Some("Hello")));
+        let id = t.push_pending_user("again", &[]);
+        assert_eq!(user(&t.rows()), 2, "shown at once");
+
+        // Accepted, but the runtime has not written it into history yet.
+        t.ack_pending_user(id);
+        t.set_timeline(timeline(Some("Hello")));
+        assert_eq!(user(&t.rows()), 2, "an accepted send must not vanish");
+
+        let mut page = timeline(Some("Hello"));
+        page.messages.push(
+            serde_json::from_value(serde_json::json!({
+                "message_id": "m3", "sequence": 3, "kind": "user", "status": "accepted",
+                "content": "again"
+            }))
+            .expect("message decodes"),
+        );
+        t.set_timeline(page);
+        let rows = t.rows();
+        assert_eq!(user(&rows), 2, "the server copy replaces it, no duplicate");
+        assert!(matches!(rows.last(), Some(Row::User { key, .. }) if key == "msg:m3"));
+    }
+}

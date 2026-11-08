@@ -3,7 +3,7 @@
 //! line under the request; a tool or settled approval in the activity tree
 //! opens to it, so a call that ran without asking (auto-approve) still says
 //! why it ran. The reason itself comes from the transcript
-//! (`ironclaw_gpui_client::transcript`).
+//! (`zlo_client::transcript`).
 
 use rune::{El, text};
 

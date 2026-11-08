@@ -3,8 +3,8 @@
 //! `workspace/command.rs`.) The scrim fades in and the card rises as it
 //! mounts (Rune's presence transition); the selected row is washed.
 
-use ironclaw_gpui_client::history::HistoryHit;
-use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
+use zlo_client::history::HistoryHit;
+use zlo_client::profiles::DEFAULT_PROFILE_ID;
 use rune::{Color, El, Icon, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, el, row};
 use rune_kit::{Kit, TextInput};
 

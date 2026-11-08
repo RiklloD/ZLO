@@ -33,8 +33,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use ironclaw_gpui_client::ClientError;
-use ironclaw_gpui_client::orchestration::{ForkOptions, Lineage, QueueAction, QueueDoc, TaskView};
+use zlo_client::ClientError;
+use zlo_client::orchestration::{ForkOptions, Lineage, QueueAction, QueueDoc, TaskView};
 use rune::TextEdit;
 
 use crate::jobs;

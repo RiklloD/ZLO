@@ -22,7 +22,7 @@ const ROTATE_BYTES: u64 = 4 * 1024 * 1024;
 pub fn init() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("IRONCLAW_DESKTOP_LOG")
         .unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new("warn,zlo_rune=info,ironclaw_gpui_client=info")
+            tracing_subscriber::EnvFilter::new("warn,zlo_rune=info,zlo_client=info")
         });
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -55,7 +55,7 @@ pub fn desktop_log() -> Option<PathBuf> {
 }
 
 pub fn gateway_log() -> Option<PathBuf> {
-    ironclaw_gpui_client::reborn_home()
+    zlo_client::reborn_home()
         .ok()
         .map(|home| home.join("logs/serve.stderr.log"))
 }

@@ -42,7 +42,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use ironclaw_gpui_client::orchestration::WorktreeView;
+use zlo_client::orchestration::WorktreeView;
 use rune::{Cx, El, FileDialogOptions, Tx};
 use rune_kit::Kit;
 
@@ -590,7 +590,7 @@ pub fn on_turn_ended(s: &mut State) {
 /// selection mention.
 pub fn changes_selection(
     s: &State,
-) -> Option<(PathBuf, ironclaw_gpui_client::mentions::LineRange)> {
+) -> Option<(PathBuf, zlo_client::mentions::LineRange)> {
     side(s).and_then(changes::selection)
 }
 

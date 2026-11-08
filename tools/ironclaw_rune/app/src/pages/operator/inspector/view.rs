@@ -5,8 +5,8 @@ use crate::pages::common::controls::{
 };
 use crate::pages::common::ts::{MONO_XS, sm, sm_medium, xs, xs_medium};
 use crate::pages::common::{Tone, card, empty_state, error_line, glyph};
-use ironclaw_gpui_client::operator::InspectorRun;
-use ironclaw_gpui_client::operator::inspector::{
+use zlo_client::operator::InspectorRun;
+use zlo_client::operator::inspector::{
     DiagnosticActivityKind, InspectorModelCallStatus, ToolExecutionStatus,
 };
 use rune::{Cx, El, ScrollSpec, col, el, row, text};

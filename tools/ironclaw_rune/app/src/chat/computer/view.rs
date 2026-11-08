@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use ironclaw_gpui_client::computer_use::{ComputerApp, ComputerSession};
+use zlo_client::computer_use::{ComputerApp, ComputerSession};
 use rune::{Color, Cx, El, LoopSpec, Shape, TextStyle, canvas, col, el, row, text};
 use rune_kit::{ButtonVariant, Kit};
 
@@ -349,9 +349,9 @@ fn permissions_card(p: &Palette, id: &str, cu: &ComputerState, k: &Kit) -> El {
         .child(
             txt(
                 if screen {
-                    "Click Allow, switch ZLO Rune on in System Settings, then reopen ZLO Rune."
+                    "Click Allow, switch ZLO on in System Settings, then reopen ZLO."
                 } else {
-                    "Click Allow, then switch ZLO Rune on in System Settings."
+                    "Click Allow, then switch ZLO on in System Settings."
                 },
                 XS,
                 p.text_faint,

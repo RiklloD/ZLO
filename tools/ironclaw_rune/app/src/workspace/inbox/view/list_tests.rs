@@ -1,7 +1,7 @@
 //! The virtual inbox in the real view: only mounted rows exist, and a
 //! resorted row glides to its new place instead of jumping.
 
-use ironclaw_gpui_client::inbox::InboxState;
+use zlo_client::inbox::InboxState;
 use rune::{App, AppSpec, Env, Runtime};
 
 use crate::state::State;

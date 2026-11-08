@@ -1,7 +1,7 @@
 //! A reply's `visual` blocks drawn natively (GPUI `chat/visual.rs`): bar,
 //! line, area and pie charts, a table and stat tiles, colored from the
 //! theme's accent. The prose around them stays Markdown. The spec and its
-//! checks live in `ironclaw_gpui_client::visual`.
+//! checks live in `zlo_client::visual`.
 //!
 //! GPUI used gpui-component's charts; Rune has none, so the charts here are
 //! drawn with Rune shapes (`canvas`): the same data, axes in the same
@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ironclaw_gpui_client::visual::{self, Body, Segment, Series, Visual, compact, exact};
+use zlo_client::visual::{self, Body, Segment, Series, Visual, compact, exact};
 use rune::{Color, El, LineCap, Path, Shape, canvas, col, el, row, text};
 use rune_kit::{Kit, Markdown, MarkdownStyle};
 

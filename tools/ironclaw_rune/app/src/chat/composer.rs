@@ -8,9 +8,9 @@
 //! and `@` menu takes ↑ ↓ Tab Esc ↵ while it is open; ↑ in an empty composer
 //! recalls the last message. Plain ↵ sends (`on_submit`).
 
-use ironclaw_gpui_client::GateDecision;
-use ironclaw_gpui_client::attachments::format_bytes;
-use ironclaw_gpui_client::transcript::AttachmentChip;
+use zlo_client::GateDecision;
+use zlo_client::attachments::format_bytes;
+use zlo_client::transcript::AttachmentChip;
 use rune::{Color, Cx, El, Icon, KeyEvent, Tx, auto_grow, col, el, icon, row, text, text_input};
 use rune_kit::Kit;
 

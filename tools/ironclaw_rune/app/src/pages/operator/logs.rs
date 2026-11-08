@@ -5,7 +5,7 @@
 use crate::pages::common::controls::{Look, Size, button_sized, input, muted, rule, spinner};
 use crate::pages::common::ts::MONO_XS;
 use crate::pages::common::{empty_state, error_line, loading, page_body_virtual};
-use ironclaw_gpui_client::product_wire::{RebornLogEntry, RebornLogLevel, RebornOperatorLogsQuery};
+use zlo_client::product_wire::{RebornLogEntry, RebornLogLevel, RebornOperatorLogsQuery};
 use rune::{Color, El, TextEdit, col, row, text};
 use rune_kit::Kit;
 

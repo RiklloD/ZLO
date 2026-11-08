@@ -9,8 +9,8 @@ use crate::pages::common::glyph;
 use crate::pages::common::ts::{sm, xs};
 use std::collections::BTreeSet;
 
-use ironclaw_gpui_client::orchestration::RouteProvider;
-use ironclaw_gpui_client::profiles::{
+use zlo_client::orchestration::RouteProvider;
+use zlo_client::profiles::{
     ApprovalMode, ProfileInfo, ProfileSettings, ProfileSupermemory,
 };
 use rune::{Color, Cursor, El, FileDialogOptions, ScrollSpec, Tx, col, el, row};

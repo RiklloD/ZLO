@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine as _;
-use ironclaw_gpui_client::attachments::{self, Body, StagedFile};
+use zlo_client::attachments::{self, Body, StagedFile};
 use serde::{Deserialize, Serialize};
 
 use crate::jobs;
@@ -294,7 +294,7 @@ fn rekey(draft: Draft) -> Draft {
         last = range.end;
         // A mention chip names its target, not a staged file: it keeps its id.
         let mention =
-            ironclaw_gpui_client::mentions::token_mention(&token.id).map(|_| token.id.clone());
+            zlo_client::mentions::token_mention(&token.id).map(|_| token.id.clone());
         if let Some(id) = keys.get(&token.id).cloned().or(mention) {
             let start = text.len();
             text.push_str(&token.text);

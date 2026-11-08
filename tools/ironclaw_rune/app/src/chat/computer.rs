@@ -34,8 +34,8 @@ mod view;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ironclaw_gpui_client::Backend;
-use ironclaw_gpui_client::computer_use::{
+use zlo_client::Backend;
+use zlo_client::computer_use::{
     ComputerApp, ComputerControl, ComputerSession, ComputerState as WireState, FrameAnswer,
 };
 use rune::{Pixels, Tx};
@@ -522,7 +522,7 @@ fn control_landed(
     generation: Generation,
     viewer: String,
     action: ComputerControl,
-    result: Result<(), ironclaw_gpui_client::ClientError>,
+    result: Result<(), zlo_client::ClientError>,
 ) {
     let Some(cu) = same(s, asked, generation) else {
         if result.is_ok() && matches!(action, ComputerControl::TakeOver) {
@@ -683,7 +683,7 @@ pub fn poll(s: &mut State, id: &str, tx: &mut Tx) -> bool {
 /// A session with three windows, a pointer mid-glide and typing, for the
 /// headless scene. The cards have no picture (no gateway), so they show why.
 pub fn fixture(thread_id: &str) -> ComputerState {
-    use ironclaw_gpui_client::computer_use::{ComputerCapture, ComputerPointer, ComputerTyping};
+    use zlo_client::computer_use::{ComputerCapture, ComputerPointer, ComputerTyping};
     let now = now_ms();
     let app = |window_id: u32, name: &str, title: &str, age: f64| ComputerApp {
         pid: 1,

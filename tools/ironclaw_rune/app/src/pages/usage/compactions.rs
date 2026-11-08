@@ -6,7 +6,7 @@
 use crate::chat::model_picker::pretty_model;
 use crate::pages::common::controls::{rule, styled};
 use crate::pages::common::ts::{sm, sm_medium, xs};
-use ironclaw_gpui_client::usage::UsageHistory;
+use zlo_client::usage::UsageHistory;
 use rune::{El, col, el, row};
 
 use super::history::{format_tokens, format_usd};

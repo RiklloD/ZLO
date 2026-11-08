@@ -10,8 +10,8 @@
 //! ChatGPT plan (device sign-in, as Settings → Providers) or an API key.
 //! The first provider connected becomes the active one.
 
-use ironclaw_gpui_client::operator_llm::LlmProviderView;
-use ironclaw_gpui_client::orchestration::RouteProvider;
+use zlo_client::operator_llm::LlmProviderView;
+use zlo_client::orchestration::RouteProvider;
 use rune::{El, col, el, row, text};
 use rune_kit::Kit;
 
@@ -401,8 +401,8 @@ fn restart_step(answered: bool, seen_down: bool, before_deadline: bool) -> Resta
 fn restarted(
     s: &mut State,
     result: Result<
-        ironclaw_gpui_client::orchestration::ProviderCatalog,
-        ironclaw_gpui_client::ClientError,
+        zlo_client::orchestration::ProviderCatalog,
+        zlo_client::ClientError,
     >,
 ) {
     let a = &mut s.onboarding.agents;

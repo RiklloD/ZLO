@@ -45,7 +45,7 @@
 mod slot;
 mod view;
 
-use ironclaw_gpui_client::orchestration::{PickerPrefs, RouteChange, RouteProvider, ThreadRoute};
+use zlo_client::orchestration::{PickerPrefs, RouteChange, RouteProvider, ThreadRoute};
 use rune::TextEdit;
 
 use crate::jobs::{self, Generation};
@@ -668,7 +668,7 @@ pub fn pretty_model(id: &str) -> String {
 
 /// A picker with a small catalog, for the headless scenes.
 pub fn fixture() -> ModelPickerState {
-    use ironclaw_gpui_client::orchestration::PickerModel;
+    use zlo_client::orchestration::PickerModel;
     let provider =
         |id: &str, name: &str, runtime: &str, models: &[&str], efforts: &[&str]| RouteProvider {
             provider: id.into(),

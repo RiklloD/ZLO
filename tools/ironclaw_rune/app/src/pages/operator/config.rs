@@ -10,7 +10,7 @@ use crate::pages::common::controls::{
 };
 use crate::pages::common::ts::{MONO_XS, sm_medium};
 use crate::pages::common::{Tone, empty_state, error_line, loading};
-use ironclaw_gpui_client::product_wire::{
+use zlo_client::product_wire::{
     RebornOperatorConfigEntry, RebornOperatorConfigListResponse,
 };
 use rune::{El, TextEdit, col, row, text};

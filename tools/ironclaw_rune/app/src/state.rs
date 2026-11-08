@@ -14,7 +14,7 @@
 //! Handlers reach their slot from the root (`s.chat.as_mut()`, `&mut s.pages`)
 //! — Rune has no state lenses, every handler closure is `Fn(&mut State)`.
 
-use ironclaw_gpui_client::wire::SessionInfo;
+use zlo_client::wire::SessionInfo;
 
 use crate::design::{self, Palette, prefs::Prefs};
 use crate::jobs::Rt;

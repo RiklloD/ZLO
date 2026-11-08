@@ -3,13 +3,13 @@
 //! the new-thread screen and the settings nav. No gateway is involved.
 
 use chrono::Utc;
-use ironclaw_gpui_client::history::{
+use zlo_client::history::{
     HistoryHighlight, HistoryHit, HistorySearchRole, HistoryThreadOrigin, HistoryThreadResult,
 };
-use ironclaw_gpui_client::inbox::{
+use zlo_client::inbox::{
     InboxEngine, InboxListResponse, InboxProfile, InboxRow, InboxState, InboxStatus,
 };
-use ironclaw_gpui_client::usage::{ThreadContextReport, ThreadTelemetry};
+use zlo_client::usage::{ThreadContextReport, ThreadTelemetry};
 use rune::TextEdit;
 
 use crate::state::{Conn, Page, State};
@@ -346,13 +346,13 @@ pub fn fixture_draft(s: &mut State) {
     super::draft::place(s, vec![fixture_file(1, "PLAN.md")]);
 }
 
-fn fixture_file(key: u64, name: &str) -> ironclaw_gpui_client::attachments::StagedFile {
-    ironclaw_gpui_client::attachments::StagedFile {
+fn fixture_file(key: u64, name: &str) -> zlo_client::attachments::StagedFile {
+    zlo_client::attachments::StagedFile {
         key,
         filename: name.into(),
         mime_type: "text/markdown".into(),
         size: 4_210,
-        body: ironclaw_gpui_client::attachments::Body::Bytes(Vec::new()),
+        body: zlo_client::attachments::Body::Bytes(Vec::new()),
     }
 }
 

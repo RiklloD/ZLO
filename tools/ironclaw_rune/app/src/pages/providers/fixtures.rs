@@ -1,11 +1,11 @@
 //! Fixture data for the Providers scenes (`--scene providers`,
 //! `providers-catalog`, `providers-cli`).
 
-use ironclaw_gpui_client::operator_llm::{
+use zlo_client::operator_llm::{
     LlmActiveSelection, LlmConfigSnapshot, LlmProviderView, UserModelCatalog,
 };
-use ironclaw_gpui_client::orchestration::{PickerPrefs, RouteProvider};
-use ironclaw_gpui_client::task_models::{TaskModelChoice, TaskModels};
+use zlo_client::orchestration::{PickerPrefs, RouteProvider};
+use zlo_client::task_models::{TaskModelChoice, TaskModels};
 
 use super::{Models, Tab};
 use crate::state::{Conn, Page, State};

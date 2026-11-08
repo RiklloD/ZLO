@@ -23,7 +23,7 @@ fn fixture_profile(id: &str, name: &str, used_hours_ago: Option<i64>, threads: u
 
 fn fixture_catalog(ps: &mut ProfilesState) {
     let provider = |id: &str, name: &str, models: &[&str]| {
-        ironclaw_gpui_client::orchestration::RouteProvider {
+        zlo_client::orchestration::RouteProvider {
             provider: id.into(),
             name: name.into(),
             runtime: id.into(),

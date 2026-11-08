@@ -77,7 +77,7 @@ pub fn on_close(s: &mut State, _tx: &mut Tx) {
 /// ⇧⌘O: a fresh draft in the Default profile.
 fn new_thread(s: &mut State) {
     if matches!(s.conn, Conn::Ready) {
-        draft::start_in_profile(s, ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID.into());
+        draft::start_in_profile(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into());
     }
 }
 

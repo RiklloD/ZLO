@@ -2,7 +2,7 @@
 //! `render_queued`, `render_strip`, `render_frame`, `render_queue`).
 
 use chrono::Utc;
-use ironclaw_gpui_client::orchestration::{HoldReason, QueueAction, TaskStatus, TaskView};
+use zlo_client::orchestration::{HoldReason, QueueAction, TaskStatus, TaskView};
 use rune::{El, Icon, TextEdit, col, el, row};
 use rune_kit::{ButtonVariant, Kit, TextInput};
 

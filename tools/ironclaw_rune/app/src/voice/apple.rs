@@ -95,7 +95,7 @@ fn ready() -> Result<(), SttFailure> {
     if !declares(MIC_USAGE) || !declares(SPEECH_USAGE) {
         return Err(SttFailure {
             message:
-                "Voice works in ZLO Rune.app (tools/ironclaw_rune/bundle.sh); this build has no \
+                "Voice works in ZLO.app (tools/ironclaw_rune/bundle.sh); this build has no \
                       microphone permission strings."
                     .into(),
             pane: None,
@@ -200,7 +200,7 @@ pub(crate) async fn authorize() -> Result<(), SttFailure> {
     ready()?;
     let denied = |pane: PrivacyPane| SttFailure {
         message: format!(
-            "ZLO Rune has no {} access. Turn it on in System Settings → Privacy & Security.",
+            "ZLO has no {} access. Turn it on in System Settings → Privacy & Security.",
             pane.label()
         ),
         pane: Some(pane),

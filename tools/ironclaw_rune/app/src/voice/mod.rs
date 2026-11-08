@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ironclaw_gpui_client::transcript::Row;
+use zlo_client::transcript::Row;
 use rune::{Cx, El, TextEdit, Tx};
 use rune_kit::Kit;
 use serde::{Deserialize, Serialize};
@@ -169,7 +169,7 @@ pub struct VoiceState {
 /// What [`VoiceState::fixture_preview`] shows.
 pub struct FixturePreview {
     pub composer: Composer,
-    pub staged: Vec<ironclaw_gpui_client::attachments::StagedFile>,
+    pub staged: Vec<zlo_client::attachments::StagedFile>,
 }
 
 impl Default for VoiceState {
@@ -543,7 +543,7 @@ pub mod fixtures {
     pub fn preview(
         s: &mut State,
         composer: Composer,
-        staged: Vec<ironclaw_gpui_client::attachments::StagedFile>,
+        staged: Vec<zlo_client::attachments::StagedFile>,
     ) {
         s.voice.fixture_preview = Some(FixturePreview { composer, staged });
     }

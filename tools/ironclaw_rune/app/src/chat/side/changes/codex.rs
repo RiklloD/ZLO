@@ -15,8 +15,8 @@
 //!   with the reason shown.
 //! - **Compact**: `thread/compact/start` now.
 
-use ironclaw_gpui_client::review::{self, ReviewFinding};
-use ironclaw_gpui_client::{ReviewTarget, ThreadAction, ThreadActionOutcome, ThreadActionRefusal};
+use zlo_client::review::{self, ReviewFinding};
+use zlo_client::{ReviewTarget, ThreadAction, ThreadActionOutcome, ThreadActionRefusal};
 use rune::{Color, El, TextEdit, col, row};
 use rune_kit::{Kit, TextInput};
 

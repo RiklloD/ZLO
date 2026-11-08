@@ -16,9 +16,9 @@ mod submit;
 
 use std::path::PathBuf;
 
-use ironclaw_gpui_client::attachments::{self, StagedFile};
-use ironclaw_gpui_client::commands::MenuItem;
-use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
+use zlo_client::attachments::{self, StagedFile};
+use zlo_client::commands::MenuItem;
+use zlo_client::profiles::DEFAULT_PROFILE_ID;
 use rune::{Cx, El, FileDialogOptions, KeyEvent, TextEdit, Tx, col, el, row};
 use rune_kit::{Kit, Placement};
 

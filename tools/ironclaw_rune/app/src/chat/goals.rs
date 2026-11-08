@@ -26,8 +26,8 @@
 //!   orchestration places it (`orchestration::composer` while editing,
 //!   `orchestration::tail` otherwise).
 
-use ironclaw_gpui_client::ClientError;
-use ironclaw_gpui_client::inbox::{
+use zlo_client::ClientError;
+use zlo_client::inbox::{
     GoalCheckAction, GoalCheckRecord, GoalCheckSpec, GoalCheckStatus, GoalRecord, GoalStatus,
     ThreadGoalResponse,
 };

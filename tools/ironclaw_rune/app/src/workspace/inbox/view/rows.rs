@@ -2,7 +2,7 @@
 //! cards, the shelves' slim rows, their status and timer, and the small
 //! marks other sidebar parts reuse.
 
-use ironclaw_gpui_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
+use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 use rune::{Color, El, col, el, row};
 use rune_kit::{ControlSize, Kit};
 

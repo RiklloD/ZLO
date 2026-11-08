@@ -343,7 +343,7 @@ mod tests {
         s.onboarding.step = Step::Projects;
         projects::skip_saved(
             &mut s,
-            Err(ironclaw_gpui_client::ClientError::Config("down".into())),
+            Err(zlo_client::ClientError::Config("down".into())),
         );
         assert_eq!(s.onboarding.decision, Decision::Wizard);
         assert!(holds_launch_import(&s), "nothing may import yet");

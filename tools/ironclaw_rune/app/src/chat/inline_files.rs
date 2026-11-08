@@ -13,9 +13,9 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 
-use ironclaw_gpui_client::attachments::{self, StagedFile};
-use ironclaw_gpui_client::inbound_requests::attachment_anchor;
-use ironclaw_gpui_client::mentions;
+use zlo_client::attachments::{self, StagedFile};
+use zlo_client::inbound_requests::attachment_anchor;
+use zlo_client::mentions;
 use rune::{ClipboardContent, El, Icon, TextEdit, icon, row, text};
 
 use crate::icons;
@@ -134,7 +134,7 @@ pub fn pasted_image(
     bytes: Vec<u8>,
     mime: &str,
     staged: &[StagedFile],
-    limits: &ironclaw_gpui_client::wire::AttachmentLimits,
+    limits: &zlo_client::wire::AttachmentLimits,
 ) -> Result<StagedFile, String> {
     let ext = mime.rsplit('/').next().unwrap_or("png");
     let filename = format!("Pasted image.{ext}");

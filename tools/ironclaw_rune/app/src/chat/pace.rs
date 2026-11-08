@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ironclaw_gpui_client::transcript::Row;
+use zlo_client::transcript::Row;
 
 /// Commit steps are at least this far apart, matching the 30 Hz clock.
 const STEP: Duration = Duration::from_millis(30);

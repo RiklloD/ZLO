@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use ironclaw_gpui_client::inbox::InboxRow;
+use zlo_client::inbox::InboxRow;
 
 use crate::state::State;
 

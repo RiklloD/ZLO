@@ -10,12 +10,12 @@ mod schedule_rows;
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use ironclaw_gpui_client::AutomationAction;
-use ironclaw_gpui_client::product_wire::{
+use zlo_client::AutomationAction;
+use zlo_client::product_wire::{
     RebornAutomationHoldReason, RebornAutomationInfo, RebornAutomationRecentRunStatus,
     RebornAutomationRunStatus, RebornAutomationSource, RebornAutomationState,
 };
-use ironclaw_gpui_client::schedules::{ScheduleInfo, ScheduleSecret};
+use zlo_client::schedules::{ScheduleInfo, ScheduleSecret};
 use rune::{Cursor, Cx, El, TextEdit, col, row, text};
 use rune_kit::{Kit, TextInput};
 

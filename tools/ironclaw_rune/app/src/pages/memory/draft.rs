@@ -5,7 +5,7 @@
 //! the same path AND the same edit generation — never a document opened or
 //! edited since.
 
-use ironclaw_gpui_client::memory_page::MemoryDocument;
+use zlo_client::memory_page::MemoryDocument;
 
 /// The open document and its editor, when editing.
 pub(super) struct Open<E> {
@@ -111,7 +111,7 @@ pub(super) fn apply_archived<E>(open: &mut Option<Open<E>>, ticket: &Ticket) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ironclaw_gpui_client::memory_page::{MemoryDocumentKind, MemoryProvenance};
+    use zlo_client::memory_page::{MemoryDocumentKind, MemoryProvenance};
 
     fn doc(path: &str, content: &str) -> MemoryDocument {
         MemoryDocument {

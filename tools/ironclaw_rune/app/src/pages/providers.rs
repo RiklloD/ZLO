@@ -16,9 +16,9 @@ mod view;
 
 use std::collections::HashMap;
 
-use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView, UserModelCatalog};
-use ironclaw_gpui_client::orchestration::{PickerPrefs, RouteProvider};
-use ironclaw_gpui_client::task_models::{TaskModelChoice, TaskModels};
+use zlo_client::operator_llm::{LlmConfigSnapshot, LlmProviderView, UserModelCatalog};
+use zlo_client::orchestration::{PickerPrefs, RouteProvider};
+use zlo_client::task_models::{TaskModelChoice, TaskModels};
 use rune::{Cx, El, TextEdit};
 use rune_kit::Kit;
 

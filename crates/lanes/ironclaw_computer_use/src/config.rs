@@ -14,7 +14,7 @@ pub(crate) const INHERITED_ENV: &[&str] = &[
     "HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
 ];
 
-/// The engine bundled by `tools/ironclaw_gpui/bundle.sh`, relative to the
+/// The engine bundled by `tools/ironclaw_rune/bundle.sh`, relative to the
 /// backend executable (`ZLO.app/Contents/MacOS/zlo-backend`).
 const BUNDLED_ENGINE: &str = "../Helpers/ZLO Computer Use.app/Contents/MacOS/OpenComputerUse";
 

@@ -1,18 +1,24 @@
 # ZLO on Rune: the port plan
 
+> **08.11.2026: Rune is now ZLO.** The GPUI app was removed from the tree and
+> archived on branch `archive/gpui` (tag `gpui-final`; a git bundle and source
+> tarball sit in `~/Archives/ZLO-GPUI-2026-11-08/`). The gateway client moved
+> here as `client/` (crate `zlo_client`, was `ironclaw_gpui_client`). The app
+> took over GPUI's identity: binary `zlo`, `ZLO.app`, bundle id and LaunchAgent
+> `com.numoh.desktop`. Everything below is the port's history; GPUI paths in
+> it refer to the archive branch.
+
 Started 07.11.2026. A full rewrite of the GPUI app (`tools/ironclaw_gpui/app`,
 121 files, ~55k lines) on [Rune](https://github.com/anomalyco/rune), file by
-file. **The GPUI app is not touched**: if Rune disappoints, we go back to it.
+file.
 
-- Binary: `zlo-rune` (`cargo run --release` here). The GPUI app stays `zlo`.
-- App bundle: `bash bundle.sh` builds `target/ZLO Rune.app` and installs it
-  to `~/Applications` (`--no-install` builds only; `ZLO_BACKEND=` reuses a
-  built backend). Bundle id and login-item LaunchAgent label are both
-  `com.numoh.rune`, apart from GPUI's `com.numoh.desktop`, so permissions,
-  notifications, defaults and "Open at login" never collide. The backend
-  (`zlo-backend`, signed `com.numoh.backend`) and the gateway home are shared.
-- Shared: the GUI-free gateway client `tools/ironclaw_gpui/client` (path
-  dependency, unchanged) and the preferences file
+- Binary: `zlo` (`cargo run --release` here), formerly `zlo-rune`.
+- App bundle: `sh bundle.sh` builds `target/ZLO.app` and installs it to
+  `~/Applications` (`--no-install` builds only; `ZLO_BACKEND=` reuses a built
+  backend). Bundle id and login-item LaunchAgent label are both
+  `com.numoh.desktop` (inherited from GPUI). The backend (`zlo-backend`,
+  signed `com.numoh.backend`) and the gateway home are as before.
+- Shared: the GUI-free gateway client (now `client/`) and the preferences file
   (`~/Library/Application Support/ZLO/prefs.json`, same format).
   Every save in this app goes through one ordered writer (`app/src/persist.rs`):
   atomic replace (temp file + rename), latest-wins per file, failed writes
@@ -88,7 +94,7 @@ Rules:
 6. **Headless checks.** Add fixture scenes to `scenes.rs` (one line each,
    fixtures live in your module behind `pub fn fixture_*`), set
    `s.fixture = true` in them, and check your views with
-   `../target/debug/zlo-rune --snap out.png --scene NAME --size 1280x820`
+   `../target/debug/zlo --snap out.png --scene NAME --size 1280x820`
    (add `--tree` for the element tree). Look at the PNGs. Write unit tests
    with `rune::Runtime` for interactions that matter (see `examples/hello`).
 7. **Behaviour parity first, then look.** Same features, same gateway calls,

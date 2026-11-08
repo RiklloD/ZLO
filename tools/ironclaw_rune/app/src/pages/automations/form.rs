@@ -6,9 +6,9 @@
 //! Port of GPUI `pages/automations/form.rs`.
 
 use chrono::{DateTime, Local, Utc};
-use ironclaw_gpui_client::ClientError;
-use ironclaw_gpui_client::profiles::ProfileListResponse;
-use ironclaw_gpui_client::schedules::{
+use zlo_client::ClientError;
+use zlo_client::profiles::ProfileListResponse;
+use zlo_client::schedules::{
     DraftField, Preset, ScheduleDraft, ScheduleInfo, SchedulePreview, ScheduleSpec, ScheduleWrite,
 };
 use rune::{El, TextEdit, col, row};
@@ -138,7 +138,7 @@ impl Form {
             profiles: Vec::new(),
             profile: e
                 .and_then(|s| s.profile_id.clone())
-                .unwrap_or_else(|| ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID.into()),
+                .unwrap_or_else(|| zlo_client::profiles::DEFAULT_PROFILE_ID.into()),
             picker: None,
             fresh_thread: e.is_some_and(|s| !s.bind_to_current_thread),
             signed: e.is_none_or(|s| s.signature.as_ref().is_some_and(|sig| sig.has_secret)),
@@ -734,7 +734,7 @@ fn field(s: &mut State, pick: fn(&mut Form) -> &mut TextEdit) -> &mut TextEdit {
 
 /// A thread on `profile` (and the picked model) for a new schedule's runs.
 async fn new_home_thread(
-    c: &ironclaw_gpui_client::Client,
+    c: &zlo_client::Client,
     profile: &str,
     pick: Option<(String, String)>,
     effort: Option<String>,

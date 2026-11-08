@@ -5,13 +5,13 @@
 
 use std::path::{Path, PathBuf};
 
-use ironclaw_gpui_client::attachments::{self, StagedFile};
-use ironclaw_gpui_client::commands::{match_command, takes_arguments};
-use ironclaw_gpui_client::mentions as mention;
-use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
-use ironclaw_gpui_client::transcript::{AttachmentChip, Row};
-use ironclaw_gpui_client::wire::CommandEffect;
-use ironclaw_gpui_client::{Client, ClientError, GateDecision};
+use zlo_client::attachments::{self, StagedFile};
+use zlo_client::commands::{match_command, takes_arguments};
+use zlo_client::mentions as mention;
+use zlo_client::product_wire::RebornProductCommandInfo;
+use zlo_client::transcript::{AttachmentChip, Row};
+use zlo_client::wire::CommandEffect;
+use zlo_client::{Client, ClientError, GateDecision};
 use rune::Tx;
 
 use super::{Reserve, chat_for, chat_ref, goals, inline_files, menu, set_error};
@@ -521,7 +521,7 @@ pub(crate) fn recall_last(s: &mut State, id: &str) -> bool {
     let Some(last) = c.rows.iter().rev().find_map(|r| match r {
         Row::User {
             text, attachments, ..
-        } => Some(ironclaw_gpui_client::transcript::readable(
+        } => Some(zlo_client::transcript::readable(
             text,
             attachments,
         )),

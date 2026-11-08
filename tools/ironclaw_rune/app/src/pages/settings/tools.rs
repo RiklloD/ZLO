@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use ironclaw_gpui_client::wire::ToolPermission;
+use zlo_client::wire::ToolPermission;
 use rune::{Cursor, El, col, row, text};
 use rune_kit::{Kit, TextInput};
 

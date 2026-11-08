@@ -1,8 +1,8 @@
 //! Read-only browser over the gateway's mounts (memory, workspace, skills).
 //! Port of GPUI `pages/files.rs`.
 
-use ironclaw_gpui_client::FilePreview;
-use ironclaw_gpui_client::workspace_views::{
+use zlo_client::FilePreview;
+use zlo_client::workspace_views::{
     FsMount, ProjectFsEntry, ProjectFsEntryKind, RebornFsMountInfo,
 };
 use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};

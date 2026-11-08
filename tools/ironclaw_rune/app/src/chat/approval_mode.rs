@@ -11,7 +11,7 @@
 //! check on the current one (the global row says what it resolves to), and
 //! the hint for the current choice at the bottom.
 
-use ironclaw_gpui_client::profiles::{ApprovalMode, DEFAULT_PROFILE_ID, ProfileInfo};
+use zlo_client::profiles::{ApprovalMode, DEFAULT_PROFILE_ID, ProfileInfo};
 use rune::{Color, El, PopupItem, PopupMenu, Tx, icon, row, text};
 use rune_kit::Kit;
 

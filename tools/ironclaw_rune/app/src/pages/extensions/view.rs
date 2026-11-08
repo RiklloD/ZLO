@@ -6,11 +6,11 @@ use crate::pages::common::controls::{
 };
 use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs, xs_medium};
 use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
-use ironclaw_gpui_client::extension_state::LifecyclePublicState;
-use ironclaw_gpui_client::product_wire::{
+use zlo_client::extension_state::LifecyclePublicState;
+use zlo_client::product_wire::{
     RebornExtensionCredentialSetup, RebornExtensionRegistryEntry,
 };
-use ironclaw_gpui_client::wire::InstalledExtension;
+use zlo_client::wire::InstalledExtension;
 use rune::{Cx, El, TextStyle, col, el, row, text};
 use rune_kit::Kit;
 

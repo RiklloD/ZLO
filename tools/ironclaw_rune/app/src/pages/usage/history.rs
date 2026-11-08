@@ -10,7 +10,7 @@ use crate::pages::common::controls::{rule, styled};
 use crate::pages::common::ts::{lg_semibold, sm, sm_medium, xs};
 use std::collections::BTreeMap;
 
-use ironclaw_gpui_client::usage::{
+use zlo_client::usage::{
     UsageBucket, UsageHistory, UsageHistorySource, UsagePricingStatus, UsageSourceStatus,
 };
 use rune::{Color, El, TextStyle, col, el, row};

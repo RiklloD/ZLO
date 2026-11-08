@@ -11,8 +11,8 @@
 
 use std::time::Duration;
 
-use ironclaw_gpui_client::ClientError;
-use ironclaw_gpui_client::session_import::{
+use zlo_client::ClientError;
+use zlo_client::session_import::{
     ImportTrigger, ProjectSelection, SessionImportCounts, SessionImportRequest, SessionImportStatus,
 };
 use rune::{El, col};

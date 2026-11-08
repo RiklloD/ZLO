@@ -130,7 +130,7 @@ pub fn config(s: &mut State) {
 
 pub fn extension_config(s: &mut State) {
     base(s, Tab::Extensions);
-    let groups: Option<ironclaw_gpui_client::operator::AdminConfigGroups> = decode(
+    let groups: Option<zlo_client::operator::AdminConfigGroups> = decode(
         "extension configuration",
         json!({ "groups": [
             {

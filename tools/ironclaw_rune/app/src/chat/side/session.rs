@@ -12,7 +12,7 @@
 //! time; closing it drops its stream (area A's embedded chat), reopening
 //! reads it back.
 
-use ironclaw_gpui_client::orchestration::ForkOptions;
+use zlo_client::orchestration::ForkOptions;
 use rune::{Align, Color, Cursor, Cx, El, Side, col, el, icon, row};
 use rune_kit::Kit;
 

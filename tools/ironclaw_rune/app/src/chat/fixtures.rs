@@ -6,11 +6,11 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use ironclaw_gpui_client::GateDecision;
-use ironclaw_gpui_client::commands::MenuSources;
-use ironclaw_gpui_client::contract::ProductGateKind;
-use ironclaw_gpui_client::product_wire::RebornProductCommandInfo;
-use ironclaw_gpui_client::transcript::{AttachmentChip, GateState, QuestionState, Row, ToolStatus};
+use zlo_client::GateDecision;
+use zlo_client::commands::MenuSources;
+use zlo_client::contract::ProductGateKind;
+use zlo_client::product_wire::RebornProductCommandInfo;
+use zlo_client::transcript::{AttachmentChip, GateState, QuestionState, Row, ToolStatus};
 use ironclaw_host_api::agent_plan::{
     QuestionField, QuestionFieldKind, QuestionForm, QuestionOption,
 };
@@ -250,7 +250,7 @@ pub fn long_draft(s: &mut State) {
 /// of its context): the banner's own checks.
 pub fn context_banner(s: &mut State) {
     chat(s);
-    s.workspace.telemetry = Some(ironclaw_gpui_client::usage::ThreadTelemetry {
+    s.workspace.telemetry = Some(zlo_client::usage::ThreadTelemetry {
         context_used: Some(171_000),
         context_max: Some(200_000),
         ..Default::default()

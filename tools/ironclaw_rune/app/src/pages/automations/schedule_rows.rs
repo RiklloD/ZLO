@@ -5,7 +5,7 @@
 //! GPUI `pages/automations/schedule_rows.rs`.
 
 use chrono::{DateTime, Utc};
-use ironclaw_gpui_client::schedules::{LastOutcome, ScheduleInfo, ScheduleSecret, curl_example};
+use zlo_client::schedules::{LastOutcome, ScheduleInfo, ScheduleSecret, curl_example};
 use rune::{Cursor, El, col, el, row, text};
 use rune_kit::Kit;
 

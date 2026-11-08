@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use ironclaw_gpui_client::session_import::{
+use zlo_client::session_import::{
     ImportTrigger, ProjectSelection, SessionImportProject, SessionImportProjects,
     SessionImportRequest, SessionImportStatus,
 };
@@ -238,7 +238,7 @@ fn skip(s: &mut State) {
 /// "Do not import" landed. Finishing after a failed save would let the
 /// held import bring in every folder, the opposite of what was asked: the
 /// wizard stays, says so, and the button tries again.
-pub(super) fn skip_saved(s: &mut State, result: Result<(), ironclaw_gpui_client::ClientError>) {
+pub(super) fn skip_saved(s: &mut State, result: Result<(), zlo_client::ClientError>) {
     match result {
         Ok(()) => super::finish(s, finish_with(0, None)),
         Err(e) => {
@@ -318,7 +318,7 @@ pub(super) fn next(running: bool, waiting: Waiting) -> Next {
 fn landed(
     s: &mut State,
     generation: Generation,
-    result: Result<SessionImportStatus, ironclaw_gpui_client::ClientError>,
+    result: Result<SessionImportStatus, zlo_client::ClientError>,
     waiting: Waiting,
     request: SessionImportRequest,
 ) {
@@ -835,7 +835,7 @@ fn meta(s: &State, sources: Option<Vec<&str>>, threads: u32, last: Option<i64>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ironclaw_gpui_client::session_import::{SessionImportCounts, SessionImportGit};
+    use zlo_client::session_import::{SessionImportCounts, SessionImportGit};
 
     const DAY: i64 = 24 * 60 * 60 * 1000;
 
@@ -929,7 +929,7 @@ mod tests {
     #[test]
     fn a_finished_run_says_what_did_not_come_in() {
         let status = |imported, failed, deferred| SessionImportStatus {
-            sources: vec![ironclaw_gpui_client::session_import::SessionImportSource {
+            sources: vec![zlo_client::session_import::SessionImportSource {
                 source: "claude_code".into(),
                 label: "Claude Code".into(),
                 enabled: true,

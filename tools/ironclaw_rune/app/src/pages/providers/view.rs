@@ -6,9 +6,9 @@ use crate::pages::common::controls::{
 };
 use crate::pages::common::ts::{MONO_XS, body_semibold, sm, sm_medium, xs, xs_medium};
 use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
-use ironclaw_gpui_client::operator_llm::{LlmConfigSnapshot, LlmProviderView};
-use ironclaw_gpui_client::orchestration::RouteProvider;
-use ironclaw_gpui_client::task_models::TaskModelChoice;
+use zlo_client::operator_llm::{LlmConfigSnapshot, LlmProviderView};
+use zlo_client::orchestration::RouteProvider;
+use zlo_client::task_models::TaskModelChoice;
 use rune::{Cx, El, col, el, row, text};
 use rune_kit::Kit;
 

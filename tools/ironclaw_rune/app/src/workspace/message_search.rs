@@ -15,7 +15,7 @@
 
 use std::time::{Duration, Instant};
 
-use ironclaw_gpui_client::history::{
+use zlo_client::history::{
     HistoryHit, HistorySearchRequest, HistoryThreadOrigin, HistoryThreadResult,
 };
 use rune::{El, Span, TextStyle, rich};
@@ -212,7 +212,7 @@ pub fn origin_label(origin: HistoryThreadOrigin) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use ironclaw_gpui_client::history::HistorySearchRole;
+    use zlo_client::history::HistorySearchRole;
 
     use super::*;
 

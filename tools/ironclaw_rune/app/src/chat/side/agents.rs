@@ -4,7 +4,7 @@
 //! adds no requests of its own.
 
 use chrono::Utc;
-use ironclaw_gpui_client::orchestration::{TaskStatus, TaskView};
+use zlo_client::orchestration::{TaskStatus, TaskView};
 use rune::{Color, El, col, icon, row};
 use rune_kit::Kit;
 

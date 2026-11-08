@@ -53,7 +53,7 @@ main() {
   fi
 
   say "building (10 to 20 minutes the first time)"
-  ZLO_ALLOW_ADHOC=1 sh "$src/tools/ironclaw_gpui/bundle.sh"
+  ZLO_ALLOW_ADHOC=1 sh "$src/tools/ironclaw_rune/bundle.sh"
 
   open "$HOME/Applications/ZLO.app"
   say "installed ~/Applications/ZLO.app"

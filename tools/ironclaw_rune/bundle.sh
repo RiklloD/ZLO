@@ -1,39 +1,39 @@
 #!/bin/sh
-# Build ZLO Rune (the Rune app, backend and computer-use engine) and install
-# it to ~/Applications. Modelled on tools/ironclaw_gpui/bundle.sh; the two
-# apps live side by side.
+# Build ZLO (the Rune app, backend and computer-use engine) and install it to
+# ~/Applications.
 #
-#   ZLO Rune.app/Contents/MacOS/zlo-rune                   the window (Rune)
-#   ZLO Rune.app/Contents/MacOS/zlo-backend                IronClaw, started by zlo-rune
-#   ZLO Rune.app/Contents/Helpers/ZLO Computer Use.app     the engine, started by the backend
+#   ZLO.app/Contents/MacOS/zlo                        the window (Rune)
+#   ZLO.app/Contents/MacOS/zlo-backend                IronClaw, started by zlo
+#   ZLO.app/Contents/Helpers/ZLO Computer Use.app     the engine, started by the backend
 #
-# Its own bundle id, com.numoh.rune (the GPUI app is com.numoh.desktop), so
-# macOS keeps separate permissions (microphone, speech, Accessibility, Screen
-# Recording), notification settings and defaults for it. Its login item is
-# the LaunchAgent com.numoh.rune (app/src/login_item.rs). The backend is
-# shared: both apps run the same gateway home, and zlo-backend keeps the
-# identifier com.numoh.backend, which the keychain item trusts.
+# Bundle id com.numoh.desktop, inherited from the archived GPUI app (branch
+# `archive/gpui`), so macOS keeps the permissions (microphone, speech,
+# Accessibility, Screen Recording), notification settings, defaults and the
+# login item (LaunchAgent com.numoh.desktop, app/src/login_item.rs) already
+# granted to ZLO. Installing replaces any earlier ZLO.app, GPUI or Rune.
+# zlo-backend keeps the identifier com.numoh.backend, which the keychain
+# item trusts.
 #
-# Signing as in the GPUI script: IRONCLAW_SIGN_IDENTITY, else the first
-# "Apple Development" identity; ZLO_ALLOW_ADHOC=1 forces ad-hoc signing.
+# Signing: IRONCLAW_SIGN_IDENTITY, else the first "Apple Development"
+# identity; ZLO_ALLOW_ADHOC=1 forces ad-hoc signing.
 #
 # The backend is built from this repo (cargo build --release -p ironclaw)
 # unless ZLO_BACKEND=/path/to/ironclaw names a binary to copy (for example
 # ~/Applications/ZLO.app/Contents/MacOS/zlo-backend). The engine is the pinned
-# release, cached and checked like the GPUI script does (same cache), unless
+# release, cached in ~/Library/Caches/ZLO and checksum verified, unless
 # ZLO_ENGINE_APP=/path/to/Some.app names a local build.
 #
 #   sh tools/ironclaw_rune/bundle.sh              build, install, reopen if it was open
-#   sh tools/ironclaw_rune/bundle.sh --no-install build only (tools/ironclaw_rune/target/ZLO Rune.app)
+#   sh tools/ironclaw_rune/bundle.sh --no-install build only (tools/ironclaw_rune/target/ZLO.app)
 set -eu
 
 ENGINE_TAG=engine-v0.6.0
 ENGINE_URL=https://github.com/RiklloD/hermes-plugin-computer-use-plus/releases/download/$ENGINE_TAG/open-computer-use-engine-arm64.zip
 ENGINE_SHA256=098dc77a2ae1a9e817a2c4e7967ae016c11ed01cf315874b5f7dd44a8bfbebf0
 
-BUNDLE_ID=com.numoh.rune
-NAME="ZLO Rune"
-EXE=zlo-rune
+BUNDLE_ID=com.numoh.desktop
+NAME=ZLO
+EXE=zlo
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -89,7 +89,6 @@ done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 rm -rf "$(dirname "$iconset")"
 
-# The same keys as the GPUI app's plist, under this app's own name and id.
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -144,7 +143,7 @@ echo "Built $app ($version)"
 [ "${1:-}" = "--no-install" ] && exit 0
 
 # Replace, never overwrite in place: macOS kills a running binary whose
-# signed file changed underneath it. Quitting ZLO Rune also stops its backend.
+# signed file changed underneath it. Quitting ZLO also stops its backend.
 was_running=
 if pgrep -f "$dest/Contents/MacOS/$EXE" >/dev/null; then
   was_running=1

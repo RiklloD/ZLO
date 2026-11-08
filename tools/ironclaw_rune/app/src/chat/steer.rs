@@ -5,9 +5,9 @@
 //! declined, since the new words replace it. Stop sits beside Send; ⌥Enter
 //! (or ⌥-click on Send) queues the message to run after the turn.
 
-use ironclaw_gpui_client::attachments::StagedFile;
-use ironclaw_gpui_client::wire::SubmitAck;
-use ironclaw_gpui_client::{ClientError, GateDecision};
+use zlo_client::attachments::StagedFile;
+use zlo_client::wire::SubmitAck;
+use zlo_client::{ClientError, GateDecision};
 use rune::{El, KeyEvent, Tx, row};
 use rune_kit::Kit;
 

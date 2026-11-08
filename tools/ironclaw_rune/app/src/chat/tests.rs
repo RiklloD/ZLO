@@ -1,8 +1,8 @@
 //! Tests for the chat's folding (GPUI `chat/flow.rs` tests). GPUI's
 //! `list_diff` tests have no port: Rune diffs the transcript by key itself.
 
-use ironclaw_gpui_client::GateDecision;
-use ironclaw_gpui_client::transcript::{GateState, Row, ToolStatus};
+use zlo_client::GateDecision;
+use zlo_client::transcript::{GateState, Row, ToolStatus};
 
 use super::flow::{Item, fold, summary};
 
@@ -39,7 +39,7 @@ fn settled_gates_fold_into_the_work_and_open_ones_do_not() {
         key: "g".into(),
         run_id: "r".into(),
         gate_ref: "g".into(),
-        kind: ironclaw_gpui_client::contract::ProductGateKind::Approval,
+        kind: zlo_client::contract::ProductGateKind::Approval,
         headline: "Run zsh".into(),
         body: None,
         allow_always: true,
@@ -112,7 +112,7 @@ fn a_superseded_timeline_load_keeps_its_error_to_itself() {
 
 #[test]
 fn every_live_fold_asks_the_run_clock_again() {
-    use ironclaw_gpui_client::inbox::InboxState;
+    use zlo_client::inbox::InboxState;
     use rune::{Cx, El, Env, Runtime};
 
     use crate::state::State;

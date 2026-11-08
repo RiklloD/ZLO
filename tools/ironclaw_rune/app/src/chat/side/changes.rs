@@ -351,7 +351,7 @@ pub(super) fn selection(
     x: &SideState,
 ) -> Option<(
     std::path::PathBuf,
-    ironclaw_gpui_client::mentions::LineRange,
+    zlo_client::mentions::LineRange,
 )> {
     let state = &x.changes;
     let (range, path) = state
@@ -363,7 +363,7 @@ pub(super) fn selection(
         return None;
     }
     let (a, b) = (range.start.line, range.end.line);
-    let lines = ironclaw_gpui_client::mentions::LineRange::new(a.min(b), a.max(b))?;
+    let lines = zlo_client::mentions::LineRange::new(a.min(b), a.max(b))?;
     let repo = x.repo.as_ref()?;
     Some((repo.join(path), lines))
 }

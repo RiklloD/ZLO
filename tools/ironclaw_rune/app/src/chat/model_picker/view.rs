@@ -1,7 +1,7 @@
 //! The model picker's pills and popovers (GPUI `ModelPicker::render`,
 //! `render_popover`, `render_effort*`, `group_header`, `model_row`).
 
-use ironclaw_gpui_client::orchestration::RouteProvider;
+use zlo_client::orchestration::RouteProvider;
 use rune::{Color, Cx, El, Key, Modifier, Phase, TextEdit, col, el, row};
 use rune_kit::{Kit, Placement, TextInput, popover, scrim};
 

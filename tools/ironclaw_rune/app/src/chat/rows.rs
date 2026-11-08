@@ -7,11 +7,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use ironclaw_gpui_client::GateDecision;
-use ironclaw_gpui_client::contract::ProductGateKind;
-use ironclaw_gpui_client::inbound_requests::{AnchoredPart, anchored_parts};
-use ironclaw_gpui_client::mentions::{self as mention, MentionPart, MentionSpan, MentionUri};
-use ironclaw_gpui_client::transcript::{AttachmentChip, GateState, Row, ToolStatus};
+use zlo_client::GateDecision;
+use zlo_client::contract::ProductGateKind;
+use zlo_client::inbound_requests::{AnchoredPart, anchored_parts};
+use zlo_client::mentions::{self as mention, MentionPart, MentionSpan, MentionUri};
+use zlo_client::transcript::{AttachmentChip, GateState, Row, ToolStatus};
 use rune::{Color, El, Icon, PopupItem, PopupMenu, Tx, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 

@@ -2,7 +2,7 @@
 //! `workspace/inbox.rs`).
 
 use chrono::{Datelike, Duration as Span, Local, TimeZone};
-use ironclaw_gpui_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
+use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 use rune::{PopupItem, PopupMenu, Tx};
 
 use super::{mark, settle, title_of};

@@ -10,12 +10,12 @@
 mod view;
 
 use chrono::{DateTime, Utc};
-use ironclaw_gpui_client::operator::inspector::ToolExecutionDiagnostic;
-use ironclaw_gpui_client::operator::{
+use zlo_client::operator::inspector::ToolExecutionDiagnostic;
+use zlo_client::operator::{
     InspectorPrompt, InspectorRun, InspectorSignal, InspectorStream,
 };
-use ironclaw_gpui_client::product_wire::{RebornLogEntry, RebornOperatorLogsQuery};
-use ironclaw_gpui_client::wire::ThreadSummary;
+use zlo_client::product_wire::{RebornLogEntry, RebornOperatorLogsQuery};
+use zlo_client::wire::ThreadSummary;
 
 use crate::jobs::{self, Generation};
 use crate::state::State;

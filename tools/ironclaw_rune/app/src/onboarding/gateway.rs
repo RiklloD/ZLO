@@ -13,7 +13,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
-use ironclaw_gpui_client::{Client, ClientError, Connection, Token};
+use zlo_client::{Client, ClientError, Connection, Token};
 use serde::{Deserialize, Serialize};
 
 /// The command a person runs on the other computer for its link: its

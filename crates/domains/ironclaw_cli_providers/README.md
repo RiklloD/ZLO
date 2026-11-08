@@ -62,7 +62,7 @@ CLI has its tools and every call waits for a person:
   request that registers a PreToolUse hook (matcher: every tool, MCP tools
   included). The prompt goes out only after the CLI acknowledges it; a
   refusal or no ack within 60 s fails the turn.
-- Each `hook_callback` becomes a pending gate on the bridge. The GPUI app
+- Each `hook_callback` becomes a pending gate on the bridge. The desktop app
   shows it as a normal approval in the thread's stream (`gate.resolve`
   answers it, owner only). The driver answers the CLI with an explicit
   `allow` or `deny`, never an error frame: on an error the CLI falls back to

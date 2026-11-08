@@ -109,7 +109,7 @@ pub(super) fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>
                     s,
                     "Microphone and speech recognition",
                     Some(
-                        "macOS asks once. If you said no, turn ZLO Rune on in System Settings → \
+                        "macOS asks once. If you said no, turn ZLO on in System Settings → \
                          Privacy & Security → Microphone and Speech Recognition.",
                     ),
                     access,

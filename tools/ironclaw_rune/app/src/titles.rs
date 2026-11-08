@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ironclaw_gpui_client::inbox::InboxRow;
+use zlo_client::inbox::InboxRow;
 use rune::Tx;
 
 use crate::jobs;

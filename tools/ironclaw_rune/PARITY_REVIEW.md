@@ -1,5 +1,8 @@
 # ZLO on Rune: parity review against the GPUI app
 
+> Historical. The GPUI app is archived on branch `archive/gpui` (tag
+> `gpui-final`); its paths below resolve there.
+
 Reviewed 07.11.2026 on `rune-port` at `fe0ea85c8`. GPUI paths are under
 `tools/ironclaw_gpui/app/src/`, Rune paths under `tools/ironclaw_rune/app/src/`.
 
@@ -7,7 +10,7 @@ Reviewed 07.11.2026 on `rune-port` at `fe0ea85c8`. GPUI paths are under
 
 The review compares behaviour, not code shape. Every file got these checks:
 
-- **Gateway calls.** All 160 `async fn`s of `ironclaw_gpui_client` were matched
+- **Gateway calls.** All 160 `async fn`s of `zlo_client` were matched
   call by call. For each one, the GPUI files that call it were set against the
   Rune files that call it. `Backend::subscribe` and `inspector_updates` were
   checked the same way.

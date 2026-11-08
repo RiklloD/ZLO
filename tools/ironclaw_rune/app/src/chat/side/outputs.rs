@@ -8,8 +8,8 @@
 
 use std::path::PathBuf;
 
-use ironclaw_gpui_client::ClientError;
-use ironclaw_gpui_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
+use zlo_client::ClientError;
+use zlo_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
 use rune::{El, col, icon, row};
 use rune_kit::Kit;
 

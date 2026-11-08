@@ -8,12 +8,12 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
-use ironclaw_gpui_client::AutomationAction;
-use ironclaw_gpui_client::product_wire::{
+use zlo_client::AutomationAction;
+use zlo_client::product_wire::{
     RebornAutomationInfo, RebornAutomationRecentRunStatus, RebornAutomationSource,
     RebornAutomationState,
 };
-use ironclaw_gpui_client::schedules::{LastOutcome, ScheduleInfo};
+use zlo_client::schedules::{LastOutcome, ScheduleInfo};
 use rune::{El, col, icon, row};
 use rune_kit::Kit;
 

@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use ironclaw_gpui_client::transcript::{QuestionState, Row};
+use zlo_client::transcript::{QuestionState, Row};
 use ironclaw_host_api::agent_plan::{
     QuestionAnswer, QuestionField, QuestionFieldKind, QuestionForm, QuestionValue,
 };

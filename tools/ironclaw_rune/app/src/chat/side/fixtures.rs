@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use ironclaw_gpui_client::transcript::{GateState, Row, ToolStatus};
+use zlo_client::transcript::{GateState, Row, ToolStatus};
 
 use super::{SideChat, SideState, Tab, changes, console, git, history, outputs, project, routines};
 use crate::state::{Conn, Page, State};
@@ -14,7 +14,7 @@ use crate::state::{Conn, Page, State};
 #[derive(Default)]
 pub struct FixtureData {
     pub rows: Vec<Row>,
-    pub tasks: Vec<ironclaw_gpui_client::orchestration::TaskView>,
+    pub tasks: Vec<zlo_client::orchestration::TaskView>,
 }
 
 thread_local! {
@@ -222,7 +222,7 @@ fn gate(key: &str, headline: &str, state: GateState) -> Row {
         key: key.into(),
         run_id: "run-1".into(),
         gate_ref: key.into(),
-        kind: ironclaw_gpui_client::contract::ProductGateKind::Approval,
+        kind: zlo_client::contract::ProductGateKind::Approval,
         headline: headline.into(),
         body: Some("rm -rf target/ && cargo build --release".into()),
         allow_always: true,
@@ -320,7 +320,7 @@ pub fn agents(s: &mut State) {
 
 pub fn routines(s: &mut State) {
     let now = chrono::Utc::now();
-    let schedule: Option<ironclaw_gpui_client::schedules::ScheduleInfo> =
+    let schedule: Option<zlo_client::schedules::ScheduleInfo> =
         serde_json::from_value(serde_json::json!({
             "id": "s1", "title": "Morning inbox digest", "prompt": "Summarize my inbox",
             "schedule": {"type": "cron", "cron": "0 8 * * *"}, "describe": "Every day at 08:00",
@@ -330,7 +330,7 @@ pub fn routines(s: &mut State) {
         }))
         .map_err(|e| tracing::warn!(error = %e, "fixture schedule"))
         .ok();
-    let automation: Option<ironclaw_gpui_client::product_wire::RebornAutomationInfo> =
+    let automation: Option<zlo_client::product_wire::RebornAutomationInfo> =
         serde_json::from_value(serde_json::json!({
             "automation_id": "r1", "name": "Weekly dependency audit",
             "source": {"type": "schedule", "cron": "0 9 * * 1", "timezone": "Europe/Berlin"},
@@ -349,7 +349,7 @@ pub fn routines(s: &mut State) {
 }
 
 pub fn outputs(s: &mut State) {
-    use ironclaw_gpui_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
+    use zlo_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
     let entry = |name: &str, kind| ProjectFsEntry {
         name: name.into(),
         path: format!("/workspace/{name}"),

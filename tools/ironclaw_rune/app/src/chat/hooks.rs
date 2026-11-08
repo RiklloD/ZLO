@@ -6,8 +6,8 @@
 //! side pane (S) works on the open chat and passes its id. The voice (F) and
 //! workspace (B) hooks route by composer or act on the open chat.
 
-use ironclaw_gpui_client::orchestration::MergedFork;
-use ironclaw_gpui_client::wire::TimelineMessage;
+use zlo_client::orchestration::MergedFork;
+use zlo_client::wire::TimelineMessage;
 use rune::{TextEdit, Tx};
 
 use super::{

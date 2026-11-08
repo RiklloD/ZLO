@@ -13,8 +13,8 @@ mod traces;
 
 use std::collections::HashSet;
 
-use ironclaw_gpui_client::product_wire::SettingsToolPermissionState;
-use ironclaw_gpui_client::wire::ToolPermission;
+use zlo_client::product_wire::SettingsToolPermissionState;
+use zlo_client::wire::ToolPermission;
 use rune::{Cx, El, TextEdit, col};
 use rune_kit::Kit;
 
@@ -186,7 +186,7 @@ fn render_desktop(s: &State, k: &Kit) -> El {
                 Some(if bundled {
                     "Starts ZLO when you log in to your Mac."
                 } else {
-                    "Available when ZLO runs from ZLO Rune.app (tools/ironclaw_rune/bundle.sh)."
+                    "Available when ZLO runs from ZLO.app (tools/ironclaw_rune/bundle.sh)."
                 }),
                 login,
             ),

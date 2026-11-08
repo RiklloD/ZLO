@@ -50,7 +50,7 @@ fn paths() -> Option<Paths> {
     if std::env::var_os("IRONCLAW_DESKTOP_URL").is_some_and(|v| !v.is_empty()) {
         return None;
     }
-    let home = ironclaw_gpui_client::reborn_home().ok()?;
+    let home = zlo_client::reborn_home().ok()?;
     let bundled = std::env::current_exe()
         .ok()
         .and_then(|exe| Some(exe.parent()?.join("zlo-backend")));

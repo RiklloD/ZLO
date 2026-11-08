@@ -6,9 +6,9 @@
 
 use std::collections::HashSet;
 
-use ironclaw_gpui_client::GateDecision;
-use ironclaw_gpui_client::contract::ProductGateKind;
-use ironclaw_gpui_client::transcript::{GateState, Row, ToolStatus};
+use zlo_client::GateDecision;
+use zlo_client::contract::ProductGateKind;
+use zlo_client::transcript::{GateState, Row, ToolStatus};
 use rune::{El, col, el, icon, row};
 use rune_kit::{Kit, Spinner};
 

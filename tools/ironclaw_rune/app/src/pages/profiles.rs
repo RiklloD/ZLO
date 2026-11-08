@@ -21,8 +21,8 @@ use crate::pages::common::ts::{sm, sm_medium, title as page_title, xs, xs_semibo
 use crate::pages::common::{
     block_fill, empty_state, error_line, glyph, group_header, page_body, rows_card,
 };
-use ironclaw_gpui_client::orchestration::PickerPrefs;
-use ironclaw_gpui_client::profiles::{HermesImportResponse, ProfileInfo, ProfileSettings};
+use zlo_client::orchestration::PickerPrefs;
+use zlo_client::profiles::{HermesImportResponse, ProfileInfo, ProfileSettings};
 use rune::{Color, Cursor, Cx, El, TextEdit, col, el, row};
 use rune_kit::{Badge, Kit, TextArea, TextInput};
 
@@ -159,7 +159,7 @@ fn load_catalog(s: &mut State) {
                         .filter(|e| e.key.starts_with("tool."))
                         .filter_map(|e| {
                             // silent-ok: a row the gateway shapes differently is skipped.
-                            serde_json::from_value::<ironclaw_gpui_client::wire::ToolPermission>(
+                            serde_json::from_value::<zlo_client::wire::ToolPermission>(
                                 e.value,
                             )
                             .ok()

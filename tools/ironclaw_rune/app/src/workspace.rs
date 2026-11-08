@@ -18,9 +18,9 @@
 
 use std::time::{Duration, Instant};
 
-use ironclaw_gpui_client::inbox::InboxAction;
-use ironclaw_gpui_client::usage::ThreadTelemetry;
-use ironclaw_gpui_client::{Backend, Client, ClientError};
+use zlo_client::inbox::InboxAction;
+use zlo_client::usage::ThreadTelemetry;
+use zlo_client::{Backend, Client, ClientError};
 use rune::{Cx, El, KeyEvent, Tx};
 
 use crate::alerts::Alerts;
@@ -295,7 +295,7 @@ fn connect(s: &mut State) {
                         // Nothing open: a fresh draft in the default profile.
                         None => start_in_profile(
                             s,
-                            ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID.into(),
+                            zlo_client::profiles::DEFAULT_PROFILE_ID.into(),
                         ),
                     }
                 }
@@ -321,7 +321,7 @@ pub fn reconnect(s: &mut State) {
 pub fn release_session_import(s: &mut State) {
     session_import_tick(
         s,
-        ironclaw_gpui_client::session_import::ImportTrigger::Launch,
+        zlo_client::session_import::ImportTrigger::Launch,
     );
 }
 
@@ -616,7 +616,7 @@ fn start_polling(s: &mut State) {
         // First-run setup holds this back and releases it when it ends.
         session_import_tick(
             s,
-            ironclaw_gpui_client::session_import::ImportTrigger::Launch,
+            zlo_client::session_import::ImportTrigger::Launch,
         );
         s.workspace.timers.session_import = Some(now + SESSION_RESCAN);
     }
@@ -626,7 +626,7 @@ fn start_polling(s: &mut State) {
 /// backend skips a pass that is not due).
 fn session_import_tick(
     s: &mut State,
-    trigger: ironclaw_gpui_client::session_import::ImportTrigger,
+    trigger: zlo_client::session_import::ImportTrigger,
 ) {
     // While first-run setup is open nothing is imported, launch or rescan:
     // its Projects step decides what comes in.
@@ -667,7 +667,7 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
         s.workspace.timers.session_import = Some(now + SESSION_RESCAN);
         session_import_tick(
             s,
-            ironclaw_gpui_client::session_import::ImportTrigger::Background,
+            zlo_client::session_import::ImportTrigger::Background,
         );
     }
     if due(s.workspace.timers.inbox) {

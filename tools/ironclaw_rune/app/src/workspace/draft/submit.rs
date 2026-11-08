@@ -2,7 +2,7 @@
 //! a [`Submission`] fixed at Enter, and its reply only clears the draft it
 //! came from while that draft is unedited (GPUI `send_draft_as`).
 
-use ironclaw_gpui_client::attachments::StagedFile;
+use zlo_client::attachments::StagedFile;
 
 use super::{DraftState, inbox, record};
 use crate::chat::inline_files;

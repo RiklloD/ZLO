@@ -16,10 +16,10 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use ironclaw_gpui_client::inbox::{
+use zlo_client::inbox::{
     InboxAction, InboxEngine, InboxListResponse, InboxProfile, InboxRow, InboxState, InboxStatus,
 };
-use ironclaw_gpui_client::profiles::DEFAULT_PROFILE_ID;
+use zlo_client::profiles::DEFAULT_PROFILE_ID;
 use rune::TextEdit;
 
 use super::{active_id, draft};

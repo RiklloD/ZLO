@@ -1,7 +1,7 @@
 //! The sidebar's grouping of the visible rows into shelves, and the
 //! ⌘1..⌘9 jump order.
 
-use ironclaw_gpui_client::inbox::{InboxRow, InboxState};
+use zlo_client::inbox::{InboxRow, InboxState};
 
 use super::subagents;
 use crate::state::State;

@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use ironclaw_gpui_client::transcript::Row;
+use zlo_client::transcript::Row;
 use rune::{App, AppSpec, Env, Runtime};
 
 use super::{Reserve, sync_items};

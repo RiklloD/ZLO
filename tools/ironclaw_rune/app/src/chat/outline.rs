@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use ironclaw_gpui_client::transcript::{self, Row};
+use zlo_client::transcript::{self, Row};
 use rune::{El, Tx, col, el, row, text};
 
 use super::{ChatState, Item, flow};
