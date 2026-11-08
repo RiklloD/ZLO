@@ -61,7 +61,7 @@
 
 pub mod compact;
 mod editor;
-mod loops;
+pub(crate) mod loops;
 
 pub use editor::mono_editor;
 

@@ -66,7 +66,9 @@ fn the_sent_prompt_holds_its_place_while_the_answer_streams() {
     let mut rt = Runtime::new(s, crate::view, (1000., 760.), Env::new(true, 1.));
     let dt = 1. / 60.;
     rt.frame(0.);
-    rt.update(|s, tx| sync_items(s, "t1", tx));
+    rt.update(|s, tx| {
+        sync_items(s, "t1", tx);
+    });
     let mut t = 0.;
     // Let the send's climb and the reserve settle.
     for _ in 0..90 {
@@ -108,7 +110,9 @@ fn an_answer_longer_than_the_room_is_followed_to_its_end() {
     let mut rt = Runtime::new(s, crate::view, (1000., 760.), Env::new(true, 1.));
     let dt = 1. / 60.;
     rt.frame(0.);
-    rt.update(|s, tx| sync_items(s, "t1", tx));
+    rt.update(|s, tx| {
+        sync_items(s, "t1", tx);
+    });
     let mut t = 0.;
     for frame in 0..600 {
         if frame % 4 == 0 && frame < 400 {

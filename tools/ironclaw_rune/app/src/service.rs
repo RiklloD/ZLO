@@ -12,8 +12,8 @@
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// The launchd job older installs used; retired on first start.
@@ -25,7 +25,10 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const HEALTHY_RUN: Duration = Duration::from_secs(60);
 
 struct Supervisor {
-    child: Mutex<Option<Child>>,
+    /// The running backend's pid; 0 while none runs. The supervisor thread
+    /// owns the `Child` and blocks in `wait` on it (no polling), so `stop`
+    /// and `restart` signal it by pid.
+    pid: AtomicU32,
     stopping: AtomicBool,
     running: AtomicBool,
 }
@@ -34,7 +37,7 @@ fn supervisor() -> &'static Arc<Supervisor> {
     static SUPERVISOR: OnceLock<Arc<Supervisor>> = OnceLock::new();
     SUPERVISOR.get_or_init(|| {
         Arc::new(Supervisor {
-            child: Mutex::new(None),
+            pid: AtomicU32::new(0),
             stopping: AtomicBool::new(false),
             running: AtomicBool::new(false),
         })
@@ -92,12 +95,7 @@ pub fn restart() -> bool {
     if sup.stopping.load(Ordering::SeqCst) {
         return false;
     }
-    let pid = sup
-        .child
-        .lock()
-        .ok()
-        .and_then(|c| c.as_ref().map(Child::id));
-    match pid {
+    match backend_pid() {
         Some(pid) => {
             tracing::debug!(pid, "backend restarting");
             terminate(pid);
@@ -161,21 +159,21 @@ pub fn stop_on_terminate() {}
 pub fn stop() {
     let sup = supervisor();
     sup.stopping.store(true, Ordering::SeqCst);
-    if let Some(pid) = sup
-        .child
-        .lock()
-        .ok()
-        .and_then(|c| c.as_ref().map(Child::id))
-    {
+    if let Some(pid) = backend_pid() {
         terminate(pid);
     }
+}
+
+/// The backend this app runs, while it runs.
+pub fn backend_pid() -> Option<u32> {
+    Some(supervisor().pid.load(Ordering::SeqCst)).filter(|pid| *pid != 0)
 }
 
 fn supervise(sup: &Supervisor, paths: &Paths) {
     let mut backoff = Duration::from_secs(1);
     while !sup.stopping.load(Ordering::SeqCst) {
         let started = Instant::now();
-        let child = match spawn(paths) {
+        let mut child = match spawn(paths) {
             Ok(child) => child,
             Err(e) => {
                 tracing::error!(error = %e, backend = %paths.backend.display(), "backend failed to start");
@@ -185,10 +183,10 @@ fn supervise(sup: &Supervisor, paths: &Paths) {
         let pid = child.id();
         tracing::debug!(pid, backend = %paths.backend.display(), "backend started");
         let _ = fs::write(paths.home.join(PID_FILE), pid.to_string());
-        if let Ok(mut slot) = sup.child.lock() {
-            *slot = Some(child);
-        }
-        let status = wait(sup);
+        sup.pid.store(pid, Ordering::SeqCst);
+        // Block until it exits: no wakeups while it runs.
+        let status = child.wait().ok();
+        sup.pid.store(0, Ordering::SeqCst);
         let _ = fs::remove_file(paths.home.join(PID_FILE));
         if sup.stopping.load(Ordering::SeqCst) {
             tracing::debug!(?status, "backend stopped");
@@ -200,28 +198,6 @@ fn supervise(sup: &Supervisor, paths: &Paths) {
         tracing::warn!(?status, retry_in = ?backoff, "backend exited; restarting");
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(MAX_BACKOFF);
-    }
-}
-
-/// Poll rather than block, so `stop` can take the lock to read the pid.
-fn wait(sup: &Supervisor) -> Option<std::process::ExitStatus> {
-    loop {
-        {
-            let mut slot = sup.child.lock().ok()?;
-            let child = slot.as_mut()?;
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    *slot = None;
-                    return Some(status);
-                }
-                Ok(None) => {}
-                Err(_) => {
-                    *slot = None;
-                    return None;
-                }
-            }
-        }
-        std::thread::sleep(Duration::from_millis(200));
     }
 }
 

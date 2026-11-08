@@ -75,8 +75,10 @@ pub use view::view;
 const TIMELINE_LIMIT: u32 = 200;
 /// How long the copy button shows its check.
 const COPIED_FOR: Duration = Duration::from_millis(1400);
-/// The pacer's step, MonoCode's 30 Hz clock.
-const PACE_TICK: Duration = Duration::from_millis(30);
+/// The pacer's step. MonoCode stepped at 30 Hz; each step here rebuilds the
+/// view, and Rune's word reveal already staggers a step's words in one after
+/// another, so 20 Hz reads the same at two thirds of the work.
+const PACE_TICK: Duration = Duration::from_millis(50);
 
 /// Zeron's reading column; Appearance → Conversation width moves it.
 pub fn content_width(s: &State) -> f32 {
@@ -113,6 +115,9 @@ pub struct ChatState {
     pub(crate) reject: Option<reject_feedback::RejectEditor>,
     /// When the live run began, for the pending row's seconds.
     pub(crate) run_started: Option<Instant>,
+    /// The whole second the working line last showed, so the poll asks
+    /// for a new view once a second, not on every frame of the run.
+    clock_secs: Option<u64>,
     pub(crate) reserve: Option<Reserve>,
     /// The transcript viewport's height, for the reserve.
     pub(crate) list_height: f32,
@@ -143,6 +148,10 @@ pub struct ChatState {
     /// Streaming replies revealed at a steady rate.
     pacer: pace::Pacer,
     pub(crate) pacing: bool,
+    /// When the pacer's next step is due. The poll runs on every frame of
+    /// any animation; folding the rows (and rebuilding the view) only when a
+    /// step is due keeps the pacer at its 30 Hz however fast frames come.
+    pace_due: Option<Instant>,
     pub(crate) outline: outline::OutlineState,
     /// Whether the transcript ends with the tail row (work, goal, queue).
     pub(crate) has_tail: bool,
@@ -199,6 +208,7 @@ impl ChatState {
             toggles: HashMap::new(),
             reject: None,
             run_started: None,
+            clock_secs: None,
             reserve: None,
             list_height: 0.,
             turn_heights: HashMap::new(),
@@ -213,6 +223,7 @@ impl ChatState {
             arrive: false,
             pacer: pace::Pacer::default(),
             pacing: false,
+            pace_due: None,
             outline: Default::default(),
             has_tail: false,
             far_from_bottom: false,
@@ -408,10 +419,12 @@ pub(crate) fn open_stream(s: &mut State, id: &str) {
                 batch.push(next);
             }
             let thread = thread.clone();
-            handle.update(move |s, tx| {
-                if !s.fixture {
-                    on_stream(s, &thread, generation, batch, tx);
-                }
+            // Only a burst that changes what shows rebuilds the view: one
+            // the pacer folds in at its next step, or that changed nothing,
+            // costs no frame.
+            handle.update_if(move |s, tx| {
+                crate::energy::hit(crate::energy::C::UpdateStream);
+                !s.fixture && on_stream(s, &thread, generation, batch, tx)
             });
         }
     });
@@ -485,16 +498,20 @@ fn accept_timeline(c: &mut ChatState, asked: u64, floor: Option<&str>) -> bool {
     true
 }
 
+/// Apply a burst of stream messages. Returns whether anything the view reads
+/// changed now (rows the pacer takes in at its next step do not count).
 fn on_stream(
     s: &mut State,
     id: &str,
     generation: Generation,
     batch: Vec<StreamMessage>,
     tx: &mut Tx,
-) {
-    let Some(c) = chat_for(s, id) else { return };
+) -> bool {
+    let Some(c) = chat_for(s, id) else {
+        return false;
+    };
     if c.stream_gen != generation {
-        return;
+        return false;
     }
     // The CLI agent's turn diff and review, to tell the Changes tab (area
     // S) when either moves.
@@ -503,6 +520,7 @@ fn on_stream(
         c.transcript.cli_review().cloned(),
     );
     let mut changed = false;
+    let mut visible = false;
     let mut ended = None;
     let mut reload = false;
     let mut closed = None;
@@ -510,13 +528,18 @@ fn on_stream(
         match message {
             StreamMessage::Frame(frame) => {
                 let applied = c.transcript.apply(&frame.event);
+                crate::energy::hit(if applied.changed {
+                    crate::energy::C::StreamChanged
+                } else {
+                    crate::energy::C::StreamIdle
+                });
                 changed |= applied.changed;
                 reload |= applied.reload_timeline;
                 ended = applied.run_ended.or(ended);
             }
             StreamMessage::Status(status) => {
+                visible |= c.status != status;
                 c.status = status;
-                changed = true;
             }
             StreamMessage::Undecodable { event, error } => {
                 tracing::debug!(%event, %error, "skipped an undecodable stream frame");
@@ -526,12 +549,14 @@ fn on_stream(
     }
     if let Some(reason) = closed {
         set_error(s, id, format!("Live updates stopped: {reason}"));
+        visible = true;
     }
     if reload {
         load_timeline(s, id);
+        visible = true;
     }
     if changed {
-        refresh_rows(s, id, tx);
+        visible |= !refresh_rows(s, id, tx);
     }
     let cli_moved = chat_ref(s, id).is_some_and(|c| {
         (c.transcript.cli_turn_diff(), c.transcript.cli_review())
@@ -539,6 +564,7 @@ fn on_stream(
     });
     if cli_moved && is_main(s, id) {
         side::on_cli_report(s);
+        visible = true;
     }
     // A run end or reload can move tasks and the queue; a run start only
     // needs the slow poll armed.
@@ -547,12 +573,15 @@ fn on_stream(
     } else {
         orchestration::ensure_poll(s, id);
     }
+    visible |= ended.is_some();
     if ended.is_some() && is_main(s, id) {
         side::on_turn_ended(s);
     }
     // Stopping a run is the person's own doing; no alert for that.
     if let Some(end @ (RunEnd::Completed | RunEnd::Failed)) = ended {
-        let Some(c) = chat_ref(s, id) else { return };
+        let Some(c) = chat_ref(s, id) else {
+            return visible;
+        };
         if end == RunEnd::Failed {
             tracing::warn!(thread_id = %id, "run failed");
         }
@@ -561,23 +590,38 @@ fn on_stream(
         crate::voice::run_ended(s, id, run.as_deref(), end == RunEnd::Completed, &rows);
         crate::workspace::run_ended(s, id.to_string(), end == RunEnd::Failed);
     }
+    visible
 }
 
 /// Rebuild the rows from the transcript and fold them into list items.
-pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) {
-    let Some(c) = chat_for(s, id) else { return };
+/// Returns whether the fold waits for the pacer's next step (see
+/// [`sync_items`]).
+pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) -> bool {
+    let Some(c) = chat_for(s, id) else {
+        return false;
+    };
+    crate::energy::hit(crate::energy::C::RowsRebuilt);
     c.rows = Rc::new(c.transcript.rows());
     c.rows_gen += 1;
     question_form::sync_drafts(c);
-    sync_items(s, id, tx);
+    sync_items(s, id, tx)
 }
 
 /// Fold rows into list items: the pacer's view of streaming replies, the
 /// pending row while a run is live, the tail and the reserve.
-pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) {
-    let reduced = s.prefs.reduce_motion == "on";
+///
+/// While the pacer runs and its next step is not due, new rows wait for that
+/// step (at most [`PACE_TICK`]) instead of folding now: the reply grows at
+/// the pacer's rate either way, and the view rebuilds once, not twice.
+/// Returns true when it deferred like that.
+pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
+    // The pacer is motion too: off with "Reduce motion" and while the window
+    // is in the background (nobody watches it type; the text lands whole).
+    let reduced = s.prefs.reduce_motion == "on" || s.look.battery.background();
     let has_tail = orchestration::has_tail(s, id);
-    let Some(c) = chat_for(s, id) else { return };
+    let Some(c) = chat_for(s, id) else {
+        return false;
+    };
     c.has_tail = has_tail;
     let run = c.running_run();
     let live = run.is_some();
@@ -594,21 +638,33 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) {
     } else if c.run_started.take().is_some() {
         crate::run_clock::end(s, id);
     }
-    let Some(c) = chat_for(s, id) else { return };
+    let Some(c) = chat_for(s, id) else {
+        return false;
+    };
     let inputs = (c.rows_gen, live, stopping, c.has_tail, c.reserve.is_some());
     if !c.pacing && !c.pin_next && c.folded == Some(inputs) {
-        return;
+        return false;
+    }
+    let step_pending = c.pace_due.is_some_and(|due| due > Instant::now());
+    let same_shape = c
+        .folded
+        .is_some_and(|f| (f.1, f.2, f.3, f.4) == (inputs.1, inputs.2, inputs.3, inputs.4));
+    if c.pacing && step_pending && !c.pin_next && same_shape {
+        return true;
     }
     c.folded = Some(inputs);
+    crate::energy::hit(crate::energy::C::ItemsFolded);
     let rows = c.rows.clone();
     let (rows, pacing) = c.pacer.apply(&rows, Instant::now(), reduced);
     c.pacing = pacing;
+    c.pace_due = pacing.then(|| Instant::now() + PACE_TICK);
     if pacing {
+        crate::energy::hit(crate::energy::C::PacerStep);
         tx.wake_after(PACE_TICK);
     }
     let new_items = flow::fold(&rows, live, stopping, c.has_tail, c.reserve.is_some());
     if *c.items == new_items && !c.pin_next {
-        return;
+        return false;
     }
     let pin = std::mem::take(&mut c.pin_next);
     c.outline.set(outline::prompts(&new_items));
@@ -628,6 +684,7 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) {
             .flatten();
     }
     try_reveal(s, id, tx);
+    false
 }
 
 /// Scroll to `message_id` (a history-search hit) as soon as it is in the
@@ -703,12 +760,17 @@ fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     };
     let mut changed = false;
     if c.pacing {
-        // The pacer reveals more on each step.
-        sync_items(s, id, tx);
-        changed = true;
+        // The pacer reveals more on each step, once a step is due.
+        match c.pace_due.map(|due| due.saturating_duration_since(Instant::now())) {
+            Some(left) if !left.is_zero() => tx.wake_after(left),
+            _ => {
+                sync_items(s, id, tx);
+                changed = crate::energy::polled(crate::energy::C::PollChatPace, true);
+            }
+        }
     }
     // Computer use's cursor glides, ripples and trails.
-    changed |= computer::poll(s, id, tx);
+    changed |= crate::energy::polled(crate::energy::C::PollComputer, computer::poll(s, id, tx));
     let Some(c) = chat_for(s, id) else {
         return changed;
     };
@@ -716,15 +778,25 @@ fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         let left = COPIED_FOR.saturating_sub(at.elapsed());
         if left.is_zero() {
             c.copied = None;
-            changed = true;
+            changed = crate::energy::polled(crate::energy::C::PollChatCopied, true);
         } else {
             tx.wake_after(left);
         }
     }
-    // The working line counts seconds while a run is live.
-    if c.run_started.is_some() {
-        tx.wake_after(Duration::from_secs(1));
-        changed = true;
+    // The working line counts seconds while a run is live: a new view only
+    // when the shown second turns (the poll also runs on every frame of any
+    // animation, which must not rebuild the view each time), and one wake
+    // at the next turn.
+    match c.run_started {
+        Some(at) => {
+            let elapsed = at.elapsed();
+            let secs = elapsed.as_secs();
+            if c.clock_secs.replace(secs) != Some(secs) {
+                changed = crate::energy::polled(crate::energy::C::PollChatClock, true);
+            }
+            tx.wake_after(Duration::from_secs(secs + 1).saturating_sub(elapsed));
+        }
+        None => c.clock_secs = None,
     }
     changed
 }

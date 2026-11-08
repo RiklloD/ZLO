@@ -15,6 +15,7 @@ mod backdrop;
 mod chat;
 mod design;
 mod drafts;
+mod energy;
 mod icons;
 mod jobs;
 mod login_item;
@@ -39,6 +40,7 @@ use rune::{App, AppSpec, Chrome, Cx, El, KeyEvent, Tx, WindowOptions};
 use crate::state::State;
 
 fn view(s: &State, cx: &mut Cx<State>) -> El {
+    energy::hit(energy::C::ViewRun);
     // Appearance → UI font size scales every shared text style this build.
     design::styles::set_type_scale(&s.prefs);
     design::look::apply_motion(s, cx);
@@ -49,25 +51,29 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 }
 
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
-    let mut changed = workspace::poll(s, tx);
+    use energy::{C, polled};
+    energy::hit(C::PollCall);
+    let mut changed = polled(C::PollWorkspace, workspace::poll(s, tx));
     // The quick composer's voice controls live in its own window.
-    changed |= workspace::quick::poll(s);
+    changed |= polled(C::PollQuick, workspace::quick::poll(s));
+    // The chat counts its own sources (pacer, clock, copy check, computer).
     changed |= chat::poll(s, tx);
     // A closed dock's column stays drawn until its clip has slid shut.
-    changed |= chat::side::poll(s, clock, tx);
-    changed |= voice::poll(s, tx);
-    changed |= snapshot::poll(s, tx);
-    changed |= design::look::poll(s, tx);
+    changed |= polled(C::PollSide, chat::side::poll(s, clock, tx));
+    changed |= polled(C::PollVoice, voice::poll(s, tx));
+    changed |= polled(C::PollSnapshot, snapshot::poll(s, tx));
+    changed |= polled(C::PollLook, design::look::poll(s, tx));
     // Show, place and hide the native previews (QuickLook, WebKit).
-    changed |= native_view::poll(s, tx);
+    changed |= polled(C::PollNativeView, native_view::poll(s, tx));
     changed
 }
 
-/// Window focus: the workspace (refreshes, composer focus) and the battery
-/// saver (reduced motion while unfocused).
+/// Window focus: the battery saver (reduced motion while unfocused) first,
+/// so the workspace's refreshes on refocus see it released, then the
+/// workspace (refreshes, composer focus).
 fn window_focus(s: &mut State, focused: bool, tx: &mut Tx) {
-    workspace::window_focus(s, focused, tx);
     design::look::on_focus(s, focused, tx);
+    workspace::window_focus(s, focused, tx);
 }
 
 fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
@@ -87,6 +93,7 @@ fn main() {
     if !headless {
         service::start();
         service::stop_on_terminate();
+        energy::start();
     }
 
     let spec = AppSpec::<State> {
@@ -120,6 +127,8 @@ fn main() {
         // ⌘ held alone shows the sidebar's ⌘N badges.
         .modifier_keys()
         .on_focus(window_focus)
+        // The energy meter's frame counts: one atomic add per frame.
+        .on_frame_encoded(energy::frame)
         .on_close(workspace::on_close)
         .on_window(move |window| {
             window_state::created(window);

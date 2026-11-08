@@ -152,6 +152,12 @@ impl ModelPickerState {
         self.effort.clone()
     }
 
+    /// A route read was asked for since the picker was made.
+    #[cfg(test)]
+    pub(crate) fn route_requested(&self) -> bool {
+        self.generation != Generation::default()
+    }
+
     /// The model list or the thinking menu is showing.
     pub fn is_open(&self) -> bool {
         self.open || self.effort_open
@@ -391,19 +397,28 @@ pub fn open(s: &mut State) {
     }
 }
 
-/// Read the route (catalog, preferences, the thread's pick) through the
-/// picker's catalog thread.
+/// Read the route (catalog, preferences, the thread's pick): a chat's
+/// through its thread; the new-thread screen's from `GET /providers`, which
+/// needs no thread, so an account with none can still pick a model.
 pub fn load(s: &mut State, slot: Slot) {
     let Some(p) = slot.get_mut(s) else { return };
-    let Some(thread_id) = p.catalog_thread.clone() else {
-        return;
-    };
-    let own = p.thread_id.is_some();
+    let own = p.thread_id.clone();
     let generation = p.generation.bump();
+    let read = own.clone();
+    let own = own.is_some();
     jobs::run(
         s,
         "model picker",
-        move |c| async move { c.thread_route(&thread_id).await },
+        move |c| async move {
+            match read {
+                Some(thread_id) => c.thread_route(&thread_id).await,
+                None => c.providers().await.map(|catalog| ThreadRoute {
+                    providers: catalog.providers,
+                    picker: catalog.picker,
+                    ..ThreadRoute::default()
+                }),
+            }
+        },
         move |s, result, _| {
             let recent = s.prefs.recent_models.clone();
             let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else {
@@ -745,16 +760,24 @@ pub fn scene(s: &mut State, effort: bool) {
 
 // The new-thread screen's picker (area B's `workspace/draft.rs`).
 
-/// The draft screen picked a profile: a fresh picker reading the catalog
-/// through `catalog_thread`, on that profile's default.
+/// The draft screen picked a profile: show that profile's default and read
+/// the catalog if it is not in yet.
 pub fn draft_set_profile(s: &mut State, profile: String, catalog_thread: Option<String>) {
     let Some(d) = s.workspace.draft.as_mut() else {
         return;
     };
+    // Picker preferences are saved through a thread; bind one once the
+    // inbox has it, keeping any pick and catalog already made.
     if d.picker.catalog_thread.is_none() {
-        d.picker = ModelPickerState::new(None, catalog_thread);
+        d.picker.catalog_thread = catalog_thread;
     }
+    // The catalog is what the pill lists: without it the pill stays hidden
+    // and a new thread cannot pick its model (GPUI loads it on construction).
+    let unloaded = d.picker.route.is_none();
     set_profile(s, DRAFT, profile);
+    if unloaded {
+        load(s, DRAFT);
+    }
 }
 
 /// The draft screen's model and thinking pills.

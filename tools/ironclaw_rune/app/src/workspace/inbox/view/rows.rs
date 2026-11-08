@@ -519,7 +519,7 @@ fn pulse_dots(color: Color) -> El {
             phase,
             stops: &[(0.0, 0.35), (0.5, 1.0), (1.0, 0.35)],
             still: 1.0,
-            fps: 30.0,
+            fps: 15.0, // small pulses read the same at 15 fps, at half the frames
         })
     };
     row()

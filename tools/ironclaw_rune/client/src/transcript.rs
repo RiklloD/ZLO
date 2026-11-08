@@ -1227,6 +1227,17 @@ impl Transcript {
 
         let mut rows = Vec::new();
         let mut emitted: HashSet<Option<String>> = HashSet::new();
+        // Runs drawn up to one of their replies, with live rows still to come.
+        let mut split: HashSet<Option<String>> = HashSet::new();
+        // Live keys a stored reply took over.
+        let mut reply_keys: HashSet<&str> = HashSet::new();
+        // Each run's last stored reply: where its notice goes.
+        let last_reply: HashMap<&str, &str> = self
+            .durable
+            .iter()
+            .filter(|m| m.kind == MessageKind::Assistant && m.is_visible())
+            .filter_map(|m| Some((m.turn_run_id.as_deref()?, m.message_id.as_str())))
+            .collect();
         // Activity already drawn above a steer; never drawn twice.
         let mut shown: HashSet<&str> = HashSet::new();
         // A run that fails before producing any output has no live group and
@@ -1336,6 +1347,12 @@ impl Transcript {
                 MessageKind::Assistant => {
                     let run = message.turn_run_id.clone();
                     let group = groups.iter().find(|(r, _)| run.is_some() && *r == run);
+                    // The live text this stored message streamed as, if held.
+                    let copy = |k: &&str| {
+                        matches!(&self.live[*k].item,
+                            Live::Text { body, .. } if body.trim() == text.trim())
+                    };
+                    let mut own: Option<&str> = None;
                     if !emitted.contains(&run)
                         && let Some((_, keys)) = group
                     {
@@ -1344,26 +1361,72 @@ impl Transcript {
                             .copied()
                             .filter(|k| !shown.contains(k))
                             .collect();
-                        self.activity_rows(&rest, Some(&text), &mut rows);
-                        emitted.insert(run.clone());
+                        // A run that replies more than once (a steer, or a
+                        // stored narration) is drawn in reply order: only
+                        // what came before this reply goes above it, the
+                        // rest waits for the next reply or the run's tail.
+                        // Dumping all of it here drew newer text above older
+                        // text, then reflowed when the timeline caught up.
+                        // A CLI's live text is cumulative: an entry that
+                        // already runs past this reply is still growing, so
+                        // it stays below as the bubble, not above the reply.
+                        let grown = |k: &&str| {
+                            matches!(&self.live[*k].item, Live::Text { body, .. }
+                                if body.trim().len() > text.trim().len()
+                                    && body.trim().starts_with(text.trim()))
+                        };
+                        let take: Vec<&str> = match rest.iter().position(|k| copy(k) || grown(k)) {
+                            Some(i) if copy(&rest[i]) => {
+                                own = Some(rest[i]);
+                                rest[..=i].to_vec()
+                            }
+                            Some(i) => rest[..i].to_vec(),
+                            None => match sent {
+                                Some(sent) => rest
+                                    .iter()
+                                    .copied()
+                                    .filter(|k| self.live[*k].at <= sent)
+                                    .collect(),
+                                None => rest.clone(),
+                            },
+                        };
+                        self.activity_rows(&take, Some(&text), &mut rows);
+                        if take.len() == rest.len() {
+                            emitted.insert(run.clone());
+                        } else {
+                            split.insert(run.clone());
+                        }
+                        shown.extend(take);
                     }
                     // The bubble the reply streamed into keeps its key, so
                     // the stored copy replaces it in place.
-                    let key = group
-                        .and_then(|(_, keys)| {
-                            keys.iter().find(|k| {
-                                matches!(&self.live[**k].item,
-                                    Live::Text { body, .. } if body.trim() == text.trim())
-                            })
+                    // Each live copy lends its key once: a run that says
+                    // the same words twice must not draw two rows one key.
+                    let own = own.or_else(|| {
+                        group.and_then(|(_, keys)| {
+                            keys.iter()
+                                .copied()
+                                .find(|k| copy(k) && !reply_keys.contains(k))
                         })
-                        .map_or(key, |k| k.to_string());
+                    });
+                    let key = match own {
+                        Some(k) => {
+                            reply_keys.insert(k);
+                            k.to_string()
+                        }
+                        None => key,
+                    };
                     rows.push(Row::Assistant {
                         key,
                         text,
                         streaming: false,
                     });
-                    if let Some(run) = &run {
-                        self.notice_row(run, &mut rows);
+                    // The run's notice goes once, under its last row.
+                    if let Some(r) = run.as_deref()
+                        && last_reply.get(r) == Some(&message.message_id.as_str())
+                        && (group.is_none() || emitted.contains(&run))
+                    {
+                        self.notice_row(r, &mut rows);
                     }
                 }
                 _ => rows.push(Row::System { key, text }),
@@ -1387,11 +1450,31 @@ impl Transcript {
             if emitted.contains(run) {
                 continue;
             }
-            let durable = run.as_deref().and_then(|r| durable_replies.get(r).copied());
+            // A split run's stored replies were matched in place; what is
+            // left is newer, so its last text is the live bubble.
+            let durable = run
+                .as_deref()
+                .and_then(|r| durable_replies.get(r).copied())
+                .filter(|_| !split.contains(run));
+            // A split run's stored replies are drawn already: a leftover
+            // live copy of one (a final frame, a re-sent item) is not news.
+            let stored: HashSet<&str> = if split.contains(run) {
+                self.durable
+                    .iter()
+                    .filter(|m| m.kind == MessageKind::Assistant && m.turn_run_id == *run)
+                    .filter_map(|m| m.content.as_deref().map(str::trim))
+                    .collect()
+            } else {
+                HashSet::new()
+            };
             let rest: Vec<&str> = keys
                 .iter()
                 .copied()
                 .filter(|k| !shown.contains(k))
+                .filter(|k| {
+                    !matches!(&self.live[*k].item,
+                        Live::Text { body, .. } if stored.contains(body.trim()))
+                })
                 .collect();
             self.activity_rows(&rest, durable, &mut rows);
             if let Some(run) = run {
@@ -1984,6 +2067,133 @@ mod tests {
                 "result:Delegated work finished: Review page",
             ]
         );
+    }
+
+    /// A steered run stores its earlier replies while it still streams.
+    /// Newer live text must stay below them (and below the steer), not jump
+    /// above the stored replies and reflow once the timeline catches up.
+    #[test]
+    fn a_steered_run_keeps_reply_order_while_it_streams() {
+        let mut t = Transcript::default();
+        let ms = |ts: i64| chrono::DateTime::from_timestamp_millis(ts).map(|d| d.to_rfc3339());
+        let now = chrono::Utc::now().timestamp_millis();
+        t.apply(&text_update("Starting a long run.", false, 1));
+        t.apply(&tool("running"));
+        t.apply(&text_update("Starting a long run.", true, 1));
+        t.apply(&text_update("The profile folder holds one file.", false, 2));
+        t.apply(&text_update("The profile folder holds one file.", true, 2));
+        let page = |extra: Vec<serde_json::Value>| {
+            let mut messages = vec![
+                serde_json::json!({ "message_id": "m1", "sequence": 1, "kind": "user",
+                    "status": "accepted", "turn_run_id": RUN, "content": "go",
+                    "created_at": ms(now - 60_000) }),
+                serde_json::json!({ "message_id": "a1", "sequence": 2, "kind": "assistant",
+                    "status": "finalized", "turn_run_id": RUN,
+                    "content": "Starting a long run.", "created_at": ms(now + 1) }),
+                serde_json::json!({ "message_id": "a2", "sequence": 3, "kind": "assistant",
+                    "status": "finalized", "turn_run_id": RUN,
+                    "content": "The profile folder holds one file.", "created_at": ms(now + 2) }),
+                serde_json::json!({ "message_id": "m2", "sequence": 4, "kind": "user",
+                    "status": "submitted", "turn_run_id": RUN, "content": "say bananas",
+                    "created_at": ms(now + 3) }),
+            ];
+            messages.extend(extra);
+            serde_json::from_value::<TimelinePage>(serde_json::json!({
+                "thread": { "thread_id": "t1" }, "messages": messages
+            }))
+            .expect("timeline decodes")
+        };
+        t.set_timeline(page(vec![]));
+        // After the steer: the model answers it while the run goes on.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        t.apply(&text_update("Bananas.", false, 3));
+        let labels = |t: &Transcript| -> Vec<String> {
+            t.rows()
+                .iter()
+                .map(|r| match r {
+                    Row::User { text, .. } => format!("user:{text}"),
+                    Row::Tool { .. } => "tool".into(),
+                    Row::Assistant { text, .. } => format!("reply:{text}"),
+                    Row::Narration { text, .. } => format!("narration:{text}"),
+                    other => format!("{other:?}"),
+                })
+                .collect()
+        };
+        let streaming = [
+            "user:go",
+            "reply:Starting a long run.",
+            "tool",
+            "reply:The profile folder holds one file.",
+            "user:say bananas",
+            "reply:Bananas.",
+        ];
+        assert_eq!(labels(&t), streaming);
+        let keys = |t: &Transcript| {
+            t.rows()
+                .iter()
+                .map(|r| r.key().to_string())
+                .collect::<Vec<_>>()
+        };
+        let before = keys(&t);
+        // The stop lands, then the timeline stores the answer: nothing moves.
+        t.apply(&status("cancelled"));
+        let stopped = keys(&t);
+        assert_eq!(&stopped[..before.len()], &before[..]);
+        assert_eq!(
+            stopped.iter().filter(|k| k.starts_with("notice:")).count(),
+            1
+        );
+        t.set_timeline(page(vec![
+            serde_json::json!({ "message_id": "a3", "sequence": 5,
+            "kind": "assistant", "status": "finalized", "turn_run_id": RUN,
+            "content": "Bananas.", "created_at": ms(chrono::Utc::now().timestamp_millis()) }),
+        ]));
+        assert_eq!(keys(&t), stopped);
+    }
+
+    /// A run that says the same words twice keeps one row per reply, each
+    /// under its own key, and a final frame's copy of a stored reply that
+    /// is already drawn never adds a third.
+    #[test]
+    fn repeated_replies_keep_their_own_keys_and_no_final_copy() {
+        let mut t = Transcript::default();
+        t.apply(&text_update("Done.", true, 1));
+        t.apply(&tool("completed"));
+        t.apply(&text_update("Done.", true, 2));
+        t.apply(&frame(serde_json::json!({
+            "cursor": "c9", "type": "final_reply",
+            "reply": { "turn_run_id": RUN, "text": "Done.",
+                       "generated_at": "2026-10-28T00:00:00Z" }
+        })));
+        let at = |s: u32| format!("2000-01-01T00:00:{s:02}Z");
+        t.set_timeline(
+            serde_json::from_value(
+                serde_json::json!({ "thread": { "thread_id": "t1" }, "messages": [
+                    { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+                      "turn_run_id": RUN, "content": "go", "created_at": at(1) },
+                    { "message_id": "a1", "sequence": 2, "kind": "assistant", "status": "finalized",
+                      "turn_run_id": RUN, "content": "Done.", "created_at": at(2) },
+                    { "message_id": "a2", "sequence": 3, "kind": "assistant", "status": "finalized",
+                      "turn_run_id": RUN, "content": "Done.", "created_at": at(3) },
+                ]}),
+            )
+            .expect("timeline decodes"),
+        );
+        let rows = t.rows();
+        let replies: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Assistant { key, .. } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            replies,
+            [format!("text:{RUN}:1"), format!("text:{RUN}:2")],
+            "{rows:?}"
+        );
+        let keys: HashSet<&str> = rows.iter().map(Row::key).collect();
+        assert_eq!(keys.len(), rows.len(), "duplicate row keys: {rows:?}");
     }
 
     #[test]

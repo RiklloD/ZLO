@@ -65,6 +65,15 @@ pub fn enabled(prefs: &Prefs) -> bool {
     prefs.wallpaper != Wallpaper::None && prefs.wallpaper_opacity > 0.
 }
 
+/// Whether the wallpaper lies over the main composer: the `window` and
+/// `conversation` areas hold both the new-thread and the docked chat
+/// composer. A `matched` flight between them draws above the whole window,
+/// so over this layer: the card would show unwashed (dark) until it landed
+/// back under it (see `chat::composer::dock_matched`).
+pub fn covers_composer(prefs: &Prefs) -> bool {
+    enabled(prefs) && matches!(prefs.wallpaper_area.as_str(), "window" | "conversation")
+}
+
 /// The wallpaper layer for `area`, when the preferences put it there: an
 /// out-of-flow element pinned to all four edges of its parent, inert (it
 /// takes no clicks, hovers or scrolls) and hidden from accessibility. Add it
@@ -357,6 +366,35 @@ fn replace(s: &mut State, image: Option<Pixels>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The composers' matched flight draws over the wallpaper, so it is off
+    /// wherever the wallpaper lies over them.
+    #[test]
+    fn the_wallpaper_covers_the_composer_in_the_main_areas_only() {
+        let mut prefs = Prefs {
+            wallpaper: Wallpaper::Aurora,
+            wallpaper_opacity: 0.4,
+            ..Prefs::default()
+        };
+        for (area, covers) in [
+            ("window", true),
+            ("conversation", true),
+            ("sidebar", false),
+            ("pane", false),
+        ] {
+            prefs.wallpaper_area = area.into();
+            assert_eq!(covers_composer(&prefs), covers, "{area}");
+        }
+        prefs.wallpaper_area = "window".into();
+        prefs.wallpaper_opacity = 0.;
+        assert!(
+            !covers_composer(&prefs),
+            "an invisible wallpaper covers nothing"
+        );
+        prefs.wallpaper_opacity = 0.4;
+        prefs.wallpaper = Wallpaper::None;
+        assert!(!covers_composer(&prefs));
+    }
 
     #[test]
     fn a_folder_without_pictures_picks_nothing() {

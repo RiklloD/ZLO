@@ -44,7 +44,11 @@ fn elapsed(task: &TaskView) -> Option<String> {
 fn status_dot(color: Color, live: bool) -> El {
     let d = ui::dot(color, 8.);
     if live {
-        d.looping(rune::LoopSpec::opacity(1.2, 0.0, 0.45, 1.0))
+        d.cycle(crate::design::kit::loops::breathe(
+            1.2,
+            0.,
+            &crate::design::kit::loops::BREATH_45,
+        ))
     } else {
         d
     }

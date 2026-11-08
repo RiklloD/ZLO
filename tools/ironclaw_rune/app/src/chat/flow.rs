@@ -563,14 +563,11 @@ pub fn render_activity(
             .font(small)
             .color(p.text_muted)
             .truncate()
-            .looping(rune::LoopSpec {
-                period: 1.6,
-                delay: 0.,
-                kind: rune::LoopKind::Opacity {
-                    low: 0.55,
-                    high: 1.,
-                },
-            })
+            .cycle(crate::design::kit::loops::breathe(
+                1.6,
+                0.,
+                &crate::design::kit::loops::BREATH_55,
+            ))
     } else {
         RollingText::new(format!("{key}-title"), label.clone())
             .font(small)

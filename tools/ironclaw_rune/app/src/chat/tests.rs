@@ -130,7 +130,9 @@ fn every_live_fold_asks_the_run_clock_again() {
     let mut rt = Runtime::new(s, blank, (100., 100.), Env::new(true, 1.));
     let fold = |rt: &mut Runtime<State>| {
         let id = id.clone();
-        rt.update(move |s, tx| super::sync_items(s, &id, tx));
+        rt.update(move |s, tx| {
+            super::sync_items(s, &id, tx);
+        });
         rt.state
             .chat
             .as_ref()
@@ -144,4 +146,94 @@ fn every_live_fold_asks_the_run_clock_again() {
     row.working_since = Some(chrono::Utc::now().timestamp_millis() - 90_000);
     rt.update(move |s, _| crate::run_clock::set_rows(s, &[row]));
     assert!(fold(&mut rt).elapsed().as_secs() >= 89);
+}
+
+/// A live chat in a runtime, for the poll and fold tests below.
+fn live_runtime() -> (rune::Runtime<crate::state::State>, String) {
+    use rune::{Cx, El, Env, Runtime};
+
+    use crate::state::State;
+
+    fn blank(_: &State, _: &mut Cx<State>) -> El {
+        rune::el()
+    }
+    let mut s = super::fixtures::test_state();
+    super::fixtures::running(&mut s);
+    let id = s
+        .chat
+        .as_ref()
+        .map(|c| c.thread_id.clone())
+        .expect("open chat");
+    (Runtime::new(s, blank, (100., 100.), Env::new(true, 1.)), id)
+}
+
+#[test]
+fn the_working_clock_rebuilds_the_view_once_a_second_not_every_frame() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    let (mut rt, id) = live_runtime();
+    let poll = |rt: &mut rune::Runtime<crate::state::State>| {
+        let out = Rc::new(Cell::new(false));
+        let seen = out.clone();
+        let id = id.clone();
+        rt.update(move |s, tx| {
+            let c = super::chat_for(s, &id).expect("chat");
+            // The pacer and the copy check are not under test.
+            c.pacing = false;
+            c.copied = None;
+            if c.run_started.is_none() {
+                c.run_started = Some(Instant::now());
+            }
+            seen.set(super::poll(s, tx));
+        });
+        out.get()
+    };
+    assert!(poll(&mut rt), "the first poll shows the seconds");
+    // The poll runs on every frame of any animation; within the same second
+    // it must not ask for a new view.
+    for _ in 0..5 {
+        assert!(!poll(&mut rt), "same second, no new view");
+    }
+    // The next second turns.
+    let back = id.clone();
+    rt.update(move |s, _| {
+        let c = super::chat_for(s, &back).expect("chat");
+        c.run_started = c.run_started.map(|t| t - Duration::from_secs(1));
+    });
+    assert!(poll(&mut rt), "a new second, a new view");
+}
+
+#[test]
+fn stream_rows_wait_for_the_pacers_next_step() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    let (mut rt, id) = live_runtime();
+    let fold = |rt: &mut rune::Runtime<crate::state::State>, due_in: Option<Duration>| {
+        let out = Rc::new(Cell::new(false));
+        let seen = out.clone();
+        let id = id.clone();
+        rt.update(move |s, tx| {
+            super::sync_items(s, &id, tx);
+            let c = super::chat_for(s, &id).expect("chat");
+            // New rows from the stream, with the pacer between steps.
+            c.rows_gen += 1;
+            c.pacing = due_in.is_some();
+            c.pace_due = due_in.map(|d| Instant::now() + d);
+            seen.set(super::sync_items(s, &id, tx));
+        });
+        out.get()
+    };
+    assert!(
+        fold(&mut rt, Some(Duration::from_secs(5))),
+        "a step is pending: the rows wait for it"
+    );
+    assert!(
+        !fold(&mut rt, Some(Duration::ZERO)),
+        "the step is due: the rows fold now"
+    );
+    assert!(!fold(&mut rt, None), "no pacer: the rows fold now");
 }

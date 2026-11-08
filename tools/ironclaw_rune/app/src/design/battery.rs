@@ -49,6 +49,12 @@ impl BatterySaver {
         self.idle || !self.active
     }
 
+    /// The window is in the background (not the key window). Unlike
+    /// [`Self::saving`], reading without touching anything does not count.
+    pub fn background(&self) -> bool {
+        !self.active
+    }
+
     /// The window gained or lost focus. Returns whether the saver changed.
     pub fn set_active(&mut self, active: bool) -> bool {
         let before = self.saving();

@@ -83,6 +83,7 @@ pub fn run<F, Fut, T>(
             tracing::warn!(view = label, error = %e, "gateway request failed");
         }
         handle.update(move |s, tx| {
+            crate::energy::hit(crate::energy::C::UpdateJob);
             if !s.fixture {
                 done(s, result, tx)
             }
@@ -100,6 +101,7 @@ pub fn blocking<T: Send + 'static>(
     std::thread::spawn(move || {
         let out = work();
         handle.update(move |s, tx| {
+            crate::energy::hit(crate::energy::C::UpdateBlocking);
             if !s.fixture {
                 done(s, out, tx)
             }
@@ -115,6 +117,7 @@ pub fn after(s: &State, delay: Duration, f: impl FnOnce(&mut State, &mut Tx) + S
     std::thread::spawn(move || {
         std::thread::sleep(delay);
         handle.update(move |s, tx| {
+            crate::energy::hit(crate::energy::C::UpdateTimer);
             if !s.fixture {
                 f(s, tx)
             }

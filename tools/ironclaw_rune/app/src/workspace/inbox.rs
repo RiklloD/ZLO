@@ -291,6 +291,7 @@ pub(super) fn apply(s: &mut State, list: InboxListResponse) {
         }) && row.status != Some(InboxStatus::Working)
     });
     s.workspace.inbox.list = list;
+    super::draft::bind_catalog(s);
     if finished {
         poll_for_title(s);
     }
@@ -427,10 +428,13 @@ pub(super) fn poll_due(s: &mut State) {
     if !s.workspace.inbox.needs_poll() {
         return;
     }
-    // In the background nothing is watching; activation refreshes.
-    if s.workspace.window_active {
-        refresh(s);
+    // In the background nothing is watching: let the poll lapse instead of
+    // waking every 5 s to do nothing. Activation refreshes the inbox, whose
+    // reply arms the poll again (`apply` → `ensure_poll`).
+    if !s.workspace.window_active {
+        return;
     }
+    refresh(s);
     s.workspace.timers.inbox = Some(Instant::now() + POLL);
 }
 
@@ -596,5 +600,42 @@ mod tests {
     fn long_branches_keep_their_last_segment() {
         assert_eq!(branch_tail("feature/team/sidebar-pass"), "…/sidebar-pass");
         assert_eq!(branch_tail("main"), "main");
+    }
+
+    /// A new thread lists its models: the draft's picker reads the catalog
+    /// on open, with or without a thread (`GET /providers`), and binds a
+    /// thread for saving its preferences once the inbox has one, keeping the
+    /// user's pick.
+    #[test]
+    fn a_new_thread_loads_its_model_catalog() {
+        // The inbox already lists a thread.
+        let mut s = crate::chat::fixtures::test_state();
+        s.workspace.inbox.list.rows = vec![row("t1", InboxState::Inbox, None)];
+        draft::open(&mut s);
+        let picker = &s.workspace.draft.as_ref().expect("draft").picker;
+        assert_eq!(picker.catalog_thread.as_deref(), Some("t1"));
+        assert!(picker.route_requested(), "the catalog is read on open");
+
+        // A fresh account: no thread at all.
+        let mut s = crate::chat::fixtures::test_state();
+        draft::open(&mut s);
+        let picker = &s.workspace.draft.as_ref().expect("draft").picker;
+        assert_eq!(picker.catalog_thread, None);
+        assert!(
+            picker.route_requested(),
+            "no thread is needed to list models"
+        );
+        let picked = Some(("codex".to_string(), "gpt-6.1-sol".to_string()));
+        s.workspace.draft.as_mut().expect("draft").picker.current = picked.clone();
+        apply(
+            &mut s,
+            InboxListResponse {
+                rows: vec![row("t2", InboxState::Inbox, None)],
+                ..Default::default()
+            },
+        );
+        let picker = &s.workspace.draft.as_ref().expect("draft").picker;
+        assert_eq!(picker.catalog_thread.as_deref(), Some("t2"));
+        assert_eq!(picker.current, picked, "binding keeps the pick");
     }
 }

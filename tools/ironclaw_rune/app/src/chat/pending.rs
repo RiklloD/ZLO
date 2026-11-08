@@ -4,11 +4,12 @@
 
 use std::time::Instant;
 
-use rune::{El, col, el, row};
+use rune::{El, col, el, row, text};
 use rune_kit::{Kit, RollingText};
 
 use super::flow::{SPACE_SM, rise, type_at};
 use crate::design::Palette;
+use crate::design::kit::loops::{BREATH_35, breathe};
 use crate::state::State;
 
 /// The words that rotate on the working line, every
@@ -39,7 +40,7 @@ const FLAVOUR_WORDS: [&str; 21] = [
 const FLAVOUR_ROTATE_SECS: u64 = 7;
 
 /// Zeron's working line: a pulsing glyph, a verb that rolls every 7 s and
-/// the elapsed seconds, rolling as they tick.
+/// the elapsed seconds.
 pub fn render_pending(s: &State, stopping: bool, since: Option<Instant>, seed: u64, k: &Kit) -> El {
     let p = &s.palette;
     let secs = since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
@@ -61,11 +62,14 @@ pub fn render_pending(s: &State, stopping: bool, since: Option<Instant>, seed: u
                 .color(p.text_muted)
                 .build(k),
         )
+        // Plain text, not a `RollingText`: a roll every second kept the
+        // window drawing at the display's full rate for most of each second
+        // of a run, for a number nobody watches tick.
         .child(
-            RollingText::new("working-timer", format_elapsed(secs))
+            text(format_elapsed(secs))
+                .key("working-timer")
                 .font(type_at(s, 11., 14., 400.))
                 .color(p.text_faint)
-                .build(k)
                 .mt(1.),
         )
 }
@@ -81,14 +85,7 @@ fn working_glyph(p: &Palette) -> El {
         el().size(cell, cell)
             .radius(1.5)
             .fill(c)
-            .looping(rune::LoopSpec {
-                period: 1.2,
-                delay: i as f64 * 0.3,
-                kind: rune::LoopKind::Opacity {
-                    low: 0.35,
-                    high: 1.,
-                },
-            })
+            .cycle(breathe(1.2, i as f32 * 0.3, &BREATH_35))
     };
     let _ = p;
     col()

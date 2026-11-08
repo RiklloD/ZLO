@@ -87,7 +87,7 @@ pub(super) fn bar(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             phase: 0.,
             stops: &[(0.0, 1.0), (0.5, 0.35), (1.0, 1.0)],
             still: 1.0,
-            fps: 30.0,
+            fps: 15.0, // small pulses read the same at 15 fps, at half the frames
         });
     }
     let mut bar = row()

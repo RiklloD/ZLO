@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use zlo_client::computer_use::{ComputerApp, ComputerSession};
-use rune::{Color, Cx, El, LoopSpec, Shape, TextStyle, canvas, col, el, row, text};
+use rune::{Color, Cx, El, Shape, TextStyle, canvas, col, el, row, text};
 use rune_kit::{ButtonVariant, Kit};
 
 use super::{
@@ -425,7 +425,11 @@ pub fn view(
     }
     let mut dot = el().size(7., 7.).radius(3.5).fill(rgb(status.dot));
     if status.pulse {
-        dot = dot.looping(LoopSpec::opacity(1.1, 0., 0.3, 1.));
+        dot = dot.cycle(crate::design::kit::loops::breathe(
+            1.1,
+            0.,
+            &crate::design::kit::loops::BREATH_30,
+        ));
     }
     let held_elsewhere = session.human_has_control && !cu.mine;
     let mut bar = row()

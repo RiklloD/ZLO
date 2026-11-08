@@ -113,7 +113,7 @@ fn loading(s: &State, p: &Palette) -> El {
             phase: 0.,
             stops: &[(0.0, 0.55), (0.5, 1.0), (1.0, 0.55)],
             still: 1.0,
-            fps: 30.0,
+            fps: 15.0, // small pulses read the same at 15 fps, at half the frames
         }))
         // GPUI's `fade_in_after`: nothing for 700 ms, then a 300 ms fade, so
         // a fast connect never shows the line.

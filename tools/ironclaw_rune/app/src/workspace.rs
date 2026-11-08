@@ -660,7 +660,10 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
         refresh_unread(s);
     }
     if due(s.workspace.timers.status) {
-        s.workspace.timers.status = Some(now + STATUS_POLL);
+        // The refresh is skipped while the battery saver holds, and focus
+        // refreshes at once, so a saving window checks back rarely.
+        let saving = crate::design::look::saving(s);
+        s.workspace.timers.status = Some(now + if saving { STATUS_POLL * 6 } else { STATUS_POLL });
         status::refresh_status(s);
     }
     if due(s.workspace.timers.session_import) {

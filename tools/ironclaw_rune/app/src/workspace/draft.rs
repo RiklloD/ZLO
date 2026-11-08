@@ -30,7 +30,7 @@ use super::ui::{self, SEMIBOLD, SM, XS, t, tw};
 use crate::chat::menu::{self, ComposerMenu, MenuKey, MenuKeyName};
 use crate::chat::model_picker::ModelPickerState;
 use crate::chat::{composer, inline_files};
-use crate::design::{motion, prefs::Wallpaper};
+use crate::design::prefs::Wallpaper;
 use crate::drafts;
 use crate::icons;
 use crate::jobs::{self, Generation};
@@ -153,15 +153,8 @@ pub(super) fn open(s: &mut State) {
         load_menu(s, generation);
         crate::design::look::reshuffle(s);
     }
-    // A kept draft re-reads its profile: its default may have changed. The
-    // model catalog is per user; any thread can read it.
-    let catalog = s
-        .workspace
-        .inbox
-        .list
-        .rows
-        .first()
-        .map(|r| r.thread_id.clone());
+    // A kept draft re-reads its profile: its default may have changed.
+    let catalog = catalog_thread(s);
     if let Some(profile) = s.workspace.draft.as_ref().map(|d| d.profile.clone()) {
         crate::chat::model_picker::draft_set_profile(s, profile, catalog);
     }
@@ -169,6 +162,34 @@ pub(super) fn open(s: &mut State) {
         draft.input.focused = true;
     }
     inbox::reveal_active_subagent(s);
+}
+
+/// The thread the draft's model catalog is read through. The catalog is per
+/// user, so any thread can read it; `None` until the inbox has a row.
+fn catalog_thread(s: &State) -> Option<String> {
+    s.workspace
+        .inbox
+        .list
+        .rows
+        .first()
+        .map(|r| r.thread_id.clone())
+}
+
+/// The inbox landed: a draft opened before it had a thread to read the model
+/// catalog through binds its picker now, so the model pill appears.
+pub(super) fn bind_catalog(s: &mut State) {
+    let Some(profile) = s
+        .workspace
+        .draft
+        .as_ref()
+        .filter(|d| d.picker.catalog_thread.is_none())
+        .map(|d| d.profile.clone())
+    else {
+        return;
+    };
+    if let Some(catalog) = catalog_thread(s) {
+        crate::chat::model_picker::draft_set_profile(s, profile, Some(catalog));
+    }
 }
 
 /// Skills, extensions and threads for the `@` menu of the draft opened as
@@ -260,13 +281,7 @@ pub(super) fn quick_send(s: &mut State, text: String, voice: Option<crate::voice
 pub fn start_in_profile(s: &mut State, profile: String) {
     s.workspace.inbox.new_menu_open = false;
     open(s);
-    let catalog = s
-        .workspace
-        .inbox
-        .list
-        .rows
-        .first()
-        .map(|r| r.thread_id.clone());
+    let catalog = catalog_thread(s);
     crate::chat::model_picker::draft_set_profile(s, profile.clone(), catalog);
     if let Some(draft) = s.workspace.draft.as_mut() {
         draft.profile = profile;
@@ -615,7 +630,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .child(send_button);
     // The chat's composer card in its hero form (GPUI `composer_card` with
     // `compact` false), hero-wide; the chat's docked card is the same one.
-    let mut card = composer::composer_card(
+    let card = composer::composer_card(
         s,
         "draft-composer",
         draft.input.focused,
@@ -624,11 +639,11 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         input,
         crate::chat::model_picker::draft_pill(s, cx, k, layer),
         actions,
-    )
-    .matched(motion::COMPOSER_MATCH)
-    .max_w(HERO_WIDTH)
-    .on_drawn_layout_tx(super::thread_drag::saw_draft)
-    .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()));
+    );
+    let mut card = composer::dock_matched(s, card)
+        .max_w(HERO_WIDTH)
+        .on_drawn_layout_tx(super::thread_drag::saw_draft)
+        .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()));
     if thread_over {
         card = card.border(1., p.accent);
     }

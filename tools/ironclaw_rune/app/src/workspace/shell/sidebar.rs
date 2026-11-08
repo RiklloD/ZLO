@@ -62,17 +62,25 @@ pub(super) fn sidebar(
             p.text,
         ));
     let mut pane = el().key("sidebar").w_full().h_full();
-    // Closed, the pane's contents only show peeking over the panel (or
-    // sliding back out of a peek): they float on the shell's own surface.
-    if !s.workspace.sidebar.is_open() {
-        pane = pane.child(
-            el().key("sidebar-surface")
-                .pin(Some(0.), Some(-BAND), Some(0.), Some(0.))
-                .fill(p.surface)
-                .shadow(0., 16., Color::BLACK.alpha(0.3))
-                .inert(),
-        );
-    }
+    let surface = el()
+        .key("sidebar-surface")
+        .pin(Some(0.), Some(-BAND), Some(0.), Some(0.))
+        .inert();
+    pane = pane.child(if s.workspace.sidebar.is_open() {
+        // Docked over a translucent window, the shell's fill alone lets
+        // through far more of the blurred desktop than the panel's stacked
+        // fills, and the sidebar read lighter than the panel. GPUI's reads a
+        // step darker: the shell's (darker) surface at the panel's opacity.
+        // Opaque, this is the shell's own fill again.
+        let st = design::styles::Style::of(&s.prefs);
+        surface.fill(p.surface.alpha(st.panel_alpha))
+    } else {
+        // Closed, the pane's contents only show peeking over the panel (or
+        // sliding back out of a peek): they float on the shell's own surface.
+        surface
+            .fill(p.surface)
+            .shadow(0., 16., Color::BLACK.alpha(0.3))
+    });
     let mut pane = pane.child(column).child(title);
     if let Some(over) = crate::design::look::wallpaper_layer(s, "sidebar") {
         pane = pane.child(

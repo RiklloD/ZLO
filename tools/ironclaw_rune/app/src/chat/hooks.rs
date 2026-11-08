@@ -141,14 +141,18 @@ pub fn set_composer_text(s: &mut State, id: &str, text: String) {
 pub fn set_fork_prefix(s: &mut State, id: &str, prefix: Vec<TimelineMessage>) {
     let Some(c) = chat_for(s, id) else { return };
     c.transcript.set_prefix(prefix);
-    with_tx(s, id, refresh_rows);
+    with_tx(s, id, |s, id, tx| {
+        refresh_rows(s, id, tx);
+    });
 }
 
 /// Forks merged back into this thread, shown where they arrived.
 pub fn set_merges(s: &mut State, id: &str, merges: Vec<MergedFork>) {
     let Some(c) = chat_for(s, id) else { return };
     c.transcript.set_merges(merges);
-    with_tx(s, id, refresh_rows);
+    with_tx(s, id, |s, id, tx| {
+        refresh_rows(s, id, tx);
+    });
 }
 
 /// Stop `id`'s turn (computer use's Stop does this too).

@@ -7,6 +7,12 @@
 //! shortcut is on (the SnapShot watcher's own cadence), 30 while the key is
 //! down so release lands fast. Nothing runs while the shortcut is off.
 //!
+//! With Accessibility granted (computer use asks for it), modifier changes
+//! anywhere reach an `NSEvent` flags-changed monitor, and the thread sleeps
+//! until one arrives instead of waking 10 times a second: the shortcut then
+//! costs nothing while no modifier moves. It still samples key state the
+//! same way once woken, so the detector is the same either way.
+//!
 //! Holding is what counts. A quick tap does nothing, the take starts after
 //! [`HOLD`], and any other key or modifier pressed during the hold (Option+E
 //! typing é) cancels it, so the key keeps its normal job.
@@ -111,9 +117,12 @@ pub(crate) use mac::Watcher;
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
+
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
 
     use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 
@@ -121,6 +130,98 @@ mod mac {
 
     const POLL_IDLE: Duration = Duration::from_millis(100);
     const POLL_HELD: Duration = Duration::from_millis(33);
+    /// Event-driven: a look anyway after this long without a modifier
+    /// change, in case a monitor missed one.
+    const EVENT_SAFETY: Duration = Duration::from_secs(5);
+    /// NSEventMaskFlagsChanged.
+    const FLAGS_CHANGED: u64 = 1 << 12;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+
+    /// Set by the flags-changed monitors, taken by the watcher thread.
+    #[derive(Default)]
+    struct Signal {
+        changed: Mutex<bool>,
+        cv: Condvar,
+    }
+
+    impl Signal {
+        fn notify(&self) {
+            crate::energy::hit(crate::energy::C::PttWake);
+            if let Ok(mut changed) = self.changed.lock() {
+                *changed = true;
+                self.cv.notify_one();
+            }
+        }
+
+        /// Sleep until a modifier changes (or `timeout`).
+        fn wait(&self, timeout: Duration) {
+            let Ok(guard) = self.changed.lock() else {
+                std::thread::sleep(timeout);
+                return;
+            };
+            if let Ok((mut changed, _)) = self.cv.wait_timeout_while(guard, timeout, |c| !*c) {
+                *changed = false;
+            }
+        }
+    }
+
+    /// The global and local `NSEvent` monitors; removed on drop. Installed
+    /// and dropped on the main thread (the voice session lives there).
+    struct Monitors(Vec<*mut AnyObject>);
+
+    impl Monitors {
+        fn install(signal: &Arc<Signal>) -> Option<Self> {
+            // SAFETY: a constant-free C query.
+            if !unsafe { AXIsProcessTrusted() } {
+                return None;
+            }
+            let cls = AnyClass::get(c"NSEvent")?;
+            let global = {
+                let signal = signal.clone();
+                block2::RcBlock::new(move |_event: *mut AnyObject| signal.notify())
+            };
+            let local = {
+                let signal = signal.clone();
+                block2::RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
+                    signal.notify();
+                    event
+                })
+            };
+            // SAFETY: the blocks match `void (^)(NSEvent *)` and
+            // `NSEvent *(^)(NSEvent *)`; AppKit copies them and keeps each
+            // monitor until `removeMonitor:`. The returned monitors are
+            // retained by AppKit while installed.
+            let monitors: Vec<*mut AnyObject> = unsafe {
+                vec![
+                    msg_send![cls, addGlobalMonitorForEventsMatchingMask: FLAGS_CHANGED, handler: &*global],
+                    msg_send![cls, addLocalMonitorForEventsMatchingMask: FLAGS_CHANGED, handler: &*local],
+                ]
+            };
+            if monitors.iter().any(|m| m.is_null()) {
+                drop(Self(monitors));
+                return None;
+            }
+            Some(Self(monitors))
+        }
+    }
+
+    impl Drop for Monitors {
+        fn drop(&mut self) {
+            let Some(cls) = AnyClass::get(c"NSEvent") else {
+                return;
+            };
+            for monitor in self.0.drain(..).filter(|m| !m.is_null()) {
+                // SAFETY: a monitor `add…Monitor…` returned, removed once.
+                unsafe {
+                    let _: () = msg_send![cls, removeMonitor: monitor];
+                }
+            }
+        }
+    }
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
@@ -156,11 +257,15 @@ mod mac {
     /// Live while the shortcut is on; dropping it stops the thread.
     pub(crate) struct Watcher {
         stop: Arc<AtomicBool>,
+        signal: Arc<Signal>,
+        _monitors: Option<Monitors>,
     }
 
     impl Drop for Watcher {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Relaxed);
+            // Wake an event-driven thread so it sees the stop.
+            self.signal.notify();
         }
     }
 
@@ -170,6 +275,11 @@ mod mac {
             let stop = Arc::new(AtomicBool::new(false));
             let flag = stop.clone();
             let (code, own, twin) = key(name);
+            let signal = Arc::new(Signal::default());
+            let monitors = Monitors::install(&signal);
+            let event_driven = monitors.is_some();
+            let wake = signal.clone();
+            tracing::debug!(event_driven, "push-to-talk watcher");
             std::thread::Builder::new()
                 .name("voice-ptt".into())
                 .spawn(move || {
@@ -193,15 +303,24 @@ mod mac {
                         {
                             break;
                         }
-                        std::thread::sleep(if detector.held() {
-                            POLL_HELD
+                        if detector.held() {
+                            std::thread::sleep(POLL_HELD);
+                        } else if event_driven {
+                            wake.wait(EVENT_SAFETY);
                         } else {
-                            POLL_IDLE
-                        });
+                            std::thread::sleep(POLL_IDLE);
+                        }
                     }
                 })
                 .map_err(|e| format!("The push-to-talk watcher did not start ({e})."))?;
-            Ok((Self { stop }, rx))
+            Ok((
+                Self {
+                    stop,
+                    signal,
+                    _monitors: monitors,
+                },
+                rx,
+            ))
         }
     }
 }

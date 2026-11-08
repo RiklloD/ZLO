@@ -283,8 +283,22 @@ pub(crate) fn view(
     // on the send's own spring (`motion::DOCK`, set on that commit); any
     // other move rides the commit's curve with the rest of the chat.
     match chat.embedded {
-        false => card.matched(design::motion::COMPOSER_MATCH),
+        false => dock_matched(s, card),
         true => card,
+    }
+}
+
+/// The hero and docked composer cards share `motion::COMPOSER_MATCH`, so the
+/// new-thread composer flies to the chat's dock and back. Not under a
+/// wallpaper: the wallpaper is laid OVER the content (as GPUI and
+/// vscode-background do), while a matched flight draws above the whole
+/// window, so the flying card would sit on top of the picture, unwashed and
+/// dark, then snap back under it as it landed. There it swaps in place.
+pub fn dock_matched(s: &State, card: El) -> El {
+    if design::wallpaper::covers_composer(&s.prefs) {
+        card
+    } else {
+        card.matched(design::motion::COMPOSER_MATCH)
     }
 }
 

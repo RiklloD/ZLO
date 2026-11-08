@@ -24,6 +24,39 @@ use crate::state::State;
 /// Loop frame rate for small loaders (GPUI `Rate::Half`).
 const HALF_FPS: f32 = 15.;
 
+/// A cosine breath from `low` up to full and back over one period.
+const fn breath(low: f32) -> [(f32, f32); 9] {
+    const UP: [f32; 9] = [0., 0.146, 0.5, 0.854, 1., 0.854, 0.5, 0.146, 0.];
+    let mut out = [(0., 0.); 9];
+    let mut i = 0;
+    while i < 9 {
+        out[i] = (i as f32 / 8., low + (1. - low) * UP[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Breaths for [`breathe`], by their lowest opacity.
+pub static BREATH_30: [(f32, f32); 9] = breath(0.3);
+pub static BREATH_35: [(f32, f32); 9] = breath(0.35);
+pub static BREATH_45: [(f32, f32); 9] = breath(0.45);
+pub static BREATH_55: [(f32, f32); 9] = breath(0.55);
+
+/// An opacity breath on the small loaders' clock. `LoopSpec::opacity` looks
+/// the same but draws at the display's rate (120 Hz on ProMotion) for as
+/// long as it is on screen, which was most of the UI's energy during a run;
+/// this asks for [`HALF_FPS`]. `delay` is in seconds, as `LoopSpec`'s was.
+/// Reduced motion holds it fully lit.
+pub fn breathe(period: f32, delay: f32, stops: &'static [(f32, f32)]) -> Cycle {
+    Cycle {
+        period,
+        phase: delay / period,
+        stops,
+        still: 1.,
+        fps: HALF_FPS,
+    }
+}
+
 /// A sine bump 0.25 → 1 → 0.25 over the first half of a period, resting at
 /// 0.25 for the second (GPUI `0.25 + 0.75 * max(sin, 0)`).
 const DOT_WAVE: &[(f32, f32)] = &[
