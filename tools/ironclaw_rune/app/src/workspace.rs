@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use ironclaw_gpui_client::inbox::InboxAction;
 use ironclaw_gpui_client::usage::ThreadTelemetry;
-use ironclaw_gpui_client::{Backend, Client, ClientError, Connection};
+use ironclaw_gpui_client::{Backend, Client, ClientError};
 use rune::{Cx, El, KeyEvent, Tx};
 
 use crate::alerts::Alerts;
@@ -121,6 +121,9 @@ pub struct WorkspaceState {
     /// (noted by the view, `shell::note_field_focus`), so coming back
     /// leaves focus there instead of moving it to the composer.
     pub field_focused: std::cell::Cell<bool>,
+    /// The sidebar was just toggled; the view that commits the slide
+    /// queues its follow-ups (`settle_sidebar_slide`).
+    pub sidebar_slid: std::cell::Cell<bool>,
     /// The thread whose delete is being confirmed.
     pub confirm_delete: Option<String>,
     pub timers: Timers,
@@ -153,6 +156,7 @@ impl Default for WorkspaceState {
             thread_drag: Default::default(),
             window_active: true,
             field_focused: Default::default(),
+            sidebar_slid: Default::default(),
             confirm_delete: None,
             timers: Timers::default(),
             quick_fixture: false,
@@ -204,6 +208,8 @@ pub fn toggle_scheme(s: &mut State) {
 }
 
 use sidebar_pane::persist_sidebar;
+pub use sidebar_pane::{set_sidebar_open, sidebar_pane};
+
 /// Fold the sidebar away or bring it back. One spring owns the motion
 /// (GPUI's 240 ms `panels::reveal`): the sidebar, the panel, the transcript
 /// and the composer all move on it.
@@ -214,13 +220,26 @@ use sidebar_pane::persist_sidebar;
 /// the running slide alone), and the one after has rows pinned to the end
 /// ride the viewport's bottom edge as the composer rewraps (`follow_edge`),
 /// so nothing moves vertically once the slide is over.
-pub use sidebar_pane::{set_sidebar_open, sidebar_pane};
-
+///
+/// Those follow-ups wait for the frame that starts the slide
+/// ([`settle_sidebar_slide`]). ⌘B reaches here as a menu item, which Rune
+/// runs as a queued update; updates merge into the next frame's commit,
+/// so follow-ups queued from here could land in the slide's own commit
+/// and their `instant()` would cancel it.
 pub fn toggle_sidebar(s: &mut State, tx: &mut rune::Tx) {
     tx.motion(crate::design::panels::REVEAL);
     tx.follow_edge();
     s.workspace.sidebar.toggle();
     persist_sidebar(s);
+    s.workspace.sidebar_slid.set(true);
+}
+
+/// From the view that commits a sidebar slide: queue its follow-ups
+/// ([`toggle_sidebar`]), now that the slide itself is committed.
+pub(crate) fn settle_sidebar_slide(s: &State) {
+    if !s.workspace.sidebar_slid.replace(false) {
+        return;
+    }
     s.rt.handle.update(|s, tx| {
         tx.instant();
         s.rt.handle.update(|_, tx| {
@@ -233,10 +252,11 @@ pub fn toggle_sidebar(s: &mut State, tx: &mut rune::Tx) {
 fn connect(s: &mut State) {
     s.conn = Conn::Connecting;
     let generation = s.workspace.connect_gen.bump();
-    let backend = match Connection::discover()
-        .and_then(Client::new)
-        .and_then(Backend::new)
-    {
+    s.onboarding.paired = crate::onboarding::gateway::paired();
+    let backend = match crate::onboarding::gateway::connection().and_then(|(conn, computer)| {
+        s.onboarding.computer = computer;
+        Backend::new(Client::new(conn)?)
+    }) {
         Ok(backend) => backend,
         Err(e) => {
             tracing::warn!(error = %e, "gateway connection settings unavailable");
@@ -266,6 +286,8 @@ fn connect(s: &mut State) {
                     s.session = Some(session);
                     inbox::apply(s, list);
                     s.conn = Conn::Ready;
+                    // First-run setup decides before the launch import.
+                    crate::onboarding::decide(s);
                     start_polling(s);
                     status::start(s);
                     match s.workspace.inbox.first_open() {
@@ -281,6 +303,31 @@ fn connect(s: &mut State) {
             }
         },
     );
+}
+
+/// Connect again, to the computer setup switched to.
+pub fn reconnect(s: &mut State) {
+    s.workspace.connect_attempt = 0;
+    // A switch needs a launch's grace: this Mac's gateway may be starting.
+    s.launched = Instant::now();
+    if s.onboarding.computer == crate::onboarding::gateway::Computer::ThisMac {
+        crate::service::start();
+    }
+    connect(s);
+}
+
+/// Setup is over: the launch-time session import it held back runs now
+/// (the backend runs it only when due).
+pub fn release_session_import(s: &mut State) {
+    session_import_tick(
+        s,
+        ironclaw_gpui_client::session_import::ImportTrigger::Launch,
+    );
+}
+
+/// Read the inbox again (after setup imported threads).
+pub fn refresh_inbox(s: &mut State) {
+    inbox::refresh(s);
 }
 
 /// The connection screen's "Try again": also brings the gateway back after
@@ -566,6 +613,7 @@ fn start_polling(s: &mut State) {
     s.workspace.timers.unread = Some(now + UNREAD_POLL);
     if !s.workspace.session_import_launched {
         s.workspace.session_import_launched = true;
+        // First-run setup holds this back and releases it when it ends.
         session_import_tick(
             s,
             ironclaw_gpui_client::session_import::ImportTrigger::Launch,
@@ -580,6 +628,11 @@ fn session_import_tick(
     s: &mut State,
     trigger: ironclaw_gpui_client::session_import::ImportTrigger,
 ) {
+    // While first-run setup is open nothing is imported, launch or rescan:
+    // its Projects step decides what comes in.
+    if crate::onboarding::holds_launch_import(s) {
+        return;
+    }
     jobs::run(
         s,
         "session import",
@@ -720,6 +773,7 @@ pub fn window_focus(s: &mut State, focused: bool, _tx: &mut Tx) {
     if !matches!(s.conn, Conn::Ready) {
         return;
     }
+    crate::onboarding::window_focus(s, focused);
     status::refresh_status(s);
     // Back in front: catch up on whatever finished meanwhile.
     if focused {

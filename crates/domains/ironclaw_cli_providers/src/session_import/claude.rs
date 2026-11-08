@@ -98,6 +98,7 @@ impl SessionImporter {
                 if scan.sidechain
                     || scan.first_prompt.is_none()
                     || self.own_folder(scan.cwd.as_deref())
+                    || !pass.allowed(scan.cwd.as_deref())
                     || scan
                         .session_id
                         .as_deref()

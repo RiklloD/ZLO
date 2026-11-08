@@ -10,7 +10,7 @@ use axum::Json;
 use axum::extract::{Extension, Path, State};
 use ironclaw_product_contracts::inbox::*;
 use ironclaw_product_contracts::session_import::{
-    SESSION_IMPORT_COMMAND, SESSION_IMPORT_VIEW, SessionImportRequest,
+    SESSION_IMPORT_COMMAND, SESSION_IMPORT_PROJECTS_VIEW, SESSION_IMPORT_VIEW, SessionImportRequest,
 };
 use ironclaw_product_contracts::surface::ProductSurfaceCaller;
 use ironclaw_product_contracts::task_models::{
@@ -142,6 +142,18 @@ pub async fn session_import_status(
     Extension(caller): Extension<ProductSurfaceCaller>,
 ) -> Result<Json<Value>, WebUiV2HttpError> {
     let view = SESSION_IMPORT_VIEW.descriptor();
+    Ok(Json(
+        query_product_view(state.services(), caller, view, serde_json::json!({}), None).await?,
+    ))
+}
+
+/// `GET /api/webchat/v2/session-imports/projects` — the folders terminal
+/// sessions ran in (first-run setup's project list). Imports nothing.
+pub async fn session_import_projects(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    let view = SESSION_IMPORT_PROJECTS_VIEW.descriptor();
     Ok(Json(
         query_product_view(state.services(), caller, view, serde_json::json!({}), None).await?,
     ))

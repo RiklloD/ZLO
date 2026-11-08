@@ -910,9 +910,15 @@ mod tests {
         let ms = Duration::from_millis;
         // The turn runner's 200 ms poll doubles up to the 2 s ceiling.
         let steps: Vec<_> = (0..6).map(|n| idle_poll_delay(ms(200), n)).collect();
-        assert_eq!(steps, [ms(200), ms(400), ms(800), ms(1600), ms(2000), ms(2000)]);
+        assert_eq!(
+            steps,
+            [ms(200), ms(400), ms(800), ms(1600), ms(2000), ms(2000)]
+        );
         // A slower configured poll keeps its own pace.
-        assert_eq!(idle_poll_delay(Duration::from_secs(5), 9), Duration::from_secs(5));
+        assert_eq!(
+            idle_poll_delay(Duration::from_secs(5), 9),
+            Duration::from_secs(5)
+        );
         // Tight test polls stay tight: at most 16x.
         assert_eq!(idle_poll_delay(ms(1), u32::MAX), ms(16));
     }

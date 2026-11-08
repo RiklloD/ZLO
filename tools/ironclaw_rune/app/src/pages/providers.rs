@@ -10,7 +10,7 @@
 //! Port of GPUI `pages/providers.rs`: the state and the gateway calls live
 //! here, the rendering in `providers/view.rs`.
 
-mod catalog;
+pub(crate) mod catalog;
 pub mod fixtures;
 mod view;
 
@@ -428,7 +428,7 @@ fn toggle_cli_hidden(s: &mut State, provider: String) {
 
 /// Show the device code, open the sign-in page, then wait for the gateway
 /// to make Codex active.
-fn start_codex(s: &mut State, provider_id: String) {
+pub(crate) fn start_codex(s: &mut State, provider_id: String) {
     st(s).notice = None;
     jobs::run(
         s,

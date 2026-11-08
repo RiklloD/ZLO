@@ -4,6 +4,7 @@
 //! rows on screen, not the whole history.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -27,7 +28,7 @@ use crate::workspace::ui::{XS, t};
 pub(in crate::workspace) const SCROLL: &str = "inbox-scroll";
 /// The growth stack's key.
 const LIST: &str = "inbox-list";
-/// The room between the cards and the shelves.
+/// The least room between the cards and the shelves.
 const GAP: f32 = 8.;
 /// Room under each line (the old list's gap) and under the last one.
 const LINE_GAP: f32 = 4.;
@@ -35,6 +36,54 @@ const LIST_BOTTOM: f32 = 8.;
 /// Estimated height of a line the list has not measured yet: most of a long
 /// history is slim rows.
 const ESTIMATE: f32 = design::SIDEBAR_SLIM_HEIGHT + LINE_GAP;
+
+/// The spacer between the cards and the shelves. GPUI's list is a flex
+/// column whose `flex_1` spacer sits the Working, Snoozed and Settled folds
+/// at the sidebar's bottom while the cards are short; a virtual list must be
+/// its viewport's only child, so the spacer is a row sized from layout: the
+/// viewport's height less everything else in the list, never under [`GAP`].
+#[derive(Debug, Default)]
+pub(in crate::workspace) struct ShelfGap {
+    /// The spacer's height, as the next view builds it.
+    height: f32,
+    /// The height the last view built it at (`list` runs with `&State`).
+    built: Cell<f32>,
+    /// The scroll viewport's height.
+    viewport: f32,
+    /// The list's height without the spacer (its line's bottom room kept).
+    rest: f32,
+}
+
+impl ShelfGap {
+    fn height(&self) -> f32 {
+        self.height.max(GAP)
+    }
+
+    /// Re-aim the spacer at the measured heights; whether it changed.
+    fn aim(&mut self) -> bool {
+        if self.viewport <= 0. || self.rest <= 0. {
+            return false;
+        }
+        let height = (self.viewport - self.rest).max(GAP);
+        let moved = (height - self.height).abs() > 0.5;
+        if moved {
+            self.height = height;
+        }
+        moved
+    }
+
+    fn viewport(s: &mut State, height: f32) -> bool {
+        let g = &mut s.workspace.inbox.shelf_gap;
+        g.viewport = height;
+        g.aim()
+    }
+
+    fn content(s: &mut State, height: f32) -> bool {
+        let g = &mut s.workspace.inbox.shelf_gap;
+        g.rest = height - g.built.get();
+        g.aim()
+    }
+}
 
 /// One line of the list, in draw order.
 #[derive(Clone, Debug, PartialEq)]
@@ -97,7 +146,7 @@ impl Ctx {
         let is_active =
             |ix: usize| self.active.as_deref() == rows.get(ix).map(|r| r.thread_id.as_str());
         let body = match self.lines.get(i) {
-            Some(Line::Searching) => el().px(12.).py(4.).child(t(
+            Some(Line::Searching) => el().px(12.).py(4.).child(crate::workspace::ui::side_t(
                 "Searching older chats…",
                 design::SIDEBAR_META_SIZE,
                 p.text_faint,
@@ -113,7 +162,7 @@ impl Ctx {
                     .py(12.)
                     .child(t("No conversations yet.", XS, p.text_faint))
             }
-            Some(Line::Gap) | None => el().h(GAP),
+            Some(Line::Gap) | None => el().h(s.workspace.inbox.shelf_gap.height()),
             Some(Line::Fold {
                 key,
                 label,
@@ -246,6 +295,12 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
         }
     }
     let count = lines.len();
+    let gap = &inbox.shelf_gap;
+    gap.built.set(if lines.contains(&Line::Gap) {
+        gap.height()
+    } else {
+        0.
+    });
     let ctx = Rc::new(Ctx {
         lines,
         tree: sh.tree,
@@ -266,12 +321,22 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
             stick_bottom: false,
         })
         .wheel_glide(SCROLL)
+        .on_layout_tx(|s: &mut State, r: [f32; 4], tx: &mut rune::Tx| {
+            if !ShelfGap::viewport(s, r[3]) {
+                tx.live_only();
+            }
+        })
         .child(
             col()
                 .key(LIST)
                 .w_full()
                 .min_h(0.0)
                 .growth(GrowthSpec::default())
+                .on_layout_tx(|s: &mut State, r: [f32; 4], tx: &mut rune::Tx| {
+                    if !ShelfGap::content(s, r[3]) {
+                        tx.live_only();
+                    }
+                })
                 .virtual_rows(
                     count,
                     ESTIMATE,

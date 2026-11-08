@@ -22,7 +22,7 @@ use ironclaw_orchestrator::runtime::{HistoryRole, TurnEventSink};
 use ironclaw_orchestrator::store::Store;
 use ironclaw_product_contracts::inbox::{InboxState, InboxStatus};
 use ironclaw_product_contracts::session_import::{
-    ImportTrigger, SessionImportCounts, SessionImportRequest,
+    ImportTrigger, ProjectSelection, SessionImportCounts, SessionImportRequest,
 };
 
 const CLAUDE_SESSION: &str = "5b1d2c3e-1111-4222-8333-444455556666";
@@ -626,6 +626,155 @@ async fn settings_and_triggers_decide_what_runs() {
         )
         .await;
     assert!(bad.is_err());
+}
+
+/// First-run setup: the folders sessions ran in, then an import limited to
+/// the picked folders, then every folder again.
+#[tokio::test]
+async fn projects_list_session_folders_and_limit_what_is_imported() {
+    let home = home();
+    let lib = home.root.join("work").join("lib");
+    std::fs::create_dir_all(lib.join(".git")).unwrap();
+    std::fs::write(
+        lib.join(".git").join("config"),
+        "[remote \"origin\"]\n\turl = git@github.com:acme/lib.git\n",
+    )
+    .unwrap();
+    let lib_session = "9c1d2c3e-1111-4222-8333-444455557777";
+    write_lines(
+        &home
+            .root
+            .join(".claude")
+            .join("projects")
+            .join(claude_codes::transcript::encode_project_dir(&lib))
+            .join(format!("{lib_session}.jsonl")),
+        &[claude_row(
+            "user",
+            lib_session,
+            &lib,
+            "2026-10-03T10:00:00.000Z",
+            "Bump the version",
+        )],
+    );
+    // A Codex session started in `lib` that moved on to another folder:
+    // listed and imported by the folder it started in.
+    let moved = "01a19dc0-0000-7000-8000-0000000000aa";
+    let elsewhere = home.root.join("work").join("elsewhere");
+    write_lines(
+        &home
+            .root
+            .join(".codex")
+            .join("sessions")
+            .join("2026")
+            .join("10")
+            .join("03")
+            .join(format!("rollout-2026-10-03T11-00-00-{moved}.jsonl")),
+        &[
+            codex_meta(moved, &lib, "codex_cli_rs", serde_json::json!("cli")),
+            codex_message("user", "2026-10-03T11:00:02.000Z", "Release it"),
+            serde_json::json!({
+                "timestamp": "2026-10-03T11:00:03.000Z", "type": "turn_context",
+                "payload": {"cwd": elsewhere, "model": "gpt-x"},
+            })
+            .to_string(),
+            codex_message("assistant", "2026-10-03T11:00:09.000Z", "Released."),
+        ],
+    );
+    let engine = engine(&home).await;
+    let importer = importer(&home);
+    let owner = ProfileOwner::from(&scope());
+
+    let listed = importer.projects(&engine, &owner).await.unwrap();
+    assert!(!listed.truncated);
+    let app_path = home.app.to_str().unwrap();
+    let lib_path = lib.to_str().unwrap();
+    let paths: Vec<&str> = listed.projects.iter().map(|p| p.path.as_str()).collect();
+    assert_eq!(paths.len(), 2, "only the two work folders: {paths:?}");
+    let app = listed.projects.iter().find(|p| p.path == app_path).unwrap();
+    assert_eq!(app.title, "app");
+    assert_eq!(
+        app.sources,
+        vec![CLAUDE_CODE.to_string(), CODEX.to_string()]
+    );
+    // Two Claude sessions with a folder (the empty one names none) and one
+    // terminal Codex rollout; the app's own and the spawned rollout are out.
+    assert_eq!(app.thread_count, 3);
+    assert_eq!(app.git, None, "not a checkout");
+    assert!(!app.imported);
+    let lib_row = listed.projects.iter().find(|p| p.path == lib_path).unwrap();
+    assert_eq!(
+        lib_row.sources,
+        vec![CLAUDE_CODE.to_string(), CODEX.to_string()]
+    );
+    assert_eq!(lib_row.thread_count, 2);
+    let git = lib_row.git.clone().unwrap();
+    assert_eq!(git.repository.as_deref(), Some("acme/lib"));
+    assert_eq!(git.remote_key.as_deref(), Some("github.com/acme/lib"));
+
+    // Pick only `lib`: its session comes in, `app`'s do not.
+    let status = importer
+        .request(
+            &engine,
+            &scope(),
+            &SessionImportRequest {
+                projects: Some(ProjectSelection::Only([lib_path.to_string()].into())),
+                run: Some(ImportTrigger::Manual),
+                ..SessionImportRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.projects, Some([lib_path.to_string()].into()));
+    assert!(status.started, "this request started the run");
+    wait_for(|| !importer.is_running()).await;
+    let status = importer.status(&engine, &owner).await.unwrap();
+    let counts = |source: &str| {
+        status
+            .sources
+            .iter()
+            .find(|s| s.source == source)
+            .unwrap()
+            .counts
+            .unwrap()
+    };
+    assert_eq!(counts(CLAUDE_CODE).imported, 1);
+    assert_eq!(counts(CODEX).imported, 1, "the session that moved on");
+    let imported = imported_thread(&engine, lib_session).await;
+    assert_eq!(imported.title.as_deref(), Some("Bump the version"));
+    let listed = importer.projects(&engine, &owner).await.unwrap();
+    let marked: Vec<(&str, bool)> = listed
+        .projects
+        .iter()
+        .map(|p| (p.path.as_str(), p.imported))
+        .collect();
+    assert!(marked.contains(&(lib_path, true)) && marked.contains(&(app_path, false)));
+
+    // Every folder again: what was left out for its folder comes in now.
+    importer
+        .request(
+            &engine,
+            &scope(),
+            &SessionImportRequest {
+                projects: Some(ProjectSelection::All),
+                run: Some(ImportTrigger::Manual),
+                ..SessionImportRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+    wait_for(|| !importer.is_running()).await;
+    let status = importer.status(&engine, &owner).await.unwrap();
+    assert_eq!(status.projects, None);
+    let claude = status
+        .sources
+        .iter()
+        .find(|s| s.source == CLAUDE_CODE)
+        .unwrap()
+        .counts
+        .unwrap();
+    assert_eq!(claude.imported, 2, "the two app sessions");
+    imported_thread(&engine, CLAUDE_SESSION).await;
+    imported_thread(&engine, CODEX_SESSION).await;
 }
 
 fn history_texts(history: &[ironclaw_orchestrator::runtime::HistoryMessage]) -> Vec<String> {

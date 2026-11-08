@@ -73,3 +73,22 @@ fn a_pinned_row_glides_to_the_top() {
         .count();
     assert!(between >= 3, "it glides through {between} frames: {seen:?}");
 }
+
+#[test]
+fn a_short_list_seats_its_shelves_at_the_bottom() {
+    let mut rt = runtime(crate::workspace::fixtures::fixture_inbox_short);
+    for _ in 0..10 {
+        rt.frame(1. / 60.);
+    }
+    let card = top(&rt, "row-t-short-2").expect("the last card shows");
+    let fold = top(&rt, "fold-settled").expect("the Settled fold shows");
+    let footer = top(&rt, "sidebar-footer").expect("the footer shows");
+    assert!(
+        fold - card > 300.,
+        "the fold leaves the cards: {card} → {fold}"
+    );
+    assert!(
+        (footer - fold - 36.).abs() < 16.,
+        "and sits on the footer, as GPUI's: fold {fold}, footer {footer}"
+    );
+}

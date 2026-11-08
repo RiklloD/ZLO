@@ -50,7 +50,7 @@ mod inbox;
 pub use inbox::{
     inbox_list, inbox_mutate, task_models_get, task_models_set, thread_goal, thread_goal_set,
 };
-pub use inbox::{session_import_run, session_import_status};
+pub use inbox::{session_import_projects, session_import_run, session_import_status};
 mod run_artifact;
 pub use run_artifact::{
     admin_get_thread_scrape_artifact, admin_get_thread_scrape_run_artifact,

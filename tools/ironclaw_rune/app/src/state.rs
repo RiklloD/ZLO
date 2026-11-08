@@ -82,6 +82,8 @@ pub struct State {
     pub look: crate::design::look::LookState,
     /// At most two native macOS views (area S).
     pub native: crate::native_view::NativeViews,
+    /// First-run setup (t3code's onboarding).
+    pub onboarding: crate::onboarding::OnboardingState,
 }
 
 impl State {
@@ -107,6 +109,7 @@ impl State {
             snapshot: Default::default(),
             look: Default::default(),
             native: Default::default(),
+            onboarding: Default::default(),
         }
     }
 

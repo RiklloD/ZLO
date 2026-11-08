@@ -144,6 +144,14 @@ fn open(s: &mut State, id: &str) {
     s.chat = Some(crate::chat::ChatState::new(id.into()));
 }
 
+/// A first run: no threads, the new-thread screen (setup's backdrop).
+pub fn fixture_empty(s: &mut State) {
+    base(s);
+    s.chat = None;
+    s.page = Page::Draft;
+    super::draft::open(s);
+}
+
 /// The window with the inbox and a thread open.
 pub fn fixture_shell(s: &mut State) {
     base(s);
@@ -204,6 +212,42 @@ pub fn fixture_inbox_long(s: &mut State) {
     }
     s.workspace.inbox.list.rows = rows;
     s.workspace.inbox.settled_limit = 1000;
+}
+
+/// A short inbox over a folded Settled shelf: the shelf sits at the
+/// sidebar's bottom, as in GPUI, not under the last card.
+pub fn fixture_inbox_short(s: &mut State) {
+    fixture_shell(s);
+    let mut rows: Vec<_> = [
+        "Port the sidebar",
+        "Review the deploy plan",
+        "Draft the notes",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, title)| {
+        row(
+            &format!("t-short-{i}"),
+            title,
+            "default",
+            InboxState::Inbox,
+            5 + i as i64,
+        )
+    })
+    .collect();
+    for i in 0..12usize {
+        let mut r = row(
+            &format!("t-short-settled-{i}"),
+            &format!("Settled thread {i}"),
+            "default",
+            InboxState::Settled,
+            900 + i as i64,
+        );
+        r.settled_at = Some(r.last_activity_at);
+        rows.push(r);
+    }
+    s.workspace.inbox.list.rows = rows;
+    s.workspace.inbox.show_settled = false;
 }
 
 /// A parent with nested subagents, its list unfolded.

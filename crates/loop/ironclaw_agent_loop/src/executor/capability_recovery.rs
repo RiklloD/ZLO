@@ -4,8 +4,8 @@ use super::capabilities::{CapabilityStage, OutcomeStep};
 use super::capability_outcomes::{SelectedParallelTerminal, finish_selected_parallel_terminal};
 use super::{
     AgentLoopExecutorError, FailedExitDetails, StageContext, TurnCompletedStep,
-    append_capability_safe_summary_ref,
-    attach_failure_explanation, cancelled_exit_with_reason, failed_exit,
+    append_capability_safe_summary_ref, attach_failure_explanation, cancelled_exit_with_reason,
+    failed_exit,
 };
 use crate::state::LoopExecutionState;
 

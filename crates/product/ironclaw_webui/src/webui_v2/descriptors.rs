@@ -294,6 +294,9 @@ pub const WEBUI_V2_PATTERN_TASK_MODELS: &str = "/api/webchat/v2/llm/task-models"
 pub const WEBUI_V2_ROUTE_SESSION_IMPORT_STATUS: &str = "webui.v2.session_import.status";
 pub const WEBUI_V2_ROUTE_SESSION_IMPORT_RUN: &str = "webui.v2.session_import.run";
 pub const WEBUI_V2_PATTERN_SESSION_IMPORT: &str = "/api/webchat/v2/session-imports";
+pub const WEBUI_V2_ROUTE_SESSION_IMPORT_PROJECTS: &str = "webui.v2.session_import.projects";
+pub const WEBUI_V2_PATTERN_SESSION_IMPORT_PROJECTS: &str =
+    "/api/webchat/v2/session-imports/projects";
 pub const WEBUI_V2_PATTERN_CREATE_THREAD: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_THREADS: &str = "/api/webchat/v2/threads";
 pub const WEBUI_V2_PATTERN_LIST_NOTIFICATIONS: &str = "/api/webchat/v2/notifications";
@@ -662,6 +665,11 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_ROUTE_SESSION_IMPORT_RUN,
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_SESSION_IMPORT,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_SESSION_IMPORT_PROJECTS,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_SESSION_IMPORT_PROJECTS,
         ),
         profile_route_descriptor(
             WEBUI_V2_ROUTE_HISTORY_SEARCH,

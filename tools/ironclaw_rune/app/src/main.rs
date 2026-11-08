@@ -11,6 +11,7 @@
 //! `ironclaw_gpui_client::Connection::discover`.
 
 mod alerts;
+mod backdrop;
 mod chat;
 mod design;
 mod drafts;
@@ -19,6 +20,7 @@ mod jobs;
 mod login_item;
 mod logs;
 mod native_view;
+mod onboarding;
 mod pages;
 mod permissions;
 mod persist;
@@ -119,8 +121,9 @@ fn main() {
         .modifier_keys()
         .on_focus(window_focus)
         .on_close(workspace::on_close)
-        .on_window(|window| {
+        .on_window(move |window| {
             window_state::created(window);
+            backdrop::on_window(window, translucent);
             // Native previews sit beside the window's content view.
             native_view::on_window(window);
         })

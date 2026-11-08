@@ -74,3 +74,38 @@ fn dragging_the_grip_resizes_and_saves_the_width_on_release() {
         "saved {saved}, dragged to {dragged}"
     );
 }
+
+/// ⌘B is a menu item, which Rune runs as a queued update: the toggle must
+/// slide the pane there too, its follow-up commits queued only once the
+/// slide's own frame is committed.
+#[test]
+fn a_toggle_from_an_update_slides_the_pane() {
+    let mut rt = runtime(crate::workspace::fixtures::fixture_shell);
+    frames(&mut rt, 5);
+    let width = |rt: &Runtime<State>| {
+        rt.elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("sidebar-column"))
+            .map_or(0., |e| e.rect[0] + e.rect[2])
+    };
+    let open = width(&rt);
+    rt.update(crate::workspace::toggle_sidebar);
+    assert!(
+        rt.state.workspace.sidebar_slid.get(),
+        "the follow-ups wait for the view"
+    );
+    let mut seen = Vec::new();
+    for _ in 0..30 {
+        rt.frame(1. / 60.);
+        seen.push(width(&rt));
+    }
+    assert!(
+        !rt.state.workspace.sidebar_slid.get(),
+        "the view queued them"
+    );
+    let between = seen.iter().filter(|w| **w > 1. && **w < open - 1.).count();
+    assert!(
+        between >= 3,
+        "the pane slides through {between} frames: {seen:?}"
+    );
+}

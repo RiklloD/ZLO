@@ -15,7 +15,7 @@ use rune_kit::shell::{Sidebar, SidebarRow, SidebarSection};
 use rune_kit::{ControlSize, Kit};
 
 use super::super::inbox::view as inbox_view;
-use super::super::ui::{self, SEMIBOLD, SM, t, tw};
+use super::super::ui::{self, SEMIBOLD, SM, tw};
 use super::super::{in_settings, settings_groups};
 use super::frame::{BAND, CLUSTER_END, PAST_CLUSTER};
 use crate::design::{self, Palette};
@@ -151,7 +151,11 @@ fn footer(s: &State, p: &Palette) -> El {
                         .center()
                         .child(tw("L", 10., SEMIBOLD, p.on_accent())),
                 )
-                .child(t("Local", design::SIDEBAR_TITLE_SIZE, p.text.alpha(0.8))),
+                .child(ui::side_t(
+                    "Local",
+                    design::SIDEBAR_TITLE_SIZE,
+                    p.text.alpha(0.8),
+                )),
         )
         .child(el().grow(1.0))
         .child(bell)

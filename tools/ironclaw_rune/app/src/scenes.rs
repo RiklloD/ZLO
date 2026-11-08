@@ -78,6 +78,11 @@ pub const SCENES: &[Scene] = &[
     ("hooks", crate::pages::hooks::fixture_hooks),
     ("inbox", ws::fixture_inbox),
     ("inbox-long", ws::fixture_inbox_long),
+    ("inbox-short", ws::fixture_inbox_short),
+    ("inbox-short-large-type", |s| {
+        ws::fixture_inbox_short(s);
+        s.prefs.ui_font_size = LARGE_TYPE;
+    }),
     ("inbox-subagents", ws::fixture_inbox_subagents),
     ("kit-gallery", gallery::fixture_kit_gallery),
     ("kit-gallery-light", gallery::fixture_kit_gallery_light),
@@ -134,6 +139,19 @@ pub const SCENES: &[Scene] = &[
     ("projects", |s| {
         page_with(s, Page::Projects, crate::pages::projects::fixture)
     }),
+    ("onboarding-agents", crate::onboarding::fixtures::agents),
+    ("onboarding-connect", crate::onboarding::fixtures::connect),
+    ("onboarding-pairing", crate::onboarding::fixtures::pairing),
+    ("onboarding-projects", crate::onboarding::fixtures::projects),
+    (
+        "onboarding-projects-loading",
+        crate::onboarding::fixtures::projects_loading,
+    ),
+    (
+        "onboarding-providers",
+        crate::onboarding::fixtures::providers,
+    ),
+    ("onboarding-toast", crate::onboarding::fixtures::toast),
     ("providers", crate::pages::providers::fixtures::providers),
     ("providers-large-type", |s| {
         crate::pages::providers::fixtures::providers(s);

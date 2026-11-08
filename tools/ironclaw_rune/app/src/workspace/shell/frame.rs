@@ -41,6 +41,7 @@ pub(super) fn ready(
     k: &Kit,
     layer: &mut Vec<El>,
 ) -> El {
+    super::super::settle_sidebar_slide(s);
     let mut main = el()
         .key("panel")
         .w_full()
@@ -119,18 +120,13 @@ fn frame_kit(s: &State, p: &Palette, k: &Kit) -> Kit {
 }
 
 /// Zeron's sidebar button (GPUI `panels::toggle`): the morphing sidebar
-/// glyph, and the titlebar toggles' active fill while the sidebar is open.
-/// Folds the left sidebar away or brings it back (docks a peeking one); the
-/// choice survives a relaunch.
+/// glyph, washed only under the pointer, as in GPUI. Folds the left sidebar
+/// away or brings it back (docks a peeking one); the choice survives a
+/// relaunch.
 fn sidebar_toggle(s: &State) -> El {
     let open = s.workspace.sidebar.is_open();
     let label = if open { "Hide sidebar" } else { "Show sidebar" };
     panels::toggle(s, "sidebar-toggle", open, false, label)
-        .fill(if open {
-            s.palette.active
-        } else {
-            Color::TRANSPARENT
-        })
         .on_press_tx(|s: &mut State, tx: &mut rune::Tx| super::super::toggle_sidebar(s, tx))
 }
 

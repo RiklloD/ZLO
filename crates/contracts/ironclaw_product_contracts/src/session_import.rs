@@ -4,8 +4,12 @@
 //! source is an opaque id the backend names (with a display label); the inbox
 //! row carries it as [`crate::inbox::InboxRow::imported`]. A run is a
 //! background job: the status answers `running` until it ends.
+//!
+//! Projects: [`SESSION_IMPORT_PROJECTS_VIEW`] lists the folders the
+//! sessions ran in (first-run setup picks from it), and
+//! [`SessionImportSettings::projects`] limits new imports to some of them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +36,10 @@ pub struct SessionImportSettings {
     /// Rescan now and then for new and grown sessions (an unchanged file is
     /// not read again).
     pub background: bool,
+    /// Only sessions started in these folders become new threads; `None`
+    /// imports every folder. Threads imported before keep growing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projects: Option<BTreeSet<String>>,
 }
 
 impl Default for SessionImportSettings {
@@ -39,6 +47,7 @@ impl Default for SessionImportSettings {
         Self {
             sources: BTreeMap::new(),
             background: true,
+            projects: None,
         }
     }
 }
@@ -47,6 +56,26 @@ impl SessionImportSettings {
     pub fn enabled(&self, source: &str) -> bool {
         self.sources.get(source).copied().unwrap_or(true)
     }
+
+    /// A new session started in `folder` may be imported. A session whose
+    /// folder is unknown is imported only when every folder is.
+    pub fn project_allowed(&self, folder: Option<&str>) -> bool {
+        match (&self.projects, folder) {
+            (None, _) => true,
+            (Some(only), Some(folder)) => only.contains(folder),
+            (Some(_), None) => false,
+        }
+    }
+}
+
+/// Which folders new imports come from (a request's `projects`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectSelection {
+    /// Every folder (the default).
+    All,
+    /// These folders only; empty imports nothing new.
+    Only(BTreeSet<String>),
 }
 
 /// What one run did with one source's sessions.
@@ -87,6 +116,11 @@ pub struct SessionImportStatus {
     pub background: bool,
     #[serde(default)]
     pub running: bool,
+    /// This request started the run that is `running` (a command's answer
+    /// only). `false` with `running`: another run was going on, which read
+    /// the settings before this request changed them.
+    #[serde(default)]
+    pub started: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +128,51 @@ pub struct SessionImportStatus {
     /// The last run failed before it finished (sanitized).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// The folders new imports are limited to; `None`: every folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projects: Option<BTreeSet<String>>,
+}
+
+/// A folder's git checkout, for grouping folders of one repository.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionImportGit {
+    /// `owner/name` from the `origin` remote.
+    pub repository: Option<String>,
+    /// The remote without scheme, user and `.git` (`github.com/owner/name`):
+    /// clones of one repository share it.
+    pub remote_key: Option<String>,
+}
+
+/// One folder terminal sessions ran in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionImportProject {
+    /// The folder, as the sessions recorded it.
+    pub path: String,
+    /// Its last path component.
+    pub title: String,
+    /// Source ids with sessions here, in [`SessionImportStatus::sources`] order.
+    pub sources: Vec<String>,
+    /// Sessions found here (an estimate: empty ones are counted too).
+    pub thread_count: u32,
+    /// Unix ms of the newest session file's last write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active_at: Option<i64>,
+    /// `None`: not a git checkout (or no longer on disk).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<SessionImportGit>,
+    /// Already imported from here before.
+    #[serde(default)]
+    pub imported: bool,
+}
+
+/// Output of [`SESSION_IMPORT_PROJECTS_VIEW`], newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionImportProjects {
+    pub projects: Vec<SessionImportProject>,
+    /// The scan hit its limit: some folders may be missing.
+    pub truncated: bool,
 }
 
 /// Input of [`SESSION_IMPORT_COMMAND`]: settings to change (left out keeps
@@ -106,12 +185,19 @@ pub struct SessionImportRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projects: Option<ProjectSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<ImportTrigger>,
 }
 
 /// Output: [`SessionImportStatus`].
 pub const SESSION_IMPORT_VIEW: ProductView<serde_json::Value, serde_json::Value> =
     ProductView::unpaginated("session_import.status");
+
+/// Output: [`SessionImportProjects`]. Reads only the start of each session
+/// file; nothing is imported.
+pub const SESSION_IMPORT_PROJECTS_VIEW: ProductView<serde_json::Value, serde_json::Value> =
+    ProductView::unpaginated("session_import.projects");
 
 /// Output: [`SessionImportStatus`] after the write.
 pub const SESSION_IMPORT_COMMAND_ID: &str = "session_import.run";
@@ -132,5 +218,27 @@ mod tests {
             serde_json::from_str(r#"{"sources":{"a":true},"run":"manual"}"#).unwrap();
         assert_eq!(r.run, Some(ImportTrigger::Manual));
         assert!(serde_json::from_str::<SessionImportRequest>(r#"{"wipe":true}"#).is_err());
+    }
+
+    #[test]
+    fn project_selection_limits_new_imports() {
+        let r: SessionImportRequest =
+            serde_json::from_str(r#"{"projects":{"only":["/work/app"]}}"#).unwrap();
+        let Some(ProjectSelection::Only(only)) = r.projects else {
+            panic!("expected a folder list");
+        };
+        let s = SessionImportSettings {
+            projects: Some(only),
+            ..SessionImportSettings::default()
+        };
+        assert!(s.project_allowed(Some("/work/app")));
+        assert!(!s.project_allowed(Some("/work/other")));
+        assert!(!s.project_allowed(None), "unknown folder, limited list");
+        assert!(SessionImportSettings::default().project_allowed(None));
+        let all: SessionImportRequest = serde_json::from_str(r#"{"projects":"all"}"#).unwrap();
+        assert_eq!(all.projects, Some(ProjectSelection::All));
+        // Stored settings from before the field still read.
+        let old: SessionImportSettings = serde_json::from_str(r#"{"background":false}"#).unwrap();
+        assert_eq!(old.projects, None);
     }
 }

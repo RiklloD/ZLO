@@ -256,7 +256,7 @@ pub(super) fn line(s: &State, tree: &Tree, row_data: &InboxRow, compact: bool) -
             } else {
                 label
             })
-            .font(rune::TextStyle::new(crate::design::styles::rem(size), 400.))
+            .font(crate::workspace::ui::sidebar_style(size, 400.))
             .color(p.text_muted)
             .group_color(p.text),
         );
@@ -264,12 +264,12 @@ pub(super) fn line(s: &State, tree: &Tree, row_data: &InboxRow, compact: bool) -
         line = line
             .child(
                 text("·")
-                    .font(rune::TextStyle::new(crate::design::styles::rem(size), 400.))
+                    .font(crate::workspace::ui::sidebar_style(size, 400.))
                     .color(p.text_faint),
             )
             .child(
                 text(part)
-                    .font(rune::TextStyle::new(crate::design::styles::rem(size), 400.))
+                    .font(crate::workspace::ui::sidebar_style(size, 400.))
                     .color(color),
             );
     }
@@ -392,8 +392,8 @@ fn subagent_row(
         .child(
             el().grow(1.0).min_w(0.0).child(
                 text(title_of(row_data).to_string())
-                    .font(rune::TextStyle::new(
-                        crate::design::styles::rem(design::SIDEBAR_META_SIZE),
+                    .font(crate::workspace::ui::sidebar_style(
+                        design::SIDEBAR_META_SIZE,
                         400.,
                     ))
                     .color(if settled { p.text_faint } else { p.text_muted })

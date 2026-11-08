@@ -24,7 +24,11 @@ use crate::session_import::lines::Lines;
 pub(crate) struct CodexScan {
     /// The Codex thread id (`session_meta.id`).
     pub(crate) id: Option<String>,
+    /// The folder the session runs in now (the last one it named).
     pub(crate) cwd: Option<PathBuf>,
+    /// The folder it started in: what the import's folder filter and the
+    /// project list go by (`session_import::projects`).
+    pub(crate) first_cwd: Option<PathBuf>,
     /// The client that started the session (`ironclaw` for this app's own).
     pub(crate) originator: Option<String>,
     /// Spawned by another session's agent.
@@ -152,6 +156,9 @@ impl Fold {
         if o.cwd.is_none() {
             o.cwd = meta.get("cwd").and_then(Value::as_str).map(PathBuf::from);
         }
+        if o.first_cwd.is_none() {
+            o.first_cwd.clone_from(&o.cwd);
+        }
         if o.originator.is_none() {
             o.originator = meta
                 .get("originator")
@@ -228,6 +235,9 @@ impl Fold {
             Some("turn_context") => {
                 if let Some(cwd) = v["payload"].get("cwd").and_then(Value::as_str) {
                     self.out.cwd = Some(PathBuf::from(cwd));
+                    if self.out.first_cwd.is_none() {
+                        self.out.first_cwd = Some(PathBuf::from(cwd));
+                    }
                 }
             }
             Some("response_item") => self.item(&v["payload"], at),

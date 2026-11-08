@@ -15,7 +15,6 @@ use ironclaw_product_contracts::surface::{
 };
 use serde::Serialize;
 
-use crate::webui_v2::descriptors::WEBUI_V2_PATTERN_SESSION_IMPORT;
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_ARTIFACT,
     WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_RUN_ARTIFACT,
@@ -94,6 +93,9 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_SUPERMEMORY, WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT,
     WEBUI_V2_PATTERN_SUPERMEMORY_DOCUMENTS, WEBUI_V2_PATTERN_SUPERMEMORY_FORGET,
     WEBUI_V2_PATTERN_SUPERMEMORY_SEARCH,
+};
+use crate::webui_v2::descriptors::{
+    WEBUI_V2_PATTERN_SESSION_IMPORT, WEBUI_V2_PATTERN_SESSION_IMPORT_PROJECTS,
 };
 use crate::webui_v2::handlers;
 use crate::webui_v2::sse_capacity::SseCapacity;
@@ -492,6 +494,10 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         .route(
             WEBUI_V2_PATTERN_SESSION_IMPORT,
             get(handlers::session_import_status).post(handlers::session_import_run),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SESSION_IMPORT_PROJECTS,
+            get(handlers::session_import_projects),
         )
         .route(
             WEBUI_V2_PATTERN_TASK_MODELS,

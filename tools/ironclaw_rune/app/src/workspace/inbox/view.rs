@@ -15,7 +15,7 @@ use crate::icons;
 use crate::state::{Page, State};
 use crate::workspace::draft;
 
-mod list;
+pub(in crate::workspace) mod list;
 mod rows;
 
 pub(in crate::workspace) use rows::{branch_label, draft_mark, profile_mark, status_label};
@@ -60,10 +60,7 @@ fn header(s: &State, k: &Kit) -> El {
         .plain()
         .leading_icon(&icons::SEARCH)
         .leading_icon_size(16.)
-        .text_style(rune::TextStyle::new(
-            design::styles::rem(design::SIDEBAR_TITLE_SIZE),
-            ui::REGULAR,
-        ))
+        .text_style(ui::sidebar_style(design::SIDEBAR_TITLE_SIZE, ui::REGULAR))
         .on_edit(|s: &mut State| &mut s.workspace.inbox.search)
         .on_change(|s: &mut State, _| super::search_changed(s))
         .build(k);
@@ -323,8 +320,11 @@ pub(super) fn fold(
         .center_y()
         .cursor(rune::Cursor::Pointer)
         .hover_group()
-        .child(tw(label, design::SIDEBAR_META_SIZE + 1., MEDIUM, p.text_muted).group_color(p.text))
-        .child(t(
+        .child(
+            ui::side_tw(label, design::SIDEBAR_META_SIZE + 1., MEDIUM, p.text_muted)
+                .group_color(p.text),
+        )
+        .child(ui::side_t(
             count.to_string(),
             design::SIDEBAR_META_SIZE + 1.,
             p.text_faint,
@@ -387,7 +387,7 @@ pub(super) fn new_draft_card(s: &State, k: &Kit) -> Option<El> {
         .child(
             el().grow(1.0)
                 .min_w(36.)
-                .child(t(name, design::SIDEBAR_META_SIZE, p.text_muted).truncate()),
+                .child(ui::side_t(name, design::SIDEBAR_META_SIZE, p.text_muted).truncate()),
         );
     if let Some(b) = branch {
         meta = meta.child(branch_label(p, &b));
@@ -417,6 +417,6 @@ pub(super) fn new_draft_card(s: &State, k: &Kit) -> Option<El> {
             .hover_group()
             .on_press(|s: &mut State| draft::open(s))
             .child(meta)
-            .child(t(line, design::SIDEBAR_TITLE_SIZE, p.text).truncate()),
+            .child(ui::side_t(line, design::SIDEBAR_TITLE_SIZE, p.text).truncate()),
     )
 }

@@ -75,6 +75,8 @@ pub struct Inbox {
     revealed: Option<String>,
     /// ⌘ alone is held: cards show their `⌘N` jump badge.
     pub cmd_held: bool,
+    /// The spacer that seats the shelves at the sidebar's bottom.
+    pub(super) shelf_gap: view::list::ShelfGap,
 }
 
 impl Inbox {
@@ -100,6 +102,7 @@ impl Inbox {
             expanded: BTreeSet::new(),
             revealed: None,
             cmd_held: false,
+            shelf_gap: view::list::ShelfGap::default(),
         }
     }
 

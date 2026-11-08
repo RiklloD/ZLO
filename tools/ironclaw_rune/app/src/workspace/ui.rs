@@ -16,6 +16,31 @@ pub const REGULAR: f32 = 400.;
 pub const MEDIUM: f32 = 500.;
 pub const SEMIBOLD: f32 = 600.;
 
+/// GPUI's default line height, a multiple of the size (`gpui::phi`).
+const GPUI_LINE: f32 = 1.618;
+
+/// The sidebar's own type, as GPUI drew it: sizes in fixed pixels (the UI
+/// font size never scales them, unlike its rem-based `text_xs`/`text_sm`)
+/// on GPUI's 1.618 line height, which gives the cards their air.
+pub fn sidebar_style(size: f32, weight: f32) -> TextStyle {
+    TextStyle {
+        line_height: (size * GPUI_LINE).round(),
+        ..TextStyle::new(size, weight)
+    }
+}
+
+/// Sidebar text at `size` and `weight` ([`sidebar_style`]).
+pub fn side_tw(s: impl Into<String>, size: f32, weight: f32, color: Color) -> El {
+    text(s.into())
+        .font(sidebar_style(size, weight))
+        .color(color)
+}
+
+/// Sidebar text at `size` in the regular weight ([`sidebar_style`]).
+pub fn side_t(s: impl Into<String>, size: f32, color: Color) -> El {
+    side_tw(s, size, REGULAR, color)
+}
+
 /// Text at `size` points (at the 16 pt base, scaled to the UI font size)
 /// in the UI face.
 pub fn t(s: impl Into<String>, size: f32, color: Color) -> El {

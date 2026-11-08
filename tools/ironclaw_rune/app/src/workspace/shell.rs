@@ -39,22 +39,17 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     let mut layer: Vec<El> = Vec::new();
     let body = match &s.conn {
         Conn::Connecting => loading(s, &p),
-        Conn::Failed { message, retry_in } => failed(&p, &k, message, *retry_in),
+        Conn::Failed { message, retry_in } => failed(s, &p, &k, message, *retry_in),
         Conn::Ready => ready(s, &p, cx, &k, &mut layer),
     };
     // GPUI's shell: the surface at the style's shell alpha. Translucent, the
-    // window's backdrop is the system material (macOS blurs the desktop
-    // through it); opaque windows and headless renders draw the fill alone.
+    // desktop shows through it, blurred by the WindowServer (`backdrop`).
     let st = design::styles::Style::of(&s.prefs);
     let mut root = col()
         .key("window")
         .w_full()
         .h_full()
-        .fill(p.surface.alpha(st.shell_alpha));
-    if let Some(material) = st.material() {
-        root = root.system_material(material);
-    }
-    let mut root = root
+        .fill(p.surface.alpha(st.shell_alpha))
         .on_pointer_move(|s: &mut State, _| crate::design::look::input(s))
         .child(el().w_full().grow(1.0).min_h(0.0).child(body));
     if !s.prefs.status_bar_hidden {
@@ -73,6 +68,9 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         );
     }
     confirm_delete(s, &k, &mut layer);
+    // First-run setup over the home screen, whatever the connection does
+    // (it switches computers itself).
+    crate::onboarding::view(s, &k, &mut layer);
     // Native previews draw above Rune's view: while anything floats in the
     // overlay layer (⌘K, a menu or popover, a dialog) they hide.
     crate::native_view::cover(s, !layer.is_empty());
@@ -126,7 +124,8 @@ fn loading(s: &State, p: &Palette) -> El {
         )
 }
 
-fn failed(p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>) -> El {
+fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>) -> El {
+    let remote = s.onboarding.computer != crate::onboarding::gateway::Computer::ThisMac;
     let mut c = col()
         .key("failed")
         .w_full()
@@ -151,6 +150,26 @@ fn failed(p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>) -> El {
                     .on_press(super::retry_connect)
                     .build(k),
             )
+            .children(remote.then(|| {
+                // A paired computer that does not answer must not strand
+                // the app: back to this Mac's own gateway.
+                rune_kit::Button::new("Use this Mac")
+                    .icon(&icons::MONITOR)
+                    .help(format!(
+                        "Forget {} and connect to this Mac",
+                        s.onboarding.computer.label()
+                    ))
+                    .on_press(|s: &mut State| {
+                        if let Err(e) = crate::onboarding::gateway::forget() {
+                            tracing::warn!(error = %e, "could not forget the paired computer");
+                            return;
+                        }
+                        s.onboarding.connect.selected = None;
+                        crate::onboarding::computer_switched(s);
+                        super::reconnect(s);
+                    })
+                    .build(k)
+            }))
             .child(
                 // The gateway is down, so its in-app log ring is out of
                 // reach: open the files instead.

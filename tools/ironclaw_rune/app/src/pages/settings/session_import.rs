@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use ironclaw_gpui_client::ClientError;
 use ironclaw_gpui_client::session_import::{
-    ImportTrigger, SessionImportCounts, SessionImportRequest, SessionImportStatus,
+    ImportTrigger, ProjectSelection, SessionImportCounts, SessionImportRequest, SessionImportStatus,
 };
 use rune::{El, col};
 use rune_kit::Kit;
@@ -151,6 +151,32 @@ pub fn view(s: &State, k: &Kit) -> El {
                 .key(format!("import-{}", source.source))
         })
         .collect();
+    // First-run setup may have limited new imports to some folders.
+    if let Some(only) = &status.projects {
+        let note = match only.len() {
+            0 => "No folders: new terminal sessions are not imported (chosen during setup)."
+                .to_string(),
+            1 => "Only the folder picked during setup. Sessions in other folders are not imported."
+                .to_string(),
+            n => format!(
+                "Only the {n} folders picked during setup. Sessions in other folders are not imported."
+            ),
+        };
+        let all = button("Import every folder", Btn::Secondary)
+            .disabled(busy)
+            .on_press(|s: &mut State| {
+                send(
+                    s,
+                    SessionImportRequest {
+                        projects: Some(ProjectSelection::All),
+                        ..SessionImportRequest::default()
+                    },
+                )
+            })
+            .build(k)
+            .key("import-every-folder");
+        rows.push(setting_row(p, "Folders", Some(&note), all).key("import-folders"));
+    }
     let background_on = status.background;
     let background = switch(
         k,
@@ -218,6 +244,7 @@ pub fn fixture(s: &mut State) {
         ],
         "background": true,
         "running": false,
+        "projects": ["/Users/me/code/ironclaw", "/Users/me/src/rune"],
         "last_run_at": chrono::Utc::now().timestamp_millis() - 12 * 60 * 1000
     })) {
         Ok(v) => v,

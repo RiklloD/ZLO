@@ -35,8 +35,9 @@
 
 pub(crate) mod files;
 pub(crate) mod lines;
+mod projects;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -54,8 +55,8 @@ use ironclaw_orchestrator::session_imports::{
 };
 use ironclaw_orchestrator::store::Store;
 use ironclaw_product_contracts::session_import::{
-    BACKGROUND_RESCAN_MIN_MS, ImportTrigger, SessionImportCounts, SessionImportRequest,
-    SessionImportSource, SessionImportStatus,
+    BACKGROUND_RESCAN_MIN_MS, ImportTrigger, ProjectSelection, SessionImportCounts,
+    SessionImportRequest, SessionImportSource, SessionImportStatus,
 };
 
 /// Source ids (persisted in the ledger and settings, and on inbox rows).
@@ -220,7 +221,21 @@ struct Pass<'a> {
     ledger: HashMap<String, ImportLedgerEntry>,
     /// Native ids on threads this app started.
     own: HashSet<String>,
+    /// The folders new imports are limited to (`SessionImportSettings::projects`).
+    projects: Option<BTreeSet<String>>,
     counts: SessionImportCounts,
+}
+
+impl Pass<'_> {
+    /// A new session started in `cwd` may become a thread.
+    fn allowed(&self, cwd: Option<&Path>) -> bool {
+        match &self.projects {
+            None => true,
+            Some(only) => cwd
+                .and_then(Path::to_str)
+                .is_some_and(|cwd| only.contains(cwd)),
+        }
+    }
 }
 
 pub struct SessionImporter {
@@ -284,6 +299,8 @@ impl SessionImporter {
             last_run_at: state.last_run_at,
             last_trigger: state.last_trigger,
             last_error: state.last_error.clone(),
+            projects: state.settings.projects.clone(),
+            started: false,
         }
     }
 
@@ -298,7 +315,9 @@ impl SessionImporter {
         let owner = ProfileOwner::from(scope);
         let store = engine.store();
         let mut state = store.session_import_state(&owner).await?;
-        let changed = !request.sources.is_empty() || request.background.is_some();
+        let changed = !request.sources.is_empty()
+            || request.background.is_some()
+            || request.projects.is_some();
         for (source, on) in &request.sources {
             if !SOURCES.iter().any(|s| s.id == source) {
                 return Err(OrchestratorError::invalid(format!(
@@ -310,31 +329,54 @@ impl SessionImporter {
         if let Some(background) = request.background {
             state.settings.background = background;
         }
+        if let Some(selection) = &request.projects {
+            let projects = match selection {
+                ProjectSelection::All => None,
+                ProjectSelection::Only(only) => Some(only.clone()),
+            };
+            if projects != state.settings.projects {
+                state.settings.projects = projects;
+                // Files skipped for their folder may be wanted now.
+                if let Ok(mut skipped) = self.skipped.lock() {
+                    skipped.clear();
+                }
+            }
+        }
         if changed {
             store.put_session_import_state(&owner, &state).await?;
         }
+        let mut started = false;
         if let Some(trigger) = request.run
             && due(&state, trigger, now_ms())
         {
-            self.start(Arc::clone(engine), scope.clone(), trigger);
+            started = self.start(Arc::clone(engine), scope.clone(), trigger);
         }
-        Ok(self.status_of(engine, &state))
+        let mut status = self.status_of(engine, &state);
+        status.started = started;
+        Ok(status)
     }
 
-    /// Run in the background unless a run is going on already.
-    fn start(self: &Arc<Self>, engine: Arc<Engine>, scope: ThreadScope, trigger: ImportTrigger) {
+    /// Run in the background unless a run is going on already; `true`
+    /// when this call started one.
+    fn start(
+        self: &Arc<Self>,
+        engine: Arc<Engine>,
+        scope: ThreadScope,
+        trigger: ImportTrigger,
+    ) -> bool {
         if self
             .running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return;
+            return false;
         }
         let this = Arc::clone(self);
         tokio::spawn(async move {
             this.run_held(&engine, &scope, trigger).await;
             this.running.store(false, Ordering::SeqCst);
         });
+        true
     }
 
     /// Run now and wait for it; `None` when another run is going on.
@@ -428,6 +470,7 @@ impl SessionImporter {
                 runtime,
                 ledger: store.import_ledger(&owner, spec.id).await?,
                 own,
+                projects: state.settings.projects.clone(),
                 counts: SessionImportCounts::default(),
             };
             let candidates = match spec.id {

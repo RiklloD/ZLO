@@ -9,7 +9,7 @@ use ironclaw_product_contracts::inbox::{
 };
 use ironclaw_product_contracts::profiles::DEFAULT_PROFILE_ID;
 use ironclaw_product_contracts::session_import::{
-    ImportTrigger, SessionImportRequest, SessionImportStatus,
+    ImportTrigger, SessionImportProjects, SessionImportRequest, SessionImportStatus,
 };
 use ironclaw_product_contracts::task_models::TaskModels;
 use serde_json::json;
@@ -82,6 +82,12 @@ impl Client {
     /// Terminal session import: settings, last run, and whether one runs.
     pub async fn session_import_status(&self) -> Result<SessionImportStatus, ClientError> {
         document(self.get(&format!("{V2}/session-imports")).await?)
+    }
+
+    /// The folders terminal sessions ran in (first-run setup). Imports
+    /// nothing; an older gateway answers 404.
+    pub async fn session_import_projects(&self) -> Result<SessionImportProjects, ClientError> {
+        document(self.get(&format!("{V2}/session-imports/projects")).await?)
     }
 
     /// Change import settings and/or start a run (`run`). Answers the

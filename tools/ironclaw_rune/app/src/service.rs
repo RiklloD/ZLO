@@ -84,6 +84,29 @@ pub fn start() {
         .ok();
 }
 
+/// Restart the backend this app runs (a CLI installed since it started is
+/// registered only at startup): SIGTERM it and let the supervisor start it
+/// again. `false` when this app does not run one.
+pub fn restart() -> bool {
+    let sup = supervisor();
+    if sup.stopping.load(Ordering::SeqCst) {
+        return false;
+    }
+    let pid = sup
+        .child
+        .lock()
+        .ok()
+        .and_then(|c| c.as_ref().map(Child::id));
+    match pid {
+        Some(pid) => {
+            tracing::debug!(pid, "backend restarting");
+            terminate(pid);
+            true
+        }
+        None => false,
+    }
+}
+
 /// SIGTERM the backend without waiting: its graceful shutdown drains open
 /// streams, and this app's streams close only once it exits. A backend that
 /// is still around at the next launch is stopped by `stop_stale`.

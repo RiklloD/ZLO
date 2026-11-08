@@ -261,6 +261,7 @@ impl SessionImporter {
             || scan.subagent
             || scan.first_prompt.is_none()
             || self.own_folder(scan.cwd.as_deref())
+            || !pass.allowed(scan.first_cwd.as_deref())
             || scan.id.as_ref().is_some_and(|id| pass.own.contains(id))
         {
             self.remember_skip(c);

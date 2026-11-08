@@ -8,11 +8,10 @@
 //! cheap enough to build in every view run. Every widget in `kit` reads it
 //! instead of hardcoding a radius or a duration.
 //!
-//! Vibrancy maps onto Rune's system materials: [`Style::material`] is the
-//! `SystemMaterial` a translucent shell asks for (`El::system_material`),
-//! drawn by the platform under the element in a transparent window. In an
-//! opaque window and in headless renders Rune draws the element's fill
-//! instead, which is why `shell_alpha`/`panel_alpha` still apply to fills.
+//! Vibrancy is GPUI's blurred backdrop: a transparent window whose desktop
+//! the WindowServer blurs, untinted (`crate::backdrop`), under the shell's
+//! and panel's fills at `shell_alpha`/`panel_alpha`. Not Rune's system
+//! materials: their popover material greys the window over.
 //!
 //! GPUI flipped the window's backdrop live (`set_translucent`/`apply_window`).
 //! Rune fixes a window's transparency when it creates the window
@@ -26,7 +25,7 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use rune::{Curve, Spring, SystemMaterial, TextStyle};
+use rune::{Curve, Spring, TextStyle};
 
 use super::motion::TAILWIND;
 use super::prefs::Prefs;
@@ -37,7 +36,7 @@ pub const POP: Spring = Spring::new(0.30, 0.08);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Style {
-    /// Ask macOS for the blurred window backdrop (a system material).
+    /// Ask macOS for the blurred window backdrop (`crate::backdrop`).
     pub vibrancy: bool,
     /// Opacity of the shell and sidebar fill; below 1 shows the backdrop.
     pub shell_alpha: f32,
@@ -85,12 +84,6 @@ impl Style {
             s.font_size = prefs.ui_font_size;
         }
         s
-    }
-
-    /// The system material a translucent shell (sidebar, window backdrop)
-    /// sits on, or `None` when the window is opaque.
-    pub fn material(&self) -> Option<SystemMaterial> {
-        self.vibrancy.then_some(SystemMaterial::Popover)
     }
 
     /// Body text size, scaled from the 16 pt rem (GPUI `text_sm` = 14).

@@ -1,5 +1,6 @@
-//! `session_import.status` and `session_import.run`: the caller's terminal
-//! session import (settings, last run, "Import now"). The work is
+//! `session_import.status`, `session_import.projects` and
+//! `session_import.run`: the caller's terminal session import (settings,
+//! last run, the folders sessions ran in, "Import now"). The work is
 //! `ironclaw_cli_providers::session_import`; this answers for the caller's
 //! own scope only, and a run is a background job the status reports on.
 
@@ -10,7 +11,8 @@ use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::error::OrchestratorError;
 use ironclaw_orchestrator::profiles::ProfileOwner;
 use ironclaw_product_contracts::session_import::{
-    SESSION_IMPORT_COMMAND_ID, SESSION_IMPORT_VIEW, SessionImportRequest,
+    SESSION_IMPORT_COMMAND_ID, SESSION_IMPORT_PROJECTS_VIEW, SESSION_IMPORT_VIEW,
+    SessionImportRequest,
 };
 use ironclaw_product_contracts::surface::ProductSurfaceCaller;
 use serde_json::Value;
@@ -31,13 +33,19 @@ pub(super) async fn view(
     caller: &ProductSurfaceCaller,
     view: &str,
 ) -> Option<Result<Value, OrchestratorError>> {
-    if view != SESSION_IMPORT_VIEW.id {
+    let projects = view == SESSION_IMPORT_PROJECTS_VIEW.id;
+    if view != SESSION_IMPORT_VIEW.id && !projects {
         return None;
     }
     Some(
         async {
             let importer = importer.ok_or_else(unavailable)?;
             let owner = ProfileOwner::from(&scope_of(caller));
+            if projects {
+                return Ok(serde_json::to_value(
+                    importer.projects(engine, &owner).await?,
+                )?);
+            }
             Ok(serde_json::to_value(
                 importer.status(engine, &owner).await?,
             )?)
@@ -82,7 +90,7 @@ mod tests {
     use ironclaw_host_api::ids::{ActivityId, CapabilityId, TenantId, UserId};
     use ironclaw_orchestrator::runtime::TurnEventSink;
     use ironclaw_product_contracts::inbox::{INBOX_VIEW, InboxListResponse, InboxState};
-    use ironclaw_product_contracts::session_import::SessionImportStatus;
+    use ironclaw_product_contracts::session_import::{SessionImportProjects, SessionImportStatus};
     use ironclaw_product_contracts::surface::{
         ProductSurface, ProductSurfaceError, ProductSurfaceInvokeRequest,
         ProductSurfaceInvokeResponse, ProductSurfaceQueryPage, ProductSurfaceQueryRequest,
@@ -237,6 +245,24 @@ mod tests {
                 own_roots: vec![root.join(".ironclaw")],
             })),
         );
+
+        // Setup's project list goes through the surface too.
+        let page = surface
+            .query(
+                caller(),
+                ProductSurfaceQueryRequest {
+                    view_id: SESSION_IMPORT_PROJECTS_VIEW.id.into(),
+                    input: json!({}),
+                    cursor: None,
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap();
+        let listed: SessionImportProjects = serde_json::from_value(page.items[0].clone()).unwrap();
+        assert_eq!(listed.projects.len(), 1);
+        assert_eq!(listed.projects[0].path, app.to_str().unwrap());
+        assert_eq!(listed.projects[0].sources, vec![CLAUDE_CODE.to_string()]);
 
         let started: SessionImportStatus =
             serde_json::from_value(run(&surface, json!({"run": "manual"})).await).unwrap();

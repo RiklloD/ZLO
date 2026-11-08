@@ -135,7 +135,7 @@ pub(super) fn card(
         .child(
             el().grow(1.0)
                 .min_w(36.)
-                .child(t(name, design::SIDEBAR_META_SIZE, p.text_muted).truncate()),
+                .child(ui::side_t(name, design::SIDEBAR_META_SIZE, p.text_muted).truncate()),
         );
     if let Some(b) = branch {
         meta = meta.child(branch_label(p, &b));
@@ -188,7 +188,7 @@ pub(super) fn card(
         .on_drag(move |s: &mut State, d, tx| thread_drag::drag(s, &drag_id, &drag_title, d, tx))
         .child(meta)
         .child(
-            tw(
+            ui::side_tw(
                 title,
                 design::SIDEBAR_TITLE_SIZE,
                 if unread { SEMIBOLD } else { ui::REGULAR },
@@ -368,7 +368,7 @@ pub(super) fn slim(
         )
         .child(
             el().grow(1.0).min_w(0.0).child(
-                tw(
+                ui::side_tw(
                     title_of(row_data),
                     design::SIDEBAR_TITLE_SIZE,
                     if unread { SEMIBOLD } else { ui::REGULAR },
