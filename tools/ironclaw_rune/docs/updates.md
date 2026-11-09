@@ -29,7 +29,7 @@ Each machine updates from its own source checkout. A machine that built ZLO from
 
 Both take effect at once; nothing restarts. `zlo update disable` turns updates off again.
 
-If the machine doesn't know its checkout (ZLO was installed from a prebuilt binary, or the checkout moved), **Turn on** isn't offered. Clone the source there and name it:
+**Turn on** is only offered when it will work: the checkout ZLO was built from is still there, still holds the commit this build came from, belongs to you, and is on a branch with a remote. If not (ZLO came from a prebuilt binary, or the checkout moved or was replaced), it isn't offered. Clone the source there and name it:
 
 ```sh
 zlo update enable --repo /home/you/src/zlo     # add --branch <name> to follow another branch

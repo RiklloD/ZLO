@@ -440,12 +440,31 @@ fn machines(s: &State) -> Fleet {
     Fleet { remotes, this_mac }
 }
 
+/// Whether `key` is still one of this Mac's computers.
+fn is_member(s: &State, key: &str) -> bool {
+    if key == THIS_MAC {
+        return !s.remote.app_only;
+    }
+    super::saved(s).iter().any(|env| env.environment_id == key)
+}
+
+/// Record `key`'s row, unless that computer was removed while its answer
+/// was on the way (its row would count as "Update available" forever).
+pub(crate) fn set_row(s: &mut State, key: String, row: RowState) {
+    if is_member(s, &key) {
+        s.remote.updates.rows.insert(key, row);
+    }
+}
+
+/// A computer was removed from this Mac: its row goes with it.
+pub fn forget(s: &mut State, key: &str) {
+    s.remote.updates.rows.remove(key);
+}
+
 fn reporter(s: &State) -> Report {
     let handle = s.rt.handle.clone();
     Arc::new(move |key: String, state: RowState| {
-        handle.update(move |s, _| {
-            s.remote.updates.rows.insert(key, state);
-        });
+        handle.update(move |s, _| set_row(s, key, state));
     })
 }
 
@@ -494,12 +513,12 @@ pub fn poll(s: &mut State) {
                 let result = m.status().await;
                 let key = m.key().to_string();
                 handle.update(move |s, _| {
-                    let u = &mut s.remote.updates;
+                    let u = &s.remote.updates;
                     if u.checking || u.updating {
                         return;
                     }
                     if let Some(row) = from_poll(u.rows.get(&key), result.as_ref()) {
-                        u.rows.insert(key, row);
+                        set_row(s, key, row);
                     }
                 });
             }

@@ -109,7 +109,7 @@ async fn listeners(
             server_version: "0.0.0-test".to_string(),
             remote,
             build_commit: Some("0123abcd".to_string()),
-            self_update: false,
+            self_update: Arc::new(|| SELF_UPDATE_ON.load(std::sync::atomic::Ordering::SeqCst)),
         },
     ));
     let router = webui_v2_app(Arc::new(NoProductSurface), config).expect("app composes");
@@ -204,6 +204,10 @@ async fn redeem(router: &Router, code: &str, peer: [u8; 4]) -> (StatusCode, Valu
     .await
 }
 
+/// What the descriptor's `self_update` source answers. Only the descriptor
+/// test flips it.
+static SELF_UPDATE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[tokio::test]
 async fn descriptor_is_public_and_carries_no_secrets() {
     let root = Arc::new(InMemoryBackend::default());
@@ -227,6 +231,21 @@ async fn descriptor_is_public_and_carries_no_secrets() {
     assert_eq!(body["tailnet_url"], Value::Null);
     assert_eq!(body["build_commit"], json!("0123abcd"));
     assert_eq!(body["self_update"], json!(false));
+    // Turned on while the backend runs: the next read says so, no restart.
+    SELF_UPDATE_ON.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (_, live) = send(
+        &off.main,
+        request(
+            Method::GET,
+            "/.well-known/ironclaw/environment",
+            None,
+            None,
+            [10, 0, 0, 1],
+        ),
+    )
+    .await;
+    SELF_UPDATE_ON.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(live["self_update"], json!(true));
     let keys: Vec<&str> = body
         .as_object()
         .expect("object")

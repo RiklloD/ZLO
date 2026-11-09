@@ -94,8 +94,10 @@ pub struct EnvironmentAccessRouteConfig {
     pub remote: Option<RemoteAccessPolicy>,
     /// The commit the backend was built from, reported as `build_commit`.
     pub build_commit: Option<String>,
-    /// `[update]` is set up, reported as `self_update`.
-    pub self_update: bool,
+    /// Whether `[update]` is set up right now, reported as `self_update`.
+    /// Asked on every request: self-update is turned on and off while the
+    /// backend runs.
+    pub self_update: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 struct RouteState {
@@ -103,7 +105,7 @@ struct RouteState {
     server_version: String,
     remote: Option<RemoteAccessPolicy>,
     build_commit: Option<String>,
-    self_update: bool,
+    self_update: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 /// The device whose token authenticated this request (inserted by the
@@ -319,7 +321,7 @@ async fn get_descriptor(State(state): State<Arc<RouteState>>) -> Response {
             .as_ref()
             .map(|remote| remote.tailnet_url.clone()),
         build_commit: state.build_commit.clone(),
-        self_update: state.self_update,
+        self_update: (state.self_update)(),
     })
     .into_response()
 }

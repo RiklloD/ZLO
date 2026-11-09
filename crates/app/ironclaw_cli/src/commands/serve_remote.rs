@@ -82,14 +82,17 @@ pub(crate) fn device_token_authenticator(
 pub(crate) fn route_mount(
     service: Arc<dyn EnvironmentAccessService>,
     plan: Option<&RemoteServePlan>,
-    self_update: &crate::commands::update::SourceSelfUpdate,
+    self_update: &Arc<crate::commands::update::SourceSelfUpdate>,
 ) -> SplitRouteMount {
     environment_access_route_mount(EnvironmentAccessRouteConfig {
         service,
         server_version: env!("CARGO_PKG_VERSION").to_string(),
         remote: plan.map(RemoteServePlan::policy),
         build_commit: crate::commands::update::current_build().commit,
-        self_update: self_update.configured(),
+        self_update: {
+            let self_update = Arc::clone(self_update);
+            Arc::new(move || self_update.configured())
+        },
     })
 }
 

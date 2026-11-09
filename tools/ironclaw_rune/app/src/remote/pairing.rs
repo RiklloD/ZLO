@@ -355,6 +355,7 @@ pub fn remove(s: &mut State, environment_id: String) {
         .retain(|e| e.environment_id != environment_id);
     s.remote.problems.remove(&environment_id);
     s.remote.last_thread.remove(&environment_id);
+    super::updates::forget(s, &environment_id);
     if !s.fixture {
         let tokens = s.remote.tokens.clone();
         let id = environment_id.clone();

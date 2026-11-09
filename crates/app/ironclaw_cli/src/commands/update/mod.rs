@@ -119,6 +119,29 @@ pub(crate) fn enable_source(
         .map_err(|_| git::GitRefusal::RepoMissing(repo.to_path_buf()))?;
     let tracking =
         git::Checkout::open(&repo).and_then(|checkout| checkout.tracking(branch.as_deref()))?;
+    write_source_section(config_path, repo, branch, tracking)
+}
+
+/// [`enable_source`] for the checkout the binary itself names: nobody
+/// chose that path just now, so it is vetted first
+/// ([`git::Checkout::open_build_checkout`]).
+pub(crate) fn enable_from_build_checkout(
+    config_path: &Path,
+    checkout: &Path,
+    build_commit: Option<&str>,
+) -> anyhow::Result<(SourceUpdateSettings, git::Tracking)> {
+    let (_, tracking) = git::Checkout::open_build_checkout(checkout, build_commit)?;
+    let repo = std::fs::canonicalize(checkout)
+        .map_err(|_| git::GitRefusal::RepoMissing(checkout.to_path_buf()))?;
+    write_source_section(config_path, repo, None, tracking)
+}
+
+fn write_source_section(
+    config_path: &Path,
+    repo: PathBuf,
+    branch: Option<String>,
+    tracking: git::Tracking,
+) -> anyhow::Result<(SourceUpdateSettings, git::Tracking)> {
     write_update_section(
         config_path,
         &UpdateSection {
@@ -152,10 +175,23 @@ impl UpdateCommand {
 
         match self.action {
             Some(UpdateAction::Enable { repo, branch }) => {
-                let repo = repo
-                    .or_else(build_checkout)
-                    .ok_or_else(|| anyhow::anyhow!(NO_CHECKOUT_HINT))?;
-                let (settings, tracking) = enable_source(&config_path, &repo, branch)?;
+                let (settings, tracking) = match repo {
+                    // Named by the person at the keyboard: taken as given.
+                    Some(repo) => enable_source(&config_path, &repo, branch)?,
+                    None => {
+                        let checkout =
+                            build_checkout().ok_or_else(|| anyhow::anyhow!(NO_CHECKOUT_HINT))?;
+                        match branch {
+                            Some(branch) => enable_source(&config_path, &checkout, Some(branch))?,
+                            None => enable_from_build_checkout(
+                                &config_path,
+                                &checkout,
+                                build.commit.as_deref(),
+                            )
+                            .map_err(|e| e.context(NO_CHECKOUT_HINT))?,
+                        }
+                    }
+                };
                 println!(
                     "Self-update is on: {} follows {}.",
                     settings.repo.display(),

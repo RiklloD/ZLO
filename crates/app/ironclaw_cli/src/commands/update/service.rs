@@ -141,13 +141,20 @@ impl SourceSelfUpdate {
         self.settings().is_some()
     }
 
-    /// The checkout the enable route would use, when it would work.
+    /// The config file and checkout the enable route would use.
     fn enable_target(&self) -> Option<(&Path, &Path)> {
         let Settings::File(config_path) = &self.settings else {
             return None;
         };
-        let checkout = self.build_checkout.as_deref().filter(|dir| dir.is_dir())?;
-        Some((config_path, checkout))
+        Some((config_path, self.build_checkout.as_deref()?))
+    }
+
+    /// Whether the enable route would work right now: the same vetting
+    /// enable itself does (a few local git reads, no network).
+    fn can_enable(&self) -> bool {
+        self.enable_target().is_some_and(|(_, checkout)| {
+            Checkout::open_build_checkout(checkout, self.build.commit.as_deref()).is_ok()
+        })
     }
 
     pub(crate) fn status_blocking(&self) -> anyhow::Result<UpdateStatus> {
@@ -165,7 +172,7 @@ impl SourceSelfUpdate {
             current: self.build.clone(),
             available,
             last_run: records::last_run(&self.paths, locked, Utc::now())?,
-            can_enable: !configured && self.enable_target().is_some(),
+            can_enable: !configured && self.can_enable(),
         })
     }
 
@@ -175,7 +182,20 @@ impl SourceSelfUpdate {
         &self,
         settings: &SourceUpdateSettings,
     ) -> anyhow::Result<(UpdateStatus, u32)> {
+        self.check_within(settings, None)
+    }
+
+    /// [`Self::check_blocking`], with the fetch cut off after `fetch_timeout`.
+    fn check_within(
+        &self,
+        settings: &SourceUpdateSettings,
+        fetch_timeout: Option<std::time::Duration>,
+    ) -> anyhow::Result<(UpdateStatus, u32)> {
         let outcome = Checkout::open(&settings.repo).and_then(|c| {
+            let c = match fetch_timeout {
+                Some(timeout) => c.fetching_within(timeout),
+                None => c,
+            };
             c.check(
                 settings.branch.as_deref(),
                 self.build.commit.as_deref(),
@@ -228,14 +248,13 @@ impl SourceSelfUpdate {
         let Some((config_path, checkout)) = self.enable_target() else {
             return Err(SelfUpdateError::NoCheckout(super::NO_CHECKOUT_HINT.into()));
         };
-        super::enable_source(config_path, checkout, None).map_err(|error| {
-            match error.downcast::<GitRefusal>() {
+        super::enable_from_build_checkout(config_path, checkout, self.build.commit.as_deref())
+            .map_err(|error| match error.downcast::<GitRefusal>() {
                 Ok(refusal) => {
                     SelfUpdateError::NoCheckout(format!("{refusal} {}", super::NO_CHECKOUT_HINT))
                 }
                 Err(other) => unavailable(other),
-            }
-        })?;
+            })?;
         self.status_blocking().map_err(unavailable)
     }
 }
@@ -274,7 +293,10 @@ async fn check_in_background(this: &Arc<SourceSelfUpdate>) {
                 if records::is_locked(&worker.paths)? {
                     return Ok(());
                 }
-                worker.check_blocking(&settings).map(drop)
+                // Short: a start or enable may be waiting behind this.
+                worker
+                    .check_within(&settings, Some(super::git::BACKGROUND_FETCH_TIMEOUT))
+                    .map(drop)
             })();
             // silent-ok: the backend is shutting down and no longer listens.
             let _ = done.send(outcome);
@@ -344,7 +366,7 @@ mod tests {
 
     use ironclaw_product_contracts::self_update::UpdateRunState;
 
-    use super::super::git::tests::{push_upstream, repos, sh};
+    use super::super::git::tests::{commit, push_upstream, repos, sh};
     use super::*;
 
     #[derive(Default)]
@@ -481,13 +503,18 @@ mod tests {
     /// A backend as `serve` builds it: `[update]` followed from a config
     /// file, built from `checkout`.
     fn served(home: &Path, checkout: Option<PathBuf>) -> SelfUpdateRoutes {
+        // Built from the checkout's HEAD when it is one.
+        let checkout_head = checkout
+            .as_deref()
+            .filter(|dir| dir.join(".git").exists())
+            .map(|dir| sh(dir, &["rev-parse", "HEAD"]));
         SelfUpdateRoutes(Arc::new(SourceSelfUpdate {
             settings: Settings::File(home.join("config.toml")),
             build_checkout: checkout,
             ..SourceSelfUpdate::with_spawner(
                 home,
                 None,
-                build(None),
+                build(checkout_head),
                 Arc::new(RecordingSpawner::default()),
             )
         }))
@@ -574,12 +601,63 @@ mod tests {
         // A folder that is not a git checkout.
         let plain = tempfile::tempdir().expect("plain");
         let not_git = served(home.path(), Some(plain.path().to_path_buf()));
+        assert!(
+            !not_git.status().await.expect("status").can_enable,
+            "Turn on is only offered when it would work"
+        );
         match not_git.enable().await.expect_err("not git") {
             SelfUpdateError::NoCheckout(message) => {
                 assert!(message.contains("not a git checkout"), "{message}")
             }
             other => panic!("expected NoCheckout, got {other:?}"),
         }
+        // The folder was replaced by another repository since the build:
+        // same path, but it does not hold the commit this binary came from.
+        let r = repos();
+        let other = repos();
+        let replaced = SelfUpdateRoutes(Arc::new(SourceSelfUpdate {
+            settings: Settings::File(home.path().join("config.toml")),
+            build_checkout: Some(other.checkout.clone()),
+            ..SourceSelfUpdate::with_spawner(
+                home.path(),
+                None,
+                build(Some(commit(
+                    &r.checkout,
+                    "only-here.txt",
+                    "x",
+                    "Only in the original",
+                ))),
+                Arc::new(RecordingSpawner::default()),
+            )
+        }));
+        assert!(!replaced.status().await.expect("status").can_enable);
+        match replaced.enable().await.expect_err("replaced") {
+            SelfUpdateError::NoCheckout(message) => {
+                assert!(
+                    message.contains("not the checkout this ZLO was built from"),
+                    "{message}"
+                )
+            }
+            other => panic!("expected NoCheckout, got {other:?}"),
+        }
+        // A link to a real checkout where the folder used to be.
+        #[cfg(unix)]
+        {
+            let link = home.path().join("linked");
+            std::os::unix::fs::symlink(&r.checkout, &link).expect("symlink");
+            let linked = served(home.path(), Some(link));
+            assert!(!linked.status().await.expect("status").can_enable);
+            assert!(matches!(
+                linked.enable().await.expect_err("link"),
+                SelfUpdateError::NoCheckout(_)
+            ));
+        }
+        // On a branch with no remote: not offered, and refused.
+        let lone = tempfile::tempdir().expect("lone");
+        sh(lone.path(), &["init", "-q", "-b", "main"]);
+        commit(lone.path(), "a.txt", "a", "First");
+        let no_remote = served(home.path(), Some(lone.path().to_path_buf()));
+        assert!(!no_remote.status().await.expect("status").can_enable);
         assert!(
             !home.path().join("config.toml").exists(),
             "a refused enable writes nothing"

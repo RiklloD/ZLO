@@ -18,6 +18,9 @@ use ironclaw_config::is_safe_branch_name;
 use ironclaw_product_contracts::self_update::{MAX_UPDATE_SUBJECTS, bound_subject};
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
+/// A background check's fetch: short, because it runs while a start or
+/// enable waits behind it and a client gives those 20 seconds.
+pub(crate) const BACKGROUND_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Most bytes kept of one git command's output.
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
@@ -53,6 +56,8 @@ pub(crate) enum GitRefusal {
     Diverged { ahead: u32, upstream: String },
     #[error("Could not fetch `{upstream}`: {reason}")]
     FetchFailed { upstream: String, reason: String },
+    #[error("{0} is not the checkout this ZLO was built from ({1}).")]
+    NotTheBuildCheckout(PathBuf, &'static str),
     #[error("git {command} failed: {reason}")]
     GitFailed { command: String, reason: String },
 }
@@ -133,6 +138,7 @@ pub(crate) struct CheckOutcome {
 /// One checkout, driven through the `git` on `PATH`.
 pub(crate) struct Checkout {
     repo: PathBuf,
+    fetch_timeout: Duration,
 }
 
 impl Checkout {
@@ -143,11 +149,51 @@ impl Checkout {
         }
         let checkout = Self {
             repo: repo.to_path_buf(),
+            fetch_timeout: FETCH_TIMEOUT,
         };
         match checkout.git(&["rev-parse", "--is-inside-work-tree"], LOCAL_TIMEOUT) {
             Ok(out) if out.trim() == "true" => Ok(checkout),
             _ => Err(GitRefusal::NotARepo(repo.to_path_buf())),
         }
+    }
+
+    /// The same checkout, fetching within `timeout`.
+    pub(crate) fn fetching_within(mut self, timeout: Duration) -> Self {
+        self.fetch_timeout = timeout;
+        self
+    }
+
+    /// Open the checkout a binary says it was built from, for turning
+    /// self-update on without being told where the source is. A path alone
+    /// proves nothing (the folder may have been replaced since the build),
+    /// so it must still be a real folder (not a link to somewhere else),
+    /// belong to the user running this, hold the very commit the binary was
+    /// built from, and sit on a branch with a remote.
+    pub(crate) fn open_build_checkout(
+        dir: &Path,
+        build_commit: Option<&str>,
+    ) -> Result<(Self, Tracking), GitRefusal> {
+        let not_it = |why| GitRefusal::NotTheBuildCheckout(dir.to_path_buf(), why);
+        let meta = std::fs::symlink_metadata(dir)
+            .map_err(|_| GitRefusal::RepoMissing(dir.to_path_buf()))?;
+        if !meta.is_dir() {
+            return Err(not_it("it is a link or a file now"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // SAFETY: `geteuid` takes no arguments and cannot fail.
+            if meta.uid() != unsafe { libc::geteuid() } {
+                return Err(not_it("it belongs to another user"));
+            }
+        }
+        let checkout = Self::open(dir)?;
+        let commit = build_commit.ok_or_else(|| not_it("this build does not know its commit"))?;
+        if !checkout.knows(commit) {
+            return Err(not_it("it does not hold the commit this build came from"));
+        }
+        let tracking = checkout.tracking(None)?;
+        Ok((checkout, tracking))
     }
 
     /// The branch to follow: the configured one, which must be the one
@@ -202,7 +248,7 @@ impl Checkout {
         );
         self.git(
             &["fetch", "--quiet", "--no-tags", &tracking.remote, &refspec],
-            FETCH_TIMEOUT,
+            self.fetch_timeout,
         )
         .map_err(|e| GitRefusal::FetchFailed {
             upstream: tracking.upstream_name(),
@@ -376,7 +422,19 @@ impl Checkout {
         command
             .arg("-C")
             .arg(&self.repo)
+            // Unattended: the checkout's own hooks and fsmonitor never run
+            // from here, and nothing may pop up a password prompt (an empty
+            // GIT_ASKPASS ends git's askpass lookup). Credential helpers
+            // stay: a private source needs them to fetch.
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+            ])
             .args(args)
+            .env("GIT_ASKPASS", "")
+            .env("SSH_ASKPASS", "")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env("LC_ALL", "C")

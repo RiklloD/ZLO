@@ -365,3 +365,21 @@ fn a_stale_connect_answer_never_takes_the_newer_attempts_backend() {
     ));
     assert!(s.remote.page.pending_backend.is_none());
 }
+
+#[test]
+fn a_removed_computer_leaves_no_update_prompt_behind() {
+    use super::updates::{RowState, set_row, waiting};
+    let mut s = state();
+    s.remote.registry.upsert(studio());
+    set_row(&mut s, "env-studio".into(), RowState::Behind(2));
+    assert_eq!(waiting(&s.remote.updates), 1);
+    super::pairing::remove(&mut s, "env-studio".into());
+    assert_eq!(waiting(&s.remote.updates), 0);
+    // A poll that was already on its way answers after the removal.
+    set_row(&mut s, "env-studio".into(), RowState::Behind(2));
+    assert_eq!(
+        waiting(&s.remote.updates),
+        0,
+        "no row for a computer that is gone"
+    );
+}
