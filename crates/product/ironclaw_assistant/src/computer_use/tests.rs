@@ -502,7 +502,11 @@ impl ProductSurface for NotFoundSurface {
 #[tokio::test]
 async fn the_surface_serves_the_live_view_frames_and_controls_for_the_caller() {
     let sessions = FakeSessions::new();
-    let surface = wrap_surface(Arc::new(NotFoundSurface), Some(Arc::clone(&sessions)));
+    let surface = wrap_surface(
+        Arc::new(NotFoundSurface),
+        Some(Arc::clone(&sessions)),
+        fixed_readiness(true),
+    );
     let caller = ProductSurfaceCaller::new(
         TenantId::new("t1").unwrap(),
         UserId::new("alice").unwrap(),
@@ -560,7 +564,7 @@ async fn the_surface_serves_the_live_view_frames_and_controls_for_the_caller() {
     let passthrough = surface.query(caller, query("threads", json!({}))).await;
     assert!(passthrough.is_err(), "other views reach the inner surface");
 
-    let off = wrap_surface::<FakeSessions>(Arc::new(NotFoundSurface), None);
+    let off = wrap_surface::<FakeSessions>(Arc::new(NotFoundSurface), None, fixed_readiness(true));
     let state = off
         .query(
             ProductSurfaceCaller::new(
@@ -574,6 +578,67 @@ async fn the_surface_serves_the_live_view_frames_and_controls_for_the_caller() {
         .await
         .unwrap();
     assert_eq!(state.items[0]["enabled"], false);
+}
+
+struct FixedReadiness(ComputerUseReadiness);
+
+impl ComputerUseReadinessProbe for FixedReadiness {
+    fn readiness(&self) -> ComputerUseReadiness {
+        self.0.clone()
+    }
+}
+
+fn fixed_readiness(screen_recording: bool) -> Arc<dyn ComputerUseReadinessProbe> {
+    use ironclaw_product_contracts::computer_use::{
+        ComputerUseEngineState, ComputerUsePermissionState, ComputerUsePlatform,
+    };
+    Arc::new(FixedReadiness(ComputerUseReadiness {
+        platform: ComputerUsePlatform::Macos,
+        engine: ComputerUseEngineState::Present,
+        accessibility: ComputerUsePermissionState::Granted,
+        screen_recording: if screen_recording {
+            ComputerUsePermissionState::Granted
+        } else {
+            ComputerUsePermissionState::Missing
+        },
+    }))
+}
+
+/// The backend's readiness is an operator read: its shape is the probe's
+/// answer plus `ready`, and a non-operator caller is refused before the
+/// probe runs.
+#[tokio::test]
+async fn readiness_is_the_probes_answer_for_operators_only() {
+    let off = wrap_surface::<FakeSessions>(Arc::new(NotFoundSurface), None, fixed_readiness(false));
+    let user = ProductSurfaceCaller::new(
+        TenantId::new("t1").unwrap(),
+        UserId::new("alice").unwrap(),
+        None,
+        None,
+    );
+    let request = || ProductSurfaceQueryRequest {
+        view_id: "computer_use.readiness".to_string(),
+        input: json!({}),
+        cursor: None,
+        limit: None,
+    };
+    let refused = off.query(user.clone(), request()).await.unwrap_err();
+    assert_eq!(refused.status_code, 403, "{refused:?}");
+
+    let page = off
+        .query(user.with_operator_config(true), request())
+        .await
+        .unwrap();
+    assert_eq!(
+        page.items[0],
+        json!({
+            "platform": "macos",
+            "engine": "present",
+            "accessibility": "granted",
+            "screen_recording": "missing",
+            "ready": false,
+        })
+    );
 }
 
 #[test]

@@ -18,6 +18,9 @@ mod mentions_surface_tests;
 mod observer;
 mod profile_context;
 mod profiles;
+mod repo_surface;
+#[cfg(test)]
+mod repo_surface_tests;
 mod runtime;
 #[cfg(test)]
 mod schedule_surface_tests;
@@ -27,6 +30,7 @@ mod stitched;
 mod surface;
 mod telemetry;
 mod tools;
+mod workspace;
 
 pub use history::{
     HISTORY_SEARCH_CAPABILITY_ID, HISTORY_SEARCH_TOOL_NAME, HistorySearchSurface,
@@ -43,6 +47,7 @@ pub use runtime::{AgentLoopRuntime, IRONCLAW_RUNTIME_ID};
 pub use surface::OrchestratedProductSurface;
 pub use telemetry::OrchestratorTelemetrySink;
 pub use tools::orchestrator_capabilities;
+pub use workspace::{NoWorkspaceFolders, WorkspaceFolders};
 
 use std::sync::Arc;
 
@@ -55,14 +60,17 @@ use ironclaw_product_contracts::surface::ProductSurface;
 /// (acting on the undecorated `inner`, so automatic turns are not mistaken for
 /// user activity), the tick loop starts, and the orchestrating decorator is
 /// returned; `cli_bridge` streams CLI threads and answers their tool-call
-/// approvals; `routes` lists the other providers a thread may run on. Falls
-/// back to `inner` when the runtime cannot be built.
+/// approvals; `routes` lists the other providers a thread may run on;
+/// `workspace` names the host folder of each caller's `/workspace`, which
+/// `@`-mentions of workspace paths read from. Falls back to `inner` when the
+/// runtime cannot be built.
 pub fn orchestrate(
     engine: &Arc<Engine>,
     inner: Arc<dyn ProductSurface>,
     session_extension_id: Option<String>,
     cli_bridge: Option<Arc<CliBridge>>,
     routes: Option<Arc<dyn NativeModelRoutes>>,
+    workspace: Arc<dyn WorkspaceFolders>,
 ) -> Arc<dyn ProductSurface> {
     match AgentLoopRuntime::new(Arc::clone(&inner), session_extension_id, routes) {
         Ok(agent_loop) => engine.register_runtime(Arc::new(agent_loop)),
@@ -73,11 +81,10 @@ pub fn orchestrate(
     }
     engine.set_schedule_planner(Arc::new(schedules::RoutineSchedulePlanner::local()));
     engine.start(std::time::Duration::from_secs(2));
-    let surface: Arc<dyn ProductSurface> = Arc::new(OrchestratedProductSurface::new(
-        inner,
-        Arc::clone(engine),
-        cli_bridge,
-    ));
+    let surface: Arc<dyn ProductSurface> = Arc::new(
+        OrchestratedProductSurface::new(inner, Arc::clone(engine), cli_bridge)
+            .with_workspace_folders(workspace),
+    );
     inbox::title_on_completion(engine, &surface);
     surface
 }

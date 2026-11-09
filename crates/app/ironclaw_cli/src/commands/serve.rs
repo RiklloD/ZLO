@@ -20,8 +20,9 @@ use ironclaw_extension_host::extension_ingress::extension_ingress_route_mount;
 use ironclaw_webui::{
     BoundWebuiListener, DeferredWebuiRouterHandle, EnvBearerAuthenticator, ProductAuthRouteState,
     RebornWebuiServeError, RebornWebuiServeOptions, WebuiAuthenticator, WebuiServeConfig,
-    bind_webui_v2, deferred_webui_v2_startup_router, product_auth_route_mount,
-    serve_bound_webui_v2, serve_webui_v2, webui_v2_app_with_lifecycle,
+    bind_webui_v2, deferred_webui_v2_startup_router, main_listener_router,
+    product_auth_route_mount, serve_bound_identity_listener, serve_bound_webui_v2, serve_webui_v2,
+    webui_v2_app_with_lifecycle,
 };
 use secrecy::SecretString;
 
@@ -328,6 +329,19 @@ impl ServeCommand {
         // the login wiring are assembled inside the async runtime below,
         // because opening the libSQL user store is async.
         let sso_startup = crate::commands::serve_sso::sso_startup_config_from_env(listen_addr)?;
+        // `[remote]`: resolved before the runtime so the local-account check
+        // runs once per start. `None` keeps the backend loopback-only with no
+        // identity listener.
+        let remote_plan =
+            crate::commands::serve_remote::RemoteServePlan::from_config(config_file.as_ref());
+        // `[update]`: the self-update routes and the descriptor's
+        // `self_update` flag. Records live under `<home>/update/`; a job this
+        // backend starts runs detached and survives its restart.
+        let self_update = Arc::new(crate::commands::update::SourceSelfUpdate::for_serve(
+            boot_config.home().path(),
+            crate::commands::update::source_settings(config_file.as_ref()),
+            crate::commands::update::current_build(),
+        )?);
         // This token keys the stateless session HMAC, so a weak value would be
         // an OFFLINE forgery target: an attacker who obtains one legitimate
         // `{payload}.{hmac}` session pair could brute-force a low-entropy key
@@ -476,6 +490,13 @@ impl ServeCommand {
             }
 
             let product_surface = runtime.product_surface(None)?;
+            // Remote-environment records (permanent environment id, pairing
+            // codes, device grants) on the runtime's durable control-plane
+            // mount, so a revoked device stays revoked across restarts.
+            let environment_access = runtime
+                .open_environment_access(&crate::host_info::default_environment_label())
+                .await
+                .context("failed to open the remote-environment records")?;
             let openai_compat_mount = build_openai_compat_route_mount(
                 &runtime,
                 tenant_id.clone(),
@@ -525,6 +546,13 @@ impl ServeCommand {
                 env_authenticator,
             )
             .await?;
+            // Paired-device `icd_` tokens resolve to the operator, in front of
+            // the master-token / session chain.
+            let authenticator = crate::commands::serve_remote::device_token_authenticator(
+                Arc::clone(&environment_access),
+                user_id.clone(),
+                authenticator,
+            );
 
             // CLI-token-login mount (`GET /login?token=`, printed by `onboard`
             // at setup end) — only when SSO is off AND the token came from
@@ -562,6 +590,12 @@ impl ServeCommand {
                         .await
                         .context("failed to bind WebChat v2 listener")?,
                 ),
+            };
+            let identity_listener = match remote_plan.as_ref() {
+                Some(plan) => {
+                    Some(crate::commands::serve_remote::bind_identity_listener(plan).await?)
+                }
+                None => None,
             };
             print_serve_banner(
                 listener.announced_addr(listen_addr),
@@ -622,6 +656,15 @@ impl ServeCommand {
                 }
                 serve_config = serve_config.with_split_route_mount(product_auth_route_mount(state));
             }
+            serve_config =
+                serve_config.with_split_route_mount(crate::commands::serve_remote::route_mount(
+                    Arc::clone(&environment_access),
+                    remote_plan.as_ref(),
+                    &self_update,
+                ));
+            serve_config = serve_config.with_protected_route_mount(
+                crate::commands::update::self_update_routes(Arc::clone(&self_update)),
+            );
             // Generic extension channel ingress (extension-runtime P4): one
             // mount serves `/webhooks/extensions/{extension_id}/{route_suffix}`
             // for every active extension; the route table follows the active
@@ -668,6 +711,21 @@ impl ServeCommand {
             let webui_app = webui_v2_app_with_lifecycle(product_surface, serve_config)
                 .context("failed to compose v2 Router")?;
             let (router, public_route_drains) = webui_app.into_parts();
+            // The identity listener serves the same router plus the tailnet
+            // identity layer; the main listener drops every `Tailscale-*`
+            // header so nobody can claim a tailnet identity through it.
+            let identity_task = identity_listener.map(|bound| {
+                eprintln!(
+                    "ironclaw: remote identity listener on {} (tailscale serve target)",
+                    bound.local_addr()
+                );
+                tokio::spawn(serve_bound_identity_listener(
+                    bound,
+                    router.clone(),
+                    webui_shutdown_signal(),
+                ))
+            });
+            let router = main_listener_router(router);
 
             let serve_result = match listener {
                 ListenerPlan::Hosted(startup_serve) => {
@@ -689,12 +747,23 @@ impl ServeCommand {
             // request before product workflow dispatch completes, so their
             // route-owned work must finish after ingress stops accepting new
             // requests but before shared runtime services are torn down.
+            let identity_result = match identity_task {
+                Some(task) => {
+                    crate::commands::serve_remote::finish_identity_listener(
+                        task,
+                        serve_result.is_err(),
+                    )
+                    .await
+                }
+                None => Ok(()),
+            };
             public_route_drains.drain().await;
 
             // Always drain the Reborn runtime, even on serve error, so
             // background tasks and turn-runner state shut down cleanly.
             let shutdown_result = runtime.shutdown().await;
             serve_result.context("WebChat v2 serve loop failed")?;
+            identity_result?;
             shutdown_result.context("Reborn runtime shutdown failed")?;
             Ok::<(), anyhow::Error>(())
         })?;

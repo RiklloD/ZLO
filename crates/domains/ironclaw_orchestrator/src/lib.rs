@@ -22,6 +22,7 @@
 //! ([`store::Store`]).
 
 pub mod cli_approvals;
+mod console;
 pub mod context_report;
 pub mod delegation;
 pub mod engine;
@@ -36,6 +37,9 @@ pub mod model;
 pub mod profile_runtime;
 pub mod profiles;
 mod recovery;
+mod repo;
+#[cfg(test)]
+mod repo_tests;
 pub mod restart;
 pub mod runtime;
 pub mod schedule_webhooks;

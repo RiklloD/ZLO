@@ -1181,7 +1181,26 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // schedule mutations, and goal checks. Behavior lives in the owning
         // crates. Count read from this test's failure message on the merged
         // tree.
-        ("ironclaw_product_contracts", 20_186),
+        // 20_186 -> 20_520 (2026-11-08, ZLO remote environments): the
+        // `environment_access` wire DTOs (descriptor, pairing code, device
+        // token, device list) shared by the WebUI transport and the ZLO
+        // client. Shapes and redacting `Debug` only; storage and the
+        // Tailscale identity listener live in the host.
+        // 20_520 -> 20_808 (2026-11-08, same feature, backend half): the
+        // `EnvironmentAccessService` port (caller `ironclaw_webui`,
+        // implementor `ironclaw_identity`), its error, the validated
+        // `DeviceId`/`EnvironmentId` newtypes, and the pairing-code
+        // normalize/display helpers both the CLI and ZLO need. Records,
+        // hashing and the CAS live in `ironclaw_identity`.
+        // 20_808 -> 21_451 (2026-11-09, ZLO remote environments, phase 7/8):
+        // re-measured on the live tree. ~115 lines are remote `@`-mentions
+        // and computer-use readiness: `PROJECT_FS_INDEX_VIEW` and its bodies,
+        // `COMPUTER_USE_READINESS_VIEW`, the `ComputerUseReadiness` DTO and
+        // enums, and the `ComputerUseReadinessProbe` port (caller
+        // `ironclaw_assistant`, implementor `ironclaw_computer_use`). The
+        // rest is the concurrent `self_update` and `thread_repo` wire
+        // modules. Walk, expansion and preflight live in the owning crates.
+        ("ironclaw_product_contracts", 21_451),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

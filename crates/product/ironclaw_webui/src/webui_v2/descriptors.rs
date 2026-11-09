@@ -125,6 +125,7 @@ pub const WEBUI_V2_ROUTE_LOGS: &str = "webui.v2.logs";
 pub const WEBUI_V2_ROUTE_LIST_PROJECT_FILES: &str = "webui.v2.list_project_files";
 pub const WEBUI_V2_ROUTE_STAT_PROJECT_FILE: &str = "webui.v2.stat_project_file";
 pub const WEBUI_V2_ROUTE_READ_PROJECT_FILE: &str = "webui.v2.read_project_file";
+pub const WEBUI_V2_ROUTE_INDEX_PROJECT_FILES: &str = "webui.v2.index_project_files";
 pub const WEBUI_V2_ROUTE_LIST_FS_MOUNTS: &str = "webui.v2.list_fs_mounts";
 pub const WEBUI_V2_ROUTE_BROWSE_FS_DIR: &str = "webui.v2.browse_fs_dir";
 pub const WEBUI_V2_ROUTE_STAT_FS_PATH: &str = "webui.v2.stat_fs_path";
@@ -172,6 +173,11 @@ pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
     "webui.v2.orchestrator.thread_merge_back";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_WORKTREE: &str =
     "webui.v2.orchestrator.thread_worktree";
+pub const WEBUI_V2_ROUTE_THREAD_GIT: &str = "webui.v2.orchestrator.thread_git";
+pub const WEBUI_V2_ROUTE_THREAD_GIT_CHANGE: &str = "webui.v2.orchestrator.thread_git_change";
+pub const WEBUI_V2_ROUTE_THREAD_CONSOLE: &str = "webui.v2.orchestrator.thread_console";
+pub const WEBUI_V2_ROUTE_THREAD_CONSOLE_CONTROL: &str =
+    "webui.v2.orchestrator.thread_console_control";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ACTION: &str = "webui.v2.orchestrator.thread_action";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS: &str = "webui.v2.orchestrator.providers";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK: &str = "webui.v2.orchestrator.task";
@@ -200,6 +206,10 @@ pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK: &str =
     "/api/webchat/v2/threads/{thread_id}/merge-back";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_WORKTREE: &str =
     "/api/webchat/v2/threads/{thread_id}/worktree";
+/// GET (a read) and POST (a change) of the thread's repository on the backend.
+pub const WEBUI_V2_PATTERN_THREAD_GIT: &str = "/api/webchat/v2/threads/{thread_id}/git";
+/// GET (output after a cursor) and POST (start / cancel / clear) of its console.
+pub const WEBUI_V2_PATTERN_THREAD_CONSOLE: &str = "/api/webchat/v2/threads/{thread_id}/console";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ACTION: &str =
     "/api/webchat/v2/threads/{thread_id}/action";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS: &str = "/api/webchat/v2/providers";
@@ -276,6 +286,9 @@ pub const WEBUI_V2_PATTERN_COMPUTER_USE_STATE: &str = "/api/webchat/v2/computer-
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_FRAME: &str = "webui.v2.computer_use.frame";
 pub const WEBUI_V2_PATTERN_COMPUTER_USE_FRAME: &str =
     "/api/webchat/v2/threads/{thread_id}/computer-use/frame";
+// This host's computer-use readiness (engine, macOS permissions); operator only.
+pub const WEBUI_V2_ROUTE_COMPUTER_USE_READINESS: &str = "webui.v2.computer_use.readiness";
+pub const WEBUI_V2_PATTERN_COMPUTER_USE_READINESS: &str = "/api/webchat/v2/computer-use/readiness";
 // Inbox and goal routes (v2 stage 5).
 pub const WEBUI_V2_ROUTE_INBOX_LIST: &str = "webui.v2.inbox.list";
 pub const WEBUI_V2_ROUTE_INBOX_MUTATE: &str = "webui.v2.inbox.mutate";
@@ -424,6 +437,8 @@ pub const WEBUI_V2_PATTERN_STAT_PROJECT_FILE: &str =
     "/api/webchat/v2/threads/{thread_id}/files/stat";
 pub const WEBUI_V2_PATTERN_READ_PROJECT_FILE: &str =
     "/api/webchat/v2/threads/{thread_id}/files/content";
+pub const WEBUI_V2_PATTERN_INDEX_PROJECT_FILES: &str =
+    "/api/webchat/v2/threads/{thread_id}/files/index";
 pub const WEBUI_V2_PATTERN_LIST_FS_MOUNTS: &str = "/api/webchat/v2/fs/mounts";
 pub const WEBUI_V2_PATTERN_BROWSE_FS_DIR: &str = "/api/webchat/v2/fs/list";
 pub const WEBUI_V2_PATTERN_STAT_FS_PATH: &str = "/api/webchat/v2/fs/stat";
@@ -500,6 +515,10 @@ pub fn webui_v2_routes_with_artifact_flags(
         orchestrator_providers_descriptor(),
         orchestrator_thread_merge_back_descriptor(),
         orchestrator_thread_worktree_descriptor(),
+        thread_git_descriptor(),
+        thread_git_change_descriptor(),
+        thread_console_descriptor(),
+        thread_console_control_descriptor(),
         orchestrator_thread_action_descriptor(),
         orchestrator_task_descriptor(),
         orchestrator_task_cancel_descriptor(),
@@ -645,6 +664,7 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_ROUTE_COMPUTER_USE_FRAME,
             WEBUI_V2_PATTERN_COMPUTER_USE_FRAME,
         ),
+        computer_use_readiness_descriptor(),
         // Same read/mutation policy shape as the profile routes.
         profile_route_descriptor(
             WEBUI_V2_ROUTE_INBOX_LIST,
@@ -772,6 +792,7 @@ pub fn webui_v2_routes_with_artifact_flags(
         list_project_files_descriptor(),
         stat_project_file_descriptor(),
         read_project_file_descriptor(),
+        index_project_files_descriptor(),
         list_fs_mounts_descriptor(),
         browse_fs_dir_descriptor(),
         stat_fs_path_descriptor(),
@@ -846,6 +867,12 @@ pub fn is_webui_v2_operator_webui_config_route_id(route_id: &str) -> bool {
             // request body is buffered, instead of relying on the
             // handler-level capability check alone.
             | WEBUI_V2_ROUTE_IMPORT_EXTENSION
+            // Host git and a host shell on the backend's machine for a
+            // remote client (ZLO remote environments): operator only.
+            | WEBUI_V2_ROUTE_THREAD_GIT
+            | WEBUI_V2_ROUTE_THREAD_GIT_CHANGE
+            | WEBUI_V2_ROUTE_THREAD_CONSOLE
+            | WEBUI_V2_ROUTE_THREAD_CONSOLE_CONTROL
     )
 }
 
@@ -1098,6 +1125,22 @@ fn list_project_files_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_PATTERN_LIST_PROJECT_FILES,
         read_policy(
             read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+/// One walk of up to a few hundred listings: a tighter per-caller rate than
+/// a single listing.
+fn index_project_files_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_INDEX_PROJECT_FILES,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_INDEX_PROJECT_FILES,
+        read_policy(
+            rate_limit_per_caller(30, 60),
             AuditTraceClass::UserAction,
             AllowedEffectPath::ProductSurface,
             StreamingMode::None,
@@ -1915,6 +1958,63 @@ fn orchestrator_thread_worktree_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_WORKTREE,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_WORKTREE,
+        mutation_policy(
+            body_limit_kib(16),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
+fn thread_git_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_THREAD_GIT,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_THREAD_GIT,
+        read_policy(
+            rate_limit_per_caller(240, 60),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn thread_git_change_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_THREAD_GIT_CHANGE,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_THREAD_GIT,
+        mutation_policy(
+            body_limit_kib(256),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
+/// Polled while a command runs, so its read budget is wider.
+fn thread_console_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_THREAD_CONSOLE,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_THREAD_CONSOLE,
+        read_policy(
+            rate_limit_per_caller(600, 60),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+fn thread_console_control_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_THREAD_CONSOLE_CONTROL,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_THREAD_CONSOLE,
         mutation_policy(
             body_limit_kib(16),
             mutation_rate_limit(),
@@ -2918,6 +3018,21 @@ fn computer_use_session_descriptor() -> IngressRouteDescriptor {
 
 /// The viewer polls these while an agent drives apps: the state about once a
 /// second and one window's picture at up to 10 frames a second.
+/// Operator read of host facts; the product surface refuses other callers.
+fn computer_use_readiness_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_COMPUTER_USE_READINESS,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_COMPUTER_USE_READINESS,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
 fn computer_use_live_descriptor(
     route: &'static str,
     pattern: &'static str,

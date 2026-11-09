@@ -15,6 +15,7 @@ use ironclaw_product_contracts::surface::{
 };
 use serde::Serialize;
 
+use crate::webui_v2::descriptors::WEBUI_V2_PATTERN_INDEX_PROJECT_FILES;
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_ARTIFACT,
     WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_RUN_ARTIFACT,
@@ -73,7 +74,8 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_STREAM_EVENTS, WEBUI_V2_PATTERN_STREAM_EVENTS_WS,
     WEBUI_V2_PATTERN_SUGGESTION_DETAIL, WEBUI_V2_PATTERN_SUGGESTION_START,
     WEBUI_V2_PATTERN_SUGGESTIONS_GENERATE, WEBUI_V2_PATTERN_SUGGESTIONS_LIST,
-    WEBUI_V2_PATTERN_TEST_LLM_CONNECTION, WEBUI_V2_PATTERN_TRACE_ACCOUNT_LOGIN_LINK,
+    WEBUI_V2_PATTERN_TEST_LLM_CONNECTION, WEBUI_V2_PATTERN_THREAD_CONSOLE,
+    WEBUI_V2_PATTERN_THREAD_GIT, WEBUI_V2_PATTERN_TRACE_ACCOUNT_LOGIN_LINK,
     WEBUI_V2_PATTERN_TRACE_ACCOUNT_TRACES, WEBUI_V2_PATTERN_TRACE_CREDITS,
     WEBUI_V2_PATTERN_TRACE_HOLD_AUTHORIZE, WEBUI_V2_PATTERN_USAGE_HISTORY,
     WEBUI_V2_PATTERN_USAGE_REPORT, WEBUI_V2_PATTERN_USER_MODEL_CATALOG,
@@ -81,7 +83,7 @@ use crate::webui_v2::descriptors::{
 };
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_COMPUTER_USE, WEBUI_V2_PATTERN_COMPUTER_USE_FRAME,
-    WEBUI_V2_PATTERN_COMPUTER_USE_STATE,
+    WEBUI_V2_PATTERN_COMPUTER_USE_READINESS, WEBUI_V2_PATTERN_COMPUTER_USE_STATE,
 };
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_HISTORY_SEARCH, WEBUI_V2_PATTERN_INBOX, WEBUI_V2_PATTERN_INBOX_THREAD,
@@ -343,6 +345,10 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             get(handlers::stat_project_file),
         )
         .route(
+            WEBUI_V2_PATTERN_INDEX_PROJECT_FILES,
+            get(handlers::index_project_files),
+        )
+        .route(
             WEBUI_V2_PATTERN_READ_PROJECT_FILE,
             get(handlers::read_project_file),
         )
@@ -520,6 +526,10 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             get(handlers::computer_use_frame),
         )
         .route(
+            WEBUI_V2_PATTERN_COMPUTER_USE_READINESS,
+            get(handlers::computer_use_readiness),
+        )
+        .route(
             WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS,
             get(handlers::orchestrator_thread_tasks),
         )
@@ -562,6 +572,14 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         .route(
             WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_WORKTREE,
             post(handlers::orchestrator_thread_worktree),
+        )
+        .route(
+            WEBUI_V2_PATTERN_THREAD_GIT,
+            get(handlers::thread_git).post(handlers::thread_git_change),
+        )
+        .route(
+            WEBUI_V2_PATTERN_THREAD_CONSOLE,
+            get(handlers::thread_console).post(handlers::thread_console_control),
         )
         .route(
             WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ACTION,

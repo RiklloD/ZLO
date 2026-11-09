@@ -105,6 +105,13 @@ pub struct RebornConfigFile {
     /// host-runtime binding resolver, which owns the profile catalog; this
     /// config layer only does deployment-agnostic structural validation.
     pub memory: Option<MemorySection>,
+    /// Remote access over the owner's tailnet (`ironclaw remote enable`).
+    /// Absent or `enabled = false` keeps the backend reachable on loopback
+    /// only. See [`crate::remote`].
+    pub remote: Option<crate::remote::RemoteSection>,
+    /// Self-update from a source checkout (`ironclaw update`). Absent or
+    /// `method = "none"` refuses updates. See [`crate::update`].
+    pub update: Option<crate::update::UpdateSection>,
     /// Sections this crate's schema used to define and no longer does,
     /// captured verbatim so an existing operator file still parses and can be
     /// answered with migration guidance. `serde(skip)` in both directions: it
@@ -1098,6 +1105,15 @@ impl RebornConfigFile {
                 });
             }
         }
+        if let Some(remote) = &self.remote {
+            if let Some(url) = &remote.tailnet_url {
+                check(Cow::Borrowed("remote.tailnet_url"), url)?;
+            }
+            remote.validate(attributed_path)?;
+        }
+        if let Some(update) = &self.update {
+            update.validate(attributed_path)?;
+        }
         if let Some(webui) = &self.webui {
             if let Some(host) = &webui.listen_host {
                 check(Cow::Borrowed("webui.listen_host"), host)?;
@@ -1292,7 +1308,7 @@ pub fn begin_default_llm_slot_update(
     })
 }
 
-fn acquire_update_lock(path: &Path) -> Result<fs::File, RebornConfigFileUpdateError> {
+pub(crate) fn acquire_update_lock(path: &Path) -> Result<fs::File, RebornConfigFileUpdateError> {
     let lock_path = config_update_lock_path(path);
     if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent).map_err(|source| RebornConfigFileUpdateError::Lock {
@@ -1327,7 +1343,9 @@ fn config_update_lock_path(path: &Path) -> PathBuf {
     path.with_file_name(lock_name)
 }
 
-fn load_edit_document(path: &Path) -> Result<toml_edit::DocumentMut, RebornConfigFileUpdateError> {
+pub(crate) fn load_edit_document(
+    path: &Path,
+) -> Result<toml_edit::DocumentMut, RebornConfigFileUpdateError> {
     match fs::read_to_string(path) {
         Ok(text) => text.parse::<toml_edit::DocumentMut>().map_err(|source| {
             RebornConfigFileUpdateError::Parse {
@@ -1377,7 +1395,7 @@ fn ensure_llm_default_table(doc: &mut toml_edit::DocumentMut) {
     }
 }
 
-fn write_edit_document(
+pub(crate) fn write_edit_document(
     path: &Path,
     doc: &toml_edit::DocumentMut,
 ) -> Result<(), RebornConfigFileUpdateError> {

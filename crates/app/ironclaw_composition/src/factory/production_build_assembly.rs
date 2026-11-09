@@ -318,6 +318,11 @@ async fn build_local_storage_production_shaped(
         context.workspace_scoped_per_caller,
     )?);
     context.local_process_port = host_access.process_port;
+    // The operator console runs where the agent itself gets a host shell:
+    // the policy gave this deployment a local host process port.
+    if let (Some((engine, _)), Some(port)) = (&orchestrator, &context.local_process_port) {
+        crate::worktree_host::wire_console(engine, port.clone());
+    }
     context.standalone_storage_root = Some(root.clone());
     context.default_system_prompt_path = Some(default_system_prompt_path);
     let scoped_filesystem = crate::wrap_scoped(Arc::clone(&filesystem));
@@ -378,6 +383,7 @@ async fn build_local_storage_production_shaped(
             .set(Arc::clone(&engine));
         runtime_stores.orchestrator = Some(engine);
         runtime_stores.cli_bridge = Some(bridge);
+        runtime_stores.workspace_host_root = Some(workspace_root.clone());
     }
     Ok(runtime_stores)
 }

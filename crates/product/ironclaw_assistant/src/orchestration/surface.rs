@@ -47,9 +47,13 @@ use serde_json::Value;
 use super::external;
 use super::inbox;
 use super::profiles::{self, ProfileHome};
+use super::workspace::{self, NoWorkspaceFolders, WorkspaceFolders};
 use crate::reborn_services::{
     CANCEL_RUN_COMMAND_ID, CREATE_THREAD_COMMAND_ID, RESOLVE_GATE_COMMAND_ID,
     SUBMIT_TURN_COMMAND_ID, THREAD_DELETE_CAPABILITY_ID, TIMELINE_VIEW,
+};
+use ironclaw_product_contracts::workspace_views::{
+    PROJECT_FS_INDEX_VIEW, RebornProjectFsIndexRequest,
 };
 
 pub struct OrchestratedProductSurface {
@@ -64,6 +68,9 @@ pub struct OrchestratedProductSurface {
     /// (its routes then answer a correctable error).
     // arch-exempt: optional_arc, no HOME means nothing to import from, plan #session-import
     importer: Option<Arc<SessionImporter>>,
+    /// Where each caller's `/workspace` lives on this disk, for workspace
+    /// mentions; [`NoWorkspaceFolders`] until composition sets it.
+    workspace: Arc<dyn WorkspaceFolders>,
 }
 
 impl OrchestratedProductSurface {
@@ -78,7 +85,14 @@ impl OrchestratedProductSurface {
             home: ProfileHome::from_env(),
             bridge,
             importer: SessionImporter::from_env().map(Arc::new),
+            workspace: Arc::new(NoWorkspaceFolders),
         }
+    }
+
+    /// Resolve `@`-mentions of `/workspace/...` under `workspace`'s folder.
+    pub fn with_workspace_folders(mut self, workspace: Arc<dyn WorkspaceFolders>) -> Self {
+        self.workspace = workspace;
+        self
     }
 }
 
@@ -781,6 +795,12 @@ impl ProductSurface for OrchestratedProductSurface {
         {
             return Ok(ProductSurfaceInvokeResponse { output });
         }
+        if let Some(output) =
+            super::repo_surface::command(&self.engine, &caller, &operation, request.input.clone())
+                .await
+        {
+            return Ok(ProductSurfaceInvokeResponse { output: output? });
+        }
         if let Some(output) = self
             .orchestrator_command(&operation, request.input.clone(), &scope)
             .await?
@@ -834,10 +854,12 @@ impl ProductSurface for OrchestratedProductSurface {
                         };
                         let in_front = handoff.as_ref().map_or(0, |c| c.len() + HANDOFF_SEP.len());
                         let home = std::env::home_dir();
+                        let folder = self.workspace.host_folder(&caller);
                         let expanded = super::mentions::expand(
                             typed,
                             &roots,
                             home.as_deref(),
+                            folder.as_deref(),
                             runtime,
                             &threads,
                             cap.saturating_sub(in_front),
@@ -1078,11 +1100,41 @@ impl ProductSurface for OrchestratedProductSurface {
         request: ProductSurfaceQueryRequest,
     ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
         let scope = scope_of(&caller);
+        if request.view_id == PROJECT_FS_INDEX_VIEW.id {
+            let selector: RebornProjectFsIndexRequest = serde_json::from_value(request.input)
+                .map_err(|error| {
+                    tracing::debug!(%error, "workspace index request rejected");
+                    ProductSurfaceError::validation(
+                        "body",
+                        ProductSurfaceValidationCode::InvalidValue,
+                    )
+                })?;
+            let index = workspace::file_index(
+                self.inner.as_ref(),
+                &caller,
+                selector,
+                workspace::IndexLimits::default(),
+            )
+            .await?;
+            return Ok(page(
+                serde_json::to_value(index).map_err(ProductSurfaceError::internal_from)?,
+            ));
+        }
         if let Some(value) = self
             .inbox_view(&caller, &request.view_id, request.input.clone())
             .await?
         {
             return Ok(page(value));
+        }
+        if let Some(value) = super::repo_surface::view(
+            &self.engine,
+            &caller,
+            &request.view_id,
+            request.input.clone(),
+        )
+        .await
+        {
+            return Ok(page(value?));
         }
         if let Some(value) = self
             .orchestrator_view(&request.view_id, request.input.clone(), &scope)

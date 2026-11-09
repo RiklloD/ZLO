@@ -33,6 +33,18 @@ reason to be its own compilation unit.
   the compatibility window for sections this crate used to define: an
   existing file still parses, a retired *setup* key still fails `serve`
   closed, an inert section boots and says so.
+- `RemoteSection` / `RemoteSettings` / `write_remote_section` (`remote.rs`) —
+  the `[remote]` table (`enabled`, `identity_port` default 3001,
+  `owner_logins`, `trust_local_users`, `tailnet_url`, `https_port` default
+  443): validation (fixed non-zero ports, `https://` tailnet URL, required
+  once enabled), defaults, the one-click rule (owners known, and no other
+  local login accounts unless `trust_local_users`), and the lock-protected
+  rewrite `ironclaw remote enable|disable` uses. Pure: Tailscale and the
+  local-account check run in the binary.
+- `UpdateSection` / `SourceUpdateSettings` / `is_safe_branch_name`
+  (`update.rs`) — the `[update]` table (`method = "source" | "none"`,
+  default none; absolute `repo`, required for source; optional plain
+  `branch`). Pure: git, the build and the install run in the binary.
 - `capability_remediation.rs` — remediation text helpers (not dead: consumers
   in four crates).
 

@@ -381,6 +381,9 @@ pub(crate) struct RebornRuntimeStores {
     /// Approvals, live stream and MCP tokens of CLI threads; set with `orchestrator`.
     // arch-exempt: optional_arc, libSQL-only like the engine it serves, plan #v3-cli-bridge
     pub(crate) cli_bridge: Option<Arc<ironclaw_cli_providers::bridge::CliBridge>>,
+    /// The host folder mounted at `/projects/workspace` (what `/workspace`
+    /// names), set with `orchestrator`: workspace `@`-mentions read below it.
+    pub(crate) workspace_host_root: Option<std::path::PathBuf>,
     /// Filled with `orchestrator` so the gate reads each thread's profile
     /// approval mode.
     pub(crate) profile_approval_engine: crate::profile_approval_mode::ProfileApprovalEngineSlot,

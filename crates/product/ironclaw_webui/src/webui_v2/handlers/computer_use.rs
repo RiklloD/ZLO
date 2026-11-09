@@ -8,8 +8,9 @@
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
 use ironclaw_product_contracts::computer_use::{
-    COMPUTER_USE_CONTROL_COMMAND, COMPUTER_USE_FRAME_VIEW, COMPUTER_USE_SESSION_VIEW,
-    COMPUTER_USE_STATE_VIEW, ComputerUseControlAction, ComputerUseControlRequest,
+    COMPUTER_USE_CONTROL_COMMAND, COMPUTER_USE_FRAME_VIEW, COMPUTER_USE_READINESS_VIEW,
+    COMPUTER_USE_SESSION_VIEW, COMPUTER_USE_STATE_VIEW, ComputerUseControlAction,
+    ComputerUseControlRequest,
 };
 use ironclaw_product_contracts::surface::ProductSurfaceCaller;
 use serde::Deserialize;
@@ -120,5 +121,24 @@ pub async fn computer_use_frame(
     let descriptor = COMPUTER_USE_FRAME_VIEW.descriptor();
     Ok(Json(
         query_product_view(state.services(), caller, descriptor, params, None).await?,
+    ))
+}
+
+/// `GET /api/webchat/v2/computer-use/readiness` — this host's engine and
+/// macOS permissions (operator only; the product surface refuses others).
+pub async fn computer_use_readiness(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    let descriptor = COMPUTER_USE_READINESS_VIEW.descriptor();
+    Ok(Json(
+        query_product_view(
+            state.services(),
+            caller,
+            descriptor,
+            serde_json::json!({}),
+            None,
+        )
+        .await?,
     ))
 }

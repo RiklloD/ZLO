@@ -1,13 +1,16 @@
+mod backend_client;
 mod cli;
 mod commands;
 mod context;
 mod dto;
 mod file_write;
 mod first_party;
+mod host_info;
 mod operator_env;
 mod render;
 mod runtime;
 mod serve_invocation;
+mod tailscale;
 mod webui_token;
 
 fn main() -> anyhow::Result<()> {

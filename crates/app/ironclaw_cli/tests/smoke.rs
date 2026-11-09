@@ -1907,6 +1907,52 @@ fn reborn_cli_skill_root(reborn_home: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
+fn update_is_refused_with_the_enable_hint_until_configured() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    let v1_base_dir = temp.path().join("v1-state");
+    let run = |args: &[&str]| {
+        reborn_command()
+            .args(args)
+            .env("IRONCLAW_REBORN_HOME", &reborn_home)
+            .env("IRONCLAW_BASE_DIR", &v1_base_dir)
+            .output()
+            .expect("ironclaw update should run")
+    };
+
+    for args in [&["update", "--check"][..], &["update"][..]] {
+        let output = run(args);
+        assert!(
+            !output.status.success(),
+            "{args:?} must refuse without [update]"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("[update]"), "{args:?} stderr: {stderr}");
+        assert!(
+            stderr.contains("method = \"source\""),
+            "{args:?} stderr: {stderr}"
+        );
+    }
+
+    let output = run(&["update", "--check", "--json"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(json["method"], "none");
+    assert_eq!(json["last_run"]["state"], "idle");
+    assert!(json["current"]["version"].is_string());
+
+    assert!(
+        !reborn_home.join("update").exists(),
+        "a refused or read-only update creates no update records"
+    );
+    assert!(!v1_base_dir.exists(), "update never touches v1 state");
+}
+
+#[test]
 fn config_path_reports_reborn_home_without_touching_v1_state() {
     let temp = tempfile::tempdir().expect("tempdir");
     let reborn_home = temp.path().join("reborn-home");

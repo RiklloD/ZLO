@@ -329,6 +329,7 @@ pub(crate) fn build_product_surface_with_channel_connection(
             runtime.session_channel_extension_id().map(str::to_string),
             runtime.cli_bridge.clone(),
             runtime.native_model_routes(),
+            workspace_folders(runtime),
         ),
         None => Arc::new(api) as _,
     };
@@ -349,8 +350,19 @@ pub(crate) fn build_product_surface_with_channel_connection(
             runtime.product_thread_service(),
         );
     }
-    let surface =
-        ironclaw_assistant::computer_use::wrap_surface(surface, runtime.computer_use.clone());
+    // This host's computer-use readiness (engine, macOS permissions of this
+    // process), probed whether or not computer use is on.
+    let readiness = Arc::new(ironclaw_computer_use::HostComputerUseReadiness::from_env(
+        runtime
+            .computer_use
+            .as_ref()
+            .map(|computer_use| computer_use.config()),
+    ));
+    let surface = ironclaw_assistant::computer_use::wrap_surface(
+        surface,
+        runtime.computer_use.clone(),
+        readiness,
+    );
     // Subscription usage windows for the Usage page (polled on demand).
     let usage = ironclaw_usage::UsageMonitor::for_host(
         crate::RuntimeOperatorSecretValueStore::shared(runtime.secret_store()),
@@ -872,3 +884,17 @@ fn status_check(
 
 #[cfg(test)]
 mod tests;
+
+/// Where each caller's `/workspace` lives on this disk, for workspace
+/// `@`-mentions (ZLO with a remote backend names files by workspace path).
+fn workspace_folders(
+    runtime: &RebornRuntime,
+) -> Arc<dyn ironclaw_assistant::orchestration::WorkspaceFolders> {
+    match &runtime.workspace_host_root {
+        Some(root) => Arc::new(crate::runtime_mounts::HostWorkspaceFolders {
+            policy: runtime.workspace_mount_policy.clone(),
+            workspace_root: root.clone(),
+        }),
+        None => Arc::new(ironclaw_assistant::orchestration::NoWorkspaceFolders),
+    }
+}

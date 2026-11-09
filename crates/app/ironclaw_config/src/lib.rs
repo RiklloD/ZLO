@@ -29,8 +29,10 @@ mod config_seed;
 mod doctor;
 mod home;
 mod profile;
+mod remote;
 mod retired_sections;
 mod secrets_guard;
+mod update;
 
 pub use boot::RebornBootConfig;
 pub use budget::{
@@ -58,5 +60,10 @@ pub use config_seed::{
 pub use doctor::RebornDoctorReport;
 pub use home::{REBORN_HOME_ENV, RebornConfigError, RebornHome, RebornHomeSource};
 pub use profile::{REBORN_PROFILE_ENV, RebornProfile};
+pub use remote::{
+    DEFAULT_REMOTE_HTTPS_PORT, DEFAULT_REMOTE_IDENTITY_PORT, RemoteSection, RemoteSettings,
+    write_remote_section,
+};
 pub use retired_sections::{RetiredSectionError, RetiredSections, retired_config_key_guidance};
 pub use secrets_guard::{InlineSecretError, reject_inline_secret};
+pub use update::{SourceUpdateSettings, UpdateMethodSetting, UpdateSection, is_safe_branch_name};

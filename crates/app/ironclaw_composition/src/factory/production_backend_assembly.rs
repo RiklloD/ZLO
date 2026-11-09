@@ -1486,6 +1486,7 @@ pub(super) async fn build_backend_production(
         trigger_repository: Arc::clone(&trigger_repository),
         orchestrator: None,
         cli_bridge: None,
+        workspace_host_root: None,
         profile_approval_engine,
         trigger_manual_fire_runner,
         trigger_create_hook,

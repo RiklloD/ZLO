@@ -357,6 +357,43 @@ pub struct RebornProjectFsReadRequest {
     pub path: String,
 }
 
+/// `GET /api/webchat/v2/threads/{thread_id}/files/index`: the files of a
+/// thread's project workspace, walked for `@`-mention completion on a client
+/// that cannot see the backend's disk (ZLO with a remote backend).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RebornProjectFsIndexRequest {
+    pub thread_id: String,
+}
+
+/// One indexed path: relative to the workspace root (`src/main.rs`), with
+/// `/`-separated components and no leading slash. Folders are listed too, so
+/// a folder mention can be completed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFsIndexEntry {
+    pub path: String,
+    pub kind: ProjectFsEntryKind,
+}
+
+/// The bounded index. `root` is the scoped path the entries are relative to
+/// (`/workspace`), which is also what a mention of an entry names:
+/// `root + "/" + path`. `complete` is false when a bound (count, depth,
+/// folders read, time) cut the walk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebornProjectFsIndexResponse {
+    pub root: String,
+    pub entries: Vec<ProjectFsIndexEntry>,
+    pub complete: bool,
+}
+
+/// Answered by the orchestrating product surface from the thread's own
+/// project-filesystem listings, so ownership, confinement and the sensitive-
+/// name filter are the listing view's.
+pub const PROJECT_FS_INDEX_VIEW: crate::descriptors::ProductView<
+    RebornProjectFsIndexRequest,
+    RebornProjectFsIndexResponse,
+> = crate::descriptors::ProductView::unpaginated("project_fs_index");
+
 /// A logical, browsable filesystem mount exposed by the read-only file viewer.
 ///
 /// Deliberately a small logical enum: the concrete alias (`/memory`,

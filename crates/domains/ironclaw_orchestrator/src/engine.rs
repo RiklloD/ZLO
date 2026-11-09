@@ -80,6 +80,10 @@ pub struct Engine {
     pub(crate) checkout_locks: StdMutex<HashMap<std::path::PathBuf, Arc<Mutex<()>>>>,
     /// More listeners told after every completed turn (history indexing).
     extra_turn_listeners: StdMutex<Vec<Arc<dyn TurnCompletedListener>>>,
+    /// Last-turn checkpoints of thread repositories (`crate::repo`).
+    pub(crate) git_checkpoints: crate::repo::Checkpoints,
+    /// Operator consoles of threads (`crate::console`).
+    pub(crate) consoles: crate::console::Consoles,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -131,6 +135,8 @@ impl Engine {
             reserved_dirs: StdMutex::new(std::collections::HashSet::new()),
             checkout_locks: StdMutex::new(HashMap::new()),
             extra_turn_listeners: StdMutex::new(Vec::new()),
+            git_checkpoints: StdMutex::new(HashMap::new()),
+            consoles: Default::default(),
         }))
     }
 
@@ -285,6 +291,8 @@ impl Engine {
             return Ok(0);
         }
         self.abort_goal_checks();
+        // Console commands end with the backend, with their process trees.
+        self.consoles.stop_all();
         let mine: Vec<_> = self
             .store
             .live_work()

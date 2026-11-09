@@ -17,7 +17,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{CommitId, HostCommand, HostCommandOutput, HostCommandRunner, WorktreeBranch};
+use super::{
+    CommitId, HostCommand, HostCommandEvent, HostCommandOutput, HostCommandRunner, WorktreeBranch,
+};
 use crate::error::OrchestratorError;
 
 type Result<T> = std::result::Result<T, OrchestratorError>;
@@ -78,6 +80,76 @@ impl<'a> Git<'a> {
                 timeout: GIT_TIMEOUT,
             })
             .await
+    }
+
+    /// Run `git <args>` in `dir` reading its output as it comes: at most
+    /// `max` bytes of stdout are kept (then git is killed and `truncated`
+    /// set), stderr separately and short. For outputs past [`Self::run`]'s
+    /// preview (diffs, logs, long statuses), with the same hardening.
+    pub(crate) async fn capture(&self, dir: &Path, args: &[&str], max: usize) -> Result<Captured> {
+        let mut process = self
+            .runner
+            .spawn(HostCommand {
+                line: line(args),
+                workdir: dir.to_path_buf(),
+                timeout: GIT_TIMEOUT,
+            })
+            .await?;
+        let mut out = Captured::default();
+        let mut stderr = Vec::new();
+        while let Some(event) = process.next().await {
+            match event {
+                HostCommandEvent::Stdout(bytes) => {
+                    let room = max.saturating_sub(out.stdout.len());
+                    if bytes.len() > room {
+                        out.stdout.extend_from_slice(&bytes[..room]);
+                        out.truncated = true;
+                        process.kill();
+                    } else {
+                        out.stdout.extend_from_slice(&bytes);
+                    }
+                }
+                HostCommandEvent::Stderr(bytes) => {
+                    let room = MESSAGE_MAX.saturating_sub(stderr.len());
+                    stderr.extend_from_slice(&bytes[..bytes.len().min(room)]);
+                }
+                HostCommandEvent::Exited { code, timed_out } => {
+                    out.exit_code = code;
+                    if timed_out && !out.truncated {
+                        return Err(OrchestratorError::request(
+                            "git_failed",
+                            format!("git {} took too long", what(args)),
+                        ));
+                    }
+                }
+            }
+        }
+        out.stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+        Ok(out)
+    }
+
+    /// stdout of a successful [`Self::capture`]; `git_failed` with git's
+    /// message otherwise (a cut output is a success).
+    pub(crate) async fn capture_ok(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        max: usize,
+    ) -> Result<Captured> {
+        let out = self.capture(dir, args, max).await?;
+        if out.success() || out.truncated {
+            return Ok(out);
+        }
+        Err(OrchestratorError::request(
+            "git_failed",
+            format!(
+                "git {} failed (exit {}): {}",
+                what(args),
+                out.exit_code
+                    .map_or_else(|| "signal".to_string(), |c| c.to_string()),
+                out.stderr
+            ),
+        ))
     }
 
     /// stdout of a successful `git <args>`; a model-visible `git_failed`
@@ -363,12 +435,38 @@ fn porcelain_paths(out: &str) -> Vec<String> {
         .collect()
 }
 
-fn failed(args: &[&str], out: &HostCommandOutput) -> OrchestratorError {
-    let what = args
-        .iter()
+/// What [`Git::capture`] read.
+#[derive(Debug, Default)]
+pub(crate) struct Captured {
+    /// `None` when a signal ended git (a kill after `truncated`).
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: String,
+    /// stdout went past the asked maximum and was cut.
+    pub(crate) truncated: bool,
+}
+
+impl Captured {
+    pub(crate) fn success(&self) -> bool {
+        self.exit_code == Some(0)
+    }
+
+    /// stdout as text (lossy).
+    pub(crate) fn text(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).into_owned()
+    }
+}
+
+/// The subcommand in `args` (the first word that is not an option).
+fn what<'a>(args: &[&'a str]) -> &'a str {
+    args.iter()
         .find(|a| !a.starts_with('-') && !a.contains('='))
         .copied()
-        .unwrap_or("git");
+        .unwrap_or("git")
+}
+
+fn failed(args: &[&str], out: &HostCommandOutput) -> OrchestratorError {
+    let what = what(args);
     let text = out.output.trim();
     let text = if text.len() > MESSAGE_MAX {
         super::tail(text, MESSAGE_MAX)

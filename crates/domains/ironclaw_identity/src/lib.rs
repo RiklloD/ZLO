@@ -43,6 +43,7 @@
 //! adds no dependency and no new layer reach; see the module doc for what
 //! deliberately stayed in `ironclaw_assistant`.
 
+pub mod environment_access;
 mod identity_store;
 mod key;
 pub mod projects;

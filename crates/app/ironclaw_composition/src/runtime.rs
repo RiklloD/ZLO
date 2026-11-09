@@ -623,6 +623,8 @@ pub struct RebornRuntime {
     /// Approvals, live stream and MCP tokens of CLI threads; set with `orchestrator`.
     // arch-exempt: optional_arc, libSQL-only like the engine it serves, plan #v3-cli-bridge
     pub(crate) cli_bridge: Option<Arc<ironclaw_cli_providers::bridge::CliBridge>>,
+    /// See `factory`'s field of the same name.
+    pub(crate) workspace_host_root: Option<std::path::PathBuf>,
     pub(crate) computer_use: Option<Arc<ironclaw_computer_use::ComputerUse>>,
     /// Late-bound manual-fire runner shared by product automation actions and
     /// the scheduler so both surfaces execute through the same worker graph.
@@ -1725,6 +1727,28 @@ impl RebornRuntime {
             self.thread_scope.project_id.clone(),
         );
         Ok(store)
+    }
+
+    /// Open the remote-access records (environment id, pairing codes, device
+    /// grants) over the host-owned identity substrate, creating the permanent
+    /// environment id with `default_label` on first start. Same control-plane
+    /// mount as the identity resolver, so revocations survive a restart.
+    pub async fn open_environment_access(
+        &self,
+        default_label: &str,
+    ) -> Result<
+        Arc<dyn ironclaw_product_contracts::environment_access::EnvironmentAccessService>,
+        ironclaw_product_contracts::environment_access::EnvironmentAccessError,
+    > {
+        let access = ironclaw_identity::environment_access::FilesystemEnvironmentAccess::new(
+            Arc::clone(&self.scoped_filesystem),
+            self.thread_scope.tenant_id.clone(),
+            self.actor_user_id.clone(),
+            self.thread_scope.agent_id.clone(),
+            self.thread_scope.project_id.clone(),
+        );
+        access.ensure_environment(default_label).await?;
+        Ok(Arc::new(access))
     }
 
     /// Open the admin user-directory surface over the host-owned identity
@@ -4999,6 +5023,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         trigger_repository: trigger_repository.clone(),
         orchestrator: services.orchestrator.clone(),
         cli_bridge: services.cli_bridge.clone(),
+        workspace_host_root: services.workspace_host_root.clone(),
         computer_use,
         trigger_manual_fire_runner: services.trigger_manual_fire_runner.clone(),
         #[cfg(any(test, feature = "test-support"))]

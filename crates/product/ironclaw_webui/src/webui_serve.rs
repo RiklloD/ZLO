@@ -45,6 +45,7 @@ use ironclaw_host_api::ingress::IngressRouteDescriptor;
 use ironclaw_host_ingress::{
     ProtectedRouteMount, PublicRouteDrains, PublicRouteMount, SplitRouteMount,
 };
+use ironclaw_product_contracts::environment_access::DeviceId;
 use ironclaw_product_contracts::surface::ProductSurface;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowHeaders, CorsLayer};
@@ -127,6 +128,10 @@ pub trait WebuiAuthenticator: Send + Sync + 'static {
 pub struct WebuiAuthentication {
     pub user_id: UserId,
     pub capabilities: WebUiV2Capabilities,
+    /// The paired device whose `icd_` token authenticated the request, kept
+    /// for audit and for `GET /api/auth/devices`' `current` flag. `None` for
+    /// every other bearer kind.
+    pub device_id: Option<DeviceId>,
 }
 
 impl WebuiAuthentication {
@@ -134,7 +139,14 @@ impl WebuiAuthentication {
         Self {
             user_id,
             capabilities,
+            device_id: None,
         }
+    }
+
+    /// Record which paired device presented the bearer.
+    pub fn with_device(mut self, device_id: DeviceId) -> Self {
+        self.device_id = Some(device_id);
+        self
     }
 
     pub fn user(user_id: UserId) -> Self {
@@ -861,6 +873,11 @@ async fn authenticate_request(
     .with_operator_config(auth.capabilities.operator_webui_config);
     request.extensions_mut().insert(caller);
     request.extensions_mut().insert(auth.capabilities);
+    if let Some(device_id) = auth.device_id.clone() {
+        request
+            .extensions_mut()
+            .insert(crate::environment_access::AuthenticatedDevice(device_id));
+    }
     {
         let scope = ironclaw_openai_compat::OpenAiCompatActorScope::new(
             state.tenant_id.clone(),

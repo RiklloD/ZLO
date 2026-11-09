@@ -253,6 +253,19 @@ impl ServicePlatform {
     }
 }
 
+/// Restart the installed OS service, for `ironclaw update` after it
+/// replaced the binary. `Ok(false)` when no service is installed (nothing
+/// to restart; the caller says so). Same decision tree as
+/// `ironclaw service restart`.
+pub(crate) fn restart_if_installed() -> Result<bool> {
+    let platform = ServicePlatform::detect()?;
+    if platform.current_state()? == ServiceState::NotInstalled {
+        return Ok(false);
+    }
+    platform.restart()?;
+    Ok(true)
+}
+
 /// Install then start the OS service in one call — used by `onboard`'s
 /// finale so a fresh install ends with `serve` actually running.
 pub(crate) fn install_and_start(context: &RebornCliContext) -> Result<()> {

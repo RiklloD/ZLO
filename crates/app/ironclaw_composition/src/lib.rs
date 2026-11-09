@@ -253,6 +253,47 @@ pub use ironclaw_identity::{
     ResolveExternalIdentity, SurfaceKind,
 };
 
+/// Test-support: open the remote-access records (environment id, pairing
+/// codes, device grants) over `root`, an in-memory host filesystem the caller
+/// keeps so it can open the store again to model a backend restart.
+///
+/// Mirrors [`RebornRuntime::open_environment_access`](crate::RebornRuntime::open_environment_access),
+/// which builds the same store on the runtime's durable scoped filesystem.
+/// Gated so it ships zero bytes in production binaries.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn open_environment_access_for_test(
+    root: std::sync::Arc<ironclaw_filesystem::InMemoryBackend>,
+    default_label: &str,
+) -> Result<
+    std::sync::Arc<dyn ironclaw_product_contracts::environment_access::EnvironmentAccessService>,
+    ironclaw_product_contracts::environment_access::EnvironmentAccessError,
+> {
+    use ironclaw_host_api::{
+        ids::{AgentId, TenantId, UserId},
+        mount::{MountGrant, MountPermissions, MountView},
+        path::{MountAlias, VirtualPath},
+    };
+
+    let view = MountView::new(vec![MountGrant::new(
+        MountAlias::new("/tenant-shared").expect("mount alias"), // safety: test-support-only static valid alias
+        VirtualPath::new("/tenants/test/shared").expect("virtual path"), // safety: test-support-only static valid path
+        MountPermissions::read_write_list_delete(),
+    )])
+    .expect("mount view"); // safety: test-support-only static valid view
+    let filesystem = std::sync::Arc::new(ironclaw_filesystem::ScopedFilesystem::with_fixed_view(
+        root, view,
+    ));
+    let access = ironclaw_identity::environment_access::FilesystemEnvironmentAccess::new(
+        filesystem,
+        TenantId::new("test").expect("tenant"), // safety: test-support-only static valid ID
+        UserId::new("test-owner").expect("user"), // safety: test-support-only static valid ID
+        AgentId::new("test-agent").expect("agent"), // safety: test-support-only static valid ID
+        None,
+    );
+    access.ensure_environment(default_label).await?;
+    Ok(std::sync::Arc::new(access))
+}
+
 /// Test-support: build a standalone canonical Reborn identity resolver on an
 /// in-memory host filesystem under `tenant_id`.
 ///

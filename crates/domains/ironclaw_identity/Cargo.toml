@@ -28,8 +28,13 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api", version = "0.1
 # `reborn_dependency_boundaries.rs` — the crate still may not reach any
 # `products`, `loops`, `kernel` or `app` crate.
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts", version = "0.1.0" }
+# `environment_access` mints pairing codes and device tokens from the thread
+# CSPRNG, stores only their SHA-256, and compares hashes in constant time.
+rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
+subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["sync"] }
 # `projects::service` logs backend causes behind sanitized product errors so a

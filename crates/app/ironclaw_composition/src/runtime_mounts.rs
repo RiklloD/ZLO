@@ -486,3 +486,87 @@ mod tests {
         assert_eq!(mount_for("/Users/alice").target.as_str(), HOST_TARGET);
     }
 }
+
+/// The host folder `/workspace` names for a caller, resolved through the
+/// deployment's [`WorkspaceMountPolicy`] — the same view the workspace file
+/// routes read through — and the host folder the disk mounts at
+/// `/projects/workspace`. One resolution for both sides, so a file the
+/// Files tree lists at `/workspace/a.rs` is the file a mention of that path
+/// reads.
+pub(crate) struct HostWorkspaceFolders {
+    pub(crate) policy: WorkspaceMountPolicy,
+    pub(crate) workspace_root: std::path::PathBuf,
+}
+
+impl HostWorkspaceFolders {
+    fn resolve(&self, scope: &ResourceScope) -> Result<std::path::PathBuf, HostApiError> {
+        let view = self.policy.capability_grant_view(scope)?;
+        let target = view.resolve(&ironclaw_host_api::path::ScopedPath::new(WORKSPACE_ALIAS)?)?;
+        let rest = Path::new(target.as_str())
+            .strip_prefix(WORKSPACE_TARGET)
+            .map_err(|error| HostApiError::InvalidPath {
+                value: target.as_str().to_string(),
+                reason: format!("workspace alias resolves outside the workspace mount: {error}"),
+            })?;
+        Ok(self.workspace_root.join(rest))
+    }
+}
+
+impl ironclaw_assistant::orchestration::WorkspaceFolders for HostWorkspaceFolders {
+    fn host_folder(
+        &self,
+        caller: &ironclaw_product_contracts::surface::ProductSurfaceCaller,
+    ) -> Option<std::path::PathBuf> {
+        let scope = ResourceScope {
+            tenant_id: caller.tenant_id.clone(),
+            user_id: caller.user_id.clone(),
+            agent_id: caller.agent_id.clone(),
+            project_id: caller.project_id.clone(),
+            mission_id: None,
+            thread_id: None,
+            invocation_id: ironclaw_host_api::ids::InvocationId::new(),
+        };
+        match self.resolve(&scope) {
+            Ok(folder) => Some(folder),
+            Err(error) => {
+                tracing::debug!(%error, "workspace folder unresolved");
+                None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod workspace_folder_tests {
+    use super::*;
+    use ironclaw_assistant::orchestration::WorkspaceFolders as _;
+    use ironclaw_host_api::ids::{TenantId, UserId};
+    use ironclaw_product_contracts::surface::ProductSurfaceCaller;
+
+    fn caller() -> ProductSurfaceCaller {
+        ProductSurfaceCaller::new(
+            TenantId::new("t1").unwrap(),
+            UserId::new("alice").unwrap(),
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn the_workspace_alias_names_the_mounted_folder_shared_or_per_caller() {
+        let root = std::path::PathBuf::from("/srv/ironclaw/workspace");
+        let shared = HostWorkspaceFolders {
+            policy: WorkspaceMountPolicy::resolve(false, &[], &[]).unwrap(),
+            workspace_root: root.clone(),
+        };
+        assert_eq!(shared.host_folder(&caller()), Some(root.clone()));
+        let per_caller = HostWorkspaceFolders {
+            policy: WorkspaceMountPolicy::resolve(true, &[], &[]).unwrap(),
+            workspace_root: root.clone(),
+        };
+        assert_eq!(
+            per_caller.host_folder(&caller()),
+            Some(root.join("tenants/t1/users/alice"))
+        );
+    }
+}

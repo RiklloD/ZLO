@@ -23,6 +23,7 @@
 //! | `live` | The live view: activity, windows used, pointer, typing, the desktop take-over lease |
 //! | `capture` | Window pictures for the viewer: `screencapture -l`, the agent's screenshot as fallback, shared producers |
 //! | `cursor` | The viewer's cursor: coordinate targets and the native cursor's observation file |
+//! | `readiness` | Engine present, and Accessibility / Screen Recording preflight for this host (never prompts) |
 //! | `prompt` | The system-prompt section: server instructions, tool names, fork guidance |
 //! | `trace` | One JSON line per call (tool, ok, code, seconds) |
 //! | `args` | Arguments repaired against the tool's schema (numeric and boolean strings, "null" optionals) |
@@ -39,6 +40,7 @@ mod error;
 mod frame;
 mod live;
 mod prompt;
+mod readiness;
 mod session;
 mod stdio;
 mod target;
@@ -53,4 +55,5 @@ pub use client::COMPUTER_USE_TRANSPORT;
 pub use config::ComputerUseConfig;
 pub use error::ComputerUseError;
 pub use frame::Frame;
+pub use readiness::{HostComputerUseReadiness, HostPermissionPreflight, PermissionPreflight};
 pub use session::{ComputerUse, ComputerUseOutcome, RefusalCode, SessionState, SessionStatus};

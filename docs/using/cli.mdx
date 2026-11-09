@@ -34,6 +34,49 @@ driver initialized.
 
 ---
 
+## Other Devices
+
+| Command | What it does |
+| --- | --- |
+| `ironclaw pair` | Issue a one-time pairing code (five minutes, single use) and a pairing link for another device |
+| `ironclaw devices` | List paired devices; `ironclaw devices revoke <id or label>` or `--all` revokes them |
+| `ironclaw remote enable` | Publish this backend on your own tailnet with `tailscale serve` (never Funnel); `remote status` and `remote disable` manage it |
+
+`pair` and `devices` talk to the running `ironclaw serve` on this machine. A revoked
+device stops working at once, including after a restart. `remote enable` needs Tailscale
+running and signed in; restart `ironclaw serve` afterwards so it starts the listener
+Tailscale forwards to. When other people have login accounts on the machine, one-click
+pairing from your tailnet stays off unless you pass `--trust-local-users`.
+
+---
+
+## Updates
+
+| Command | What it does |
+| --- | --- |
+| `ironclaw update` | Update this machine from its source checkout: fast-forward pull, rebuild, reinstall, restart |
+
+`ironclaw update --check` fetches and reports how many commits the running build is
+behind, with their subjects, and changes nothing; `--json` prints the same status the
+desktop app reads. Updates are off until `config.toml` names the checkout:
+
+```toml
+[update]
+method = "source"            # default "none"
+repo = "/path/to/ironclaw"   # the checkout this binary is built from
+# branch = "main"            # default: the branch the checkout has checked out
+```
+
+Only fast-forward pulls run: a checkout with local changes, or with commits the remote
+does not have, is refused with the reason. The `zlo-backend` inside a ZLO.app is rebuilt
+with the checkout's `tools/ironclaw_rune/bundle.sh`, which reinstalls ZLO and reopens it;
+any other install is rebuilt with `cargo build --release -p ironclaw` and its binary
+replaced in place, then `ironclaw service` is restarted when it is installed (otherwise
+restart `ironclaw serve` yourself). The outcome and a log are kept under
+`<home>/update/`, so ZLO's "Update all machines" can read them after the restart.
+
+---
+
 ## Setup and Configuration
 
 | Command | What it does |

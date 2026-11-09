@@ -13,7 +13,10 @@
 //!   thread's session (kills the process), any other turn end sends the
 //!   server its turn-ended notification;
 //! - the `computer_use.session` view and `computer_use.control` command
-//!   (Stop, take over, hand back) behind the WebUI routes.
+//!   (Stop, take over, hand back) behind the WebUI routes;
+//! - the operator-only `computer_use.readiness` view: this host's engine and
+//!   macOS permissions, from the [`ComputerUseReadinessProbe`] port, so a
+//!   client on another computer never checks its own.
 //!
 //! The approval steps follow `crate::supermemory`'s write gate.
 
@@ -55,10 +58,11 @@ use ironclaw_processes::{
 };
 use ironclaw_product_contracts::computer_use::{
     COMPUTER_USE_CAPABILITY_PREFIX, COMPUTER_USE_CONTROL_COMMAND_ID, COMPUTER_USE_FRAME_VIEW,
-    COMPUTER_USE_RESULT_FRAME, COMPUTER_USE_SESSION_VIEW, COMPUTER_USE_STATE_VIEW,
-    COMPUTER_USE_TOOL_NAME_PREFIX, ComputerUseControlRequest, ComputerUseFrameRequest,
-    ComputerUseSession, ComputerUseSessionRequest, ComputerUseSessions, ComputerUseStateRequest,
-    ComputerUseToolSpec,
+    COMPUTER_USE_READINESS_VIEW, COMPUTER_USE_RESULT_FRAME, COMPUTER_USE_SESSION_VIEW,
+    COMPUTER_USE_STATE_VIEW, COMPUTER_USE_TOOL_NAME_PREFIX, ComputerUseControlRequest,
+    ComputerUseFrameRequest, ComputerUseReadiness, ComputerUseReadinessProbe,
+    ComputerUseReadinessRequest, ComputerUseSession, ComputerUseSessionRequest,
+    ComputerUseSessions, ComputerUseStateRequest, ComputerUseToolSpec,
 };
 use ironclaw_product_contracts::surface::{
     ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceInvokeRequest,
@@ -743,16 +747,28 @@ impl ProcessJournalCommitObserver for ComputerUseStopObserver {
 pub struct ComputerUseProductSurface {
     inner: Arc<dyn ProductSurface>,
     sessions: Option<Arc<dyn ComputerUseSessions>>,
+    readiness: Arc<dyn ComputerUseReadinessProbe>,
 }
 
 pub fn wrap_surface<S: ComputerUseSessions + 'static>(
     inner: Arc<dyn ProductSurface>,
     sessions: Option<Arc<S>>,
+    readiness: Arc<dyn ComputerUseReadinessProbe>,
 ) -> Arc<ComputerUseProductSurface> {
     Arc::new(ComputerUseProductSurface {
         inner,
         sessions: sessions.map(|sessions| sessions as Arc<dyn ComputerUseSessions>),
+        readiness,
     })
+}
+
+/// The readiness view item: the probe's answer plus `ready`.
+fn readiness_item(readiness: &ComputerUseReadiness) -> Result<Value, ProductSurfaceError> {
+    let mut item = serde_json::to_value(readiness).map_err(ProductSurfaceError::internal_from)?;
+    if let Some(fields) = item.as_object_mut() {
+        fields.insert("ready".to_string(), Value::Bool(readiness.ready()));
+    }
+    Ok(item)
 }
 
 fn session_key(
@@ -845,6 +861,17 @@ impl ProductSurface for ComputerUseProductSurface {
                 None => json!({"enabled": false, "sessions": []}),
                 Some(sessions) => sessions.viewer_state(&caller.tenant_id, &caller.user_id, viewer),
             }
+        } else if request.view_id == COMPUTER_USE_READINESS_VIEW.id {
+            // Host permissions are deployment facts: operators only.
+            if !caller.operator_config {
+                return Err(ProductSurfaceError::from_status(
+                    ironclaw_product_contracts::surface::ProductSurfaceErrorCode::Forbidden,
+                    403,
+                    false,
+                ));
+            }
+            let _: ComputerUseReadinessRequest = decode(request.input)?;
+            readiness_item(&self.readiness.readiness())?
         } else if request.view_id == COMPUTER_USE_FRAME_VIEW.id {
             let selector: ComputerUseFrameRequest = decode(request.input)?;
             match &self.sessions {

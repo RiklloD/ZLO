@@ -70,6 +70,8 @@ fn flatten_config(config: &ironclaw_config::RebornConfigFile) -> anyhow::Result<
         memory: Some(config.memory.clone().unwrap_or_default()),
         budget: Some(config.budget.clone().unwrap_or_default()),
         trigger_poller: Some(config.trigger_poller.clone().unwrap_or_default()),
+        remote: Some(config.remote.clone().unwrap_or_default()),
+        update: Some(config.update.clone().unwrap_or_default()),
     };
 
     let value = serde_json::to_value(&expanded)?;

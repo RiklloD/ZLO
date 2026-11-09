@@ -26,12 +26,15 @@ pub use orchestrator::{
 };
 mod profiles;
 pub use computer_use::{
-    computer_use_control, computer_use_frame, computer_use_session, computer_use_state,
+    computer_use_control, computer_use_frame, computer_use_readiness, computer_use_session,
+    computer_use_state,
 };
 pub use profiles::{
     profile_create, profile_delete, profile_get, profile_thread_create, profile_update,
     profiles_import_hermes, profiles_list,
 };
+mod thread_repo;
+pub use thread_repo::{thread_console, thread_console_control, thread_git, thread_git_change};
 mod schedules;
 pub use schedules::{
     schedule_create, schedule_delete, schedule_preview, schedule_rotate_secret, schedule_run,
@@ -182,6 +185,9 @@ use ironclaw_product_contracts::workspace_views::{
     RebornProjectFsListResponse, RebornProjectFsReadRequest, RebornProjectFsStatRequest,
     RebornProjectFsStatResponse, RebornProjectMemberInfo, RebornProjectResponse,
     RebornRemoveMemberRequest, RebornUpdateMemberRoleRequest, RebornUpdateProjectRequest,
+};
+use ironclaw_product_contracts::workspace_views::{
+    PROJECT_FS_INDEX_VIEW, RebornProjectFsIndexRequest, RebornProjectFsIndexResponse,
 };
 use secrecy::ExposeSecret;
 use serde::de::DeserializeOwned;
@@ -749,6 +755,23 @@ pub async fn list_project_files(
     let surface = state.bind_services(caller);
     let response = PROJECT_FS_LIST_VIEW
         .query_on(&surface, request, None)
+        .await?;
+    Ok(Json(response))
+}
+
+/// `GET /api/webchat/v2/threads/{thread_id}/files/index`
+///
+/// The thread workspace's files and folders as paths relative to
+/// `/workspace`, bounded, for `@`-mention completion on a client that cannot
+/// see this machine's disk. Answered from the thread's own listings.
+pub async fn index_project_files(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<RebornProjectFsIndexResponse>, WebUiV2HttpError> {
+    let surface = state.bind_services(caller);
+    let response = PROJECT_FS_INDEX_VIEW
+        .query_on(&surface, RebornProjectFsIndexRequest { thread_id }, None)
         .await?;
     Ok(Json(response))
 }

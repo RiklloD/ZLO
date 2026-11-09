@@ -15,6 +15,13 @@
 //! in-process, and folders are listed through descriptors. Thread mentions
 //! resolve only against the caller's own threads ([`ThreadDigests`]).
 //!
+//! The thread workspace: a mention of `/workspace/...` (what ZLO writes for
+//! a remote backend's files, which it lists through the workspace views)
+//! resolves under `workspace`, the host folder that alias names for the
+//! sender, as one more root ([`fs`] holds the mapping). The loop is shown the
+//! workspace path it addresses; a CLI engine, which reads the disk itself,
+//! the real one.
+//!
 //! Bounds: every block is size-capped, and the whole message, wrapper and
 //! markers included, stays within the limit the caller passes (the native
 //! loop's message cap, or the CLI prompt cap). Content is leak-scanned and
@@ -48,7 +55,7 @@ struct Roots;
 
 #[cfg(not(unix))]
 impl Roots {
-    fn vet(_: &[String], _: Option<&Path>) -> Self {
+    fn vet_with_workspace(_: &[String], _: Option<&Path>, _: Option<(&str, &Path)>) -> Self {
         Self
     }
 }
@@ -101,11 +108,13 @@ pub(super) trait ThreadDigests: Send + Sync {
 /// `content` with its mentions expanded, at most `limit` bytes in all.
 /// Skill and extension links become the `/name` and `@name` words the loop
 /// already understands; the rest stay links, and their context is appended
-/// when it fits. `home` is the user's home folder, which no root may cover.
+/// when it fits. `home` is the user's home folder, which no root may cover;
+/// `workspace` is the host folder `/workspace` names for the sender.
 pub(super) async fn expand(
     content: &str,
     roots: &[String],
     home: Option<&Path>,
+    workspace: Option<&Path>,
     runtime: MentionRuntime,
     threads: &dyn ThreadDigests,
     limit: usize,
@@ -140,7 +149,8 @@ pub(super) async fn expand(
     if mentions.is_empty() {
         return text;
     }
-    let roots = Roots::vet(roots, home);
+    let workspace = workspace.map(|folder| (ironclaw_attachments::WORKSPACE_ALIAS, folder));
+    let roots = Roots::vet_with_workspace(roots, home, workspace);
     let detector = LeakDetector::new();
     let mut blocks: Vec<String> = Vec::new();
     let mut used = 0usize;
@@ -251,11 +261,12 @@ async fn file_block(
     range: Option<LineRange>,
     runtime: MentionRuntime,
 ) -> String {
-    let shown = opened.path.display().to_string();
     let size = opened.size;
     if runtime == MentionRuntime::Cli && range.is_none() {
-        return format!("@{label}: file {shown} ({size} bytes). Read it from disk.");
+        let real = opened.path.display();
+        return format!("@{label}: file {real} ({size} bytes). Read it from disk.");
     }
+    let shown = opened.shown.display().to_string();
     // Ranges read further in, so their lines can sit past the first slice.
     let cap = if range.is_some() {
         FILE_BYTES * 16
@@ -292,11 +303,11 @@ async fn file_block(
 
 #[cfg(unix)]
 async fn dir_block(label: &str, opened: fs::Opened, runtime: MentionRuntime) -> String {
-    let path = opened.path.clone();
-    let shown = path.display();
     if runtime == MentionRuntime::Cli {
-        return format!("@{label}: folder {shown}. List or read it from disk as needed.");
+        let real = opened.path.display();
+        return format!("@{label}: folder {real}. List or read it from disk as needed.");
     }
+    let shown = opened.shown.display().to_string();
     // Listed through descriptors from the opened folder, off the runtime.
     let fd = opened.fd;
     let walked = tokio::task::spawn_blocking(move || {
@@ -450,7 +461,16 @@ mod tests {
 
     async fn run(content: &str, roots: &[&Path], runtime: MentionRuntime) -> String {
         let roots: Vec<String> = roots.iter().map(|r| r.to_string_lossy().into()).collect();
-        expand(content, &roots, None, runtime, &Threads::default(), 60_000).await
+        expand(
+            content,
+            &roots,
+            None,
+            None,
+            runtime,
+            &Threads::default(),
+            60_000,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -538,6 +558,7 @@ mod tests {
             &content,
             &roots,
             None,
+            None,
             MentionRuntime::Loop,
             &Threads::default(),
             limit,
@@ -563,6 +584,7 @@ mod tests {
                 &typed,
                 &roots,
                 None,
+                None,
                 MentionRuntime::Loop,
                 &Threads::default(),
                 limit,
@@ -579,6 +601,7 @@ mod tests {
         let out = expand(
             &typed,
             &roots,
+            None,
             None,
             MentionRuntime::Loop,
             &Threads::default(),
@@ -636,6 +659,7 @@ mod tests {
             &format!("{mine} vs {other}"),
             &[],
             None,
+            None,
             MentionRuntime::Loop,
             &threads,
             60_000,
@@ -670,6 +694,74 @@ mod tests {
         let first = run(&file(&a, None), &[dir.path()], MentionRuntime::Loop).await;
         let again = run(&first, &[dir.path()], MentionRuntime::Loop).await;
         assert_eq!(again.matches(MENTION_CONTEXT_OPEN).count(), 1, "{again}");
+    }
+
+    /// A remote client names workspace files by their `/workspace` path; the
+    /// backend resolves them under the host folder that alias names, shows
+    /// the loop the workspace path and a CLI engine the real one, and keeps
+    /// every containment rule: traversal, symlinks out and sensitive names
+    /// stay refused, and nothing is read without the host's folder.
+    #[tokio::test]
+    async fn workspace_mentions_resolve_under_the_hosts_folder() {
+        let outer = tempfile::tempdir().unwrap();
+        let folder = outer.path().join("workspace");
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        std::fs::write(folder.join("src/main.rs"), "fn remote() {}").unwrap();
+        std::fs::write(folder.join(".env"), "API=TOP-SECRET").unwrap();
+        std::fs::write(outer.path().join("secret.txt"), "TOP-SECRET").unwrap();
+        std::os::unix::fs::symlink(outer.path().join("secret.txt"), folder.join("out.txt"))
+            .unwrap();
+        let link = |path: &str| {
+            MentionUri::File {
+                path: path.to_string(),
+                line_range: None,
+            }
+            .to_link("m")
+        };
+        let run_ws = |content: String, runtime| {
+            let folder = folder.clone();
+            async move {
+                expand(
+                    &content,
+                    &[],
+                    None,
+                    Some(&folder),
+                    runtime,
+                    &Threads::default(),
+                    60_000,
+                )
+                .await
+            }
+        };
+
+        let out = run_ws(link("/workspace/src/main.rs"), MentionRuntime::Loop).await;
+        assert!(context(&out).contains("fn remote() {}"), "{out}");
+        assert!(context(&out).contains("/workspace/src/main.rs"), "{out}");
+        let real = std::fs::canonicalize(folder.join("src/main.rs")).unwrap();
+        assert!(!out.contains(&*real.to_string_lossy()), "{out}");
+
+        let cli = run_ws(link("/workspace/src/main.rs"), MentionRuntime::Cli).await;
+        assert!(context(&cli).contains(&*real.to_string_lossy()), "{cli}");
+        assert!(context(&cli).contains("Read it from disk"), "{cli}");
+
+        let folder_link = MentionUri::Directory {
+            path: "/workspace/src".into(),
+        }
+        .to_link("src");
+        let out = run_ws(folder_link, MentionRuntime::Loop).await;
+        assert!(out.contains("main.rs"), "{out}");
+
+        for refused in ["/workspace/out.txt", "/workspace/.env", "/workspaceother/x"] {
+            let out = run_ws(link(refused), MentionRuntime::Loop).await;
+            assert!(!out.contains("TOP-SECRET"), "{refused}: {out}");
+            assert!(out.contains("not expanded"), "{refused}: {out}");
+        }
+        // `..` never parses as a mention, so it stays the typed link.
+        let dotted = "[@x](file:///workspace/../secret.txt)".to_string();
+        assert_eq!(run_ws(dotted.clone(), MentionRuntime::Loop).await, dotted);
+        // Without the host's folder a workspace path reads nothing.
+        let out = run(&link("/workspace/src/main.rs"), &[], MentionRuntime::Loop).await;
+        assert!(!out.contains("fn remote"), "{out}");
     }
 
     /// `git` in `dir`, panicking on failure; `None` without git.

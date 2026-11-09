@@ -394,3 +394,93 @@ async fn submit_near_the_message_cap_stays_within_it() {
         assert!(content.len() <= CAP, "send {ix}: {} > {CAP}", content.len());
     }
 }
+
+/// Each caller's workspace folder, as composition resolves it.
+struct Folders(std::path::PathBuf);
+
+impl super::WorkspaceFolders for Folders {
+    fn host_folder(&self, caller: &ProductSurfaceCaller) -> Option<std::path::PathBuf> {
+        Some(self.0.join(caller.user_id.as_str()))
+    }
+}
+
+/// A remote client's mention of `/workspace/...` (no `mention_roots`: it
+/// cannot see this disk) expands from the sender's own workspace folder as
+/// the surface resolves it; another sender's folder is never reached, and
+/// without a resolver the mention stays a link.
+#[tokio::test]
+async fn workspace_mentions_read_the_senders_workspace_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let folders = dir.path().join("workspaces");
+    std::fs::create_dir_all(folders.join("owner/src")).unwrap();
+    std::fs::write(folders.join("owner/src/lib.rs"), "OWNER-CODE").unwrap();
+    std::fs::create_dir_all(folders.join("intruder/src")).unwrap();
+    std::fs::write(folders.join("intruder/src/lib.rs"), "INTRUDER-CODE").unwrap();
+    let inner = Arc::new(Recording::default());
+    let surface = OrchestratedProductSurface::new(inner.clone(), engine(dir.path()).await, None)
+        .with_workspace_folders(Arc::new(Folders(folders.clone())));
+    let link = MentionUri::File {
+        path: "/workspace/src/lib.rs".into(),
+        line_range: None,
+    }
+    .to_link("lib.rs");
+    surface
+        .invoke(caller("owner"), submit("t-current", &link, Vec::new()))
+        .await
+        .unwrap();
+    let sent = inner.submits.lock().unwrap()[0].clone();
+    let content = sent["content"].as_str().unwrap();
+    assert!(content.contains("OWNER-CODE"), "{content}");
+    assert!(
+        content.contains("@lib.rs: /workspace/src/lib.rs"),
+        "{content}"
+    );
+    assert!(!content.contains("INTRUDER-CODE"), "{content}");
+    assert!(
+        !content.contains(&*folders.to_string_lossy()),
+        "the loop sees the workspace path, not the host folder: {content}"
+    );
+
+    let bare = OrchestratedProductSurface::new(inner.clone(), engine(dir.path()).await, None);
+    bare.invoke(caller("owner"), submit("t-current", &link, Vec::new()))
+        .await
+        .unwrap();
+    let sent = inner.submits.lock().unwrap()[1].clone();
+    assert!(!sent["content"].as_str().unwrap().contains("OWNER-CODE"));
+}
+
+/// `project_fs_index` is answered by the orchestrating surface from the
+/// inner surface's own listings, under the caller's identity.
+#[tokio::test]
+async fn the_workspace_index_view_walks_the_inner_listings() {
+    let dir = tempfile::tempdir().unwrap();
+    let inner = Arc::new(Recording::default());
+    let surface = OrchestratedProductSurface::new(inner, engine(dir.path()).await, None);
+    let refused = surface
+        .query(
+            caller("owner"),
+            ProductSurfaceQueryRequest {
+                view_id: "project_fs_index".into(),
+                input: json!({"thread_id": "t-current"}),
+                cursor: None,
+                limit: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    // `Recording` serves no listings: the root's refusal is the answer.
+    assert_eq!(refused.status_code, 404, "{refused:?}");
+    let malformed = surface
+        .query(
+            caller("owner"),
+            ProductSurfaceQueryRequest {
+                view_id: "project_fs_index".into(),
+                input: json!({"thread_id": "t-current", "path": "/etc"}),
+                cursor: None,
+                limit: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(malformed.status_code, 400, "{malformed:?}");
+}

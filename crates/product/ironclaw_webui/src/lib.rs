@@ -25,8 +25,14 @@ mod auth;
 // crate gain them; the pairing service core stays in the extension host.
 mod channel_pairing;
 mod cli_token_login;
+// Remote environments: descriptor, device pairing, device tokens, and the
+// Tailscale identity listener wrapper. See the module docs.
+mod environment_access;
 mod oidc;
 mod product_auth;
+// Self-update ("update all machines"): the operator routes over the
+// binary-implemented `SelfUpdateService` port. See the module docs.
+mod self_update;
 mod session;
 mod signed_session_login;
 // Folded in from the former `ironclaw_webui_v2` crate: the WebChat v2 HTTP
@@ -49,10 +55,16 @@ mod webui_ws_origin;
 // mounts and this ingress crate can consume them without a reverse dependency
 // on WebUI.
 pub use channel_pairing::channel_pairing_route_mount;
+pub use environment_access::{
+    AuthenticatedDevice, DeviceTokenAuthenticator, EnvironmentAccessRouteConfig,
+    RemoteAccessPolicy, TAILSCALE_USER_LOGIN_HEADER, environment_access_route_mount,
+    identity_listener_router, main_listener_router,
+};
 pub use ironclaw_host_ingress::{
     ProtectedRouteMount, PublicRouteDrain, PublicRouteDrains, PublicRouteMount, SplitRouteMount,
 };
 pub use product_auth::{ProductAuthRouteMount, ProductAuthRouteState, product_auth_route_mount};
+pub use self_update::{SelfUpdateError, SelfUpdateService, self_update_route_mount};
 pub use webui_rate_limit::RateLimitConfigError;
 pub use webui_serve::{
     WebuiAuthentication, WebuiAuthenticator, WebuiServeConfig, WebuiServeConfigError,
@@ -289,6 +301,17 @@ pub async fn serve_bound_webui_v2(
     })
     .await
     .map_err(RebornWebuiServeError::Serve)
+}
+
+/// Serve the remote identity listener (the `tailscale serve` target) on an
+/// already-bound loopback listener: `router` plus the layer that reads the
+/// caller's tailnet login (see [`identity_listener_router`]).
+pub async fn serve_bound_identity_listener(
+    bound: BoundWebuiListener,
+    router: Router,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) -> Result<(), RebornWebuiServeError> {
+    serve_bound_webui_v2(bound, identity_listener_router(router), shutdown).await
 }
 
 /// Authenticator that compares the bearer token from the request

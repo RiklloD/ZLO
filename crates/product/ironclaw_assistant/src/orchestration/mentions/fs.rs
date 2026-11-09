@@ -5,6 +5,15 @@
 //! of its ancestors, a top-level system folder, `~/Library`, or a path the
 //! sensitivity policy flags. The desktop sends the thread's project folder.
 //!
+//! The thread workspace: a client with no view of this machine's disk (ZLO
+//! with a remote backend) names files by their workspace path,
+//! `/workspace/src/main.rs`. The host adds the folder `/workspace` names for
+//! the sender as one more root whose *sent* spelling is that alias, so the
+//! mapping from the virtual path to the real one happens here, once, and the
+//! rest is opened below the real folder's descriptor exactly like any other
+//! root. The host chose that folder, so the client-root breadth rules do not
+//! apply to it; containment, no-follow opens and the sensitivity checks do.
+//!
 //! Opening: a root is itself opened from `/` without following symlinks,
 //! and that descriptor is kept. A mentioned path is reached from it,
 //! one component at a time with `O_NOFOLLOW`. A symlink anywhere below the
@@ -58,6 +67,8 @@ pub(super) struct Root {
     fd: OwnedFd,
     /// `(device, inode)` of `fd`: what another spelling of the root must be.
     id: (u64, u64),
+    /// `sent` is a virtual alias (`/workspace`), not a path on this disk.
+    alias: bool,
 }
 
 /// The vetted roots of one message.
@@ -68,6 +79,9 @@ pub(super) struct Roots(Vec<Root>);
 pub(super) struct Opened {
     pub(super) fd: OwnedFd,
     pub(super) path: PathBuf,
+    /// How the mention named it: the alias path under the thread workspace,
+    /// else the real path.
+    pub(super) shown: PathBuf,
     pub(super) size: u64,
 }
 
@@ -90,10 +104,21 @@ impl Roots {
     /// Keep the roots that may grant reads. `home` is the user's home
     /// folder (canonical), which no root may contain. Each kept root is
     /// opened from `/` one component at a time without following symlinks,
-    /// and that descriptor is what every later open starts from.
-    pub(super) fn vet(raw: &[String], home: Option<&Path>) -> Self {
+    /// and that descriptor is what every later open starts from. `workspace`
+    /// is the host folder the workspace alias names for the sender
+    /// (`(alias, folder)`), kept ahead of the client's roots.
+    pub(super) fn vet_with_workspace(
+        raw: &[String],
+        home: Option<&Path>,
+        workspace: Option<(&str, &Path)>,
+    ) -> Self {
         let home = home.and_then(|h| std::fs::canonicalize(h).ok());
         let mut out = Vec::new();
+        if let Some((alias, folder)) = workspace
+            && let Some(root) = host_root(alias, folder)
+        {
+            out.push(root);
+        }
         for sent in raw.iter().take(MAX_ROOTS).map(PathBuf::from) {
             if !sent.is_absolute() {
                 continue;
@@ -118,6 +143,7 @@ impl Roots {
                 canonical,
                 fd,
                 id,
+                alias: false,
             });
         }
         Self(out)
@@ -138,11 +164,12 @@ impl Roots {
                 _ => Err("outside the project folder"),
             })
             .collect::<Result<_, _>>()?;
-        let path = if parts.is_empty() {
-            root.canonical.clone()
+        let (path, shown) = if parts.is_empty() {
+            (root.canonical.clone(), root.sent.clone())
         } else {
-            root.canonical.join(rel)
+            (root.canonical.join(rel), root.sent.join(rel))
         };
+        let shown = if root.alias { shown } else { path.clone() };
         if is_sensitive_path_str(&path.to_string_lossy()) {
             return Err("sensitive file");
         }
@@ -169,6 +196,7 @@ impl Roots {
         Ok(Opened {
             fd,
             path,
+            shown,
             size: u64::try_from(stat.st_size).unwrap_or(0),
         })
     }
@@ -201,6 +229,30 @@ impl Roots {
         }
         None
     }
+}
+
+/// The workspace root: `folder` (host-chosen) held like a vetted root, named
+/// `alias` by mentions. `None` when it does not exist yet or is not a folder
+/// reachable without symlinks.
+fn host_root(alias: &str, folder: &Path) -> Option<Root> {
+    let canonical = std::fs::canonicalize(folder).ok()?; // silent-ok: a workspace not created yet grants nothing
+    let deep = canonical
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .count();
+    if deep < 2 || is_sensitive_path_str(&canonical.to_string_lossy()) {
+        tracing::debug!("workspace mention root refused");
+        return None;
+    }
+    let fd = from_anchor(&canonical)?;
+    let id = identity(&fd)?;
+    Some(Root {
+        sent: PathBuf::from(alias),
+        canonical,
+        fd,
+        id,
+        alias: true,
+    })
 }
 
 /// `(device, inode)` of an open descriptor.
@@ -381,7 +433,7 @@ mod tests {
 
     fn vet(roots: &[&Path], home: &Path) -> Roots {
         let raw: Vec<String> = roots.iter().map(|r| r.to_string_lossy().into()).collect();
-        Roots::vet(&raw, Some(home))
+        Roots::vet_with_workspace(&raw, Some(home), None)
     }
 
     #[test]

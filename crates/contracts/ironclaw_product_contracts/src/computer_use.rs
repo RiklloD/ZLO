@@ -171,3 +171,72 @@ pub const COMPUTER_USE_CONTROL_COMMAND: ProductSurfaceCommandDescriptor<
     ComputerUseControlRequest,
     Value,
 > = ProductSurfaceCommandDescriptor::new(COMPUTER_USE_CONTROL_COMMAND_ID);
+
+/// Whether computer use can run on the backend's machine, as that machine
+/// sees it: the engine, and the two macOS permissions it needs, granted to
+/// the process that drives it. Read-only and operator-only; nothing is
+/// prompted. A remote ZLO shows this instead of checking its own Mac.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseReadiness {
+    pub platform: ComputerUsePlatform,
+    pub engine: ComputerUseEngineState,
+    pub accessibility: ComputerUsePermissionState,
+    pub screen_recording: ComputerUsePermissionState,
+}
+
+impl ComputerUseReadiness {
+    /// The engine is present and both permissions are granted.
+    pub fn ready(&self) -> bool {
+        self.platform == ComputerUsePlatform::Macos
+            && self.engine == ComputerUseEngineState::Present
+            && self.accessibility == ComputerUsePermissionState::Granted
+            && self.screen_recording == ComputerUsePermissionState::Granted
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUsePlatform {
+    Macos,
+    /// Computer use drives macOS apps only.
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseEngineState {
+    /// Configured and its executable is on disk.
+    Present,
+    /// No engine bundled or configured.
+    Missing,
+    /// Turned off (`COMPUTER_USE_ENABLED=false`).
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUsePermissionState {
+    Granted,
+    Missing,
+    /// The host could not tell (not checked, or no way to check here).
+    Unknown,
+    /// Not a question on this platform.
+    NotApplicable,
+}
+
+/// `GET /api/webchat/v2/computer-use/readiness` (operator only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerUseReadinessRequest {}
+
+/// Output: [`ComputerUseReadiness`] plus `"ready": bool`.
+pub const COMPUTER_USE_READINESS_VIEW: ProductView<ComputerUseReadinessRequest, Value> =
+    ProductView::unpaginated("computer_use.readiness");
+
+/// Implemented by `ironclaw_computer_use` (the preflight the engine's own
+/// checks use, never a prompt); read by `ironclaw_assistant`'s computer-use
+/// surface. Wired whether or not computer use is on, so a missing engine is
+/// reported rather than hidden.
+pub trait ComputerUseReadinessProbe: Send + Sync {
+    fn readiness(&self) -> ComputerUseReadiness;
+}

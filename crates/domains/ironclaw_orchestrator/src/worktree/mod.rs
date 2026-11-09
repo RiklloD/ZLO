@@ -31,7 +31,7 @@
 //! Git runs with the repository's hooks switched off.
 
 mod config;
-mod git;
+pub(crate) mod git;
 mod hooks;
 mod integrate;
 mod lifecycle;
@@ -84,6 +84,43 @@ impl HostCommandOutput {
 #[async_trait]
 pub trait HostCommandRunner: Send + Sync {
     async fn run(&self, command: HostCommand) -> Result<HostCommandOutput, OrchestratorError>;
+
+    /// Start `command` and read its output while it runs (repository views
+    /// that need more than [`Self::run`]'s short preview, the operator
+    /// console). Ending the returned process — [`HostCommandProcess::kill`],
+    /// its timeout, or dropping it — kills its whole process tree. Runners
+    /// without streaming refuse model-visibly.
+    async fn spawn(
+        &self,
+        command: HostCommand,
+    ) -> Result<Box<dyn HostCommandProcess>, OrchestratorError> {
+        let _ = command;
+        Err(OrchestratorError::request(
+            "command_streaming_unsupported",
+            "This backend cannot stream command output.",
+        ))
+    }
+}
+
+/// What a streamed host command did next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostCommandEvent {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    /// The last event; `code` is `None` when a signal ended the command.
+    Exited {
+        code: Option<i32>,
+        timed_out: bool,
+    },
+}
+
+/// A host command started by [`HostCommandRunner::spawn`].
+#[async_trait]
+pub trait HostCommandProcess: Send {
+    /// The next output chunk or the exit; `None` once the exit was returned.
+    async fn next(&mut self) -> Option<HostCommandEvent>;
+    /// Kill the command's process tree now; idempotent.
+    fn kill(&mut self);
 }
 
 /// One request to run a project's worktree setup: exactly what would run.

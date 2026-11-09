@@ -60,6 +60,7 @@ mod post_edit_check;
 mod process_aliases;
 mod process_output;
 mod process_port;
+mod process_stream;
 mod production;
 mod services;
 mod standard_op_output;
@@ -139,6 +140,7 @@ pub use post_edit_check::{
     PostEditCheckConfigError, PostEditCheckService,
 };
 pub use process_port::{HostProcessPort, RuntimeProcessPort, UserSandboxProcessPort};
+pub use process_stream::{HostProcessEvent, HostProcessStream};
 pub use production::DefaultHostRuntime;
 // The sandbox lane (`sandbox_process`) moved to `ironclaw_sandbox` with the
 // WS3 merge; its Docker/CA cone is a runtimes-layer concern, and nothing

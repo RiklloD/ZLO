@@ -101,6 +101,11 @@ turning the `webui_v2_routes()` descriptors into tower layers.
 | `webui_v2_auth_router(config) -> PublicRouteMount` | OAuth login router + route descriptors. The descriptors travel with the router so composition can fold them into the descriptor-driven per-route rate-limit / body-limit middleware — same machinery the v2 facade and product-auth callback already use, no side door. |
 | `product_auth_route_mount(state) -> ProductAuthRouteMount` | Product-auth route router + descriptors for OAuth start/callback/status, manual-token setup/submit, account selection/recovery/refresh, and lifecycle cleanup. |
 | `channel_pairing_route_mount(registry) -> ProtectedRouteMount` | Bearer-authed generic pairing routes for `WebGeneratedCode` channels (`/api/webchat/v2/extensions/{extension_id}/pairing/{mint,status,unpair}`). Moved here from `ironclaw_extension_host` (PROPOSAL §6.8.2 shed list, §6.9.4). **The pairing *service core* stays in `ironclaw_extension_host`** — this module is transport over it and holds no pairing semantics, which is why this crate names `ironclaw_extension_host` at all. Its three patterns are a separate mount and are **not** rows of the frozen `webui_v2/descriptors.rs` table. Composition hands out the *registry*, not the mount (it only dev-depends on this crate); the binary builds the mount. |
+| `environment_access_route_mount(config) -> SplitRouteMount` | Remote-environment routes (below), over the `ironclaw_product_contracts::environment_access::EnvironmentAccessService` port. Records, hashing, expiry and the single-use CAS live in `ironclaw_identity::environment_access`; this module owns HTTP, the operator check and the tailnet owner decision. |
+| `DeviceTokenAuthenticator` | `WebuiAuthenticator` for `icd_<device_id>_<secret>` device tokens; every other bearer falls through to the wrapped authenticator (master token / session chain). A live device token is the operator (`WebuiAuthentication::operator(..).with_device(id)`); the bearer middleware inserts `AuthenticatedDevice` so `GET /api/auth/devices` can mark `current`. A store outage fails closed (401). |
+| `identity_listener_router(router)` / `serve_bound_identity_listener(bound, router, shutdown)` | The `tailscale serve` target: the same router plus a layer that reads `Tailscale-User-Login` into a request extension and removes every `Tailscale-*` header. Only requests that came through it can reach `POST /api/auth/pair/tailnet`. |
+| `main_listener_router(router)` | The normal listener: removes every `Tailscale-*` header before routing, so the identity header is never read there. |
+| `self_update_route_mount(service) -> ProtectedRouteMount` / `SelfUpdateService` / `SelfUpdateError` | The operator self-update routes ("update all machines", below) over the `SelfUpdateService` port this crate declares and the `ironclaw` binary implements (it alone knows how its host is installed). No method takes request input. |
 | `PublicRouteMount` | `{ router, descriptors }` pair handed to `WebuiServeConfig::with_public_route_mount` |
 | `OAuthProvider` trait (in `auth/provider.rs`) | Extension point for per-provider URL / code-exchange logic. Deliberately lives in its own module so each provider does not depend on the others. `GoogleProvider` and `GitHubProvider` ship today. |
 | `GoogleProvider` (in `auth/google.rs`) | Google OIDC provider (scopes `openid email profile`, PKCE S256, optional `hd` hosted-domain restriction). Built from `GoogleOAuthConfig`. |
@@ -108,6 +113,65 @@ turning the `webui_v2_routes()` descriptors into tower layers.
 | `OAuthRouterConfig` | Tenant + `SignedTokenSessionStore` + `UserDirectory` + provider list + base URL |
 | `UserDirectory` trait | Host-supplied mapping from `(provider, OAuthUserProfile)` to `UserId` |
 | `EmailUserDirectory` | Standalone default impl (verified email → `UserId`); gated on `test-support` |
+
+## Remote environments (`src/environment_access.rs`)
+
+Wire contract v1 of `docs/internal/plans/2026-11-08-zlo-remote-environments.md`;
+the DTOs and paths are `ironclaw_product_contracts::environment_access`.
+Error bodies are `{"error": "<code>", "message": "<text>"}`.
+
+| Route | Auth | Rate limit | Result |
+|---|---|---|---|
+| `GET /.well-known/ironclaw/environment` | public | 60/min per peer | `EnvironmentDescriptor`: id, label, server version, protocol 1, pairing methods, tailnet URL, build commit, self-update flag. Nothing else. |
+| `POST /api/auth/pair` | public | 10/min per peer | `{code, client}` → `PairedDevice`. Unknown, expired, used and malformed codes are one `400 invalid_code`. |
+| `POST /api/auth/pair/tailnet` | public, identity listener only | 10/min per peer | Owner login → `PairedDevice` (`paired_by: tailnet_identity`); else `403 not_owner`; one-click off → `403 tailnet_pairing_disabled`; main listener → `404`. |
+| `POST /api/auth/pairing-codes` | bearer, operator | 30/min per caller | `{code, expires_at}`; 12 Crockford characters as `XXXX-XXXX-XXXX`, five minutes, single use. |
+| `GET /api/auth/devices` | bearer, operator | 120/min per caller | `DeviceList`, revoked rows included, `current` marks the caller's device. |
+| `DELETE /api/auth/devices/{device_id}` | bearer, operator | 30/min per caller | `204`, idempotent; unknown id → `404 not_found`. |
+
+Invariants:
+
+- Codes and tokens are stored as SHA-256 only; a token is checked by
+  device id then constant-time hash compare. Revocation is a durable
+  `revoked_at`, so a revoked token is `401` after a restart too.
+- Tailscale identity headers are trusted only through
+  `identity_listener_router`; the handler reads the extension it inserts,
+  never the raw header, and `main_listener_router` strips the headers.
+- Both listeners bind loopback. `ironclaw serve` binds the identity
+  listener on `127.0.0.1:[remote].identity_port` only while `[remote]
+  enabled = true`; `reject_non_loopback_privileged_local_runtime` is
+  unchanged.
+- These routes are a separate split mount, not rows of the frozen
+  `webui_v2/descriptors.rs` table.
+
+Tests: `tests/integration/environment_access.rs`
+(`cargo test -p ironclaw_integration_tests --test reborn_integration_environment_access`)
+drives the composed `webui_v2_app` over the real identity store; the store's
+own contract is `ironclaw_identity`'s `environment_access::tests`.
+
+The descriptor also carries `build_commit` (the commit the backend was built
+from, when the build knew it) and `self_update` (`[update]` is set up); both
+are `serde(default)` so older backends still parse.
+
+## Self-update (`src/self_update.rs`)
+
+"Update all machines" of the remote-environments plan; DTOs and paths are
+`ironclaw_product_contracts::self_update`. All three routes are bearer,
+operator-only (`403 operator_required` otherwise), and `BodyLimitPolicy::NoBody`:
+a body is refused (`413`) before the handler, and the port takes no argument,
+so no request input can reach a command line. The repository, branch and
+build steps come only from the host's `[update]` config.
+
+| Route | Rate limit | Result |
+|---|---|---|
+| `GET /api/operator/update` | 120/min per caller | `UpdateStatus`: method, running build (version, commit), what the last check found (`available`, `null` when nothing is newer), and the last job (`idle`/`running`/`succeeded`/`failed`, times, message, log tail). Read from disk, so it survives the backend restarting itself. |
+| `POST /api/operator/update/check` | 10/min per caller | Fetch and answer the refreshed status; `409 not_configured` (message says how to enable it); `502 check_failed` with the reason (dirty, diverged, wrong branch, fetch failed). |
+| `POST /api/operator/update` | 5/min per caller | `202` + status with `last_run.state = running`: the job runs detached. `409 update_running` while a job holds the lock; `409 not_configured`. |
+
+Tests: `tests/self_update_routes.rs` (operator-only, `202` then `409`, a
+finished job read back, `not_configured`, a body refused); the port's real
+implementation (git, lock, detached job, records) is tested in the binary
+(`crates/app/ironclaw_cli/src/commands/update/`).
 
 ## `handlers.rs` module-charter map
 
@@ -137,7 +201,7 @@ candidate module.
 | `threads` | Thread lifecycle, message send, and timeline/thread reads | Run control (that is `runs`) or transport (that is `streaming`) | `create_thread`, `delete_thread`, `session_channel_message`, `get_timeline`, `TimelineQuery`, `list_threads`, `ListThreadsQuery` |
 | `notifications` | Durable notification-inbox listing and lifecycle mutations, including route-edge query/path parsing | External-channel preferences, enrollment, or delivery — those are `outbound` | `list_notifications`, `ListNotificationsQuery`, `NotificationPath`, `mark_notification_read`, `mark_all_notifications_read`, `archive_notification` |
 | `admin-users` | Admin user CRUD, role/status, and per-user secrets; parsing `{user_id}`/`{handle}` into domain types at the edge | Authorization logic — the service enforces admin authorization and last-admin protection | `parse_admin_user_id`, `parse_admin_secret_handle`, `read_admin_user_secret`, `admin_list_users`, `admin_create_user`, `admin_get_user`, `admin_update_user`, `admin_delete_user`, `admin_set_user_status`, `admin_set_user_role`, `admin_list_user_secrets`, `admin_put_user_secret`, `admin_delete_user_secret` |
-| `workspace-fs` | Project-file and mount-catalog reads, and the workspace path-scoping rules that keep a served path inside its projection | Attachment download (that is `attachments`) | `PROJECT_FS_ROOT`, `ProjectFsQuery`, `list_project_files`, `stat_project_file`, `read_project_file`, `project_fs_download_response`, `FsBrowseQuery`, `list_fs_mounts`, `browse_fs_dir`, `stat_fs_path`, `read_fs_file`, `require_fs_browse_path`, `workspace_scoped_projection_required`, `workspace_projection_for`, `workspace_served_path`, `strip_workspace_prefix`, `project_fs_list_path`, `require_project_fs_path` |
+| `workspace-fs` | Project-file and mount-catalog reads, and the workspace path-scoping rules that keep a served path inside its projection | Attachment download (that is `attachments`) | `PROJECT_FS_ROOT`, `ProjectFsQuery`, `list_project_files`, `stat_project_file`, `read_project_file`, `project_fs_download_response`, `FsBrowseQuery`, `list_fs_mounts`, `browse_fs_dir`, `stat_fs_path`, `read_fs_file`, `require_fs_browse_path`, `workspace_scoped_projection_required`, `workspace_projection_for`, `workspace_served_path`, `strip_workspace_prefix`, `project_fs_list_path`, `require_project_fs_path`, `index_project_files` |
 | `projects` | Project CRUD and project membership | Project *files* — those are `workspace-fs` | `ListProjectsQuery`, `list_projects`, `create_project`, `get_project`, `update_project`, `delete_project`, `list_project_members`, `add_project_member`, `update_project_member`, `remove_project_member`, `read_project_member` |
 | `attachments` | Attachment download and the filename sanitizing that download depends on | A filesystem path rule — that is `workspace-fs` | `MAX_DOWNLOAD_FILENAME_BYTES`, `sanitized_download_filename`, `get_attachment` |
 | `streaming` | Both live transports and everything that shapes a frame: SSE poll/keepalive tuning, capacity and concurrency rejection, cursor tokens, the envelope→event mapping, and the WebSocket drain loop | A product decision — a stream carries what the surface already produced | `SSE_POLL_INTERVAL`, `SSE_IDLE_POLL_MAX_INTERVAL`, `SSE_KEEPALIVE_INTERVAL`, `LAST_EVENT_ID_HEADER`, `sse_poll_interval_for_idle_polls`, `stream_events`, `sse_capacity_rejected`, `sse_concurrency_exhausted`, `StreamEventsQuery`, `stream_connection_id`, `SseErrorPayload`, `webchat_sse_event_from_envelope`, `sse_error_event`, `sse_keep_alive_event`, `build_sse_stream`, `parse_cursor_token`, `cursor_token`, `stream_events_ws`, `ws_drain_loop`, `ws_send_with_timeout` |
@@ -159,7 +223,8 @@ candidate module.
 | `schedules` | Schedules (`t3_schedule` rows, agent- or desktop-made): list, preview, create/update/delete/run, and a webhook's signing-secret rotation and explicit reveal — its own file, each handler one `ironclaw_product_contracts::orchestration` descriptor | Trigger automations (that is `automations`) | `handlers/schedules.rs::ScheduleBody`, `handlers/schedules.rs::mutate`, `handlers/schedules.rs::schedules_list`, `handlers/schedules.rs::schedule_preview`, `handlers/schedules.rs::schedule_create`, `handlers/schedules.rs::schedule_update`, `handlers/schedules.rs::schedule_delete`, `handlers/schedules.rs::schedule_run`, `handlers/schedules.rs::schedule_rotate_secret`, `handlers/schedules.rs::schedule_secret` |
 | `usage` | Subscription usage windows and the coding CLIs' token history for the Usage page (CLI-login 5-hour/weekly windows, coding-plan quotas, per-day token totals) — its own file, two `ironclaw_product_contracts::usage` descriptors | Per-thread context/TPS telemetry (that is the thread telemetry route) | `handlers/usage.rs::usage_report`, `handlers/usage.rs::UsageHistoryQuery`, `handlers/usage.rs::usage_history` |
 | `memory` | The Memory page — the caller's local memory documents (tree, read, search, conflict-aware save, archive) and their Supermemory account (binding status, captured documents, search, delete a document, forget a memory) — plus the read-only hook inventory; its own file, each handler one `ironclaw_product_contracts::memory_page` / `hooks_catalog` descriptor | Chat-history search (that is the thread search route) and any automatic memory writing | `handlers/memory.rs::view`, `handlers/memory.rs::memory_tree`, `handlers/memory.rs::MemoryPathQuery`, `handlers/memory.rs::memory_document`, `handlers/memory.rs::MemorySearchQuery`, `handlers/memory.rs::memory_search`, `handlers/memory.rs::memory_write`, `handlers/memory.rs::memory_archive`, `handlers/memory.rs::SupermemoryQuery`, `handlers/memory.rs::supermemory_status`, `handlers/memory.rs::supermemory_documents`, `handlers/memory.rs::supermemory_search`, `handlers/memory.rs::supermemory_delete_document`, `handlers/memory.rs::supermemory_forget`, `handlers/memory.rs::hooks_catalog` |
-| `computer-use` | A thread's computer-use session (state + latest screenshot frame), its Stop / take over / hand back, and the live view (every session of the caller, one window's picture) — its own file, one `ironclaw_product_contracts::computer_use` descriptor each | Running a computer-use action (that is an approval-gated capability, never a route) | `handlers/computer_use.rs::ComputerUseSessionQuery`, `handlers/computer_use.rs::computer_use_session`, `handlers/computer_use.rs::ComputerUseControlBody`, `handlers/computer_use.rs::computer_use_control`, `handlers/computer_use.rs::ComputerUseStateQuery`, `handlers/computer_use.rs::computer_use_state`, `handlers/computer_use.rs::ComputerUseFrameQuery`, `handlers/computer_use.rs::computer_use_frame` |
+| `computer-use` | A thread's computer-use session (state + latest screenshot frame), its Stop / take over / hand back, and the live view (every session of the caller, one window's picture) — its own file, one `ironclaw_product_contracts::computer_use` descriptor each | Running a computer-use action (that is an approval-gated capability, never a route) | `handlers/computer_use.rs::ComputerUseSessionQuery`, `handlers/computer_use.rs::computer_use_session`, `handlers/computer_use.rs::ComputerUseControlBody`, `handlers/computer_use.rs::computer_use_control`, `handlers/computer_use.rs::ComputerUseStateQuery`, `handlers/computer_use.rs::computer_use_state`, `handlers/computer_use.rs::ComputerUseFrameQuery`, `handlers/computer_use.rs::computer_use_frame`, `handlers/computer_use.rs::computer_use_readiness` |
+| `thread-repo` | A thread's repository and console on the backend's machine for a remote client: git status/diff/log/commit reads, stage/unstage/discard/checkpoint/undo changes, and one console command at a time with its output after a cursor — its own file, one `ironclaw_product_contracts::thread_repo` descriptor each, operator-only | Choosing the folder (the thread's own, resolved behind `ProductSurface`) or running git/a process (that is the orchestrator behind `ProductSurface`) | `handlers/thread_repo.rs::ThreadGitParams`, `handlers/thread_repo.rs::thread_git`, `handlers/thread_repo.rs::thread_git_change`, `handlers/thread_repo.rs::ThreadConsoleParams`, `handlers/thread_repo.rs::thread_console`, `handlers/thread_repo.rs::thread_console_control` |
 | `inbox` | The v2 inbox and goals: the caller's joined inbox list, one lifecycle mark (pin/snooze/settle/visit) on a thread, a thread's goal read/write, and the background-task models, terminal session import — its own file, each handler one `ironclaw_product_contracts::inbox` descriptor | The plain thread list (that is `threads`) | `handlers/inbox.rs::inbox_list`, `handlers/inbox.rs::InboxMutateBody`, `handlers/inbox.rs::inbox_mutate`, `handlers/inbox.rs::thread_goal`, `handlers/inbox.rs::ThreadGoalBody`, `handlers/inbox.rs::thread_goal_set`, `handlers/inbox.rs::task_models_get`, `handlers/inbox.rs::task_models_set`, `handlers/inbox.rs::session_import_status`, `handlers/inbox.rs::session_import_run` |
 | `history` | History search across the caller's past chats: discover/scroll/read/browse inferred from the query parameters — its own file, one `ironclaw_product_contracts::history` descriptor | Thread listing (that is `threads`) or a thread's timeline | `handlers/history.rs::history_search` |
 
@@ -233,6 +298,10 @@ closed (`500`) if that layer is missing (locked by
 | `webui.v2.orchestrator.thread_fork` | POST | `/api/webchat/v2/threads/{thread_id}/fork` | — | `ProductSurface` |
 | `webui.v2.orchestrator.thread_merge_back` | POST | `/api/webchat/v2/threads/{thread_id}/merge-back` | — | `ProductSurface` |
 | `webui.v2.orchestrator.thread_worktree` | POST | `/api/webchat/v2/threads/{thread_id}/worktree` | — | `ProductSurface` |
+| `webui.v2.orchestrator.thread_git` | GET | `/api/webchat/v2/threads/{thread_id}/git` | `?view=status\|diff\|log\|commit&scope=working\|staged\|unstaged\|turn&path=&limit=&sha=` | `ProductSurface` (operator only: 403 otherwise) — the thread's own repository on the backend; patches ≤ 2 MiB, ≤ 2 000 status entries, ≤ 500 commits; git with hooks/fsmonitor/network off |
+| `webui.v2.orchestrator.thread_git_change` | POST | `/api/webchat/v2/threads/{thread_id}/git` | body `{action: stage\|unstage (paths ≤ 500), discard (path), checkpoint, undo_turn, keep_turn}` (≤ 256 KiB) | `ProductSurface` (operator only) — repository-relative paths only; answers `{status, note?}`, the status read back after the change |
+| `webui.v2.orchestrator.thread_console` | GET | `/api/webchat/v2/threads/{thread_id}/console` | `?after=` | `ProductSurface` (operator only) — `{available, folder?, running, command?, exit_code?, lines, next, dropped}`; `available: false` unless the deployment gives the agent a host shell (local host process backend) |
+| `webui.v2.orchestrator.thread_console_control` | POST | `/api/webchat/v2/threads/{thread_id}/console` | body `{action: start (command ≤ 8 KiB), cancel, clear}` | `ProductSurface` (operator only) — one command per thread in its folder through the host process port (scrubbed env); cancel/timeout/shutdown kill its process tree; `console_unavailable` where there is no host shell |
 | `webui.v2.orchestrator.thread_action` | POST | `/api/webchat/v2/threads/{thread_id}/action` | — | `ProductSurface` |
 | `webui.v2.profiles.list` / `create` | GET/POST | `/api/webchat/v2/profiles` | — | `ProductSurface` |
 | `webui.v2.profiles.get` / `update` / `delete` | GET/POST/DELETE | `/api/webchat/v2/profiles/{profile_id}` | — | `ProductSurface` |
@@ -260,6 +329,8 @@ closed (`500`) if that layer is missing (locked by
 | `webui.v2.computer_use.control` | POST | `/api/webchat/v2/threads/{thread_id}/computer-use` | — | `ProductSurface` |
 | `webui.v2.computer_use.state` | GET | `/api/webchat/v2/computer-use` | `?viewer=` | `ProductSurface` |
 | `webui.v2.computer_use.frame` | GET | `/api/webchat/v2/threads/{thread_id}/computer-use/frame` | `?window_id=&width=&fps=&after_seq=` | `ProductSurface` |
+| `webui.v2.computer_use.readiness` | GET | `/api/webchat/v2/computer-use/readiness` | — | `ProductSurface` (operator only: 403 otherwise) — this host's engine and macOS Accessibility / Screen Recording preflight for the process that drives it, never prompted; `{platform, engine, accessibility, screen_recording, ready}` |
+| `webui.v2.index_project_files` | GET | `/api/webchat/v2/threads/{thread_id}/files/index` | — | `ProductSurface` (`project_fs_index`) — the thread workspace's files and folders relative to `/workspace` (hidden and build folders skipped; ≤5,000 entries, ≤600 folders, ≤12 levels, ≤3 s; `complete` false when cut), built from the thread's own `project_fs_list` listings so ownership, confinement and the sensitive-name filter are that view's. A mention of `/workspace/<path>` resolves on the backend under the caller's workspace folder (`orchestration::mentions`) |
 | `webui.v2.inbox.list` | GET | `/api/webchat/v2/inbox` | — | `ProductSurface` |
 | `webui.v2.inbox.mutate` | POST | `/api/webchat/v2/inbox/{thread_id}` | — | `ProductSurface` |
 | `webui.v2.session_import.status` | GET | `/api/webchat/v2/session-imports` | — | `ProductSurface` |

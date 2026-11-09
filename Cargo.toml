@@ -380,6 +380,10 @@ name = "reborn_integration_extension_ingress"
 path = "tests/integration/extension_ingress.rs"
 
 [[test]]
+name = "reborn_integration_environment_access"
+path = "tests/integration/environment_access.rs"
+
+[[test]]
 name = "reborn_integration_extension_delivery"
 path = "tests/integration/extension_delivery.rs"
 

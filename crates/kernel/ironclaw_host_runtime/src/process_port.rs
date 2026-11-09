@@ -414,6 +414,51 @@ impl HostProcessPort {
     }
 }
 
+impl HostProcessPort {
+    /// Start `request.command` and hand back its output as it is printed,
+    /// for an operator console. Same placement as [`RuntimeProcessPort::run_command`]
+    /// (workdir resolution, environment, own process group) but nothing is
+    /// buffered, saved or rewritten: the caller bounds what it keeps. The
+    /// whole process group is killed on [`HostProcessStream::kill`], when
+    /// `timeout_secs` (default 120 s) runs out, and when the stream is dropped.
+    pub async fn spawn_streaming(
+        &self,
+        request: CommandExecutionRequest,
+    ) -> Result<crate::process_stream::HostProcessStream, RuntimeProcessError> {
+        let aliases = self.aliases_for(&request.scope);
+        let cwd =
+            resolve_local_host_workdir(request.workdir.as_deref(), &aliases).map_err(|e| {
+                RuntimeProcessError::ExecutionFailed(format!(
+                    "cannot determine working directory: {e}"
+                ))
+            })?;
+        let timeout = request
+            .timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(DEFAULT_COMMAND_TIMEOUT);
+        let command = rewrite_local_host_command_aliases(&request.command, &aliases);
+        let mut command = local_command(&command, &cwd, &request.extra_env, self.env_mode);
+        let child = command.spawn().map_err(|e| {
+            RuntimeProcessError::ExecutionFailed(format!("Failed to spawn command: {e}"))
+        })?;
+        Ok(crate::process_stream::HostProcessStream::new(
+            child, timeout,
+        ))
+    }
+}
+
+/// SIGKILL the process group `pid` leads (best-effort; it may be gone).
+pub(crate) fn kill_process_group(pid: u32) {
+    #[cfg(unix)]
+    // SAFETY: the child was spawned into its own process group with
+    // pgid == pid; a negative pid targets only that group.
+    unsafe {
+        let _ = kill(-(pid as i32), SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
 #[async_trait]
 impl RuntimeProcessPort for HostProcessPort {
     async fn run_command(
@@ -498,14 +543,16 @@ async fn ensure_caller_workspace(
     })
 }
 
-async fn execute_local_command(
-    scope: &ResourceScope,
+/// `sh -c <cmd>` in `workdir` in its own process group, with the port's
+/// environment (scrubbed to `SAFE_ENV_VARS` unless inherited) plus
+/// `extra_env`, stdin closed and both output streams piped. Shared by the
+/// run-to-completion path and [`HostProcessPort::spawn_streaming`].
+fn local_command(
     cmd: &str,
-    workdir: &PathBuf,
-    timeout: Duration,
+    workdir: &Path,
     extra_env: &HashMap<String, String>,
     env_mode: HostProcessEnvMode,
-) -> Result<(CapturedCommandOutput, i32), RuntimeProcessError> {
+) -> Command {
     let mut command = if cfg!(target_os = "windows") {
         let mut c = Command::new("cmd");
         c.args(["/C", cmd]);
@@ -539,7 +586,18 @@ async fn execute_local_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    command
+}
 
+async fn execute_local_command(
+    scope: &ResourceScope,
+    cmd: &str,
+    workdir: &Path,
+    timeout: Duration,
+    extra_env: &HashMap<String, String>,
+    env_mode: HostProcessEnvMode,
+) -> Result<(CapturedCommandOutput, i32), RuntimeProcessError> {
+    let mut command = local_command(cmd, workdir, extra_env, env_mode);
     let mut child = command.spawn().map_err(|e| {
         RuntimeProcessError::ExecutionFailed(format!("Failed to spawn command: {e}"))
     })?;
@@ -1192,7 +1250,7 @@ mod tests {
         let (output, exit_code) = execute_local_command(
             &ResourceScope::system(),
             "yes a | head -c 70000; printf 'MIDDLE-FROM-COMMAND'; yes z | head -c 70000",
-            &workdir.path().to_path_buf(),
+            workdir.path(),
             Duration::from_secs(5),
             &HashMap::new(),
             HostProcessEnvMode::Scrubbed,
@@ -1222,7 +1280,7 @@ mod tests {
         let (output, exit_code) = execute_local_command(
             &ResourceScope::system(),
             "printf '%s' \"$HOME\"",
-            &workdir.path().to_path_buf(),
+            workdir.path(),
             Duration::from_secs(5),
             &HashMap::new(),
             HostProcessEnvMode::Scrubbed,
@@ -1244,7 +1302,7 @@ mod tests {
         let (output, exit_code) = execute_local_command(
             &ResourceScope::system(),
             "printf '%s\\n%s' \"$HOME\" \"$IRONCLAW_REBORN_SENTINEL\"",
-            &workdir.path().to_path_buf(),
+            workdir.path(),
             Duration::from_secs(5),
             &HashMap::from([(
                 "IRONCLAW_REBORN_SENTINEL".to_string(),
@@ -1402,7 +1460,7 @@ mod tests {
         let (output, exit_code) = execute_local_command(
             &ResourceScope::system(),
             "echo %HOME%",
-            &workdir.path().to_path_buf(),
+            workdir.path(),
             Duration::from_secs(5),
             &HashMap::new(),
             HostProcessEnvMode::Scrubbed,

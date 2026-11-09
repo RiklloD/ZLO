@@ -3,6 +3,7 @@ use clap::Subcommand;
 pub(crate) mod channels;
 pub(crate) mod completion;
 pub(crate) mod config;
+pub(crate) mod devices;
 pub(crate) mod doctor;
 pub(crate) mod extension;
 pub(crate) mod hooks;
@@ -10,15 +11,19 @@ pub(crate) mod ironhub;
 pub(crate) mod logs;
 pub(crate) mod models;
 pub(crate) mod onboard;
+pub(crate) mod pair;
 pub(crate) mod profile;
+pub(crate) mod remote;
 pub(crate) mod repl;
 pub(crate) mod run;
 pub(crate) mod serve;
+pub(crate) mod serve_remote;
 pub(crate) mod serve_sso;
 pub(crate) mod service;
 pub(crate) mod skills;
 pub(crate) mod status;
 pub(crate) mod traces;
+pub(crate) mod update;
 pub(crate) mod user_directory;
 pub(crate) mod webui_auth;
 
@@ -30,6 +35,8 @@ pub(crate) enum Command {
     Completion(completion::CompletionCommand),
     /// Inspect Reborn configuration paths without creating state.
     Config(config::ConfigCommand),
+    /// List or revoke devices paired with the running backend.
+    Devices(devices::DevicesCommand),
     /// Check Reborn binary configuration without creating state.
     Doctor(doctor::DoctorCommand),
     /// Manage local Reborn extension lifecycle.
@@ -45,8 +52,12 @@ pub(crate) enum Command {
     Models(models::ModelsCommand),
     /// Initialize the standalone Reborn home and first-run setup marker.
     Onboard(onboard::OnboardCommand),
+    /// Issue a one-time code to pair another device with this backend.
+    Pair(pair::PairCommand),
     /// Inspect supported Reborn boot profiles.
     Profile(profile::ProfileCommand),
+    /// Reach this backend from your other machines over your tailnet.
+    Remote(remote::RemoteCommand),
     /// Start the composed Reborn CLI REPL.
     Repl(repl::ReplCommand),
     /// Initialize the minimal Reborn runtime shell and exit.
@@ -63,6 +74,8 @@ pub(crate) enum Command {
     Status(status::StatusCommand),
     /// Manage trace contributions to TraceCommons.
     Traces(Box<traces::TracesCommand>),
+    /// Update this installation from its source checkout (`[update]`).
+    Update(update::UpdateCommand),
 }
 
 impl Command {
@@ -71,6 +84,9 @@ impl Command {
             Self::Channels(command) => command.execute(),
             Self::Completion(command) => command.execute(),
             Self::Config(command) => {
+                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+            }
+            Self::Devices(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::Doctor(command) => {
@@ -88,7 +104,13 @@ impl Command {
             Self::Onboard(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
+            Self::Pair(command) => {
+                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+            }
             Self::Profile(command) => command.execute(),
+            Self::Remote(command) => {
+                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+            }
             Self::Repl(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
@@ -108,6 +130,9 @@ impl Command {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::Traces(command) => command.execute(),
+            Self::Update(command) => {
+                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+            }
         }
     }
 }
