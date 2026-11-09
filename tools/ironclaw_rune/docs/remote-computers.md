@@ -42,6 +42,8 @@ This follows [T3 Code](https://github.com/pingdotgg/t3code)'s remote environment
 - **Your repos on the backend computer.** The agent works on that machine's files, so the projects it should touch need to be there.
 - **Codex or Claude Code**, if you use them, installed and logged in on the backend computer.
 
+The backend you build is the same one ZLO bundles (`ZLO.app/Contents/MacOS/zlo-backend` is `cargo build --release -p ironclaw` from this repository). `ironclaw service` also runs it the same way ZLO does: from the same home folder (`~/.ironclaw/reborn`), with the same working folder (`~/.ironclaw/reborn/workspace`). The only piece missing outside `ZLO.app` is the computer-use engine.
+
 What doesn't move: threads, memory and keys on your Mac stay on your Mac. A new backend computer starts empty.
 
 ## Set up the backend computer
@@ -92,7 +94,7 @@ mkdir -p ~/.ironclaw/bin && cp target/release/ironclaw ~/.ironclaw/bin/
 ~/.ironclaw/bin/ironclaw service restart
 ```
 
-For computer use on that Mac, grant Accessibility and Screen Recording to the process that runs the backend. When remote, ZLO shows on your laptop whether that machine is ready.
+Computer use needs the engine that ships inside `ZLO.app`, so a Mac running `ironclaw` on its own has none. If you want the agent to use that Mac's screen, run ZLO there instead (the "With ZLO on it" setup above) and grant it Accessibility and Screen Recording. Your laptop then shows whether that machine is ready.
 
 ### Check it from the server
 

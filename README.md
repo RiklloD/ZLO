@@ -6,8 +6,6 @@ I'm [Lorik](https://github.com/RiklloD). I'm a business student who likes to tin
 
 ## Why I'm building it
 
-I want an agent that can do work on my computer, not just tell me how to do it. I also want to see what it's doing, choose which model handles a task, and decide what it can access.
-
 The desktop app matters to me as much as the agent behind it. I want something light that feels at home on my Mac. Memory use and battery life are part of the product, not things to fix after adding every feature.
 
 This is my own working setup and a place to try ideas. It isn't a promise of a polished release or support for every machine.
