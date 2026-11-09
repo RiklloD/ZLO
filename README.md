@@ -74,6 +74,7 @@ Then open ZLO on your Mac, go to **Settings → Computers**, and click **Connect
 - setting up a Linux server or a second Mac;
 - pairing with one click, with a code, or over SSH;
 - managing paired devices;
+- moving your setup (threads, memory, profiles, settings, provider keys) to the server with `zlo transfer user@host`, or `zlo export` / `zlo import`;
 - what works remotely;
 - how the connection is secured;
 - troubleshooting.

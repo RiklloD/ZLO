@@ -5,8 +5,10 @@ pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod devices;
 pub(crate) mod doctor;
+pub(crate) mod export;
 pub(crate) mod extension;
 pub(crate) mod hooks;
+pub(crate) mod import;
 pub(crate) mod ironhub;
 pub(crate) mod logs;
 pub(crate) mod models;
@@ -23,6 +25,7 @@ pub(crate) mod service;
 pub(crate) mod skills;
 pub(crate) mod status;
 pub(crate) mod traces;
+pub(crate) mod transfer;
 pub(crate) mod update;
 pub(crate) mod user_directory;
 pub(crate) mod webui_auth;
@@ -39,10 +42,14 @@ pub(crate) enum Command {
     Devices(devices::DevicesCommand),
     /// Check Reborn binary configuration without creating state.
     Doctor(doctor::DoctorCommand),
+    /// Write this computer's ZLO setup to one encrypted file for another computer.
+    Export(export::ExportCommand),
     /// Manage local Reborn extension lifecycle.
     Extension(extension::ExtensionCommand),
     /// Inspect configured Reborn hooks.
     Hooks(hooks::HooksCommand),
+    /// Restore a setup written by `zlo export` on this computer.
+    Import(import::ImportCommand),
     /// Search and install signed registry packages from IronHub.
     #[command(name = "ironhub", visible_alias = "iron-hub", visible_alias = "hub")]
     IronHub(ironhub::IronHubCommand),
@@ -74,6 +81,8 @@ pub(crate) enum Command {
     Status(status::StatusCommand),
     /// Manage trace contributions to TraceCommons.
     Traces(Box<traces::TracesCommand>),
+    /// Move this computer's ZLO setup to another computer over SSH.
+    Transfer(transfer::TransferCommand),
     /// Update this installation from its source checkout (`[update]`).
     Update(update::UpdateCommand),
 }
@@ -92,10 +101,16 @@ impl Command {
             Self::Doctor(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
+            Self::Export(command) => {
+                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+            }
             Self::Extension(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::Hooks(command) => command.execute(),
+            Self::Import(command) => {
+                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+            }
             Self::IronHub(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
@@ -130,6 +145,9 @@ impl Command {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::Traces(command) => command.execute(),
+            Self::Transfer(command) => {
+                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+            }
             Self::Update(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }

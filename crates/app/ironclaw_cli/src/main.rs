@@ -10,6 +10,7 @@ mod operator_env;
 mod render;
 mod runtime;
 mod serve_invocation;
+mod setup_bundle;
 mod tailscale;
 mod webui_token;
 

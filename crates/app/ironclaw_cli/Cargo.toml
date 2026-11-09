@@ -40,10 +40,16 @@ test-support = [
     "ironclaw_webui/test-support",
 ]
 [dependencies]
+# `zlo export`/`import` archive encryption: AES-256-GCM in 1 MiB chunks
+# (STREAM construction) under a PBKDF2-HMAC-SHA256 key from the passphrase.
+# Both crates are already in the tree (aes-gcm via ironclaw_secrets, pbkdf2
+# via zip); no new crate enters Cargo.lock.
+aes-gcm = "0.11"
 anyhow = "1"
 async-trait = { version = "0.1" }
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4.3"
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4.5.0"
 # Masked (echo-suppressed) API-key prompt in `onboard`. Same crate v1's setup
@@ -87,6 +93,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
+zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 # O_NOFOLLOW for the single-handle, symlink-safe token file open in

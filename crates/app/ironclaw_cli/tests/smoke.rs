@@ -1127,6 +1127,9 @@ fn help_mentions_reborn_commands() {
     assert!(stdout.contains("serve"), "stdout: {stdout}");
     assert!(stdout.contains("service"), "stdout: {stdout}");
     assert!(stdout.contains("skills"), "stdout: {stdout}");
+    assert!(stdout.contains("export"), "stdout: {stdout}");
+    assert!(stdout.contains("import"), "stdout: {stdout}");
+    assert!(stdout.contains("transfer"), "stdout: {stdout}");
     // No standalone `tui` subcommand exists (Reborn's interactive surface
     // is `repl`); pin this so a `full`-feature build never grows one
     // without an explicit, reviewed decision.
@@ -7685,4 +7688,120 @@ fn local_yolo_command(temp: &tempfile::TempDir, args: &[&str]) -> Command {
         .env("IRONCLAW_REBORN_PROFILE", "local-dev-yolo")
         .env("HOME", home);
     command
+}
+
+/// `zlo export` then `zlo import --replace` between two temp homes, through
+/// the real binary: only `ZLO_HOME`/`HOME` temp dirs, the keychain off, and
+/// the import's loopback probe pointed at a port nothing listens on.
+#[test]
+fn export_then_import_moves_a_setup_between_two_temp_homes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_home = temp.path().join("source-home");
+    let source = source_home.join(".zlo");
+    std::fs::create_dir_all(&source).expect("source");
+    std::fs::write(source.join("providers.json"), "{\"providers\":[]}").expect("providers");
+    std::fs::write(source.join("webui-token"), "machine-local-token").expect("token");
+    let passphrase = temp.path().join("passphrase");
+    std::fs::write(&passphrase, "smoke test passphrase\n").expect("passphrase");
+    let archive = temp.path().join("setup.zlobundle");
+
+    let output = reborn_command()
+        .env("HOME", &source_home)
+        .env("ZLO_HOME", &source)
+        .arg("export")
+        .arg("--out")
+        .arg(&archive)
+        .arg("--passphrase-file")
+        .arg(&passphrase)
+        .output()
+        .expect("export runs");
+    assert!(
+        output.status.success(),
+        "export stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(archive.is_file());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("smoke test passphrase"));
+
+    let target_home = temp.path().join("target-home");
+    let target = target_home.join(".zlo");
+    std::fs::create_dir_all(&target).expect("target");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("addr")
+        .port();
+    std::fs::write(
+        target.join("config.toml"),
+        format!("[webui]\nlisten_port = {port}\n"),
+    )
+    .expect("target config");
+
+    let refused = reborn_command()
+        .env("HOME", &target_home)
+        .env("ZLO_HOME", &target)
+        .arg("import")
+        .arg(&archive)
+        .arg("--passphrase-file")
+        .arg(&passphrase)
+        .output()
+        .expect("import runs");
+    assert!(!refused.status.success(), "existing setup needs --replace");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("--replace"),
+        "stderr: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    let output = reborn_command()
+        .env("HOME", &target_home)
+        .env("ZLO_HOME", &target)
+        .arg("import")
+        .arg(&archive)
+        .arg("--passphrase-file")
+        .arg(&passphrase)
+        .arg("--replace")
+        .output()
+        .expect("import runs");
+    assert!(
+        output.status.success(),
+        "import stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Imported the setup"), "stdout: {stdout}");
+    assert!(target.join("providers.json").is_file());
+    assert!(
+        !target.join("webui-token").exists(),
+        "the token stays behind"
+    );
+    let aside: Vec<_> = std::fs::read_dir(&target_home)
+        .expect("home")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".zlo.before-import-")
+        })
+        .collect();
+    assert_eq!(aside.len(), 1, "the old setup was moved aside");
+    assert!(aside[0].path().join("config.toml").is_file());
+}
+
+#[test]
+fn transfer_refuses_a_shell_like_target_before_doing_anything() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = reborn_command()
+        .env("HOME", temp.path())
+        .env("ZLO_HOME", temp.path().join(".zlo"))
+        .arg("transfer")
+        .arg("ana@host;id")
+        .output()
+        .expect("transfer runs");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("user@host"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

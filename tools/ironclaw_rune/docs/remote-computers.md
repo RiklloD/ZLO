@@ -5,6 +5,7 @@ ZLO is a window onto an IronClaw backend. By default that backend runs on the sa
 - [How it fits together](#how-it-fits-together)
 - [Before you start](#before-you-start)
 - [Set up the backend computer](#set-up-the-backend-computer)
+- [Move your setup to another computer](#move-your-setup-to-another-computer)
 - [Connect from ZLO](#connect-from-zlo)
 - [Pairing other devices](#pairing-other-devices)
 - [Laptop only: turning off the local backend](#laptop-only-turning-off-the-local-backend)
@@ -30,7 +31,7 @@ ZLO is a window onto an IronClaw backend. By default that backend runs on the sa
 
 - **The backend never listens on the network.** It stays on `127.0.0.1`. `tailscale serve` publishes it to your tailnet only, at `https://<machine>.<tailnet>.ts.net`, with a real certificate. It is never published to the internet; ZLO refuses Tailscale Funnel.
 - **Each device gets its own token.** Pairing turns a one-time code into a device token, stored in the macOS Keychain. Revoking one device doesn't affect the others.
-- **ZLO works on one computer at a time.** Each computer has its own threads, memory, settings, provider keys and files, because they live with its backend. Switching computers in ZLO switches all of that. Nothing is copied between computers.
+- **ZLO works on one computer at a time.** Each computer has its own threads, memory, settings, provider keys and files, because they live with its backend. Switching computers in ZLO switches all of that. Nothing is copied between computers unless you [move your setup](#move-your-setup-to-another-computer).
 - **Without Tailscale**, ZLO can reach a computer over SSH instead: it opens an SSH tunnel to the backend's loopback port when you use that computer.
 
 This follows [T3 Code](https://github.com/pingdotgg/t3code)'s remote environments, with Tailscale doing the job of its paid relay.
@@ -44,7 +45,7 @@ This follows [T3 Code](https://github.com/pingdotgg/t3code)'s remote environment
 
 The backend you build is the same one ZLO bundles (`ZLO.app/Contents/MacOS/zlo-backend` is `target/release/zlo` from `cargo build --release -p ironclaw` in this repository). `zlo service` also runs it the same way ZLO does: from the same data folder (`~/.zlo`), with the same working folder (`~/.zlo/workspace`). The only piece missing outside `ZLO.app` is the computer-use engine.
 
-What doesn't move: threads, memory and keys on your Mac stay on your Mac. A new backend computer starts empty.
+A new backend computer starts empty. To start it with what your Mac already has (threads, memory, profiles, settings, provider keys), [move your setup](#move-your-setup-to-another-computer) after installing it.
 
 ## Set up the backend computer
 
@@ -103,6 +104,58 @@ zlo remote status
 ```
 
 The output shows the tailnet address, the owner (your Tailscale login), whether `tailscale serve` is running, and how many devices are paired.
+
+## Move your setup to another computer
+
+A new backend computer starts empty. `zlo transfer` (or `zlo export` and `zlo import`) copies your setup from this computer to it, so the server starts with your threads, memory and keys.
+
+**One step, over SSH** (needs the same SSH key setup as the [SSH route](#troubleshooting): `ssh user@host` must work without a password):
+
+```sh
+# On the server: install ZLO, then make sure its backend is stopped
+zlo service stop          # if it was installed already
+
+# On your Mac
+zlo transfer you@server   # asks for a passphrase twice
+```
+
+`transfer` exports to a private temporary file, then runs `zlo import` on the server with the passphrase and the file sent through the SSH session (never on a command line, never left in a file there). Add `--replace` if the server already has a setup.
+
+**Or by hand**, with any way of copying a file:
+
+```sh
+# On your Mac (the backend can keep running)
+zlo export                                  # writes zlo-setup-<computer>-<date>.zlobundle
+scp zlo-setup-*.zlobundle you@server:
+
+# On the server, with its backend stopped
+zlo import zlo-setup-<computer>-<date>.zlobundle
+zlo service install                         # first time; afterwards: zlo service start
+```
+
+For scripts, `--passphrase-file <file>` reads the passphrase from that file's first line instead of asking.
+
+**What moves:** threads and their history, memory, profiles, skills, automations, project records, settings (`config.toml`, `providers.json` and the other files in `~/.zlo`), and provider keys and other stored secrets — together with the key that encrypts them, so they keep working.
+
+**What doesn't move:**
+
+- this computer's identity and paired devices: the server keeps (or makes) its own, so pair ZLO with it as usual;
+- the WebUI token, logs, update state, the installed `zlo` binary;
+- Claude Code and Codex session files, and the agent folders under `~/.ironclaw` — they live outside the data folder;
+- your project folders. `import` lists the folders the imported profiles and worktrees point to that aren't on the server ("Clone or copy them here"). Clone them to the paths it shows.
+
+**The passphrase.** The file holds the key your provider keys are encrypted with, so the whole file is encrypted (AES-256-GCM, with a key made from your passphrase by PBKDF2-HMAC-SHA256). Without the passphrase nobody can read it, including ZLO: there is no recovery. Use a new passphrase, and delete the file when you're done.
+
+**Paths.** Absolute paths that pointed into your Mac's home folder are moved to the server's: `/Users/you/src/app` becomes `/home/you/src/app`, and `/Users/you/.zlo/…` becomes the server's data folder. This covers profile working folders, worktree records and the paths in `config.toml`. Paths written as `~/…` stay as they are. Chat history is never changed.
+
+**Safety.**
+
+- `export` is safe while the backend runs: the database is copied with SQLite's own consistent snapshot.
+- `import` refuses while the server's backend is running (stop it with `zlo service stop`).
+- `import` refuses if the server already has a setup, unless you pass `--replace`. Then the old setup moves to `~/.zlo.before-import-<time>`; nothing is deleted.
+- `import` checks the passphrase, the format version (a file from a newer ZLO is refused: update first) and every item's checksum before anything is put in place. A wrong passphrase or a damaged file changes nothing.
+
+On a Mac target the restored key is written to `~/.zlo/local-dev/.reborn-local-dev-secrets-master-key` (0600), which the backend reads before the Keychain; on Linux that file is where the backend keeps it anyway.
 
 ## Connect from ZLO
 
@@ -223,6 +276,9 @@ On the backend, run `zlo remote disable`, then `zlo service restart`. It removes
 | `zlo devices [--json]` | List paired devices |
 | `zlo devices revoke <id-or-name>` / `--all` | Revoke devices |
 | `zlo service install \| start \| stop \| restart \| status \| uninstall` | Run the backend as a launchd or systemd service |
+| `zlo export [--out <file>] [--passphrase-file <file>]` | Write this computer's setup to one encrypted file |
+| `zlo import <file> [--replace] [--passphrase-file <file>]` | Restore a setup here (backend stopped) |
+| `zlo transfer <user@host> [--replace] [--passphrase-file <file>]` | Export and import on another computer over SSH |
 
 The `[remote]` section `remote enable` writes to `~/.zlo/config.toml`:
 

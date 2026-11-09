@@ -55,6 +55,23 @@ pairing from your tailnet stays off unless you pass `--trust-local-users`.
 
 ---
 
+## Moving to Another Computer
+
+| Command | What it does |
+| --- | --- |
+| `zlo export` | Write this computer's setup (threads, memory, profiles, skills, settings, providers and their keys, automations) to one passphrase-encrypted `.zlobundle` file; `--out <file>`, `--passphrase-file <file>` |
+| `zlo import <file>` | Restore a setup from `zlo export` here; refuses while this computer's backend runs, and `--replace` moves an existing setup to `~/.zlo.before-import-<time>` instead of deleting it |
+| `zlo transfer <user@host>` | Export, then import on another computer over SSH in one step (your SSH key; the passphrase and the file travel over the SSH session, never on a command line) |
+
+`export` is safe while the backend runs: the database is copied with SQLite's own
+consistent snapshot. The file includes the secrets master key, so it is encrypted
+(AES-256-GCM, key from your passphrase with PBKDF2) and nothing in it is readable
+without the passphrase. Logs, the WebUI token, update state and this computer's
+identity and paired devices stay behind. `import` moves paths under the old home
+folder to the new one and lists the project folders to clone on the new computer.
+
+---
+
 ## Updates
 
 | Command | What it does |

@@ -1,5 +1,12 @@
 # ZLO remote environments: t3code's architecture on Tailscale
 
+Status (2026-11-09): moving a setup to another computer is built — `zlo
+export` / `zlo import` / `zlo transfer user@host` (encrypted `.zlobundle`:
+PBKDF2-HMAC-SHA256 + chunked AES-256-GCM; database via `VACUUM INTO`, this
+machine's environment identity and devices left out, home paths rewritten on
+import). User guide: `tools/ironclaw_rune/docs/remote-computers.md`, "Move
+your setup to another computer". Not yet run against a real second machine.
+
 Status (2026-11-08): phases 0–5, 7 and 8 (SSH route, Light bundle) are
 built, uncommitted on `rune-port`. Phase 6 is covered only partly (every
 connect reloads from the backend; per-connection tags drop stale replies;
