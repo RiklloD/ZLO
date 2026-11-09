@@ -1,8 +1,8 @@
 //! The main column under the breadcrumb (GPUI `Workspace::render`'s
 //! `main`): one keyed structure whatever shows. The open chat stays mounted
-//! under the settings pages (hidden) and Appearance (live), so a visit
-//! never loses its place; pages and threads enter with a rise and the one
-//! they replace cuts out at once.
+//! under the settings pages (hidden), so a visit never loses its place;
+//! pages and threads enter with a rise and the one they replace cuts out
+//! at once.
 
 use rune::{Cx, El, col, el};
 use rune_kit::Kit;
@@ -13,8 +13,8 @@ use crate::design::Palette;
 use crate::icons;
 use crate::state::{Page, State};
 
-/// Whether the open chat is mounted in the main area: on its own page, under
-/// Appearance and, hidden, under the settings pages, so coming back finds
+/// Whether the open chat is mounted in the main area: on its own page and,
+/// hidden, under the settings pages, so coming back finds
 /// it where it was (GPUI kept the chat entity alive). The new-thread screen
 /// unmounts it: its composer flies to the chat's on the first send.
 pub(super) fn chat_shown(s: &State) -> bool {
@@ -73,8 +73,6 @@ pub(super) fn main_area(
                 .offset(0., 0.)
                 .opacity_motion(st.enter)
                 .offset_motion(st.enter),
-            // Appearance previews on the live chat underneath.
-            Page::Appearance => host.inert(),
             // Under a settings page: out at once, kept as it was.
             _ => host
                 .opacity(0.)
@@ -93,16 +91,11 @@ pub(super) fn main_area(
         page => Some(crate::pages::view(s, page, cx, k, layer)),
     };
     if let Some(page) = page {
-        let mut over = el()
+        let over = el()
             .key(format!("main-{:?}", s.page))
             .pin(Some(0.), Some(0.), Some(0.), Some(0.))
             .transition(entrance(s))
             .child(page);
-        // Appearance floats over the chat at 85 % so a pick previews live
-        // on the real thread or new-chat screen.
-        if s.page == Page::Appearance {
-            over = over.fill(p.bg.alpha(0.85));
-        }
         main = main.child(over);
     }
     main
