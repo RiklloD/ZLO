@@ -1520,7 +1520,7 @@ mod tests {
 
     /// PROVENANCE, not content shape, governs the credential-vocabulary scan.
     ///
-    /// History: a host-authored remediation ("run `ironclaw config set
+    /// History: a host-authored remediation ("run `zlo config set
     /// google.client_secret`") routed through this channel tripped the
     /// `client_secret` marker and dropped the WHOLE model observation, taking
     /// the unrelated `config set google.client_id` line with it. Two successive
@@ -1544,9 +1544,9 @@ mod tests {
             "the client secret was rejected by the provider",
             "update the secret and the password, then restart",
             // And the real production shape, in every tail form.
-            "run `ironclaw config set google.client_secret` to update it",
-            "ironclaw config set google.client_secret   (prompts, hidden input)",
-            "run ironclaw config set google.client_secret to fix this",
+            "run `zlo config set google.client_secret` to update it",
+            "zlo config set google.client_secret   (prompts, hidden input)",
+            "run zlo config set google.client_secret to fix this",
         ] {
             assert!(
                 validate_model_observation_text(text, ObservationProvenance::HostAuthored).is_ok(),
@@ -1568,7 +1568,7 @@ mod tests {
     /// widen the exemption by tagging the object.
     #[test]
     fn host_authored_trust_exempts_only_the_generic_failure_detail_field() {
-        let remediation = "run `ironclaw config set google.client_secret` to update it";
+        let remediation = "run `zlo config set google.client_secret` to update it";
 
         let accepted = serde_json::json!({
             "schema_version": super::MODEL_VISIBLE_TOOL_OBSERVATION_SCHEMA_VERSION,

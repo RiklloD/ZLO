@@ -1391,7 +1391,7 @@ async fn trigger_poller_drives_trusted_ingress_for_due_scheduled_trigger() {
 /// clears the field.
 ///
 /// Driven through the real boot path (`build_reborn_runtime`, the same
-/// function `ironclaw serve` calls) over a durable store, then booted a second
+/// function `zlo serve` calls) over a durable store, then booted a second
 /// time to prove the pass is idempotent — a migration that re-appended its
 /// step on every restart would grow the prompt without bound.
 ///

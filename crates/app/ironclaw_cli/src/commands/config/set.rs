@@ -1,4 +1,4 @@
-//! `ironclaw config set <key> [value]` — write one config value,
+//! `zlo config set <key> [value]` — write one config value,
 //! routed through `capability_config::ConfigKey`'s alias table so the
 //! destination (config.toml literal / encrypted secret store / token
 //! file), shape validation, and secret-vs-non-secret refusal all come
@@ -70,7 +70,7 @@ fn unknown_key_message(key: &str) -> String {
     format!(
         "unknown config key `{key}` for `config set`\nSupported keys: <provider>.api_key \
          (default provider `{}`), google.client_id, google.client_secret, google.redirect_uri, \
-         webui.token (--rotate only)\nRun `ironclaw config list` to see \
+         webui.token (--rotate only)\nRun `zlo config list` to see \
          all readable keys",
         super::init::DEFAULT_LLM_PROVIDER_ID,
     )
@@ -260,7 +260,7 @@ fn write_google_client_secret(
 /// treat `apply_step_text` as the source of truth for the *content* of
 /// this instruction if the two ever need to change together.
 fn print_apply_step() {
-    println!("  to apply: ironclaw service restart");
+    println!("  to apply: zlo service restart");
 }
 
 // ── webui.token --rotate ────────────────────────────────────────
@@ -300,7 +300,7 @@ fn execute_webui_token(
     // The token file on disk is already rotated, but a running `serve`
     // process keeps the old token in memory until it restarts — so the
     // login link below (already built from the new token) only becomes
-    // valid once `ironclaw service restart` (printed above) runs.
+    // valid once `zlo service restart` (printed above) runs.
     if let Some(link) = crate::webui_token::login_link(home)? {
         println!("login_link: {link} (valid after restart)");
     }
@@ -308,7 +308,7 @@ fn execute_webui_token(
 }
 
 /// `Some(env_var_name)` when the operator's `[webui].env_token_var`
-/// (defaulting to [`crate::webui_token::DEFAULT_ENV_TOKEN_VAR`]) is set to
+/// (defaulting to [`crate::webui_token::default_env_token_var`]) is set to
 /// a non-empty value in the process environment — meaning `serve` reads
 /// the token from that env var, not from the rotated file, so rotating
 /// the file would silently do nothing at runtime (see
@@ -322,7 +322,7 @@ fn configured_webui_token_env_override(
         .as_ref()
         .and_then(|file| file.webui.as_ref())
         .and_then(|section| section.env_token_var.as_deref())
-        .unwrap_or(crate::webui_token::DEFAULT_ENV_TOKEN_VAR)
+        .unwrap_or(crate::webui_token::default_env_token_var())
         .to_string();
     Ok(std::env::var_os(&env_var_name)
         .filter(|value| !value.is_empty())

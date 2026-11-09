@@ -1,4 +1,4 @@
-//! Remote-environment wiring for `ironclaw serve`: the environment-access
+//! Remote-environment wiring for `zlo serve`: the environment-access
 //! routes, the device-token authenticator, and — while `[remote]` is
 //! enabled — the loopback identity listener `tailscale serve` targets.
 //!
@@ -102,7 +102,7 @@ pub(crate) async fn bind_identity_listener(
     bind_webui_v2(addr).await.with_context(|| {
         format!(
             "failed to bind the remote identity listener on {addr} ([remote].identity_port); \
-             free the port or run `ironclaw remote disable`"
+             free the port or run `zlo remote disable`"
         )
     })
 }

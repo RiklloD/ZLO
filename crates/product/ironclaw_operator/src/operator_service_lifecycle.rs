@@ -30,10 +30,14 @@ use ironclaw_product_contracts::surface::{
     ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode, ProductSurfaceErrorKind,
 };
 
-const LAUNCHD_LABEL: &str = "com.ironclaw.reborn";
-const SYSTEMD_UNIT: &str = "ironclaw-reborn.service";
-const WEBUI_TOKEN_ENV: &str = "IRONCLAW_REBORN_WEBUI_TOKEN";
-const WEBUI_USER_ID_ENV: &str = "IRONCLAW_REBORN_WEBUI_USER_ID";
+// Shared with the CLI's `zlo service` (`ironclaw_cli::commands::service`).
+const LAUNCHD_LABEL: &str = "com.zlo.serve";
+const SYSTEMD_UNIT: &str = "zlo.service";
+/// Pre-ZLO names: still managed until an install retires them.
+const LEGACY_LAUNCHD_LABEL: &str = "com.ironclaw.reborn";
+const LEGACY_SYSTEMD_UNIT: &str = "ironclaw-reborn.service";
+const WEBUI_TOKEN_ENV: &str = ironclaw_config::WEBUI_TOKEN_ENV;
+const WEBUI_USER_ID_ENV: &str = ironclaw_config::WEBUI_USER_ID_ENV;
 const SERVICE_COMMAND_OUTPUT_LIMIT_BYTES: usize = 16 * 1024;
 const SERVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -439,16 +443,77 @@ impl OperatorServiceLifecycle {
     }
 
     fn service_file(&self) -> Option<PathBuf> {
+        self.service_file_named(self.active_name())
+    }
+
+    fn service_file_named(&self, name: &str) -> Option<PathBuf> {
         let home = self.home_dir.as_ref()?;
         match self.platform {
-            ServicePlatform::Linux => Some(home.join(".config/systemd/user").join(SYSTEMD_UNIT)),
+            ServicePlatform::Linux => Some(home.join(".config/systemd/user").join(name)),
             ServicePlatform::Macos => Some(
                 home.join("Library")
                     .join("LaunchAgents")
-                    .join(format!("{LAUNCHD_LABEL}.plist")),
+                    .join(format!("{name}.plist")),
             ),
             ServicePlatform::Unsupported => None,
         }
+    }
+
+    /// The ZLO label/unit name for this platform.
+    fn current_name(&self) -> &'static str {
+        match self.platform {
+            ServicePlatform::Linux => SYSTEMD_UNIT,
+            _ => LAUNCHD_LABEL,
+        }
+    }
+
+    fn legacy_name(&self) -> &'static str {
+        match self.platform {
+            ServicePlatform::Linux => LEGACY_SYSTEMD_UNIT,
+            _ => LEGACY_LAUNCHD_LABEL,
+        }
+    }
+
+    /// The label/unit start/stop/status manage: the ZLO one, unless only a
+    /// pre-ZLO one is installed.
+    fn active_name(&self) -> &'static str {
+        let exists = |name| {
+            self.service_file_named(name)
+                .is_some_and(|path| path.exists())
+        };
+        if !exists(self.current_name()) && exists(self.legacy_name()) {
+            self.legacy_name()
+        } else {
+            self.current_name()
+        }
+    }
+
+    /// Stop a pre-ZLO unit and move its file aside (`<file>.retired`), so it
+    /// never fights the ZLO one over the port. Best-effort stop, like the
+    /// other post-install steps; a failed move is reported.
+    fn retire_legacy(&self) -> Result<(), String> {
+        let Some(legacy) = self.service_file_named(self.legacy_name()) else {
+            return Ok(());
+        };
+        if !legacy.exists() {
+            return Ok(());
+        }
+        let stop = match self.platform {
+            ServicePlatform::Linux => self.runner.run(
+                "systemctl",
+                &["--user", "disable", "--now", LEGACY_SYSTEMD_UNIT],
+            ),
+            _ => self
+                .runner
+                .run("launchctl", &["unload", "-w", &legacy.to_string_lossy()]),
+        };
+        if let Err(error) = stop {
+            tracing::debug!(?error, "best-effort stop of the pre-ZLO service failed");
+        }
+        let mut kept = legacy.clone().into_os_string();
+        kept.push(".retired");
+        std::fs::rename(&legacy, &kept)
+            .map_err(|error| format!("the old IronClaw service unit could not be retired: {error}"))
     }
 
     fn service_file_for_action(
@@ -464,10 +529,15 @@ impl OperatorServiceLifecycle {
 
     fn install(&self) -> RebornServiceLifecycleResponse {
         let action = RebornServiceLifecycleAction::Install;
-        let path = match self.service_file_for_action(action) {
-            Ok(path) => path,
-            Err(response) => return response,
+        if let Err(response) = self.service_file_for_action(action) {
+            return response;
+        }
+        let Some(path) = self.service_file_named(self.current_name()) else {
+            return Self::missing_home_response(action);
         };
+        if let Err(reason) = self.retire_legacy() {
+            return Self::failed_response(action, &reason);
+        }
         let Some(parent) = path.parent() else {
             return Self::missing_home_response(action);
         };
@@ -526,7 +596,7 @@ impl OperatorServiceLifecycle {
                 self.run_checked(
                     action,
                     "systemctl",
-                    &["--user", "start", SYSTEMD_UNIT],
+                    &["--user", "start", self.active_name()],
                     RebornServiceLifecycleState::Running,
                     "local Reborn service is running",
                 )
@@ -544,7 +614,7 @@ impl OperatorServiceLifecycle {
                 self.run_checked(
                     action,
                     "launchctl",
-                    &["start", LAUNCHD_LABEL],
+                    &["start", self.active_name()],
                     RebornServiceLifecycleState::Running,
                     "local Reborn service is running",
                 )
@@ -559,7 +629,7 @@ impl OperatorServiceLifecycle {
             ServicePlatform::Linux => self.run_checked(
                 action,
                 "systemctl",
-                &["--user", "stop", SYSTEMD_UNIT],
+                &["--user", "stop", self.active_name()],
                 RebornServiceLifecycleState::Stopped,
                 "local Reborn service is stopped",
             ),
@@ -570,7 +640,7 @@ impl OperatorServiceLifecycle {
                 };
                 let path = path.to_string_lossy().to_string();
                 if let Err(response) =
-                    self.require_command_success(action, "launchctl", &["stop", LAUNCHD_LABEL])
+                    self.require_command_success(action, "launchctl", &["stop", self.active_name()])
                 {
                     return response;
                 }
@@ -596,7 +666,7 @@ impl OperatorServiceLifecycle {
             ServicePlatform::Linux => {
                 let output = self
                     .runner
-                    .run("systemctl", &["--user", "is-active", SYSTEMD_UNIT]);
+                    .run("systemctl", &["--user", "is-active", self.active_name()]);
                 match output {
                     Ok(output) if output.success && output.stdout_text().trim() == "active" => {
                         Self::status_response(
@@ -624,9 +694,10 @@ impl OperatorServiceLifecycle {
                 }
             }
             ServicePlatform::Macos => {
-                let output = self.runner.run("launchctl", &["list", LAUNCHD_LABEL]);
+                let label = self.active_name();
+                let output = self.runner.run("launchctl", &["list", label]);
                 match output {
-                    Ok(output) => match launchd_status(output.stdout_text().as_ref()) {
+                    Ok(output) => match launchd_status(output.stdout_text().as_ref(), label) {
                         LaunchdStatus::Running => Self::status_response(
                             RebornServiceLifecycleState::Running,
                             "local Reborn service is running",
@@ -883,21 +954,21 @@ enum LaunchdStatus {
     Failed,
 }
 
-fn launchd_status(stdout: &str) -> LaunchdStatus {
+fn launchd_status(stdout: &str, label: &str) -> LaunchdStatus {
     // `launchctl list <label>` prints a plist-style dictionary, while plain
     // `launchctl list` prints a PID / status / label table. Accept both.
-    if let Some(status) = launchd_status_from_dictionary(stdout) {
+    if let Some(status) = launchd_status_from_dictionary(stdout, label) {
         return status;
     }
     stdout
         .lines()
         .find_map(|line| {
-            launchd_status_from_line(line).filter(|(_, label)| label == &LAUNCHD_LABEL)
+            launchd_status_from_line(line).filter(|(_, line_label)| *line_label == label)
         })
         .map_or(LaunchdStatus::Stopped, |(status, _)| status)
 }
 
-fn launchd_status_from_dictionary(stdout: &str) -> Option<LaunchdStatus> {
+fn launchd_status_from_dictionary(stdout: &str, label: &str) -> Option<LaunchdStatus> {
     let field = |key: &str| {
         stdout.lines().find_map(|line| {
             let (name, value) = line.trim().split_once(" = ")?;
@@ -905,7 +976,7 @@ fn launchd_status_from_dictionary(stdout: &str) -> Option<LaunchdStatus> {
                 .then(|| value.trim_end_matches(';').trim_matches('"').to_string())
         })
     };
-    if field("Label")? != LAUNCHD_LABEL {
+    if field("Label")? != label {
         return None;
     }
     Some(
@@ -965,10 +1036,20 @@ struct WebuiEnvNames {
 impl Default for WebuiEnvNames {
     fn default() -> Self {
         Self {
-            token: WEBUI_TOKEN_ENV.to_string(),
-            user_id: WEBUI_USER_ID_ENV.to_string(),
+            token: default_token_env().to_string(),
+            user_id: default_user_id_env().to_string(),
         }
     }
+}
+
+/// `ZLO_WEBUI_TOKEN`, or the pre-ZLO name when only that one is set.
+fn default_token_env() -> &'static str {
+    ironclaw_config::active_env_name(WEBUI_TOKEN_ENV, ironclaw_config::LEGACY_WEBUI_TOKEN_ENV)
+}
+
+/// `ZLO_WEBUI_USER_ID`, or the pre-ZLO name when only that one is set.
+fn default_user_id_env() -> &'static str {
+    ironclaw_config::active_env_name(WEBUI_USER_ID_ENV, ironclaw_config::LEGACY_WEBUI_USER_ID_ENV)
 }
 
 fn webui_env_names_for_boot_config(
@@ -988,10 +1069,10 @@ fn webui_env_names_for_boot_config(
     Ok(WebuiEnvNames {
         token: webui
             .env_token_var
-            .unwrap_or_else(|| WEBUI_TOKEN_ENV.to_string()),
+            .unwrap_or_else(|| default_token_env().to_string()),
         user_id: webui
             .env_user_id_var
-            .unwrap_or_else(|| WEBUI_USER_ID_ENV.to_string()),
+            .unwrap_or_else(|| default_user_id_env().to_string()),
     })
 }
 
@@ -1162,6 +1243,43 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn install_retires_a_pre_zlo_launchd_job_and_status_follows_the_new_label() {
+        let temp = TempDir::new().expect("tempdir");
+        let agents = temp.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&agents).expect("LaunchAgents");
+        let legacy = agents.join(format!("{LEGACY_LAUNCHD_LABEL}.plist"));
+        std::fs::write(&legacy, "<plist/>").expect("legacy plist");
+        let runner = Arc::new(RecordingRunner::new(""));
+        let service = macos_service(&temp, runner.clone());
+
+        // Before install, the old job is the one managed.
+        assert_eq!(service.active_name(), LEGACY_LAUNCHD_LABEL);
+
+        let response = service.install();
+        assert_eq!(response.state, RebornServiceLifecycleState::Installed);
+        assert!(!legacy.exists(), "old plist moved out of the load path");
+        assert!(
+            agents
+                .join(format!("{LEGACY_LAUNCHD_LABEL}.plist.retired"))
+                .is_file()
+        );
+        assert!(agents.join(format!("{LAUNCHD_LABEL}.plist")).is_file());
+        assert_eq!(service.active_name(), LAUNCHD_LABEL);
+        assert!(
+            runner
+                .calls()
+                .iter()
+                .any(|(program, args)| program == "launchctl"
+                    && args.first().map(String::as_str) == Some("unload")
+                    && args
+                        .last()
+                        .is_some_and(|a| a.ends_with("com.ironclaw.reborn.plist"))),
+            "{:?}",
+            runner.calls()
+        );
+    }
+
     #[test]
     fn service_manager_stdout_is_bounded() {
         let mut stdout_file = tempfile::tempfile().expect("tempfile");
@@ -1229,8 +1347,8 @@ mod tests {
         #[cfg(unix)]
         assert_service_file_owner_only(&unit_path);
         assert!(unit.contains("ExecStart=\"/usr/local/bin/ironclaw-reborn\" serve"));
-        assert!(unit.contains("Environment=\"IRONCLAW_REBORN_WEBUI_TOKEN=test-webui-token\""));
-        assert!(unit.contains("Environment=\"IRONCLAW_REBORN_WEBUI_USER_ID=user-test\""));
+        assert!(unit.contains("Environment=\"ZLO_WEBUI_TOKEN=test-webui-token\""));
+        assert!(unit.contains("Environment=\"ZLO_WEBUI_USER_ID=user-test\""));
         assert_eq!(
             runner.calls(),
             vec![
@@ -1392,7 +1510,7 @@ env_user_id_var = "CUSTOM_WEBUI_USER_ID"
         assert_eq!(response.state, RebornServiceLifecycleState::Installed);
         let unit_path = temp.path().join(".config/systemd/user").join(SYSTEMD_UNIT);
         let unit = std::fs::read_to_string(unit_path).expect("unit file");
-        assert!(unit.contains("Environment=\"IRONCLAW_REBORN_WEBUI_TOKEN=test$webui%%token\""));
+        assert!(unit.contains("Environment=\"ZLO_WEBUI_TOKEN=test$webui%%token\""));
         assert!(!unit.contains("test$$webui"));
     }
 
@@ -1431,7 +1549,7 @@ env_user_id_var = "CUSTOM_WEBUI_USER_ID"
         let temp = TempDir::new().expect("tempdir");
         let runner = Arc::new(RecordingRunner::new("inactive"));
         let service = linux_service(&temp, runner.clone())
-            .with_webui_boot_env_error("IRONCLAW_REBORN_WEBUI_TOKEN must be set");
+            .with_webui_boot_env_error("ZLO_WEBUI_TOKEN must be set");
 
         let response = service
             .control_service(
@@ -1444,7 +1562,7 @@ env_user_id_var = "CUSTOM_WEBUI_USER_ID"
             .expect("install response");
 
         assert_eq!(response.state, RebornServiceLifecycleState::Failed);
-        assert!(response.message.contains("IRONCLAW_REBORN_WEBUI_TOKEN"));
+        assert!(response.message.contains("ZLO_WEBUI_TOKEN"));
         assert!(runner.calls().is_empty());
         assert!(
             !temp
@@ -1671,9 +1789,9 @@ env_user_id_var = "CUSTOM_WEBUI_USER_ID"
         let plist = std::fs::read_to_string(&plist_path).expect("plist file");
         #[cfg(unix)]
         assert_service_file_owner_only(&plist_path);
-        assert!(plist.contains("<key>IRONCLAW_REBORN_WEBUI_TOKEN</key>"));
+        assert!(plist.contains("<key>ZLO_WEBUI_TOKEN</key>"));
         assert!(plist.contains("<string>test-webui-token</string>"));
-        assert!(plist.contains("<key>IRONCLAW_REBORN_WEBUI_USER_ID</key>"));
+        assert!(plist.contains("<key>ZLO_WEBUI_USER_ID</key>"));
         assert!(plist.contains("<string>user-test</string>"));
     }
 
@@ -1846,13 +1964,22 @@ env_user_id_var = "CUSTOM_WEBUI_USER_ID"
         let running = format!(
             "{{\n\t\"Label\" = \"{LAUNCHD_LABEL}\";\n\t\"LastExitStatus\" = 0;\n\t\"PID\" = 4289;\n}};\n"
         );
-        assert_eq!(launchd_status(&running), LaunchdStatus::Running);
+        assert_eq!(
+            launchd_status(&running, LAUNCHD_LABEL),
+            LaunchdStatus::Running
+        );
         let failed =
             format!("{{\n\t\"Label\" = \"{LAUNCHD_LABEL}\";\n\t\"LastExitStatus\" = 256;\n}};\n");
-        assert_eq!(launchd_status(&failed), LaunchdStatus::Failed);
+        assert_eq!(
+            launchd_status(&failed, LAUNCHD_LABEL),
+            LaunchdStatus::Failed
+        );
         let stopped =
             format!("{{\n\t\"Label\" = \"{LAUNCHD_LABEL}\";\n\t\"LastExitStatus\" = 0;\n}};\n");
-        assert_eq!(launchd_status(&stopped), LaunchdStatus::Stopped);
+        assert_eq!(
+            launchd_status(&stopped, LAUNCHD_LABEL),
+            LaunchdStatus::Stopped
+        );
     }
 
     #[tokio::test]

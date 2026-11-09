@@ -1,4 +1,4 @@
-//! `ironclaw devices` — list paired devices, or revoke one (by id or label)
+//! `zlo devices` — list paired devices, or revoke one (by id or label)
 //! or all of them, on the running backend. Revocation is durable: a revoked
 //! token gets 401 everywhere, including after a restart.
 
@@ -77,7 +77,7 @@ impl DevicesCommand {
 
 fn print_devices(devices: &[DeviceSummary]) {
     if devices.is_empty() {
-        println!("No paired devices. Run `ironclaw pair` to add one.");
+        println!("No paired devices. Run `zlo pair` to add one.");
         return;
     }
     for device in devices {

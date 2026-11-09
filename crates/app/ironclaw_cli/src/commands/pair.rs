@@ -1,4 +1,4 @@
-//! `ironclaw pair` — issue a one-time pairing code on the running backend
+//! `zlo pair` — issue a one-time pairing code on the running backend
 //! and print it with a pairing link. The code is valid five minutes and
 //! works once; a device redeems it at `POST /api/auth/pair`.
 

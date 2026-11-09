@@ -1,6 +1,6 @@
 //! The backend's [`SelfUpdateService`]: status from the records on disk,
 //! a check that fetches and records, and a start that spawns the detached
-//! job. Wired into `ironclaw serve` by `serve.rs`.
+//! job. Wired into `zlo serve` by `serve.rs`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

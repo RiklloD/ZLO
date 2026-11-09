@@ -629,11 +629,11 @@ async fn enroll_instance(
          enrollment, attributed via salted per-user pseudonyms."
     );
     println!(
-        "Opt a single user out with `ironclaw traces opt-out --user-scope \
+        "Opt a single user out with `zlo traces opt-out --user-scope \
          <tenant-id>/<user-id>`; an explicit opt-out always wins over instance enrollment \
          (bare `traces opt-out` disables the whole instance enrollment)."
     );
-    println!("Verify with `ironclaw traces status --json` and `traces ingest-health`.");
+    println!("Verify with `zlo traces status --json` and `traces ingest-health`.");
     Ok(())
 }
 
@@ -768,7 +768,7 @@ async fn profile_set(
     let runtime_scope = trace_runtime_user_scope(user_scope)?;
     set_community_profile_for_scope(Some(&runtime_scope), handle, bio).await?;
     println!("Community profile set: display handle '{}'.", handle.trim());
-    println!("Withdraw anytime with 'ironclaw traces profile withdraw'.");
+    println!("Withdraw anytime with 'zlo traces profile withdraw'.");
     Ok(())
 }
 

@@ -860,7 +860,7 @@ mod tests {
         assert!(
             install_activation_error(
                 ProductOperationFailure::ProviderInstanceNotConfigured {
-                    reason: "ironclaw config set google.client_id <id>".to_string(),
+                    reason: "zlo config set google.client_id <id>".to_string(),
                 },
                 installed_response(),
             )

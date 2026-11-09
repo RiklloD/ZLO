@@ -2277,8 +2277,7 @@ mod tests {
         // permanent `PolicyDenied` rejection carrying the reason verbatim);
         // this pins that the shared arm behaves identically for the new
         // variant.
-        let reason =
-            "ironclaw config set google.client_id <id>.apps.googleusercontent.com".to_string();
+        let reason = "zlo config set google.client_id <id>.apps.googleusercontent.com".to_string();
         let ack = terminal_ack_for_error(&ProductSurfaceFailure::ProviderInstanceNotConfigured {
             reason: reason.clone(),
         })

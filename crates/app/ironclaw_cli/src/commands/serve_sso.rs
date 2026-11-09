@@ -1,4 +1,4 @@
-//! WebChat v2 SSO startup config for `ironclaw serve`.
+//! WebChat v2 SSO startup config for `zlo serve`.
 //!
 //! This module owns the host config side
 //! of SSO login startup policy: reading the operator's env vars into a

@@ -7,10 +7,15 @@ pub(crate) struct RebornCliContext {
 }
 
 impl RebornCliContext {
+    /// Resolves the home (moving a pre-ZLO `~/.ironclaw/reborn` to `~/.zlo`
+    /// on first run — see `ironclaw_config::migrate_legacy_home`) and tells
+    /// the user on stderr when that move happened or both folders exist.
     pub(crate) fn resolve_from_env() -> anyhow::Result<Self> {
-        Ok(Self {
-            boot_config: RebornBootConfig::resolve_from_env()?,
-        })
+        let boot_config = RebornBootConfig::resolve_from_env()?;
+        if let Some(notice) = boot_config.home().migration().notice() {
+            eprintln!("{notice}");
+        }
+        Ok(Self { boot_config })
     }
 
     #[cfg(test)]

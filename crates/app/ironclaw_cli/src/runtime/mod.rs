@@ -13,9 +13,7 @@ use ironclaw_composition::{
     RebornHostBindings, RebornRuntimeIdentity, RebornRuntimeInput, RebornRuntimeProfileOptions,
     TurnRunnerSettings, build_reborn_runtime, local_runtime_build_input_with_options,
 };
-use ironclaw_config::{
-    REBORN_PROFILE_ENV, RebornBootConfig, RebornProfile, seed_default_config_file_if_missing,
-};
+use ironclaw_config::{RebornBootConfig, RebornProfile, seed_default_config_file_if_missing};
 use ironclaw_extension_host::FirstPartyPackageBundle;
 use ironclaw_operator::OperatorLogLayer;
 use ironclaw_operator::llm_admin::nearai_mcp::nearai_mcp_bootstrap_config_from_env;
@@ -94,6 +92,7 @@ fn protect_reborn_log_filter(raw_filter: &str) -> String {
     } else {
         raw_filter.trim().to_string()
     };
+    mirror_binary_crate_directives(&mut filter);
     for (target, level) in REBORN_NOISY_LOG_TARGETS {
         if !log_filter_mentions_target(&filter, target) {
             filter.push(',');
@@ -103,6 +102,33 @@ fn protect_reborn_log_filter(raw_filter: &str) -> String {
         }
     }
     filter
+}
+
+/// The binary crate is `zlo`, so events logged from this crate carry
+/// `zlo::…` targets. Operators' existing `ironclaw=debug` filters must keep
+/// reaching them: every `ironclaw` / `ironclaw::…` directive gets a `zlo`
+/// twin (unless the filter already names that `zlo` target).
+fn mirror_binary_crate_directives(filter: &mut String) {
+    let twins: Vec<String> = filter
+        .split(',')
+        .filter_map(|directive| {
+            let directive = directive.trim();
+            let target = log_directive_target(directive)?;
+            let rest = target.strip_prefix("ironclaw")?;
+            if !(rest.is_empty() || rest.starts_with("::")) {
+                return None; // `ironclaw_llm` etc. are other crates
+            }
+            let twin_target = format!("zlo{rest}");
+            if log_filter_mentions_target(filter, &twin_target) {
+                return None;
+            }
+            Some(directive.replacen("ironclaw", "zlo", 1))
+        })
+        .collect();
+    for twin in twins {
+        filter.push(',');
+        filter.push_str(&twin);
+    }
 }
 
 fn log_filter_mentions_target(filter: &str, target: &str) -> bool {
@@ -709,7 +735,7 @@ pub(crate) fn build_services_input_with_options(
     options: RuntimeInputOptions,
 ) -> anyhow::Result<RuntimeServicesInput> {
     // Read the operator's boot TOML if present. Missing file is OK
-    // (operator may not have run `ironclaw config init` yet);
+    // (operator may not have run `zlo config init` yet);
     // sparse fields are OK (each absent field falls back to the
     // CLI-shaped default baked into composition).
     let config_file = read_config_file(config)?;
@@ -1458,7 +1484,7 @@ pub(crate) fn effective_profile(
 ) -> anyhow::Result<RebornProfile> {
     // Env wins over file. `RebornBootConfig` already parsed/validated env,
     // so if the variable is present we keep that value.
-    if std::env::var_os(REBORN_PROFILE_ENV).is_some() {
+    if ironclaw_config::profile_env_value().is_some() {
         return Ok(config.profile());
     }
 
@@ -2395,6 +2421,21 @@ api_key_env = "NEARAI_API_KEY"
             settings.max_concurrent_conversation_runs.map(|v| v.get()),
             Some(2)
         );
+    }
+
+    #[test]
+    fn reborn_log_filter_extends_ironclaw_directives_to_the_zlo_binary_crate() {
+        let filter = protect_reborn_log_filter("info,ironclaw=debug,ironclaw_llm=trace");
+        let directives: Vec<&str> = filter.split(',').collect();
+        assert!(directives.contains(&"ironclaw=debug"), "{filter}");
+        assert!(directives.contains(&"zlo=debug"), "{filter}");
+        assert!(
+            !directives.iter().any(|d| d.starts_with("zlo_llm")),
+            "{filter}"
+        );
+
+        let explicit = protect_reborn_log_filter("ironclaw=debug,zlo=warn");
+        assert!(!explicit.contains("zlo=debug"), "{explicit}");
     }
 
     #[test]

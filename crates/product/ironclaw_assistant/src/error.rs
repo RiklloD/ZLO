@@ -88,7 +88,7 @@ pub enum ProductSurfaceFailure {
     /// credential account. `reason` is a plain, host-authored `String` (not a
     /// composition type — this crate sits below `composition` in the
     /// dependency graph) carrying the exact remediation text (e.g. the
-    /// `ironclaw config set` commands to run). Two independent consumers read
+    /// `zlo config set` commands to run). Two independent consumers read
     /// this variant differently: the WebUI service
     /// (`lifecycle_product_surface_error`) discards `reason` and maps
     /// the DISCRIMINANT alone to a sanitized 400 (no free text crosses the
@@ -548,10 +548,10 @@ mod tests {
             ),
             (
                 ProductOperationFailure::ProviderInstanceNotConfigured {
-                    reason: "ironclaw config set google.client_id <id>".into(),
+                    reason: "zlo config set google.client_id <id>".into(),
                 },
                 ProductSurfaceFailure::ProviderInstanceNotConfigured {
-                    reason: "ironclaw config set google.client_id <id>".into(),
+                    reason: "zlo config set google.client_id <id>".into(),
                 },
             ),
             (
@@ -594,7 +594,7 @@ mod tests {
                 reason: "bad ref".into(),
             },
             ProductOperationFailure::ProviderInstanceNotConfigured {
-                reason: "run ironclaw config set".into(),
+                reason: "run zlo config set".into(),
             },
             ProductOperationFailure::UnsupportedActionKind {
                 kind: "unknown".into(),
@@ -721,8 +721,7 @@ mod tests {
 
     #[test]
     fn provider_instance_not_configured_maps_to_workflow_rejected() {
-        let reason =
-            "ironclaw config set google.client_id <id>.apps.googleusercontent.com".to_string();
+        let reason = "zlo config set google.client_id <id>.apps.googleusercontent.com".to_string();
         let err: ProductAdapterError = ProductSurfaceFailure::ProviderInstanceNotConfigured {
             reason: reason.clone(),
         }

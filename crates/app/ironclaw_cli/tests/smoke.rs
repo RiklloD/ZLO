@@ -6,10 +6,10 @@ use std::{
     process::{Command, Stdio},
 };
 
-const INVALID_PROFILE_MESSAGE: &str = "IRONCLAW_REBORN_PROFILE must be one of";
+const INVALID_PROFILE_MESSAGE: &str = "ZLO_PROFILE must be one of";
 
 fn reborn_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_ironclaw")
+    env!("CARGO_BIN_EXE_zlo")
 }
 
 /// Shared builder for every real-binary spawn in this file: `Command::new(reborn_bin())`
@@ -58,7 +58,7 @@ fn isolated_no_llm_command(workspace: &Path, reborn_home: &Path) -> Command {
         .env("OPENAI_API_KEY", "")
         .env("ANTHROPIC_API_KEY", "")
         .env("OLLAMA_BASE_URL", "")
-        .env("IRONCLAW_REBORN_HOME", reborn_home);
+        .env("ZLO_HOME", reborn_home);
     command
 }
 
@@ -625,7 +625,7 @@ fn release_ci_compiles_reborn_for_all_supported_targets() {
         cli_manifest.contains("[package]\nname = \"ironclaw\"\nversion = \"")
             && cli_manifest.contains("[package.metadata.dist]\ndist = true")
             && cli_manifest.contains("[package.metadata.wix]")
-            && cli_manifest.contains("[[bin]]\nname = \"ironclaw\""),
+            && cli_manifest.contains("[[bin]]\nname = \"zlo\""),
         "the canonical Reborn package must be cargo-dist enabled without removed backend feature flags and with WiX metadata"
     );
     let dist_features = package_metadata_dist_features(&cli_manifest);
@@ -1108,11 +1108,8 @@ fn help_mentions_reborn_commands() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("IronClaw agent runtime"),
-        "stdout: {stdout}"
-    );
-    assert!(stdout.contains("Usage: ironclaw"), "stdout: {stdout}");
+    assert!(stdout.contains("ZLO agent runtime"), "stdout: {stdout}");
+    assert!(stdout.contains("Usage: zlo"), "stdout: {stdout}");
     assert!(stdout.contains("channels"), "stdout: {stdout}");
     assert!(stdout.contains("completion"), "stdout: {stdout}");
     assert!(stdout.contains("config"), "stdout: {stdout}");
@@ -1166,7 +1163,7 @@ fn ironhub_hub_alias_resolves() {
         .arg("hub")
         .arg("--help")
         .output()
-        .expect("ironclaw hub --help should run");
+        .expect("zlo hub --help should run");
 
     assert!(
         output.status.success(),
@@ -1299,7 +1296,7 @@ fn service_install_reports_error_when_service_definition_path_is_blocked() {
         .args(["service", "install"])
         .env_clear()
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .output()
         .expect("ironclaw-reborn service install should run");
 
@@ -1329,7 +1326,7 @@ fn extension_search_does_not_seed_reborn_config() {
 
     let output = reborn_command()
         .args(["extension", "search", "--json"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", temp.path().join("home"))
         .output()
         .expect("ironclaw-reborn extension search should run");
@@ -1380,10 +1377,7 @@ fn profile_list_shows_supported_profiles_without_reborn_home() {
     );
     assert!(stdout.contains("production"), "stdout: {stdout}");
     assert!(stdout.contains("migration-dry-run"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("IRONCLAW_REBORN_PROFILE"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("ZLO_PROFILE"), "stdout: {stdout}");
 }
 
 #[test]
@@ -1402,7 +1396,7 @@ fn profile_list_json_is_stable_and_does_not_resolve_reborn_home() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
-    assert_eq!(json["selector"], "IRONCLAW_REBORN_PROFILE");
+    assert_eq!(json["selector"], "ZLO_PROFILE");
     let profiles = json["profiles"].as_array().expect("profiles array");
     assert_eq!(profiles.len(), 8);
     assert!(
@@ -1480,7 +1474,7 @@ fn skills_list_reports_reborn_skill_data() {
     let output = reborn_command()
         .arg("skills")
         .arg("list")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("IRONCLAW_BASE_DIR", &v1_home)
         .output()
         .expect("ironclaw-reborn skills list should run");
@@ -1526,7 +1520,7 @@ fn skills_list_verbose_reports_reborn_skill_details() {
         .arg("skills")
         .arg("list")
         .arg("--verbose")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn skills list --verbose should run");
 
@@ -1563,7 +1557,7 @@ fn skills_list_json_reports_reborn_skill_data() {
         .arg("list")
         .arg("--json")
         .arg("--verbose")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn skills list --json should run");
 
@@ -1605,7 +1599,7 @@ fn skills_list_rejects_unsupported_profiles() {
         let output = reborn_command()
             .arg("skills")
             .arg("list")
-            .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+            .env("ZLO_HOME", temp.path().join("reborn-home"))
             .env("IRONCLAW_REBORN_PROFILE", profile)
             .output()
             .expect("ironclaw-reborn skills list should run");
@@ -1616,7 +1610,7 @@ fn skills_list_rejects_unsupported_profiles() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("ironclaw skills currently supports profile=local-dev"),
+            stderr.contains("zlo skills currently supports profile=local-dev"),
             "stderr: {stderr}"
         );
         assert!(
@@ -1636,7 +1630,7 @@ fn skills_list_accepts_sandbox_profiles() {
         let output = reborn_command()
             .arg("skills")
             .arg("list")
-            .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+            .env("ZLO_HOME", temp.path().join("reborn-home"))
             .env("IRONCLAW_REBORN_PROFILE", profile)
             .output()
             .expect("ironclaw-reborn skills list should run");
@@ -1727,7 +1721,7 @@ api_key_env = "OPENAI_API_KEY"
         .arg("models")
         .arg("status")
         .arg("--json")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models status --json should run");
 
@@ -1756,7 +1750,7 @@ fn models_set_provider_writes_reborn_config_without_v1_state() {
         .arg("openai")
         .arg("--model")
         .arg("gpt-5-mini")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models set-provider should run");
 
@@ -1812,7 +1806,7 @@ api_key_env = "OPENAI_API_KEY"
         .arg("models")
         .arg("set")
         .arg("gpt-5.3-codex")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models set should run");
 
@@ -1840,7 +1834,7 @@ fn models_set_without_provider_fails_without_panicking() {
         .arg("models")
         .arg("set")
         .arg("gpt-5.3-codex")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models set should run");
 
@@ -1914,10 +1908,10 @@ fn update_is_refused_with_the_enable_hint_until_configured() {
     let run = |args: &[&str]| {
         reborn_command()
             .args(args)
-            .env("IRONCLAW_REBORN_HOME", &reborn_home)
+            .env("ZLO_HOME", &reborn_home)
             .env("IRONCLAW_BASE_DIR", &v1_base_dir)
             .output()
-            .expect("ironclaw update should run")
+            .expect("zlo update should run")
     };
 
     for args in [&["update", "--check"][..], &["update"][..]] {
@@ -1961,7 +1955,7 @@ fn config_path_reports_reborn_home_without_touching_v1_state() {
     let output = Command::new(reborn_bin())
         .arg("config")
         .arg("path")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("IRONCLAW_REBORN_PROFILE", "production")
         .env("IRONCLAW_BASE_DIR", &v1_base_dir)
         .output()
@@ -1981,10 +1975,7 @@ fn config_path_reports_reborn_home_without_touching_v1_state() {
         stdout.contains(&format!("reborn_home: {}", reborn_home.display())),
         "stdout: {stdout}"
     );
-    assert!(
-        stdout.contains("home_source: IRONCLAW_REBORN_HOME"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("home_source: ZLO_HOME"), "stdout: {stdout}");
     assert!(stdout.contains("profile: production"), "stdout: {stdout}");
     assert!(stdout.contains("v1_state: not-used"), "stdout: {stdout}");
     assert!(
@@ -2000,14 +1991,16 @@ fn config_path_reports_reborn_home_without_touching_v1_state() {
 #[test]
 fn config_path_reports_default_reborn_home_without_creating_directories() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let reborn_home = temp.path().join(".ironclaw").join("reborn");
+    let reborn_home = temp.path().join(".zlo");
 
     let output = Command::new(reborn_bin())
         .arg("config")
         .arg("path")
+        .env_remove("ZLO_HOME")
         .env_remove("IRONCLAW_REBORN_HOME")
         .env("HOME", temp.path())
         .env_remove("USERPROFILE")
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn config path should run");
@@ -2025,7 +2018,7 @@ fn config_path_reports_default_reborn_home_without_creating_directories() {
     assert!(stdout.contains("home_source: default"), "stdout: {stdout}");
     assert!(stdout.contains("profile: local-dev"), "stdout: {stdout}");
     assert!(
-        !temp.path().join(".ironclaw").exists(),
+        !temp.path().join(".ironclaw").exists() && !reborn_home.exists(),
         "config path should not create default Reborn or v1 state directories"
     );
 }
@@ -2042,10 +2035,10 @@ fn config_set_google_client_id_writes_config_toml() {
             "google.client_id",
             "abc123.apps.googleusercontent.com",
         ])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", temp.path().join("home"))
         .output()
-        .expect("ironclaw config set google.client_id should run");
+        .expect("zlo config set google.client_id should run");
 
     assert!(
         output.status.success(),
@@ -2058,7 +2051,7 @@ fn config_set_google_client_id_writes_config_toml() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("to apply: ironclaw service restart"),
+        stdout.contains("to apply: zlo service restart"),
         "config set must never auto-restart; it must print the explicit apply step: {stdout}"
     );
     assert_eq!(
@@ -2094,10 +2087,10 @@ fn config_set_retired_slack_key_is_refused_with_migration_guidance() {
 
     let output = reborn_command()
         .args(["config", "set", "slack.enabled", "true"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", temp.path().join("home"))
         .output()
-        .expect("ironclaw config set slack.enabled should run");
+        .expect("zlo config set slack.enabled should run");
 
     assert!(
         !output.status.success(),
@@ -2142,10 +2135,10 @@ fn config_set_google_client_id_then_status_reports_partial_from_config_file() {
             "google.client_id",
             "abc123.apps.googleusercontent.com",
         ])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", &home)
         .output()
-        .expect("ironclaw config set google.client_id should run");
+        .expect("zlo config set google.client_id should run");
     assert!(
         set_client_id.status.success(),
         "stderr: {}",
@@ -2154,10 +2147,10 @@ fn config_set_google_client_id_then_status_reports_partial_from_config_file() {
 
     let status = reborn_command()
         .args(["status"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", &home)
         .output()
-        .expect("ironclaw status should run");
+        .expect("zlo status should run");
     assert!(
         status.status.success(),
         "stderr: {}",
@@ -2180,10 +2173,10 @@ fn config_set_rejects_unknown_key() {
 
     let output = reborn_command()
         .args(["config", "set", "nonsense.key", "value"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", temp.path().join("home"))
         .output()
-        .expect("ironclaw config set should run");
+        .expect("zlo config set should run");
 
     assert!(!output.status.success(), "unknown key must fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2209,8 +2202,8 @@ fn completion_generates_zsh_script_without_reborn_home() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("#compdef ironclaw"), "stdout: {stdout}");
-    assert!(stdout.contains("_ironclaw"), "stdout: {stdout}");
+    assert!(stdout.contains("#compdef zlo"), "stdout: {stdout}");
+    assert!(stdout.contains("_zlo"), "stdout: {stdout}");
     assert!(
         stdout.contains("$+functions[compdef]"),
         "zsh completion should guard compdef: {stdout}"
@@ -2232,7 +2225,7 @@ fn completion_generates_bash_script_without_reborn_home() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("_ironclaw()"), "stdout: {stdout}");
+    assert!(stdout.contains("_zlo()"), "stdout: {stdout}");
     assert!(stdout.contains("COMPREPLY"), "stdout: {stdout}");
 }
 
@@ -2270,7 +2263,8 @@ fn serve_fails_closed_when_env_bearer_token_var_is_unset() {
         .arg("127.0.0.1")
         .arg("--port")
         .arg("0")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
         .env_remove("IRONCLAW_REBORN_WEBUI_USER_ID")
@@ -2283,7 +2277,7 @@ fn serve_fails_closed_when_env_bearer_token_var_is_unset() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IRONCLAW_REBORN_WEBUI_TOKEN must be set"),
+        stderr.contains("ZLO_WEBUI_TOKEN must be set"),
         "stderr should explain which env var is missing: {stderr}"
     );
 }
@@ -2306,7 +2300,8 @@ fn serve_boots_without_user_id_env_var() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         // Token must be >=32 bytes so it clears its own entropy floor before
         // the user-id fallback under test is reached.
@@ -2349,7 +2344,8 @@ fn serve_boots_from_the_workspace_subdir_the_installed_service_now_uses_as_cwd()
         .arg(port.to_string())
         .current_dir(&working_directory)
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
@@ -2387,7 +2383,8 @@ fn serve_crash_loops_with_skill_root_overlap_when_cwd_is_reborn_home_itself() {
         .arg(port.to_string())
         .current_dir(&reborn_home)
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
@@ -2431,7 +2428,7 @@ fn a_real_env_var_beats_the_config_default_end_to_end() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
             "reborn-smoke-test-token-0123456789abcdef",
@@ -2462,7 +2459,7 @@ fn serve_with_env_auth_seeds_reborn_config_before_binding() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
             // >=32 bytes: serve now enforces the session-signing entropy
@@ -2603,7 +2600,7 @@ fn serve_resolves_bearer_token_from_reborn_home_webui_token_file() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
         .env("IRONCLAW_REBORN_WEBUI_USER_ID", "test-user")
         .stdout(Stdio::piped())
@@ -2720,7 +2717,7 @@ fn serve_rejects_malformed_host_before_webui_handoff() {
         .arg("serve")
         .arg("--host")
         .arg("localhost:3000")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .output()
         .expect("ironclaw-reborn serve should run");
 
@@ -2954,7 +2951,7 @@ fn serve_mounts_cli_login_route_without_sso() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("IRONCLAW_REBORN_WEBUI_USER_ID", "test-user")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3054,7 +3051,7 @@ fn serve_does_not_mount_cli_login_route_when_token_is_env_sourced() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
             "reborn-smoke-test-env-token-0123456789abcdef",
@@ -3119,7 +3116,7 @@ fn serve_banner_reports_the_bound_port_and_prints_only_once_it_accepts_connectio
     let mut child = reborn_command()
         .args(["serve", "--host", "127.0.0.1", "--port", "0"])
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
             "reborn-smoke-test-token-0123456789abcdef",
@@ -3189,7 +3186,7 @@ fn serve_keeps_serving_after_its_stderr_consumer_goes_away() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
             "reborn-smoke-test-token-0123456789abcdef",
@@ -3250,7 +3247,7 @@ fn serve_with_sso_does_not_double_mount_session_exchange() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
             "reborn-smoke-test-token-0123456789abcdef",
@@ -3435,10 +3432,11 @@ fn run_reports_runtime_readiness_snapshot_without_touching_v1_state() {
     let output = Command::new(reborn_bin())
         .arg("run")
         .arg("--dry-run")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", &home_dir)
         .env("IRONCLAW_BASE_DIR", &v1_base_dir)
         .env_remove("USERPROFILE")
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn run should run");
@@ -3488,8 +3486,9 @@ fn no_subcommand_defaults_to_serve_command() {
     let home_dir = temp.path().join("home");
 
     let output = reborn_command()
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", &home_dir)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
         .env_remove("IRONCLAW_REBORN_WEBUI_USER_ID")
@@ -3503,7 +3502,7 @@ fn no_subcommand_defaults_to_serve_command() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IRONCLAW_REBORN_WEBUI_TOKEN must be set"),
+        stderr.contains("ZLO_WEBUI_TOKEN must be set"),
         "stderr should match the `serve` auth gate: {stderr}"
     );
 }
@@ -3515,7 +3514,8 @@ fn doctor_uses_reborn_home_override_without_touching_v1_state() {
 
     let output = Command::new(reborn_bin())
         .arg("doctor")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn doctor should run");
@@ -3575,7 +3575,7 @@ fn repl_exit_command_seeds_reborn_config() {
 
     let mut child = reborn_command()
         .arg("repl")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", &home_dir)
         .env("IRONCLAW_BASE_DIR", &v1_base_dir)
         .stdin(Stdio::piped())
@@ -3655,7 +3655,7 @@ fn repl_resolves_codex_auth_env_without_openai_api_key() {
 
     let mut child = reborn_command()
         .arg("repl")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", &home_dir)
         .env("LLM_BACKEND", "openai_codex")
         .env("LLM_USE_CODEX_AUTH", "true")
@@ -3710,7 +3710,7 @@ fn repl_resolves_codex_api_key_auth_env_without_openai_api_key() {
 
     let mut child = reborn_command()
         .arg("repl")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", &home_dir)
         .env("LLM_BACKEND", "openai_codex")
         .env("LLM_USE_CODEX_AUTH", "true")
@@ -3757,7 +3757,7 @@ fn run_rejects_codex_backend_when_auth_file_is_missing() {
 
     let output = reborn_command()
         .args(["run", "-m", "ping"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("LLM_BACKEND", "openai_codex")
         .env("CODEX_AUTH_PATH", &missing_codex_auth_path)
         .output()
@@ -3785,7 +3785,7 @@ fn repl_help_command_prints_repl_commands_and_exits_on_exit() {
 
     let mut child = reborn_command()
         .arg("repl")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .env("HOME", temp.path().join("home"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -3819,7 +3819,7 @@ fn run_help_command_prints_repl_commands_and_exits_on_quit() {
 
     let mut child = reborn_command()
         .arg("run")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .env("HOME", temp.path().join("home"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -3856,7 +3856,7 @@ fn repl_piped_message_exits_nonzero_when_runtime_does_not_produce_reply() {
 
     let mut child = reborn_command()
         .arg("repl")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", temp.path().join("home"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -3914,7 +3914,7 @@ fn run_message_exits_nonzero_when_runtime_does_not_produce_reply() {
         .arg("run")
         .arg("--message")
         .arg("hello")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("HOME", temp.path().join("home"))
         .output()
         .expect("ironclaw-reborn run --message should run");
@@ -3958,7 +3958,7 @@ fn run_piped_stdin_exits_nonzero_when_runtime_does_not_produce_reply() {
 
     let mut child = reborn_command()
         .arg("run")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .env("HOME", temp.path().join("home"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -3988,16 +3988,102 @@ fn run_piped_stdin_exits_nonzero_when_runtime_does_not_produce_reply() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn first_run_moves_the_ironclaw_data_folder_to_zlo_and_links_the_old_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let legacy = temp.path().join(".ironclaw").join("reborn");
+    std::fs::create_dir_all(legacy.join("workspace")).expect("legacy home");
+    std::fs::write(legacy.join("config.toml"), "").expect("legacy config");
+    let zlo = temp.path().join(".zlo");
+
+    let output = reborn_command()
+        .arg("config")
+        .arg("path")
+        .env("HOME", temp.path())
+        .output()
+        .expect("zlo config path should run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains(&format!("reborn_home: {}", zlo.display())),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("Moved your data folder"),
+        "stderr: {stderr}"
+    );
+    assert!(zlo.join("config.toml").is_file(), "data moved to ~/.zlo");
+    assert_eq!(
+        std::fs::read_link(&legacy).expect("old path is a link"),
+        zlo
+    );
+
+    // Second start: nothing to say, nothing moved.
+    let again = reborn_command()
+        .arg("config")
+        .arg("path")
+        .env("HOME", temp.path())
+        .output()
+        .expect("zlo config path should run again");
+    assert!(again.status.success());
+    assert!(
+        !String::from_utf8_lossy(&again.stderr).contains("data folder"),
+        "stderr: {}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+}
+
+#[test]
+fn legacy_ironclaw_reborn_home_env_still_selects_the_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("old-style-home");
+
+    let output = reborn_command()
+        .arg("config")
+        .arg("path")
+        .env("HOME", temp.path())
+        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("IRONCLAW_REBORN_PROFILE", "production")
+        .output()
+        .expect("zlo config path should run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("reborn_home: {}", reborn_home.display())),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("home_source: IRONCLAW_REBORN_HOME"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("profile: production"), "stdout: {stdout}");
+    assert!(!temp.path().join(".zlo").exists());
+}
+
 #[test]
 fn doctor_default_home_is_reborn_scoped_and_dry_run() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let reborn_home = temp.path().join(".ironclaw").join("reborn");
+    let reborn_home = temp.path().join(".zlo");
 
     let output = Command::new(reborn_bin())
         .arg("doctor")
+        .env_remove("ZLO_HOME")
         .env_remove("IRONCLAW_REBORN_HOME")
         .env("HOME", temp.path())
         .env_remove("USERPROFILE")
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn doctor should run");
@@ -4015,7 +4101,7 @@ fn doctor_default_home_is_reborn_scoped_and_dry_run() {
     assert!(stdout.contains("(default)"), "stdout: {stdout}");
     assert!(stdout.contains("local-dev"), "stdout: {stdout}");
     assert!(
-        !temp.path().join(".ironclaw").exists(),
+        !temp.path().join(".ironclaw").exists() && !reborn_home.exists(),
         "doctor should not create default Reborn or v1 state directories"
     );
 }
@@ -4026,7 +4112,7 @@ fn doctor_reports_explicit_profile() {
 
     let output = Command::new(reborn_bin())
         .arg("doctor")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .env("IRONCLAW_REBORN_PROFILE", "production")
         .output()
         .expect("ironclaw-reborn doctor should run");
@@ -4055,7 +4141,7 @@ fn run_reports_explicit_profile() {
     let output = Command::new(reborn_bin())
         .arg("run")
         .arg("--dry-run")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .env("IRONCLAW_REBORN_PROFILE", "migration-dry-run")
         .output()
         .expect("ironclaw-reborn run should run");
@@ -4078,7 +4164,7 @@ fn doctor_rejects_invalid_profile() {
 
     let output = Command::new(reborn_bin())
         .arg("doctor")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .env("IRONCLAW_REBORN_PROFILE", "prod")
         .output()
         .expect("ironclaw-reborn doctor should run");
@@ -4097,7 +4183,7 @@ fn doctor_rejects_empty_profile_override() {
 
     let output = Command::new(reborn_bin())
         .arg("doctor")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .env("IRONCLAW_REBORN_PROFILE", "")
         .output()
         .expect("ironclaw-reborn doctor should run");
@@ -4116,7 +4202,7 @@ fn run_rejects_invalid_profile() {
 
     let output = Command::new(reborn_bin())
         .arg("run")
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
         .env("IRONCLAW_REBORN_PROFILE", "prod")
         .output()
         .expect("ironclaw-reborn run should run");
@@ -4136,7 +4222,7 @@ fn run_rejects_reborn_home_equal_to_explicit_v1_base_dir() {
 
     let output = Command::new(reborn_bin())
         .arg("run")
-        .env("IRONCLAW_REBORN_HOME", &v1_root)
+        .env("ZLO_HOME", &v1_root)
         .env("IRONCLAW_BASE_DIR", &v1_root)
         .output()
         .expect("ironclaw-reborn run should run");
@@ -4144,7 +4230,7 @@ fn run_rejects_reborn_home_equal_to_explicit_v1_base_dir() {
     assert!(!output.status.success(), "run should reject v1 root");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IRONCLAW_REBORN_HOME must not point at the v1 IronClaw state root"),
+        stderr.contains("ZLO_HOME must not point at the v1 IronClaw state root"),
         "stderr: {stderr}"
     );
 }
@@ -4156,7 +4242,7 @@ fn doctor_rejects_reborn_home_equal_to_explicit_v1_base_dir() {
 
     let output = Command::new(reborn_bin())
         .arg("doctor")
-        .env("IRONCLAW_REBORN_HOME", &v1_root)
+        .env("ZLO_HOME", &v1_root)
         .env("IRONCLAW_BASE_DIR", &v1_root)
         .output()
         .expect("ironclaw-reborn doctor should run");
@@ -4164,7 +4250,7 @@ fn doctor_rejects_reborn_home_equal_to_explicit_v1_base_dir() {
     assert!(!output.status.success(), "doctor should reject v1 root");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IRONCLAW_REBORN_HOME must not point at the v1 IronClaw state root"),
+        stderr.contains("ZLO_HOME must not point at the v1 IronClaw state root"),
         "stderr: {stderr}"
     );
 }
@@ -4177,7 +4263,7 @@ fn doctor_rejects_reborn_home_equal_to_relative_explicit_v1_base_dir() {
     let output = Command::new(reborn_bin())
         .arg("doctor")
         .current_dir(temp.path())
-        .env("IRONCLAW_REBORN_HOME", &v1_root)
+        .env("ZLO_HOME", &v1_root)
         .env("IRONCLAW_BASE_DIR", "v1-state")
         .output()
         .expect("ironclaw-reborn doctor should run");
@@ -4185,7 +4271,7 @@ fn doctor_rejects_reborn_home_equal_to_relative_explicit_v1_base_dir() {
     assert!(!output.status.success(), "doctor should reject v1 root");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IRONCLAW_REBORN_HOME must not point at the v1 IronClaw state root"),
+        stderr.contains("ZLO_HOME must not point at the v1 IronClaw state root"),
         "stderr: {stderr}"
     );
 }
@@ -4194,14 +4280,14 @@ fn doctor_rejects_reborn_home_equal_to_relative_explicit_v1_base_dir() {
 fn doctor_rejects_empty_reborn_home_override() {
     let output = reborn_command()
         .arg("doctor")
-        .env("IRONCLAW_REBORN_HOME", "")
+        .env("ZLO_HOME", "")
         .output()
         .expect("ironclaw-reborn doctor should run");
 
     assert!(!output.status.success(), "doctor should reject empty home");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IRONCLAW_REBORN_HOME must not be empty"),
+        stderr.contains("ZLO_HOME must not be empty"),
         "stderr: {stderr}"
     );
 }
@@ -4210,7 +4296,7 @@ fn doctor_rejects_empty_reborn_home_override() {
 fn doctor_rejects_relative_reborn_home_override() {
     let output = reborn_command()
         .arg("doctor")
-        .env("IRONCLAW_REBORN_HOME", "relative/reborn")
+        .env("ZLO_HOME", "relative/reborn")
         .output()
         .expect("ironclaw-reborn doctor should run");
 
@@ -4220,7 +4306,7 @@ fn doctor_rejects_relative_reborn_home_override() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IRONCLAW_REBORN_HOME must be an absolute path"),
+        stderr.contains("ZLO_HOME must be an absolute path"),
         "stderr: {stderr}"
     );
 }
@@ -4250,7 +4336,8 @@ fn doctor_json_reports_checks_and_summary() {
 
     let output = Command::new(reborn_bin())
         .args(["doctor", "--json"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn doctor --json should run");
@@ -4292,9 +4379,9 @@ fn config_init_writes_both_files() {
     let output = Command::new(reborn_bin())
         .args(["config", "init"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
-        .expect("ironclaw config init should run");
+        .expect("zlo config init should run");
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -4327,7 +4414,7 @@ fn config_init_refuses_to_clobber_without_force() {
     let first = Command::new(reborn_bin())
         .args(["config", "init"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("first init should run");
     assert!(first.status.success());
@@ -4335,7 +4422,7 @@ fn config_init_refuses_to_clobber_without_force() {
     let second = Command::new(reborn_bin())
         .args(["config", "init"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("second init should run");
     assert!(
@@ -4359,7 +4446,7 @@ fn config_init_preflights_both_targets_before_writing() {
     let output = Command::new(reborn_bin())
         .args(["config", "init"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("init should run");
     assert!(!output.status.success(), "init must refuse clobber");
@@ -4386,7 +4473,7 @@ fn config_init_with_force_overwrites() {
     let output = Command::new(reborn_bin())
         .args(["config", "init", "--force"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("forced init should run");
     assert!(
@@ -4413,7 +4500,7 @@ fn onboard_bootstraps_reborn_home_without_touching_v1_state() {
 
     let output = reborn_command()
         .arg("onboard")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("IRONCLAW_BASE_DIR", &v1_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
@@ -4481,7 +4568,7 @@ fn onboard_is_idempotent_for_the_webui_token_file() {
 
     let first = reborn_command()
         .arg("onboard")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("first onboard should run");
     assert!(
@@ -4494,7 +4581,7 @@ fn onboard_is_idempotent_for_the_webui_token_file() {
 
     let second = reborn_command()
         .arg("onboard")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("second onboard should run");
     assert!(
@@ -4532,7 +4619,7 @@ fn onboard_then_serve_boots_in_degraded_mode_with_an_empty_environment() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
     assert!(
@@ -4582,7 +4669,7 @@ fn onboard_then_serve_boots_in_degraded_mode_with_an_empty_environment() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -4621,7 +4708,7 @@ fn onboard_with_complete_llm_env_then_serve_boots_from_the_env_seeded_slot() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("OPENAI_API_KEY", "sk-smoke-test-env-detected-openai-key")
         .env("OPENAI_MODEL", ENV_DETECTED_MODEL)
         .output()
@@ -4659,7 +4746,7 @@ fn onboard_with_complete_llm_env_then_serve_boots_from_the_env_seeded_slot() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("OPENAI_API_KEY", "sk-smoke-test-env-detected-openai-key")
         .env("IRONCLAW_REBORN_LOG", "info,ironclaw=debug")
         .stdout(Stdio::piped())
@@ -4702,7 +4789,7 @@ fn onboard_login_link_then_bearer_authorizes_a_protected_request() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("NEARAI_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
         .output()
         .expect("ironclaw-reborn onboard should run");
@@ -4742,7 +4829,7 @@ fn onboard_login_link_then_bearer_authorizes_a_protected_request() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -5138,7 +5225,7 @@ fn stored_key_reaches_real_turn_via_product_surface() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
     assert!(
@@ -5158,7 +5245,7 @@ fn stored_key_reaches_real_turn_via_product_surface() {
 
     let set_provider_output = reborn_command()
         .args(["models", "set-provider", "nearai", "--model", "test-model"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models set-provider should run");
     assert!(
@@ -5183,7 +5270,7 @@ fn stored_key_reaches_real_turn_via_product_surface() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         // No NEARAI_API_KEY / NEARAI_SESSION_TOKEN: the stored key is the
         // ONLY thing that can authenticate the live provider.
         .env_remove("NEARAI_API_KEY")
@@ -5243,7 +5330,7 @@ fn stored_key_reaches_real_turn_across_fresh_boots() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
     assert!(
@@ -5258,7 +5345,7 @@ fn stored_key_reaches_real_turn_across_fresh_boots() {
 
     let set_provider_output = reborn_command()
         .args(["models", "set-provider", "nearai", "--model", "test-model"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models set-provider should run");
     assert!(
@@ -5282,7 +5369,7 @@ fn stored_key_reaches_real_turn_across_fresh_boots() {
             .args(["serve", "--host", "127.0.0.1", "--port"])
             .arg(port.to_string())
             .env("HOME", &home)
-            .env("IRONCLAW_REBORN_HOME", &reborn_home)
+            .env("ZLO_HOME", &reborn_home)
             .env_remove("NEARAI_API_KEY")
             .env_remove("NEARAI_SESSION_TOKEN")
             .stdout(Stdio::piped())
@@ -5424,7 +5511,7 @@ fn onboard_openai_key_then_serve_boots_with_env_var_unset() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
     assert!(
@@ -5444,7 +5531,7 @@ fn onboard_openai_key_then_serve_boots_with_env_var_unset() {
             "--model",
             SCRIPTED_MODEL,
         ])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models set-provider should run");
     assert!(
@@ -5463,7 +5550,7 @@ fn onboard_openai_key_then_serve_boots_with_env_var_unset() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         // No OPENAI_API_KEY: the stored key must be what makes this boot.
         // Target is `ironclaw` (the bin's normalized crate name, not
         // the `ironclaw_cli` package this test itself compiles as).
@@ -5541,7 +5628,7 @@ fn onboard_nearai_then_serve_boots_with_cloud_base_url() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
     assert!(
@@ -5552,7 +5639,7 @@ fn onboard_nearai_then_serve_boots_with_cloud_base_url() {
 
     let set_provider_output = reborn_command()
         .args(["models", "set-provider", "nearai"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models set-provider should run");
     assert!(
@@ -5569,7 +5656,7 @@ fn onboard_nearai_then_serve_boots_with_cloud_base_url() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         // No NEARAI_API_KEY, no NEARAI_BASE_URL: nothing pins the base URL —
         // proving the coded default itself is cloud, not a key-presence race.
         .env_remove("NEARAI_API_KEY")
@@ -5631,7 +5718,7 @@ fn onboard_nearai_stored_key_then_serve_boots_with_cloud_base_url() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
     assert!(
@@ -5642,7 +5729,7 @@ fn onboard_nearai_stored_key_then_serve_boots_with_cloud_base_url() {
 
     let set_provider_output = reborn_command()
         .args(["models", "set-provider", "nearai"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models set-provider should run");
     assert!(
@@ -5665,7 +5752,7 @@ fn onboard_nearai_stored_key_then_serve_boots_with_cloud_base_url() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         // No NEARAI_API_KEY, no NEARAI_BASE_URL: only the stored credential
         // (applied by the boot-time LLM reload) is present — proving the
         // late-attached path also lands on cloud.
@@ -5733,7 +5820,7 @@ fn serve_boots_with_env_api_key_set_and_empty_secret_store() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
     assert!(
@@ -5758,7 +5845,7 @@ fn serve_boots_with_env_api_key_set_and_empty_secret_store() {
         .args(["serve", "--host", "127.0.0.1", "--port"])
         .arg(port.to_string())
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("NEARAI_API_KEY", "railway-shape-smoke-test-nearai-key")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -5784,7 +5871,7 @@ fn serve_fails_closed_when_neither_env_nor_store_has_the_key() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
     assert!(
@@ -5794,7 +5881,7 @@ fn serve_fails_closed_when_neither_env_nor_store_has_the_key() {
     );
     let set_provider_output = reborn_command()
         .args(["models", "set-provider", "openai", "--model", "gpt-5-mini"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn models set-provider should run");
     assert!(
@@ -5810,7 +5897,7 @@ fn serve_fails_closed_when_neither_env_nor_store_has_the_key() {
     let mut child = reborn_command()
         .args(["serve", "--host", "127.0.0.1", "--port", "0"])
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         // No OPENAI_API_KEY set.
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -5880,7 +5967,7 @@ fn onboard_prints_env_token_note_instead_of_login_link_when_env_token_is_set() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
             "reborn-smoke-test-onboard-env-token-0123456789abcdef",
@@ -5922,7 +6009,7 @@ fn status_prints_env_token_note_instead_of_login_link_when_env_token_is_set() {
     let onboard_output = reborn_command()
         .arg("onboard")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
     assert!(
@@ -5934,7 +6021,7 @@ fn status_prints_env_token_note_instead_of_login_link_when_env_token_is_set() {
     let status_output = reborn_command()
         .arg("status")
         .env("HOME", &home)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env(
             "IRONCLAW_REBORN_WEBUI_TOKEN",
             "reborn-smoke-test-status-env-token-0123456789abcdef",
@@ -5958,7 +6045,7 @@ fn status_prints_env_token_note_instead_of_login_link_when_env_token_is_set() {
         // (no user dbus session to query), so this arm is load-bearing for
         // CI, not just standalone symmetry.
         "running" | "unknown" => assert!(
-            stdout.contains("login_note:") && stdout.contains("IRONCLAW_REBORN_WEBUI_TOKEN is set"),
+            stdout.contains("login_note:") && stdout.contains("ZLO_WEBUI_TOKEN is set"),
             "service is running or unknown, so the env-token note must still win: {stdout}"
         ),
         "stopped" | "not installed" => assert!(
@@ -5984,7 +6071,7 @@ fn onboard_dry_run_is_read_only() {
 
     let output = reborn_command()
         .args(["onboard", "--dry-run", "--import-history"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard --dry-run should run");
 
@@ -6015,7 +6102,7 @@ fn onboard_dry_run_reports_existing_marker_as_preserved() {
 
     let output = reborn_command()
         .args(["onboard", "--dry-run"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard --dry-run should run");
 
@@ -6051,7 +6138,7 @@ fn onboard_dry_run_propagates_a_webui_token_io_error_without_mutating_home() {
     let output = Command::new(reborn_bin())
         .args(["onboard", "--dry-run"])
         .env_clear()
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard --dry-run should run");
 
@@ -6084,7 +6171,7 @@ fn onboard_import_history_records_pending_step() {
 
     let output = reborn_command()
         .args(["onboard", "--import-history"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard --import-history should run");
 
@@ -6136,7 +6223,7 @@ fn onboard_preserves_existing_config_without_force() {
 
     let output = reborn_command()
         .arg("onboard")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
 
@@ -6188,7 +6275,7 @@ fn onboard_with_force_overwrites_existing_files_and_marker() {
 
     let output = reborn_command()
         .args(["onboard", "--force"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard --force should run");
 
@@ -6231,7 +6318,7 @@ fn onboard_reports_suppressed_master_key_fallback_and_still_succeeds() {
 
     let output = reborn_command()
         .arg("onboard")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
 
@@ -6285,7 +6372,7 @@ fn onboard_master_key_provisioning_is_a_noop_once_a_dotfile_is_cached() {
 
     let output = reborn_command()
         .arg("onboard")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn onboard should run");
 
@@ -6318,7 +6405,7 @@ fn config_path_reports_file_presence() {
     let absent_output = Command::new(reborn_bin())
         .args(["config", "path"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("config path runs without files");
     assert!(absent_output.status.success());
@@ -6332,7 +6419,7 @@ fn config_path_reports_file_presence() {
     let init_output = Command::new(reborn_bin())
         .args(["config", "init"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("init runs");
     assert!(init_output.status.success());
@@ -6340,7 +6427,7 @@ fn config_path_reports_file_presence() {
     let present_output = Command::new(reborn_bin())
         .args(["config", "path"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("config path runs after init");
     assert!(present_output.status.success());
@@ -6364,7 +6451,8 @@ fn status_reports_reborn_home_without_touching_v1_state() {
 
     let output = Command::new(reborn_bin())
         .arg("status")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn status should run");
@@ -6403,7 +6491,8 @@ fn status_json_reports_reborn_home_without_touching_v1_state() {
     let output = Command::new(reborn_bin())
         .arg("status")
         .arg("--json")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn status --json should run");
@@ -6443,7 +6532,7 @@ fn status_json_reports_present_config_and_providers_files() {
 
     let output = Command::new(reborn_bin())
         .args(["status", "--json"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn status --json should run");
     assert!(
@@ -6474,7 +6563,8 @@ fn config_list_reports_entries_without_creating_state() {
 
     let output = Command::new(reborn_bin())
         .args(["config", "list"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn config list should run");
@@ -6509,7 +6599,8 @@ fn config_list_json_reports_entries_without_creating_state() {
 
     let output = Command::new(reborn_bin())
         .args(["config", "list", "--json"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn config list --json should run");
@@ -6546,7 +6637,8 @@ fn config_get_known_key_prints_value() {
 
     let output = Command::new(reborn_bin())
         .args(["config", "get", "boot.profile"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn config get should run");
@@ -6570,7 +6662,8 @@ fn config_get_known_key_json_prints_value() {
 
     let output = Command::new(reborn_bin())
         .args(["config", "get", "boot.profile", "--json"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn config get --json should run");
@@ -6592,7 +6685,8 @@ fn config_get_unknown_key_exits_nonzero() {
 
     let output = Command::new(reborn_bin())
         .args(["config", "get", "nonexistent.key"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .output()
         .expect("ironclaw-reborn config get should run");
@@ -6627,7 +6721,7 @@ fn assert_config_read_rejects_malformed(args: &[&str]) {
 
     let output = Command::new(reborn_bin())
         .args(args)
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("config read command should run");
     assert!(!output.status.success(), "malformed config must fail");
@@ -6735,7 +6829,7 @@ fn run_confirm_host_access_requires_home_or_userprofile() {
 
     let output = reborn_command()
         .args(["run", "--confirm-host-access", "-m", "ping"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("IRONCLAW_REBORN_PROFILE", "local-dev-yolo")
         .output()
         .expect("ironclaw-reborn run should not crash");
@@ -6759,7 +6853,7 @@ fn run_confirm_host_access_uses_userprofile_when_home_is_absent() {
 
     let output = reborn_command()
         .args(["run", "--confirm-host-access", "-m", "ping"])
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("IRONCLAW_REBORN_PROFILE", "local-dev-yolo")
         .env("USERPROFILE", &host_home)
         .output()
@@ -6836,7 +6930,7 @@ fn serve_confirm_host_access_flag_gates_standalone_yolo() {
         "failed WebUI token preflight must not seed runtime config"
     );
     assert!(
-        confirmed_stderr.contains("IRONCLAW_REBORN_WEBUI_TOKEN"),
+        confirmed_stderr.contains("ZLO_WEBUI_TOKEN"),
         "confirmed serve should reach WebUI token resolution; got: {confirmed_stderr}"
     );
 }
@@ -6914,7 +7008,8 @@ fn serve_standalone_allows_non_loopback_without_trusted_laptop_access() {
     let temp = tempfile::tempdir().expect("tempdir");
     let output = Command::new(reborn_bin())
         .args(["serve", "--host", "0.0.0.0", "--port", "0"])
-        .env("IRONCLAW_REBORN_HOME", temp.path().join("reborn-home"))
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
         .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
         .env_remove("IRONCLAW_REBORN_WEBUI_USER_ID")
@@ -6927,7 +7022,7 @@ fn serve_standalone_allows_non_loopback_without_trusted_laptop_access() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IRONCLAW_REBORN_WEBUI_TOKEN must be set"),
+        stderr.contains("ZLO_WEBUI_TOKEN must be set"),
         "ordinary standalone serve should reach WebUI token validation; got: {stderr}"
     );
     assert!(
@@ -6953,8 +7048,9 @@ profile = "production"
     let output = Command::new(reborn_bin())
         .args(["run", "-m", "ping"])
         .env_remove("USERPROFILE")
+        .env_remove("ZLO_PROFILE")
         .env_remove("IRONCLAW_REBORN_PROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn run should not crash");
     assert!(
@@ -7060,7 +7156,7 @@ default_project = "project-alpha"
     let output = Command::new(reborn_bin())
         .args(["run", "-m", "ping"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn run should not crash");
     assert!(
@@ -7093,7 +7189,7 @@ default_approval_policy = "ask_always"
     let output = Command::new(reborn_bin())
         .args(["run", "-m", "ping"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn run should not crash");
     assert!(!output.status.success(), "unsupported policy must fail");
@@ -7122,7 +7218,7 @@ provider_id = "openai"
     let output = Command::new(reborn_bin())
         .args(["run", "-m", "ping"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn run should not crash");
     assert!(!output.status.success(), "malformed overlay must fail");
@@ -7166,7 +7262,7 @@ provider_id = "empty-key-provider"
     let output = Command::new(reborn_bin())
         .args(["run", "-m", "ping"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("REBORN_TEST_EMPTY_KEY", "")
         .output()
         .expect("ironclaw-reborn run should not crash");
@@ -7195,7 +7291,7 @@ heartbeat_interval_secs = 0
     let output = Command::new(reborn_bin())
         .args(["run", "-m", "ping"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn run should not crash");
     assert!(
@@ -7226,7 +7322,7 @@ heartbeat_interval_secs = 60
     let output = Command::new(reborn_bin())
         .args(["run", "-m", "ping"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn run should not crash");
     assert!(
@@ -7257,7 +7353,7 @@ poll_interval_ms = 0
     let output = Command::new(reborn_bin())
         .args(["run", "-m", "ping"])
         .env_remove("USERPROFILE")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn run should not crash");
     assert!(!output.status.success(), "zero poll interval must fail");
@@ -7288,7 +7384,7 @@ api_key_env = "REBORN_TEST_UNSET_BC8F4D_KEY"
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OLLAMA_BASE_URL")
         .env_remove("REBORN_TEST_UNSET_BC8F4D_KEY")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn run should not crash");
     assert!(
@@ -7515,8 +7611,8 @@ fn release_ci_publishes_reborn_and_regular_docker_without_legacy_or_dind_paths()
     );
     assert!(
         wix_manifest.contains("Name='ironclaw'")
-            && wix_manifest.contains("Name='ironclaw.exe'")
-            && wix_manifest.contains("Source='$(var.CargoTargetBinDir)\\ironclaw.exe'")
+            && wix_manifest.contains("Name='zlo.exe'")
+            && wix_manifest.contains("Source='$(var.CargoTargetBinDir)\\zlo.exe'")
             && !wix_manifest.contains("ironclaw-legacy")
             && !root.join("wix/main.wxs").exists(),
         "the MSI definition must install only the canonical Reborn executable"
@@ -7586,7 +7682,7 @@ fn local_yolo_command(temp: &tempfile::TempDir, args: &[&str]) -> Command {
     let mut command = reborn_command();
     command
         .args(args)
-        .env("IRONCLAW_REBORN_HOME", reborn_home)
+        .env("ZLO_HOME", reborn_home)
         .env("IRONCLAW_REBORN_PROFILE", "local-dev-yolo")
         .env("HOME", home);
     command

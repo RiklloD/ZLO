@@ -426,8 +426,7 @@ mod tests {
     #[test]
     fn provider_instance_not_configured_maps_to_sanitized_400() {
         let error = ProductSurfaceFailure::ProviderInstanceNotConfigured {
-            reason: "ironclaw config set google.client_id <id>.apps.googleusercontent.com"
-                .to_string(),
+            reason: "zlo config set google.client_id <id>.apps.googleusercontent.com".to_string(),
         };
 
         let mapped = map_lifecycle_error(error);

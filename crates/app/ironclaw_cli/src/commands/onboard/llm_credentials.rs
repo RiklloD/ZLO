@@ -466,7 +466,7 @@ fn probe_and_confirm_key(
         if attempt >= MAX_PROBE_ATTEMPTS {
             return Err(LlmCredentialPromptError::Other(anyhow::anyhow!(
                 "no working API key for `{provider_id}` after {MAX_PROBE_ATTEMPTS} attempts; \
-                 configure it later with `ironclaw models set-provider {provider_id}`"
+                 configure it later with `zlo models set-provider {provider_id}`"
             )));
         }
         attempt += 1;

@@ -1,5 +1,5 @@
 //! Stamp the commit this binary is built from as `IRONCLAW_BUILD_COMMIT`,
-//! read by `ironclaw update` and the environment descriptor's
+//! read by `zlo update` and the environment descriptor's
 //! `build_commit`. A build outside a git checkout (release tarball, Docker
 //! context without `.git`) sets nothing; an explicit `IRONCLAW_BUILD_COMMIT`
 //! in the build environment wins.

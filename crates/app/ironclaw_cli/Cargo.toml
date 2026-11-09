@@ -15,7 +15,7 @@ layer = "app"
 
 [package.metadata.dist]
 dist = true
-display-name = "ironclaw"
+display-name = "zlo"
 
 [package.metadata.wix]
 upgrade-guid = "650712A0-A6B4-4584-829A-03A90CE3D7D9"
@@ -124,6 +124,8 @@ ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version =
 ironclaw_secrets = { path = "../../substrates/ironclaw_secrets", version = "0.1.0" }
 toml = "1.1"
 
+# The command ZLO users type. The package keeps the name `ironclaw` so
+# `cargo build -p ironclaw`, CI, and the cargo-dist release config stay valid.
 [[bin]]
-name = "ironclaw"
+name = "zlo"
 path = "src/main.rs"

@@ -33,15 +33,15 @@ fn repo_root() -> PathBuf {
 /// every other spawn in this suite. The auto-generated `help` subcommand is
 /// not a documentation obligation.
 fn help_subcommands() -> BTreeSet<String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_ironclaw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_zlo"))
         .env_clear()
         .env("IRONCLAW_DISABLE_OS_KEYCHAIN", "1")
         .arg("--help")
         .output()
-        .expect("spawn ironclaw --help");
+        .expect("spawn zlo --help");
     assert!(
         output.status.success(),
-        "ironclaw --help failed: {}",
+        "zlo --help failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).expect("--help output is UTF-8");
@@ -142,7 +142,7 @@ fn cli_reference_documents_every_subcommand_and_no_retired_ones() {
     let unique_paths: BTreeSet<&[String]> = documented.iter().map(Vec::as_slice).collect();
     let mut retired = Vec::new();
     for path in unique_paths {
-        let output = Command::new(env!("CARGO_BIN_EXE_ironclaw"))
+        let output = Command::new(env!("CARGO_BIN_EXE_zlo"))
             .env_clear()
             .env("IRONCLAW_DISABLE_OS_KEYCHAIN", "1")
             .args(path.iter())
@@ -166,12 +166,12 @@ fn cli_reference_documents_every_subcommand_and_no_retired_ones() {
 /// `[aliases: ...]` on the primary's line.
 #[test]
 fn visible_alias_table_matches_the_binary() {
-    let output = Command::new(env!("CARGO_BIN_EXE_ironclaw"))
+    let output = Command::new(env!("CARGO_BIN_EXE_zlo"))
         .env_clear()
         .env("IRONCLAW_DISABLE_OS_KEYCHAIN", "1")
         .arg("--help")
         .output()
-        .expect("spawn ironclaw --help");
+        .expect("spawn zlo --help");
     let help = String::from_utf8(output.stdout).expect("--help output is UTF-8");
     for (primary, aliases) in VISIBLE_ALIASES {
         let line = help

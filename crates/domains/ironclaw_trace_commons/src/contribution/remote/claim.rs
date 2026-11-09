@@ -634,7 +634,7 @@ impl PilotAllowlistRefusal {
         match self {
             Self::InviteCodeMissing => {
                 "the workload token did not carry an invite_code claim. \
-                 Re-run `ironclaw traces opt-in --upload-token-invite-code <CODE> ...` with the operator-issued code, \
+                 Re-run `zlo traces opt-in --upload-token-invite-code <CODE> ...` with the operator-issued code, \
                  or have your operator reissue a workload token that includes it."
             }
             Self::NotMatched => {

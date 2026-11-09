@@ -83,7 +83,7 @@ fn build_status_dto_with_service_state(
 }
 
 const SERVICE_NOT_RUNNING_LOGIN_NOTE: &str = "service is not running — start with \
-     `ironclaw service restart`; link available once running";
+     `zlo service restart`; link available once running";
 
 /// Overrides `(login_link, login_note)` when the live service state is
 /// *known* not-running (`Stopped`/`NotInstalled`) — no login link can be
@@ -116,7 +116,7 @@ fn resolve_google_oauth_degraded(
             state.missing_config_key().map(|missing| {
                 format!(
                     "partially configured (missing google.{missing}) — disabled; fix with \
-             `ironclaw config set google.{missing} <value>`"
+             `zlo config set google.{missing} <value>`"
                 )
             })
         }),
@@ -591,7 +591,7 @@ redirect_uri = "http://127.0.0.1:3000/oauth/google/callback"
         dto.render_text_to(&mut buf).expect("render must succeed");
         let text = String::from_utf8(buf).expect("render output must be UTF-8");
         assert!(!text.contains("login_link:"));
-        assert!(text.contains("`ironclaw service restart`"));
+        assert!(text.contains("`zlo service restart`"));
         assert!(!text.contains("ironclaw-reborn service restart"));
     }
 }

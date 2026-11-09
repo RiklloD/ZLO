@@ -1,6 +1,6 @@
 // arch-exempt: large_file, test-only environment isolation stays with the systemd contract tests, plan #4088
 //! Linux systemd user-unit generators, path resolution, and verb
-//! bodies for `ironclaw service`.
+//! bodies for `zlo service`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use crate::context::RebornCliContext;
 use crate::serve_invocation::ServeInvocation;
 
-use super::{SYSTEMD_UNIT, ServiceCommandRunner, home_dir};
+use super::{LEGACY_SYSTEMD_UNIT, SYSTEMD_UNIT, ServiceCommandRunner, home_dir};
 
 // ── Quoting ─────────────────────────────────────────────────────
 
@@ -126,7 +126,7 @@ struct SystemdUnitState {
 /// error, not a silently-assumed default: a malformed/truncated response
 /// must not read as `enabled=false`, which would make an install-failure
 /// rollback skip re-enabling a unit that actually was enabled.
-fn query_unit_state(runner: &mut dyn ServiceCommandRunner) -> Result<SystemdUnitState> {
+fn query_unit_state(runner: &mut dyn ServiceCommandRunner, unit: &str) -> Result<SystemdUnitState> {
     let output = runner.run_capture_checked(
         "systemctl show unit state",
         Command::new("systemctl").args([
@@ -134,7 +134,7 @@ fn query_unit_state(runner: &mut dyn ServiceCommandRunner) -> Result<SystemdUnit
             "show",
             "--property=LoadState",
             "--property=UnitFileState",
-            SYSTEMD_UNIT,
+            unit,
         ]),
     )?;
     let mut load_state = None;
@@ -178,10 +178,56 @@ fn combined_failure(primary: anyhow::Error, rollback_errors: Vec<String>) -> any
 // ── Path helpers ────────────────────────────────────────────────
 
 fn unit_path() -> Result<PathBuf> {
-    Ok(config_home()?
-        .join("systemd")
-        .join("user")
-        .join(SYSTEMD_UNIT))
+    unit_path_for(SYSTEMD_UNIT)
+}
+
+fn unit_path_for(unit: &str) -> Result<PathBuf> {
+    Ok(config_home()?.join("systemd").join("user").join(unit))
+}
+
+/// The unit the non-install verbs manage: `zlo.service` when its file
+/// exists, else a pre-ZLO `ironclaw-reborn.service` still installed (so
+/// `service status/stop/restart/uninstall` keep working until `install`
+/// replaces it), else `zlo.service`.
+fn active_unit() -> Result<&'static str> {
+    if !unit_path_for(SYSTEMD_UNIT)?.exists() && unit_path_for(LEGACY_SYSTEMD_UNIT)?.exists() {
+        return Ok(LEGACY_SYSTEMD_UNIT);
+    }
+    Ok(SYSTEMD_UNIT)
+}
+
+/// Stop and disable a pre-ZLO `ironclaw-reborn.service` and move its unit
+/// file into the data folder (`<home>/retired-ironclaw-reborn.service`), so
+/// two backends never fight over the port. Returns whether it was running,
+/// so `install` can start the replacement in its place.
+fn retire_legacy_unit(runner: &mut dyn ServiceCommandRunner, home: &Path) -> Result<bool> {
+    let legacy = unit_path_for(LEGACY_SYSTEMD_UNIT)?;
+    if !legacy.exists() {
+        return Ok(false);
+    }
+    let active_state = runner.run_capture_checked(
+        "systemctl show legacy ActiveState",
+        Command::new("systemctl").args([
+            "--user",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            LEGACY_SYSTEMD_UNIT,
+        ]),
+    )?;
+    let was_running = active_state.trim() == "active";
+    runner.run_checked(
+        "systemctl disable legacy",
+        Command::new("systemctl").args(["--user", "disable", "--now", LEGACY_SYSTEMD_UNIT]),
+    )?;
+    let kept = home.join(format!("retired-{LEGACY_SYSTEMD_UNIT}"));
+    std::fs::rename(&legacy, &kept)
+        .with_context(|| format!("move {} to {}", legacy.display(), kept.display()))?;
+    println!(
+        "Retired the old IronClaw service {LEGACY_SYSTEMD_UNIT} (kept at {}).",
+        kept.display()
+    );
+    Ok(was_running)
 }
 
 /// The base config directory for the user systemd unit search path, per
@@ -235,7 +281,8 @@ pub(super) fn install_with_runner(
     let reborn_home = context.boot_config().home().path();
     let working_directory = super::ensure_service_working_directory(reborn_home)?;
     let unit = unit_content(invocation, &working_directory)?;
-    let previous_state = query_unit_state(runner)?;
+    let previous_state = query_unit_state(runner, SYSTEMD_UNIT)?;
+    let legacy_was_running = retire_legacy_unit(runner, reborn_home)?;
     super::write_atomic(&file, unit.as_bytes())?;
     if let Err(error) = runner.run_checked(
         "systemctl daemon-reload",
@@ -283,11 +330,18 @@ pub(super) fn install_with_runner(
         }
         return Err(combined_failure(error, rollback_errors));
     }
+    if legacy_was_running {
+        // The retired unit was running: start its replacement in its place.
+        runner.run_checked(
+            "systemctl start",
+            Command::new("systemctl").args(["--user", "start", SYSTEMD_UNIT]),
+        )?;
+    }
     println!("Installed systemd user service: {}", file.display());
     if let Some(note) = super::replaced_existing_service_file_note(replaced_existing) {
         println!("{note}");
     }
-    println!("  Start with: ironclaw service start");
+    println!("  Start with: zlo service start");
     Ok(replaced_existing)
 }
 
@@ -304,8 +358,9 @@ fn start_with_runner_quiet(runner: &mut dyn ServiceCommandRunner) -> Result<()> 
 }
 
 fn start_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) -> Result<()> {
-    if !unit_path()?.exists() {
-        bail!("Service not installed. Run `ironclaw service install` first.");
+    let unit = active_unit()?;
+    if !unit_path_for(unit)?.exists() {
+        bail!("Service not installed. Run `zlo service install` first.");
     }
     runner.run_checked(
         "systemctl daemon-reload",
@@ -313,7 +368,7 @@ fn start_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) 
     )?;
     runner.run_checked(
         "systemctl start",
-        Command::new("systemctl").args(["--user", "start", SYSTEMD_UNIT]),
+        Command::new("systemctl").args(["--user", "start", unit]),
     )?;
     if verbose {
         println!("Service started");
@@ -332,13 +387,14 @@ fn stop_with_runner_quiet(runner: &mut dyn ServiceCommandRunner) -> Result<()> {
 }
 
 fn stop_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) -> Result<()> {
-    if !unit_path()?.exists() {
+    let unit = active_unit()?;
+    if !unit_path_for(unit)?.exists() {
         // The unit file is gone, but it may still be an orphan: removed
         // out-of-band while systemd still shows it loaded/enabled (mirrors
         // the manager-state check `status`/`uninstall` already do via
         // `resolve_installed`/`query_unit_state`). Only skip the stop when
         // the manager also shows nothing.
-        let unit_state = query_unit_state(runner)?;
+        let unit_state = query_unit_state(runner, unit)?;
         if !unit_state.loaded && !unit_state.enabled {
             if verbose {
                 println!("Service stopped");
@@ -348,7 +404,7 @@ fn stop_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) -
     }
     runner.run_checked(
         "systemctl stop",
-        Command::new("systemctl").args(["--user", "stop", SYSTEMD_UNIT]),
+        Command::new("systemctl").args(["--user", "stop", unit]),
     )?;
     if verbose {
         println!("Service stopped");
@@ -376,7 +432,8 @@ pub(super) fn restart_with_runner(runner: &mut dyn ServiceCommandRunner) -> Resu
 /// [`systemd_status_detail`]'s secondary line, so it keeps its own
 /// `systemctl show` query rather than sharing this bool-only helper.
 pub(super) fn installed_and_running(runner: &mut dyn ServiceCommandRunner) -> Result<(bool, bool)> {
-    let installed = unit_path()?.exists();
+    let unit = active_unit()?;
+    let installed = unit_path_for(unit)?.exists();
     let running = if installed {
         let active_state = runner.run_capture_checked(
             "systemctl show ActiveState",
@@ -385,7 +442,7 @@ pub(super) fn installed_and_running(runner: &mut dyn ServiceCommandRunner) -> Re
                 "show",
                 "--property=ActiveState",
                 "--value",
-                SYSTEMD_UNIT,
+                unit,
             ]),
         )?;
         active_state.trim() == "active"
@@ -433,11 +490,12 @@ struct SystemdStatusInfo {
 }
 
 fn resolve_status_info(runner: &mut dyn ServiceCommandRunner) -> Result<SystemdStatusInfo> {
-    let file_exists = unit_path()?.exists();
+    let unit = active_unit()?;
+    let file_exists = unit_path_for(unit)?.exists();
     // Query the manager unconditionally — a unit file removed out-of-band
     // while systemd still has it loaded/enabled is an orphan we must
     // still report as installed, not silently claim "not installed".
-    let unit_state = query_unit_state(runner)?;
+    let unit_state = query_unit_state(runner, unit)?;
     // `is-active` uses non-zero exits for ordinary inactive states.
     // `show` returns those states in stdout and reserves failure for a
     // broken query.
@@ -448,7 +506,7 @@ fn resolve_status_info(runner: &mut dyn ServiceCommandRunner) -> Result<SystemdS
             "show",
             "--property=ActiveState",
             "--value",
-            SYSTEMD_UNIT,
+            unit,
         ]),
     )?;
     let running = active_state.trim() == "active";
@@ -462,7 +520,7 @@ fn resolve_status_info(runner: &mut dyn ServiceCommandRunner) -> Result<SystemdS
 }
 
 pub(super) fn status_with_runner(runner: &mut dyn ServiceCommandRunner) -> Result<()> {
-    let file = unit_path()?;
+    let file = unit_path_for(active_unit()?)?;
     let info = resolve_status_info(runner)?;
     // Detail line stays keyed off file presence: for a genuine orphan
     // (no unit file) the `Service: running/stopped` line already covers
@@ -503,6 +561,7 @@ pub(super) fn current_state_with_runner(
 /// failure path and the `daemon-reload` failure path, which must leave
 /// the host in the same recovered state regardless of which step failed.
 fn rollback_uninstall(
+    unit: &str,
     file: &Path,
     previous: Option<&[u8]>,
     manager_state: SystemdUnitState,
@@ -521,7 +580,7 @@ fn rollback_uninstall(
     if manager_state.enabled
         && let Err(rollback) = runner.run_checked(
             "systemctl rollback enable previous unit",
-            Command::new("systemctl").args(["--user", "enable", SYSTEMD_UNIT]),
+            Command::new("systemctl").args(["--user", "enable", unit]),
         )
     {
         rollback_errors.push(format!("re-enable previous unit: {rollback:#}"));
@@ -552,13 +611,14 @@ fn uninstall_with_runner_and_remover(
     runner: &mut dyn ServiceCommandRunner,
     remove_file: fn(&Path) -> std::io::Result<()>,
 ) -> Result<()> {
-    let file = unit_path()?;
+    let unit = active_unit()?;
+    let file = unit_path_for(unit)?;
     let previous = match std::fs::read(&file) {
         Ok(contents) => Some(contents),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error).with_context(|| format!("read {}", file.display())),
     };
-    let manager_state = query_unit_state(runner)?;
+    let manager_state = query_unit_state(runner, unit)?;
     if previous.is_none() && !manager_state.loaded && !manager_state.enabled {
         println!("Service uninstalled ({})", file.display());
         return Ok(());
@@ -566,23 +626,26 @@ fn uninstall_with_runner_and_remover(
     if (manager_state.loaded || manager_state.enabled)
         && let Err(error) = runner.run_checked(
             "systemctl disable",
-            Command::new("systemctl").args(["--user", "disable", "--now", SYSTEMD_UNIT]),
+            Command::new("systemctl").args(["--user", "disable", "--now", unit]),
         )
     {
-        let rollback_errors = rollback_uninstall(&file, previous.as_deref(), manager_state, runner);
+        let rollback_errors =
+            rollback_uninstall(unit, &file, previous.as_deref(), manager_state, runner);
         return Err(combined_failure(error, rollback_errors));
     }
     if previous.is_some()
         && let Err(error) = remove_file(&file).with_context(|| format!("remove {}", file.display()))
     {
-        let rollback_errors = rollback_uninstall(&file, previous.as_deref(), manager_state, runner);
+        let rollback_errors =
+            rollback_uninstall(unit, &file, previous.as_deref(), manager_state, runner);
         return Err(combined_failure(error, rollback_errors));
     }
     if let Err(error) = runner.run_checked(
         "systemctl daemon-reload",
         Command::new("systemctl").args(["--user", "daemon-reload"]),
     ) {
-        let rollback_errors = rollback_uninstall(&file, previous.as_deref(), manager_state, runner);
+        let rollback_errors =
+            rollback_uninstall(unit, &file, previous.as_deref(), manager_state, runner);
         return Err(combined_failure(error, rollback_errors));
     }
     println!("Service uninstalled ({})", file.display());
@@ -707,7 +770,7 @@ mod tests {
                         && show == "show"
                         && load == "--property=LoadState"
                         && unit_file == "--property=UnitFileState"
-                        && unit == SYSTEMD_UNIT =>
+                        && (unit == SYSTEMD_UNIT || unit == LEGACY_SYSTEMD_UNIT) =>
                 {
                     Ok(self
                         .unit_state_output
@@ -719,7 +782,7 @@ mod tests {
                         && show == "show"
                         && property == "--property=ActiveState"
                         && value == "--value"
-                        && unit == SYSTEMD_UNIT =>
+                        && (unit == SYSTEMD_UNIT || unit == LEGACY_SYSTEMD_UNIT) =>
                 {
                     Ok(self
                         .active_state_output
@@ -755,6 +818,79 @@ mod tests {
             ironclaw_config::RebornBootConfig::resolve_from_env()
                 .expect("boot config must resolve under temp HOME"),
         )
+    }
+
+    fn write_legacy_unit(home: &Path) -> PathBuf {
+        let dir = home.join(".config/systemd/user");
+        std::fs::create_dir_all(&dir).expect("unit dir");
+        let legacy = dir.join(LEGACY_SYSTEMD_UNIT);
+        std::fs::write(&legacy, "[Service]\n").expect("legacy unit");
+        legacy
+    }
+
+    #[test]
+    fn a_pre_zlo_unit_is_still_managed_until_install_replaces_it() {
+        let _lock = crate::runtime::test_env::lock_runtime_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _home = TempHomeGuard::set(tmp.path());
+        write_legacy_unit(tmp.path());
+        let mut runner = RecordingRunner {
+            active_state_output: Some("active\n".to_string()),
+            ..RecordingRunner::default()
+        };
+
+        let state = current_state_with_runner(&mut runner).expect("status");
+        assert_eq!(state, super::super::ServiceState::Running);
+        stop_with_runner(&mut runner).expect("stop the legacy unit");
+        assert!(
+            runner.args.contains(&vec![
+                "--user".to_string(),
+                "stop".to_string(),
+                LEGACY_SYSTEMD_UNIT.to_string()
+            ]),
+            "{:?}",
+            runner.args
+        );
+    }
+
+    #[test]
+    fn install_retires_a_pre_zlo_unit_and_starts_its_replacement() {
+        let _lock = crate::runtime::test_env::lock_runtime_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _home = TempHomeGuard::set(tmp.path());
+        let legacy = write_legacy_unit(tmp.path());
+        let context = sample_context();
+        let mut runner = RecordingRunner {
+            active_state_output: Some("active\n".to_string()),
+            ..RecordingRunner::default()
+        };
+
+        install_with_runner(&context, &sample_invocation(), &mut runner).expect("install");
+
+        assert!(!legacy.exists(), "the old unit leaves the search path");
+        let kept = context
+            .boot_config()
+            .home()
+            .path()
+            .join(format!("retired-{LEGACY_SYSTEMD_UNIT}"));
+        assert_eq!(std::fs::read_to_string(&kept).expect("kept"), "[Service]\n");
+        assert!(unit_path().expect("path").is_file(), "new unit written");
+        let args: Vec<Vec<&str>> = runner
+            .args
+            .iter()
+            .map(|a| a.iter().map(String::as_str).collect())
+            .collect();
+        let disable_legacy = args
+            .iter()
+            .position(|a| *a == ["--user", "disable", "--now", LEGACY_SYSTEMD_UNIT]);
+        let start_new = args
+            .iter()
+            .position(|a| *a == ["--user", "start", SYSTEMD_UNIT]);
+        assert!(
+            matches!((disable_legacy, start_new), (Some(d), Some(s)) if d < s),
+            "the old unit stops before the new one starts: {args:?}"
+        );
+        assert_eq!(active_unit().expect("unit"), SYSTEMD_UNIT);
     }
 
     #[test]
@@ -921,7 +1057,7 @@ mod tests {
         }
         assert_eq!(
             path.expect("must resolve"),
-            PathBuf::from("/home/op/.config/systemd/user/ironclaw-reborn.service")
+            PathBuf::from("/home/op/.config/systemd/user/zlo.service")
         );
     }
 
@@ -955,7 +1091,7 @@ mod tests {
         }
         assert_eq!(
             path.expect("must resolve"),
-            PathBuf::from("/custom/xdg-config/systemd/user/ironclaw-reborn.service")
+            PathBuf::from("/custom/xdg-config/systemd/user/zlo.service")
         );
     }
 
@@ -985,7 +1121,7 @@ mod tests {
         }
         assert_eq!(
             path.expect("must resolve"),
-            PathBuf::from("/home/op/.config/systemd/user/ironclaw-reborn.service")
+            PathBuf::from("/home/op/.config/systemd/user/zlo.service")
         );
     }
 
@@ -1470,7 +1606,8 @@ mod tests {
             unit_state_output: Some("UnitFileState=enabled\nLoadState=loaded\n".to_string()),
             ..RecordingRunner::default()
         };
-        let state = query_unit_state(&mut runner).expect("out-of-order lines must parse");
+        let state =
+            query_unit_state(&mut runner, SYSTEMD_UNIT).expect("out-of-order lines must parse");
         assert!(state.loaded);
         assert!(state.enabled);
     }
@@ -1481,7 +1618,7 @@ mod tests {
             unit_state_output: Some("LoadState=loaded\n".to_string()),
             ..RecordingRunner::default()
         };
-        let error = query_unit_state(&mut runner)
+        let error = query_unit_state(&mut runner, SYSTEMD_UNIT)
             .expect_err("a missing UnitFileState line must error, not silently default");
         assert!(error.to_string().contains("UnitFileState"));
     }

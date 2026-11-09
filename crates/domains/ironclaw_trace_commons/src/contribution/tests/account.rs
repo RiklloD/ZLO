@@ -685,7 +685,7 @@ async fn pinned_trace_remote_client_rejects_private_endpoint_hosts() {
 }
 
 /// #7144: the builder attaches the enrolled bearer to whatever endpoint the
-/// policy carries, and `ironclaw traces opt-in --endpoint <url>` writes that
+/// policy carries, and `zlo traces opt-in --endpoint <url>` writes that
 /// endpoint unvalidated. Before this, `http://` to a public host built a
 /// client happily and the token went out in clear text — the comment above
 /// the builder claimed a validator ran on this lane, and none did.

@@ -1,4 +1,4 @@
-//! `ironclaw update [--check] [--json]` — update this installation from its
+//! `zlo update [--check] [--json]` — update this installation from its
 //! source checkout (`[update] method = "source"`).
 //!
 //! - `--check`: fetch the configured branch and report the running build's
@@ -8,7 +8,7 @@
 //!   checkout is refused), rebuild the way this host is installed (ZLO's
 //!   `bundle.sh` for the `zlo-backend` inside a ZLO.app, else
 //!   `cargo build --release -p ironclaw` and an atomic replace of this
-//!   binary), then restart through `ironclaw service` when it is installed.
+//!   binary), then restart through `zlo service` when it is installed.
 //!
 //! The backend runs the same job detached for `POST /api/operator/update`
 //! (`job.rs`); its records live under `<reborn_home>/update/`
@@ -105,7 +105,7 @@ impl UpdateCommand {
             )?;
             if outcome.is_err() {
                 // Another job holds the lock; it owns run.json.
-                eprintln!("ironclaw update: another update is already running");
+                eprintln!("zlo update: another update is already running");
             }
             return Ok(());
         }
@@ -158,7 +158,7 @@ impl UpdateCommand {
         let exe = std::env::current_exe().context("resolve the running binary")?;
         if exe.starts_with(settings.repo.join("target")) {
             anyhow::bail!(
-                "this `ironclaw` is the checkout's own build output ({}); run the installed binary instead",
+                "this `zlo` is the checkout's own build output ({}); run the installed binary instead",
                 exe.display()
             );
         }
@@ -174,7 +174,7 @@ impl UpdateCommand {
             &job::SystemUpdateHost,
             &mut |step| {
                 if !json {
-                    eprintln!("ironclaw update: {step}");
+                    eprintln!("zlo update: {step}");
                 }
             },
         )?;

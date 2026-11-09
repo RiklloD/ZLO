@@ -5,7 +5,7 @@ use clap::{CommandFactory, Parser};
 use crate::commands::Command;
 
 #[derive(Debug, Parser)]
-#[command(name = "ironclaw", about = "IronClaw agent runtime", version)]
+#[command(name = "zlo", about = "ZLO agent runtime", version)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
@@ -25,7 +25,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
 }
 
 fn args_with_default_serve(mut args: impl Iterator<Item = OsString>) -> Vec<OsString> {
-    let program = args.next().unwrap_or_else(|| OsString::from("ironclaw"));
+    let program = args.next().unwrap_or_else(|| OsString::from("zlo"));
     let mut rest: Vec<_> = args.collect();
 
     let has_explicit_command = rest

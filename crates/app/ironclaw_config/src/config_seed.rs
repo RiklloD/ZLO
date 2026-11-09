@@ -48,7 +48,7 @@ pub enum RebornConfigSeedOutcome {
 
 /// Atomically seed a sparse first-run `config.toml` if the file is missing.
 ///
-/// The first-run seed is intentionally smaller than `ironclaw config
+/// The first-run seed is intentionally smaller than `zlo config
 /// init`: it records only the API version and safe default boot profile without
 /// installing an active LLM slot or pinning compiled runtime defaults. That
 /// preserves the existing "missing config" behavior for env-driven provider
@@ -117,7 +117,7 @@ fn first_run_config_toml() -> String {
 #   compiled defaults < this file < env vars < CLI flags.
 #
 # For a fully commented operator template, run:
-#   ironclaw config init --force
+#   zlo config init --force
 #
 # Secrets stay out of this file. Store token values in environment variables
 # or a secret store, and reference them here only by env-var NAME.
@@ -164,7 +164,7 @@ mod tests {
             "first-run seed must not pin compiled defaults: {text}"
         );
         assert!(
-            text.contains("ironclaw config init --force") && !text.contains("ironclaw-reborn"),
+            text.contains("zlo config init --force") && !text.contains("ironclaw-reborn"),
             "first-run guidance must use the canonical CLI command: {text}"
         );
         let parsed = RebornConfigFile::load(&path)

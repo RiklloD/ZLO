@@ -1,6 +1,6 @@
 // arch-exempt: large_file, service command backend awaits composition helper extraction, plan #4471
 //! macOS launchd generators, path resolution, status matching, and verb
-//! bodies for `ironclaw service`.
+//! bodies for `zlo service`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use crate::context::RebornCliContext;
 use crate::serve_invocation::ServeInvocation;
 
-use super::{SERVICE_LABEL, ServiceCommandRunner, home_dir};
+use super::{LEGACY_SERVICE_LABEL, SERVICE_LABEL, ServiceCommandRunner, home_dir};
 
 // ── Escaping ────────────────────────────────────────────────────
 
@@ -88,10 +88,67 @@ fn plist_content(
 // ── Path helpers ────────────────────────────────────────────────
 
 fn plist_path() -> Result<PathBuf> {
+    plist_path_for(SERVICE_LABEL)
+}
+
+fn plist_path_for(label: &str) -> Result<PathBuf> {
     Ok(home_dir()?
         .join("Library")
         .join("LaunchAgents")
-        .join(format!("{SERVICE_LABEL}.plist")))
+        .join(format!("{label}.plist")))
+}
+
+/// The label the non-install verbs manage: the ZLO job when its plist
+/// exists, else a pre-ZLO `com.ironclaw.reborn` job still installed (so
+/// `service status/stop/restart/uninstall` keep working until `install`
+/// replaces it), else the ZLO label.
+fn active_label() -> Result<&'static str> {
+    if !plist_path_for(SERVICE_LABEL)?.exists() && plist_path_for(LEGACY_SERVICE_LABEL)?.exists() {
+        return Ok(LEGACY_SERVICE_LABEL);
+    }
+    Ok(SERVICE_LABEL)
+}
+
+/// Unload a pre-ZLO `com.ironclaw.reborn` job and move its plist into the
+/// data folder (`<home>/retired-com.ironclaw.reborn.plist`) so two backends
+/// never fight over the port. Returns whether it was loaded, so `install`
+/// can start the replacement in its place.
+fn retire_legacy_job(
+    runner: &mut dyn ServiceCommandRunner,
+    list: &str,
+    home: &Path,
+) -> Result<bool> {
+    let legacy = plist_path_for(LEGACY_SERVICE_LABEL)?;
+    let was_loaded = service_loaded(list, LEGACY_SERVICE_LABEL);
+    if was_loaded {
+        runner.run_checked(
+            "launchctl stop",
+            Command::new("launchctl")
+                .arg("stop")
+                .arg(LEGACY_SERVICE_LABEL),
+        )?;
+        let uid = runner
+            .run_capture_checked("id -u", Command::new("id").arg("-u"))?
+            .trim()
+            .parse::<u32>()
+            .context("parse numeric uid from `id -u`")?;
+        runner.run_checked(
+            "launchctl bootout",
+            Command::new("launchctl")
+                .arg("bootout")
+                .arg(format!("gui/{uid}/{LEGACY_SERVICE_LABEL}")),
+        )?;
+    }
+    if legacy.exists() {
+        let kept = home.join(format!("retired-{LEGACY_SERVICE_LABEL}.plist"));
+        std::fs::rename(&legacy, &kept)
+            .with_context(|| format!("move {} to {}", legacy.display(), kept.display()))?;
+        println!(
+            "Retired the old IronClaw service {LEGACY_SERVICE_LABEL} (kept at {}).",
+            kept.display()
+        );
+    }
+    Ok(was_loaded)
 }
 
 // ── Status matching ─────────────────────────────────────────────
@@ -133,15 +190,15 @@ fn launchd_status_from_line(line: &str) -> Option<(LaunchdStatus, &str)> {
 
 /// The status of our label's line in `launchctl list`, if it appears at
 /// all (i.e. the job is currently loaded, running or not).
-fn find_label_status(launchctl_list_output: &str) -> Option<LaunchdStatus> {
+fn find_label_status(launchctl_list_output: &str, wanted: &str) -> Option<LaunchdStatus> {
     launchctl_list_output.lines().find_map(|line| {
         launchd_status_from_line(line)
-            .and_then(|(status, label)| (label == SERVICE_LABEL).then_some(status))
+            .and_then(|(status, label)| (label == wanted).then_some(status))
     })
 }
 
-fn service_running(launchctl_list_output: &str) -> bool {
-    find_label_status(launchctl_list_output) == Some(LaunchdStatus::Running)
+fn service_running(launchctl_list_output: &str, label: &str) -> bool {
+    find_label_status(launchctl_list_output, label) == Some(LaunchdStatus::Running)
 }
 
 /// Whether the label is registered with launchd at all, regardless of
@@ -149,8 +206,8 @@ fn service_running(launchctl_list_output: &str) -> bool {
 /// job still needs to be torn down / reloaded (uninstall, reinstall) —
 /// unlike `service_running`, which only asks "does it have a PID right
 /// now" (used for the user-facing running/stopped status line).
-fn service_loaded(launchctl_list_output: &str) -> bool {
-    find_label_status(launchctl_list_output).is_some()
+fn service_loaded(launchctl_list_output: &str, label: &str) -> bool {
+    find_label_status(launchctl_list_output, label).is_some()
 }
 
 /// Whether `service status` should report the service as installed:
@@ -197,7 +254,8 @@ pub(super) fn install_with_runner(
     let stderr_log = logs_dir.join("serve.stderr.log");
     let list =
         runner.run_capture_checked("launchctl list", Command::new("launchctl").arg("list"))?;
-    let was_loaded = service_loaded(&list);
+    let was_loaded = service_loaded(&list, SERVICE_LABEL);
+    let legacy_was_loaded = retire_legacy_job(runner, &list, context.boot_config().home().path())?;
     // Captured before the write: a pre-existing file at this path may
     // have been installed by this CLI's own prior run, or by the WebUI
     // operator service (`RebornLocalServiceLifecycle`) — both surfaces
@@ -229,12 +287,22 @@ pub(super) fn install_with_runner(
             "launchctl start",
             Command::new("launchctl").arg("start").arg(SERVICE_LABEL),
         )?;
+    } else if legacy_was_loaded {
+        // The retired job was running: start its replacement in its place.
+        runner.run_checked(
+            "launchctl load",
+            Command::new("launchctl").arg("load").arg("-w").arg(&file),
+        )?;
+        runner.run_checked(
+            "launchctl start",
+            Command::new("launchctl").arg("start").arg(SERVICE_LABEL),
+        )?;
     }
     println!("Installed launchd service: {}", file.display());
     if let Some(note) = launchd_install_advisory(replaced_existing, was_loaded) {
         println!("{note}");
     }
-    println!("  Start with: ironclaw service start");
+    println!("  Start with: zlo service start");
     Ok(replaced_existing)
 }
 
@@ -251,9 +319,10 @@ fn start_with_runner_quiet(runner: &mut dyn ServiceCommandRunner) -> Result<()> 
 }
 
 fn start_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) -> Result<()> {
-    let plist = plist_path()?;
+    let label = active_label()?;
+    let plist = plist_path_for(label)?;
     if !plist.exists() {
-        bail!("Service not installed. Run `ironclaw service install` first.");
+        bail!("Service not installed. Run `zlo service install` first.");
     }
     // A bare `launchctl load -w` fails when the label is already loaded
     // (loaded-but-stopped, i.e. a `-` PID) — the same condition `install`
@@ -262,7 +331,7 @@ fn start_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) 
     // not-loaded label needs the `load` step.
     let list =
         runner.run_capture_checked("launchctl list", Command::new("launchctl").arg("list"))?;
-    if !service_loaded(&list) {
+    if !service_loaded(&list, label) {
         runner.run_checked(
             "launchctl load",
             Command::new("launchctl").arg("load").arg("-w").arg(&plist),
@@ -270,7 +339,7 @@ fn start_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) 
     }
     runner.run_checked(
         "launchctl start",
-        Command::new("launchctl").arg("start").arg(SERVICE_LABEL),
+        Command::new("launchctl").arg("start").arg(label),
     )?;
     if verbose {
         println!("Service started");
@@ -289,7 +358,8 @@ fn stop_with_runner_quiet(runner: &mut dyn ServiceCommandRunner) -> Result<()> {
 }
 
 fn stop_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) -> Result<()> {
-    let plist = plist_path()?;
+    let label = active_label()?;
+    let plist = plist_path_for(label)?;
     if !plist.exists() {
         if verbose {
             println!("Service stopped");
@@ -298,7 +368,7 @@ fn stop_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) -
     }
     let list =
         runner.run_capture_checked("launchctl list", Command::new("launchctl").arg("list"))?;
-    if !service_loaded(&list) {
+    if !service_loaded(&list, label) {
         if verbose {
             println!("Service stopped");
         }
@@ -310,7 +380,7 @@ fn stop_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) -
     // loaded-but-stopped KeepAlive job undisturbed.
     runner.run_checked(
         "launchctl stop",
-        Command::new("launchctl").arg("stop").arg(SERVICE_LABEL),
+        Command::new("launchctl").arg("stop").arg(label),
     )?;
     runner.run_checked(
         "launchctl unload",
@@ -335,12 +405,13 @@ fn stop_with_runner_impl(runner: &mut dyn ServiceCommandRunner, verbose: bool) -
 /// `service_loaded`, so this subsumes the previously-running case without
 /// changing its behavior.
 pub(super) fn restart_with_runner(runner: &mut dyn ServiceCommandRunner) -> Result<()> {
-    let plist = plist_path()?;
+    let label = active_label()?;
+    let plist = plist_path_for(label)?;
     let installed = plist.exists();
     let was_active = if installed {
         let list =
             runner.run_capture_checked("launchctl list", Command::new("launchctl").arg("list"))?;
-        service_loaded(&list)
+        service_loaded(&list, label)
     } else {
         false
     };
@@ -362,19 +433,20 @@ struct LaunchdStatusInfo {
 }
 
 fn resolve_status_info(runner: &mut dyn ServiceCommandRunner) -> Result<LaunchdStatusInfo> {
-    let file_exists = plist_path()?.exists();
+    let label = active_label()?;
+    let file_exists = plist_path_for(label)?.exists();
     // Query launchctl unconditionally — a plist that was removed
     // out-of-band while the job is still loaded is an orphan we must
     // still report as installed, not silently claim "not installed".
     let list =
         runner.run_capture_checked("launchctl list", Command::new("launchctl").arg("list"))?;
-    let running = service_running(&list);
-    let installed = resolve_installed(file_exists, service_loaded(&list));
+    let running = service_running(&list, label);
+    let installed = resolve_installed(file_exists, service_loaded(&list, label));
     Ok(LaunchdStatusInfo { installed, running })
 }
 
 pub(super) fn status_with_runner(runner: &mut dyn ServiceCommandRunner) -> Result<()> {
-    let plist = plist_path()?;
+    let plist = plist_path_for(active_label()?)?;
     let info = resolve_status_info(runner)?;
     println!(
         "Service: {}",
@@ -398,17 +470,18 @@ pub(super) fn current_state_with_runner(
 }
 
 pub(super) fn uninstall_with_runner(runner: &mut dyn ServiceCommandRunner) -> Result<()> {
-    let file = plist_path()?;
+    let label = active_label()?;
+    let file = plist_path_for(label)?;
     let list =
         runner.run_capture_checked("launchctl list", Command::new("launchctl").arg("list"))?;
-    if service_loaded(&list) {
+    if service_loaded(&list, label) {
         // `stop` alone is insufficient for a KeepAlive agent: launchd
         // immediately restarts it. Target the registered label so a loaded
         // job left behind by an older broken uninstall can still be removed
         // even when its plist path is already absent.
         runner.run_checked(
             "launchctl stop",
-            Command::new("launchctl").arg("stop").arg(SERVICE_LABEL),
+            Command::new("launchctl").arg("stop").arg(label),
         )?;
         let uid = runner
             .run_capture_checked("id -u", Command::new("id").arg("-u"))?
@@ -419,7 +492,7 @@ pub(super) fn uninstall_with_runner(runner: &mut dyn ServiceCommandRunner) -> Re
             "launchctl bootout",
             Command::new("launchctl")
                 .arg("bootout")
-                .arg(format!("gui/{uid}/{SERVICE_LABEL}")),
+                .arg(format!("gui/{uid}/{label}")),
         )?;
     }
     if file.exists() {
@@ -553,6 +626,99 @@ mod tests {
             !replaced,
             "a fresh install (no prior plist) must not report a replacement"
         );
+    }
+
+    /// RAII `$HOME` override; caller holds `lock_runtime_env()`.
+    struct HomeGuard(Option<std::ffi::OsString>);
+
+    impl HomeGuard {
+        fn set(path: &Path) -> Self {
+            let prior = std::env::var_os("HOME");
+            // SAFETY: serialized by `lock_runtime_env`; restored on drop.
+            unsafe { std::env::set_var("HOME", path) };
+            Self(prior)
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialized by `lock_runtime_env`.
+            unsafe {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("HOME", value),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    fn write_legacy_plist(home: &Path) -> PathBuf {
+        let dir = home.join("Library/LaunchAgents");
+        std::fs::create_dir_all(&dir).expect("LaunchAgents");
+        let legacy = dir.join(format!("{LEGACY_SERVICE_LABEL}.plist"));
+        std::fs::write(&legacy, "<plist/>").expect("legacy plist");
+        legacy
+    }
+
+    #[test]
+    fn a_pre_zlo_job_is_still_managed_until_install_replaces_it() {
+        let _lock = crate::runtime::test_env::lock_runtime_env();
+        let home_tmp = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home_tmp.path());
+        write_legacy_plist(home_tmp.path());
+        let mut runner = RecordingRunner {
+            launchctl_list: format!("123\t0\t{LEGACY_SERVICE_LABEL}\n"),
+            ..RecordingRunner::default()
+        };
+
+        let state = current_state_with_runner(&mut runner).expect("status");
+        assert_eq!(state, super::super::ServiceState::Running);
+
+        stop_with_runner(&mut runner).expect("stop the legacy job");
+        assert!(
+            runner
+                .args
+                .contains(&vec!["stop".to_string(), LEGACY_SERVICE_LABEL.to_string()]),
+            "{:?}",
+            runner.args
+        );
+    }
+
+    #[test]
+    fn install_retires_a_pre_zlo_job_and_starts_its_replacement() {
+        let _lock = crate::runtime::test_env::lock_runtime_env();
+        let home_tmp = tempfile::tempdir().expect("tempdir");
+        let _home = HomeGuard::set(home_tmp.path());
+        let legacy = write_legacy_plist(home_tmp.path());
+        let (_ctx_tmp, context) = RebornCliContext::test_context();
+        let mut runner = RecordingRunner {
+            launchctl_list: format!("123\t0\t{LEGACY_SERVICE_LABEL}\n"),
+            ..RecordingRunner::default()
+        };
+
+        install_with_runner(&context, &sample_invocation(), &mut runner).expect("install");
+
+        assert!(!legacy.exists(), "the old plist leaves LaunchAgents");
+        let kept = context
+            .boot_config()
+            .home()
+            .path()
+            .join(format!("retired-{LEGACY_SERVICE_LABEL}.plist"));
+        assert_eq!(std::fs::read_to_string(&kept).expect("kept"), "<plist/>");
+        assert!(plist_path().expect("path").is_file(), "new plist written");
+        let bootout_legacy = vec![
+            "bootout".to_string(),
+            format!("gui/501/{LEGACY_SERVICE_LABEL}"),
+        ];
+        let start_new = vec!["start".to_string(), SERVICE_LABEL.to_string()];
+        let bootout_at = runner.args.iter().position(|a| *a == bootout_legacy);
+        let start_at = runner.args.iter().position(|a| *a == start_new);
+        assert!(
+            matches!((bootout_at, start_at), (Some(b), Some(s)) if b < s),
+            "the old job stops before the new one starts: {:?}",
+            runner.args
+        );
+        assert_eq!(active_label().expect("label"), SERVICE_LABEL);
     }
 
     #[test]
@@ -836,23 +1002,24 @@ mod tests {
         }
         assert_eq!(
             path.expect("must resolve"),
-            PathBuf::from("/home/op/Library/LaunchAgents/com.ironclaw.reborn.plist")
+            PathBuf::from("/home/op/Library/LaunchAgents/com.zlo.serve.plist")
         );
     }
 
     #[test]
     fn service_running_matches_only_the_label_line() {
-        let output = "-\t0\tcom.apple.something\n123\t0\tcom.ironclaw.reborn\n";
-        assert!(service_running(output));
+        let output = "-\t0\tcom.apple.something\n123\t0\tcom.zlo.serve\n";
+        assert!(service_running(output, SERVICE_LABEL));
     }
 
     #[test]
     fn service_running_false_when_label_absent() {
         let output = "com.apple.something\t0\t0\n";
-        assert!(!service_running(output));
-        assert!(!service_running(&format!(
-            "123\t0\t{SERVICE_LABEL}.helper\n"
-        )));
+        assert!(!service_running(output, SERVICE_LABEL));
+        assert!(!service_running(
+            &format!("123\t0\t{SERVICE_LABEL}.helper\n"),
+            SERVICE_LABEL
+        ));
     }
 
     #[test]
@@ -893,10 +1060,7 @@ mod tests {
         assert_eq!(runner.args[2], ["-u"]);
         assert_eq!(
             runner.args[3],
-            [
-                "bootout".to_string(),
-                "gui/501/com.ironclaw.reborn".to_string()
-            ]
+            ["bootout".to_string(), "gui/501/com.zlo.serve".to_string()]
         );
     }
 
@@ -912,7 +1076,7 @@ mod tests {
         std::fs::write(&file, "plist").expect("write plist");
         let mut runner = RecordingRunner {
             launchctl_list: format!("123\t0\t{SERVICE_LABEL}\n"),
-            fail_args: Some(vec!["bootout", "gui/501/com.ironclaw.reborn"]),
+            fail_args: Some(vec!["bootout", "gui/501/com.zlo.serve"]),
             ..RecordingRunner::default()
         };
         let result = uninstall_with_runner(&mut runner);
@@ -976,7 +1140,7 @@ mod tests {
                 vec!["list"],
                 vec!["stop", SERVICE_LABEL],
                 vec!["-u"],
-                vec!["bootout", "gui/501/com.ironclaw.reborn"]
+                vec!["bootout", "gui/501/com.zlo.serve"]
             ]
         );
     }
@@ -1140,11 +1304,11 @@ mod tests {
         // so it misread this as running.
         let output = format!("-\t0\t{SERVICE_LABEL}\n");
         assert!(
-            !service_running(&output),
+            !service_running(&output, SERVICE_LABEL),
             "dash PID must not read as running"
         );
         assert!(
-            service_loaded(&output),
+            service_loaded(&output, SERVICE_LABEL),
             "the label is still registered with launchd even though stopped"
         );
     }

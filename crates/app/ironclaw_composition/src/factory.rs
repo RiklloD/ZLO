@@ -1086,7 +1086,7 @@ fn write_standalone_secret_master_key(path: &Path, key: &str) -> Result<(), Rebo
                     .to_string(),
             })?;
         // `icacls` writes a success banner to stdout. Capture it so commands
-        // such as `ironclaw extension search --json` keep stdout machine-clean.
+        // such as `zlo extension search --json` keep stdout machine-clean.
         let output = std::process::Command::new("icacls")
             .arg(path)
             .arg("/inheritance:r")

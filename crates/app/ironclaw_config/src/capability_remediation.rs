@@ -22,9 +22,9 @@ pub fn google_remediation_text() -> String {
      1. https://console.cloud.google.com/apis/credentials -> Create Credentials -> OAuth \
      client ID -> Desktop app\n  \
      2. Enable the Gmail API (and Calendar/Drive as needed) for the project\n  \
-     3. ironclaw config set google.client_id <id>.apps.googleusercontent.com\n  \
-     4. ironclaw config set google.client_secret   (prompts, hidden input)\n  \
-     5. ironclaw config set google.redirect_uri <redirect-uri-from-the-oauth-client>"
+     3. zlo config set google.client_id <id>.apps.googleusercontent.com\n  \
+     4. zlo config set google.client_secret   (prompts, hidden input)\n  \
+     5. zlo config set google.redirect_uri <redirect-uri-from-the-oauth-client>"
         .to_string()
 }
 
@@ -34,7 +34,7 @@ pub fn google_remediation_text() -> String {
 /// so every surface that tells a caller "go configure this" must also tell
 /// them the explicit next step rather than implying it happens automatically.
 pub fn apply_step_text() -> &'static str {
-    "Run `ironclaw service restart` to apply the change, then ask again."
+    "Run `zlo service restart` to apply the change, then ask again."
 }
 
 /// The console steps plus the apply step — the complete "here is how to
@@ -74,7 +74,7 @@ pub fn google_not_configured_text() -> String {
 pub fn google_backend_auth_text() -> String {
     format!(
         "Google OAuth is configured but the provider rejected the request while exchanging \
-         or refreshing the token (e.g. invalid_client). Re-run `ironclaw config set \
+         or refreshing the token (e.g. invalid_client). Re-run `zlo config set \
          google.client_secret` to update it, then confirm the OAuth client credentials at \
          https://console.cloud.google.com/apis/credentials. {}",
         apply_step_text()
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn apply_step_text_names_the_explicit_restart_command() {
         let text = apply_step_text();
-        assert!(text.contains("ironclaw service restart"));
+        assert!(text.contains("zlo service restart"));
         assert!(!text.contains("automatically"));
     }
 
@@ -175,7 +175,7 @@ mod tests {
     fn google_not_configured_text_embeds_the_shared_setup_steps_verbatim() {
         let steps = google_setup_steps_text();
         assert!(steps.contains("config set google.client_id"));
-        assert!(steps.contains("ironclaw service restart"));
+        assert!(steps.contains("zlo service restart"));
         assert!(
             google_not_configured_text().contains(&steps),
             "the dispatch-time text must embed the shared body verbatim, not recompose it"

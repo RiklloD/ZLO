@@ -1,4 +1,4 @@
-//! WebChat v2 auth-surface assembly for `ironclaw serve`.
+//! WebChat v2 auth-surface assembly for `zlo serve`.
 //!
 //! Owns the one place that turns host config into the pair the listener
 //! needs: the `WebuiAuthenticator` the protected v2 routes use, plus the

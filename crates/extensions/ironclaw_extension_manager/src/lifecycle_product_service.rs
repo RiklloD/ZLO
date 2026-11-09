@@ -889,7 +889,7 @@ mod tests {
                 reason: "bad ref".into(),
             },
             ProductOperationFailure::ProviderInstanceNotConfigured {
-                reason: "ironclaw config set google.client_id <id>".into(),
+                reason: "zlo config set google.client_id <id>".into(),
             },
             ProductOperationFailure::UnsupportedActionKind {
                 kind: "teleport".into(),
@@ -928,7 +928,7 @@ mod tests {
         assert!(
             install_activation_error(
                 ProductOperationFailure::ProviderInstanceNotConfigured {
-                    reason: "ironclaw config set google.client_id <id>".to_string(),
+                    reason: "zlo config set google.client_id <id>".to_string(),
                 },
                 installed_response(),
             )
@@ -1509,7 +1509,7 @@ mod tests {
     /// carries the same message-only device-link guidance as the model-facing
     /// `builtin.extension_activate` capability (`extension_lifecycle_capabilities.rs`'s
     /// sibling test), but through this separate `ExtensionHostLifecycleProductService::execute_action`
-    /// arm (line ~207) — the CLI's `ironclaw extension activate` command and
+    /// arm (line ~207) — the CLI's `zlo extension activate` command and
     /// any internal auth-continuation completion both route through this
     /// service, not the capability handler. Drives the real service end to
     /// end (`.execute_action`, the same seam `hosted_mcp_registration.rs`

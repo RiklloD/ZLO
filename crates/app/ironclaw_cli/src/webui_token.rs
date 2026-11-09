@@ -27,11 +27,17 @@ use crate::file_write::FileWriteAction;
 pub(crate) const WEBUI_TOKEN_FILENAME: &str = "webui-token";
 
 /// Default name of the env var that overrides the token file at runtime,
-/// absent an operator override via `[webui].env_token_var`. Shared by
-/// `serve` (which reads it) and `config set webui.token --rotate` (which
-/// checks it before rotating, since rotating the file has no effect while
-/// this env var is set and non-empty — see `commands::config::set`).
-pub(crate) const DEFAULT_ENV_TOKEN_VAR: &str = "IRONCLAW_REBORN_WEBUI_TOKEN";
+/// absent an operator override via `[webui].env_token_var`: `ZLO_WEBUI_TOKEN`,
+/// or the pre-ZLO `IRONCLAW_REBORN_WEBUI_TOKEN` when only that one is set.
+/// Shared by `serve` (which reads it) and `config set webui.token --rotate`
+/// (which checks it before rotating, since rotating the file has no effect
+/// while this env var is set and non-empty — see `commands::config::set`).
+pub(crate) fn default_env_token_var() -> &'static str {
+    ironclaw_config::active_env_name(
+        ironclaw_config::WEBUI_TOKEN_ENV,
+        ironclaw_config::LEGACY_WEBUI_TOKEN_ENV,
+    )
+}
 
 /// Minimum byte length for the WebChat v2 bearer token, mirroring the
 /// server-side session-signing entropy floor: an attacker who obtains
@@ -106,7 +112,7 @@ fn read_token_file_checked(path: &Path) -> anyhow::Result<Option<String>> {
             {
                 anyhow::bail!(
                     "{} is a symlink; refusing to read the WebChat v2 token file through it. \
-                     Remove it and re-run `ironclaw onboard` to provision a regular file.",
+                     Remove it and re-run `zlo onboard` to provision a regular file.",
                     path.display()
                 );
             }
@@ -120,7 +126,7 @@ fn read_token_file_checked(path: &Path) -> anyhow::Result<Option<String>> {
     if !metadata.is_file() {
         anyhow::bail!(
             "{} is not a regular file; refusing to read the WebChat v2 token file through it. \
-             Remove it and re-run `ironclaw onboard` to provision a regular file.",
+             Remove it and re-run `zlo onboard` to provision a regular file.",
             path.display()
         );
     }
@@ -161,7 +167,7 @@ fn read_token_file_checked(path: &Path) -> anyhow::Result<Option<String>> {
             if metadata.file_type().is_symlink() {
                 anyhow::bail!(
                     "{} is a symlink; refusing to read the WebChat v2 token file through it. \
-                     Remove it and re-run `ironclaw onboard` to provision a regular file.",
+                     Remove it and re-run `zlo onboard` to provision a regular file.",
                     path.display()
                 );
             }
@@ -417,7 +423,7 @@ pub(crate) fn resolve_webui_token(
         }
         None => Err(anyhow::anyhow!(
             "{env_var_name} must be set to the WebChat v2 bearer token, or a token file must \
-             exist at {} (written by `ironclaw onboard`). Neither was found.",
+             exist at {} (written by `zlo onboard`). Neither was found.",
             file_path.display()
         )),
     }
@@ -442,7 +448,7 @@ pub(crate) fn env_token_is_active(env_var_name: &str) -> anyhow::Result<bool> {
 
 /// Resolve which env var name gates the webui bearer token: the operator's
 /// `[webui].env_token_var` override when set, else
-/// `commands::serve::DEFAULT_ENV_TOKEN_VAR`. Shared so `onboard`/`status`
+/// [`default_env_token_var`]. Shared so `onboard`/`status`
 /// check [`env_token_is_active`] against the same name `serve` resolves
 /// against.
 pub(crate) fn resolve_env_token_var_name(
@@ -451,7 +457,7 @@ pub(crate) fn resolve_env_token_var_name(
     config_file
         .and_then(|file| file.webui.as_ref())
         .and_then(|section| section.env_token_var.as_deref())
-        .unwrap_or(crate::commands::serve::DEFAULT_ENV_TOKEN_VAR)
+        .unwrap_or(default_env_token_var())
 }
 
 /// What a login-link printer (`onboard`'s finale, `status`) should announce.
@@ -507,7 +513,7 @@ fn validate_token_entropy(
         "the WebChat v2 bearer token (from {env_var_name} or {}) is only {} bytes; it is also \
          the WebChat v2 session-signing key and must be at least {WEBUI_TOKEN_MIN_BYTES} bytes \
          of high-entropy random material. Generate one with e.g. `openssl rand -hex 32`, or run \
-         `ironclaw onboard` to provision a valid token file.",
+         `zlo onboard` to provision a valid token file.",
         webui_token_file_path(reborn_home).display(),
         value.len(),
     ))

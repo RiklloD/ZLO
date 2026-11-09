@@ -1,7 +1,7 @@
 use std::{fs, path::Path, process::Command};
 
 fn reborn_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_ironclaw")
+    env!("CARGO_BIN_EXE_zlo")
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn extension_install_json_uses_reborn_home_without_v1_state() {
         .arg("--json")
         .env_clear()
         .env("IRONCLAW_DISABLE_OS_KEYCHAIN", "1")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .env("IRONCLAW_BASE_DIR", &v1_base_dir)
         .output()
         .expect("ironclaw-reborn extension install --json should run");
@@ -134,7 +134,7 @@ fn extension_search_human_output_escapes_control_characters() {
         .arg("zztest-evil")
         .env_clear()
         .env("IRONCLAW_DISABLE_OS_KEYCHAIN", "1")
-        .env("IRONCLAW_REBORN_HOME", &reborn_home)
+        .env("ZLO_HOME", &reborn_home)
         .output()
         .expect("ironclaw-reborn extension search should run");
 
@@ -183,7 +183,7 @@ fn run_extension_json(reborn_home: &Path, args: &[&str]) -> serde_json::Value {
         .args(args)
         .env_clear()
         .env("IRONCLAW_DISABLE_OS_KEYCHAIN", "1")
-        .env("IRONCLAW_REBORN_HOME", reborn_home);
+        .env("ZLO_HOME", reborn_home);
     preserve_windows_runtime_environment(&mut command);
     let output = command
         .output()

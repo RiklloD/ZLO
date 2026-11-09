@@ -8,7 +8,7 @@
 //!
 //! * budget limits are configured through the production
 //!   [`RebornRuntimeInput::with_budget_defaults`] seam — the same
-//!   composition-root path `ironclaw serve` uses — and installed on first
+//!   composition-root path `zlo serve` uses — and installed on first
 //!   touch by the accountant's seeding policy (so every test here also
 //!   exercises that wiring);
 //! * emitted [`BudgetEvent`]s are observed through the runtime's public

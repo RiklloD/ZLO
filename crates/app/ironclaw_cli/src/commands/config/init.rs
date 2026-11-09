@@ -10,7 +10,7 @@ use crate::file_write::{FileWriteAction, write_atomic};
 /// Write a commented stub `config.toml` and `providers.json` into the
 /// Reborn home directory so an operator has something editable.
 ///
-/// Mirrors v1's `ironclaw config init` ergonomics: refuses to clobber
+/// Mirrors v1's `zlo config init` ergonomics: refuses to clobber
 /// existing files unless `--force` is given. Both files are written
 /// atomically (write to `.tmp`, rename) so a partial write never
 /// leaves an unreadable config on the next boot.
@@ -33,11 +33,11 @@ impl ConfigInitCommand {
         println!(
             "hint: config.toml ships with `[llm.default]` commented out, so `run`/`serve` fall \
              back to LLM environment variables until you configure a slot — run `ironclaw \
-             onboard` interactively, `ironclaw models set-provider <provider>`, or edit \
+             onboard` interactively, `zlo models set-provider <provider>`, or edit \
              config.toml and uncomment `[llm.default]` with a `provider_id` (and usually a \
              `model`) to pin an explicit provider."
         );
-        println!("edit them, then run `ironclaw run`.");
+        println!("edit them, then run `zlo run`.");
         Ok(())
     }
 }
@@ -169,7 +169,7 @@ fn config_stub() -> String {
 # Precedence on each field:
 #   compiled defaults < this file < env vars < CLI flags.
 #
-# Regenerate with `ironclaw config init --force`.
+# Regenerate with `zlo config init --force`.
 
 api_version = "{api_version}"
 
@@ -238,8 +238,8 @@ regex_activation_enabled = true
 # # `api_key_env` override the catalog defaults for this deployment.
 # # No slot is seeded by default: leaving this section commented means the
 # # runtime falls back to LLM environment variables (`LLM_BACKEND`, or a
-# # provider whose own env vars are set — see `ironclaw onboard` and
-# # `.env.example`). Run `ironclaw onboard` interactively, `ironclaw config
+# # provider whose own env vars are set — see `zlo onboard` and
+# # `.env.example`). Run `zlo onboard` interactively, `zlo config
 # # set` / `models set-provider`, or the WebUI settings page to
 # # write an explicit slot here.
 # #

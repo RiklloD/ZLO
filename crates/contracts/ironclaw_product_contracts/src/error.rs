@@ -71,7 +71,7 @@ pub enum ProductOperationFailure {
     /// backend registered on this build at all) is missing entirely — a
     /// static, build-time fact distinct from a per-user missing or expired
     /// credential account. `reason` is plain, host-authored text carrying the
-    /// exact remediation (e.g. the `ironclaw config set` commands to run).
+    /// exact remediation (e.g. the `zlo config set` commands to run).
     ///
     /// Two independent consumers read this variant differently, and both
     /// behaviours are load-bearing: the WebUI projection discards `reason` and
@@ -129,7 +129,7 @@ impl From<ProductOperationFailure> for ProductSurfaceError {
             | ProductOperationFailure::UnsupportedActionKind { .. }
             // WebUI gets a plain 400 with no free text: the exact `config set`
             // remediation reaches users via the LLM tool path and
-            // `ironclaw status`; bespoke WebUI messaging is a deliberately
+            // `zlo status`; bespoke WebUI messaging is a deliberately
             // deferred scope-cut.
             | ProductOperationFailure::ProviderInstanceNotConfigured { .. } => {
                 ProductSurfaceError::from_status(ProductSurfaceErrorCode::InvalidRequest, 400, false)
@@ -185,7 +185,7 @@ mod tests {
             ),
             (
                 ProductOperationFailure::ProviderInstanceNotConfigured {
-                    reason: "ironclaw config set google.client_id <id>".into(),
+                    reason: "zlo config set google.client_id <id>".into(),
                 },
                 ProductSurfaceErrorCode::InvalidRequest,
                 400,
@@ -258,7 +258,7 @@ mod tests {
     fn projection_carries_no_reason_text_across_the_membrane() {
         let projected: ProductSurfaceError =
             ProductOperationFailure::ProviderInstanceNotConfigured {
-                reason: "ironclaw config set google.client_secret <secret>".into(),
+                reason: "zlo config set google.client_secret <secret>".into(),
             }
             .into();
         assert_eq!(projected.field, None);
@@ -302,9 +302,9 @@ mod tests {
             ),
             (
                 ProductOperationFailure::ProviderInstanceNotConfigured {
-                    reason: "ironclaw config set google.client_id <id>".into(),
+                    reason: "zlo config set google.client_id <id>".into(),
                 },
-                Some("ironclaw config set google.client_id <id>"),
+                Some("zlo config set google.client_id <id>"),
             ),
             (
                 ProductOperationFailure::UnsupportedActionKind {

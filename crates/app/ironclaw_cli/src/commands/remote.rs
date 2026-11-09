@@ -1,4 +1,4 @@
-//! `ironclaw remote enable|status|disable` — reach this backend from the
+//! `zlo remote enable|status|disable` — reach this backend from the
 //! owner's other machines over their tailnet.
 //!
 //! `enable` checks Tailscale, refuses Funnel and a port someone else
@@ -6,7 +6,7 @@
 //! `tailscale serve --bg --https=<port> http://127.0.0.1:<identity_port>`.
 //! `disable` turns off only that one port (`serve --https=<port> off`, never
 //! `serve reset`) and sets `enabled = false`. The backend itself stays on
-//! loopback; `ironclaw serve` starts the identity listener on its next
+//! loopback; `zlo serve` starts the identity listener on its next
 //! start.
 
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
@@ -85,12 +85,12 @@ impl RemoteCommand {
                     } else if !other_accounts.is_empty() {
                         println!(
                             "One-click pairing is off: other login accounts exist on this machine \
-                             ({}). Pair with `ironclaw pair`, or re-run with --trust-local-users.",
+                             ({}). Pair with `zlo pair`, or re-run with --trust-local-users.",
                             other_accounts.join(", ")
                         );
                     }
                     if outcome.restart_required {
-                        println!("Restart `ironclaw serve` to start the identity listener.");
+                        println!("Restart `zlo serve` to start the identity listener.");
                     }
                 }
                 Ok(())
@@ -117,7 +117,7 @@ impl RemoteCommand {
                 } else {
                     println!("Remote access disabled.");
                 }
-                println!("Restart `ironclaw serve` to stop the identity listener.");
+                println!("Restart `zlo serve` to stop the identity listener.");
                 Ok(())
             }
         }

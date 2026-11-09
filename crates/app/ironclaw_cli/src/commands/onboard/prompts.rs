@@ -72,7 +72,7 @@ pub(crate) enum LlmCredentialPromptError {
     /// an unavailable interactive input.
     #[error(
         "onboarding LLM credential prompts require an interactive terminal; run \
-         `ironclaw models set-provider <provider>` and set the provider's API key env \
+         `zlo models set-provider <provider>` and set the provider's API key env \
          var instead, or rerun `onboard` from an interactive shell"
     )]
     NonInteractive,
@@ -93,7 +93,7 @@ impl PromptSource for StdinPromptSource {
         // Both streams matter: a redirected/piped stdout must not receive
         // the masked `*` characters `api_key`'s raw-mode read writes as the
         // operator types, even when stdin itself is a real terminal (e.g.
-        // `ironclaw onboard > log.txt` in an interactive shell).
+        // `zlo onboard > log.txt` in an interactive shell).
         std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
     }
 

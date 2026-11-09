@@ -185,7 +185,7 @@ fn host_remediation_texts_name_their_operator_step() {
         let expected = match entry {
             HostRemediationText::GoogleNotConfigured => "config set google.client_id",
             HostRemediationText::GoogleBackendAuth => "config set google.client_secret",
-            HostRemediationText::ApplyStep => "ironclaw service restart",
+            HostRemediationText::ApplyStep => "zlo service restart",
         };
         assert!(
             text.contains(expected),
@@ -284,7 +284,7 @@ fn persistence_is_governed_by_provenance_not_content_shape() {
         // heuristic could never have exempted this.
         "the client secret was rejected by the provider",
         // The dotted-key shape the heuristic used to special-case.
-        "run `ironclaw config set google.client_secret` to update it",
+        "run `zlo config set google.client_secret` to update it",
         // And a real production string end to end.
         &ironclaw_config::HostRemediationText::GoogleBackendAuth.text(),
     ] {

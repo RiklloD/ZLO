@@ -5,7 +5,7 @@
 //! - `update.log` — the job's output, truncated when a job starts.
 //! - `update.lock` — held (an OS file lock) by the running job for its
 //!   whole life, so it is released even when the job dies.
-//! - `ironclaw-updater` — the copy of the binary the detached job runs
+//! - `zlo-updater` — the copy of the binary the detached job runs
 //!   from, so replacing the installed binary or app never touches it.
 //!
 //! Plain files beside the other host files the binary keeps in the Reborn
@@ -74,7 +74,7 @@ impl UpdatePaths {
     }
 
     pub(crate) fn updater_binary(&self) -> PathBuf {
-        self.dir.join("ironclaw-updater")
+        self.dir.join("zlo-updater")
     }
 }
 

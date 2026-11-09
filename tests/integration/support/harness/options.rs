@@ -133,7 +133,7 @@ pub(crate) struct HostRuntimeHarnessOptions {
     /// `true`, registers a dummy Google OAuth backend on the `RebornHostBindings`
     /// via the SAME generic production builder
     /// (`RebornHostBindings::with_vendor_oauth_client`)
-    /// that `ironclaw config set google.client_id`/`client_secret` feeds in
+    /// that `zlo config set google.client_id`/`client_secret` feeds in
     /// production — proving the readiness-map check clears once an operator
     /// configures the instance, with no test-only bypass. `false` (the
     /// default) matches every pre-existing harness: no Google OAuth backend,

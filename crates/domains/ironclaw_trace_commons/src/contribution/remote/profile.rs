@@ -161,7 +161,7 @@ pub(crate) async fn mint_profile_attribution_token_with_context(
     anyhow::ensure!(
         policy.enabled,
         "not enrolled in Trace Commons — onboard first (run the Trace Commons onboarding \
-         or `ironclaw traces opt-in`)"
+         or `zlo traces opt-in`)"
     );
     anyhow::ensure!(
         policy

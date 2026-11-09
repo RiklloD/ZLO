@@ -32,9 +32,14 @@ use crate::runtime::RuntimeInputOptions;
 // pub(crate): reused by onboard's finale login-link print (same default host:port).
 pub(crate) const DEFAULT_SERVE_HOST: &str = "127.0.0.1";
 pub(crate) const DEFAULT_SERVE_PORT: u16 = 3000;
-// pub(crate): reused by onboard/status for `env_token_is_active` (webui_token.rs).
-pub(crate) const DEFAULT_ENV_TOKEN_VAR: &str = "IRONCLAW_REBORN_WEBUI_TOKEN";
-const DEFAULT_ENV_USER_ID_VAR: &str = "IRONCLAW_REBORN_WEBUI_USER_ID";
+/// `ZLO_WEBUI_USER_ID`, or the pre-ZLO `IRONCLAW_REBORN_WEBUI_USER_ID` when
+/// only that one is set.
+fn default_env_user_id_var() -> &'static str {
+    ironclaw_config::active_env_name(
+        ironclaw_config::WEBUI_USER_ID_ENV,
+        ironclaw_config::LEGACY_WEBUI_USER_ID_ENV,
+    )
+}
 /// Lifetime of the one-time API bearer minted when an admin creates a user. A
 /// year: this is a long-lived programmatic credential, not a browser session.
 const ADMIN_API_TOKEN_LIFETIME_DAYS: i64 = 365;
@@ -159,10 +164,10 @@ impl ServeCommand {
         let webui_section = config_file.as_ref().and_then(|file| file.webui.as_ref());
         let env_token_var = webui_section
             .and_then(|section| section.env_token_var.as_deref())
-            .unwrap_or(DEFAULT_ENV_TOKEN_VAR);
+            .unwrap_or(crate::webui_token::default_env_token_var());
         let env_user_id_var = webui_section
             .and_then(|section| section.env_user_id_var.as_deref())
-            .unwrap_or(DEFAULT_ENV_USER_ID_VAR);
+            .unwrap_or(default_env_user_id_var());
 
         // Precedence: `env_token_var` (if set and non-empty), else
         // `<reborn_home>/webui-token` (the `onboard`-provisioned fallback a
@@ -886,7 +891,7 @@ fn reject_non_loopback_privileged_local_runtime(
     }
 
     anyhow::bail!(
-        "`ironclaw serve` refuses non-loopback listener {host} because the selected \
+        "`zlo serve` refuses non-loopback listener {host} because the selected \
          runtime policy grants trusted-laptop host access (host-home filesystem, local host \
          process, direct network, inherited environment). Bind to a loopback host such as \
          127.0.0.1 or ::1, or choose a less privileged profile."

@@ -1,10 +1,10 @@
-//! `ironclaw service` — install/manage the standalone Reborn
+//! `zlo service` — install/manage the standalone Reborn
 //! binary as an OS-native service.
 //!
 //! - **macOS**: launchd user agent at
-//!   `~/Library/LaunchAgents/com.ironclaw.reborn.plist`.
+//!   `~/Library/LaunchAgents/com.zlo.serve.plist`.
 //! - **Linux**: systemd user unit at
-//!   `~/.config/systemd/user/ironclaw-reborn.service`.
+//!   `~/.config/systemd/user/zlo.service`.
 //!
 //! The installed service runs `<current_exe> serve`, restarting
 //! automatically on failure. Mirrors v1's `src/service.rs` shape with
@@ -21,7 +21,7 @@
 //!
 //! [`SERVICE_LABEL`] and [`SYSTEMD_UNIT`] name the **one** OS service
 //! identity for the standalone Reborn binary. Two surfaces install and
-//! manage it today: this CLI (`ironclaw service install`), and the
+//! manage it today: this CLI (`zlo service install`), and the
 //! WebUI operator facade (`OperatorServiceLifecycle` in
 //! `ironclaw_operator::operator_service_lifecycle`,
 //! behind `POST /api/webchat/v2/operator/service`). Both target the same
@@ -60,9 +60,14 @@ mod systemd;
 /// install from either surface atomically replaces the other's file at
 /// this same path; do not fork these constants to "avoid collisions"
 /// without updating both sides together.
-const SERVICE_LABEL: &str = "com.ironclaw.reborn";
+const SERVICE_LABEL: &str = "com.zlo.serve";
 /// See [`SERVICE_LABEL`] — same shared-identity contract, Linux side.
-const SYSTEMD_UNIT: &str = "ironclaw-reborn.service";
+const SYSTEMD_UNIT: &str = "zlo.service";
+/// Pre-ZLO launchd label. Verbs still manage a job installed under it until
+/// `zlo service install` retires it (unload + move the plist aside).
+const LEGACY_SERVICE_LABEL: &str = "com.ironclaw.reborn";
+/// Pre-ZLO systemd unit; same retirement contract as [`LEGACY_SERVICE_LABEL`].
+const LEGACY_SYSTEMD_UNIT: &str = "ironclaw-reborn.service";
 const UNSUPPORTED_OS_MESSAGE: &str = "Service management is only supported on macOS and Linux";
 
 // ── Clap surface ────────────────────────────────────────────────
@@ -253,10 +258,10 @@ impl ServicePlatform {
     }
 }
 
-/// Restart the installed OS service, for `ironclaw update` after it
+/// Restart the installed OS service, for `zlo update` after it
 /// replaced the binary. `Ok(false)` when no service is installed (nothing
 /// to restart; the caller says so). Same decision tree as
-/// `ironclaw service restart`.
+/// `zlo service restart`.
 pub(crate) fn restart_if_installed() -> Result<bool> {
     let platform = ServicePlatform::detect()?;
     if platform.current_state()? == ServiceState::NotInstalled {
@@ -326,7 +331,7 @@ fn ensure_service_working_directory(reborn_home: &Path) -> Result<PathBuf> {
 /// Non-fatal readiness warnings for `service install`: warn, don't
 /// fail, when onboarding hasn't run yet — the service can still be
 /// installed, but `serve` starts without config, providers, or a valid
-/// WebUI token until `ironclaw onboard` runs. Checks the
+/// WebUI token until `zlo onboard` runs. Checks the
 /// onboarding marker, `config.toml`, and the WebUI token file's entropy
 /// floor.
 ///
@@ -342,7 +347,7 @@ fn preflight_warnings(context: &RebornCliContext) -> Result<Vec<String>> {
     let marker = crate::commands::onboard::onboarding_marker_path(home);
     if !marker.exists() {
         warnings.push(format!(
-            "onboarding marker not found at {} — run `ironclaw onboard` first so \
+            "onboarding marker not found at {} — run `zlo onboard` first so \
              `serve` has config, providers, and the WebUI token available",
             marker.display()
         ));
@@ -358,7 +363,7 @@ fn preflight_warnings(context: &RebornCliContext) -> Result<Vec<String>> {
 
     if !crate::webui_token::webui_token_file_is_valid(home.path())? {
         warnings.push(format!(
-            "WebUI token not found or too short at {} — run `ironclaw onboard` first so \
+            "WebUI token not found or too short at {} — run `zlo onboard` first so \
              `serve` has a valid WebUI bearer token",
             crate::webui_token::webui_token_file_path(home.path()).display()
         ));
@@ -388,7 +393,7 @@ fn restart_generic(
     start: fn(&mut dyn ServiceCommandRunner) -> Result<()>,
 ) -> Result<()> {
     if !installed {
-        bail!("Service not installed. Run `ironclaw service install` first.");
+        bail!("Service not installed. Run `zlo service install` first.");
     }
     if was_running {
         stop(runner)?;
@@ -474,7 +479,7 @@ fn status_label(installed: bool, running: bool) -> &'static str {
 fn replaced_existing_service_file_note(replaced_existing: bool) -> Option<&'static str> {
     replaced_existing.then_some(
         "  Replaced an existing service definition at this path; if the service is currently \
-         running, it keeps the OLD definition until `ironclaw service restart`.",
+         running, it keeps the OLD definition until `zlo service restart`.",
     )
 }
 
@@ -894,9 +899,7 @@ mod tests {
         let mut runner = SuccessfulServiceCommandRunner::default();
         let fresh_replaced = systemd::install_with_runner(&context, &invocation, &mut runner)
             .expect("install must succeed");
-        let unit_path = tmp
-            .path()
-            .join(".config/systemd/user/ironclaw-reborn.service");
+        let unit_path = tmp.path().join(".config/systemd/user/zlo.service");
         assert!(unit_path.exists(), "unit file must be written");
         let contents = std::fs::read_to_string(&unit_path).expect("read unit file");
         assert!(contents.contains("ExecStart="));
@@ -968,13 +971,11 @@ mod tests {
 
         launchd::install_with_runner(&context, &invocation, &mut runner)
             .expect("install must succeed");
-        let plist_path = tmp
-            .path()
-            .join("Library/LaunchAgents/com.ironclaw.reborn.plist");
+        let plist_path = tmp.path().join("Library/LaunchAgents/com.zlo.serve.plist");
         assert!(plist_path.exists(), "plist file must be written");
         let contents = std::fs::read_to_string(&plist_path).expect("read plist file");
         assert!(contents.contains(SERVICE_LABEL));
-        assert!(contents.contains("<key>IRONCLAW_REBORN_HOME</key>"));
+        assert!(contents.contains("<key>ZLO_HOME</key>"));
         let reborn_home = context.boot_config().home().path().to_path_buf();
         let expected_working_directory = reborn_home.join("workspace");
         assert!(

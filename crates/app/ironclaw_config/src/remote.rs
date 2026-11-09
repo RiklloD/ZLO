@@ -11,8 +11,8 @@
 //! https_port = 443
 //! ```
 //!
-//! `ironclaw remote enable` writes this section and `remote disable` sets
-//! `enabled = false`; `ironclaw serve` reads it. Nothing here touches the
+//! `zlo remote enable` writes this section and `remote disable` sets
+//! `enabled = false`; `zlo serve` reads it. Nothing here touches the
 //! network or Tailscale: this module only parses, validates and rewrites the
 //! section.
 
@@ -35,7 +35,7 @@ pub const DEFAULT_REMOTE_HTTPS_PORT: u16 = 443;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteSection {
-    /// Whether `ironclaw serve` starts the identity listener. Default `false`.
+    /// Whether `zlo serve` starts the identity listener. Default `false`.
     pub enabled: Option<bool>,
     /// Loopback TCP port of the identity listener (the `tailscale serve`
     /// target). Default [`DEFAULT_REMOTE_IDENTITY_PORT`].
@@ -119,7 +119,7 @@ impl RemoteSection {
         if self.enabled == Some(true) && self.tailnet_url.is_none() {
             return Err(invalid(
                 "tailnet_url",
-                "is required when remote access is enabled (run `ironclaw remote enable`)",
+                "is required when remote access is enabled (run `zlo remote enable`)",
             ));
         }
         Ok(())

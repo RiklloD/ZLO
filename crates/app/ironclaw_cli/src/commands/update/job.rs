@@ -2,8 +2,8 @@
 //! installed, restart, and record the outcome in `run.json`.
 //!
 //! The job outlives the backend that starts it. The backend copies its own
-//! binary to `<reborn_home>/update/ironclaw-updater` and runs
-//! `ironclaw-updater update --run-job --install-path <its own path>` in a
+//! binary to `<reborn_home>/update/zlo-updater` and runs
+//! `zlo-updater update --run-job --install-path <its own path>` in a
 //! new process group (on Linux under systemd, in its own transient
 //! `systemd-run --user` unit), with stdin closed and output appended to
 //! `update.log`. So:
@@ -33,6 +33,9 @@ use ironclaw_product_contracts::self_update::UpdateRunState;
 use super::git::Checkout;
 use super::records::{self, RunRecord, UpdatePaths};
 
+/// Where `cargo build --release -p ironclaw --bin zlo` leaves the binary.
+const BUILT_BINARY: &str = "target/release/zlo";
+
 /// How this host runs IronClaw, read from the backend binary's path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InstallKind {
@@ -40,8 +43,9 @@ pub(crate) enum InstallKind {
     /// `tools/ironclaw_rune/bundle.sh`, which installs ZLO.app and reopens
     /// it; ZLO then starts its new backend.
     Zlo { bundle_script: PathBuf },
-    /// A plain `ironclaw` binary: `cargo build --release -p ironclaw`, then
-    /// the file at `target` is replaced atomically.
+    /// A plain `zlo` binary (or a pre-ZLO `ironclaw` one): `cargo build
+    /// --release -p ironclaw` (the package keeps that name; its binary is
+    /// `zlo`), then the file at `target` is replaced atomically.
     Binary { target: PathBuf },
 }
 
@@ -70,9 +74,9 @@ impl InstallKind {
 pub(crate) enum Restarted {
     /// `bundle.sh` reopened ZLO, which starts its new backend.
     ByZlo,
-    /// The installed `ironclaw service` was restarted.
+    /// The installed `zlo service` was restarted.
     Service,
-    /// Nothing manages the backend here; someone restarts `ironclaw serve`.
+    /// Nothing manages the backend here; someone restarts `zlo serve`.
     No,
 }
 
@@ -176,7 +180,7 @@ fn steps(
         Restarted::ByZlo => format!("Updated to {short}; ZLO reopened."),
         Restarted::Service => format!("Updated to {short}; IronClaw restarted."),
         Restarted::No => {
-            format!("Updated to {short}. Restart `ironclaw serve` on this machine to run it.")
+            format!("Updated to {short}. Restart `zlo serve` on this machine to run it.")
         }
     })
 }
@@ -224,7 +228,7 @@ pub(crate) fn detached_command(
             "--user".into(),
             "--collect".into(),
             "--quiet".into(),
-            format!("--unit=ironclaw-update-{}", chrono::Utc::now().timestamp()).into(),
+            format!("--unit=zlo-update-{}", chrono::Utc::now().timestamp()).into(),
         ];
         for (key, value) in &env {
             let mut pair = OsString::from(format!("--setenv={key}="));
@@ -260,7 +264,7 @@ pub(crate) fn spawn_detached(
         &updater,
         exe,
         reborn_home,
-        std::env::var_os(REBORN_PROFILE_ENV),
+        ironclaw_config::profile_env_value(),
         under_systemd,
     );
     let log = records::append_log(paths)?;
@@ -376,9 +380,9 @@ impl UpdateHost for SystemUpdateHost {
             }
             InstallKind::Binary { target } => {
                 let mut command = Self::command("cargo", repo, log)?;
-                command.args(["build", "--release", "-p", "ironclaw"]);
+                command.args(["build", "--release", "-p", "ironclaw", "--bin", "zlo"]);
                 run_checked(command, "cargo build")?;
-                copy_executable(&repo.join("target/release/ironclaw"), target)
+                copy_executable(&repo.join(BUILT_BINARY), target)
             }
         }
     }
@@ -624,7 +628,7 @@ mod tests {
     #[test]
     fn the_detached_command_carries_only_local_values() {
         let spec = detached_command(
-            Path::new("/home/me/.ironclaw/reborn/update/ironclaw-updater"),
+            Path::new("/home/me/.ironclaw/reborn/update/zlo-updater"),
             Path::new("/home/me/.ironclaw/bin/ironclaw"),
             Path::new("/home/me/.ironclaw/reborn"),
             None,
@@ -632,7 +636,7 @@ mod tests {
         );
         assert_eq!(
             spec.program,
-            PathBuf::from("/home/me/.ironclaw/reborn/update/ironclaw-updater")
+            PathBuf::from("/home/me/.ironclaw/reborn/update/zlo-updater")
         );
         assert_eq!(
             spec.args,
@@ -653,7 +657,7 @@ mod tests {
         );
 
         let systemd = detached_command(
-            Path::new("/u/ironclaw-updater"),
+            Path::new("/u/zlo-updater"),
             Path::new("/u/ironclaw"),
             Path::new("/u/home"),
             Some("local".into()),
@@ -666,13 +670,13 @@ mod tests {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert_eq!(&args[..3], ["--user", "--collect", "--quiet"]);
-        assert!(args[3].starts_with("--unit=ironclaw-update-"));
+        assert!(args[3].starts_with("--unit=zlo-update-"));
         assert!(args.contains(&format!("--setenv={REBORN_HOME_ENV}=/u/home")));
         assert!(args.contains(&format!("--setenv={REBORN_PROFILE_ENV}=local")));
         assert_eq!(
             &args[args.len() - 5..],
             [
-                "/u/ironclaw-updater",
+                "/u/zlo-updater",
                 "update",
                 "--run-job",
                 "--install-path",

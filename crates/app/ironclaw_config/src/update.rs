@@ -1,5 +1,5 @@
 //! `[update]` — how this installation updates itself from a source checkout
-//! (`ironclaw update`, `POST /api/operator/update`).
+//! (`zlo update`, `POST /api/operator/update`).
 //!
 //! ```toml
 //! [update]

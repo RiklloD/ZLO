@@ -1,4 +1,4 @@
-//! The operator LLM key store wired the way production `ironclaw serve` wires
+//! The operator LLM key store wired the way production `zlo serve` wires
 //! it — the dynamic `invocation_mount_view` scoped filesystem behind a real
 //! `SecretStore`, behind the `OperatorSecretValueStore` adapter this crate
 //! implements.
@@ -69,7 +69,7 @@ fn caller() -> ProductSurfaceCaller {
 
 /// Reproduction for issue #4673: saving the NEAR AI (builtin) provider returns
 /// `service_unavailable` even though Test connection succeeds. Wires the secret
-/// store EXACTLY as production `ironclaw serve` does, so a system-scope
+/// store EXACTLY as production `zlo serve` does, so a system-scope
 /// write/read regression in that path is caught.
 #[tokio::test]
 async fn upsert_builtin_nearai_with_production_secret_store_succeeds() {

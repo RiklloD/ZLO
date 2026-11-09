@@ -1,4 +1,4 @@
-//! Talks to the running `ironclaw serve` over loopback with the master
+//! Talks to the running `zlo serve` over loopback with the master
 //! WebUI token, for `pair`, `devices` and `remote status`.
 //!
 //! The origin comes from `[webui]` (listen host/port, the same defaults
@@ -113,7 +113,7 @@ impl RunningBackend {
 
     fn unreachable(&self, error: reqwest::Error) -> anyhow::Error {
         anyhow::anyhow!(
-            "could not reach the IronClaw backend at {} ({error}). Is `ironclaw serve` running?",
+            "could not reach the IronClaw backend at {} ({error}). Is `zlo serve` running?",
             self.origin
         )
     }
@@ -139,13 +139,13 @@ async fn http_error(response: reqwest::Response) -> anyhow::Error {
     match status {
         reqwest::StatusCode::UNAUTHORIZED => anyhow::anyhow!(
             "the backend rejected the WebUI token (401). Check {} or the webui-token file.",
-            crate::commands::serve::DEFAULT_ENV_TOKEN_VAR
+            crate::webui_token::default_env_token_var()
         ),
         reqwest::StatusCode::NOT_FOUND if code == "not_found" => {
             anyhow::anyhow!("no such device")
         }
         reqwest::StatusCode::NOT_FOUND => anyhow::anyhow!(
-            "the running backend does not have remote-environment routes; restart `ironclaw serve` \
+            "the running backend does not have remote-environment routes; restart `zlo serve` \
              with this build"
         ),
         _ => anyhow::anyhow!("the backend answered {status} {code}"),

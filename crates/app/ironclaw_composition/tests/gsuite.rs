@@ -896,7 +896,7 @@ async fn bundled_gsuite_handler_projects_stage_backend_to_first_party_dispatch_b
         text.contains("config set google.client_secret"),
         "text: {text}"
     );
-    assert!(text.contains("ironclaw service restart"), "text: {text}");
+    assert!(text.contains("zlo service restart"), "text: {text}");
 }
 
 #[tokio::test]
@@ -954,7 +954,7 @@ async fn bundled_gsuite_handler_returns_not_configured_tool_result_when_no_googl
         "text: {text}"
     );
     assert!(text.contains("console.cloud.google.com"), "text: {text}");
-    assert!(text.contains("ironclaw service restart"), "text: {text}");
+    assert!(text.contains("zlo service restart"), "text: {text}");
     assert_eq!(
         text.matches("service restart").count(),
         1,

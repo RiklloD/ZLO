@@ -74,7 +74,7 @@ impl ProductSurface for NoProductSurface {
     }
 }
 
-/// The main and identity listeners exactly as `ironclaw serve` builds them.
+/// The main and identity listeners exactly as `zlo serve` builds them.
 struct Listeners {
     main: Router,
     identity: Router,

@@ -11,7 +11,7 @@
 //! [`SafeSummary::placeholder`](crate::safe_summary::SafeSummary::placeholder).
 //!
 //! That rule is correct for untrusted output and *wrong* for host-authored
-//! operator remediation. "Run `ironclaw config set provider.client_id
+//! operator remediation. "Run `zlo config set provider.client_id
 //! <id>`, then confirm the client at
 //! <https://console.provider.example/oauth/credentials>" is a multi-line
 //! instruction containing a URL, backticks, and the word `client_secret` — it
@@ -195,8 +195,8 @@ mod tests {
     fn accepts_the_shapes_safe_summary_rejects() {
         let multi_line_with_url_backticks_and_key_names = "Google OAuth setup:\n  \
              1. https://console.cloud.google.com/apis/credentials -> Create Credentials\n  \
-             2. Run `ironclaw config set google.client_id <id>.apps.googleusercontent.com`\n  \
-             3. Run `ironclaw config set google.client_secret` (prompts, hidden input)";
+             2. Run `zlo config set google.client_id <id>.apps.googleusercontent.com`\n  \
+             3. Run `zlo config set google.client_secret` (prompts, hidden input)";
         let remediation = HostRemediation::new(multi_line_with_url_backticks_and_key_names)
             .expect("host-authored remediation must survive the trusted channel");
         assert_eq!(
@@ -207,7 +207,7 @@ mod tests {
         for accepted in [
             "line one\nline two",
             "see https://console.cloud.google.com/apis/credentials",
-            "run `ironclaw config set slack.enabled true`",
+            "run `zlo config set slack.enabled true`",
             "set google.client_secret and the password for the account",
             "brace { bracket [ angle <",
         ] {
@@ -249,7 +249,7 @@ mod tests {
     fn does_not_false_positive_on_long_host_identifiers() {
         for ok in [
             "set IRONCLAW_REBORN_WEBUI_BASE_URL=<your public base URL>",
-            "ironclaw config set google.client_id <id>.apps.googleusercontent.com",
+            "zlo config set google.client_id <id>.apps.googleusercontent.com",
             "https://console.cloud.google.com/apis/credentials?project=my-project-1234",
             "add `enabled = true` under the [telegram] section of config.toml",
         ] {
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn serde_revalidates_on_the_wire() {
-        let value = HostRemediation::new("run `ironclaw config set slack.enabled true`").unwrap();
+        let value = HostRemediation::new("run `zlo config set slack.enabled true`").unwrap();
         let json = serde_json::to_string(&value).unwrap();
         let back: HostRemediation = serde_json::from_str(&json).unwrap();
         assert_eq!(back, value);

@@ -577,10 +577,10 @@ fn onboard_success_value(outcome: &OnboardOutcome, consents: &OnboardConsents) -
         "next_steps": "Traces are redacted locally and queued; submission requires meeting \
     the score threshold. Optional second opt-in: to appear on the public community \
     leaderboard, choose a pseudonymous handle and ask the agent to set your public \
-    Trace Commons profile, or run 'ironclaw traces profile set --handle \
+    Trace Commons profile, or run 'zlo traces profile set --handle \
     <pseudonymous-handle>'. Browser/manual profile setup can still use \
     'traces profile token'. \
-    Opt out anytime with 'ironclaw traces opt-out'."
+    Opt out anytime with 'zlo traces opt-out'."
     });
     // Navigation hints are optional and only included when present (and HTTPS).
     if let Some(ref url) = outcome.community_url {
@@ -1522,7 +1522,7 @@ mod tests {
             "output must not contain 'BEGIN' (no PEM key material)"
         );
         assert!(
-            serialized.contains("ironclaw traces profile set --handle")
+            serialized.contains("zlo traces profile set --handle")
                 && !serialized.contains("ironclaw-reborn"),
             "next steps must use the canonical CLI command: {serialized}"
         );

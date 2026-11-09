@@ -105,11 +105,11 @@ pub struct RebornConfigFile {
     /// host-runtime binding resolver, which owns the profile catalog; this
     /// config layer only does deployment-agnostic structural validation.
     pub memory: Option<MemorySection>,
-    /// Remote access over the owner's tailnet (`ironclaw remote enable`).
+    /// Remote access over the owner's tailnet (`zlo remote enable`).
     /// Absent or `enabled = false` keeps the backend reachable on loopback
     /// only. See [`crate::remote`].
     pub remote: Option<crate::remote::RemoteSection>,
-    /// Self-update from a source checkout (`ironclaw update`). Absent or
+    /// Self-update from a source checkout (`zlo update`). Absent or
     /// `method = "none"` refuses updates. See [`crate::update`].
     pub update: Option<crate::update::UpdateSection>,
     /// Sections this crate's schema used to define and no longer does,

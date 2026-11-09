@@ -1,4 +1,4 @@
-//! Resolves how to invoke `ironclaw serve` as a child process.
+//! Resolves how to invoke `zlo serve` as a child process.
 //!
 //! Consumed by the `service` subcommand's plist/unit generators
 //! (`commands/service/`) so the installed service unit's `serve`
@@ -7,9 +7,9 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use ironclaw_config::{REBORN_HOME_ENV, REBORN_PROFILE_ENV, RebornBootConfig};
+use ironclaw_config::{REBORN_HOME_ENV, REBORN_PROFILE_ENV, RebornBootConfig, profile_env_value};
 
-/// A fully resolved way to launch `ironclaw serve` as a child
+/// A fully resolved way to launch `zlo serve` as a child
 /// process: the binary path, its arguments, and the environment pairs a
 /// caller must set so `serve` resolves the same Reborn home/profile as
 /// the invoking process.
@@ -22,10 +22,10 @@ pub struct ServeInvocation {
 
 /// Resolve the current executable and the `serve` invocation environment.
 ///
-/// `IRONCLAW_REBORN_HOME` is always included — the resolved home path —
+/// `ZLO_HOME` is always included — the resolved home path —
 /// so a spawned `serve` always agrees with the spawning process on where
-/// state lives. `IRONCLAW_REBORN_PROFILE` is included only when the
-/// operator set it explicitly: this reads the raw env var rather than
+/// state lives. `ZLO_PROFILE` is included only when the
+/// operator set it (or its legacy alias `IRONCLAW_REBORN_PROFILE`) explicitly: this reads the raw env var rather than
 /// `RebornBootConfig::profile()` (which always resolves to a default),
 /// because baking a silently-defaulted profile into a long-lived service
 /// unit would pin behavior the operator never asked for.
@@ -38,8 +38,11 @@ pub fn serve_invocation() -> Result<ServeInvocation> {
         REBORN_HOME_ENV.to_string(),
         boot_config.home().path().display().to_string(),
     )];
-    if let Ok(profile) = std::env::var(REBORN_PROFILE_ENV) {
-        env.push((REBORN_PROFILE_ENV.to_string(), profile));
+    if let Some(profile) = profile_env_value() {
+        env.push((
+            REBORN_PROFILE_ENV.to_string(),
+            profile.to_string_lossy().into_owned(),
+        ));
     }
 
     Ok(ServeInvocation {
@@ -119,10 +122,8 @@ mod tests {
         assert_eq!(invocation.args, vec!["serve".to_string()]);
         assert_eq!(
             invocation.env,
-            vec![(
-                "IRONCLAW_REBORN_HOME".to_string(),
-                tmp.path().display().to_string()
-            )]
+            // Set through the legacy alias, written under the ZLO name.
+            vec![("ZLO_HOME".to_string(), tmp.path().display().to_string())]
         );
     }
 
@@ -138,14 +139,8 @@ mod tests {
         assert_eq!(
             invocation.env,
             vec![
-                (
-                    "IRONCLAW_REBORN_HOME".to_string(),
-                    tmp.path().display().to_string()
-                ),
-                (
-                    "IRONCLAW_REBORN_PROFILE".to_string(),
-                    "production".to_string()
-                ),
+                ("ZLO_HOME".to_string(), tmp.path().display().to_string()),
+                ("ZLO_PROFILE".to_string(), "production".to_string()),
             ]
         );
     }

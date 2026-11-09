@@ -81,7 +81,7 @@ pub(crate) async fn pinned_trace_remote_http_client(
     // above claimed this lane was "validated ... via
     // `validate_trace_commons_ingest_url`", but nothing on the
     // submit/status/revoke path ever called it — that validator only ran from
-    // `community_profile_url_from_policy`. Meanwhile `ironclaw traces opt-in
+    // `community_profile_url_from_policy`. Meanwhile `zlo traces opt-in
     // --endpoint <url>` writes `policy.ingestion_endpoint` unvalidated, so
     // `--endpoint http://public-host/...` plus a bearer shipped the token in
     // clear text (#7144). Validating in the builder makes the claim true: this
