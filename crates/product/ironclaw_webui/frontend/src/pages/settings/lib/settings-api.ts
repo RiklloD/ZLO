@@ -363,12 +363,3 @@ export function setAutoActivateLearned(enabled) {
     body: JSON.stringify({ enabled }),
   });
 }
-export function fetchUsers() {
-  return Promise.resolve({ users: [], todo: true });
-}
-export function createUser(_payload) {
-  return Promise.resolve({ success: false, message: "TODO: requires v2 users endpoint" });
-}
-export function updateUser(_id, _payload) {
-  return Promise.resolve({ success: false, message: "TODO: requires v2 users endpoint" });
-}

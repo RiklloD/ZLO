@@ -38,21 +38,16 @@ export const routeSectionDefs = [
 ];
 
 export const SETTINGS_SUB_ROUTES = [
-  // Inference is un-hidden: its lib/*-api.ts (LLM providers) now calls the real
-  // v2 `/api/webchat/v2/llm/*` endpoints, per the unhide rule in the header
-  // comment above. The rest stay hidden until their api libs leave stub state.
+  // Inference's lib/*-api.ts (LLM providers) calls the real v2
+  // `/api/webchat/v2/llm/*` endpoints.
   { id: "inference", labelKey: "settings.inference", icon: "spark" },
   // Appearance is browser-local UI preference state and does not need a v2 API.
   { id: "appearance", labelKey: "settings.appearance", icon: "sun" },
-  // { id: "agent", labelKey: "settings.agent", icon: "bolt" },
-  // { id: "channels", labelKey: "settings.channels", icon: "send" },
-  // { id: "networking", labelKey: "settings.networking", icon: "pulse" },
   { id: "tools", labelKey: "settings.tools", icon: "tool" },
   { id: "skills", labelKey: "settings.skills", icon: "file" },
   // Trace Commons is un-hidden: its api lib calls the real v2
   // `/api/webchat/v2/traces/credit` endpoint.
   { id: "traces", labelKey: "settings.traceCommons", icon: "layers" },
-  // { id: "users", labelKey: "settings.users", icon: "lock" },
   { id: "language", labelKey: "settings.language", icon: "globe" },
 ];
 
