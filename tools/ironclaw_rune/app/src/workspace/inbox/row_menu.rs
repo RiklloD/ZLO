@@ -2,8 +2,8 @@
 //! `workspace/inbox.rs`).
 
 use chrono::{Datelike, Duration as Span, Local, TimeZone};
-use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 use rune::{PopupItem, PopupMenu, Tx};
+use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 
 use super::{mark, settle, title_of};
 use crate::state::State;

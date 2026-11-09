@@ -43,6 +43,8 @@ pub enum Page {
     Usage,
     Memory,
     Hooks,
+    /// Settings → Computers (`pages::computers`).
+    Computers,
 }
 
 /// Gateway connection state.
@@ -84,6 +86,8 @@ pub struct State {
     pub native: crate::native_view::NativeViews,
     /// First-run setup (t3code's onboarding).
     pub onboarding: crate::onboarding::OnboardingState,
+    /// The saved computers and the connection to the active one.
+    pub remote: crate::remote::RemoteState,
 }
 
 impl State {
@@ -110,6 +114,7 @@ impl State {
             look: Default::default(),
             native: Default::default(),
             onboarding: Default::default(),
+            remote: Default::default(),
         }
     }
 

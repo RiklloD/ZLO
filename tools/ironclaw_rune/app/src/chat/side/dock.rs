@@ -262,6 +262,35 @@ fn title(s: &State, dock: Dock, tab: Tab) -> El {
     title
 }
 
+/// A git or shell tab while the backend is on another computer.
+pub(super) fn remote_unavailable(s: &State, tab: Tab) -> El {
+    let p = &s.palette;
+    ui::fill_col()
+        .items_center()
+        .justify_center()
+        .gap(12.)
+        .padding(24.)
+        .child(icon(&icons::FOLDER_GIT, 28.).color(p.text_faint))
+        .child(
+            ui::para(
+                remote_line(tab, &crate::remote::computer_label(s)),
+                ui::sm(),
+                p.text_muted,
+            )
+            .align(rune::Align::Center),
+        )
+        .key("side-remote-unavailable")
+}
+
+/// "Changes: Runs on studio — not available remotely yet".
+pub(super) fn remote_line(tab: Tab, computer: &str) -> String {
+    format!(
+        "{}: {}",
+        tab.label(),
+        crate::remote::unavailable_line(computer)
+    )
+}
+
 /// A coding tab before the thread has a project folder.
 pub(super) fn no_folder(s: &State, k: &Kit, tab: Tab) -> El {
     let p = &s.palette;
@@ -538,6 +567,40 @@ mod tests {
 
     fn blank(_: &State, _: &mut rune::Cx<State>) -> rune::El {
         rune::el()
+    }
+
+    /// While the backend is remote, the git and shell tabs say where they
+    /// run, Files stays (read through the gateway), and no folder on this
+    /// Mac is adopted for the thread.
+    #[test]
+    fn remote_backend_disables_the_local_only_tabs() {
+        use super::super::{Tab, set_folder};
+        let off: Vec<Tab> = [
+            Tab::Changes,
+            Tab::Files,
+            Tab::Outputs,
+            Tab::History,
+            Tab::Console,
+        ]
+        .into_iter()
+        .filter(|t| t.local_only())
+        .collect();
+        assert_eq!(off, vec![Tab::Changes, Tab::History, Tab::Console]);
+        assert_eq!(
+            super::remote_line(Tab::Console, "studio"),
+            "Console: Runs on studio — not available remotely yet"
+        );
+
+        let mut s = crate::chat::fixtures::test_state();
+        s.chat = Some(crate::chat::ChatState::new("t1".into()));
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+        set_folder(
+            &mut s,
+            std::path::PathBuf::from("/Users/you/code/zlo"),
+            false,
+        );
+        assert!(s.chat.as_ref().is_some_and(|c| c.side.folder.is_none()));
     }
 
     /// A closed dock stays drawn (so the clip, not a fade, hides it) until

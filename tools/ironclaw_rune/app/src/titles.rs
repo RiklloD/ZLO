@@ -6,8 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use zlo_client::inbox::InboxRow;
 use rune::Tx;
+use zlo_client::inbox::InboxRow;
 
 use crate::jobs;
 use crate::state::State;

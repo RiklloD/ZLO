@@ -112,8 +112,8 @@ fn a_superseded_timeline_load_keeps_its_error_to_itself() {
 
 #[test]
 fn every_live_fold_asks_the_run_clock_again() {
-    use zlo_client::inbox::InboxState;
     use rune::{Cx, El, Env, Runtime};
+    use zlo_client::inbox::InboxState;
 
     use crate::state::State;
 

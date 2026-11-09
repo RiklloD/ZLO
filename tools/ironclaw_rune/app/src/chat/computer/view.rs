@@ -3,9 +3,9 @@
 
 use std::time::Instant;
 
-use zlo_client::computer_use::{ComputerApp, ComputerSession};
 use rune::{Color, Cx, El, Shape, TextStyle, canvas, col, el, row, text};
 use rune_kit::{ButtonVariant, Kit};
+use zlo_client::computer_use::{ComputerApp, ComputerSession};
 
 use super::{
     Card, ComputerState, RIPPLE, TYPING_MS, click_card, close_big, now_ms, permissions, slot, stop,
@@ -389,6 +389,33 @@ fn permissions_card(p: &Palette, id: &str, cu: &ComputerState, k: &Kit) -> El {
         )
 }
 
+/// One line about the backend computer's computer use, with Hide.
+fn remote_line_card(p: &Palette, id: &str, line: String, ready: bool, k: &Kit) -> El {
+    let hide_id = id.to_string();
+    row()
+        .key("cu-remote-readiness")
+        .pin(None, Some(12.), Some(12.), None)
+        .max_w(CARD_W + 40.)
+        .gap(8.)
+        .padding(10.)
+        .radius(8.)
+        .fill(p.surface_overlay)
+        .border(1., p.border)
+        .child(txt(line, XS, if ready { p.text_faint } else { p.text }).wrap())
+        .child(ghost_button(
+            k,
+            "cu-remote-hide",
+            "Hide",
+            None,
+            false,
+            move |s| {
+                if let Some(cu) = slot(s, &hide_id) {
+                    cu.permissions_hidden = true;
+                }
+            },
+        ))
+}
+
 /// The stack, pinned to the top right of its parent; the enlarged card
 /// goes into `layer`.
 pub fn view(
@@ -403,6 +430,16 @@ pub fn view(
     let p = &s.palette;
     if !cu.missing.is_empty() && !cu.permissions_hidden {
         return Some(permissions_card(p, id, cu, k));
+    }
+    // A remote backend: its own readiness, in the same place. "Ready" shows
+    // until the agent starts driving apps (or Hide); a gap shows until Hide.
+    if let Some(remote) = &cu.remote
+        && cu.enabled
+        && !cu.permissions_hidden
+        && (!remote.readiness.ready() || cu.session.is_none())
+    {
+        let line = super::remote::line(&crate::remote::computer_label(s), &remote.readiness);
+        return Some(remote_line_card(p, id, line, remote.readiness.ready(), k));
     }
     let session = cu.session.as_ref().filter(|_| !cu.hidden)?;
     let status = status_of(cu, session);

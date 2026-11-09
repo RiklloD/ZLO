@@ -70,11 +70,32 @@ pub(crate) fn seg(raw: &str) -> String {
     out
 }
 
+/// Follow a redirect only within the same origin (scheme, host and port).
+/// The transport rule is checked once, before a request; a redirect to
+/// another origin (or from https down to plain http) would carry the bearer
+/// token or a pairing code past it, so it is refused.
+pub(crate) fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let same = attempt.previous().last().is_some_and(|prev| {
+            let next = attempt.url();
+            prev.scheme() == next.scheme()
+                && prev.host_str() == next.host_str()
+                && prev.port_or_known_default() == next.port_or_known_default()
+        });
+        if same && attempt.previous().len() < 5 {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
 impl Client {
     pub fn new(conn: Connection) -> Result<Self, ClientError> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .user_agent(concat!("zlo/", env!("CARGO_PKG_VERSION")))
+            .redirect(same_origin_redirects())
             .build()?;
         Ok(Self {
             inner: Arc::new(Inner { http, conn }),

@@ -29,16 +29,17 @@
 //! - `has_session(s, id)`, `hidden(s, id)`, `toggle_hidden(s, id)`: the side
 //!   pane's screen-share button (area S).
 
+mod remote;
 mod view;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use rune::{Pixels, Tx};
 use zlo_client::Backend;
 use zlo_client::computer_use::{
     ComputerApp, ComputerControl, ComputerSession, ComputerState as WireState, FrameAnswer,
 };
-use rune::{Pixels, Tx};
 
 use crate::jobs::{self, Generation};
 use crate::permissions;
@@ -160,6 +161,9 @@ pub struct ComputerState {
     note: Option<String>,
     /// macOS permissions ZLO still lacks while computer use is on.
     missing: Vec<permissions::Permission>,
+    /// A remote backend's own readiness (its engine and permissions); this
+    /// Mac's are never asked for it.
+    remote: Option<remote::Remote>,
     permissions_hidden: bool,
     /// Invalidates the poll loop of an earlier `start`.
     generation: Generation,
@@ -182,6 +186,7 @@ impl Default for ComputerState {
             busy: false,
             note: None,
             missing: Vec::new(),
+            remote: None,
             permissions_hidden: false,
             generation: Generation::default(),
         }
@@ -296,15 +301,20 @@ fn poll_state(s: &mut State, thread_id: String, generation: Generation) {
 }
 
 fn apply(s: &mut State, thread_id: &str, generation: Generation, state: WireState) {
+    let remote = crate::remote::backend_is_remote(s);
     let Some(cu) = same(s, thread_id, generation) else {
         return;
     };
     cu.enabled = state.enabled;
     cu.missing = if state.enabled {
-        permissions::missing()
+        permissions::missing_for_backend(remote)
     } else {
         Vec::new()
     };
+    if !remote {
+        cu.remote = None;
+    }
+    let ask_backend = remote && state.enabled && remote::due(cu.remote.as_ref(), Instant::now());
     if state.now > 0 {
         cu.skew_ms = now_ms() - state.now;
     }
@@ -322,6 +332,9 @@ fn apply(s: &mut State, thread_id: &str, generation: Generation, state: WireStat
     }
     cu.session = session;
     sync_cards(s, thread_id);
+    if ask_backend {
+        remote::fetch(s, thread_id.to_string(), generation);
+    }
 }
 
 impl ComputerState {

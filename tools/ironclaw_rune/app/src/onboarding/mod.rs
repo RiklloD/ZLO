@@ -3,8 +3,9 @@
 //! threads, a wizard walks through three steps before the app:
 //!
 //! 1. **Connect** — the computer to work on: this Mac's gateway, or another
-//!    computer's, added with a pairing link (`gateway.rs`). ZLO talks to one
-//!    gateway at a time, so picking a computer switches to it.
+//!    computer's, found on the tailnet or added with a pairing link or code
+//!    (`crate::remote`). ZLO talks to one gateway at a time, so picking a
+//!    computer switches to it.
 //! 2. **Agents** — coding-agent CLIs (Codex, Claude Code) with Install and
 //!    Sign in run in Terminal, as t3code runs them in its terminal; or,
 //!    instead of a CLI, a provider (ChatGPT plan, an API key) that
@@ -29,7 +30,7 @@ mod view;
 
 use std::path::PathBuf;
 
-use rune::{El, TextEdit};
+use rune::El;
 use rune_kit::Kit;
 use serde::{Deserialize, Serialize};
 
@@ -76,10 +77,9 @@ impl Step {
 #[derive(Default)]
 pub struct OnboardingState {
     pub decision: Decision,
-    /// The computer ZLO is connected to, and the paired one if any (read
-    /// at each connect, so views never touch the disk).
+    /// The computer ZLO is connected to (the saved ones are
+    /// `State::remote`).
     pub computer: gateway::Computer,
-    pub paired: Option<gateway::Computer>,
     pub step: Step,
     pub connect: ConnectState,
     pub agents: AgentsState,
@@ -102,13 +102,8 @@ pub struct Toast {
 
 #[derive(Default)]
 pub struct ConnectState {
-    /// The computer picked; `None` keeps the one ZLO is on.
-    pub selected: Option<gateway::Computer>,
+    /// "Add a computer" is unfolded (its form is `remote::pairing`'s).
     pub pairing_open: bool,
-    pub pairing_help_open: bool,
-    pub pairing_input: TextEdit,
-    pub pairing: bool,
-    pub pairing_error: Option<String>,
 }
 
 /// The saved record (t3code's `onboardingCompletedAt` client setting).
@@ -341,10 +336,7 @@ mod tests {
         let mut s = state();
         s.onboarding.decision = Decision::Wizard;
         s.onboarding.step = Step::Projects;
-        projects::skip_saved(
-            &mut s,
-            Err(zlo_client::ClientError::Config("down".into())),
-        );
+        projects::skip_saved(&mut s, Err(zlo_client::ClientError::Config("down".into())));
         assert_eq!(s.onboarding.decision, Decision::Wizard);
         assert!(holds_launch_import(&s), "nothing may import yet");
         assert!(s.onboarding.projects.error.is_some());
@@ -376,7 +368,7 @@ mod tests {
         let mut s = state();
         fixtures::agents(&mut s);
         s.onboarding.agents.terminal = None;
-        s.onboarding.computer = gateway::Computer::Remote("http://studio.local:3000".into());
+        s.onboarding.computer = gateway::Computer::remote("env-1", "studio.local");
         agents::open_terminal(&mut s, agents::Driver::Codex, true);
         let t = s
             .onboarding

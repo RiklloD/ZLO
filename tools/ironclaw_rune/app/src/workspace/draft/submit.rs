@@ -101,6 +101,17 @@ pub(super) fn send_with(s: &mut State, voice: Option<crate::voice::Submission>) 
     if let Some(why) = refusal(s.workspace.draft.as_ref()) {
         return refuse(s, why);
     }
+    if let Some(Err(why)) = s
+        .workspace
+        .draft
+        .as_ref()
+        .map(|d| crate::remote::check_outgoing(s, &d.staged))
+    {
+        if let Some(draft) = s.workspace.draft.as_mut() {
+            draft.error = Some(why.clone());
+        }
+        return refuse(s, &why);
+    }
     let Some(draft) = s.workspace.draft.as_ref() else {
         return;
     };

@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use rune::{El, Icon, TextEdit, Tx, icon};
+use rune_kit::{Kit, PopupItem, PopupList};
 use zlo_client::commands::{
     MenuItem, MenuSources, complete_mention, menu_matches_with, tab_complete, trigger_token,
 };
@@ -24,16 +26,27 @@ use zlo_client::mentions::{
 };
 use zlo_client::product_wire::RebornProductCommandInfo;
 use zlo_client::{Client, ClientError};
-use rune::{El, Icon, TextEdit, Tx, icon};
-use rune_kit::{Kit, PopupItem, PopupList};
 
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
 
 thread_local! {
-    /// File listings per project folder, shared by every composer.
-    static INDEXES: RefCell<IndexCache> = RefCell::default();
+    /// File listings per project folder (or remote thread workspace),
+    /// shared by every composer.
+    static INDEXES: RefCell<IndexCache<IndexKey>> = RefCell::default();
+}
+
+/// Where a composer's `@` files come from.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum IndexKey {
+    /// A folder on this Mac, walked here.
+    Local(PathBuf),
+    /// A thread's workspace on a remote backend, listed by that backend
+    /// (`/files/index`); its mentions name `/workspace/...`, which the
+    /// backend resolves under the folder it owns. Keyed by computer and
+    /// thread, since every thread's workspace is `/workspace`.
+    Remote { environment: String, thread: String },
 }
 
 /// What a click on a menu row does.
@@ -50,9 +63,9 @@ pub struct ComposerMenu {
     dismissed: Option<String>,
     /// The project folder's listing, for `@` files and folders.
     files: Option<Arc<FileIndex>>,
-    /// The folder the listing was last asked for: a listing of another
-    /// folder that lands later is not applied.
-    files_root: Option<PathBuf>,
+    /// The listing last asked for: a listing of another folder (or thread)
+    /// that lands later is not applied.
+    files_key: Option<IndexKey>,
     /// The latest ranking of `files`, made off the UI thread.
     ranked: Option<Arc<RankedPaths>>,
     /// The `(listing, query)` being ranked now, so it is not started twice.
@@ -103,20 +116,20 @@ impl ComposerMenu {
         token.strip_prefix('@').map(str::to_lowercase)
     }
 
-    /// Point `@` files at `root`'s listing (or none).
-    fn want_root(&mut self, root: Option<PathBuf>) {
-        if self.files_root != root {
+    /// Point `@` files at `key`'s listing (or none).
+    fn want_key(&mut self, key: Option<IndexKey>) {
+        if self.files_key != key {
             self.files = None;
             self.ranked = None;
             self.ranking = None;
         }
-        self.files_root = root;
+        self.files_key = key;
     }
 
-    /// Take a listing that landed: only the one for the folder last asked
-    /// for. Returns whether it was taken.
-    fn accept_index(&mut self, index: Arc<FileIndex>) -> bool {
-        if self.files_root.as_deref() != Some(index.root.as_path()) {
+    /// Take a listing that landed: only the one last asked for. Returns
+    /// whether it was taken.
+    fn accept_index(&mut self, key: &IndexKey, index: Arc<FileIndex>) -> bool {
+        if self.files_key.as_ref() != Some(key) {
             return false;
         }
         if self.files.as_ref().map(|f| f.generation) != Some(index.generation) {
@@ -154,8 +167,9 @@ impl ComposerMenu {
             generation: 1,
             ..FileIndex::default()
         });
-        self.want_root(Some(root.to_path_buf()));
-        self.accept_index(index.clone());
+        let key = IndexKey::Local(root.to_path_buf());
+        self.want_key(Some(key.clone()));
+        self.accept_index(&key, index.clone());
         self.want_query = Some(query.to_string());
         self.accept_ranking(mentions::rank_paths(&index, query));
     }
@@ -261,45 +275,76 @@ fn set_text_at_end(composer: &mut TextEdit, text: String) {
     composer.mark_edited();
 }
 
-/// Point `@` files at `root`'s listing: the cached one at once, rebuilt in
-/// the background when missing or stale. A listing of a folder no longer
-/// asked for is dropped.
-pub fn sync_index(s: &mut State, root: Option<&Path>, menu_of: MenuOf) {
-    let root = root.map(Path::to_path_buf);
+/// Point `@` files at `key`'s listing: the cached one at once, rebuilt in
+/// the background when missing or stale (walked here for a local folder,
+/// asked of the backend for a remote thread). A listing no longer asked
+/// for is dropped.
+pub fn sync_index(s: &mut State, key: Option<IndexKey>, menu_of: MenuOf) {
     if let Some(menu) = menu_of(s) {
-        menu.want_root(root.clone());
+        menu.want_key(key.clone());
     }
-    let Some(root) = root else {
+    let Some(key) = key else {
         return;
     };
-    let (cached, rebuild) = INDEXES.with(|c| c.borrow_mut().get(&root));
+    let (cached, rebuild) = INDEXES.with(|c| c.borrow_mut().get(&key));
     if let (Some(index), Some(menu)) = (cached, menu_of(s)) {
-        menu.accept_index(index);
+        menu.accept_index(&key, index);
     }
     if !rebuild {
         return;
     }
-    let dir = root.clone();
-    jobs::blocking(
-        s,
-        move || FileIndex::build(&dir),
-        move |s, index, _| {
-            let index_root = index.root.clone();
-            INDEXES.with(|c| c.borrow_mut().put(index));
-            let (fresh, _) = INDEXES.with(|c| c.borrow_mut().get(&index_root));
-            let query = menu_of(s).and_then(|menu| {
-                let taken = fresh.is_some_and(|index| menu.accept_index(index));
-                taken.then(|| menu.want_query.clone()).flatten()
-            });
-            match query {
-                Some(query) => rank_in_background(s, query, menu_of),
-                None if menu_of(s).is_none() => {
-                    INDEXES.with(|c| c.borrow_mut().abandon(&root));
-                }
-                None => {}
-            }
-        },
-    );
+    match key.clone() {
+        IndexKey::Local(dir) => jobs::blocking(
+            s,
+            move || FileIndex::build(&dir),
+            move |s, index, _| landed(s, key, Some(index), menu_of),
+        ),
+        IndexKey::Remote { thread, .. } => jobs::run(
+            s,
+            "mention index",
+            move |c| async move { c.thread_file_index(&thread).await },
+            move |s, result, _| {
+                // silent-ok: an older backend has no index route; `@` then
+                // offers threads, skills and commands, as before.
+                let index = result.map(remote_listing).ok();
+                landed(s, key, index, menu_of);
+            },
+        ),
+    }
+}
+
+/// A remote backend's index as a listing rooted at its workspace path, so
+/// a picked file mentions `/workspace/<path>`.
+pub fn remote_listing(index: zlo_client::workspace_views::RebornProjectFsIndexResponse) -> FileIndex {
+    use zlo_client::workspace_views::ProjectFsEntryKind;
+    let files = index
+        .entries
+        .into_iter()
+        .filter(|e| e.kind == ProjectFsEntryKind::File)
+        .map(|e| e.path)
+        .collect();
+    FileIndex::from_listing(PathBuf::from(index.root), files, !index.complete)
+}
+
+/// A listing landed (or failed): cache it, show it if still wanted, rank it.
+fn landed(s: &mut State, key: IndexKey, index: Option<FileIndex>, menu_of: MenuOf) {
+    let Some(index) = index else {
+        INDEXES.with(|c| c.borrow_mut().abandon(&key));
+        return;
+    };
+    INDEXES.with(|c| c.borrow_mut().put_as(key.clone(), index));
+    let (fresh, _) = INDEXES.with(|c| c.borrow_mut().get(&key));
+    let query = menu_of(s).and_then(|menu| {
+        let taken = fresh.is_some_and(|index| menu.accept_index(&key, index));
+        taken.then(|| menu.want_query.clone()).flatten()
+    });
+    match query {
+        Some(query) => rank_in_background(s, query, menu_of),
+        None if menu_of(s).is_none() => {
+            INDEXES.with(|c| c.borrow_mut().abandon(&key));
+        }
+        None => {}
+    }
 }
 
 /// Rank the menu's listing for `query` off the UI thread; the menu shows
@@ -504,6 +549,65 @@ pub fn uri_kind(uri: &mentions::MentionUri) -> MentionKind {
 mod tests {
     use super::*;
 
+    fn local(root: &str) -> IndexKey {
+        IndexKey::Local(PathBuf::from(root))
+    }
+
+    /// Every remote thread's listing is rooted at `/workspace`: the key, not
+    /// the root, tells them apart, so another thread's (or computer's)
+    /// listing landing late is dropped, and a remote listing's files
+    /// mention workspace paths.
+    #[test]
+    fn remote_listings_are_kept_apart_by_computer_and_thread() {
+        use zlo_client::workspace_views::{
+            ProjectFsEntryKind, ProjectFsIndexEntry, RebornProjectFsIndexResponse,
+        };
+        let remote = |env: &str, thread: &str| IndexKey::Remote {
+            environment: env.into(),
+            thread: thread.into(),
+        };
+        let index = Arc::new(remote_listing(RebornProjectFsIndexResponse {
+            root: "/workspace".into(),
+            entries: vec![
+                ProjectFsIndexEntry {
+                    path: "src".into(),
+                    kind: ProjectFsEntryKind::Directory,
+                },
+                ProjectFsIndexEntry {
+                    path: "src/menu.rs".into(),
+                    kind: ProjectFsEntryKind::File,
+                },
+            ],
+            complete: false,
+        }));
+        assert_eq!(index.root, PathBuf::from("/workspace"));
+        assert_eq!(index.files, ["src/menu.rs"]);
+        assert_eq!(index.dirs, ["src"]);
+        assert!(index.truncated);
+        let mut menu = ComposerMenu::default();
+        menu.want_key(Some(remote("studio", "t2")));
+        assert!(!menu.accept_index(&remote("studio", "t1"), index.clone()));
+        assert!(!menu.accept_index(&remote("laptop", "t2"), index.clone()));
+        assert!(!menu.accept_index(&local("/workspace"), index.clone()));
+        assert!(menu.accept_index(&remote("studio", "t2"), index.clone()));
+        let rows = mentions::mention_matches(
+            "menu",
+            &MentionContext {
+                index: menu.files.as_deref(),
+                ranking: Ranking::Inline,
+                ..MentionContext::default()
+            },
+        );
+        assert!(
+            rows.iter().any(|r| r.uri
+                == mentions::MentionUri::File {
+                    path: "/workspace/src/menu.rs".into(),
+                    line_range: None,
+                }),
+            "{rows:?}"
+        );
+    }
+
     fn listing(root: &str) -> Arc<FileIndex> {
         Arc::new(FileIndex {
             root: PathBuf::from(root),
@@ -518,10 +622,10 @@ mod tests {
     #[test]
     fn late_results_for_another_folder_are_dropped() {
         let mut menu = ComposerMenu::default();
-        menu.want_root(Some(PathBuf::from("/b")));
-        assert!(!menu.accept_index(listing("/a")));
+        menu.want_key(Some(local("/b")));
+        assert!(!menu.accept_index(&local("/a"), listing("/a")));
         assert!(menu.files.is_none());
-        assert!(menu.accept_index(listing("/b")));
+        assert!(menu.accept_index(&local("/b"), listing("/b")));
         let stale = mentions::rank_paths(&listing("/a"), "menu");
         assert!(!menu.accept_ranking(stale));
         assert!(menu.ranked.is_none());
@@ -529,7 +633,7 @@ mod tests {
         menu.want_query = Some("menu".into());
         assert!(menu.accept_ranking(mentions::rank_paths(&shown, "menu")));
         // Moving to another folder clears what was shown for the last one.
-        menu.want_root(Some(PathBuf::from("/c")));
+        menu.want_key(Some(local("/c")));
         assert!(menu.files.is_none() && menu.ranked.is_none());
     }
 
@@ -538,8 +642,8 @@ mod tests {
     #[test]
     fn an_older_querys_ranking_never_overwrites_a_newer_one() {
         let mut menu = ComposerMenu::default();
-        menu.want_root(Some(PathBuf::from("/b")));
-        assert!(menu.accept_index(listing("/b")));
+        menu.want_key(Some(local("/b")));
+        assert!(menu.accept_index(&local("/b"), listing("/b")));
         let shown = menu.files.clone().unwrap();
         menu.want_query = Some("me".into());
         menu.want_query = Some("men".into());

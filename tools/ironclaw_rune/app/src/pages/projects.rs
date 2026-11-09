@@ -2,9 +2,9 @@
 //! gateway reports `features.reborn_projects`. Port of GPUI
 //! `pages/projects.rs`.
 
-use zlo_client::workspace_views::{RebornProjectInfo, RebornProjectState};
 use rune::{Cx, El, TextEdit, col, row};
 use rune_kit::{Kit, TextArea, TextInput};
+use zlo_client::workspace_views::{RebornProjectInfo, RebornProjectState};
 
 use super::common::{
     BASE, Btn, SM, Tone, XS, actions, button, card, empty_state, error_line, glyph, header,

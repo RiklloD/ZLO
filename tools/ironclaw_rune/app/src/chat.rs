@@ -54,12 +54,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use rune::{Cx, El, TextEdit, Tx};
+use rune_kit::Kit;
 use zlo_client::attachments::StagedFile;
 use zlo_client::transcript::{Row, RunEnd, Transcript};
 use zlo_client::wire::AttachmentLimits;
 use zlo_client::{EventStream, StreamMessage, StreamStatus};
-use rune::{Cx, El, TextEdit, Tx};
-use rune_kit::Kit;
 
 use crate::jobs::{self, Generation};
 use crate::state::State;
@@ -761,7 +761,10 @@ fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     let mut changed = false;
     if c.pacing {
         // The pacer reveals more on each step, once a step is due.
-        match c.pace_due.map(|due| due.saturating_duration_since(Instant::now())) {
+        match c
+            .pace_due
+            .map(|due| due.saturating_duration_since(Instant::now()))
+        {
             Some(left) if !left.is_zero() => tx.wake_after(left),
             _ => {
                 sync_items(s, id, tx);

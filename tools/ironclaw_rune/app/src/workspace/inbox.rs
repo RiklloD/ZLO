@@ -16,11 +16,11 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use rune::TextEdit;
 use zlo_client::inbox::{
     InboxAction, InboxEngine, InboxListResponse, InboxProfile, InboxRow, InboxState, InboxStatus,
 };
 use zlo_client::profiles::DEFAULT_PROFILE_ID;
-use rune::TextEdit;
 
 use super::{active_id, draft};
 use crate::jobs;

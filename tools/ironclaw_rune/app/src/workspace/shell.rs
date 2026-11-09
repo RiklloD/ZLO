@@ -125,7 +125,16 @@ fn loading(s: &State, p: &Palette) -> El {
 }
 
 fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>) -> El {
-    let remote = s.onboarding.computer != crate::onboarding::gateway::Computer::ThisMac;
+    // A Light bundle with no computer yet: nothing failed, there is
+    // nothing to connect to.
+    if crate::remote::needs_computer(s) {
+        return crate::pages::computers::first_computer(s, k);
+    }
+    // Another computer, or a computers list ZLO could not read: offer the
+    // way back to this Mac (never taken on its own; a Light bundle has no
+    // backend of its own to go back to).
+    let remote = (crate::remote::backend_is_remote(s) || s.remote.registry_error.is_some())
+        && !s.remote.app_only;
     let mut c = col()
         .key("failed")
         .w_full()
@@ -156,18 +165,10 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
                 rune_kit::Button::new("Use this Mac")
                     .icon(&icons::MONITOR)
                     .help(format!(
-                        "Forget {} and connect to this Mac",
+                        "Work on this Mac instead of {} (it stays saved)",
                         s.onboarding.computer.label()
                     ))
-                    .on_press(|s: &mut State| {
-                        if let Err(e) = crate::onboarding::gateway::forget() {
-                            tracing::warn!(error = %e, "could not forget the paired computer");
-                            return;
-                        }
-                        s.onboarding.connect.selected = None;
-                        crate::onboarding::computer_switched(s);
-                        super::reconnect(s);
-                    })
+                    .on_press(crate::remote::use_this_mac)
                     .build(k)
             }))
             .child(
@@ -176,7 +177,7 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
                 rune_kit::Button::new("Logs")
                     .icon(&icons::FILE)
                     .help("Open the app and gateway logs in Console")
-                    .on_press(|_: &mut State| crate::logs::open_files())
+                    .on_press(|s: &mut State| crate::logs::open_files(s))
                     .build(k),
             ),
     )

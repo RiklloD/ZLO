@@ -53,3 +53,14 @@ strip = true
 # crate stays at opt-level 0 for debugging.
 [profile.dev.package."*"]
 opt-level = 1
+
+# Rune with ZLO's energy patches, kept local (Rune takes no PRs): a clone of
+# the pinned rev above at ../../../rune-zlo (~/rune-zlo), branch
+# `zlo-energy`. It caches the IME cursor area, honours a zero word reveal
+# under reduced motion, steps word fades at 40 Hz and adds
+# `rune::cap_ambient_motion` (60 Hz once input rests), which main.rs calls.
+# Building elsewhere needs that clone: `git clone <rune> ~/rune-zlo`, then
+# check out `zlo-energy` (or re-apply its one commit on 53c7f60).
+[patch."https://github.com/anomalyco/rune"]
+rune = { path = "../../../rune-zlo/crates/rune" }
+rune-kit = { path = "../../../rune-zlo/crates/rune-kit" }

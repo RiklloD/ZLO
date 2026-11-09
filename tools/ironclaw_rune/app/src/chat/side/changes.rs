@@ -16,11 +16,13 @@ use rune_kit::{ButtonVariant, Kit, TextInput};
 
 use super::ui::{self, xs, xs_med};
 use super::{
-    SideState, Tab, bridge, git, short_path, side, side_mut, side_of, side_total, thread_id,
+    SideState, Tab, bridge, git, remote_repo, short_path, side, side_mut, side_of, side_total,
+    thread_id,
 };
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
+use zlo_client::repo_calls::{GitDiffScope, GitStatusView, ThreadGitAction};
 
 mod codex;
 mod list;
@@ -101,6 +103,9 @@ fn stats(files: &[rune_kit::diff::FileDiff]) -> (usize, usize, usize) {
 
 /// Re-read status, branch and both diffs. Coalesces like the orchestration poll.
 pub(super) fn refresh(s: &mut State) {
+    if remote_repo::remote(s) {
+        return remote_refresh(s);
+    }
     let Some(thread) = thread_id(s) else { return };
     let Some(x) = side_mut(s) else { return };
     let Some(repo) = x.repo.clone() else { return };
@@ -236,6 +241,12 @@ fn sync_annotations(s: &mut State) {
 
 /// Record the working tree before a turn, for its card.
 pub(super) fn checkpoint(s: &mut State) {
+    if remote_repo::remote(s) {
+        if side(s).is_some_and(|x| remote_repo::offered(x, Tab::Changes)) {
+            remote_change(s, "checkpoint", ThreadGitAction::Checkpoint {});
+        }
+        return;
+    }
     let Some(thread) = thread_id(s) else { return };
     let Some(repo) = side(s).and_then(|x| x.repo.clone()) else {
         return;
@@ -281,6 +292,10 @@ fn git_action(
     label: &'static str,
     f: impl FnOnce(&std::path::Path) -> Result<Option<String>, String> + Send + 'static,
 ) {
+    // Nothing on this Mac is mutated for a backend on another computer.
+    if crate::remote::backend_is_remote(s) {
+        return;
+    }
     let Some(thread) = thread_id(s) else { return };
     let Some(x) = side_mut(s) else { return };
     let Some(repo) = x.repo.clone() else { return };
@@ -304,6 +319,21 @@ fn git_action(
             super::history::stale(s);
         },
     );
+}
+
+/// One git change: on the backend's machine when it is remote (`remote`),
+/// else on this Mac (`local`). Same busy state and confirmations either way.
+fn change(
+    s: &mut State,
+    label: &'static str,
+    remote: ThreadGitAction,
+    local: impl FnOnce(&std::path::Path) -> Result<Option<String>, String> + Send + 'static,
+) {
+    if remote_repo::remote(s) {
+        remote_change(s, label, remote);
+    } else {
+        git_action(s, label, local);
+    }
 }
 
 /// The first click arms a destructive action, the second runs it.
@@ -349,10 +379,7 @@ fn set_scope(s: &mut State, scope: Scope) {
 /// for the composer's `@` selection mention.
 pub(super) fn selection(
     x: &SideState,
-) -> Option<(
-    std::path::PathBuf,
-    zlo_client::mentions::LineRange,
-)> {
+) -> Option<(std::path::PathBuf, zlo_client::mentions::LineRange)> {
     let state = &x.changes;
     let (range, path) = state
         .draft
@@ -470,7 +497,17 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let Some(x) = side(s) else {
         return ui::loading(k);
     };
+    let remote = remote_repo::remote(s);
+    if remote && !x.changes.loaded {
+        return ui::loading(k);
+    }
     if x.repo.is_none() {
+        if remote {
+            let why = x.changes.error.clone().unwrap_or_else(|| {
+                "This conversation has no git repository on its computer.".into()
+            });
+            return ui::empty(s, &why);
+        }
         return ui::empty(
             s,
             "This folder is not a git repository, so there are no changes to review. Pick another folder from the title above.",
@@ -509,7 +546,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(ui::grow())
         .child(
             ui::busy(ui::btn("Pull"), busy == Some("pull"))
-                .disabled(busy.is_some() || b.upstream.is_none())
+                .disabled(busy.is_some() || b.upstream.is_none() || remote)
                 .on_press(|s: &mut State| {
                     git_action(s, "pull", |repo| {
                         git::pull(repo).map(|()| Some("Pulled.".into()))
@@ -520,7 +557,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         )
         .child(
             ui::busy(ui::btn("Push").icon(&icons::UPLOAD), busy == Some("push"))
-                .disabled(busy.is_some())
+                .disabled(busy.is_some() || remote)
                 .on_press(|s: &mut State| {
                     git_action(s, "push", |repo| {
                         git::push(repo).map(|()| Some("Pushed.".into()))
@@ -588,6 +625,20 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     if let Some(e) = state.error.clone() {
         col = col.child(ui::error_line(s, e));
     }
+    if remote {
+        col = col.child(
+            ui::line(
+                format!(
+                    "Commit, push and pull run on this Mac only; {} is changed in place.",
+                    crate::remote::computer_label(s)
+                ),
+                xs(),
+                p.text_faint,
+            )
+            .px(12.)
+            .pt(4.),
+        );
+    }
 
     // Commit box and file list (working tree only).
     if scope == Scope::Working {
@@ -618,14 +669,14 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                                 .icon(&icons::CHECK),
                                 busy == Some("commit"),
                             )
-                            .disabled(busy.is_some() || !has)
+                            .disabled(busy.is_some() || !has || remote)
                             .on_press(|s: &mut State| commit_now(s, false))
                             .build(k)
                             .key("changes-commit"),
                         )
                         .child(
                             ui::outline("Commit & push")
-                                .disabled(busy.is_some() || !has)
+                                .disabled(busy.is_some() || !has || remote)
                                 .on_press(|s: &mut State| commit_now(s, true))
                                 .build(k)
                                 .key("changes-commit-push"),
@@ -756,6 +807,9 @@ fn turn_card(s: &State, k: &Kit, state: &ChangesState, files: usize, add: usize,
                     ui::btn("Keep")
                         .help("Accept these changes and dismiss the card")
                         .on_press(|s: &mut State| {
+                            if remote_repo::remote(s) {
+                                remote_change(s, "keep", ThreadGitAction::KeepTurn {});
+                            }
                             let Some(x) = side_mut(s) else { return };
                             x.changes.checkpoint = None;
                             x.changes.turn_stats = None;
@@ -783,6 +837,13 @@ fn turn_card(s: &State, k: &Kit, state: &ChangesState, files: usize, add: usize,
                     .help("Put every file this turn touched back as it was")
                     .on_press(|s: &mut State| {
                         if !confirmed(s, "undo-turn") {
+                            return;
+                        }
+                        if remote_repo::remote(s) {
+                            if let Some(x) = side_mut(s) {
+                                x.changes.scope = Scope::Working;
+                            }
+                            remote_change(s, "undo", ThreadGitAction::UndoTurn {});
                             return;
                         }
                         let Some(x) = side_mut(s) else { return };
@@ -840,3 +901,265 @@ fn diff_view(s: &State, k: &Kit) -> El {
 }
 
 pub(super) use notes::{fixture, fixture_comment};
+
+/// What a remote refresh brought back.
+struct RemoteLoaded {
+    status: GitStatusView,
+    working: Result<String, String>,
+    turn: Option<Result<String, String>>,
+}
+
+/// [`refresh`] on the backend's machine: status, then the working diff and
+/// (when the backend holds a checkpoint) the last turn's.
+fn remote_refresh(s: &mut State) {
+    let Some(thread) = thread_id(s) else { return };
+    let Some(x) = side_mut(s) else { return };
+    if !remote_repo::offered(x, Tab::Changes) {
+        return;
+    }
+    if x.changes.loading {
+        x.changes.stale = true;
+        return;
+    }
+    x.changes.loading = true;
+    let asked = thread.clone();
+    jobs::run(
+        s,
+        "changes",
+        move |c| async move {
+            let status = c.thread_git_status(&asked).await?;
+            let working = c
+                .thread_git_diff(&asked, GitDiffScope::Working, None)
+                .await
+                .map(|p| p.patch)
+                .map_err(|e| e.to_string());
+            let turn = if status.checkpoint {
+                Some(
+                    c.thread_git_diff(&asked, GitDiffScope::Turn, None)
+                        .await
+                        .map(|p| p.patch)
+                        .map_err(|e| e.to_string()),
+                )
+            } else {
+                None
+            };
+            Ok(RemoteLoaded {
+                status,
+                working,
+                turn,
+            })
+        },
+        move |s, result, _| remote_landed(s, &thread, result),
+    );
+}
+
+/// Land a remote refresh like a local one. An older backend switches the
+/// tab back to its "not available" line.
+fn remote_landed(
+    s: &mut State,
+    thread: &str,
+    result: Result<RemoteLoaded, zlo_client::ClientError>,
+) {
+    let Some(x) = side_of(s, thread) else { return };
+    x.changes.loading = false;
+    let loaded = match result {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            if !remote_repo::note(x, false, Err(&e)) {
+                x.changes.loaded = true;
+                x.changes.error = Some(e.to_string());
+            }
+            return;
+        }
+    };
+    remote_repo::note(x, false, Ok(()));
+    remote_repo::adopt_root(x, &loaded.status.repo_root);
+    x.remote_repo.checkpoint = loaded.status.checkpoint;
+    let state = &mut x.changes;
+    state.loaded = true;
+    state.branch = remote_repo::branch(loaded.status.branch);
+    state.changes = loaded
+        .status
+        .changes
+        .into_iter()
+        .map(remote_repo::change)
+        .collect();
+    match loaded.working {
+        Ok(patch) => {
+            state.error = None;
+            state.working_patch = patch;
+        }
+        Err(e) => state.error = Some(e),
+    }
+    match loaded.turn {
+        Some(Ok(patch)) => {
+            state.turn_stats = Some(stats(&rune_kit::diff::parse(&patch)));
+            state.turn_patch = patch;
+        }
+        Some(Err(e)) => {
+            tracing::debug!(error = %e, "remote turn diff failed");
+            state.turn_stats = None;
+        }
+        None => state.turn_stats = None,
+    }
+    if state.scope == Scope::Turn && !state.has_turn() {
+        state.scope = Scope::Working;
+    }
+    let stale = std::mem::take(&mut state.stale);
+    apply(s);
+    if stale {
+        refresh(s);
+    }
+}
+
+/// [`git_action`] on the backend's machine; its answer carries the status
+/// read back after the change, then the diffs are reloaded.
+fn remote_change(s: &mut State, label: &'static str, action: ThreadGitAction) {
+    let Some(thread) = thread_id(s) else { return };
+    let Some(x) = side_mut(s) else { return };
+    if x.changes.busy.is_some() {
+        return;
+    }
+    x.changes.busy = Some(label);
+    x.changes.confirm = None;
+    x.changes.note = None;
+    let asked = thread.clone();
+    jobs::run(
+        s,
+        "changes",
+        move |c| async move { c.thread_git_change(&asked, &action).await },
+        move |s, result, _| {
+            let Some(x) = side_of(s, &thread) else { return };
+            x.changes.busy = None;
+            match result {
+                Ok(done) => {
+                    x.changes.note = done.note;
+                    x.remote_repo.checkpoint = done.status.checkpoint;
+                    x.changes.branch = remote_repo::branch(done.status.branch);
+                    x.changes.changes = done
+                        .status
+                        .changes
+                        .into_iter()
+                        .map(remote_repo::change)
+                        .collect();
+                }
+                Err(e) => {
+                    if remote_repo::note(x, false, Err(&e)) {
+                        return;
+                    }
+                    x.changes.error = Some(e.to_string());
+                }
+            }
+            refresh(s);
+            super::history::stale(s);
+        },
+    );
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+    use zlo_client::repo_calls::{GitBranch, GitChange};
+
+    fn remote_state() -> State {
+        let mut s = crate::chat::fixtures::test_state();
+        s.chat = Some(crate::chat::ChatState::new("t1".into()));
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+        s
+    }
+
+    /// A remote refresh lands the backend's status and diff in the same
+    /// state the local path fills, with the backend's repository root.
+    #[test]
+    fn a_remote_refresh_fills_the_tab_from_the_backend() {
+        let mut s = remote_state();
+        let status = GitStatusView {
+            repo_root: "/srv/app".into(),
+            branch: GitBranch {
+                name: "main".into(),
+                upstream: None,
+                ahead: 2,
+                behind: 0,
+            },
+            changes: vec![GitChange {
+                path: "a.rs".into(),
+                from: None,
+                index: ' ',
+                worktree: 'M',
+            }],
+            truncated: false,
+            checkpoint: true,
+        };
+        let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        remote_landed(
+            &mut s,
+            "t1",
+            Ok(RemoteLoaded {
+                status,
+                working: Ok(patch.into()),
+                turn: Some(Ok(patch.into())),
+            }),
+        );
+        let x = side(&s).unwrap();
+        assert_eq!(x.repo.as_deref(), Some(std::path::Path::new("/srv/app")));
+        assert!(x.changes.loaded);
+        assert_eq!(x.changes.branch.ahead, 2);
+        assert_eq!(x.changes.changes[0].path, "a.rs");
+        assert!(x.changes.changes[0].unstaged());
+        assert_eq!(x.changes.working_patch, patch);
+        assert!(
+            x.changes.has_turn(),
+            "the backend's checkpoint drives the turn card"
+        );
+        assert!(remote_repo::offered(x, Tab::Changes));
+    }
+
+    /// An older backend (no git route) puts the tab back to its
+    /// "not available on Studio" line; a real failure is shown instead.
+    #[test]
+    fn an_older_backend_falls_back_to_the_unavailable_line() {
+        let mut s = remote_state();
+        let old = zlo_client::ClientError::Api {
+            status: 404,
+            message: "Not found".into(),
+            body: Box::default(),
+        };
+        remote_landed(&mut s, "t1", Err(old));
+        let x = side(&s).unwrap();
+        assert!(!remote_repo::offered(x, Tab::Changes));
+        assert!(!remote_repo::offered(x, Tab::History));
+        assert!(x.changes.error.is_none());
+
+        let mut s = remote_state();
+        let refused = zlo_client::ClientError::Refused {
+            code: "not_a_git_repository".into(),
+            message: "This thread's folder is not a git repository.".into(),
+        };
+        remote_landed(&mut s, "t1", Err(refused));
+        let x = side(&s).unwrap();
+        assert!(remote_repo::offered(x, Tab::Changes));
+        assert!(x.changes.loaded);
+        assert_eq!(
+            x.changes.error.as_deref(),
+            Some("This thread's folder is not a git repository.")
+        );
+    }
+
+    /// While remote, a refresh never runs local git: it goes to the backend
+    /// (no folder on this Mac is needed), and not at all once unsupported.
+    #[test]
+    fn remote_refresh_asks_the_backend_not_this_mac() {
+        let mut s = remote_state();
+        assert!(side(&s).unwrap().repo.is_none());
+        refresh(&mut s);
+        assert!(
+            side(&s).unwrap().changes.loading,
+            "a backend request is out"
+        );
+        let mut s = remote_state();
+        side_mut(&mut s).unwrap().remote_repo.git = remote_repo::Support::No;
+        refresh(&mut s);
+        assert!(!side(&s).unwrap().changes.loading);
+    }
+}

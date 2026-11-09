@@ -3,9 +3,7 @@
 //! `onboarding-projects`, `onboarding-projects-loading`, `onboarding-toast`).
 
 use zlo_client::orchestration::RouteProvider;
-use zlo_client::session_import::{
-    SessionImportGit, SessionImportProject, SessionImportProjects,
-};
+use zlo_client::session_import::{SessionImportGit, SessionImportProject, SessionImportProjects};
 
 use super::agents::{AgentTerminal, Driver, TerminalState};
 use super::projects::Scan;
@@ -22,18 +20,25 @@ fn base(s: &mut State, step: Step) {
 
 pub fn connect(s: &mut State) {
     base(s, Step::Connect);
-    s.onboarding.paired = Some(super::gateway::Computer::Remote(
-        "http://studio.local:3000".into(),
-    ));
+    s.remote.registry.environments = vec![zlo_client::environments::SavedEnvironment {
+        environment_id: "0f6c2d0e-3b0a-4a51-9b7e-6b1c8f1f2a10".into(),
+        label: "Studio".into(),
+        routes: vec![zlo_client::environments::Route {
+            kind: zlo_client::environments::RouteKind::Tailnet,
+            url: "https://studio.tail9915dd.ts.net".into(),
+            remote_port: None,
+        }],
+        legacy_token: false,
+    }];
 }
 
 pub fn pairing(s: &mut State) {
     base(s, Step::Connect);
-    let c = &mut s.onboarding.connect;
-    c.pairing_open = true;
-    c.pairing_help_open = true;
-    c.pairing_input = rune::TextEdit::new("http://studio.local:3000");
-    c.pairing_error = Some("The link has no token. It ends in #token=…".into());
+    s.onboarding.connect.pairing_open = true;
+    let page = &mut s.remote.page;
+    page.tailscale = Some(false);
+    page.input = rune::TextEdit::new("https://studio.tail9915dd.ts.net/pair");
+    page.error = Some("The link has no code. It ends in #code=…".into());
 }
 
 fn route(provider: &str, name: &str, authenticated: bool) -> RouteProvider {

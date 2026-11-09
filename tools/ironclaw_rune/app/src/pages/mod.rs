@@ -5,6 +5,7 @@
 
 pub mod automations;
 pub mod common;
+pub mod computers;
 pub mod extensions;
 pub mod files;
 pub mod hooks;
@@ -58,6 +59,7 @@ pub fn opened(s: &mut State, page: Page) {
         Page::Usage => usage::opened(s),
         Page::Memory => memory::opened(s),
         Page::Hooks => hooks::opened(s),
+        Page::Computers => computers::opened(s),
     }
 }
 
@@ -80,5 +82,6 @@ pub fn view(s: &State, page: Page, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         Page::Usage => usage::view(s, cx, k, layer),
         Page::Memory => memory::view(s, cx, k, layer),
         Page::Hooks => hooks::view(s, cx, k, layer),
+        Page::Computers => computers::view(s, cx, k, layer),
     }
 }

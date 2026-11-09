@@ -10,6 +10,12 @@ use serde_json::{Value, json};
 use crate::api::{Client, V2, seg};
 use crate::error::ClientError;
 
+/// `GET /computer-use/readiness`: the backend machine's own answer (its
+/// `ready` field is [`ComputerUseReadiness::ready`]).
+pub use ironclaw_product_contracts::computer_use::{
+    ComputerUseEngineState, ComputerUsePermissionState, ComputerUsePlatform, ComputerUseReadiness,
+};
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ComputerState {
     #[serde(default)]
@@ -154,6 +160,12 @@ impl Client {
             .get(&format!("{V2}/computer-use?viewer={}", seg(viewer)))
             .await?;
         serde_json::from_value(value).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    /// The backend machine's computer-use readiness (operator only): its
+    /// engine and the macOS permissions of the process that drives it.
+    pub async fn computer_readiness(&self) -> Result<ComputerUseReadiness, ClientError> {
+        self.get(&format!("{V2}/computer-use/readiness")).await
     }
 
     /// The newest picture of `window_id` after `after_seq`; the gateway waits

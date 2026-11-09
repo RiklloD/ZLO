@@ -8,12 +8,12 @@ use crate::pages::common::controls::{
 };
 use crate::pages::common::empty_state;
 use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs};
+use rune::{El, TextEdit, col, row};
+use rune_kit::{Kit, Spinner, TextInput};
 use zlo_client::memory_page::{
     SupermemoryBindingInfo, SupermemoryBindingOrigin, SupermemoryDocumentPage,
     SupermemoryDocumentSummary, SupermemoryMemoryHit, SupermemoryStatus,
 };
-use rune::{El, TextEdit, col, row};
-use rune_kit::{Kit, Spinner, TextInput};
 
 use super::{MemoryState, fail, field_row};
 use crate::icons;

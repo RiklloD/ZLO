@@ -12,9 +12,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use zlo_client::visual::{self, Body, Segment, Series, Visual, compact, exact};
 use rune::{Color, El, LineCap, Path, Shape, canvas, col, el, row, text};
 use rune_kit::{Kit, Markdown, MarkdownStyle};
+use zlo_client::visual::{self, Body, Segment, Series, Visual, compact, exact};
 
 use super::{actions, file_links, flow};
 use crate::design::Palette;

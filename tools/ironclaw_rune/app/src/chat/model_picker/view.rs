@@ -1,9 +1,9 @@
 //! The model picker's pills and popovers (GPUI `ModelPicker::render`,
 //! `render_popover`, `render_effort*`, `group_header`, `model_row`).
 
-use zlo_client::orchestration::RouteProvider;
 use rune::{Color, Cx, El, Key, Modifier, Phase, TextEdit, col, el, row};
 use rune_kit::{Kit, Placement, TextInput, popover, scrim};
+use zlo_client::orchestration::RouteProvider;
 
 use super::{
     ModelPickerState, NATIVE, Rail, Slot, cycle_rail, edit_prefs, effort_label, hidden_summary,

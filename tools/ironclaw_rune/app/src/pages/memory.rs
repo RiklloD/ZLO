@@ -19,13 +19,13 @@ use crate::pages::common::controls::{
 };
 use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs};
 use crate::pages::common::{block_fill, empty_state, error_line, page_body};
+use rune::{Cursor, Cx, El, TextEdit, col, el, row};
+use rune_kit::{Kit, Markdown, TextInput};
 use zlo_client::memory_page::{
     MemoryArchiveOutcome, MemoryDocument, MemoryDocumentEntry, MemoryDocumentKind,
     MemoryPageWriteOutcome, MemorySearchHit, SupermemoryDocumentPage, SupermemoryMemoryHit,
     SupermemoryStatus,
 };
-use rune::{Cursor, Cx, El, TextEdit, col, el, row};
-use rune_kit::{Kit, Markdown, TextInput};
 
 use self::draft::{Effect, SaveReply, apply_archived, apply_save};
 use crate::design::kit::mono_editor;

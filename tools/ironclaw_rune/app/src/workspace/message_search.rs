@@ -15,10 +15,10 @@
 
 use std::time::{Duration, Instant};
 
+use rune::{El, Span, TextStyle, rich};
 use zlo_client::history::{
     HistoryHit, HistorySearchRequest, HistoryThreadOrigin, HistoryThreadResult,
 };
-use rune::{El, Span, TextStyle, rich};
 
 use crate::design::Palette;
 use crate::jobs;

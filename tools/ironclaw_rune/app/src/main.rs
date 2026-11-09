@@ -4,8 +4,9 @@
 //! `archive/gpui` branch (tag `gpui-final`). Same preferences file, same
 //! behaviour; see `../../PLAN.md` for the port plan and conventions.
 //!
-//! Opening the app starts the gateway's launchd job and quitting (⌘Q) stops
-//! it (`service.rs`). Closing the window keeps the app and the gateway
+//! Opening the app starts this Mac's gateway and quitting (⌘Q) stops it
+//! (`service.rs`), unless another computer is in use or "Run IronClaw on
+//! this Mac" is off (`remote.rs`). Closing the window keeps the app and the gateway
 //! running; clicking the Dock icon brings the window back. The app finds the
 //! gateway and its token on its own; see
 //! `zlo_client::Connection::discover`.
@@ -25,6 +26,7 @@ mod onboarding;
 mod pages;
 mod permissions;
 mod persist;
+mod remote;
 mod run_clock;
 mod scenes;
 mod service;
@@ -90,11 +92,19 @@ fn main() {
     // ZLO owns the local backend's lifetime: started at launch, stopped on
     // quit (`service.rs`). Headless scenes and scripts leave it be.
     let headless = rune::is_headless();
-    if !headless {
+    // The computers list decides whether this Mac runs a backend at all
+    // (Settings → Computers); it is read before anything starts.
+    let launch = (!headless).then(remote::Launch::read);
+    if let Some(launch) = &launch {
+        service::set_allowed(launch.runs_local_backend());
         service::start();
         service::stop_on_terminate();
         energy::start();
     }
+    // Motion nobody steers (a reply streaming in, the list following it)
+    // paces at 60 Hz; any input lifts the cap, so scrolling and typing keep
+    // the panel's full 120 Hz.
+    rune::cap_ambient_motion(true);
 
     let spec = AppSpec::<State> {
         min_size: Some((720.0, 480.0)),
@@ -144,6 +154,9 @@ fn main() {
     let handle = app.handle();
     let app = app.init(move || {
         let mut s = State::new(jobs::Rt::new(handle));
+        if let Some(launch) = launch {
+            s.remote.launched(launch);
+        }
         workspace::quick::attach(&mut s, quick);
         design::look::start(&mut s);
         workspace::start(&mut s);
@@ -152,6 +165,7 @@ fn main() {
     app.run();
     if !headless {
         service::stop();
+        remote::tunnel::close();
     }
 }
 

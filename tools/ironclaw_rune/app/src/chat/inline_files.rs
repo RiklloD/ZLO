@@ -13,10 +13,10 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 
+use rune::{ClipboardContent, El, Icon, TextEdit, icon, row, text};
 use zlo_client::attachments::{self, StagedFile};
 use zlo_client::inbound_requests::attachment_anchor;
 use zlo_client::mentions;
-use rune::{ClipboardContent, El, Icon, TextEdit, icon, row, text};
 
 use crate::icons;
 use crate::snapshot;

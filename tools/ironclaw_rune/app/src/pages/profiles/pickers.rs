@@ -9,12 +9,10 @@ use crate::pages::common::glyph;
 use crate::pages::common::ts::{sm, xs};
 use std::collections::BTreeSet;
 
-use zlo_client::orchestration::RouteProvider;
-use zlo_client::profiles::{
-    ApprovalMode, ProfileInfo, ProfileSettings, ProfileSupermemory,
-};
 use rune::{Color, Cursor, El, FileDialogOptions, ScrollSpec, Tx, col, el, row};
 use rune_kit::{Kit, Placement, TextInput};
+use zlo_client::orchestration::RouteProvider;
+use zlo_client::profiles::{ApprovalMode, ProfileInfo, ProfileSettings, ProfileSupermemory};
 
 use super::ProfilesState;
 use crate::design::smooth_scroll::WheelGlide;

@@ -16,10 +16,12 @@ use rune::{El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, el, row, text};
 use rune_kit::{ButtonVariant, Kit, TextInput};
 
 use super::ui::{self, MONO_XS, xs};
-use super::{short_path, side, side_mut, side_of, side_total, thread_id};
+use super::{Tab, remote_repo, short_path, side, side_mut, side_of, side_total, thread_id};
 use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
+use crate::jobs;
 use crate::state::State;
+use zlo_client::repo_calls::{ConsoleLineKind, ThreadConsoleAction, ThreadConsoleView};
 
 /// Oldest lines go first past this.
 const LINES_MAX: usize = 4000;
@@ -51,7 +53,23 @@ pub(super) struct ConsoleState {
     history: Vec<String>,
     /// Position while stepping through `history` with the arrows.
     recall: Option<usize>,
+    /// When the backend is on another computer: its console's state.
+    remote: RemoteConsole,
 }
+
+/// The backend's console as last read: its cursor, whether its command
+/// runs, and the folder it runs in.
+#[derive(Default)]
+pub(super) struct RemoteConsole {
+    after: Option<u64>,
+    running: bool,
+    folder: Option<String>,
+    /// A poll is out; another is not started.
+    polling: bool,
+}
+
+/// How long between console reads while a remote command runs.
+const POLL_EVERY: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Drop terminal escape sequences (colors, cursor moves, titles).
 fn strip_ansi(s: &str) -> String {
@@ -153,6 +171,11 @@ fn push(state: &mut ConsoleState, kind: Kind, text: String) {
 }
 
 fn run(s: &mut State, tx: &mut Tx) {
+    // This Mac's shell is not the backend's when it runs elsewhere: the
+    // command runs in the thread's folder on that computer.
+    if remote_repo::remote(s) {
+        return remote_run(s, tx);
+    }
     let Some(thread) = thread_id(s) else { return };
     let Some(x) = side_mut(s) else { return };
     let command = x.console.input.text.trim().to_string();
@@ -220,6 +243,9 @@ fn forward(s: &State, thread: String, rx: mpsc::Receiver<Msg>) {
 }
 
 fn stop(s: &mut State) {
+    if remote_repo::remote(s) {
+        return remote_control(s, ThreadConsoleAction::Cancel {});
+    }
     if let Some(run) = side(s).and_then(|x| x.console.running.as_ref()) {
         // The negative pid names the whole process group.
         let _ = Command::new("/bin/kill")
@@ -257,12 +283,25 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         return ui::loading(k);
     };
     let state = &x.console;
-    let folder = x.folder.as_deref().map(short_path).unwrap_or_default();
-    let running = state.running.is_some();
+    let remote = remote_repo::remote(s);
+    let folder = if remote {
+        let on = crate::remote::computer_label(s);
+        match state.remote.folder.as_deref() {
+            Some(f) => format!("{} on {on}", short_path(std::path::Path::new(f))),
+            None => format!("the conversation's folder on {on}"),
+        }
+    } else {
+        x.folder.as_deref().map(short_path).unwrap_or_default()
+    };
+    let running = state.running.is_some() || (remote && state.remote.running);
     let mut lines = col().w_full().px(12.).py(8.);
     if state.lines.is_empty() {
         lines = lines.child(ui::para(
-            format!("Commands run in {folder} with your login shell. Try `git log --oneline -5` or `npm test`."),
+            if remote {
+                format!("Commands run in {folder}. Try `git log --oneline -5` or `npm test`.")
+            } else {
+                format!("Commands run in {folder} with your login shell. Try `git log --oneline -5` or `npm test`.")
+            },
             xs(),
             p.text_faint,
         ));
@@ -348,9 +387,239 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(input)
 }
 
+/// The tab opened: read the backend's console (its running command and
+/// kept output) when the backend is on another computer.
+pub(super) fn load(s: &mut State) {
+    if remote_repo::remote(s) {
+        poll(s, false);
+    }
+}
+
+fn remote_run(s: &mut State, tx: &mut Tx) {
+    let Some(thread) = thread_id(s) else { return };
+    let Some(x) = side_mut(s) else { return };
+    if !remote_repo::offered(x, Tab::Console) {
+        return;
+    }
+    let command = x.console.input.text.trim().to_string();
+    if command.is_empty() || x.console.remote.running {
+        return;
+    }
+    x.console.input.clear();
+    if command == "clear" {
+        x.console.lines.clear();
+        return;
+    }
+    let state = &mut x.console;
+    state.history.retain(|h| *h != command);
+    state.history.push(command.clone());
+    state.recall = None;
+    state.remote.running = true;
+    let asked = thread.clone();
+    let action = ThreadConsoleAction::Start { command };
+    jobs::run(
+        s,
+        "console",
+        move |c| async move { c.thread_console_control(&asked, &action).await },
+        move |s, result, _| {
+            landed(s, &thread, result);
+            poll(s, true);
+        },
+    );
+    tx.scroll_to_bottom(OUT_KEY);
+}
+
+fn remote_control(s: &mut State, action: ThreadConsoleAction) {
+    let Some(thread) = thread_id(s) else { return };
+    let asked = thread.clone();
+    jobs::run(
+        s,
+        "console",
+        move |c| async move { c.thread_console_control(&asked, &action).await },
+        move |s, result, _| {
+            // A stop lands before the command has ended: read on until it has.
+            if landed(s, &thread, result) {
+                poll(s, true);
+            }
+        },
+    );
+}
+
+/// Read the lines after the cursor; while the command runs, again after
+/// [`POLL_EVERY`] (`wait` delays this read too).
+fn poll(s: &mut State, wait: bool) {
+    let Some(thread) = thread_id(s) else { return };
+    let Some(x) = side_mut(s) else { return };
+    if x.console.remote.polling || !remote_repo::offered(x, Tab::Console) {
+        return;
+    }
+    x.console.remote.polling = true;
+    let after = x.console.remote.after;
+    let asked = thread.clone();
+    jobs::run(
+        s,
+        "console",
+        move |c| async move {
+            if wait {
+                tokio::time::sleep(POLL_EVERY).await;
+            }
+            c.thread_console(&asked, after).await
+        },
+        move |s, result, tx| {
+            if let Some(x) = side_of(s, &thread) {
+                x.console.remote.polling = false;
+            }
+            let more = landed(s, &thread, result);
+            tx.scroll_to_bottom(OUT_KEY);
+            if more {
+                poll(s, true);
+            }
+        },
+    );
+}
+
+/// Land the backend's console view: its new lines, its state. Returns
+/// whether its command still runs (so polling goes on). An older backend,
+/// or one with no host shell, switches the tab back to its "not available"
+/// line.
+fn landed(
+    s: &mut State,
+    thread: &str,
+    result: Result<ThreadConsoleView, zlo_client::ClientError>,
+) -> bool {
+    let Some(x) = side_of(s, thread) else {
+        return false;
+    };
+    let view = match result {
+        Ok(view) if !view.available => {
+            let off = zlo_client::ClientError::Refused {
+                code: "console_unavailable".into(),
+                message: String::new(),
+            };
+            remote_repo::note(x, true, Err(&off));
+            x.console.remote.running = false;
+            return false;
+        }
+        Ok(view) => view,
+        Err(e) => {
+            x.console.remote.running = false;
+            if !remote_repo::note(x, true, Err(&e)) {
+                push(&mut x.console, Kind::Err, e.to_string());
+            }
+            return false;
+        }
+    };
+    remote_repo::note(x, true, Ok(()));
+    let state = &mut x.console;
+    // Only lines after the cursor: a reply that overlaps an earlier one
+    // never repeats a line.
+    let seen = state.remote.after.unwrap_or(0);
+    if view.dropped > 0 {
+        push(
+            state,
+            Kind::Info,
+            format!("… {} earlier lines were dropped", view.dropped),
+        );
+    }
+    for line in view.lines.into_iter().filter(|l| l.seq > seen) {
+        let kind = match line.kind {
+            ConsoleLineKind::Command => Kind::Command,
+            ConsoleLineKind::Out => Kind::Out,
+            ConsoleLineKind::Err => Kind::Err,
+            ConsoleLineKind::Info => Kind::Info,
+        };
+        push(state, kind, strip_ansi(&line.text));
+    }
+    state.remote.after = Some(view.next.max(seen));
+    state.remote.running = view.running;
+    state.remote.folder = view.folder;
+    view.running
+}
+
 #[cfg(test)]
 mod tests {
-    use super::strip_ansi;
+    use super::*;
+    use zlo_client::repo_calls::ConsoleLine;
+
+    fn remote_state() -> State {
+        let mut s = crate::chat::fixtures::test_state();
+        s.chat = Some(crate::chat::ChatState::new("t1".into()));
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+        s
+    }
+
+    fn view(lines: &[(u64, ConsoleLineKind, &str)], running: bool) -> ThreadConsoleView {
+        ThreadConsoleView {
+            available: true,
+            folder: Some("/srv/app".into()),
+            running,
+            command: Some("ls".into()),
+            exit_code: None,
+            lines: lines
+                .iter()
+                .map(|(seq, kind, text)| ConsoleLine {
+                    seq: *seq,
+                    kind: *kind,
+                    text: (*text).into(),
+                })
+                .collect(),
+            next: lines.last().map_or(0, |l| l.0),
+            dropped: 0,
+        }
+    }
+
+    /// The backend's lines land once each, in order, and polling stops
+    /// with the command.
+    #[test]
+    fn remote_console_lines_land_once_and_polling_follows_the_command() {
+        let mut s = remote_state();
+        let first = view(
+            &[
+                (1, ConsoleLineKind::Command, "ls"),
+                (2, ConsoleLineKind::Out, "a"),
+            ],
+            true,
+        );
+        assert!(landed(&mut s, "t1", Ok(first)));
+        // An overlapping reply repeats nothing.
+        let again = view(
+            &[
+                (2, ConsoleLineKind::Out, "a"),
+                (3, ConsoleLineKind::Info, "Exited with code 1."),
+            ],
+            false,
+        );
+        assert!(!landed(&mut s, "t1", Ok(again)));
+        let x = side(&s).unwrap();
+        let texts: Vec<_> = x.console.lines.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(texts, vec!["ls", "a", "Exited with code 1."]);
+        assert_eq!(x.console.remote.after, Some(3));
+        assert!(!x.console.remote.running);
+    }
+
+    /// A backend without a host shell (or an older one) puts the tab back
+    /// to its "not available on Studio" line; this Mac's shell never runs.
+    #[test]
+    fn an_unavailable_remote_console_falls_back_to_the_line() {
+        let mut s = remote_state();
+        let mut off = view(&[], false);
+        off.available = false;
+        assert!(!landed(&mut s, "t1", Ok(off)));
+        assert!(!remote_repo::offered(side(&s).unwrap(), Tab::Console));
+
+        let mut s = remote_state();
+        let old = zlo_client::ClientError::Api {
+            status: 404,
+            message: "x".into(),
+            body: Box::default(),
+        };
+        assert!(!landed(&mut s, "t1", Err(old)));
+        let x = side(&s).unwrap();
+        assert!(!remote_repo::offered(x, Tab::Console));
+        assert!(x.console.lines.is_empty());
+        assert!(x.console.running.is_none(), "no local process was started");
+    }
 
     #[test]
     fn escape_sequences_are_dropped() {

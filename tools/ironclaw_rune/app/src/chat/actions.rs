@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use rune::Tx;
 use zlo_client::attachments::{self, StagedFile};
 use zlo_client::commands::{match_command, takes_arguments};
 use zlo_client::mentions as mention;
@@ -12,7 +13,6 @@ use zlo_client::product_wire::RebornProductCommandInfo;
 use zlo_client::transcript::{AttachmentChip, Row};
 use zlo_client::wire::CommandEffect;
 use zlo_client::{Client, ClientError, GateDecision};
-use rune::Tx;
 
 use super::{Reserve, chat_for, chat_ref, goals, inline_files, menu, set_error};
 use crate::jobs;
@@ -115,6 +115,7 @@ pub(crate) fn paste(s: &mut State, id: &str, pasted: inline_files::Pasted) {
 pub fn attach(s: &mut State, id: &str, paths: Vec<PathBuf>) {
     let Some(c) = chat_ref(s, id) else { return };
     let limits = c.limits.clone();
+    let backend = crate::remote::attachment_backend(s);
     let thread = id.to_string();
     jobs::run(
         s,
@@ -122,7 +123,7 @@ pub fn attach(s: &mut State, id: &str, paths: Vec<PathBuf>) {
         move |_| async move {
             let mut out = Vec::new();
             for path in paths {
-                out.push(attachments::stage(&path, &limits).await);
+                out.push(attachments::stage(&path, &limits, backend).await);
             }
             Ok::<_, ClientError>(out)
         },
@@ -198,11 +199,50 @@ pub(crate) fn open_fetched<Fut>(
     );
 }
 
-/// Hand `path` to macOS, which opens it in its default app.
+/// Hand `path` to macOS, which opens it in its default app. Only for files
+/// on this Mac (downloads, this Mac's backend); a path the backend names
+/// goes through [`open_backend_file`].
 pub fn open_with_system(path: &Path) {
     if let Err(e) = std::process::Command::new("open").arg(path).spawn() {
         tracing::warn!(error = %e, path = %path.display(), "couldn't open the file");
     }
+}
+
+/// Open a file by the path the backend gave. On this Mac it opens in its
+/// app; on a remote backend the path is on that computer, so it opens in
+/// VS Code over SSH to it, never as a path on this Mac.
+pub fn open_backend_file(s: &State, path: &Path) {
+    if !crate::remote::backend_is_remote(s) {
+        return open_with_system(path);
+    }
+    let Some(url) = crate::remote::ssh_host(s).and_then(|host| editor_over_ssh(&host, path)) else {
+        tracing::debug!(path = %path.display(), "remote file has no editor route");
+        return;
+    };
+    if let Err(e) = std::process::Command::new("open").arg(&url).spawn() {
+        tracing::warn!(error = %e, "couldn't open the editor over SSH");
+    }
+}
+
+/// `vscode://vscode-remote/ssh-remote+<host><path>` for an absolute path on
+/// the remote computer, percent-encoding what a URL path can't hold.
+pub(crate) fn editor_over_ssh(host: &str, path: &Path) -> Option<String> {
+    let path = path.to_str().filter(|p| p.starts_with('/'))?;
+    let host = Some(host).filter(|h| {
+        !h.is_empty()
+            && h.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '@'))
+    })?;
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    Some(format!("vscode://vscode-remote/ssh-remote+{host}{encoded}"))
 }
 
 /// A command without arguments runs at once; others get `/name ` to finish.
@@ -253,13 +293,32 @@ fn run_command(s: &mut State, id: &str, text: String) {
 }
 
 /// The folder `@` files come from and file mentions are read in: the
-/// thread's project folder, else the last one used.
+/// thread's project folder, else the last one used. None while the backend
+/// is remote: it can't read this Mac's folders, so `@` offers threads,
+/// skills and commands only (no local walk, no local path sent).
 pub(crate) fn mention_root(s: &State, id: &str) -> Option<PathBuf> {
     // A side chat reads its parent's folder: the pane is the parent's.
     let _ = id;
+    if crate::remote::backend_is_remote(s) {
+        return None;
+    }
     super::side::folder(s)
         .map(Path::to_path_buf)
         .or_else(|| s.prefs.last_project.clone())
+}
+
+/// Where `id`'s `@` files come from: this Mac's project folder, or, with the
+/// backend on another computer, the thread's workspace there, listed by
+/// that backend (its mentions name `/workspace/...`, which the backend
+/// resolves; this Mac is never walked for it).
+pub(crate) fn mention_source(s: &State, id: &str) -> Option<menu::IndexKey> {
+    if let crate::onboarding::gateway::Computer::Remote(remote) = &s.onboarding.computer {
+        return (!id.is_empty()).then(|| menu::IndexKey::Remote {
+            environment: remote.environment_id.clone(),
+            thread: id.to_string(),
+        });
+    }
+    mention_root(s, id).map(menu::IndexKey::Local)
 }
 
 /// The folder the backend may read `text`'s @-mentions from. A thread
@@ -294,6 +353,10 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
     let (text, files) = inline_files::outgoing(&c.composer, &c.staged);
     if text.is_empty() && files.is_empty() {
         return refuse(s, "There was nothing to send.", voice);
+    }
+    if let Err(why) = crate::remote::check_outgoing(s, &files) {
+        refuse(s, &why, voice);
+        return set_error(s, id, why);
     }
     // Each chat, side chats too, has its own goal (area H).
     if files.is_empty()
@@ -521,10 +584,7 @@ pub(crate) fn recall_last(s: &mut State, id: &str) -> bool {
     let Some(last) = c.rows.iter().rev().find_map(|r| match r {
         Row::User {
             text, attachments, ..
-        } => Some(zlo_client::transcript::readable(
-            text,
-            attachments,
-        )),
+        } => Some(zlo_client::transcript::readable(text, attachments)),
         _ => None,
     }) else {
         return false;
@@ -564,6 +624,72 @@ pub(crate) fn record_draft(s: &mut State, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_mentions_never_walk_this_mac() {
+        let mut s = crate::chat::fixtures::test_state();
+        s.prefs.last_project = Some(PathBuf::from("/Users/you/code/zlo"));
+        assert_eq!(
+            mention_root(&s, "t1").as_deref(),
+            Some(Path::new("/Users/you/code/zlo"))
+        );
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+        assert_eq!(mention_root(&s, "t1"), None, "no local folder for a remote");
+        assert!(mention_roots(&mut s, "t1", "see @file:src/a.rs").is_empty());
+    }
+
+    /// `@` files come from this Mac's folder locally, and from the backend's
+    /// index of that thread's workspace when the backend is remote.
+    #[test]
+    fn remote_mentions_list_the_backends_thread_workspace() {
+        let mut s = crate::chat::fixtures::test_state();
+        s.prefs.last_project = Some(PathBuf::from("/Users/you/code/zlo"));
+        assert_eq!(
+            mention_source(&s, "t1"),
+            Some(menu::IndexKey::Local(PathBuf::from("/Users/you/code/zlo")))
+        );
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+        assert_eq!(
+            mention_source(&s, "t1"),
+            Some(menu::IndexKey::Remote {
+                environment: "env-studio".into(),
+                thread: "t1".into(),
+            })
+        );
+        assert_eq!(mention_source(&s, ""), None, "no thread, no workspace");
+    }
+
+    #[test]
+    fn remote_files_open_in_the_editor_over_ssh() {
+        assert_eq!(
+            editor_over_ssh("studio.tail1.ts.net", Path::new("/home/me/My notes.md")).as_deref(),
+            Some("vscode://vscode-remote/ssh-remote+studio.tail1.ts.net/home/me/My%20notes.md")
+        );
+        assert_eq!(editor_over_ssh("studio", Path::new("relative.txt")), None);
+        assert_eq!(editor_over_ssh("bad host/x", Path::new("/a")), None);
+    }
+
+    #[test]
+    fn a_remote_send_refuses_files_staged_by_path() {
+        let mut s = crate::chat::fixtures::test_state();
+        let by_path = StagedFile {
+            key: attachments::next_key(),
+            filename: "a.txt".into(),
+            mime_type: "text/plain".into(),
+            size: 1,
+            body: attachments::Body::Path("/tmp/a.txt".into()),
+        };
+        let files = vec![by_path];
+        assert!(crate::remote::check_outgoing(&s, &files).is_ok());
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+        assert_eq!(
+            crate::remote::check_outgoing(&s, &files).err().as_deref(),
+            Some("Attach a.txt again: it was added for this Mac's backend.")
+        );
+    }
 
     #[test]
     fn a_failed_send_restores_only_into_an_empty_composer() {

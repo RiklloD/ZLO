@@ -9,7 +9,9 @@
 //! Assistant tabs read the gateway (Activity, Outputs, Agents, Routines);
 //! Browser shows a web page natively (`native_view`). Coding tabs (Files,
 //! Changes, History, Console) read a project folder on this Mac with the
-//! system `git`, picked once per thread.
+//! system `git`, picked once per thread. With the backend on another
+//! computer (`crate::remote`), Files reads that thread's workspace through
+//! the gateway and the git and shell tabs say where they run instead.
 //!
 //! # Entry points for the other areas
 //!
@@ -42,9 +44,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use zlo_client::orchestration::WorktreeView;
 use rune::{Cx, El, FileDialogOptions, Tx};
 use rune_kit::Kit;
+use zlo_client::orchestration::WorktreeView;
 
 use crate::jobs::{self, Generation};
 use crate::state::{Page, State};
@@ -61,6 +63,7 @@ mod history;
 mod outputs;
 mod preview;
 mod project;
+mod remote_repo;
 mod routines;
 mod session;
 mod ui;
@@ -207,6 +210,12 @@ impl Tab {
             })
     }
 
+    /// Tabs that run git or a shell on the project folder, which only this
+    /// Mac's backend shares: off while the backend is remote.
+    fn local_only(self) -> bool {
+        matches!(self, Tab::Changes | Tab::History | Tab::Console)
+    }
+
     /// Tabs that read the project folder.
     fn coding(self) -> bool {
         matches!(
@@ -307,6 +316,9 @@ pub struct SideState {
     changes: changes::ChangesState,
     history: history::HistoryState,
     console: console::ConsoleState,
+    /// What the backend's git and console routes do for this thread, when
+    /// the backend is on another computer.
+    remote_repo: remote_repo::RemoteRepo,
 }
 
 /// The open chat's side state.
@@ -470,8 +482,17 @@ pub fn show(s: &mut State, tab: Tab) {
 
 /// First visit loads a tab; later visits refresh the ones that go stale.
 fn load(s: &mut State, tab: Tab) {
+    // On another computer these tabs run there, unless its backend said
+    // it cannot (an older one, or no host shell for the console).
+    if tab.local_only()
+        && crate::remote::backend_is_remote(s)
+        && !side(s).is_some_and(|x| remote_repo::offered(x, tab))
+    {
+        return;
+    }
     match tab {
-        Tab::Activity | Tab::Agents | Tab::SideChat | Tab::Console => {}
+        Tab::Activity | Tab::Agents | Tab::SideChat => {}
+        Tab::Console => console::load(s),
         Tab::Browser => browser::start(s),
         Tab::Outputs => {
             if side(s).is_some_and(|x| x.outputs.files.is_none()) {
@@ -510,6 +531,11 @@ fn worktree_load(s: &mut State) {
 
 /// Point the coding tabs at `folder`. `remember` saves it for this thread.
 pub(crate) fn set_folder(s: &mut State, folder: PathBuf, remember: bool) {
+    // A folder on this Mac means nothing to a backend on another computer
+    // (Files then reads the backend's workspace instead).
+    if crate::remote::backend_is_remote(s) {
+        return;
+    }
     let Some(thread) = thread_id(s) else { return };
     if remember {
         let saved = folder.clone();
@@ -588,9 +614,7 @@ pub fn on_turn_ended(s: &mut State) {
 
 /// The lines picked for a comment in Changes, for the composer's `@`
 /// selection mention.
-pub fn changes_selection(
-    s: &State,
-) -> Option<(PathBuf, zlo_client::mentions::LineRange)> {
+pub fn changes_selection(s: &State) -> Option<(PathBuf, zlo_client::mentions::LineRange)> {
     side(s).and_then(changes::selection)
 }
 
@@ -602,6 +626,12 @@ pub fn open_link(s: &mut State, href: &str, external: bool, tx: &mut Tx) {
         Link::File(path) => {
             show(s, Tab::Outputs);
             outputs::open(s, path);
+        }
+        // A path from a remote backend is on that computer, not this Mac:
+        // fetch it through the gateway like the agent's own files.
+        Link::Local(path) if crate::remote::backend_is_remote(s) => {
+            show(s, Tab::Outputs);
+            outputs::open(s, path.to_string_lossy().into_owned());
         }
         Link::Local(path) if !external => {
             show(s, Tab::Outputs);
@@ -665,7 +695,11 @@ fn badge(s: &State, tab: Tab) -> bool {
 /// The dock's body for its tab.
 fn body(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> El {
     let _ = cx;
-    if tab.coding() && side(s).is_some_and(|x| x.folder.is_none()) {
+    if crate::remote::backend_is_remote(s) {
+        if tab.local_only() && !side(s).is_some_and(|x| remote_repo::offered(x, tab)) {
+            return dock::remote_unavailable(s, tab);
+        }
+    } else if tab.coding() && side(s).is_some_and(|x| x.folder.is_none()) {
         return dock::no_folder(s, k, tab);
     }
     match tab {

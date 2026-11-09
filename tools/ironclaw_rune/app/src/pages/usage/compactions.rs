@@ -6,8 +6,8 @@
 use crate::chat::model_picker::pretty_model;
 use crate::pages::common::controls::{rule, styled};
 use crate::pages::common::ts::{sm, sm_medium, xs};
-use zlo_client::usage::UsageHistory;
 use rune::{El, col, el, row};
+use zlo_client::usage::UsageHistory;
 
 use super::history::{format_tokens, format_usd};
 use crate::design::{self, Palette};

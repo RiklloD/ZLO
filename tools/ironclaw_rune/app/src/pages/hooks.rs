@@ -6,11 +6,9 @@
 use crate::pages::common::controls::{header_with, outlined_tag, refresh_icon, rule, spinner};
 use crate::pages::common::ts::{sm, sm_medium, xs};
 use crate::pages::common::{Tone, empty_state, error_line, page_body};
-use zlo_client::hooks_catalog::{
-    HookCatalog, HookCatalogEntry, HookSource, HookTrustClassView,
-};
 use rune::{Cx, El, col, row, text};
 use rune_kit::Kit;
+use zlo_client::hooks_catalog::{HookCatalog, HookCatalogEntry, HookSource, HookTrustClassView};
 
 use crate::jobs;
 use crate::state::{Conn, Page, State};

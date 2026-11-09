@@ -3,11 +3,11 @@
 //! the one `ChatView`; here each need is one function over the open chat
 //! (`s.chat`), so the side pane's files call only these.
 
+use rune::El;
+use rune_kit::Kit;
 use zlo_client::GateDecision;
 use zlo_client::orchestration::{Lineage, TaskView};
 use zlo_client::transcript::{CliBody, Row};
-use rune::El;
-use rune_kit::Kit;
 
 use crate::chat::{self, ChatState};
 use crate::state::State;

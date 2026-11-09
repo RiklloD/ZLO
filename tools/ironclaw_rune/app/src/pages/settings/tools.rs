@@ -5,9 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use zlo_client::wire::ToolPermission;
 use rune::{Cursor, El, col, row, text};
 use rune_kit::{Kit, TextInput};
+use zlo_client::wire::ToolPermission;
 
 use super::STATES;
 use crate::design::Palette;

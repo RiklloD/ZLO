@@ -12,9 +12,9 @@
 //! time; closing it drops its stream (area A's embedded chat), reopening
 //! reads it back.
 
-use zlo_client::orchestration::ForkOptions;
 use rune::{Align, Color, Cursor, Cx, El, Side, col, el, icon, row};
 use rune_kit::Kit;
+use zlo_client::orchestration::ForkOptions;
 
 use super::ui::{self, sm, xs};
 use super::{SideChat, Tab, bridge, pick_project_folder, short_path, side, side_mut, thread_id};

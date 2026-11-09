@@ -236,12 +236,7 @@ fn centered(s: &State, body: El) -> El {
         .child(el().w_full().max_w(super::content_width(s)).child(body))
 }
 
-fn pick_item(
-    s: &mut State,
-    id: &str,
-    item: &zlo_client::commands::MenuItem,
-    tx: &mut Tx,
-) {
+fn pick_item(s: &mut State, id: &str, item: &zlo_client::commands::MenuItem, tx: &mut Tx) {
     let Some(c) = chat_for(s, id) else { return };
     if let menu::MenuKey::Command(command) = menu::pick(item, &mut c.composer) {
         super::actions::pick_command(s, id, &command, tx);

@@ -26,13 +26,13 @@
 //!   orchestration places it (`orchestration::composer` while editing,
 //!   `orchestration::tail` otherwise).
 
+use rune::{El, Icon, TextEdit, col, el, row};
+use rune_kit::{Kit, TextInput};
 use zlo_client::ClientError;
 use zlo_client::inbox::{
     GoalCheckAction, GoalCheckRecord, GoalCheckSpec, GoalCheckStatus, GoalRecord, GoalStatus,
     ThreadGoalResponse,
 };
-use rune::{El, Icon, TextEdit, col, el, row};
-use rune_kit::{Kit, TextInput};
 
 use crate::chat::ChatState;
 use crate::design::kit::compact::{

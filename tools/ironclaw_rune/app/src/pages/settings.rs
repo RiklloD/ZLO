@@ -13,10 +13,10 @@ mod traces;
 
 use std::collections::HashSet;
 
-use zlo_client::product_wire::SettingsToolPermissionState;
-use zlo_client::wire::ToolPermission;
 use rune::{Cx, El, TextEdit, col};
 use rune_kit::Kit;
+use zlo_client::product_wire::SettingsToolPermissionState;
+use zlo_client::wire::ToolPermission;
 
 use super::common::{
     error_line, group_header, header, notice_line, page_body, refresh_button, rows_card,

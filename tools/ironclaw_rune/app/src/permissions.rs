@@ -3,7 +3,8 @@
 //! The backend and its computer-use engine run as ZLO's children, so macOS
 //! charges both permissions to ZLO: what this process sees is what the
 //! engine gets. Asking adds ZLO to the System Settings list, so the user
-//! only flips a switch.
+//! only flips a switch. A remote backend's engine runs under that
+//! computer's macOS instead (`missing_for_backend`).
 
 use std::ffi::c_void;
 use std::process::{Command, Stdio};
@@ -77,6 +78,14 @@ pub fn missing() -> Vec<Permission> {
     out
 }
 
+/// The permissions the backend's computer use still lacks on this Mac.
+/// Empty when the backend runs on another computer: its engine is charged
+/// to that computer's macOS, which ZLO can neither check nor prompt from
+/// here, so this Mac's switches are never asked for on its behalf.
+pub fn missing_for_backend(remote: bool) -> Vec<Permission> {
+    if remote { Vec::new() } else { missing() }
+}
+
 /// Put ZLO in each missing permission's list (macOS shows its own prompt)
 /// and open System Settings at the first one.
 pub fn request(missing: &[Permission]) {
@@ -113,5 +122,15 @@ pub fn request(missing: &[Permission]) {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_remote_backend_never_asks_this_mac() {
+        assert!(missing_for_backend(true).is_empty());
     }
 }

@@ -3,6 +3,7 @@
 //! the new-thread screen and the settings nav. No gateway is involved.
 
 use chrono::Utc;
+use rune::TextEdit;
 use zlo_client::history::{
     HistoryHighlight, HistoryHit, HistorySearchRole, HistoryThreadOrigin, HistoryThreadResult,
 };
@@ -10,7 +11,6 @@ use zlo_client::inbox::{
     InboxEngine, InboxListResponse, InboxProfile, InboxRow, InboxState, InboxStatus,
 };
 use zlo_client::usage::{ThreadContextReport, ThreadTelemetry};
-use rune::TextEdit;
 
 use crate::state::{Conn, Page, State};
 

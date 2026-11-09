@@ -12,7 +12,9 @@
 
 use ironclaw_product_contracts::product_wire::RebornProductCommandInfo;
 
-use crate::mentions::{MentionContext, MentionEntry, ThreadEntry, mention_matches};
+use crate::mentions::{
+    MentionContext, MentionEntry, Prepared, ThreadEntry, mention_matches, score,
+};
 
 /// One entry in the composer menu.
 #[derive(Debug, Clone, PartialEq)]
@@ -122,7 +124,14 @@ pub fn menu_matches_with(
         return Vec::new();
     };
     let query = token[1..].to_lowercase();
-    let hit = |item: &&MenuItem| item.name().to_lowercase().starts_with(&query);
+    let matcher = Matcher::new(&query);
+    let ranked = |items: &[MenuItem], limit: usize| -> Vec<MenuItem> {
+        matcher
+            .rank(items.iter().map(|i| (i.name(), i.description())), limit)
+            .into_iter()
+            .map(|ix| items[ix].clone())
+            .collect()
+    };
     if token.starts_with('@') {
         let threads = if mentions.threads.is_empty() {
             &sources.threads[..]
@@ -141,20 +150,126 @@ pub fn menu_matches_with(
         return mention_matches(&query, &ctx)
             .into_iter()
             .map(MenuItem::Mention)
-            .chain(sources.extensions.iter().filter(hit).take(extras).cloned())
-            .chain(sources.skills.iter().filter(hit).take(extras).cloned())
+            .chain(ranked(&sources.extensions, extras))
+            .chain(ranked(&sources.skills, extras))
             .collect();
     }
     // Commands only run as the first word of the draft.
     let at_start = text[..start].trim().is_empty();
-    let commands = sources
-        .commands
-        .iter()
-        .filter(|_| at_start)
-        .filter(|c| c.name.starts_with(&query))
-        .map(|c| MenuItem::Command(c.clone()));
-    let skills = sources.skills.iter().filter(hit).cloned();
-    commands.chain(skills).collect()
+    let commands: &[RebornProductCommandInfo] = if at_start { &sources.commands } else { &[] };
+    matcher
+        .rank(
+            commands
+                .iter()
+                .map(|c| (c.name.as_str(), c.description.as_str())),
+            usize::MAX,
+        )
+        .into_iter()
+        .map(|ix| MenuItem::Command(commands[ix].clone()))
+        .chain(ranked(&sources.skills, usize::MAX))
+        .collect()
+}
+
+/// Fuzzy matching for menu names, like a command palette: the query's
+/// letters in order anywhere in the name (`/hum` finds
+/// `academic-thesis-humanizer`, `/ath` too), its `-`/`_`/`:` separated words
+/// in any order (`/thesis-academic`), and, ranked below every name hit, a
+/// plain substring of the description. Exact and prefix hits rank first.
+struct Matcher {
+    whole: Prepared,
+    words: Vec<Prepared>,
+    query: String,
+}
+
+/// Puts description-only hits below any name hit.
+const DESCRIPTION_ONLY: i32 = -10_000;
+/// One rank of [`Matcher::tier`], above any fuzzy score.
+const TIER: i32 = 2_000;
+
+fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
+    text.get(..prefix.len())
+        .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+}
+
+impl Matcher {
+    fn new(query: &str) -> Self {
+        let words: Vec<Prepared> = query
+            .split(['-', '_', ':', '/', '.'])
+            .filter(|w| !w.is_empty())
+            .map(Prepared::new)
+            .collect();
+        Self {
+            whole: Prepared::new(query),
+            words: if words.len() > 1 { words } else { Vec::new() },
+            query: query.to_lowercase(),
+        }
+    }
+
+    fn score(&self, name: &str, description: &str) -> Option<i32> {
+        if self.query.is_empty() {
+            return Some(0);
+        }
+        self.name_score(name)
+            .or_else(|| self.description_score(name, description))
+    }
+
+    fn name_score(&self, name: &str) -> Option<i32> {
+        let whole = score(&self.whole, name);
+        let words = (!self.words.is_empty())
+            .then(|| {
+                self.words
+                    .iter()
+                    .map(|w| score(w, name))
+                    .sum::<Option<i32>>()
+                    .map(|s| s - 50)
+            })
+            .flatten();
+        let fuzzy = whole.max(words)?;
+        // A direct hit is a direct hit: the shorter name wins. Greedy letter
+        // scores only order scattered matches.
+        Some(match self.tier(name) {
+            0 => fuzzy,
+            tier => tier * TIER - name.len() as i32,
+        })
+    }
+
+    /// How directly the name answers the query: 3 when it or one of its
+    /// words is the query, 2 when one starts with it, 1 for a substring,
+    /// 0 for scattered letters.
+    fn tier(&self, name: &str) -> i32 {
+        let q = self.query.as_str();
+        let mut words = name.split([':', '/', '-', '_', '.', ' ']);
+        if name.eq_ignore_ascii_case(q) || words.clone().any(|w| w.eq_ignore_ascii_case(q)) {
+            3
+        } else if starts_with_ignore_case(name, q) || words.any(|w| starts_with_ignore_case(w, q)) {
+            2
+        } else if name.to_lowercase().contains(q) {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn description_score(&self, name: &str, description: &str) -> Option<i32> {
+        (self.query.len() >= 3 && description.to_lowercase().contains(&self.query))
+            .then(|| DESCRIPTION_ONLY - name.len() as i32)
+    }
+
+    /// Indices of the matching `(name, description)` entries, best first;
+    /// ties keep their inventory order.
+    fn rank<'a>(
+        &self,
+        items: impl Iterator<Item = (&'a str, &'a str)>,
+        limit: usize,
+    ) -> Vec<usize> {
+        let mut hits: Vec<(i32, usize)> = items
+            .enumerate()
+            .filter_map(|(ix, (name, description))| self.score(name, description).map(|s| (s, ix)))
+            .collect();
+        hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        hits.truncate(limit);
+        hits.into_iter().map(|(_, ix)| ix).collect()
+    }
 }
 
 /// The draft with its trailing trigger token replaced by `item`'s mention.
@@ -219,12 +334,14 @@ mod tests {
         let names = |v: Vec<MenuItem>| v.iter().map(|i| i.label()).collect::<Vec<_>>();
         assert_eq!(
             names(menu_matches("/s", &sources)),
-            ["/status", "/stop", "/security-review", "/summarize"]
+            // Equally good prefixes: the shorter name first.
+            ["/stop", "/status", "/summarize", "/security-review"]
         );
-        // Mid-sentence `/` offers skills only.
+        // Mid-sentence `/` offers skills only, fuzzy: `/se` also finds
+        // s-ummariz-e, below the prefix hit.
         assert_eq!(
             names(menu_matches("check this with /se", &sources)),
-            ["/security-review"]
+            ["/security-review", "/summarize"]
         );
         assert_eq!(names(menu_matches("look in @g", &sources)), ["@github"]);
         assert!(menu_matches("/model use", &sources).is_empty());
@@ -246,7 +363,7 @@ mod tests {
             Some("fix with /review-readiness ")
         );
         assert_eq!(tab("fix with /se", 0), "fix with /security-review ");
-        assert_eq!(tab("/st", 1), "/stop");
+        assert_eq!(tab("/st", 1), "/status");
         assert_eq!(tab("/mo", 0), "/model ");
         assert_eq!(tab("hello", 0), "");
 
@@ -257,5 +374,50 @@ mod tests {
         );
         assert!(match_command("/security-review this", all).is_none());
         assert!(takes_arguments(&all[2]) && !takes_arguments(&all[0]));
+    }
+
+    #[test]
+    fn skill_search_is_fuzzy() {
+        let mut described = skill("pdf");
+        if let MenuItem::Skill { description, .. } = &mut described {
+            *description = "Read, merge and create PDF documents".into();
+        }
+        let sources = MenuSources {
+            skills: vec![
+                skill("ironclaw:academic-thesis-humanizer"),
+                skill("anthropic-skills:humanizer"),
+                skill("security-review"),
+                described,
+                skill("financial-ml-backtest-pitfalls"),
+            ],
+            ..MenuSources::default()
+        };
+        let names = |text: &str| {
+            menu_matches(text, &sources)
+                .iter()
+                .map(|i| i.name().to_string())
+                .collect::<Vec<_>>()
+        };
+        // Any word of the name, best (shorter, tighter) first.
+        assert_eq!(
+            names("/humanizer"),
+            [
+                "anthropic-skills:humanizer",
+                "ironclaw:academic-thesis-humanizer"
+            ]
+        );
+        // Scattered letters and words out of order.
+        assert_eq!(names("/thesis"), ["ironclaw:academic-thesis-humanizer"]);
+        assert_eq!(
+            names("/thesis-academic"),
+            ["ironclaw:academic-thesis-humanizer"]
+        );
+        assert_eq!(names("/btpit"), ["financial-ml-backtest-pitfalls"]);
+        assert_eq!(names("/secrev"), ["security-review"]);
+        // The description, below every name hit.
+        assert_eq!(names("/merge"), ["pdf"]);
+        assert!(names("/zzz").is_empty());
+        // `@` ranks skills the same way.
+        assert_eq!(names("@thesis"), ["ironclaw:academic-thesis-humanizer"]);
     }
 }

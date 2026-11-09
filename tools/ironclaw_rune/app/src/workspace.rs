@@ -18,10 +18,9 @@
 
 use std::time::{Duration, Instant};
 
+use rune::{Cx, El, KeyEvent, Tx};
 use zlo_client::inbox::InboxAction;
 use zlo_client::usage::ThreadTelemetry;
-use zlo_client::{Backend, Client, ClientError};
-use rune::{Cx, El, KeyEvent, Tx};
 
 use crate::alerts::Alerts;
 use crate::jobs;
@@ -188,6 +187,9 @@ pub fn start(s: &mut State) {
     crate::alerts::install(s.rt.handle.clone());
     crate::snapshot::start(s);
     crate::voice::start(s);
+    // A `gateway.json` computer not in use is moved into the computers
+    // list on the side.
+    crate::remote::connect::migrate_in_background(s);
     connect(s);
 }
 
@@ -250,59 +252,31 @@ pub(crate) fn settle_sidebar_slide(s: &State) {
 }
 
 fn connect(s: &mut State) {
-    s.conn = Conn::Connecting;
-    let generation = s.workspace.connect_gen.bump();
-    s.onboarding.paired = crate::onboarding::gateway::paired();
-    let backend = match crate::onboarding::gateway::connection().and_then(|(conn, computer)| {
-        s.onboarding.computer = computer;
-        Backend::new(Client::new(conn)?)
-    }) {
-        Ok(backend) => backend,
-        Err(e) => {
-            tracing::warn!(error = %e, "gateway connection settings unavailable");
-            s.conn = Conn::Failed {
-                message: friendly(&e),
-                retry_in: None,
-            };
-            return;
-        }
-    };
-    s.rt.backend = Some(backend);
-    jobs::run(
-        s,
-        "workspace",
-        |c| async move {
-            let session = c.session().await?;
-            let inbox = c.inbox().await?;
-            Ok::<_, ClientError>((session, inbox))
-        },
-        move |s, result, _tx| {
-            if s.workspace.connect_gen != generation {
-                return;
-            }
-            match result {
-                Ok((session, list)) => {
-                    s.workspace.connect_attempt = 0;
-                    s.session = Some(session);
-                    inbox::apply(s, list);
-                    s.conn = Conn::Ready;
-                    // First-run setup decides before the launch import.
-                    crate::onboarding::decide(s);
-                    start_polling(s);
-                    status::start(s);
-                    match s.workspace.inbox.first_open() {
-                        Some(first) => open_thread(s, first),
-                        // Nothing open: a fresh draft in the default profile.
-                        None => start_in_profile(
-                            s,
-                            zlo_client::profiles::DEFAULT_PROFILE_ID.into(),
-                        ),
-                    }
-                }
-                Err(e) => connect_failed(s, &e),
-            }
-        },
-    );
+    crate::remote::connect(s);
+}
+
+/// The computer answered (`remote::connect`): show its threads, reopening
+/// `reopen` when it is still there.
+pub(crate) fn connected(
+    s: &mut State,
+    session: zlo_client::wire::SessionInfo,
+    list: zlo_client::inbox::InboxListResponse,
+    reopen: Option<String>,
+) {
+    s.workspace.connect_attempt = 0;
+    s.session = Some(session);
+    inbox::apply(s, list);
+    s.conn = Conn::Ready;
+    // First-run setup decides before the launch import.
+    crate::onboarding::decide(s);
+    start_polling(s);
+    status::start(s);
+    let reopen = reopen.filter(|id| s.workspace.inbox.row(id).is_some());
+    match reopen.or_else(|| s.workspace.inbox.first_open()) {
+        Some(first) => open_thread(s, first),
+        // Nothing open: a fresh draft in the default profile.
+        None => start_in_profile(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into()),
+    }
 }
 
 /// Connect again, to the computer setup switched to.
@@ -310,19 +284,13 @@ pub fn reconnect(s: &mut State) {
     s.workspace.connect_attempt = 0;
     // A switch needs a launch's grace: this Mac's gateway may be starting.
     s.launched = Instant::now();
-    if s.onboarding.computer == crate::onboarding::gateway::Computer::ThisMac {
-        crate::service::start();
-    }
     connect(s);
 }
 
 /// Setup is over: the launch-time session import it held back runs now
 /// (the backend runs it only when due).
 pub fn release_session_import(s: &mut State) {
-    session_import_tick(
-        s,
-        zlo_client::session_import::ImportTrigger::Launch,
-    );
+    session_import_tick(s, zlo_client::session_import::ImportTrigger::Launch);
 }
 
 /// Read the inbox again (after setup imported threads).
@@ -330,20 +298,30 @@ pub fn refresh_inbox(s: &mut State) {
     inbox::refresh(s);
 }
 
-/// The connection screen's "Try again": also brings the gateway back after
-/// a Stop from the Operator page.
+/// The connection screen's "Try again": also brings this Mac's gateway
+/// back after a Stop from the Operator page, when ZLO runs it
+/// (`remote::sync_local_backend`, called by every connect).
 pub fn retry_connect(s: &mut State) {
-    crate::service::start();
     s.workspace.connect_attempt = 0;
     connect(s);
 }
 
-/// Show the error, and retry on a schedule when the gateway is simply not
-/// up yet (it starts after the app at login, or is restarting).
-fn connect_failed(s: &mut State, error: &ClientError) {
-    let network = matches!(error, ClientError::Network(_));
+/// Show the problem, and retry on a schedule when the computer is simply
+/// not reachable yet (this Mac's gateway starts after the app at login, or
+/// is restarting; a remote may be waking up).
+pub(crate) fn connect_failed(s: &mut State, problem: crate::remote::connect::Problem) {
+    use crate::remote::connect::Problem;
     let generation = s.workspace.connect_gen;
-    if network && s.launched.elapsed() < STARTUP_GRACE {
+    let (network, message) = match problem {
+        Problem::Unreachable(m) => (true, m),
+        Problem::Blocked(m) => (false, m),
+    };
+    let local = !crate::remote::backend_is_remote(s);
+    if network
+        && local
+        && crate::remote::runs_local_backend(s)
+        && s.launched.elapsed() < STARTUP_GRACE
+    {
         // Still booting: stay on the loading screen and knock again soon.
         s.conn = Conn::Connecting;
         jobs::after(s, STARTUP_POLL, move |s, _| {
@@ -353,11 +331,15 @@ fn connect_failed(s: &mut State, error: &ClientError) {
         });
         return;
     }
-    tracing::warn!(error = %error, attempt = s.workspace.connect_attempt, "gateway connection failed");
+    tracing::warn!(error = %message, attempt = s.workspace.connect_attempt, "gateway connection failed");
     let attempt = s.workspace.connect_attempt;
     let retry_in = network.then(|| CONNECT_RETRY[attempt.min(CONNECT_RETRY.len() - 1)]);
     s.conn = Conn::Failed {
-        message: friendly(error),
+        message: if network && local {
+            friendly_unreachable(&message, crate::remote::runs_local_backend(s))
+        } else {
+            message
+        },
         retry_in,
     };
     let Some(secs) = retry_in else { return };
@@ -369,17 +351,18 @@ fn connect_failed(s: &mut State, error: &ClientError) {
     });
 }
 
-/// Turn the two common first-run failures into instructions.
-fn friendly(error: &ClientError) -> String {
-    match error {
-        ClientError::Network(_) => format!(
-            "{error}\n\nIronClaw starts its service when the app opens. If this persists, \
+/// This Mac's gateway is not answering: say what to do.
+fn friendly_unreachable(message: &str, runs_local: bool) -> String {
+    if runs_local {
+        format!(
+            "{message}\n\nIronClaw starts its service when the app opens. If this persists, \
              run `ironclaw service install` once, then try again."
-        ),
-        e if e.is_unauthorized() => format!(
-            "{error}\n\nThe WebUI token was rejected. Re-run `ironclaw onboard` to refresh it."
-        ),
-        e => e.to_string(),
+        )
+    } else {
+        format!(
+            "{message}\n\n\"Run IronClaw on this Mac\" is off in Settings → Computers, so ZLO does not start it. \
+             Start `ironclaw serve` yourself, turn the switch on, or pick another computer."
+        )
     }
 }
 
@@ -495,6 +478,7 @@ pub fn settings_groups(s: &State) -> Vec<(&'static str, Vec<NavItem>)> {
             "App",
             vec![
                 (Page::Settings, &i::SETTINGS, "General"),
+                (Page::Computers, &i::MONITOR, "Computers"),
                 (Page::Appearance, &i::PALETTE, "Appearance"),
                 (Page::Voice, &i::MIC, "Voice"),
                 (Page::Notifications, &i::BELL, "Notifications"),
@@ -614,20 +598,14 @@ fn start_polling(s: &mut State) {
     if !s.workspace.session_import_launched {
         s.workspace.session_import_launched = true;
         // First-run setup holds this back and releases it when it ends.
-        session_import_tick(
-            s,
-            zlo_client::session_import::ImportTrigger::Launch,
-        );
+        session_import_tick(s, zlo_client::session_import::ImportTrigger::Launch);
         s.workspace.timers.session_import = Some(now + SESSION_RESCAN);
     }
 }
 
 /// First-launch session import, then the periodic rescan request (the
 /// backend skips a pass that is not due).
-fn session_import_tick(
-    s: &mut State,
-    trigger: zlo_client::session_import::ImportTrigger,
-) {
+fn session_import_tick(s: &mut State, trigger: zlo_client::session_import::ImportTrigger) {
     // While first-run setup is open nothing is imported, launch or rescan:
     // its Projects step decides what comes in.
     if crate::onboarding::holds_launch_import(s) {
@@ -668,10 +646,7 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     }
     if due(s.workspace.timers.session_import) {
         s.workspace.timers.session_import = Some(now + SESSION_RESCAN);
-        session_import_tick(
-            s,
-            zlo_client::session_import::ImportTrigger::Background,
-        );
+        session_import_tick(s, zlo_client::session_import::ImportTrigger::Background);
     }
     if due(s.workspace.timers.inbox) {
         s.workspace.timers.inbox = None;
@@ -849,8 +824,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn friendly_errors_say_what_to_do() {
-        let e = ClientError::Config("no token".into());
-        assert_eq!(friendly(&e), e.to_string());
+    fn an_unreachable_mac_says_what_to_do() {
+        assert!(friendly_unreachable("down", true).contains("ironclaw service install"));
+        assert!(friendly_unreachable("down", false).contains("Run IronClaw on this Mac"));
     }
 }

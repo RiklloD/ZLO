@@ -13,6 +13,8 @@ mod view;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use rune::{Cx, El, FileDialogOptions, TextEdit, Tx};
+use rune_kit::Kit;
 use zlo_client::ClientError;
 use zlo_client::extension_state::LifecyclePublicState;
 use zlo_client::hosted_mcp::HostedMcpAuthSelection;
@@ -20,8 +22,6 @@ use zlo_client::product_wire::{
     RebornExtensionCredentialSetup, RebornExtensionRegistryEntry, RebornSetupExtensionResponse,
 };
 use zlo_client::wire::{InstalledExtension, PairingStatus};
-use rune::{Cx, El, FileDialogOptions, TextEdit, Tx};
-use rune_kit::Kit;
 
 use crate::jobs;
 use crate::state::State;

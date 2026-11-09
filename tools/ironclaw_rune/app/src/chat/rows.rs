@@ -7,13 +7,13 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use rune::{Color, El, Icon, PopupItem, PopupMenu, Tx, col, el, icon, row, text};
+use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 use zlo_client::GateDecision;
 use zlo_client::contract::ProductGateKind;
 use zlo_client::inbound_requests::{AnchoredPart, anchored_parts};
 use zlo_client::mentions::{self as mention, MentionPart, MentionSpan, MentionUri};
 use zlo_client::transcript::{AttachmentChip, GateState, Row, ToolStatus};
-use rune::{Color, El, Icon, PopupItem, PopupMenu, Tx, col, el, icon, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 
 use super::composer::{attachment_card, sent_subtitle};
 use super::{
@@ -141,7 +141,7 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
                     .key(format!("{key}-text"))
                     .font(flow::type_at(s, 14., 22., 400.))
                     .color(p.text)
-                    .wrap()
+                    .wrap_anywhere()
                     .selectable(true)
             } else {
                 placed_body(s, thread, key, &parts, attachments)
@@ -504,7 +504,7 @@ fn placed_body(
                     | MentionUri::Selection { path, .. } => {
                         let path = PathBuf::from(path);
                         card.cursor(rune::Cursor::Pointer)
-                            .on_press(move |_: &mut State| actions::open_with_system(&path))
+                            .on_press(move |s: &mut State| actions::open_backend_file(s, &path))
                     }
                     _ => card,
                 };
@@ -552,20 +552,23 @@ fn placed_body(
 }
 
 /// A sent file opens on click: the backend's copy from disk, or the upload
-/// fetched from the gateway.
+/// fetched from the gateway (always, when the backend is remote: its copy
+/// is on that computer's disk, not this Mac's).
 fn openable(card: El, thread: &str, chip: &AttachmentChip) -> El {
-    if let Some(path) = chip.local_path.clone() {
-        return card
-            .cursor(rune::Cursor::Pointer)
-            .on_press(move |_: &mut State| actions::open_with_system(std::path::Path::new(&path)));
+    if chip.local_path.is_none() && chip.message_id.is_none() {
+        return card;
     }
-    if chip.message_id.is_some() {
-        let (chip, thread) = (chip.clone(), thread.to_string());
-        return card
-            .cursor(rune::Cursor::Pointer)
-            .on_press(move |s: &mut State| actions::open_attachment(s, &thread, chip.clone()));
-    }
-    card
+    let (chip, thread) = (chip.clone(), thread.to_string());
+    card.cursor(rune::Cursor::Pointer)
+        .on_press(move |s: &mut State| {
+            let remote = crate::remote::backend_is_remote(s);
+            match (&chip.local_path, &chip.message_id) {
+                (Some(path), _) if !remote => actions::open_with_system(std::path::Path::new(path)),
+                (_, Some(_)) => actions::open_attachment(s, &thread, chip.clone()),
+                (Some(path), None) => actions::open_backend_file(s, std::path::Path::new(path)),
+                (None, None) => {}
+            }
+        })
 }
 
 /// A gate row's fields.

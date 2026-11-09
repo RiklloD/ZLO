@@ -6,9 +6,9 @@
 //! rejected call's result, so the agent adapts instead of stopping; it never
 //! turns the decline into an approval.
 
-use zlo_client::GateDecision;
 use rune::{El, KeyEvent, TextEdit, Tx, el, row};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextInput};
+use zlo_client::GateDecision;
 
 use super::{ChatState, actions, chat_for, orphan_edit, set_error};
 use crate::jobs;

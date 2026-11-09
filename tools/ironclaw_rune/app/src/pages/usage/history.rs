@@ -10,10 +10,10 @@ use crate::pages::common::controls::{rule, styled};
 use crate::pages::common::ts::{lg_semibold, sm, sm_medium, xs};
 use std::collections::BTreeMap;
 
+use rune::{Color, El, TextStyle, col, el, row};
 use zlo_client::usage::{
     UsageBucket, UsageHistory, UsageHistorySource, UsagePricingStatus, UsageSourceStatus,
 };
-use rune::{Color, El, TextStyle, col, el, row};
 
 use crate::design::{self, Palette, rgb};
 use crate::state::State;

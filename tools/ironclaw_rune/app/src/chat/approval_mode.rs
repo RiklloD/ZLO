@@ -11,9 +11,9 @@
 //! check on the current one (the global row says what it resolves to), and
 //! the hint for the current choice at the bottom.
 
-use zlo_client::profiles::{ApprovalMode, DEFAULT_PROFILE_ID, ProfileInfo};
 use rune::{Color, El, PopupItem, PopupMenu, Tx, icon, row, text};
 use rune_kit::Kit;
+use zlo_client::profiles::{ApprovalMode, DEFAULT_PROFILE_ID, ProfileInfo};
 
 use super::{ChatState, chat_for, chat_ref, flow};
 use crate::design::{self, Palette};

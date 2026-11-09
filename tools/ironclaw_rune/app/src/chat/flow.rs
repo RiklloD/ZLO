@@ -10,12 +10,12 @@
 
 use std::collections::HashMap;
 
-use zlo_client::GateDecision;
-use zlo_client::transcript::{CliBody, GateState, QuestionState, Row, ToolStatus};
 use rune::{
     Color, El, Icon, LineCap, Path, Shape, TextStyle, Transition, canvas, col, el, icon, row, text,
 };
 use rune_kit::{Kit, RollingText};
+use zlo_client::GateDecision;
+use zlo_client::transcript::{CliBody, GateState, QuestionState, Row, ToolStatus};
 
 use crate::design::Palette;
 use crate::icons;
@@ -794,8 +794,10 @@ pub fn user_pill(s: &State, key: &str, body: El, pending: bool, column: f32) -> 
     // wallpaper, a solid canvas and either scheme.
     let wash = p.bg.mix(p.text, if p.light { 0.06 } else { 0.11 });
     row().w_full().justify_end().child(
+        // `shrink` on the pill and its body: without it the row lays the
+        // body out at its unwrapped width and long lines run past the pill.
         el().key(format!("{key}-pill"))
-            .min_w(0.)
+            .shrink()
             .max_w(column * 0.8)
             .fill(wash)
             .radius(crate::design::BUBBLE_RADIUS)
@@ -803,6 +805,6 @@ pub fn user_pill(s: &State, key: &str, body: El, pending: bool, column: f32) -> 
             .py(10.)
             .opacity(if pending { 0.65 } else { 1. })
             .transition(rise(6.))
-            .child(body),
+            .child(body.shrink()),
     )
 }

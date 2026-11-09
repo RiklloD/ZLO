@@ -192,6 +192,18 @@ pub fn no_folder(s: &mut State) {
     base(s, Some(Tab::Console), Some(Tab::Files), |_| {});
 }
 
+/// The backend on another computer: Files lists its workspace, Console
+/// says where it runs.
+pub fn remote(s: &mut State) {
+    base(s, Some(Tab::Console), Some(Tab::Files), |x| {
+        project::fixture_remote(
+            x,
+            &[("src", true), ("README.md", false), ("Cargo.toml", false)],
+        );
+    });
+    s.onboarding.computer = crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+}
+
 pub fn console(s: &mut State) {
     base(s, Some(Tab::Console), None, |x| {
         x.folder = Some(PathBuf::from("/Users/you/code/zlo"));

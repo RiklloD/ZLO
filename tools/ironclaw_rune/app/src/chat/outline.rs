@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 
-use zlo_client::transcript::{self, Row};
 use rune::{El, Tx, col, el, row, text};
+use zlo_client::transcript::{self, Row};
 
 use super::{ChatState, Item, flow};
 use crate::state::State;

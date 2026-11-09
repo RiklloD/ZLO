@@ -4,8 +4,8 @@
 
 use std::rc::Rc;
 
-use zlo_client::transcript::Row;
 use rune::{App, AppSpec, Env, Runtime};
+use zlo_client::transcript::Row;
 
 use super::{Reserve, sync_items};
 use crate::state::State;

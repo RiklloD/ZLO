@@ -11,20 +11,30 @@ mod backend;
 pub mod commands;
 pub mod computer_use;
 mod connection;
+pub mod environment_calls;
+pub mod environments;
 mod error;
 mod history_calls;
 mod inbox_calls;
+pub mod keychain;
 mod memory_calls;
 pub mod mentions;
 pub mod operator;
 pub mod orchestration;
 mod pages;
+pub mod pairing;
 mod profile_calls;
+pub mod repo_calls;
 pub mod review;
 pub mod schedules;
 mod settings;
+pub mod ssh;
 mod stream;
+pub mod tailnet;
+#[cfg(test)]
+mod test_http;
 pub mod transcript;
+pub mod update_calls;
 pub mod usage;
 pub mod visual;
 pub mod wire;
@@ -45,6 +55,7 @@ pub use ironclaw_product_contracts::orchestration::{
 /// Contract types the app renders directly.
 pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{
-    history, hooks_catalog, inbound_requests, inbox, memory_page, notification_inbox, operator_llm,
-    package_lifecycle, product_wire, profiles, session_import, task_models, workspace_views,
+    environment_access, history, hooks_catalog, inbound_requests, inbox, memory_page,
+    notification_inbox, operator_llm, package_lifecycle, product_wire, profiles, self_update,
+    session_import, task_models, workspace_views,
 };

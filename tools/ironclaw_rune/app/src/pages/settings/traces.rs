@@ -2,9 +2,9 @@
 //! for privacy review, and a one-time link into the Trace Commons account.
 //! Port of GPUI `pages/settings/traces.rs`.
 
-use zlo_client::product_wire::{RebornAccountTrace, RebornTraceCreditsResponse};
 use rune::{El, col, row};
 use rune_kit::Kit;
+use zlo_client::product_wire::{RebornAccountTrace, RebornTraceCreditsResponse};
 
 use crate::jobs;
 use crate::pages::common::{

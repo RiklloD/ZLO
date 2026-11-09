@@ -14,8 +14,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use chrono::{DateTime, Local, Utc};
-use zlo_client::{Backend, Client, ClientError};
 use rune::{AppHandle, Tx};
+use zlo_client::{Backend, Client, ClientError};
 
 use crate::state::State;
 
@@ -45,6 +45,7 @@ pub fn flatten<T>(
 
 /// `f` runs on the network runtime; `done` runs on the UI thread with the
 /// whole state. `label` names the caller in the log when the request fails.
+/// A reply asked on an earlier connection (another computer) is dropped.
 /// Without a backend (not connected yet) `done` gets a `Config` error at once,
 /// on the next frame.
 pub fn run<F, Fut, T>(
@@ -63,9 +64,12 @@ pub fn run<F, Fut, T>(
         return;
     }
     let handle = s.rt.handle.clone();
+    // Asked on this connection: a reply that lands after a switch to
+    // another computer (or a reconnect) is dropped (`remote::lands`).
+    let tag = s.remote.tag.clone();
     let Some(backend) = s.rt.backend.as_ref() else {
         handle.update(move |s, tx| {
-            if s.fixture {
+            if s.fixture || !crate::remote::lands(s, &tag) {
                 return;
             }
             done(
@@ -84,9 +88,14 @@ pub fn run<F, Fut, T>(
         }
         handle.update(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateJob);
-            if !s.fixture {
-                done(s, result, tx)
+            if s.fixture {
+                return;
             }
+            if !crate::remote::lands(s, &tag) {
+                tracing::debug!(view = label, "reply from an earlier connection dropped");
+                return;
+            }
+            done(s, result, tx)
         });
     });
 }

@@ -8,10 +8,10 @@
 
 use std::path::PathBuf;
 
-use zlo_client::ClientError;
-use zlo_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
 use rune::{El, col, icon, row};
 use rune_kit::Kit;
+use zlo_client::ClientError;
+use zlo_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
 
 use super::preview::{self, Opened};
 use super::ui::{self, sm, xs};

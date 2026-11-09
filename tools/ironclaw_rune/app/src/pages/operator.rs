@@ -18,11 +18,11 @@ mod status;
 use crate::pages::common::controls::{Look, Size, button_sized, header_with, muted, refresh_icon};
 use crate::pages::common::ts::{body_semibold, sm};
 use crate::pages::common::{glyph, page_body};
+use rune::{Cx, El, TextEdit, col, row, text};
+use rune_kit::{Button, Kit};
 use zlo_client::product_wire::{
     RebornOperatorConfigDiagnostic, RebornOperatorConfigDiagnosticSeverity,
 };
-use rune::{Cx, El, TextEdit, col, row, text};
-use rune_kit::{Button, Kit};
 
 use crate::icons;
 use crate::state::State;

@@ -8,11 +8,11 @@
 //! and `@` menu takes ↑ ↓ Tab Esc ↵ while it is open; ↑ in an empty composer
 //! recalls the last message. Plain ↵ sends (`on_submit`).
 
+use rune::{Color, Cx, El, Icon, KeyEvent, Tx, auto_grow, col, el, icon, row, text, text_input};
+use rune_kit::Kit;
 use zlo_client::GateDecision;
 use zlo_client::attachments::format_bytes;
 use zlo_client::transcript::AttachmentChip;
-use rune::{Color, Cx, El, Icon, KeyEvent, Tx, auto_grow, col, el, icon, row, text, text_input};
-use rune_kit::Kit;
 
 use super::menu::{MenuKey, MenuKeyName};
 use super::{ChatState, actions, chat_for, chat_ref, flow, inline_files, menu, steer};
@@ -349,9 +349,9 @@ pub(crate) fn on_change(s: &mut State, id: &str) {
     let composer = c.composer.clone();
     inline_files::prune(&composer, &mut c.staged);
     if let Some(query) = menu::ComposerMenu::at_query(&composer.text) {
-        let root = actions::mention_root(s, id);
+        let source = actions::mention_source(s, id);
         let menu_of = menu_of(id);
-        menu::sync_index(s, root.as_deref(), menu_of.clone());
+        menu::sync_index(s, source, menu_of.clone());
         menu::rank_in_background(s, query, menu_of);
     }
     actions::record_draft(s, id);

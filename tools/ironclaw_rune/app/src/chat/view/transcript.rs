@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use zlo_client::transcript::{CliBody, PREFIX_KEY, Row};
 use rune::{El, GrowthSpec, ScrollSpec, Spring, SpringPair, Transition, col, el, memo, row};
 use rune_kit::Kit;
+use zlo_client::transcript::{CliBody, PREFIX_KEY, Row};
 
 use super::super::{ChatState, Item, chat_for, chat_ref, flow, outline, question_form, rows};
 use super::{row_key, transcript_key};

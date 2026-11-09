@@ -43,10 +43,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use zlo_client::transcript::Row;
 use rune::{Cx, El, TextEdit, Tx};
 use rune_kit::Kit;
 use serde::{Deserialize, Serialize};
+use zlo_client::transcript::Row;
 
 pub use self::composer::Composer;
 use self::composer::Target;

@@ -45,8 +45,8 @@
 mod slot;
 mod view;
 
-use zlo_client::orchestration::{PickerPrefs, RouteChange, RouteProvider, ThreadRoute};
 use rune::TextEdit;
+use zlo_client::orchestration::{PickerPrefs, RouteChange, RouteProvider, ThreadRoute};
 
 use crate::jobs::{self, Generation};
 use crate::state::State;

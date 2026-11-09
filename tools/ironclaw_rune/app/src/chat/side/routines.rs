@@ -8,14 +8,14 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
+use rune::{El, col, icon, row};
+use rune_kit::Kit;
 use zlo_client::AutomationAction;
 use zlo_client::product_wire::{
     RebornAutomationInfo, RebornAutomationRecentRunStatus, RebornAutomationSource,
     RebornAutomationState,
 };
 use zlo_client::schedules::{LastOutcome, ScheduleInfo};
-use rune::{El, col, icon, row};
-use rune_kit::Kit;
 
 use super::ui::{self, sm, xs};
 use super::{bridge, side, side_mut};

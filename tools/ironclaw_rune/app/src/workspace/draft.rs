@@ -16,11 +16,11 @@ mod submit;
 
 use std::path::PathBuf;
 
+use rune::{Cx, El, FileDialogOptions, KeyEvent, TextEdit, Tx, col, el, row};
+use rune_kit::{Kit, Placement};
 use zlo_client::attachments::{self, StagedFile};
 use zlo_client::commands::MenuItem;
 use zlo_client::profiles::DEFAULT_PROFILE_ID;
-use rune::{Cx, El, FileDialogOptions, KeyEvent, TextEdit, Tx, col, el, row};
-use rune_kit::{Kit, Placement};
 
 pub use snapshot::stage_snapshot;
 use submit::{Origin, Submission, send_with, submit};
@@ -227,8 +227,12 @@ fn on_change(s: &mut State) {
     draft.menu.reset();
     inline_files::prune(&draft.input, &mut draft.staged);
     if let Some(query) = ComposerMenu::at_query(&draft.input.text) {
-        let root = s.prefs.last_project.clone();
-        menu::sync_index(s, root.as_deref(), menu_of());
+        // A new thread has no workspace on a remote backend yet, and this
+        // Mac's folders are not that backend's.
+        let source = (!crate::remote::backend_is_remote(s))
+            .then(|| s.prefs.last_project.clone().map(menu::IndexKey::Local))
+            .flatten();
+        menu::sync_index(s, source, menu_of());
         menu::rank_in_background(s, query, menu_of());
     }
     record(s);
@@ -359,13 +363,14 @@ pub(super) fn attach(s: &mut State, paths: Vec<PathBuf>) {
     let limits = session.attachments.clone();
     let check = limits.clone();
     let generation = draft.generation;
+    let backend = crate::remote::attachment_backend(s);
     jobs::run(
         s,
         "attach",
         move |_| async move {
             let mut out = Vec::new();
             for path in paths {
-                out.push(attachments::stage(&path, &limits).await);
+                out.push(attachments::stage(&path, &limits, backend).await);
             }
             Ok(out)
         },

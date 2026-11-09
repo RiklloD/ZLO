@@ -7,7 +7,12 @@
 //!
 //! A backend that exits on its own is restarted with backoff. Outside the app
 //! bundle (`cargo run`) the installed `~/.ironclaw/bin/ironclaw` is used.
-//! Skipped when `IRONCLAW_DESKTOP_URL` points the app at another gateway.
+//!
+//! Nothing starts or restarts unless the app said it may
+//! ([`set_allowed`], from `remote::sync_local_backend`): never while
+//! another computer is active, "Run IronClaw on this Mac" is off, the
+//! computers list is unreadable, or `IRONCLAW_DESKTOP_URL` points the app
+//! at another gateway.
 
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -44,6 +49,25 @@ fn supervisor() -> &'static Arc<Supervisor> {
     })
 }
 
+/// Whether this app may start or restart a backend on this Mac. Off until
+/// the app decided (`remote::sync_local_backend`).
+static ALLOWED: AtomicBool = AtomicBool::new(false);
+
+/// Say whether this app may run the local backend.
+pub fn set_allowed(allowed: bool) {
+    ALLOWED.store(allowed, Ordering::SeqCst);
+}
+
+pub fn allowed() -> bool {
+    ALLOWED.load(Ordering::SeqCst)
+}
+
+/// The supervisor runs (or is starting) a backend.
+#[cfg(test)]
+pub fn is_running() -> bool {
+    supervisor().running.load(Ordering::SeqCst)
+}
+
 struct Paths {
     backend: PathBuf,
     home: PathBuf,
@@ -54,20 +78,57 @@ fn paths() -> Option<Paths> {
         return None;
     }
     let home = zlo_client::reborn_home().ok()?;
+    Some(Paths {
+        backend: backend_binary()?,
+        home,
+    })
+}
+
+/// The backend binary this app runs: the bundled `zlo-backend`, else the
+/// installed CLI. Also what `remote enable` runs (Settings → Computers).
+pub fn backend_binary() -> Option<PathBuf> {
     let bundled = std::env::current_exe()
         .ok()
         .and_then(|exe| Some(exe.parent()?.join("zlo-backend")));
     let installed = dirs::home_dir().map(|h| h.join(".ironclaw/bin/ironclaw"));
-    let backend = [bundled, installed]
+    [bundled, installed]
         .into_iter()
         .flatten()
-        .find(|p| p.is_file())?;
-    Some(Paths { backend, home })
+        .find(|p| p.is_file())
 }
 
-/// Start the backend unless it already runs. Called at launch and by the
-/// connection screen's "Try again".
+/// A Light bundle (`bundle.sh --light`): ZLO runs from an app bundle that
+/// has no `zlo-backend` next to it. `cargo run` is never one.
+pub fn light_bundle() -> bool {
+    static LIGHT: OnceLock<bool> = OnceLock::new();
+    *LIGHT.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .is_some_and(|exe| is_light_bundle(&exe))
+    })
+}
+
+/// `…/Some.app/Contents/MacOS/zlo` with no `zlo-backend` beside it.
+pub fn is_light_bundle(exe: &Path) -> bool {
+    let Some(dir) = exe.parent() else {
+        return false;
+    };
+    let in_bundle = dir.ends_with("Contents/MacOS")
+        && dir
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::extension)
+            .is_some_and(|ext| ext == "app");
+    in_bundle && !dir.join("zlo-backend").is_file()
+}
+
+/// Start the backend unless it already runs, or the app may not run one
+/// ([`set_allowed`]). Called by every connect (`remote::sync_local_backend`).
 pub fn start() {
+    // Unit tests never spawn a real backend, allowed or not.
+    if !allowed() || cfg!(test) {
+        return;
+    }
     let Some(paths) = paths() else {
         return;
     };
@@ -92,7 +153,7 @@ pub fn start() {
 /// again. `false` when this app does not run one.
 pub fn restart() -> bool {
     let sup = supervisor();
-    if sup.stopping.load(Ordering::SeqCst) {
+    if !allowed() || sup.stopping.load(Ordering::SeqCst) {
         return false;
     }
     match backend_pid() {
@@ -141,6 +202,7 @@ pub fn stop_on_terminate() {
         let block = RcBlock::new(|_note: *mut AnyObject| {
             crate::persist::global().flush(Duration::from_secs(3));
             stop();
+            crate::remote::tunnel::close();
         });
         let nil: *mut AnyObject = std::ptr::null_mut();
         let _observer: *mut AnyObject = msg_send![
@@ -156,6 +218,8 @@ pub fn stop_on_terminate() {
 #[cfg(not(target_os = "macos"))]
 pub fn stop_on_terminate() {}
 
+/// Stop the backend this app started (never another one). Quit, and
+/// turning "Run IronClaw on this Mac" off.
 pub fn stop() {
     let sup = supervisor();
     sup.stopping.store(true, Ordering::SeqCst);
@@ -290,5 +354,43 @@ fn retire_launchd_job() {
     match fs::rename(&plist, &kept) {
         Ok(()) => tracing::debug!(kept = %kept.display(), "retired the old launchd backend job"),
         Err(e) => tracing::warn!(error = %e, "could not move the old launchd plist"),
+    }
+}
+
+/// Tests that flip [`set_allowed`] hold this, so they never race.
+#[cfg(test)]
+pub static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_light_bundle_is_an_app_bundle_without_the_backend() {
+        let root = std::env::temp_dir().join(format!("zlo-light-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let macos = root.join("ZLO Light.app/Contents/MacOS");
+        fs::create_dir_all(&macos).unwrap();
+        let exe = macos.join("zlo");
+        assert!(is_light_bundle(&exe));
+        fs::write(macos.join("zlo-backend"), b"").unwrap();
+        assert!(!is_light_bundle(&exe), "the full bundle");
+        // `cargo run`: no bundle, never light.
+        let target = root.join("target/debug");
+        fs::create_dir_all(&target).unwrap();
+        assert!(!is_light_bundle(&target.join("zlo")));
+        let not_app = root.join("Folder/Contents/MacOS");
+        fs::create_dir_all(&not_app).unwrap();
+        assert!(!is_light_bundle(&not_app.join("zlo")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nothing_starts_or_restarts_unless_allowed() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_allowed(false);
+        start();
+        assert!(!is_running(), "a backend was spawned while not allowed");
+        assert!(!restart(), "a restart while not allowed");
     }
 }

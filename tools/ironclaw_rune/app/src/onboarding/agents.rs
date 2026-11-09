@@ -10,10 +10,10 @@
 //! ChatGPT plan (device sign-in, as Settings → Providers) or an API key.
 //! The first provider connected becomes the active one.
 
-use zlo_client::operator_llm::LlmProviderView;
-use zlo_client::orchestration::RouteProvider;
 use rune::{El, col, el, row, text};
 use rune_kit::Kit;
+use zlo_client::operator_llm::LlmProviderView;
+use zlo_client::orchestration::RouteProvider;
 
 use crate::design::brands::provider_logo;
 use crate::jobs::{self, Generation};
@@ -25,7 +25,6 @@ use crate::pages::common::{Tone, card, error_line, notice_line};
 use crate::pages::providers::catalog::display_name;
 use crate::state::{Page, State};
 
-use super::gateway::Computer;
 use super::view::{command_block, step_shell};
 
 /// How long a restarted gateway gets to answer again.
@@ -219,8 +218,8 @@ pub(super) fn open_terminal(s: &mut State, driver: Driver, install: bool) {
     };
     // An agent of another computer is set up there: show the command for
     // that computer, never run it on this Mac.
-    if let Computer::Remote(_) = &s.onboarding.computer {
-        let host = s.onboarding.computer.label();
+    if crate::remote::backend_is_remote(s) {
+        let host = crate::remote::computer_label(s);
         s.onboarding.agents.terminal = Some(AgentTerminal {
             driver,
             command,
@@ -295,7 +294,8 @@ fn close_terminal(s: &mut State) {
     let Some(t) = s.onboarding.agents.terminal.take() else {
         return;
     };
-    if !t.install || s.onboarding.computer != Computer::ThisMac || s.fixture {
+    // Only this Mac's own CLI and gateway are looked at or restarted here.
+    if !t.install || crate::remote::backend_is_remote(s) || s.fixture {
         refresh(s);
         return;
     }
@@ -400,10 +400,7 @@ fn restart_step(answered: bool, seen_down: bool, before_deadline: bool) -> Resta
 
 fn restarted(
     s: &mut State,
-    result: Result<
-        zlo_client::orchestration::ProviderCatalog,
-        zlo_client::ClientError,
-    >,
+    result: Result<zlo_client::orchestration::ProviderCatalog, zlo_client::ClientError>,
 ) {
     let a = &mut s.onboarding.agents;
     a.restarting = false;

@@ -15,10 +15,10 @@
 //!   with the reason shown.
 //! - **Compact**: `thread/compact/start` now.
 
-use zlo_client::review::{self, ReviewFinding};
-use zlo_client::{ReviewTarget, ThreadAction, ThreadActionOutcome, ThreadActionRefusal};
 use rune::{Color, El, TextEdit, col, row};
 use rune_kit::{Kit, TextInput};
+use zlo_client::review::{self, ReviewFinding};
+use zlo_client::{ReviewTarget, ThreadAction, ThreadActionOutcome, ThreadActionRefusal};
 
 use super::super::ui::{self, xs, xs_med};
 use super::{Scope, set_scope};

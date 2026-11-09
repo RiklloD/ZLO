@@ -6,14 +6,14 @@ use crate::pages::common::controls::{
 };
 use crate::pages::common::ts::{body_semibold, sm_medium};
 use crate::pages::common::{Tone, card, error_line, loading};
+use rune::{El, col, row, text};
+use rune_kit::Kit;
 use zlo_client::ClientError;
 use zlo_client::product_wire::{
     RebornOperatorCommandPlaneResponse, RebornOperatorServiceLifecycleAction,
     RebornOperatorStatusCheck, RebornOperatorStatusState, RebornServiceLifecycleResponse,
     RebornServiceLifecycleState,
 };
-use rune::{El, col, row, text};
-use rune_kit::Kit;
 
 use super::{confirm_row, diagnostic_row, notice_line, section_title};
 use crate::icons;

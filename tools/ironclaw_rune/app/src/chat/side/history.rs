@@ -9,7 +9,7 @@ use rune_kit::Kit;
 use rune_kit::diff::{DiffMode, DiffState, DiffView};
 
 use super::ui::{self, sm_med, tiny, xs};
-use super::{SideState, git, side, side_mut, side_of, thread_id};
+use super::{SideState, Tab, git, remote_repo, side, side_mut, side_of, thread_id};
 use crate::design::Palette;
 use crate::icons;
 use crate::jobs;
@@ -158,6 +158,9 @@ fn graph_cell(row: &GraphRow, width: f32, p: &Palette) -> El {
 }
 
 pub(super) fn refresh(s: &mut State) {
+    if remote_repo::remote(s) {
+        return remote_refresh(s);
+    }
     let Some(thread) = thread_id(s) else { return };
     let Some(x) = side_mut(s) else { return };
     let Some(repo) = x.repo.clone() else { return };
@@ -193,6 +196,9 @@ pub(super) fn stale(s: &mut State) {
 }
 
 fn open(s: &mut State, commit: git::Commit) {
+    if remote_repo::remote(s) {
+        return remote_open(s, commit);
+    }
     let Some(thread) = thread_id(s) else { return };
     let Some(x) = side_mut(s) else { return };
     let Some(repo) = x.repo.clone() else { return };
@@ -248,7 +254,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let Some(x) = side(s) else {
         return ui::loading(k);
     };
-    if x.repo.is_none() {
+    if x.repo.is_none() && !remote_repo::remote(s) {
         return ui::empty(s, "This folder is not a git repository.");
     }
     if let Some(detail) = x.history.open.as_ref() {
@@ -419,6 +425,89 @@ fn commit_view(s: &State, k: &Kit, detail: &Detail) -> El {
         .child(ui::fill_col().child(diff))
 }
 
+/// Land a log: graph and commits. Shared by the local and remote paths.
+fn landed(x: &mut SideState, result: Result<Vec<git::Commit>, String>) {
+    let state = &mut x.history;
+    state.loading = false;
+    state.graph = result.as_ref().map(|c| layout(c)).unwrap_or_default();
+    state.commits = Some(result);
+}
+
+/// [`refresh`] on the backend's machine.
+fn remote_refresh(s: &mut State) {
+    let Some(thread) = thread_id(s) else { return };
+    let Some(x) = side_mut(s) else { return };
+    if !remote_repo::offered(x, Tab::History) || x.history.loading {
+        return;
+    }
+    x.history.loading = true;
+    let asked = thread.clone();
+    jobs::run(
+        s,
+        "history",
+        move |c| async move { c.thread_git_log(&asked, LOG_LIMIT as u32).await },
+        move |s, result, _| {
+            let Some(x) = side_of(s, &thread) else { return };
+            remote_landed(x, result);
+        },
+    );
+}
+
+fn remote_landed(
+    x: &mut SideState,
+    result: Result<zlo_client::repo_calls::GitLogView, zlo_client::ClientError>,
+) {
+    match result {
+        Ok(log) => {
+            remote_repo::note(x, false, Ok(()));
+            let commits = log.commits.into_iter().map(remote_repo::commit).collect();
+            landed(x, Ok(commits));
+        }
+        Err(e) => {
+            if remote_repo::note(x, false, Err(&e)) {
+                x.history.loading = false;
+                return;
+            }
+            landed(x, Err(e.to_string()));
+        }
+    }
+}
+
+/// [`open`] on the backend's machine.
+fn remote_open(s: &mut State, commit: git::Commit) {
+    let Some(thread) = thread_id(s) else { return };
+    let Some(x) = side_mut(s) else { return };
+    let sha = commit.sha.clone();
+    x.history.open = Some(Detail {
+        commit,
+        message: None,
+        diff: None,
+        error: None,
+    });
+    let asked = thread.clone();
+    jobs::run(
+        s,
+        "history",
+        move |c| async move { c.thread_git_commit(&asked, &sha).await },
+        move |s, result, _| {
+            let Some(x) = side_of(s, &thread) else { return };
+            let Some(detail) = x.history.open.as_mut() else {
+                return;
+            };
+            match result {
+                Ok(view) if view.sha == detail.commit.sha => {
+                    detail.message = Some(view.message);
+                    let mut diff = DiffState::new(rune_kit::diff::parse(&view.patch));
+                    diff.set_mode(DiffMode::Unified);
+                    detail.diff = Some(diff);
+                }
+                Ok(_) => {}
+                Err(e) => detail.error = Some(e.to_string()),
+            }
+        },
+    );
+}
+
 /// Fill the log from a real repository synchronously (scenes only).
 pub(super) fn fixture_load(x: &mut SideState) {
     if let Some(repo) = &x.repo {
@@ -441,6 +530,37 @@ mod tests {
             refs: Vec::new(),
             subject: String::new(),
         }
+    }
+
+    /// The backend's log lands like a local one; an older backend switches
+    /// the tab back to its "not available" line.
+    #[test]
+    fn a_remote_log_lands_and_an_older_backend_falls_back() {
+        use zlo_client::repo_calls::{GitCommit, GitLogView};
+        let mut x = SideState::default();
+        let log = GitLogView {
+            commits: vec![GitCommit {
+                sha: "abc1234".into(),
+                parents: vec![],
+                author: "a".into(),
+                time: 1,
+                refs: vec!["main".into()],
+                subject: "first".into(),
+            }],
+        };
+        remote_landed(&mut x, Ok(log));
+        let commits = x.history.commits.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(commits[0].subject, "first");
+        assert_eq!(x.history.graph.len(), 1);
+        let mut x = SideState::default();
+        let old = zlo_client::ClientError::Api {
+            status: 405,
+            message: "x".into(),
+            body: Box::default(),
+        };
+        remote_landed(&mut x, Err(old));
+        assert!(!remote_repo::offered(&x, Tab::History));
+        assert!(x.history.commits.is_none());
     }
 
     #[test]

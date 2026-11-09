@@ -10,9 +10,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 use rune::{Color, El, col, el, icon, row, text};
 use rune_kit::Kit;
+use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 
 use super::{settle_blocker, title_of, view};
 use crate::design;

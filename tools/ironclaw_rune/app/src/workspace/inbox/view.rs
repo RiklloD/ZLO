@@ -3,10 +3,10 @@
 //! menu, the new-thread draft card, the cards, the shelves and their slim
 //! rows.
 
-use zlo_client::inbox::{InboxProfile, InboxState};
-use zlo_client::profiles::DEFAULT_PROFILE_ID;
 use rune::{Color, Cx, El, col, el, row};
 use rune_kit::{ControlSize, Kit, Placement, TextInput};
+use zlo_client::inbox::{InboxProfile, InboxState};
+use zlo_client::profiles::DEFAULT_PROFILE_ID;
 
 use super::super::ui::{self, MEDIUM, SM, XS, t, tw};
 

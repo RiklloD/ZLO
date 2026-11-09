@@ -3,11 +3,15 @@
 //! folders open lazily, git colours mark changed files, ignored files hide
 //! behind an eye toggle, a file previews in place and can be attached to
 //! the next message.
+//!
+//! With the backend on another computer the tree is that thread's project
+//! workspace, listed and read through the gateway (`thread_files`,
+//! `thread_file_bytes`): no local folder, no git marks, no Finder.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rune::{El, col, icon, row};
+use rune::{El, col, el, icon, row};
 use rune_kit::Kit;
 
 use super::preview::{self, Opened};
@@ -16,9 +20,59 @@ use super::{SideState, bridge, git, side, side_mut, side_of, thread_id};
 use crate::icons;
 use crate::jobs::{self, Generation};
 use crate::state::State;
+use zlo_client::ClientError;
+use zlo_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
 
 /// Folders this large list their first entries only.
 const DIR_LIMIT: usize = 2000;
+/// The backend's project workspace, the tree's root when it is remote.
+const REMOTE_ROOT: &str = "/workspace";
+
+/// The folder the tree starts at: the backend's workspace when remote,
+/// else the thread's project folder on this Mac.
+fn root(s: &State, x: &SideState) -> Option<PathBuf> {
+    if crate::remote::backend_is_remote(s) {
+        Some(PathBuf::from(REMOTE_ROOT))
+    } else {
+        x.folder.clone()
+    }
+}
+
+/// A gateway listing as tree entries, folders first (dot-files are the
+/// gateway's own bookkeeping, as in Outputs).
+fn remote_entries(list: Vec<ProjectFsEntry>) -> Vec<Entry> {
+    let mut out: Vec<Entry> = list
+        .into_iter()
+        .filter(|e| !e.name.starts_with('.'))
+        .take(DIR_LIMIT)
+        .map(|e| Entry {
+            dir: matches!(e.kind, ProjectFsEntryKind::Directory),
+            path: PathBuf::from(e.path),
+            name: e.name,
+        })
+        .collect();
+    sort(&mut out);
+    out
+}
+
+/// List `dirs` through the gateway, for the remote tree.
+async fn list_remote(
+    c: zlo_client::Client,
+    thread: String,
+    dirs: Vec<PathBuf>,
+) -> Vec<(PathBuf, Result<Vec<Entry>, String>)> {
+    let mut out = Vec::new();
+    for dir in dirs {
+        let asked = dir.to_string_lossy().into_owned();
+        let listed = c
+            .thread_files(&thread, Some(&asked))
+            .await
+            .map(|l| remote_entries(l.entries))
+            .map_err(|e| format!("Couldn't read {asked}: {e}"));
+        out.push((dir, listed));
+    }
+    out
+}
 
 #[derive(Clone)]
 pub(super) struct Entry {
@@ -55,12 +109,16 @@ fn list_dir(dir: &Path) -> Result<Vec<Entry>, String> {
             }
         })
         .collect();
-    out.sort_by(|a, b| {
+    sort(&mut out);
+    Ok(out)
+}
+
+fn sort(entries: &mut [Entry]) {
+    entries.sort_by(|a, b| {
         b.dir
             .cmp(&a.dir)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
-    Ok(out)
 }
 
 type Listed = (
@@ -73,11 +131,26 @@ type Listed = (
 pub(super) fn refresh(s: &mut State) {
     let Some(thread) = thread_id(s) else { return };
     let Some(x) = side(s) else { return };
-    let Some(root) = x.folder.clone() else { return };
+    let Some(root) = root(s, x) else { return };
     let repo = x.repo.clone();
     let generation = x.folder_gen;
     let mut dirs: Vec<PathBuf> = vec![root.clone()];
     dirs.extend(x.project.expanded.iter().cloned());
+    if crate::remote::backend_is_remote(s) {
+        let asked = thread.clone();
+        jobs::run(
+            s,
+            "project",
+            move |c| async move { Ok::<_, ClientError>(list_remote(c, asked, dirs).await) },
+            move |s, listed, _| {
+                let Ok(listed) = listed else { return };
+                if let Some(x) = side_of(s, &thread).filter(|x| x.folder_gen == generation) {
+                    land(&mut x.project, &root, listed);
+                }
+            },
+        );
+        return;
+    }
     jobs::blocking(
         s,
         move || -> Listed {
@@ -105,23 +178,27 @@ pub(super) fn refresh(s: &mut State) {
             let Some(x) = side_of(s, &thread).filter(|x| x.folder_gen == generation) else {
                 return;
             };
-            let state = &mut x.project;
-            state.error = None;
-            for (dir, result) in listed {
-                match result {
-                    Ok(entries) => {
-                        state.children.insert(dir, entries);
-                    }
-                    Err(e) if dir == root => state.error = Some(e),
-                    Err(_) => {
-                        state.expanded.remove(&dir);
-                    }
-                }
-            }
-            state.ignored = ignored;
-            state.letters = letters;
+            land(&mut x.project, &root, listed);
+            x.project.ignored = ignored;
+            x.project.letters = letters;
         },
     );
+}
+
+/// Put a refresh's listings in the tree; a folder that went away closes.
+fn land(state: &mut ProjectState, root: &Path, listed: Vec<(PathBuf, Result<Vec<Entry>, String>)>) {
+    state.error = None;
+    for (dir, result) in listed {
+        match result {
+            Ok(entries) => {
+                state.children.insert(dir, entries);
+            }
+            Err(e) if dir == root => state.error = Some(e),
+            Err(_) => {
+                state.expanded.remove(&dir);
+            }
+        }
+    }
 }
 
 fn toggle(s: &mut State, dir: PathBuf) {
@@ -136,6 +213,28 @@ fn toggle(s: &mut State, dir: PathBuf) {
         return;
     }
     let listing = dir.clone();
+    if crate::remote::backend_is_remote(s) {
+        let asked = thread.clone();
+        jobs::run(
+            s,
+            "project",
+            move |c| async move { Ok::<_, ClientError>(list_remote(c, asked, vec![listing]).await) },
+            move |s, listed, _| {
+                let Ok(listed) = listed else { return };
+                for (dir, result) in listed {
+                    match result {
+                        Ok(entries) => {
+                            if let Some(x) = side_of(s, &thread) {
+                                x.project.children.insert(dir, entries);
+                            }
+                        }
+                        Err(e) => bridge::set_error(s, e),
+                    }
+                }
+            },
+        );
+        return;
+    }
     jobs::blocking(
         s,
         move || list_dir(&listing),
@@ -157,6 +256,9 @@ pub(super) fn open(s: &mut State, path: PathBuf) {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    if crate::remote::backend_is_remote(s) {
+        return open_remote(s, thread, title, path);
+    }
     let Some(x) = side_mut(s) else { return };
     x.project.opened = Some(Opened::loading(title, path.clone()));
     let generation = x.project.open_gen.bump();
@@ -164,6 +266,41 @@ pub(super) fn open(s: &mut State, path: PathBuf) {
         s,
         move || preview::read(&path),
         move |s, read, _| {
+            if let Some(x) = side_of(s, &thread).filter(|x| x.project.open_gen == generation)
+                && let Some(opened) = x.project.opened.as_mut()
+            {
+                opened.preview = read;
+            }
+        },
+    );
+}
+
+/// Preview a file of the remote workspace: fetch it into the app's temp
+/// folder (one folder per remote path, as Outputs does) and read that copy.
+fn open_remote(s: &mut State, thread: String, title: String, path: PathBuf) {
+    let remote = path.to_string_lossy().into_owned();
+    let file = crate::chat::downloads::file_name(&remote);
+    let dir = crate::chat::downloads::dir_for("project", &[&thread, &remote]);
+    let Some(x) = side_mut(s) else { return };
+    x.project.opened = Some(Opened::loading(title, dir.join(&file)));
+    let generation = x.project.open_gen.bump();
+    let asked = thread.clone();
+    jobs::run(
+        s,
+        "project",
+        move |c| async move {
+            let bytes = c.thread_file_bytes(&asked, &remote).await?;
+            let local = crate::chat::downloads::save_async(dir, file, bytes)
+                .await
+                .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))?;
+            Ok::<_, ClientError>(tokio::task::spawn_blocking(move || preview::read(&local)).await)
+        },
+        move |s, result, _| {
+            let read = match result {
+                Ok(Ok(read)) => read,
+                Ok(Err(e)) => preview::Preview::Failed(e.to_string()),
+                Err(e) => preview::Preview::Failed(e.to_string()),
+            };
             if let Some(x) = side_of(s, &thread).filter(|x| x.project.open_gen == generation)
                 && let Some(opened) = x.project.opened.as_mut()
             {
@@ -207,9 +344,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             )
             .child(preview::body(s, k, opened, "project-preview"));
     }
-    let Some(root) = x.folder.clone() else {
+    let Some(root) = root(s, x) else {
         return ui::loading(k);
     };
+    let remote = crate::remote::backend_is_remote(s);
     if let Some(e) = x.project.error.clone() {
         return ui::error_line(s, e);
     }
@@ -304,12 +442,15 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .build(k)
             .key("project-ignored"),
         )
-        .child(
+        // A remote workspace is not on this Mac's disk.
+        .child(if remote {
+            el()
+        } else {
             ui::ibtn(&icons::EXTERNAL_LINK, "Show in Finder")
                 .on_press(move |_: &mut State| ui::open_path(&root, true))
                 .build(k)
-                .key("project-reveal"),
-        )
+                .key("project-reveal")
+        })
         .child(
             ui::ibtn(&icons::REFRESH_CW, "Refresh")
                 .label("Refresh files")
@@ -341,6 +482,26 @@ fn walk(x: &SideState, dir: &Path, depth: usize, rows: &mut Vec<(Entry, usize)>)
     }
 }
 
+/// Fill the remote tree's root with `entries` (`(name, is_folder)`), as
+/// the gateway would list them (scenes only).
+pub(super) fn fixture_remote(x: &mut SideState, entries: &[(&str, bool)]) {
+    let list = entries
+        .iter()
+        .map(|(name, dir)| ProjectFsEntry {
+            name: (*name).to_string(),
+            path: format!("{REMOTE_ROOT}/{name}"),
+            kind: if *dir {
+                ProjectFsEntryKind::Directory
+            } else {
+                ProjectFsEntryKind::File
+            },
+        })
+        .collect();
+    x.project
+        .children
+        .insert(PathBuf::from(REMOTE_ROOT), remote_entries(list));
+}
+
 /// Fill the tree from a real folder synchronously (scenes only).
 pub(super) fn fixture_load(x: &mut SideState, expand: &[&str]) {
     let Some(root) = x.folder.clone() else { return };
@@ -361,5 +522,40 @@ pub(super) fn fixture_load(x: &mut SideState, expand: &[&str]) {
             .into_iter()
             .map(|c| (c.path.clone(), c.letter()))
             .collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_remote_tree_reads_the_backend_workspace() {
+        let mut s = crate::chat::fixtures::test_state();
+        let mut x = SideState {
+            folder: Some(PathBuf::from("/Users/you/code/zlo")),
+            ..Default::default()
+        };
+        assert_eq!(root(&s, &x), x.folder.clone());
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+        assert_eq!(root(&s, &x), Some(PathBuf::from(REMOTE_ROOT)));
+
+        fixture_remote(
+            &mut x,
+            &[("b.md", false), (".ironclaw", true), ("src", true)],
+        );
+        let names: Vec<_> = x.project.children[Path::new(REMOTE_ROOT)]
+            .iter()
+            .map(|e| (e.name.as_str(), e.dir, e.path.clone()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("src", true, PathBuf::from("/workspace/src")),
+                ("b.md", false, PathBuf::from("/workspace/b.md")),
+            ],
+            "folders first, the gateway's dot-files hidden"
+        );
     }
 }

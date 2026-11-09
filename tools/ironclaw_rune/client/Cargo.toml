@@ -29,5 +29,9 @@ ignore = "0.4"
 # Ignore files are opened no-follow and non-blocking (a FIFO cannot hang).
 rustix = { version = "1", features = ["fs"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Device tokens in the login Keychain (`keychain.rs`).
+security-framework = "3"
+
 [dev-dependencies]
 tempfile = "3"

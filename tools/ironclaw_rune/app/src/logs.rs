@@ -1,7 +1,8 @@
 //! Where to look when something breaks: the app writes its own log to
 //! `~/Library/Logs/ZLO/rune.log` (stderr too, for `cargo run`), and the
 //! backend ZLO starts writes `serve.stderr.log` under its home. Both open in
-//! Console from the connection screen. (GPUI `logs.rs`; the GPUI app keeps
+//! Console from the connection screen (only the app's while the backend is
+//! remote). (GPUI `logs.rs`; the GPUI app keeps
 //! `desktop.log`, so the two apps never interleave lines in one file.)
 //!
 //! Headless runs (`--snap`, `--tree`, `--script`) log to stderr only, so a
@@ -60,11 +61,18 @@ pub fn gateway_log() -> Option<PathBuf> {
         .map(|home| home.join("logs/serve.stderr.log"))
 }
 
+/// The log files worth opening: the app's, and this Mac's gateway's unless
+/// the backend runs on another computer (its log is there, read in the app
+/// through Operator → Logs; the local one belongs to a backend not in use).
+fn files_for(remote: bool) -> Vec<PathBuf> {
+    let gateway = if remote { None } else { gateway_log() };
+    [desktop_log(), gateway].into_iter().flatten().collect()
+}
+
 /// Open the app's and the gateway's log files in Console.
-pub fn open_files() {
-    let files: Vec<PathBuf> = [desktop_log(), gateway_log()]
+pub fn open_files(s: &crate::state::State) {
+    let files: Vec<PathBuf> = files_for(crate::remote::backend_is_remote(s))
         .into_iter()
-        .flatten()
         .filter(|p| p.exists())
         .collect();
     if files.is_empty() {
@@ -80,5 +88,22 @@ pub fn open_files() {
         .spawn();
     if let Err(e) = opened {
         tracing::warn!(error = %e, "could not open the log files");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_remote_backend_leaves_this_macs_gateway_log_out() {
+        let remote = super::files_for(true);
+        assert!(
+            remote
+                .iter()
+                .all(|p| p.ends_with("Library/Logs/ZLO/rune.log"))
+        );
+        if let Some(gateway) = super::gateway_log() {
+            assert!(super::files_for(false).contains(&gateway));
+            assert!(!remote.contains(&gateway));
+        }
     }
 }

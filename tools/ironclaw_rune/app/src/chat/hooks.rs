@@ -6,9 +6,9 @@
 //! side pane (S) works on the open chat and passes its id. The voice (F) and
 //! workspace (B) hooks route by composer or act on the open chat.
 
+use rune::{TextEdit, Tx};
 use zlo_client::orchestration::MergedFork;
 use zlo_client::wire::TimelineMessage;
-use rune::{TextEdit, Tx};
 
 use super::{
     actions, approval_mode, chat_for, chat_ref, composer, load_timeline, refresh_rows, set_error,

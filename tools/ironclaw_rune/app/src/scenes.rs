@@ -42,6 +42,37 @@ pub const SCENES: &[Scene] = &[
         // Headless renders draw the shell's translucent fills (no material).
         s.prefs.translucent = true;
     }),
+    ("computers", |s| {
+        page_with(
+            s,
+            Page::Computers,
+            crate::pages::computers::fixtures::computers,
+        )
+    }),
+    ("computers-light", |s| {
+        page_with(s, Page::Chat, crate::pages::computers::fixtures::light)
+    }),
+    ("computers-light-paired", |s| {
+        page_with(
+            s,
+            Page::Computers,
+            crate::pages::computers::fixtures::light_paired,
+        )
+    }),
+    ("computers-pairing", |s| {
+        page_with(
+            s,
+            Page::Computers,
+            crate::pages::computers::fixtures::pairing,
+        )
+    }),
+    ("computers-remote", |s| {
+        page_with(
+            s,
+            Page::Computers,
+            crate::pages::computers::fixtures::remote,
+        )
+    }),
     ("automation-form", |s| {
         page_with(
             s,
@@ -176,6 +207,7 @@ pub const SCENES: &[Scene] = &[
     ("side-history", crate::chat::side::fixtures::history),
     ("side-no-folder", crate::chat::side::fixtures::no_folder),
     ("side-outputs", crate::chat::side::fixtures::outputs),
+    ("side-remote", crate::chat::side::fixtures::remote),
     ("side-routines", crate::chat::side::fixtures::routines),
     ("side-session", crate::chat::side::fixtures::session),
     (

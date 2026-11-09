@@ -25,7 +25,25 @@
 #
 #   sh tools/ironclaw_rune/bundle.sh              build, install, reopen if it was open
 #   sh tools/ironclaw_rune/bundle.sh --no-install build only (tools/ironclaw_rune/target/ZLO.app)
+#   sh tools/ironclaw_rune/bundle.sh --light      ZLO Light.app: the window only
+#
+# Light (--light, or ZLO_LIGHT=1; combines with --no-install): no
+# zlo-backend and no computer-use engine inside, so ZLO runs app-only and
+# works on other computers (paired over Tailscale or SSH). ZLO notices the
+# missing zlo-backend at runtime (app/src/service.rs `light_bundle`); there
+# is no cargo feature. It is its own app, "ZLO Light.app" with bundle id
+# com.numoh.desktop.light, so it never replaces the full ZLO.app.
 set -eu
+
+light="${ZLO_LIGHT:-}"
+install=1
+for arg in "$@"; do
+  case "$arg" in
+    --light) light=1 ;;
+    --no-install) install= ;;
+    *) echo "unknown option: $arg (use --light, --no-install)" >&2; exit 2 ;;
+  esac
+done
 
 ENGINE_TAG=engine-v0.6.0
 ENGINE_URL=https://github.com/RiklloD/hermes-plugin-computer-use-plus/releases/download/$ENGINE_TAG/open-computer-use-engine-arm64.zip
@@ -34,6 +52,10 @@ ENGINE_SHA256=098dc77a2ae1a9e817a2c4e7967ae016c11ed01cf315874b5f7dd44a8bfbebf0
 BUNDLE_ID=com.numoh.desktop
 NAME=ZLO
 EXE=zlo
+if [ -n "$light" ]; then
+  BUNDLE_ID=com.numoh.desktop.light
+  NAME="ZLO Light"
+fi
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -42,23 +64,31 @@ app="$here/target/$NAME.app"
 dest="$HOME/Applications/$NAME.app"
 engine_name="ZLO Computer Use.app"
 
-backend="${ZLO_BACKEND:-}"
-if [ -z "$backend" ]; then
-  (cd "$repo" && SKIP_FRONTEND_BUILD= cargo build --release -p ironclaw)
-  backend="$repo/target/release/ironclaw"
+if [ -z "$light" ]; then
+  backend="${ZLO_BACKEND:-}"
+  if [ -z "$backend" ]; then
+    (cd "$repo" && SKIP_FRONTEND_BUILD= cargo build --release -p ironclaw)
+    backend="$repo/target/release/ironclaw"
+  fi
+  [ -f "$backend" ] || { echo "no backend binary at $backend" >&2; exit 1; }
 fi
-[ -f "$backend" ] || { echo "no backend binary at $backend" >&2; exit 1; }
 cd "$here"
 cargo build --release -p ironclaw_rune
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "target/release/$EXE" "$app/Contents/MacOS/$EXE"
-cp "$backend" "$app/Contents/MacOS/zlo-backend"
+if [ -z "$light" ]; then
+  mkdir -p "$app/Contents/Helpers"
+  cp "$backend" "$app/Contents/MacOS/zlo-backend"
+fi
 
 # Engine: a local build, or the pinned release (cached, checksum verified).
-if [ -n "${ZLO_ENGINE_APP:-}" ]; then
+# The backend starts it, so a Light bundle has none.
+if [ -n "$light" ]; then
+  :
+elif [ -n "${ZLO_ENGINE_APP:-}" ]; then
   cp -R "$ZLO_ENGINE_APP" "$app/Contents/Helpers/$engine_name"
 else
   cache="$HOME/Library/Caches/ZLO/$ENGINE_TAG.zip"
@@ -74,9 +104,11 @@ else
   mv "$unpack"/*.app "$app/Contents/Helpers/$engine_name"
   rm -rf "$unpack"
 fi
-engine_plist="$app/Contents/Helpers/$engine_name/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleName ZLO Computer Use" \
-  -c "Set :CFBundleDisplayName ZLO Computer Use" "$engine_plist"
+if [ -z "$light" ]; then
+  engine_plist="$app/Contents/Helpers/$engine_name/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleName ZLO Computer Use" \
+    -c "Set :CFBundleDisplayName ZLO Computer Use" "$engine_plist"
+fi
 
 # Icon: every size macOS asks for, scaled from the 1024 px app icon.
 iconset=$(mktemp -d)/AppIcon.iconset
@@ -133,14 +165,16 @@ if [ -z "$identity" ]; then
   echo "warning: ZLO_ALLOW_ADHOC set, signing ad-hoc" >&2
 fi
 # Inside out: nested code first, the outer seal last.
-codesign --force --sign "${identity:--}" --timestamp=none "$app/Contents/Helpers/$engine_name"
-codesign --force --sign "${identity:--}" --timestamp=none --identifier com.numoh.backend \
-  "$app/Contents/MacOS/zlo-backend"
+if [ -z "$light" ]; then
+  codesign --force --sign "${identity:--}" --timestamp=none "$app/Contents/Helpers/$engine_name"
+  codesign --force --sign "${identity:--}" --timestamp=none --identifier com.numoh.backend \
+    "$app/Contents/MacOS/zlo-backend"
+fi
 codesign --force --sign "${identity:--}" --timestamp=none "$app"
 codesign --verify --deep --strict "$app"
 echo "Built $app ($version)"
 
-[ "${1:-}" = "--no-install" ] && exit 0
+[ -z "$install" ] && exit 0
 
 # Replace, never overwrite in place: macOS kills a running binary whose
 # signed file changed underneath it. Quitting ZLO also stops its backend.

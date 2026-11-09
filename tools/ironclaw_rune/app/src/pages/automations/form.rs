@@ -6,13 +6,13 @@
 //! Port of GPUI `pages/automations/form.rs`.
 
 use chrono::{DateTime, Local, Utc};
+use rune::{El, TextEdit, col, row};
+use rune_kit::{Kit, TextArea, TextInput};
 use zlo_client::ClientError;
 use zlo_client::profiles::ProfileListResponse;
 use zlo_client::schedules::{
     DraftField, Preset, ScheduleDraft, ScheduleInfo, SchedulePreview, ScheduleSpec, ScheduleWrite,
 };
-use rune::{El, TextEdit, col, row};
-use rune_kit::{Kit, TextArea, TextInput};
 
 use crate::chat::model_picker::{self, FixedSlot, ModelPickerState, PickerEvent, Slot};
 use crate::jobs::{self, Generation};

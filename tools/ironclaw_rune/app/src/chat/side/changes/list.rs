@@ -6,11 +6,12 @@ use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, row};
 use rune_kit::Kit;
 
 use super::super::ui::{self, xs};
-use super::{ChangesState, confirmed, git_action, jump};
+use super::{ChangesState, change as git_change, confirmed, jump};
 use crate::chat::side::git;
 use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::state::State;
+use zlo_client::repo_calls::ThreadGitAction;
 
 /// One line of the file list.
 #[derive(Clone, Copy)]
@@ -58,7 +59,16 @@ fn section(s: &State, k: &Kit, state: &ChangesState, staged_side: bool) -> El {
                     .disabled(busy)
                     .on_press(move |s: &mut State| {
                         let paths = all.clone();
-                        git_action(s, "stage", move |repo| {
+                        let remote = if stage {
+                            ThreadGitAction::Stage {
+                                paths: paths.clone(),
+                            }
+                        } else {
+                            ThreadGitAction::Unstage {
+                                paths: paths.clone(),
+                            }
+                        };
+                        git_change(s, "stage", remote, move |repo| {
                             if stage {
                                 git::stage(repo, &paths)?;
                             } else {
@@ -105,7 +115,10 @@ fn change_row(
                 .disabled(busy)
                 .on_press(move |s: &mut State| {
                     let paths = vec![path.clone()];
-                    git_action(s, "stage", move |repo| {
+                    let remote = ThreadGitAction::Unstage {
+                        paths: paths.clone(),
+                    };
+                    git_change(s, "stage", remote, move |repo| {
                         git::unstage(repo, &paths).map(|()| None)
                     })
                 })
@@ -138,9 +151,12 @@ fn change_row(
                         if !confirmed(s, &discard_key) {
                             return;
                         }
-                        let change = c.clone();
-                        git_action(s, "discard", move |repo| {
-                            git::discard(repo, &change).map(|()| None)
+                        let one = c.clone();
+                        let remote = ThreadGitAction::Discard {
+                            path: one.path.clone(),
+                        };
+                        git_change(s, "discard", remote, move |repo| {
+                            git::discard(repo, &one).map(|()| None)
                         })
                     })
                     .build(k)
@@ -151,7 +167,10 @@ fn change_row(
                         .disabled(busy)
                         .on_press(move |s: &mut State| {
                             let paths = vec![stage_path.clone()];
-                            git_action(s, "stage", move |repo| {
+                            let remote = ThreadGitAction::Stage {
+                                paths: paths.clone(),
+                            };
+                            git_change(s, "stage", remote, move |repo| {
                                 git::stage(repo, &paths).map(|()| None)
                             })
                         })

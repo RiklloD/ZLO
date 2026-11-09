@@ -4,11 +4,11 @@
 use crate::pages::common::controls::{muted, outlined_tag, spinner};
 use crate::pages::common::ts::{body_semibold, sm_medium};
 use crate::pages::common::{Tone, card, error_line, glyph};
+use rune::{El, col, row, text};
+use rune_kit::Kit;
 use zlo_client::product_wire::{
     RebornOperatorSetupResponse, RebornOperatorSetupStatus, RebornOperatorSetupStepStatus,
 };
-use rune::{El, col, row, text};
-use rune_kit::Kit;
 
 use super::{diagnostic_row, notice_line, section_title};
 use crate::icons;

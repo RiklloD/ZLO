@@ -17,14 +17,31 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine as _;
-use zlo_client::attachments::{self, Body, StagedFile};
 use serde::{Deserialize, Serialize};
+use zlo_client::attachments::{self, Body, StagedFile};
 
 use crate::jobs;
 use crate::state::State;
 
 /// The new-thread screen's draft key. Thread ids never collide with it.
+/// Like every key it is scoped to the computer in use ([`scoped`]), so each
+/// computer has its own new-thread draft.
 pub const NEW_THREAD: &str = "new";
+
+/// Drafts belong to one computer: this Mac's keys stay as they always were
+/// (the GPUI app shares them), another computer's are prefixed with its
+/// environment id.
+fn scoped(s: &State, key: &str) -> String {
+    scoped_for(&crate::remote::scope(s), key)
+}
+
+fn scoped_for(scope: &str, key: &str) -> String {
+    if scope == zlo_client::environments::THIS_MAC {
+        key.to_string()
+    } else {
+        format!("{scope}~{key}")
+    }
+}
 
 const SAVE_DELAY: Duration = Duration::from_millis(300);
 /// How long quit waits for queued draft writes.
@@ -242,12 +259,12 @@ fn to_saved(key: &str, draft: &Draft) -> Saved {
 }
 
 pub fn has(s: &State, key: &str) -> bool {
-    s.workspace.drafts.drafts.contains_key(key)
+    s.workspace.drafts.drafts.contains_key(&scoped(s, key))
 }
 
 /// The new-thread draft's sidebar card: its first line and profile.
 pub fn preview(s: &State, key: &str) -> Option<(String, Option<String>)> {
-    let draft = s.workspace.drafts.drafts.get(key)?;
+    let draft = s.workspace.drafts.drafts.get(&scoped(s, key))?;
     let line = draft
         .text
         .lines()
@@ -262,7 +279,7 @@ pub fn preview(s: &State, key: &str) -> Option<(String, Option<String>)> {
 /// are re-pointed at them), and a card whose file has left the disk is
 /// dropped together with its text.
 pub fn restore(s: &State, key: &str) -> Option<Draft> {
-    let draft = s.workspace.drafts.drafts.get(key)?.clone();
+    let draft = s.workspace.drafts.drafts.get(&scoped(s, key))?.clone();
     Some(rekey(draft))
 }
 
@@ -293,8 +310,7 @@ fn rekey(draft: Draft) -> Draft {
         text.push_str(&old[last..range.start]);
         last = range.end;
         // A mention chip names its target, not a staged file: it keeps its id.
-        let mention =
-            zlo_client::mentions::token_mention(&token.id).map(|_| token.id.clone());
+        let mention = zlo_client::mentions::token_mention(&token.id).map(|_| token.id.clone());
         if let Some(id) = keys.get(&token.id).cloned().or(mention) {
             let start = text.len();
             text.push_str(&token.text);
@@ -317,6 +333,8 @@ fn rekey(draft: Draft) -> Draft {
 
 /// Note the composer's current state; an empty box deletes the draft.
 pub fn record(s: &mut State, key: &str, draft: Draft) {
+    let scoped = scoped(s, key);
+    let key = scoped.as_str();
     let store = &mut s.workspace.drafts;
     let had = store.drafts.contains_key(key);
     if draft.is_empty() {
@@ -438,6 +456,30 @@ mod tests {
             serde_json::from_slice(&std::fs::read(file_for(&dir, "t2")).unwrap()).unwrap();
         assert_eq!(kept.text, "kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_computer_has_its_own_drafts_and_new_thread_draft() {
+        let mut s = crate::chat::fixtures::test_state();
+        s.fixture = true;
+        record(&mut s, NEW_THREAD, Draft::text("on this mac"));
+        s.onboarding.computer = crate::onboarding::gateway::Computer::remote("env-1", "Studio");
+        assert!(!has(&s, NEW_THREAD), "this Mac's draft leaked to Studio");
+        record(&mut s, NEW_THREAD, Draft::text("on studio"));
+        record(&mut s, "t1", Draft::text("studio thread"));
+        assert_eq!(
+            restore(&s, NEW_THREAD).map(|d| d.text).as_deref(),
+            Some("on studio")
+        );
+        s.onboarding.computer = crate::onboarding::gateway::Computer::ThisMac;
+        assert_eq!(
+            restore(&s, NEW_THREAD).map(|d| d.text).as_deref(),
+            Some("on this mac")
+        );
+        assert!(!has(&s, "t1"));
+        // This Mac keeps the keys the GPUI app shares; others are prefixed.
+        assert_eq!(scoped_for("this-mac", "new"), "new");
+        assert_eq!(scoped_for("env-1", "new"), "env-1~new");
     }
 
     #[test]

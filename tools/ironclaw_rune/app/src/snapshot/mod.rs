@@ -25,10 +25,10 @@ mod hotkey;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use zlo_client::attachments::{self, StagedFile};
-use zlo_client::wire::AttachmentLimits;
 use rune::{El, Tx, el, icon as glyph};
 use serde::{Deserialize, Serialize};
+use zlo_client::attachments::{self, StagedFile};
+use zlo_client::wire::AttachmentLimits;
 
 use crate::state::State;
 

@@ -73,6 +73,12 @@ impl FileIndex {
         Self::from_files(root.to_path_buf(), files, truncated)
     }
 
+    /// A listing someone else walked: `files` relative to `root` (a remote
+    /// backend's thread workspace, `/workspace`, whose mentions it resolves).
+    pub fn from_listing(root: PathBuf, files: Vec<String>, truncated: bool) -> Self {
+        Self::from_files(root, files, truncated)
+    }
+
     fn from_files(root: PathBuf, mut files: Vec<String>, truncated: bool) -> Self {
         files.sort();
         files.dedup();
@@ -93,31 +99,48 @@ impl FileIndex {
     }
 }
 
-/// Listings by folder, with their age.
-#[derive(Default)]
-pub struct IndexCache {
-    entries: HashMap<PathBuf, (Instant, Arc<FileIndex>)>,
-    building: std::collections::HashSet<PathBuf>,
+/// Listings by key (a folder on this Mac, or a remote backend's thread
+/// workspace), with their age.
+pub struct IndexCache<K = PathBuf> {
+    entries: HashMap<K, (Instant, Arc<FileIndex>)>,
+    building: std::collections::HashSet<K>,
 }
 
-impl IndexCache {
+impl<K> Default for IndexCache<K> {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            building: std::collections::HashSet::new(),
+        }
+    }
+}
+
+impl<K: Clone + Eq + std::hash::Hash> IndexCache<K> {
     /// The cached listing (possibly stale) and whether a rebuild should start.
-    pub fn get(&mut self, root: &Path) -> (Option<Arc<FileIndex>>, bool) {
-        let entry = self.entries.get(root);
+    pub fn get(&mut self, key: &K) -> (Option<Arc<FileIndex>>, bool) {
+        let entry = self.entries.get(key);
         let stale = entry.is_none_or(|(at, _)| at.elapsed() > INDEX_TTL);
-        let start = stale && self.building.insert(root.to_path_buf());
+        let start = stale && self.building.insert(key.clone());
         (entry.map(|(_, index)| Arc::clone(index)), start)
     }
 
-    pub fn put(&mut self, index: FileIndex) {
-        let root = index.root.clone();
-        self.building.remove(&root);
-        self.entries.insert(root, (Instant::now(), Arc::new(index)));
+    /// Store `index` as `key`'s listing.
+    pub fn put_as(&mut self, key: K, index: FileIndex) {
+        self.building.remove(&key);
+        self.entries.insert(key, (Instant::now(), Arc::new(index)));
     }
 
     /// A rebuild failed or was dropped: allow the next one.
-    pub fn abandon(&mut self, root: &Path) {
-        self.building.remove(root);
+    pub fn abandon(&mut self, key: &K) {
+        self.building.remove(key);
+    }
+}
+
+impl IndexCache<PathBuf> {
+    /// Store a folder's listing under its own root.
+    pub fn put(&mut self, index: FileIndex) {
+        let root = index.root.clone();
+        self.put_as(root, index);
     }
 }
 
@@ -543,14 +566,14 @@ fn parent(rel: &str) -> &str {
 }
 
 /// A query prepared once for scoring many candidates: lowercase, no spaces.
-struct Prepared {
+pub(crate) struct Prepared {
     chars: Vec<char>,
     text: String,
     ascii: bool,
 }
 
 impl Prepared {
-    fn new(query: &str) -> Self {
+    pub(crate) fn new(query: &str) -> Self {
         let chars: Vec<char> = query
             .chars()
             .filter(|c| !c.is_whitespace())
@@ -627,7 +650,7 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
 }
 
 /// [`fuzzy_score`] for a prepared query; allocates nothing for ASCII names.
-fn score(query: &Prepared, candidate: &str) -> Option<i32> {
+pub(crate) fn score(query: &Prepared, candidate: &str) -> Option<i32> {
     if query.chars.is_empty() {
         return Some(0);
     }
@@ -685,7 +708,8 @@ fn subsequence(query: &[char], text: &str) -> Option<i32> {
         };
         if hit {
             let boundary = prev.is_none_or(|p| {
-                matches!(p, '/' | '_' | '-' | '.' | ' ') || (p.is_lowercase() && c.is_uppercase())
+                matches!(p, '/' | '_' | '-' | '.' | ' ' | ':')
+                    || (p.is_lowercase() && c.is_uppercase())
             });
             score += 10;
             if boundary {

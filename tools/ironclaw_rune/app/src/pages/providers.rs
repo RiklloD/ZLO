@@ -16,11 +16,11 @@ mod view;
 
 use std::collections::HashMap;
 
+use rune::{Cx, El, TextEdit};
+use rune_kit::Kit;
 use zlo_client::operator_llm::{LlmConfigSnapshot, LlmProviderView, UserModelCatalog};
 use zlo_client::orchestration::{PickerPrefs, RouteProvider};
 use zlo_client::task_models::{TaskModelChoice, TaskModels};
-use rune::{Cx, El, TextEdit};
-use rune_kit::Kit;
 
 use crate::jobs;
 use crate::state::State;

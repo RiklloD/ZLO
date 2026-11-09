@@ -11,9 +11,7 @@ mod view;
 
 use chrono::{DateTime, Utc};
 use zlo_client::operator::inspector::ToolExecutionDiagnostic;
-use zlo_client::operator::{
-    InspectorPrompt, InspectorRun, InspectorSignal, InspectorStream,
-};
+use zlo_client::operator::{InspectorPrompt, InspectorRun, InspectorSignal, InspectorStream};
 use zlo_client::product_wire::{RebornLogEntry, RebornOperatorLogsQuery};
 use zlo_client::wire::ThreadSummary;
 

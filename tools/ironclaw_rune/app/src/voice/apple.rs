@@ -94,10 +94,9 @@ fn declares(key: &str) -> bool {
 fn ready() -> Result<(), SttFailure> {
     if !declares(MIC_USAGE) || !declares(SPEECH_USAGE) {
         return Err(SttFailure {
-            message:
-                "Voice works in ZLO.app (tools/ironclaw_rune/bundle.sh); this build has no \
+            message: "Voice works in ZLO.app (tools/ironclaw_rune/bundle.sh); this build has no \
                       microphone permission strings."
-                    .into(),
+                .into(),
             pane: None,
         });
     }

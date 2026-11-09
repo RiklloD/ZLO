@@ -2,9 +2,9 @@
 //! cards, the shelves' slim rows, their status and timer, and the small
 //! marks other sidebar parts reuse.
 
-use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 use rune::{Color, El, col, el, row};
 use rune_kit::{ControlSize, Kit};
+use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 
 use crate::design::{self, Palette, motion};
 use crate::icons;

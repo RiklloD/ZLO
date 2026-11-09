@@ -2,6 +2,8 @@
 //! recorded for this user, plus which channels deliver them outside the app.
 //! Port of GPUI `pages/notifications.rs`.
 
+use rune::{Cursor, Cx, El, col, el, row};
+use rune_kit::Kit;
 use zlo_client::notification_inbox::{
     ProductNotification, ProductNotificationAction, ProductNotificationKind,
     ProductNotificationSeverity,
@@ -11,8 +13,6 @@ use zlo_client::product_wire::{
     RebornOutboundDeliveryTargetOption,
 };
 use zlo_client::{Client, ClientError};
-use rune::{Cursor, Cx, El, col, el, row};
-use rune_kit::Kit;
 
 use super::common::{
     BASE, Btn, SM, XS, actions, button, card, empty_state, error_line, glyph, header, icon_button,

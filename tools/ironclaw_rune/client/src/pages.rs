@@ -16,7 +16,8 @@ use ironclaw_product_contracts::product_wire::{
 };
 use ironclaw_product_contracts::workspace_views::{
     FsMount, RebornCreateProjectRequest, RebornFsListResponse, RebornFsMountsResponse,
-    RebornFsStatResponse, RebornListProjectsResponse, RebornProjectFsListResponse,
+    RebornFsStatResponse, RebornListProjectsResponse, RebornProjectFsIndexResponse,
+    RebornProjectFsListResponse,
     RebornProjectFsStatResponse, RebornProjectResponse, RebornProjectState,
     RebornUpdateProjectRequest,
 };
@@ -202,6 +203,17 @@ impl Client {
             url.push_str(&format!("?path={}", seg(path)));
         }
         self.get(&url).await
+    }
+
+    /// The thread workspace's files and folders, relative to `/workspace`
+    /// and bounded by the backend: what `@` offers when the backend is on
+    /// another computer.
+    pub async fn thread_file_index(
+        &self,
+        thread_id: &str,
+    ) -> Result<RebornProjectFsIndexResponse, ClientError> {
+        self.get(&format!("{V2}/threads/{}/files/index", seg(thread_id)))
+            .await
     }
 
     pub async fn thread_file_stat(

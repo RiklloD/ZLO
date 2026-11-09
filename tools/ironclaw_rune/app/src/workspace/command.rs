@@ -3,10 +3,10 @@
 //! `workspace/command.rs`.) The scrim fades in and the card rises as it
 //! mounts (Rune's presence transition); the selected row is washed.
 
-use zlo_client::history::HistoryHit;
-use zlo_client::profiles::DEFAULT_PROFILE_ID;
 use rune::{Color, El, Icon, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, el, row};
 use rune_kit::{Kit, TextInput};
+use zlo_client::history::HistoryHit;
+use zlo_client::profiles::DEFAULT_PROFILE_ID;
 
 use super::ui::{self, XS, t};
 use super::{message_search, row_title};

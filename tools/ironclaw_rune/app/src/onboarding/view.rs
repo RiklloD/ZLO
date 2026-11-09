@@ -7,17 +7,18 @@
 use rune::{El, col, el, row, text};
 use rune_kit::{Checkbox, Kit};
 
-use crate::pages::common::controls::{Look, Size, button_sized, icon_button_sized, input};
+use crate::pages::common::controls::{Look, Size, button_sized, icon_button_sized};
 use crate::pages::common::ts::{MONO_XS, sm, sm_medium, xs};
 use crate::state::{Conn, State};
 
-use super::gateway::{self, Computer};
 use super::{Finish, STEPS, Step, Toast};
+use crate::remote::EnvState;
+use zlo_client::environments::Active;
 
 const WIDTH: f32 = 720.;
 
 fn close(s: &mut State) {
-    if s.onboarding.projects.importing || s.onboarding.connect.pairing {
+    if s.onboarding.projects.importing || s.remote.page.busy.is_some() {
         return;
     }
     super::finish(
@@ -89,7 +90,7 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
 /// t3code `WizardHeader`: the wordmark, the steps, and Close.
 fn header(s: &State, k: &Kit) -> El {
     let p = &s.palette;
-    let busy = s.onboarding.projects.importing || s.onboarding.connect.pairing;
+    let busy = s.onboarding.projects.importing || s.remote.page.busy.is_some();
     col()
         .key("onboarding-header")
         .w_full()
@@ -277,78 +278,71 @@ pub fn command_block(s: &State, k: &Kit, command: &'static str, key: &str) -> El
         )
 }
 
-/// The computers setup can pick from: this Mac, and a paired one.
-fn computers(s: &State) -> Vec<Computer> {
-    let mut out = vec![Computer::ThisMac];
-    if let Some(remote) = s.onboarding.paired.clone() {
-        out.push(remote);
+/// A computer setup can pick: its key, label and caption.
+struct Choice {
+    key: String,
+    label: String,
+    caption: Option<String>,
+    active: Active,
+}
+
+/// This Mac, then every saved computer.
+fn computers(s: &State) -> Vec<Choice> {
+    let mut out = Vec::new();
+    // A Light bundle has no IronClaw of its own to offer.
+    if !s.remote.app_only {
+        out.push(Choice {
+            key: zlo_client::environments::THIS_MAC.into(),
+            label: "This Mac".into(),
+            caption: None,
+            active: Active::ThisMac,
+        });
+    }
+    for env in crate::remote::saved(s) {
+        out.push(Choice {
+            key: env.environment_id.clone(),
+            label: env.label.clone(),
+            caption: env
+                .routes
+                .first()
+                .map(zlo_client::environments::Route::caption),
+            active: Active::Environment(env.environment_id.clone()),
+        });
     }
     out
 }
 
 /// What a computer's row says, t3code's connection labels.
-fn status_of(s: &State, computer: &Computer, active: &Computer) -> &'static str {
-    if computer != active {
-        return "Saved";
+fn status_of(s: &State, key: &str) -> &'static str {
+    match crate::remote::state_of(s, key) {
+        EnvState::Connected => "Connected",
+        EnvState::Connecting => "Connecting…",
+        EnvState::Asleep => "Asleep",
+        EnvState::Blocked(_) => "Not connected",
+        EnvState::Saved => "Saved",
     }
-    match s.conn {
-        Conn::Ready => "Connected",
-        Conn::Connecting => "Connecting…",
-        Conn::Failed { .. } => "Not connected",
-    }
-}
-
-fn selected(s: &State, active: &Computer) -> Computer {
-    s.onboarding
-        .connect
-        .selected
-        .clone()
-        .unwrap_or_else(|| active.clone())
 }
 
 /// Pick a computer. ZLO works on one at a time, so picking another
 /// switches to it (t3code adds it to the set it sets up).
-fn pick(s: &mut State, computer: Computer) {
-    let active = s.onboarding.computer.clone();
-    s.onboarding.connect.selected = Some(computer.clone());
-    if computer == active {
-        return;
-    }
-    let switched = match &computer {
-        Computer::ThisMac => gateway::forget(),
-        // Only a paired computer is offered, and it is saved already.
-        Computer::Remote(_) => Ok(()),
-    };
-    if let Err(e) = switched {
-        tracing::warn!(error = %e, "could not switch computers");
-        s.onboarding.connect.pairing_error = Some("Could not switch computers. Try again.".into());
-        return;
-    }
-    super::computer_switched(s);
-    crate::workspace::reconnect(s);
+fn pick(s: &mut State, choice: Active) {
+    crate::remote::switch_to(s, choice);
 }
 
 fn connect_step(s: &State, k: &Kit) -> El {
     let p = &s.palette;
-    let c = &s.onboarding.connect;
-    let active = s.onboarding.computer.clone();
-    let chosen = selected(s, &active);
-    let ready = chosen == active && matches!(s.conn, Conn::Ready);
+    let active = s.onboarding.computer.key();
+    let ready = matches!(s.conn, Conn::Ready) && s.remote.switching.is_none();
     let mut list = col().key("computers").w_full().gap(8.).pt(20.);
-    for computer in computers(s) {
-        let on = computer == chosen;
-        let status = status_of(s, &computer, &active);
-        let url = match &computer {
-            Computer::ThisMac => None,
-            Computer::Remote(url) => Some(url.clone()),
-        };
-        let target = computer.clone();
+    for choice in computers(s) {
+        let on = choice.key == active;
+        let status = status_of(s, &choice.key);
         let mut info = col().grow(1.).min_w(0.).child(
             row()
                 .w_full()
                 .gap(12.)
                 .child(
-                    text(computer.label())
+                    text(choice.label.clone())
                         .font(sm_medium())
                         .color(p.text)
                         .grow(1.)
@@ -357,13 +351,16 @@ fn connect_step(s: &State, k: &Kit) -> El {
                 )
                 .child(text(status).font(xs()).color(p.text_muted)),
         );
-        if let Some(url) = url {
-            info = info.child(text(url).font(xs()).color(p.text_muted).pt(2.));
+        if let Some(caption) = &choice.caption {
+            info = info.child(text(caption.clone()).font(xs()).color(p.text_muted).pt(2.));
         }
-        let pick_target = target.clone();
+        if let EnvState::Blocked(why) = crate::remote::state_of(s, &choice.key) {
+            info = info.child(text(why).font(xs()).color(p.danger).wrap().pt(2.));
+        }
+        let (row_target, check_target) = (choice.active.clone(), choice.active.clone());
         list = list.child(
             row()
-                .key(format!("computer-{}", computer.key()))
+                .key(format!("computer-{}", choice.key))
                 .w_full()
                 .gap(12.)
                 .px(12.)
@@ -373,33 +370,31 @@ fn connect_step(s: &State, k: &Kit) -> El {
                 .border(1., if on { p.accent.alpha(0.5) } else { p.border })
                 .fill(p.bg)
                 .cursor(rune::Cursor::Pointer)
-                .on_press(move |s: &mut State| pick(s, pick_target.clone()))
+                .on_press(move |s: &mut State| pick(s, row_target.clone()))
                 .child(
                     Checkbox::new(on)
-                        .label(computer.label())
+                        .label(choice.label.clone())
                         .hide_label()
-                        .on_toggle(move |s: &mut State| pick(s, target.clone()))
+                        .on_toggle(move |s: &mut State| pick(s, check_target.clone()))
                         .build(k)
-                        .key(format!("computer-check-{}", computer.key())),
+                        .key(format!("computer-check-{}", choice.key)),
                 )
                 .child(rune::icon(&crate::icons::MONITOR, 16.).color(p.text_muted))
                 .child(info),
         );
     }
     list = list.child(pairing(s, k));
-    if chosen != active || !matches!(s.conn, Conn::Ready) {
-        let label = chosen.label();
-        if matches!(s.conn, Conn::Failed { .. }) {
-            list = list.child(
-                text(format!(
-                    "Not connected, so setup cannot go on with {label}. Pick another computer, or start IronClaw there."
-                ))
-                .font(xs())
-                .color(p.text_muted)
-                .wrap()
-                .pt(8.),
-            );
-        }
+    if matches!(s.conn, Conn::Failed { .. }) {
+        list = list.child(
+            text(format!(
+                "Not connected, so setup cannot go on with {}. Pick another computer, or start IronClaw there.",
+                s.onboarding.computer.label()
+            ))
+            .font(xs())
+            .color(p.text_muted)
+            .wrap()
+            .pt(8.),
+        );
     }
     step_shell(
         s,
@@ -411,7 +406,7 @@ fn connect_step(s: &State, k: &Kit) -> El {
         row().w_full().pt(24.).justify_end().child(
             button_sized("Continue", Look::Primary, Size::Small)
                 .icon(&crate::icons::ARROW_RIGHT)
-                .disabled(!ready || c.pairing)
+                .disabled(!ready || s.remote.page.busy.is_some())
                 .on_press(|s: &mut State| super::go_to(s, Step::Agents))
                 .build(k)
                 .key("connect-continue"),
@@ -419,23 +414,20 @@ fn connect_step(s: &State, k: &Kit) -> El {
     )
 }
 
-/// t3code "Add a computer" with its `PairingForm`.
+/// t3code "Add a computer": the Computers page's pairing form.
 fn pairing(s: &State, k: &Kit) -> El {
     let p = &s.palette;
-    let c = &s.onboarding.connect;
-    let open = c.pairing_open;
-    let chevron = |open: bool| {
-        rune::icon(
-            if open {
-                &crate::icons::CHEVRON_DOWN
-            } else {
-                &crate::icons::CHEVRON_RIGHT
-            },
-            16.,
-        )
-        .color(p.text_muted)
-    };
-    let mut card = col()
+    let open = s.onboarding.connect.pairing_open;
+    let chevron = rune::icon(
+        if open {
+            &crate::icons::CHEVRON_DOWN
+        } else {
+            &crate::icons::CHEVRON_RIGHT
+        },
+        16.,
+    )
+    .color(p.text_muted);
+    let card = col()
         .key("pairing")
         .w_full()
         .radius(8.)
@@ -455,130 +447,30 @@ fn pairing(s: &State, k: &Kit) -> El {
                 .cursor(rune::Cursor::Pointer)
                 .hover(p.hover)
                 .on_press(|s: &mut State| {
+                    if s.remote.page.busy.is_some() {
+                        return;
+                    }
                     let c = &mut s.onboarding.connect;
-                    if !c.pairing {
-                        c.pairing_open = !c.pairing_open;
-                        c.pairing_input.focused = c.pairing_open;
+                    c.pairing_open = !c.pairing_open;
+                    s.remote.page.input.focused = c.pairing_open;
+                    if c.pairing_open {
+                        crate::remote::pairing::discover(s);
                     }
                 })
                 .child(rune::icon(&crate::icons::GLOBE, 16.).color(p.text_muted))
                 .child(text("Add a computer").font(sm()).color(p.text).grow(1.))
-                .child(chevron(open)),
+                .child(chevron),
         );
     if !open {
         return card;
     }
-    let link_empty = c.pairing_input.text.trim().is_empty();
-    let mut form = col()
-        .w_full()
-        .gap(12.)
-        .px(12.)
-        .pb(12.)
-        .child(text("Pairing link").font(sm()).color(p.text_muted))
-        .child(
-            input(&c.pairing_input)
-                .placeholder("http://your-computer:3000#token=…")
-                .label("Pairing link")
-                .on_edit(|s: &mut State| &mut s.onboarding.connect.pairing_input)
-                .on_submit(|s: &mut State, _: &mut rune::Tx| submit_pairing(s))
-                .build(k)
-                .key("pairing-input"),
-        );
-    if let Some(e) = &c.pairing_error {
-        form = form.child(text(e.clone()).font(sm()).color(p.danger).wrap());
-    }
-    let help_open = c.pairing_help_open;
-    form = form.child(
-        row()
+    card.child(
+        col()
             .w_full()
-            .gap(12.)
-            .center_y()
-            .child(
-                row()
-                    .key("pairing-help-toggle")
-                    .gap(4.)
-                    .center_y()
-                    .grow(1.)
-                    .cursor(rune::Cursor::Pointer)
-                    .on_press(|s: &mut State| {
-                        let c = &mut s.onboarding.connect;
-                        c.pairing_help_open = !c.pairing_help_open;
-                    })
-                    .child(chevron(help_open).w(14.).h(14.))
-                    .child(text("Need a pairing link?").font(sm()).color(p.text_muted)),
-            )
-            .child(
-                crate::pages::common::loading(
-                    button_sized(
-                        if c.pairing { "Pairing…" } else { "Pair" },
-                        Look::Primary,
-                        Size::Small,
-                    )
-                    .disabled(link_empty)
-                    .on_press(submit_pairing),
-                    c.pairing,
-                )
-                .build(k)
-                .key("pairing-submit"),
-            ),
-    );
-    if help_open {
-        form = form
-            .child(
-                text("On the computer with your code, let IronClaw listen on its Tailscale address ([webui] listen_host in ~/.ironclaw/reborn/config.toml), then run:")
-                    .font(sm())
-                    .color(p.text_muted)
-                    .wrap(),
-            )
-            .child(command_block(s, k, gateway::LINK_COMMAND, "pairing-command"))
-            .child(
-                text("Plain http works only over Tailscale (or this Mac); anything else needs https. Anyone with the link can use that computer's IronClaw: send it only to yourself.")
-                    .font(xs())
-                    .color(p.text_muted)
-                    .wrap(),
-            );
-    }
-    card = card.child(form);
-    card
-}
-
-fn submit_pairing(s: &mut State) {
-    let c = &mut s.onboarding.connect;
-    if c.pairing {
-        return;
-    }
-    let (url, token) = match gateway::parse_link(&c.pairing_input.text) {
-        Ok(parts) => parts,
-        Err(e) => {
-            c.pairing_error = Some(e);
-            return;
-        }
-    };
-    c.pairing = true;
-    c.pairing_error = None;
-    crate::jobs::run(
-        s,
-        "onboarding",
-        move |_| async move {
-            Ok::<_, zlo_client::ClientError>(gateway::pair(url, token).await)
-        },
-        |s, result, _| {
-            let c = &mut s.onboarding.connect;
-            c.pairing = false;
-            match result {
-                Ok(Ok(computer)) => {
-                    // The link held a token: drop it from the field.
-                    c.pairing_input.clear();
-                    c.pairing_open = false;
-                    c.selected = Some(computer);
-                    super::computer_switched(s);
-                    crate::workspace::reconnect(s);
-                }
-                Ok(Err(e)) => c.pairing_error = Some(e),
-                Err(e) => c.pairing_error = Some(e.to_string()),
-            }
-        },
-    );
+            .px(12.)
+            .pb(12.)
+            .child(crate::pages::computers::add_computer(s, k)),
+    )
 }
 
 /// The note after setup (t3code's toast), bottom right.

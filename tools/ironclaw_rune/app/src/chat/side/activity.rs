@@ -6,11 +6,11 @@
 
 use std::collections::HashSet;
 
+use rune::{El, col, el, icon, row};
+use rune_kit::{Kit, Spinner};
 use zlo_client::GateDecision;
 use zlo_client::contract::ProductGateKind;
 use zlo_client::transcript::{GateState, Row, ToolStatus};
-use rune::{El, col, el, icon, row};
-use rune_kit::{Kit, Spinner};
 
 use super::ui::{self, sm, sm_med, xs, xs_med};
 use super::{bridge, side, side_mut};

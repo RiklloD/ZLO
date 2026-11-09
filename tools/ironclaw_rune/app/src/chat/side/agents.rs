@@ -4,9 +4,9 @@
 //! adds no requests of its own.
 
 use chrono::Utc;
-use zlo_client::orchestration::{TaskStatus, TaskView};
 use rune::{Color, El, col, icon, row};
 use rune_kit::Kit;
+use zlo_client::orchestration::{TaskStatus, TaskView};
 
 use super::bridge;
 use super::ui::{self, sm, xs};

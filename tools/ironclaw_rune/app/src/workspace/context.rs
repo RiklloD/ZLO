@@ -9,13 +9,13 @@
 
 use std::collections::HashSet;
 
+use rune::{Color, El, col, el, row};
+use rune_kit::{ControlSize, Kit, Placement, Spinner};
 use zlo_client::orchestration::ForkOptions;
 use zlo_client::usage::{
     ContextCategory, ContextLevel, ContextSource, ContextToolOwner, ThreadContextReport,
     ThreadTelemetry,
 };
-use rune::{Color, El, col, el, row};
-use rune_kit::{ControlSize, Kit, Placement, Spinner};
 
 use super::status::tokens;
 use super::ui::{self, MEDIUM, XS, t, tw};

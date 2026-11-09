@@ -1,12 +1,10 @@
 //! Read-only browser over the gateway's mounts (memory, workspace, skills).
 //! Port of GPUI `pages/files.rs`.
 
-use zlo_client::FilePreview;
-use zlo_client::workspace_views::{
-    FsMount, ProjectFsEntry, ProjectFsEntryKind, RebornFsMountInfo,
-};
 use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};
 use rune_kit::{Kit, Markdown, Spinner};
+use zlo_client::FilePreview;
+use zlo_client::workspace_views::{FsMount, ProjectFsEntry, ProjectFsEntryKind, RebornFsMountInfo};
 
 use super::common::{
     SM, XL, XS, choice, empty_state, error_line, font, glyph, label, refresh_button,

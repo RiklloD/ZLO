@@ -33,9 +33,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use rune::TextEdit;
 use zlo_client::ClientError;
 use zlo_client::orchestration::{ForkOptions, Lineage, QueueAction, QueueDoc, TaskView};
-use rune::TextEdit;
 
 use crate::jobs;
 use crate::state::State;

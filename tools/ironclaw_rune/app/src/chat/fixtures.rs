@@ -6,14 +6,14 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use ironclaw_host_api::agent_plan::{
+    QuestionField, QuestionFieldKind, QuestionForm, QuestionOption,
+};
 use zlo_client::GateDecision;
 use zlo_client::commands::MenuSources;
 use zlo_client::contract::ProductGateKind;
 use zlo_client::product_wire::RebornProductCommandInfo;
 use zlo_client::transcript::{AttachmentChip, GateState, QuestionState, Row, ToolStatus};
-use ironclaw_host_api::agent_plan::{
-    QuestionField, QuestionFieldKind, QuestionForm, QuestionOption,
-};
 
 use super::{ChatState, flow, question_form};
 use crate::state::{Conn, Page, State};

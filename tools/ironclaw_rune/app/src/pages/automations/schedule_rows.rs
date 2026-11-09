@@ -5,9 +5,9 @@
 //! GPUI `pages/automations/schedule_rows.rs`.
 
 use chrono::{DateTime, Utc};
-use zlo_client::schedules::{LastOutcome, ScheduleInfo, ScheduleSecret, curl_example};
 use rune::{Cursor, El, col, el, row, text};
 use rune_kit::Kit;
+use zlo_client::schedules::{LastOutcome, ScheduleInfo, ScheduleSecret, curl_example};
 
 use super::{ScheduleAction, form, schedule_act, schedule_key};
 use crate::icons;
