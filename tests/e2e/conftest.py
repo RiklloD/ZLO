@@ -482,14 +482,14 @@ def ironclaw_reborn_binary():
     scenario.
     """
     target_dir = _cargo_target_dir()
-    binary = target_dir / "debug" / "ironclaw"
+    binary = target_dir / "debug" / "zlo"
     if _binary_needs_rebuild(binary):
         print("Building Reborn ironclaw (this may take a while)...")
         subprocess.run(
             [
                 "cargo", "build",
                 "-p", "ironclaw",
-                "--bin", "ironclaw",
+                "--bin", "zlo",
             ],
             cwd=ROOT,
             check=True,
@@ -506,14 +506,14 @@ def ironclaw_reborn_binary():
 def ironclaw_reborn_sso_binary():
     """Build the debug-only Reborn binary variant used by the SSO mock."""
     target_dir = _cargo_target_dir() / "e2e-sso"
-    binary = target_dir / "debug" / "ironclaw"
+    binary = target_dir / "debug" / "zlo"
     if _binary_needs_rebuild(binary):
         print("Building Reborn ironclaw with test support (this may take a while)...")
         subprocess.run(
             [
                 "cargo", "build",
                 "-p", "ironclaw",
-                "--bin", "ironclaw",
+                "--bin", "zlo",
                 "--features", "test-support",
                 "--target-dir", str(target_dir),
             ],
@@ -537,7 +537,7 @@ def ironclaw_reborn_openai_compat_binary():
     the OpenAI-compatible E2E owns its own build/staleness stamp.
     """
     target_dir = _cargo_target_dir()
-    binary = target_dir / "debug" / "ironclaw"
+    binary = target_dir / "debug" / "zlo"
     stamp = target_dir / "debug" / ".ironclaw-reborn-openai-compat.stamp"
     input_mtime = max(
         _latest_mtime(ROOT / "Cargo.toml"),
@@ -556,7 +556,7 @@ def ironclaw_reborn_openai_compat_binary():
             [
                 "cargo", "build",
                 "-p", "ironclaw",
-                "--bin", "ironclaw",
+                "--bin", "zlo",
             ],
             cwd=ROOT,
             check=True,

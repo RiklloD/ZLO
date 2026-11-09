@@ -640,7 +640,7 @@ class AuthCanarySourceContractTests(unittest.TestCase):
         start_source = inspect.getsource(common.start_reborn_gateway_stack)
         self.assertIn('"ironclaw"', build_source)
         self.assertNotIn("ironclaw_legacy", build_source)
-        self.assertIn('"debug" / "ironclaw"', start_source)
+        self.assertIn('"debug" / "zlo"', start_source)
         self.assertNotIn("ironclaw-legacy", start_source)
 
     def test_seeded_calendar_uses_current_package_id(self) -> None:

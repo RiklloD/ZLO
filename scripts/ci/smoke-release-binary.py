@@ -191,8 +191,8 @@ def smoke_release_binary(binary: Path, runner: Runner = _run_command) -> set[str
         version = _checked_output(
             binary, ("--version",), environment, workspace, runner
         )
-        if "ironclaw" not in version.lower():
-            raise SmokeFailure("--version did not identify IronClaw")
+        if not version.lower().startswith("zlo "):
+            raise SmokeFailure("--version did not identify the zlo command")
         evidence.add("version")
 
         help_output = _checked_output(
@@ -299,7 +299,7 @@ def main() -> int:
     source.add_argument("--archive", type=Path, help="cargo-dist .tar.gz to extract")
     parser.add_argument(
         "--binary-name",
-        choices=("ironclaw", "ironclaw.exe"),
+        choices=("zlo", "zlo.exe"),
         help="shipping binary basename inside --archive",
     )
     args = parser.parse_args()

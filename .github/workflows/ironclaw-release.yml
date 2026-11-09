@@ -175,9 +175,9 @@ jobs:
             exit 1
           fi
           for target in "${targets[@]}"; do
-            binary="ironclaw"
+            binary="zlo"
             if [[ "$target" == *-windows-* ]]; then
-              binary="ironclaw.exe"
+              binary="zlo.exe"
             fi
             shopt -s nullglob
             archives=(target/distrib/*"$target"*.tar.gz)

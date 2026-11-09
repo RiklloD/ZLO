@@ -263,7 +263,7 @@ jobs:
         run: |
           cargo build --locked --profile dist \
             --package ironclaw \
-            --bin ironclaw
+            --bin zlo
           cargo build --release --package ironclaw_stress
 
       - name: Run libsql scripted memory matrix
@@ -294,7 +294,7 @@ jobs:
           EOF
 
           IRONCLAW_REBORN_HOME="$RUNNER_TEMP/ironclaw-reborn-home-libsql" \
-            target/dist/ironclaw serve \
+            target/dist/zlo serve \
               --host 127.0.0.1 \
               --port 18080 \
               > target/ironclaw-stress/libsql-scripted-server.log \
@@ -480,7 +480,7 @@ jobs:
         run: |
           cargo build --locked --profile dist \
             --package ironclaw \
-            --bin ironclaw
+            --bin zlo
           cargo build --release --package ironclaw_stress
 
       - name: Run hosted-single-tenant Postgres API capacity workload
@@ -517,7 +517,7 @@ jobs:
           EOF
 
           IRONCLAW_REBORN_HOME="$RUNNER_TEMP/ironclaw-reborn-home" \
-            target/dist/ironclaw serve \
+            target/dist/zlo serve \
               --host 127.0.0.1 \
               --port 18080 \
               > target/ironclaw-stress/postgres-api-server.log \

@@ -75,7 +75,7 @@ REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
         "--preset soak-user-session",
         "postgres-api-capacity:",
         "cargo build --locked --profile dist",
-        "target/dist/ironclaw serve",
+        "target/dist/zlo serve",
         "ironclaw-stress-postgres-scripted-memory-roundtrip",
     ),
     ".github/workflows/live-canary.yml": (
@@ -1079,7 +1079,7 @@ EXIT_STATUS_MASKS = (
 )
 
 # Matched on word boundaries so `--bins` is not also reported as `--bin`, and
-# so value-bearing forms (`--bin ironclaw`, `--bench=throughput`) are caught.
+# so value-bearing forms (`--bin zlo`, `--bench=throughput`) are caught.
 FORBIDDEN_PRODUCTION_LINT_FLAGS = tuple(
     (flag, why, re.compile(rf"(?<![\w-]){re.escape(flag)}(?![\w-])"))
     for flag, why in (

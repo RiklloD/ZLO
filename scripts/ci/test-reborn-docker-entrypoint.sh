@@ -24,16 +24,16 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# `exec ironclaw "$@"` terminates the script; a stub keeps the run in-process
+# `exec zlo "$@"` terminates the script; a stub keeps the run in-process
 # and records that boot was actually reached rather than aborted early.
 mkdir -p "${WORK}/bin"
-cat > "${WORK}/bin/ironclaw" <<'STUB'
+cat > "${WORK}/bin/zlo" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" > "${IRONCLAW_STUB_ARGV_PATH}"
 printf '%s\n' "${IRONCLAW_REBORN_WORKSPACE_ROOT}" > "${IRONCLAW_STUB_WORKSPACE_PATH}"
 exit 0
 STUB
-chmod +x "${WORK}/bin/ironclaw"
+chmod +x "${WORK}/bin/zlo"
 
 # Root startup is exercised without requiring the test process itself to run as
 # root. The entrypoint resolves these commands through PATH, so the stubs model

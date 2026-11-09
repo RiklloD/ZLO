@@ -109,7 +109,7 @@ WORKDIR /app
 RUN cargo build \
     --profile dist \
     --package ironclaw \
-    --bin ironclaw
+    --bin zlo
 
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS runtime
 
@@ -123,7 +123,7 @@ RUN apt-get -o Acquire::Retries=3 update \
         sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/dist/ironclaw /usr/local/bin/ironclaw
+COPY --from=builder /app/target/dist/zlo /usr/local/bin/zlo
 COPY --from=railway_cli /usr/local/bin/railway /usr/local/bin/railway
 COPY docker/reborn/config.toml /opt/ironclaw/reborn/config.toml
 COPY docker/reborn/config.hosted-single-tenant.toml /opt/ironclaw/reborn/config.hosted-single-tenant.toml
@@ -145,7 +145,9 @@ RUN useradd -m -d /home/ironclaw -u 1000 ironclaw \
     && passwd -d agent \
     && mkdir -p /data/ironclaw-reborn /workspace \
     && chown -R ironclaw:ironclaw /home/ironclaw /data/ironclaw-reborn /workspace \
-    && chmod +x /usr/local/bin/ironclaw-reborn-entrypoint /usr/local/bin/ironclaw-reborn-start-sshd
+    && chmod +x /usr/local/bin/ironclaw-reborn-entrypoint /usr/local/bin/ironclaw-reborn-start-sshd \
+    # The command is `zlo`; `ironclaw` stays as an alias for existing scripts.
+    && ln -s zlo /usr/local/bin/ironclaw
 
 WORKDIR /workspace
 

@@ -118,8 +118,7 @@ def cargo_build_reborn() -> None:
             "build",
             "-p",
             "ironclaw",
-            "--bin",
-            "ironclaw",
+            "--bin", "zlo",
         ],
         cwd=ROOT,
     )
@@ -649,7 +648,7 @@ base_url = "{mock_llm_url}/v1"
             )
         gateway_proc = subprocess.Popen(
             [
-                str(ROOT / "target" / "debug" / "ironclaw"),
+                str(ROOT / "target" / "debug" / "zlo"),
                 "serve",
                 "--host",
                 "127.0.0.1",

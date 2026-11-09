@@ -133,7 +133,7 @@ fn fake_reborn_bin(bin_dir: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
     std::fs::create_dir_all(bin_dir).expect("fake bin dir");
-    let bin = bin_dir.join("ironclaw");
+    let bin = bin_dir.join("zlo");
     std::fs::write(
         &bin,
         "#!/bin/sh\nprintf 'home=%s\\n' \"$IRONCLAW_REBORN_HOME\"\nprintf 'args=%s\\n' \"$*\"\n",
@@ -339,9 +339,8 @@ fn dockerfile_reborn_builds_without_backend_feature_flags() {
 
     assert_no_removed_backend_cargo_features(&dockerfile, "Dockerfile");
     assert!(
-        dockerfile.contains("--bin ironclaw")
-            && dockerfile
-                .contains("COPY --from=builder /app/target/dist/ironclaw /usr/local/bin/ironclaw"),
+        dockerfile.contains("--bin zlo")
+            && dockerfile.contains("COPY --from=builder /app/target/dist/zlo /usr/local/bin/zlo"),
         "Dockerfile must build and copy the canonical ironclaw binary: {dockerfile}"
     );
     assert!(
@@ -444,7 +443,7 @@ fn release_ci_compiles_reborn_for_all_supported_targets() {
         compile_workflow.contains("fail-fast: false")
             && compile_workflow.contains("cargo build --locked --profile dist")
             && compile_workflow.contains("--package ironclaw")
-            && compile_workflow.contains("            --bin ironclaw \\\n")
+            && compile_workflow.contains("            --bin zlo \\\n")
             && !compile_workflow.contains("--bin ironclaw-reborn")
             && compile_workflow.contains("--target \"$TARGET\"")
             && !compile_workflow.contains("REBORN_RELEASE_FEATURES")
@@ -462,7 +461,7 @@ fn release_ci_compiles_reborn_for_all_supported_targets() {
             && !compile_workflow.contains("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER")
             && compile_workflow.contains("node-version: \"22\"")
             && compile_workflow.contains("corepack enable pnpm")
-            && compile_workflow.contains("binary: ironclaw.exe")
+            && compile_workflow.contains("binary: zlo.exe")
             && !compile_workflow.contains("binary: ironclaw-reborn")
             && compile_workflow.contains("core.longpaths true")
             && compile_workflow.contains("name: Install Python for release smoke")
@@ -474,14 +473,14 @@ fn release_ci_compiles_reborn_for_all_supported_targets() {
         concat!(
             "          - target: x86_64-unknown-linux-musl\n",
             "            runner: ubuntu-22.04\n",
-            "            binary: ironclaw\n",
+            "            binary: zlo\n",
             "            musl: true\n",
             "            cc_env: CC_x86_64_unknown_linux_musl=musl-gcc\n",
         ),
         concat!(
             "          - target: aarch64-unknown-linux-musl\n",
             "            runner: ubuntu-24.04-arm\n",
-            "            binary: ironclaw\n",
+            "            binary: zlo\n",
             "            musl: true\n",
             "            cc_env: CC_aarch64_unknown_linux_musl=musl-gcc\n",
         ),

@@ -30,7 +30,7 @@ class FakeRunner:
         self.calls: list[tuple[tuple[str, ...], dict[str, str], Path]] = []
         self.workspace_roots_were_directories: list[bool] = []
         self.responses = {
-            ("--version",): completed("ironclaw 1.0.0\n"),
+            ("--version",): completed("zlo 1.0.0\n"),
             ("--help",): completed("Commands: serve run extension profile\n"),
             ("profile", "list", "--json"): completed(
                 json.dumps(
@@ -97,7 +97,7 @@ class FakeRunner:
 class ReleaseBinarySmokeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.binary = Path(self.temp_dir.name) / "ironclaw"
+        self.binary = Path(self.temp_dir.name) / "zlo"
         self.binary.write_bytes(b"fake executable selected by the injected runner")
         self.runner = FakeRunner()
 
@@ -261,12 +261,12 @@ class ReleaseBinarySmokeTests(unittest.TestCase):
     def test_archive_extracts_the_only_shipping_binary(self) -> None:
         archive = Path(self.temp_dir.name) / "ironclaw-target.tar.gz"
         with tarfile.open(archive, "w:gz") as package:
-            member = tarfile.TarInfo("ironclaw-target/ironclaw")
+            member = tarfile.TarInfo("ironclaw-target/zlo")
             payload = b"packaged binary"
             member.size = len(payload)
             package.addfile(member, io.BytesIO(payload))
 
-        evidence = SMOKE.smoke_release_archive(archive, "ironclaw", self.runner)
+        evidence = SMOKE.smoke_release_archive(archive, "zlo", self.runner)
 
         self.assertEqual(evidence, SMOKE.REQUIRED_EVIDENCE)
 
@@ -279,20 +279,20 @@ class ReleaseBinarySmokeTests(unittest.TestCase):
             package.addfile(member, io.BytesIO(payload))
 
         with self.assertRaisesRegex(SMOKE.SmokeFailure, "found 0"):
-            SMOKE.smoke_release_archive(archive, "ironclaw", self.runner)
+            SMOKE.smoke_release_archive(archive, "zlo", self.runner)
         self.assertEqual(self.runner.calls, [])
 
     def test_archive_rejects_duplicate_shipping_binaries(self) -> None:
         archive = Path(self.temp_dir.name) / "ironclaw-target.tar.gz"
         with tarfile.open(archive, "w:gz") as package:
-            for path in ("first/ironclaw", "second/ironclaw"):
+            for path in ("first/zlo", "second/zlo"):
                 member = tarfile.TarInfo(path)
                 payload = b"duplicate"
                 member.size = len(payload)
                 package.addfile(member, io.BytesIO(payload))
 
         with self.assertRaisesRegex(SMOKE.SmokeFailure, "found 2"):
-            SMOKE.smoke_release_archive(archive, "ironclaw", self.runner)
+            SMOKE.smoke_release_archive(archive, "zlo", self.runner)
         self.assertEqual(self.runner.calls, [])
 
     @unittest.skipIf(os.name == "nt", "the fake executable uses a POSIX shebang")
@@ -305,7 +305,7 @@ import sys
 
 args = sys.argv[1:]
 if args == ["--version"]:
-    print("ironclaw 1.0.0")
+    print("zlo 1.0.0")
 elif args == ["--help"]:
     print("Commands: serve run extension profile")
 elif args == ["profile", "list", "--json"]:
@@ -330,11 +330,11 @@ else:
     raise SystemExit(9)
 """
         with tarfile.open(archive, "w:gz") as package:
-            member = tarfile.TarInfo("ironclaw-target/ironclaw")
+            member = tarfile.TarInfo("ironclaw-target/zlo")
             member.size = len(executable)
             package.addfile(member, io.BytesIO(executable))
 
-        evidence = SMOKE.smoke_release_archive(archive, "ironclaw")
+        evidence = SMOKE.smoke_release_archive(archive, "zlo")
 
         self.assertEqual(evidence, SMOKE.REQUIRED_EVIDENCE)
 

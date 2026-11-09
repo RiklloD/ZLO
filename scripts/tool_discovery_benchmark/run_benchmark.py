@@ -752,7 +752,7 @@ async def run_task_group(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/ironclaw")
+    parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/zlo")
     parser.add_argument("--arm", action="append", choices=ARMS)
     parser.add_argument("--tool-count", action="append", type=int)
     parser.add_argument("--task", action="append", choices=[task["id"] for task in TASKS])

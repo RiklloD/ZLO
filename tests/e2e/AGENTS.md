@@ -152,8 +152,8 @@ All fixtures are defined in `tests/e2e/conftest.py`. Running `pytest scenarios/`
 
 | Fixture | What it does |
 |---------|-------------|
-| `ironclaw_binary` | Legacy gateway binary. Checks `target/debug/ironclaw`; if absent, runs `cargo build -p ironclaw` (timeout 600s). |
-| `ironclaw_reborn_binary` | Reborn v2 binary. Builds `target/debug/ironclaw` with default features when stale/missing. Used by the v2 SPA and full-path fixture scenarios. |
+| `ironclaw_binary` | Legacy gateway binary. Checks `target/debug/zlo`; if absent, runs `cargo build -p ironclaw` (timeout 600s). |
+| `ironclaw_reborn_binary` | Reborn v2 binary. Builds `target/debug/zlo` with default features when stale/missing. Used by the v2 SPA and full-path fixture scenarios. |
 | `reborn_v2_server` | Starts `ironclaw serve` (v2 SPA at `/`, `local-dev` profile) against `mock_llm_server`; config written via `_write_config_toml` (selects the `openai` provider pointed at the mock). Waits for `/api/health`; SIGINT teardown. (Module-scoped, defined in `test_reborn_webui_v2_smoke.py`.) |
 | `reborn_v2_sso_server` | Starts the same standalone binary with the guarded debug-only Google endpoint seam pointed at `mock_oauth_idp`; queues Alice and Bob OIDC profiles for full SSO and scope-isolation coverage. (Module-scoped, defined in `reborn_webui_harness.py`.) |
 | `reborn_v2_browser` | Chromium instance for the v2 scenarios, independent of the legacy `browser` fixture (generous launch timeout + retry). |

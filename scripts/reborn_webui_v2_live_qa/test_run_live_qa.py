@@ -9179,7 +9179,7 @@ class RebornWebUiV2LiveQaRunnerTests(unittest.TestCase):
             prepare_body,
         )
         self.assertIn("--argjson features '[]'", prepare_body)
-        self.assertIn("cp target/debug/ironclaw target/debug/ironclaw-reborn", prepare_body)
+        self.assertIn("cp target/debug/zlo target/debug/ironclaw-reborn", prepare_body)
         self.assertIn(
             "ironclaw-reborn.tar.gz ironclaw ironclaw-reborn",
             prepare_body,
@@ -9197,7 +9197,7 @@ class RebornWebUiV2LiveQaRunnerTests(unittest.TestCase):
             reborn_e2e,
         )
         self.assertIn("--argjson features '[]'", reborn_e2e)
-        self.assertIn("cp target/debug/ironclaw target/debug/ironclaw-reborn", reborn_e2e)
+        self.assertIn("cp target/debug/zlo target/debug/ironclaw-reborn", reborn_e2e)
         # The packaging step pipes tar into gzip, so the archive name is the
         # redirect target rather than a tar argument. What must hold is that the
         # archive carries BOTH members: the canonical `ironclaw` and the

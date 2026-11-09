@@ -808,7 +808,7 @@ jobs:
         run: >-
           cargo build
           -p ironclaw
-          --bin ironclaw
+          --bin zlo
 
       - name: Package fallback Reborn WebUI v2 binary
         id: fallback
@@ -821,7 +821,7 @@ jobs:
           mkdir -p artifacts/prepared-reborn-webui-v2-binary
           # Temporary compatibility member for downstream QA consumers; remove
           # after every consumer invokes the canonical ironclaw binary.
-          cp target/debug/ironclaw target/debug/ironclaw-reborn
+          cp target/debug/zlo target/debug/ironclaw-reborn
           tar -C target/debug -czf artifacts/prepared-reborn-webui-v2-binary/ironclaw-reborn.tar.gz ironclaw ironclaw-reborn
           (
             cd artifacts/prepared-reborn-webui-v2-binary
@@ -1102,7 +1102,7 @@ jobs:
             ""
           mkdir -p target/debug
           tar -C target/debug -xzf .live-qa-binary/ironclaw-reborn.tar.gz
-          chmod 755 target/debug/ironclaw target/debug/ironclaw-reborn
+          chmod 755 target/debug/zlo target/debug/ironclaw-reborn
       - name: Materialize Reborn WebUI v2 live QA sensitive secrets to files
         if: steps.filter_reborn_webui_v2_google_cases.outputs.skip_shard != '1'
         shell: bash

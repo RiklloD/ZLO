@@ -1360,7 +1360,7 @@ class WorkflowContractSabotageTests(unittest.TestCase):
         for injected, flag in (
             ("--lib", "--lib"),
             ("--bins", "--bins"),
-            ("--bin ironclaw", "--bin"),
+            ("--bin zlo", "--bin"),
             ("--all-targets", "--all-targets"),
             ("--tests", "--tests"),
             ("--test smoke", "--test"),

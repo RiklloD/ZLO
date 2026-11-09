@@ -40,7 +40,7 @@ def main() -> int:
         source = path.read_text()
         if path.as_posix().endswith(".github/workflows/coverage.yml"):
             shipping_markers = (
-                "cargo build --ignore-rust-version -p ironclaw --bin ironclaw",
+                "cargo build --ignore-rust-version -p ironclaw --bin zlo",
                 "cargo llvm-cov clean --profraw-only",
                 'pytest "${reborn_e2e_tests[@]}"',
                 "profraw_count=$(find target/ -name '*.profraw'",

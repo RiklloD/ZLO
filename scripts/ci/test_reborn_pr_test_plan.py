@@ -3148,7 +3148,7 @@ class RebornPrTestPlanTests(unittest.TestCase):
         self.assertIn("max-parallel: 4", workflow)
         self.assertIn("reborn-webui-v2-sso-binary-${{", workflow)
         self.assertIn("reborn-webui-v2-binary-${{", workflow)
-        self.assertIn("touch target/debug/ironclaw", workflow)
+        self.assertIn("touch target/debug/zlo", workflow)
         self.assertIn("touch target/e2e-sso/debug/ironclaw", workflow)
         self.assertIn(
             'job_result_ok "webui-v2-test-lanes"',

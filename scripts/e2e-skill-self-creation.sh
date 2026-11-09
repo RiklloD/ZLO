@@ -81,7 +81,7 @@ PORT="${E2E_PORT:-3100}"
 MODEL="${E2E_MODEL:-deepseek/deepseek-v4-flash}"
 HOME_DIR="${E2E_HOME:-$HOME/.ironclaw-reborn-e2e-skills}"
 TOKEN="${E2E_TOKEN:-e2eskillstokene2eskillstokene2eskills}"
-BIN="${E2E_BIN:-$REPO_ROOT/target/debug/ironclaw}"
+BIN="${E2E_BIN:-$REPO_ROOT/target/debug/zlo}"
 API="http://127.0.0.1:${PORT}/api/webchat/v2"
 WORK="$(mktemp -d)"
 # Local-dev resolves `workspace_root` from the server's CURRENT DIRECTORY
@@ -113,7 +113,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [ ! -x "$BIN" ]; then
-  echo "no ironclaw binary at $BIN -- build it first: cargo build -p ironclaw --bin ironclaw"
+  echo "no ironclaw binary at $BIN -- build it first: cargo build -p ironclaw --bin zlo"
   exit 2
 fi
 if [ -z "${OPENROUTER_API_KEY:-}" ] && [ -z "${E2E_SKIP_PROVIDER_CHECK:-}" ]; then

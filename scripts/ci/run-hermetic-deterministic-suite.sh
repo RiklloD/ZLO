@@ -208,7 +208,7 @@ case "${stage}" in
       --test reborn_qa_recorded_behavior -- --nocapture
     run "${repo_root}/scripts/reborn-e2e-rust.sh" all
     run_frontend_tests
-    run cargo build -p ironclaw --bin ironclaw
+    run cargo build -p ironclaw --bin zlo
     run_python_e2e
     ;;
   command)

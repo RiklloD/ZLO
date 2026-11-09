@@ -24,33 +24,33 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
-            binary: ironclaw
+            binary: zlo
             musl: false
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-22.04
-            binary: ironclaw
+            binary: zlo
             musl: true
             cc_env: CC_x86_64_unknown_linux_musl=musl-gcc
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            binary: ironclaw
+            binary: zlo
             musl: false
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
-            binary: ironclaw
+            binary: zlo
             musl: true
             cc_env: CC_aarch64_unknown_linux_musl=musl-gcc
           - target: x86_64-apple-darwin
             runner: macos-15-intel
-            binary: ironclaw
+            binary: zlo
             musl: false
           - target: aarch64-apple-darwin
             runner: macos-15
-            binary: ironclaw
+            binary: zlo
             musl: false
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
-            binary: ironclaw.exe
+            binary: zlo.exe
             musl: false
     steps:
       - name: Enable Windows long paths
@@ -109,7 +109,7 @@ jobs:
         run: |
           cargo build --locked --profile dist \
             --package ironclaw \
-            --bin ironclaw \
+            --bin zlo \
             --target "$TARGET"
 
       # Rust's musl targets provide a self-contained static CRT. Do not set the

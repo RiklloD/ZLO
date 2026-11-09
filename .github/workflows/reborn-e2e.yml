@@ -270,9 +270,9 @@ jobs:
             {
               target_dir="${CARGO_TARGET_DIR:-target}"
               default_binary="${RUNNER_TEMP}/ironclaw-default"
-              cargo build -p ironclaw --bin ironclaw
+              cargo build -p ironclaw --bin zlo
               cp "${target_dir}/debug/ironclaw" "${default_binary}"
-              cargo build -p ironclaw --bin ironclaw \
+              cargo build -p ironclaw --bin zlo \
                 --features test-support
               mkdir -p "${target_dir}/e2e-sso/debug"
               cp "${target_dir}/debug/ironclaw" \
@@ -343,7 +343,7 @@ jobs:
 
           # Temporary compatibility member for downstream QA consumers; remove
           # after every consumer invokes the canonical ironclaw binary.
-          cp target/debug/ironclaw target/debug/ironclaw-reborn
+          cp target/debug/zlo target/debug/ironclaw-reborn
           tar -C target/debug -cf - ironclaw ironclaw-reborn \
             | gzip -1 > "${live_dir}/ironclaw-reborn.tar.gz" &
           live_package_pid=$!
@@ -455,10 +455,10 @@ jobs:
           )
           tar -C target/debug -xzf \
             artifacts/reborn-webui-v2-binary/ironclaw-reborn.tar.gz ironclaw
-          chmod +x target/debug/ironclaw
+          chmod +x target/debug/zlo
           # The archive preserves build time, while checkout uses current time.
           # Mark this same-commit binary fresh so E2E fixtures do not rebuild it.
-          touch target/debug/ironclaw
+          touch target/debug/zlo
           if [[ "${{ matrix.kind }}" == "browser" ]]; then
             mkdir -p target/e2e-sso/debug
             tar -C target/e2e-sso/debug -xzf \

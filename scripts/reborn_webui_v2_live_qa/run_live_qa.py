@@ -391,7 +391,7 @@ def _cargo_target_dir() -> Path:
 
 
 def _reborn_binary() -> Path:
-    return _cargo_target_dir() / "debug" / "ironclaw"
+    return _cargo_target_dir() / "debug" / "zlo"
 
 
 def build_reborn_binary() -> Path:
@@ -401,7 +401,7 @@ def build_reborn_binary() -> Path:
     command = ["cargo", "build", "-p", "ironclaw"]
     if features:
         command += ["--features", features]
-    command += ["--bin", "ironclaw"]
+    command += ["--bin", "zlo"]
     run(command, cwd=ROOT, env=build_env)
     binary = _reborn_binary()
     if not binary.exists():
