@@ -163,6 +163,17 @@ pub fn write_remote_section(
     write_edit_document(path, &doc)
 }
 
+/// Remove the `[remote]` table from `path`, keeping every other section.
+/// A file without one is left as it is.
+pub fn remove_remote_section(path: &Path) -> Result<(), RebornConfigFileUpdateError> {
+    let _lock = acquire_update_lock(path)?;
+    let mut doc = load_edit_document(path)?;
+    if doc.as_table_mut().remove("remote").is_none() {
+        return Ok(());
+    }
+    write_edit_document(path, &doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +285,15 @@ tailnet_url = "https://studio.tail9915dd.ts.net"
             .expect("load")
             .expect("present");
         assert_eq!(file.remote.and_then(|r| r.enabled), Some(false));
+
+        remove_remote_section(&path).expect("remove");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains("# operator note"), "{text}");
+        let file = RebornConfigFile::load(&path)
+            .expect("load")
+            .expect("present");
+        assert_eq!(file.remote, None);
+        assert_eq!(file.webui.as_ref().and_then(|w| w.listen_port), Some(3000));
+        remove_remote_section(&path).expect("removing nothing is fine");
     }
 }

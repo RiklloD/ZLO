@@ -67,12 +67,16 @@ fn left_out(relative: &Path) -> Option<&'static str> {
         "cache" | "caches" | "tmp" => return Some("caches"),
         _ => {}
     }
+    if depth == 1 && (name == ".env" || name.starts_with(".env.")) {
+        return Some("this computer's environment file (.env)");
+    }
     if name.starts_with("retired-") {
         return Some("retired service files");
     }
-    if name.ends_with(".pid")
-        || name.ends_with(".lock")
-        || name.ends_with(".sock")
+    // ZLO's own, at the top of the data folder. Deeper down a `.lock` is
+    // somebody's file (a workspace `Cargo.lock`) and travels.
+    if (depth == 1
+        && (name.ends_with(".pid") || name.ends_with(".lock") || name.ends_with(".sock")))
         || name == ".zlo-migration-pending"
     {
         return Some("pid and lock files");
@@ -398,6 +402,9 @@ mod tests {
             "local-dev/.reborn-local-dev-secrets-master-key",
             "serve.pid",
             ".zlo-migration.lock",
+            "config.toml.lock",
+            ".env",
+            ".env.bak-20261026",
             "old.zlobundle",
         ] {
             assert!(
@@ -410,6 +417,8 @@ mod tests {
             "providers.json",
             "local-dev/workspace/notes.md",
             "local-dev/system/skills/x/SKILL.md",
+            "workspace/app/Cargo.lock",
+            "workspace/app/.env",
             "SYSTEM.md",
         ] {
             assert!(left_out(Path::new(path)).is_none(), "{path} must be taken");

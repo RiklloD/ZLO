@@ -211,13 +211,33 @@ pub async fn carry_environment_records(
     };
     let mut copied = 0;
     if has_previous {
+        // Every column both databases have (version, content type and index
+        // fields included), so a kept record is the record it was.
+        let theirs = strings(
+            &conn,
+            "root_filesystem_entries",
+            "SELECT name FROM previous.pragma_table_info('root_filesystem_entries')",
+        )
+        .await?;
+        let columns = strings(
+            &conn,
+            "root_filesystem_entries",
+            "SELECT name FROM pragma_table_info('root_filesystem_entries')",
+        )
+        .await?
+        .into_iter()
+        .filter(|column| theirs.contains(column))
+        .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
         let [root, below] = environment_record_globs();
         copied = conn
             .execute(
-                "INSERT OR REPLACE INTO main.root_filesystem_entries \
-                 (path, contents, is_dir, created_at, updated_at) \
-                 SELECT path, contents, is_dir, created_at, updated_at \
-                 FROM previous.root_filesystem_entries WHERE path GLOB ?1 OR path GLOB ?2",
+                &format!(
+                    "INSERT OR REPLACE INTO main.root_filesystem_entries ({columns}) \
+                     SELECT {columns} FROM previous.root_filesystem_entries \
+                     WHERE path GLOB ?1 OR path GLOB ?2"
+                ),
                 [root.as_str(), below.as_str()],
             )
             .await
@@ -225,13 +245,13 @@ pub async fn carry_environment_records(
         // The ancestors (`/tenants`, `/tenants/<t>`, `/tenants/<t>/shared`)
         // as directories, where the imported data lacks them.
         conn.execute(
-            "INSERT OR IGNORE INTO main.root_filesystem_entries \
-             (path, contents, is_dir, created_at, updated_at) \
-             SELECT path, contents, is_dir, created_at, updated_at \
-             FROM previous.root_filesystem_entries WHERE is_dir = 1 AND ( \
-               path = '/tenants' \
-               OR (path GLOB '/tenants/*' AND path NOT GLOB '/tenants/*/*') \
-               OR (path GLOB '/tenants/*/shared' AND path NOT GLOB '/tenants/*/*/*'))",
+            &format!(
+                "INSERT OR IGNORE INTO main.root_filesystem_entries ({columns}) \
+                 SELECT {columns} FROM previous.root_filesystem_entries WHERE is_dir = 1 AND ( \
+                   path = '/tenants' \
+                   OR (path GLOB '/tenants/*' AND path NOT GLOB '/tenants/*/*') \
+                   OR (path GLOB '/tenants/*/shared' AND path NOT GLOB '/tenants/*/*/*'))"
+            ),
             (),
         )
         .await

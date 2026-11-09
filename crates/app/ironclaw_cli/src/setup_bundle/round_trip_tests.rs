@@ -94,7 +94,19 @@ async fn seed_source(source: &Computer, environment_id: &str) {
     .await;
     write(
         &source.data.join("config.toml"),
-        &format!("[update]\nmethod = \"source\"\nrepo = \"{home}/ironclaw\"\n"),
+        &format!(
+            "[update]\nmethod = \"source\"\nrepo = \"{home}/ironclaw\"\n\n[remote]\nenabled = true\n\
+             tailnet_url = \"https://{environment_id}.example.ts.net\"\n\
+             owner_logins = [\"ana@example.com\"]\n"
+        ),
+    );
+    write(
+        &source.data.join(".env"),
+        &format!("COMPUTER={environment_id}\n"),
+    );
+    write(
+        &root.join("workspace/app/Cargo.lock"),
+        "# a project's lock file",
     );
     write(&source.data.join("providers.json"), "{\"providers\":[]}");
     write(&root.join("workspace/notes.md"), "notes");
@@ -196,6 +208,31 @@ async fn a_setup_moves_to_a_fresh_computer_and_its_provider_key_still_decrypts()
     );
     assert!(server.data.join("providers.json").is_file());
     assert!(root.join("workspace/notes.md").is_file());
+    assert!(
+        root.join("workspace/app/Cargo.lock").is_file(),
+        "a project's lock file is the user's file, not ZLO's"
+    );
+    // The Mac's tailnet address is the Mac's: it does not become the server's.
+    assert!(!config.contains("[remote]"), "{config}");
+    assert!(!config.contains("mac-environment"), "{config}");
+    assert!(!server.data.join("config.toml.lock").exists());
+    // The archive carries no modes; what lands is the owner's alone.
+    #[cfg(unix)]
+    for private in ["config.toml", "providers.json"] {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(server.data.join(private))
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{private}");
+    }
+    // The server can start: it has a WebUI token of its own, not the Mac's.
+    let token = std::fs::read_to_string(server.data.join("webui-token")).expect("token");
+    assert_ne!(token.trim(), "machine-local");
+    assert!(
+        crate::webui_token::webui_token_file_is_valid(&server.data).expect("token check"),
+        "service start accepts the token"
+    );
     assert!(root.join("system/skills/demo/SKILL.md").is_file());
     let new_folder = format!("{}/src/app", server.home.display());
     assert_eq!(report.missing_folders, std::slice::from_ref(&new_folder));
@@ -211,7 +248,7 @@ async fn a_setup_moves_to_a_fresh_computer_and_its_provider_key_still_decrypts()
     .await;
     assert!(environment.is_empty(), "{environment:?}");
     for left_out in [
-        "webui-token",
+        ".env",
         "logs",
         "bin",
         "update",
@@ -280,6 +317,10 @@ async fn wrong_passphrase_tamper_and_newer_format_write_nothing() {
     assert_eq!(listing(&server.home), before);
 }
 
+const SERVER_CONFIG: &str = "# the server's own config\n[remote]\nenabled = true\n\
+     tailnet_url = \"https://server.example.ts.net\"\nowner_logins = [\"ana@example.com\"]\n";
+const SERVER_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 #[tokio::test]
 async fn existing_setup_needs_replace_and_is_moved_aside_keeping_this_computers_identity() {
     let mac = computer("Users-ana");
@@ -290,10 +331,8 @@ async fn existing_setup_needs_replace_and_is_moved_aside_keeping_this_computers_
 
     let server = computer("home-ana");
     seed_source(&server, "server-environment").await;
-    write(
-        &server.data.join("config.toml"),
-        "# the server's own config\n",
-    );
+    write(&server.data.join("config.toml"), SERVER_CONFIG);
+    write(&server.data.join("webui-token"), SERVER_TOKEN);
 
     let error = import(&server, &archive, PASS, false)
         .await
@@ -301,9 +340,19 @@ async fn existing_setup_needs_replace_and_is_moved_aside_keeping_this_computers_
     assert!(error.to_string().contains("--replace"), "{error}");
     assert_eq!(
         std::fs::read_to_string(server.data.join("config.toml")).expect("config"),
-        "# the server's own config\n"
+        SERVER_CONFIG
     );
 
+    execute_sql_for_test(
+        &ironclaw_composition::setup_transfer::standalone_database_file(
+            &server.data.join("local-dev"),
+        ),
+        &[
+            "UPDATE root_filesystem_entries SET content_type = 'application/json', version = 7 \
+           WHERE path LIKE '%reborn-environment/environment.json'",
+        ],
+    )
+    .await;
     let report = import(&server, &archive, PASS, true)
         .await
         .expect("replace");
@@ -317,7 +366,22 @@ async fn existing_setup_needs_replace_and_is_moved_aside_keeping_this_computers_
     );
     assert_eq!(
         std::fs::read_to_string(aside.join("config.toml")).expect("old config kept"),
-        "# the server's own config\n"
+        SERVER_CONFIG
+    );
+    // The Mac's settings arrive, but the server keeps its own tailnet
+    // address, WebUI token and environment file.
+    let config = std::fs::read_to_string(server.data.join("config.toml")).expect("config");
+    assert!(config.contains("[update]"), "{config}");
+    assert!(config.contains("https://server.example.ts.net"), "{config}");
+    assert!(!config.contains("mac-environment"), "{config}");
+    assert_eq!(
+        std::fs::read_to_string(server.data.join("webui-token")).expect("token"),
+        SERVER_TOKEN
+    );
+    assert!(!aside.join("webui-token").exists());
+    assert_eq!(
+        std::fs::read_to_string(server.data.join(".env")).expect("env"),
+        "COMPUTER=server-environment\n"
     );
     assert!(aside.join("local-dev/reborn-local-dev.db").is_file());
     // The installed binary stays where it runs from.
@@ -334,6 +398,35 @@ async fn existing_setup_needs_replace_and_is_moved_aside_keeping_this_computers_
     )
     .await;
     assert_eq!(identity, ["server-environment"]);
+    // The whole record came across, not only its bytes.
+    let kept = query_strings_for_test(
+        &ironclaw_composition::setup_transfer::standalone_database_file(
+            &server.data.join("local-dev"),
+        ),
+        "SELECT content_type || ' v' || version FROM root_filesystem_entries \
+         WHERE path LIKE '%reborn-environment/environment.json'",
+    )
+    .await;
+    assert_eq!(kept, ["application/json v7"]);
+}
+
+#[tokio::test]
+async fn an_archive_cannot_replace_what_this_computer_keeps() {
+    for name in ["webui-token", ".env", "bin"] {
+        let server = computer("home-ana");
+        let archive = crafted(&[(TAG_FILE, name, b"x")], Vec::new());
+        let error = import(&server, &archive, PASS, false)
+            .await
+            .expect_err("refused");
+        assert!(
+            matches!(
+                error.downcast_ref::<BundleError>(),
+                Some(BundleError::UnsafeEntry { .. })
+            ),
+            "{name}: {error}"
+        );
+        assert!(!server.data.exists(), "{name}: nothing imported");
+    }
 }
 
 /// Hand-build an archive: `records` as (tag, name, bytes), then a manifest.

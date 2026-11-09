@@ -72,7 +72,7 @@ pub use profile::{
 };
 pub use remote::{
     DEFAULT_REMOTE_HTTPS_PORT, DEFAULT_REMOTE_IDENTITY_PORT, RemoteSection, RemoteSettings,
-    write_remote_section,
+    remove_remote_section, write_remote_section,
 };
 pub use retired_sections::{RetiredSectionError, RetiredSections, retired_config_key_guidance};
 pub use secrets_guard::{InlineSecretError, reject_inline_secret};

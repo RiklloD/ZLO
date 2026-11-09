@@ -66,9 +66,14 @@ pairing from your tailnet stays off unless you pass `--trust-local-users`.
 `export` is safe while the backend runs: the database is copied with SQLite's own
 consistent snapshot. The file includes the secrets master key, so it is encrypted
 (AES-256-GCM, key from your passphrase with PBKDF2) and nothing in it is readable
-without the passphrase. Logs, the WebUI token, update state and this computer's
-identity and paired devices stay behind. `import` moves paths under the old home
-folder to the new one and lists the project folders to clone on the new computer.
+without the passphrase. Logs, the WebUI token, the `.env` file, update state and
+this computer's identity and paired devices stay behind. `import` moves paths under
+the old home folder to the new one and lists the project folders to clone on the
+new computer. The receiving computer keeps what is its own: its WebUI token (one is
+made if it has none, so `zlo service start` works right away), its `.env`, its
+installed binary, and its `[remote]` section — the source's tailnet address never
+becomes the new computer's, so run `zlo remote enable` there if it had none.
+Imported files are readable by their owner only.
 
 ---
 

@@ -26,7 +26,12 @@ use super::{
 
 const DATABASE_FILE: &str = "reborn-local-dev.db";
 /// Entries a fresh install may already have that are not "data".
-const NOT_DATA: &[&str] = &["bin", "logs", ".DS_Store"];
+const NOT_DATA: &[&str] = &["bin", "logs", ".DS_Store", "webui-token", ".env"];
+/// This computer's own files, which an import never moves aside or
+/// replaces: the installed binary, the WebUI master token (clients and the
+/// service already use it) and its environment file.
+const KEPT_IN_PLACE: &[&str] = &["bin", "webui-token", ".env"];
+const CONFIG_FILE: &str = "config.toml";
 /// Top-level text files whose absolute paths are rewritten.
 const MAX_REWRITTEN_TEXT_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -158,18 +163,25 @@ fn unpack(mut reader: BundleReader<impl Read>, staging: &Path) -> Result<Unpacke
                     master_keys.push((path, SecretString::from(text)));
                     digest
                 } else {
+                    if path.components().count() == 1
+                        && KEPT_IN_PLACE.iter().any(|kept| path.as_os_str() == *kept)
+                    {
+                        return Err(BundleError::UnsafeEntry {
+                            name,
+                            reason: "this computer keeps its own",
+                        });
+                    }
                     let dest = staging.join(&path);
                     if let Some(parent) = dest.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        create_private_dirs(parent)?;
                     }
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&dest)
-                        .map_err(|_| BundleError::UnsafeEntry {
+                    let mut file = private_file_options().open(&dest).map_err(|error| {
+                        tracing::debug!(%error, entry = %name, "setup file entry not created");
+                        BundleError::UnsafeEntry {
                             name: name.clone(),
                             reason: "duplicate or clashing entry",
-                        })?;
+                        }
+                    })?;
                     let digest = copy_out(&mut reader, size, &mut file)?;
                     file.sync_all()?;
                     digest
@@ -312,7 +324,7 @@ fn move_into_place(staging: &Path, data_folder: &Path, aside: Option<&Path>) -> 
         if let Some(aside) = aside {
             create_private_dir(aside)?;
             for name in top_level(data_folder)? {
-                if name == "bin" {
+                if KEPT_IN_PLACE.iter().any(|kept| name == *kept) {
                     continue;
                 }
                 std::fs::rename(data_folder.join(&name), aside.join(&name)).with_context(|| {
@@ -346,7 +358,8 @@ fn move_into_place(staging: &Path, data_folder: &Path, aside: Option<&Path>) -> 
     result
 }
 
-fn create_private_dir(path: &Path) -> anyhow::Result<()> {
+/// Folders an import makes are the owner's alone (0700).
+fn create_private_dirs(path: &Path) -> std::io::Result<()> {
     if path.is_dir() {
         return Ok(());
     }
@@ -357,9 +370,52 @@ fn create_private_dir(path: &Path) -> anyhow::Result<()> {
         use std::os::unix::fs::DirBuilderExt as _;
         builder.mode(0o700);
     }
-    builder
-        .create(path)
-        .with_context(|| format!("could not create {}", path.display()))
+    builder.create(path)
+}
+
+fn create_private_dir(path: &Path) -> anyhow::Result<()> {
+    create_private_dirs(path).with_context(|| format!("could not create {}", path.display()))
+}
+
+/// A new file only its owner can read (0600): the archive does not carry
+/// modes, and the data folder holds settings and provider definitions the
+/// backend itself keeps private.
+fn private_file_options() -> std::fs::OpenOptions {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options
+}
+
+/// `[remote]` describes one computer's own tailnet address, owner and
+/// listener port, so the source's never applies here: the imported
+/// `config.toml` gets this computer's previous section, or none.
+fn keep_own_remote_section(staging: &Path, previous_config: Option<&Path>) -> anyhow::Result<()> {
+    let config = staging.join(CONFIG_FILE);
+    if !config.is_file() {
+        return Ok(());
+    }
+    let previous = match previous_config.filter(|path| path.is_file()) {
+        Some(path) => ironclaw_config::RebornConfigFile::load(path)
+            .with_context(|| format!("could not read {}", path.display()))?
+            .and_then(|file| file.remote),
+        None => None,
+    };
+    match previous {
+        Some(section) => ironclaw_config::write_remote_section(&config, &section),
+        None => ironclaw_config::remove_remote_section(&config),
+    }
+    .context("could not set this computer's [remote] section in the imported config.toml")?;
+    // The edit's lock file is not part of the setup.
+    match std::fs::remove_file(staging.join(format!("{CONFIG_FILE}.lock"))) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("could not remove the staging lock file"),
+    }
 }
 
 /// Import the archive read from `input` into `request.data_folder`. The
@@ -437,6 +493,11 @@ pub(crate) async fn import_setup(
     if !rewrite.is_identity() {
         paths_rewritten += rewrite_text_files(staging.path(), &rewrite)?;
     }
+    let previous_config = data_folder.join(CONFIG_FILE);
+    keep_own_remote_section(
+        staging.path(),
+        occupied.then_some(previous_config.as_path()),
+    )?;
 
     let aside = if occupied {
         Some(aside_path(data_folder, request.now)?)
@@ -444,6 +505,10 @@ pub(crate) async fn import_setup(
         None
     };
     move_into_place(staging.path(), data_folder, aside.as_deref())?;
+    // `zlo service start` and `zlo serve` refuse without a WebUI token, and
+    // the source's is never carried: keep this computer's, or make one.
+    crate::webui_token::ensure_webui_token_file(data_folder)
+        .context("the setup is in place, but this computer's WebUI token could not be made")?;
 
     let mut missing_folders: Vec<String> = databases
         .iter()
