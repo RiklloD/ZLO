@@ -203,6 +203,26 @@ pub(crate) fn try_lock(paths: &UpdatePaths) -> anyhow::Result<Option<UpdateLock>
     }
 }
 
+/// How long a starting job waits for the lock: a status probe
+/// ([`is_locked`]) holds it for an instant, a running job for minutes.
+const JOB_LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// The lock for a job that is starting: [`try_lock`], retried briefly so a
+/// status probe that happens to hold it at that instant does not look like
+/// another running job.
+pub(crate) fn lock_for_job(paths: &UpdatePaths) -> anyhow::Result<Option<UpdateLock>> {
+    let deadline = std::time::Instant::now() + JOB_LOCK_WAIT;
+    loop {
+        if let Some(lock) = try_lock(paths)? {
+            return Ok(Some(lock));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Whether a job holds the lock right now (probes and releases at once).
 /// Creates nothing: no lock file means no job ever ran here.
 pub(crate) fn is_locked(paths: &UpdatePaths) -> anyhow::Result<bool> {

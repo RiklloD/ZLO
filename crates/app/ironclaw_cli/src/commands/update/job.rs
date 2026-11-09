@@ -117,7 +117,7 @@ pub(crate) fn run_job(
     host: &dyn UpdateHost,
     progress: &mut dyn FnMut(&str),
 ) -> anyhow::Result<Result<RunRecord, JobRefused>> {
-    let Some(_lock) = records::try_lock(input.paths)? else {
+    let Some(_lock) = records::lock_for_job(input.paths)? else {
         return Ok(Err(JobRefused::AlreadyRunning));
     };
     let mut log = records::fresh_log(input.paths)?;
@@ -593,6 +593,37 @@ mod tests {
                 .expect("tail")
                 .contains("exit status: 101")
         );
+    }
+
+    #[test]
+    fn a_status_probe_holding_the_lock_does_not_refuse_a_starting_job() {
+        let r = repos();
+        let head = super::super::git::tests::sh(&r.checkout, &["rev-parse", "HEAD"]);
+        let home = tempfile::tempdir().expect("home");
+        let paths = UpdatePaths::new(home.path());
+        let probe = records::try_lock(&paths).expect("lock").expect("free");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(probe);
+        });
+        let settings = SourceUpdateSettings {
+            repo: r.checkout.clone(),
+            branch: None,
+        };
+        let record = run_job(
+            JobInput {
+                paths: &paths,
+                settings: &settings,
+                running_commit: Some(&head),
+                install: binary(),
+            },
+            &RecordingHost::default(),
+            &mut |_| {},
+        )
+        .expect("runs")
+        .expect("the job waited out the probe");
+        release.join().expect("probe thread");
+        assert_eq!(record.state, UpdateRunState::Succeeded);
     }
 
     #[test]
