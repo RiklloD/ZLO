@@ -55,7 +55,7 @@ const MODELS: [&str; 4] = [
     "claude-opus-5-5",
     "claude-sonnet-5-5",
     "claude-haiku-5-5",
-    "claude-fable-5-1",
+    "claude-fable-5-2",
 ];
 
 /// How long Stop waits after SIGTERM before SIGKILL.
