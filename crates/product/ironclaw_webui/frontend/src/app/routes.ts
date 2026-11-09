@@ -2,10 +2,7 @@ export const defaultRoute = "/chat";
 
 // `hidden: true` keeps the route registered (direct URL access and
 // breadcrumb/title resolution still work) but suppresses it from
-// sidebar navigation. Routes whose page-level API libs are entirely
-// TODO stubs against missing v2 endpoints are hidden here until the
-// matching `/api/webchat/v2/*` contracts land. Remove the flag once
-// the page's `lib/*-api.ts` calls real endpoints.
+// sidebar navigation.
 export const primaryRoutes = [
   { id: "chat", path: "/chat", labelKey: "nav.chat" },
   { id: "workspace", path: "/workspace", labelKey: "nav.workspace" },
@@ -16,7 +13,6 @@ export const primaryRoutes = [
   // the real v2 `/api/webchat/v2/projects` endpoints (list/create/read/update/
   // delete + membership ACL) and the project-filtered thread list.
   { id: "projects", path: "/projects", labelKey: "nav.projects", hidden: true },
-  { id: "jobs", path: "/jobs", labelKey: "nav.jobs", hidden: true },
   { id: "automations", path: "/automations", labelKey: "nav.automations" },
   { id: "extensions", path: "/extensions", labelKey: "nav.extensions" },
   { id: "logs", path: "/logs", labelKey: "nav.logs", hidden: true },

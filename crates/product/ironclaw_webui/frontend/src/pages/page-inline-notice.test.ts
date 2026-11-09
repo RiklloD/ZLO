@@ -7,7 +7,6 @@ const ALLOWED_NOTICE_TONES = new Set(["info", "success", "warning", "danger"]);
 const ALLOWED_NOTICE_ROLES = new Set(["alert", "status"]);
 
 const PAGE_FILES = [
-  "./jobs/jobs-page.tsx",
   "./projects/projects-page.tsx",
   "./workspace/workspace-page.tsx",
   "./extensions/extensions-page.tsx",
