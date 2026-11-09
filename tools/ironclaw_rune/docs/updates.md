@@ -4,6 +4,7 @@ ZLO is built from source, so updating a machine means pulling this repository an
 
 - [This Mac](#this-mac)
 - [Turn on self-update for a machine](#turn-on-self-update-for-a-machine)
+- [The everyday loop](#the-everyday-loop)
 - [Update all machines from ZLO](#update-all-machines-from-zlo)
 - [From a terminal](#from-a-terminal)
 - [What an update refuses to do](#what-an-update-refuses-to-do)
@@ -21,7 +22,20 @@ or, from your checkout, `git pull && sh tools/ironclaw_rune/bundle.sh`. Both reb
 
 ## Turn on self-update for a machine
 
-Each machine updates from its own source checkout. Tell it where that checkout is in `~/.zlo/config.toml`:
+Each machine updates from its own source checkout. A machine that built ZLO from source already knows where that checkout is, so turning updates on takes one click or one command:
+
+- **In ZLO:** Settings → Computers. A computer with updates off shows **Updates are off** and a **Turn on** button.
+- **In a terminal on that machine:** `zlo update enable`.
+
+Both take effect at once; nothing restarts. `zlo update disable` turns updates off again.
+
+If the machine doesn't know its checkout (ZLO was installed from a prebuilt binary, or the checkout moved), **Turn on** isn't offered. Clone the source there and name it:
+
+```sh
+zlo update enable --repo /home/you/src/zlo     # add --branch <name> to follow another branch
+```
+
+This writes the `[update]` section of `~/.zlo/config.toml`, which you can also edit by hand:
 
 ```toml
 [update]
@@ -30,16 +44,32 @@ repo = "/home/you/src/zlo"     # absolute path to the checkout
 # branch = "main"              # optional; defaults to the branch checked out
 ```
 
-Restart the backend afterwards: `zlo service restart`, or quit and reopen ZLO on a Mac that runs it.
+The checkout always comes from the machine itself. Nothing a client sends can change the command, path or branch an update uses: **Turn on** carries no path, and works only from the checkout the backend was built from.
 
-The settings come only from this file. Nothing a client sends can change the command, path or branch an update uses.
+## The everyday loop
+
+1. Change the code and push it to the branch the machines follow.
+2. Within a couple of minutes ZLO's status bar shows **Update available**. Each backend checks its own source every two minutes, and ZLO reads the answer once a minute.
+3. Click it. Every computer that is behind updates, This Mac last.
+
+A machine only rebuilds when the new commits change something it runs:
+
+| The commits touch | ZLO on a Mac | A backend on its own |
+| --- | --- | --- |
+| the backend (`crates/`) | rebuilds | rebuilds |
+| the desktop app (`tools/ironclaw_rune/`) | rebuilds | nothing to do, keeps running |
+| only docs, guidance files, CI or tests | nothing to do | nothing to do |
+
+So an app-only change never restarts a remote backend or interrupts its chats, and its row stays **up to date**.
+
+The status bar must be visible for the prompt (it is by default); Settings → Computers always shows each computer's state.
 
 ## Update all machines from ZLO
 
 **Settings → Computers → Updates**:
 
-- **Check for updates** asks every saved computer how far behind it is. Each row shows **up to date**, **N commits behind**, or **not set up** when that machine has `method = "none"`. When any machine isn't set up, the card shows the lines to add.
-- **Update all machines** updates the other computers in parallel, then This Mac last, because its update reinstalls and reopens ZLO. Each row shows **updating…** with the current step, then **updated** or **failed:** with the reason.
+- **Check for updates** asks every saved computer to fetch right now, instead of waiting for its next check. Each row shows **up to date**, **N commits behind**, or **Updates are off**.
+- **Update all machines** updates the other computers in parallel, then This Mac last, because its update reinstalls and reopens ZLO. Each row shows **updating…** with the current step, then **updated** or **failed:** with the reason. The **Update available** prompt in the status bar does the same thing.
 
 While a machine rebuilds, its backend restarts and drops off for a while. ZLO keeps checking every few seconds, finds it again, and reads the result (it waits up to 45 minutes for a slow build). The progress survives closing the window, but not quitting ZLO.
 
@@ -50,6 +80,7 @@ A computer reached only over SSH can be updated only while it's the computer in 
 On any machine:
 
 ```sh
+zlo update enable      # turn self-update on (see above)
 zlo update --check     # how far behind, with the newest commit subjects
 zlo update             # pull and rebuild in the foreground
 zlo update --json      # machine-readable output
@@ -79,7 +110,9 @@ Untracked files don't block an update. Commit, stash or move your local work, th
 
 ## Troubleshooting
 
-**"not set up"**: add the `[update]` section above on that machine and restart its backend.
+**"Updates are off"**: click **Turn on**, or run `zlo update enable` on that machine (with `--repo` when it doesn't know its checkout).
+
+**No "Update available" although you pushed**: the machine follows the branch its checkout is on, so check that you pushed to that branch. A checkout with local changes or unpushed commits can't be checked in the background; **Check for updates** shows the reason.
 
 **"failed: … local changes"**: someone edited the checkout on that machine. Run `git status` there.
 

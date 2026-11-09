@@ -180,7 +180,7 @@ fn this_mac(s: &State, k: &Kit) -> El {
                 &st,
                 actions,
             ))
-            .children(update_line(s, THIS_MAC)),
+            .children(update_line(s, k, THIS_MAC)),
         setting_row(
             p,
             "Run IronClaw on this Mac",
@@ -300,7 +300,7 @@ fn saved_row(s: &State, k: &Kit, env: &SavedEnvironment) -> El {
         &st,
         actions,
     ));
-    out = out.children(update_line(s, &id));
+    out = out.children(update_line(s, k, &id));
     if s.remote.page.confirm_remove.as_deref() == Some(id.as_str()) {
         out = out.child(
             muted(p, "Removes it and its token from this Mac only. Its conversations stay on that computer.")
@@ -706,7 +706,7 @@ fn updates_card(s: &State, k: &Kit) -> El {
     let note = if u.updating {
         "Updating… This Mac goes last; ZLO reopens when it is done."
     } else {
-        "Fast-forwards each computer's checkout, rebuilds and restarts IronClaw there."
+        "ZLO checks by itself and says so in the status bar. An update fast-forwards each computer's checkout and rebuilds only what changed there."
     };
     let mut buttons = vec![press_button(
         k,
@@ -736,27 +736,44 @@ fn updates_card(s: &State, k: &Kit) -> El {
             .child(muted(p, note).grow(1.))
             .child(row().gap(6.).center_y().children(buttons)),
     );
-    if u.rows.values().any(|r| *r == RowState::NotSetUp) {
+    if u.rows
+        .values()
+        .any(|r| *r == RowState::NotSetUp { can_enable: false })
+    {
         card = card.child(styled(updates::ENABLE_HINT, MONO_XS, p.text_muted).wrap());
     }
     rows_card(p, [card])
 }
 
 /// One computer's update state, under its row.
-fn update_line(s: &State, key: &str) -> Option<El> {
+fn update_line(s: &State, k: &Kit, key: &str) -> Option<El> {
     let p = &s.palette;
     let state = s.remote.updates.rows.get(key)?;
     let ink = match state {
         RowState::UpToDate | RowState::Updated(_) => p.success,
         RowState::Behind(_) => p.warning,
         RowState::Failed(_) => p.danger,
-        RowState::Checking | RowState::NotSetUp | RowState::Updating(_) => p.text_muted,
+        RowState::Checking | RowState::NotSetUp { .. } | RowState::Updating(_) => p.text_muted,
     };
-    Some(
-        styled(state.label(), xs(), ink)
-            .wrap()
-            .px(16.)
-            .pb(12.)
-            .key(format!("update-{key}")),
-    )
+    let mut line = row()
+        .w_full()
+        .gap(10.)
+        .center_y()
+        .px(16.)
+        .pb(12.)
+        .key(format!("update-{key}"))
+        .child(styled(state.label(), xs(), ink).wrap().grow(1.).min_w(0.));
+    if *state == (RowState::NotSetUp { can_enable: true }) {
+        let key = key.to_string();
+        line = line.child(press_button(
+            k,
+            &format!("update-on-{key}"),
+            "Turn on",
+            Btn::Secondary,
+            None,
+            false,
+            move |s| updates::enable(s, &key),
+        ));
+    }
+    Some(line)
 }

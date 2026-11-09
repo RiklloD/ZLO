@@ -41,7 +41,9 @@ pub(crate) enum GitRefusal {
         checked_out: String,
         configured: String,
     },
-    #[error("Branch `{0}` has no usable upstream remote (set one with `git branch -u`).")]
+    #[error(
+        "Branch `{0}` has no remote to update from (add one with `git remote add origin <url>`, or set the branch's with `git branch -u`)."
+    )]
     NoUpstream(String),
     #[error("The checkout has local changes ({0}). Commit or stash them, then update again.")]
     Dirty(String),
@@ -74,6 +76,42 @@ impl Tracking {
     }
 }
 
+/// What an installation is built from, for telling whether new commits
+/// change it at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// ZLO.app: the desktop app and the backend inside it.
+    App,
+    /// A plain `zlo` binary: the backend alone.
+    Backend,
+}
+
+/// Whether any of `paths` (repository-relative) is part of what `scope`
+/// builds. Documentation, agent guidance, CI files and the test trees never
+/// are; the desktop app's sources are not part of a plain backend. Anything
+/// not named here counts, so an unknown path means "rebuild".
+pub(crate) fn rebuild_needed(scope: Scope, paths: &[String]) -> bool {
+    const NEVER_BUILT: [&str; 6] = [
+        "docs/",
+        "openwiki/",
+        ".github/",
+        ".claude/",
+        "tests/",
+        "archive/",
+    ];
+    const GUIDANCE: [&str; 4] = ["README.md", "AGENTS.md", "CLAUDE.md", "CONTRACT.md"];
+    paths.iter().any(|path| {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        if NEVER_BUILT.iter().any(|dir| path.starts_with(dir)) || GUIDANCE.contains(&name) {
+            return false;
+        }
+        match scope {
+            Scope::App => !path.starts_with("tools/ironclaw_rune/docs/"),
+            Scope::Backend => !path.starts_with("tools/"),
+        }
+    })
+}
+
 /// What a check found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CheckOutcome {
@@ -87,6 +125,9 @@ pub(crate) struct CheckOutcome {
     pub behind: u32,
     /// Their subjects, newest first, bounded.
     pub subjects: Vec<String>,
+    /// New upstream commits that change nothing this installation is built
+    /// from (then `behind` is 0: there is nothing to update here).
+    pub not_for_this_install: u32,
 }
 
 /// One checkout, driven through the `git` on `PATH`.
@@ -137,6 +178,13 @@ impl Checkout {
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "origin".to_string()); // silent-ok: an unset branch remote means git's own default, `origin`.
         if !is_safe_branch_name(&remote) {
+            return Err(GitRefusal::NoUpstream(checked_out));
+        }
+        // A checkout with nowhere to fetch from can never update.
+        if self
+            .git(&["remote", "get-url", &remote], LOCAL_TIMEOUT)
+            .is_err()
+        {
             return Err(GitRefusal::NoUpstream(checked_out));
         }
         Ok(Tracking {
@@ -227,12 +275,52 @@ impl Checkout {
         Ok(out.lines().map(bound_subject).collect())
     }
 
+    /// The paths that differ between two commits, or `None` when that cannot
+    /// be told for sure (a commit this checkout does not have, or a list too
+    /// long to read whole).
+    fn changed_paths(&self, base: &str, head: &str) -> Result<Option<Vec<String>>, GitRefusal> {
+        if !self.knows(base) || !self.knows(head) {
+            return Ok(None);
+        }
+        let out = self
+            .git(
+                &["diff", "--name-only", "--no-renames", "-z", base, head],
+                LOCAL_TIMEOUT,
+            )
+            .map_err(|e| e.refusal("diff"))?;
+        if out.len() >= MAX_OUTPUT_BYTES {
+            return Ok(None);
+        }
+        Ok(Some(
+            out.split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect(),
+        ))
+    }
+
+    /// Whether going from `base` to `head` changes what `scope` builds.
+    /// Unknown means yes.
+    pub(crate) fn changes_install(
+        &self,
+        scope: Scope,
+        base: &str,
+        head: &str,
+    ) -> Result<bool, GitRefusal> {
+        Ok(match self.changed_paths(base, head)? {
+            Some(paths) => rebuild_needed(scope, &paths),
+            None => true,
+        })
+    }
+
     /// Fetch and compare. `running` is the commit the running build came
-    /// from, when known; else the checkout's HEAD is the base.
+    /// from, when known; else the checkout's HEAD is the base. New commits
+    /// that change nothing `scope` builds are not an update for it.
     pub(crate) fn check(
         &self,
         configured: Option<&str>,
         running: Option<&str>,
+        scope: Scope,
     ) -> Result<CheckOutcome, GitRefusal> {
         let tracking = self.tracking(configured)?;
         let upstream = self.fetch(&tracking)?;
@@ -242,9 +330,21 @@ impl Checkout {
             _ => head.clone(),
         };
         let range = format!("{base}..{upstream}");
+        let behind = self.count(&range)?;
+        if behind > 0 && !self.changes_install(scope, &base, &upstream)? {
+            return Ok(CheckOutcome {
+                behind: 0,
+                subjects: Vec::new(),
+                not_for_this_install: behind,
+                tracking,
+                head,
+                upstream,
+            });
+        }
         Ok(CheckOutcome {
-            behind: self.count(&range)?,
+            behind,
             subjects: self.subjects(&range)?,
+            not_for_this_install: 0,
             tracking,
             head,
             upstream,
@@ -496,14 +596,18 @@ pub(crate) mod tests {
         let r = repos();
         let checkout = Checkout::open(&r.checkout).expect("opens");
         let head = checkout.head().expect("head");
-        let before = checkout.check(None, Some(&head)).expect("check");
+        let before = checkout
+            .check(None, Some(&head), Scope::App)
+            .expect("check");
         assert_eq!(before.behind, 0);
         assert_eq!(before.upstream, head);
         assert_eq!(before.tracking.branch, "main");
         assert_eq!(before.tracking.remote, "origin");
 
         let tip = push_upstream(&r, &["Second", "Third"]);
-        let after = checkout.check(None, Some(&head)).expect("check");
+        let after = checkout
+            .check(None, Some(&head), Scope::App)
+            .expect("check");
         assert_eq!(after.behind, 2);
         assert_eq!(after.upstream, tip);
         assert_eq!(after.subjects, vec!["Third", "Second"]);
@@ -521,11 +625,108 @@ pub(crate) mod tests {
         checkout
             .fast_forward(&tracking)
             .expect("pulled, not rebuilt");
-        let outcome = checkout.check(None, Some(&built)).expect("check");
+        let outcome = checkout
+            .check(None, Some(&built), Scope::App)
+            .expect("check");
         assert_eq!(outcome.behind, 1, "the running build is still behind");
         let unknown = "f".repeat(40);
-        let outcome = checkout.check(None, Some(&unknown)).expect("check");
+        let outcome = checkout
+            .check(None, Some(&unknown), Scope::App)
+            .expect("check");
         assert_eq!(outcome.behind, 0, "an unknown build falls back to HEAD");
+    }
+
+    #[test]
+    fn only_paths_an_installation_is_built_from_need_a_rebuild() {
+        let paths = |list: &[&str]| list.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        for (scope, changed, needed) in [
+            (
+                Scope::Backend,
+                &["crates/app/ironclaw_cli/src/main.rs"][..],
+                true,
+            ),
+            (
+                Scope::Backend,
+                &["tools/ironclaw_rune/app/src/main.rs"],
+                false,
+            ),
+            (Scope::App, &["tools/ironclaw_rune/app/src/main.rs"], true),
+            (Scope::App, &["crates/app/ironclaw_cli/src/main.rs"], true),
+            (Scope::App, &["docs/using/cli.mdx", "README.md"], false),
+            (Scope::App, &["tools/ironclaw_rune/docs/updates.md"], false),
+            (
+                Scope::Backend,
+                &["crates/x/AGENTS.md", ".github/workflows/ci.yml"],
+                false,
+            ),
+            (Scope::Backend, &["tests/integration/a.rs"], false),
+            // A prompt is a Markdown file the binary embeds.
+            (
+                Scope::Backend,
+                &["crates/loop/ironclaw_loop_host/prompts/system.md"],
+                true,
+            ),
+            (Scope::Backend, &["Cargo.lock"], true),
+            // One relevant path among irrelevant ones is enough.
+            (
+                Scope::Backend,
+                &["docs/a.md", "tools/x", "Cargo.toml"],
+                true,
+            ),
+            (Scope::Backend, &[], false),
+        ] {
+            assert_eq!(
+                rebuild_needed(scope, &paths(changed)),
+                needed,
+                "{scope:?} {changed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn commits_that_change_nothing_here_are_not_an_update() {
+        let r = repos();
+        let checkout = Checkout::open(&r.checkout).expect("opens");
+        let built = checkout.head().expect("head");
+        std::fs::create_dir_all(r.other.join("tools/ironclaw_rune/app")).expect("dirs");
+        commit(
+            &r.other,
+            "tools/ironclaw_rune/app/main.rs",
+            "app\n",
+            "App only",
+        );
+        sh(&r.other, &["push", "-q", "origin", "main"]);
+
+        let backend = checkout
+            .check(None, Some(&built), Scope::Backend)
+            .expect("check");
+        assert_eq!((backend.behind, backend.not_for_this_install), (0, 1));
+        assert!(backend.subjects.is_empty());
+        let app = checkout
+            .check(None, Some(&built), Scope::App)
+            .expect("check");
+        assert_eq!((app.behind, app.not_for_this_install), (1, 0));
+        assert_eq!(app.subjects, vec!["App only"]);
+
+        // A backend change on top makes the whole range an update again.
+        std::fs::create_dir_all(r.other.join("crates")).expect("dirs");
+        commit(&r.other, "crates/lib.rs", "backend\n", "Backend too");
+        sh(&r.other, &["push", "-q", "origin", "main"]);
+        let backend = checkout
+            .check(None, Some(&built), Scope::Backend)
+            .expect("check");
+        assert_eq!((backend.behind, backend.not_for_this_install), (2, 0));
+    }
+
+    #[test]
+    fn a_checkout_with_no_remote_cannot_be_followed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        sh(dir.path(), &["init", "-q", "-b", "main"]);
+        commit(dir.path(), "README", "one\n", "First");
+        let checkout = Checkout::open(dir.path()).expect("opens");
+        let err = checkout.tracking(None).expect_err("no remote");
+        assert_eq!(err, GitRefusal::NoUpstream("main".into()));
+        assert!(err.to_string().contains("git remote add"), "{err}");
     }
 
     #[test]
@@ -537,7 +738,7 @@ pub(crate) mod tests {
             .collect();
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         push_upstream(&r, &refs);
-        let outcome = checkout.check(None, None).expect("check");
+        let outcome = checkout.check(None, None, Scope::App).expect("check");
         assert_eq!(outcome.behind as usize, MAX_UPDATE_SUBJECTS + 5);
         assert_eq!(outcome.subjects.len(), MAX_UPDATE_SUBJECTS);
     }
@@ -670,7 +871,7 @@ pub(crate) mod tests {
         );
         let checkout = Checkout::open(&r.checkout).expect("opens");
         assert!(matches!(
-            checkout.check(None, None),
+            checkout.check(None, None, Scope::App),
             Err(GitRefusal::FetchFailed { .. })
         ));
     }

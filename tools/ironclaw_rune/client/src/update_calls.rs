@@ -5,7 +5,8 @@
 use std::time::Duration;
 
 use ironclaw_product_contracts::self_update::{
-    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_PATH, UpdateErrorCode, UpdateStatus,
+    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_PATH, UpdateErrorCode,
+    UpdateStatus,
 };
 use reqwest::Method;
 use serde::Deserialize;
@@ -59,7 +60,10 @@ fn classify(status: u16, text: &str) -> UpdateCallError {
             UpdateCallError::NotSetUp(message)
         }
         (_, Some(c)) if c == UpdateErrorCode::UpdateRunning.as_str() => UpdateCallError::Running,
-        (_, Some(c)) if c == UpdateErrorCode::CheckFailed.as_str() => {
+        (_, Some(c))
+            if c == UpdateErrorCode::CheckFailed.as_str()
+                || c == UpdateErrorCode::NoCheckout.as_str() =>
+        {
             UpdateCallError::Refused(message)
         }
         // A proxy or a backend mid-restart.
@@ -105,6 +109,14 @@ impl Client {
             .await
     }
 
+    /// `POST /api/operator/update/enable`: turn self-update on from the
+    /// checkout that backend was built from. A backend that predates the
+    /// route answers [`UpdateCallError::TooOld`].
+    pub async fn enable_update(&self) -> Result<UpdateStatus, UpdateCallError> {
+        self.update_call(Method::POST, OPERATOR_UPDATE_ENABLE_PATH, CALL_TIMEOUT)
+            .await
+    }
+
     /// `POST /api/operator/update`: start the update (`202`).
     pub async fn start_update(&self) -> Result<UpdateStatus, UpdateCallError> {
         self.update_call(Method::POST, OPERATOR_UPDATE_PATH, CALL_TIMEOUT)
@@ -130,17 +142,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_three_calls_hit_their_routes_with_no_body() {
+    async fn the_calls_hit_their_routes_with_no_body() {
         let (url, seen) = serve(200, STATUS).await;
         let c = client(url);
         let status = c.update_status().await.unwrap();
+        assert!(!status.can_enable, "absent from an older backend's answer");
         assert_eq!(status.available.unwrap().behind, 3);
         c.check_update().await.unwrap();
         c.start_update().await.unwrap();
+        c.enable_update().await.unwrap();
         let seen = seen.lock().unwrap();
         assert_eq!(seen[0].line, "GET /api/operator/update HTTP/1.1");
         assert_eq!(seen[1].line, "POST /api/operator/update/check HTTP/1.1");
         assert_eq!(seen[2].line, "POST /api/operator/update HTTP/1.1");
+        assert_eq!(seen[3].line, "POST /api/operator/update/enable HTTP/1.1");
         for s in seen.iter() {
             assert_eq!(s.auth.as_deref(), Some("Bearer icd_dev_tok"));
             assert!(s.body.is_empty(), "nothing is sent: {:?}", s.body);
@@ -164,6 +179,11 @@ mod tests {
                 502,
                 r#"{"error":"check_failed","message":"The checkout has local changes"}"#,
                 UpdateCallError::Refused("The checkout has local changes".into()),
+            ),
+            (
+                409,
+                r#"{"error":"no_checkout","message":"Run zlo update enable --repo"}"#,
+                UpdateCallError::Refused("Run zlo update enable --repo".into()),
             ),
             (404, "", UpdateCallError::TooOld),
             (401, "", UpdateCallError::Unauthorized),

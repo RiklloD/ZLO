@@ -344,8 +344,9 @@ impl ServeCommand {
         // backend starts runs detached and survives its restart.
         let self_update = Arc::new(crate::commands::update::SourceSelfUpdate::for_serve(
             boot_config.home().path(),
-            crate::commands::update::source_settings(config_file.as_ref()),
+            boot_config.home().config_file_path(),
             crate::commands::update::current_build(),
+            crate::commands::update::build_checkout(),
         )?);
         // This token keys the stateless session HMAC, so a weak value would be
         // an OFFLINE forgery target: an attacker who obtains one legitimate
@@ -670,6 +671,11 @@ impl ServeCommand {
             serve_config = serve_config.with_protected_route_mount(
                 crate::commands::update::self_update_routes(Arc::clone(&self_update)),
             );
+            // Keep the update status fresh for clients (ZLO shows "update
+            // available" from it). Ends with the runtime.
+            let update_checks = tokio::spawn(crate::commands::update::auto_check(Arc::clone(
+                &self_update,
+            )));
             // Generic extension channel ingress (extension-runtime P4): one
             // mount serves `/webhooks/extensions/{extension_id}/{route_suffix}`
             // for every active extension; the route table follows the active
@@ -762,6 +768,7 @@ impl ServeCommand {
                 }
                 None => Ok(()),
             };
+            update_checks.abort();
             public_route_drains.drain().await;
 
             // Always drain the Reborn runtime, even on serve error, so

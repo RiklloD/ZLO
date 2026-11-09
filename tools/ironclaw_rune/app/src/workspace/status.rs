@@ -101,9 +101,49 @@ pub(super) fn bar(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(t(label, XS, p.text_faint))
         .child(el().grow(1.0));
     if matches!(s.conn, Conn::Ready) {
+        bar = bar.children(update_prompt(s));
         bar = bar.child(metrics(s, k, layer));
     }
     bar
+}
+
+/// "Update available": one click updates every computer that is behind
+/// (the others answer "already up to date" at once), This Mac last. While
+/// it runs the same spot says so and opens Settings → Computers.
+fn update_prompt(s: &State) -> Option<El> {
+    let p = &s.palette;
+    let updates = &s.remote.updates;
+    if updates.updating {
+        return Some(
+            row()
+                .key("update-prompt")
+                .gap(6.)
+                .center_y()
+                .hover_group()
+                .child(ui::dot(p.warning, 6.))
+                .child(t("Updating…", XS, p.text_faint).group_color(p.text))
+                .on_press(|s: &mut State| super::show(s, Page::Computers)),
+        );
+    }
+    let waiting = crate::remote::updates::waiting(updates);
+    if waiting == 0 {
+        return None;
+    }
+    let label = if waiting == 1 {
+        "Update available".to_string()
+    } else {
+        format!("Update available · {waiting} computers")
+    };
+    Some(
+        row()
+            .key("update-prompt")
+            .gap(6.)
+            .center_y()
+            .hover_group()
+            .child(ui::dot(p.accent, 6.))
+            .child(t(label, XS, p.text).group_color(p.accent))
+            .on_press(|s: &mut State| crate::remote::updates::update_everything(s)),
+    )
 }
 
 /// Right side of the bar: context, speed, cache, then the busiest usage

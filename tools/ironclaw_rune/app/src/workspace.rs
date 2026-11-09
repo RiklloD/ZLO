@@ -67,6 +67,8 @@ const STATUS_POLL: Duration = Duration::from_secs(10);
 /// How often terminal sessions are rescanned after the launch import
 /// (GPUI `pages/settings/session_import.rs::RESCAN_EVERY`).
 const SESSION_RESCAN: Duration = Duration::from_secs(15 * 60);
+/// The first look for updates after connecting.
+const UPDATES_FIRST_POLL: Duration = Duration::from_secs(8);
 
 /// Deadlines `poll` runs; `None` is off.
 #[derive(Default)]
@@ -80,6 +82,8 @@ pub struct Timers {
     /// A snooze or usage limit that ends.
     pub wake: Option<Instant>,
     pub session_import: Option<Instant>,
+    /// The background read of every computer's update status.
+    pub updates: Option<Instant>,
 }
 
 pub struct WorkspaceState {
@@ -595,6 +599,8 @@ fn start_polling(s: &mut State) {
     refresh_unread(s);
     let now = Instant::now();
     s.workspace.timers.unread = Some(now + UNREAD_POLL);
+    // Soon after connecting, then once a minute: is an update waiting?
+    s.workspace.timers.updates = Some(now + UPDATES_FIRST_POLL);
     if !s.workspace.session_import_launched {
         s.workspace.session_import_launched = true;
         // First-run setup holds this back and releases it when it ends.
@@ -644,6 +650,12 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
         s.workspace.timers.status = Some(now + if saving { STATUS_POLL * 6 } else { STATUS_POLL });
         status::refresh_status(s);
     }
+    if due(s.workspace.timers.updates) {
+        let saving = crate::design::look::saving(s);
+        let every = crate::remote::updates::POLL;
+        s.workspace.timers.updates = Some(now + if saving { every * 6 } else { every });
+        crate::remote::updates::poll(s);
+    }
     if due(s.workspace.timers.session_import) {
         s.workspace.timers.session_import = Some(now + SESSION_RESCAN);
         session_import_tick(s, zlo_client::session_import::ImportTrigger::Background);
@@ -669,6 +681,7 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
         t.wake,
         t.tick,
         t.session_import,
+        t.updates,
     ]
     .into_iter()
     .flatten()

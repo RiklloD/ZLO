@@ -1,6 +1,11 @@
 //! `zlo update [--check] [--json]` — update this installation from its
 //! source checkout (`[update] method = "source"`).
 //!
+//! - `enable [--repo <checkout>] [--branch <name>]`: turn self-update on.
+//!   The checkout defaults to the one this binary was built from, so on a
+//!   computer that built ZLO from source there is nothing to type. A
+//!   running backend follows the change at once.
+//! - `disable`: turn it off (the checkout is remembered).
 //! - `--check`: fetch the configured branch and report the running build's
 //!   commit against the upstream tip (count and subjects, bounded).
 //! - no flag: fast-forward the checkout (`git merge --ff-only` after the
@@ -20,16 +25,19 @@ mod job;
 mod records;
 mod service;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use clap::Args;
-use ironclaw_config::{RebornConfigFile, SourceUpdateSettings};
+use clap::{Args, Subcommand};
+use ironclaw_config::{
+    RebornConfigFile, SourceUpdateSettings, UpdateMethodSetting, UpdateSection,
+    write_update_section,
+};
 use ironclaw_product_contracts::self_update::{BuildInfo, UpdateMethod, UpdateStatus};
 
 use crate::context::RebornCliContext;
 
-pub(crate) use service::SourceSelfUpdate;
+pub(crate) use service::{SourceSelfUpdate, auto_check};
 
 /// The bearer-authed self-update routes over `service`.
 pub(crate) fn self_update_routes(
@@ -39,10 +47,32 @@ pub(crate) fn self_update_routes(
 }
 
 /// How to turn self-update on, shown wherever it is off.
-pub(crate) const ENABLE_HINT: &str = "Self-update is not set up. Add to config.toml:\n\n  [update]\n  method = \"source\"\n  repo = \"/path/to/your/ironclaw/checkout\"\n";
+pub(crate) const ENABLE_HINT: &str = "Self-update is not set up. Run `zlo update enable` (add `--repo /path/to/checkout` if it does not find its source checkout).";
+
+/// What to do when this binary knows no usable source checkout.
+pub(crate) const NO_CHECKOUT_HINT: &str = "This ZLO does not know a source checkout it was built from. On this computer, clone the source and run `zlo update enable --repo /path/to/checkout`.";
+
+#[derive(Debug, Subcommand)]
+enum UpdateAction {
+    /// Turn self-update on, from the checkout this ZLO was built from.
+    Enable {
+        /// The source checkout to update from (default: the one this
+        /// binary was built from).
+        #[arg(long, value_name = "CHECKOUT")]
+        repo: Option<PathBuf>,
+        /// The branch to follow (default: the one the checkout is on).
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Turn self-update off.
+    Disable,
+}
 
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub(crate) struct UpdateCommand {
+    #[command(subcommand)]
+    action: Option<UpdateAction>,
     /// Fetch and report what is available; change nothing.
     #[arg(long)]
     check: bool,
@@ -68,6 +98,39 @@ pub(crate) fn current_build() -> BuildInfo {
     }
 }
 
+/// The source checkout this binary was built from (`build.rs`), when it was
+/// built in one and the folder is still there.
+pub(crate) fn build_checkout() -> Option<PathBuf> {
+    option_env!("IRONCLAW_BUILD_SOURCE_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute() && dir.is_dir())
+}
+
+/// Write `[update] method = "source"` for `repo` into `config_path`, after
+/// checking that `repo` is a git checkout on a branch update can follow.
+/// No network. A refused checkout is a [`git::GitRefusal`]; nothing is
+/// written then.
+pub(crate) fn enable_source(
+    config_path: &Path,
+    repo: &Path,
+    branch: Option<String>,
+) -> anyhow::Result<(SourceUpdateSettings, git::Tracking)> {
+    let repo = std::fs::canonicalize(repo)
+        .map_err(|_| git::GitRefusal::RepoMissing(repo.to_path_buf()))?;
+    let tracking =
+        git::Checkout::open(&repo).and_then(|checkout| checkout.tracking(branch.as_deref()))?;
+    write_update_section(
+        config_path,
+        &UpdateSection {
+            method: Some(UpdateMethodSetting::Source),
+            repo: Some(repo.clone()),
+            branch: branch.clone(),
+        },
+    )
+    .with_context(|| format!("write [update] to {}", config_path.display()))?;
+    Ok((SourceUpdateSettings { repo, branch }, tracking))
+}
+
 /// `[update]` from the home's config.toml, `None` for method none.
 pub(crate) fn source_settings(
     config_file: Option<&RebornConfigFile>,
@@ -86,6 +149,39 @@ impl UpdateCommand {
         let settings = source_settings(config_file.as_ref());
         let paths = records::UpdatePaths::new(&home);
         let build = current_build();
+
+        match self.action {
+            Some(UpdateAction::Enable { repo, branch }) => {
+                let repo = repo
+                    .or_else(build_checkout)
+                    .ok_or_else(|| anyhow::anyhow!(NO_CHECKOUT_HINT))?;
+                let (settings, tracking) = enable_source(&config_path, &repo, branch)?;
+                println!(
+                    "Self-update is on: {} follows {}.",
+                    settings.repo.display(),
+                    tracking.upstream_name()
+                );
+                println!(
+                    "A running backend picks this up by itself. ZLO shows when an update is \
+                     ready; `zlo update` installs it from here."
+                );
+                return Ok(());
+            }
+            Some(UpdateAction::Disable) => {
+                let existing = config_file.and_then(|file| file.update).unwrap_or_default();
+                write_update_section(
+                    &config_path,
+                    &UpdateSection {
+                        method: Some(UpdateMethodSetting::None),
+                        ..existing
+                    },
+                )
+                .with_context(|| format!("write [update] to {}", config_path.display()))?;
+                println!("Self-update is off.");
+                return Ok(());
+            }
+            None => {}
+        }
 
         if self.run_job {
             let settings = settings.ok_or_else(|| anyhow::anyhow!(ENABLE_HINT))?;
@@ -110,12 +206,18 @@ impl UpdateCommand {
             return Ok(());
         }
 
-        let service = SourceSelfUpdate::new(&home, settings.clone(), build.clone());
+        let exe = std::env::current_exe().context("resolve the running binary")?;
+        let service = SourceSelfUpdate::new(
+            &home,
+            settings.clone(),
+            build.clone(),
+            job::InstallKind::scope_of(&exe),
+        );
         if self.check {
             let Some(settings) = settings else {
                 return self.not_configured(&service);
             };
-            let status = service.check_blocking(&settings)?;
+            let (status, not_for_here) = service.check_blocking(&settings)?;
             return self.print(&status, |status| match &status.available {
                 Some(a) => {
                     let mut out = format!(
@@ -140,6 +242,9 @@ impl UpdateCommand {
                     }
                     out
                 }
+                None if not_for_here > 0 => format!(
+                    "Up to date: {not_for_here} new commit(s) change nothing this computer runs."
+                ),
                 None => format!(
                     "Up to date ({}).",
                     status
@@ -155,7 +260,6 @@ impl UpdateCommand {
         let Some(settings) = settings else {
             return self.not_configured(&service);
         };
-        let exe = std::env::current_exe().context("resolve the running binary")?;
         if exe.starts_with(settings.repo.join("target")) {
             anyhow::bail!(
                 "this `zlo` is the checkout's own build output ({}); run the installed binary instead",

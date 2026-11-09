@@ -1,4 +1,7 @@
-//! "Check for updates" and "Update all machines" (Settings → Computers):
+//! Updates for every computer: a quiet background read that drives the
+//! "Update available" prompt in the status bar, "Turn on" for a computer
+//! that has updates off, and "Check for updates" / "Update all machines"
+//! (Settings → Computers):
 //! every saved computer, and This Mac, through its own backend's operator
 //! self-update routes (`zlo_client::update_calls`). Each machine updates
 //! itself from its local `[update]` config; ZLO only says "go" and watches.
@@ -33,8 +36,13 @@ const POLL_EVERY: Duration = Duration::from_secs(3);
 /// A release build of IronClaw (or ZLO's bundle) can take a while.
 const GIVE_UP_AFTER: Duration = Duration::from_secs(45 * 60);
 
-/// How to turn self-update on, for a computer that has it off.
-pub const ENABLE_HINT: &str = "On that computer, add to ~/.zlo/config.toml (~/.ironclaw/reborn/config.toml before ZLO's rename):  [update]  method = \"source\"  repo = \"/path/to/ironclaw\"  — then restart IronClaw there.";
+/// How often the rows are refreshed in the background. Each backend checks
+/// its own source every couple of minutes; this only reads the answer.
+pub const POLL: Duration = Duration::from_secs(60);
+
+/// How to turn self-update on, for a computer ZLO cannot turn it on for
+/// (it was not built from a source checkout that is still there).
+pub const ENABLE_HINT: &str = "Where \"Turn on\" is not offered, run on that computer:  zlo update enable --repo /path/to/checkout";
 
 /// What one computer's row says about updates.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,8 +50,11 @@ pub enum RowState {
     Checking,
     UpToDate,
     Behind(u32),
-    /// `[update] method = "none"` there.
-    NotSetUp,
+    /// Updates are off there. `can_enable`: that backend knows the source
+    /// checkout it was built from, so ZLO can turn them on in one click.
+    NotSetUp {
+        can_enable: bool,
+    },
     /// The step in progress.
     Updating(String),
     /// The backend's own outcome line.
@@ -58,7 +69,10 @@ impl RowState {
             Self::UpToDate => "Up to date".into(),
             Self::Behind(1) => "1 commit behind".into(),
             Self::Behind(n) => format!("{n} commits behind"),
-            Self::NotSetUp => "Not set up (method none)".into(),
+            Self::NotSetUp { can_enable: true } => "Updates are off".into(),
+            Self::NotSetUp { can_enable: false } => {
+                "Updates are off (run `zlo update enable` there)".into()
+            }
             Self::Updating(step) => format!("Updating… {step}"),
             Self::Updated(line) => format!("Updated — {line}"),
             Self::Failed(why) => format!("Failed: {why}"),
@@ -79,7 +93,9 @@ pub struct UpdatesState {
 /// A check's answer as a row.
 pub fn from_check(result: Result<&UpdateStatus, &UpdateCallError>) -> RowState {
     match result {
-        Ok(status) if status.method == UpdateMethod::None => RowState::NotSetUp,
+        Ok(status) if status.method == UpdateMethod::None => RowState::NotSetUp {
+            can_enable: status.can_enable,
+        },
         Ok(status) if status.last_run.state == UpdateRunState::Running => {
             RowState::Updating(status.last_run.message.clone().unwrap_or_default())
         }
@@ -87,10 +103,43 @@ pub fn from_check(result: Result<&UpdateStatus, &UpdateCallError>) -> RowState {
             Some(a) if a.behind > 0 => RowState::Behind(a.behind),
             _ => RowState::UpToDate,
         },
-        Err(UpdateCallError::NotSetUp(_)) => RowState::NotSetUp,
+        Err(UpdateCallError::NotSetUp(_)) => RowState::NotSetUp { can_enable: false },
         Err(UpdateCallError::Running) => RowState::Updating(String::new()),
         Err(e) => RowState::Failed(e.to_string()),
     }
+}
+
+/// A background status read as a row, or `None` to leave the row alone: a
+/// computer that is asleep or offline keeps what it last said, and so does
+/// a row showing why the last update failed while that is still the last
+/// thing that happened there.
+pub fn from_poll(
+    shown: Option<&RowState>,
+    result: Result<&UpdateStatus, &UpdateCallError>,
+) -> Option<RowState> {
+    let status = match result {
+        Ok(status) => status,
+        Err(UpdateCallError::NotSetUp(_)) => return Some(RowState::NotSetUp { can_enable: false }),
+        Err(_) => return None,
+    };
+    let still_failed = matches!(shown, Some(RowState::Failed(_)))
+        && status.last_run.state == UpdateRunState::Failed;
+    let just_updated = matches!(shown, Some(RowState::Updated(_)))
+        && status.last_run.state == UpdateRunState::Succeeded
+        && status.available.is_none();
+    if still_failed || just_updated {
+        return None;
+    }
+    Some(from_check(Ok(status))).filter(|row| shown != Some(row))
+}
+
+/// How many computers have an update waiting (the status bar's prompt).
+pub fn waiting(updates: &UpdatesState) -> usize {
+    updates
+        .rows
+        .values()
+        .filter(|row| matches!(row, RowState::Behind(_)))
+        .count()
 }
 
 /// Keep polling, or the job is over.
@@ -129,6 +178,7 @@ pub(crate) trait Machine: Send + Sync {
     fn start(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>>;
     fn status(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>>;
     fn check(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>>;
+    fn enable(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>>;
 }
 
 pub(crate) type Report = Arc<dyn Fn(String, RowState) + Send + Sync>;
@@ -190,7 +240,9 @@ async fn update_one(m: Arc<dyn Machine>, report: Report, timing: Timing) {
             Ok(status) => status.last_run.started_at,
             Err(_) => None,
         },
-        Err(UpdateCallError::NotSetUp(_)) => return say(RowState::NotSetUp),
+        Err(UpdateCallError::NotSetUp(_)) => {
+            return say(RowState::NotSetUp { can_enable: false });
+        }
         Err(e) => return say(RowState::Failed(e.to_string())),
     };
     let deadline = tokio::time::Instant::now() + timing.give_up_after;
@@ -342,6 +394,10 @@ impl Machine for LiveMachine {
     fn check(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>> {
         Box::pin(self.call(|c| Box::pin(c.check_update())))
     }
+
+    fn enable(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>> {
+        Box::pin(self.call(|c| Box::pin(c.enable_update())))
+    }
 }
 
 // ── the page's actions ───────────────────────────────────────────────────
@@ -415,6 +471,72 @@ pub fn check(s: &mut State) {
     });
 }
 
+/// The background refresh: read every computer's update status (no fetch
+/// on this side; each backend keeps its own answer fresh) and change only
+/// the rows that have something new to say.
+pub fn poll(s: &mut State) {
+    if s.fixture || s.remote.updates.checking || s.remote.updates.updating {
+        return;
+    }
+    let Some(net) = super::net() else {
+        return;
+    };
+    let Fleet {
+        remotes: mut all,
+        this_mac,
+    } = machines(s);
+    all.extend(this_mac);
+    let handle = s.rt.handle.clone();
+    net.spawn(async move {
+        join_all(all.into_iter().map(|m| {
+            let handle = handle.clone();
+            async move {
+                let result = m.status().await;
+                let key = m.key().to_string();
+                handle.update(move |s, _| {
+                    let u = &mut s.remote.updates;
+                    if u.checking || u.updating {
+                        return;
+                    }
+                    if let Some(row) = from_poll(u.rows.get(&key), result.as_ref()) {
+                        u.rows.insert(key, row);
+                    }
+                });
+            }
+        }))
+        .await;
+    });
+}
+
+/// "Turn on" for one computer: its backend turns self-update on from the
+/// checkout it was built from, then checks.
+pub fn enable(s: &mut State, key: &str) {
+    if s.fixture || s.remote.updates.updating {
+        return;
+    }
+    let Some(net) = super::net() else {
+        return;
+    };
+    let Fleet { remotes, this_mac } = machines(s);
+    let Some(machine) = remotes.into_iter().chain(this_mac).find(|m| m.key() == key) else {
+        return;
+    };
+    let report = reporter(s);
+    net.spawn(enable_one(machine, report));
+}
+
+pub(crate) async fn enable_one(m: Arc<dyn Machine>, report: Report) {
+    let key = m.key().to_string();
+    report(key.clone(), RowState::Checking);
+    let row = match m.enable().await {
+        // On now: see whether anything is waiting.
+        Ok(_) => from_check(m.check().await.as_ref()),
+        Err(UpdateCallError::TooOld) => RowState::NotSetUp { can_enable: false },
+        Err(e) => RowState::Failed(e.to_string()),
+    };
+    report(key, row);
+}
+
 /// "Update all machines".
 pub fn update_everything(s: &mut State) {
     if s.fixture || s.remote.updates.updating {
@@ -459,6 +581,7 @@ mod tests {
                 message: Some(message.into()),
                 log_tail: String::new(),
             },
+            can_enable: false,
         }
     }
 
@@ -478,10 +601,18 @@ mod tests {
         );
         let mut off = status(UpdateRunState::Idle, None, "");
         off.method = UpdateMethod::None;
-        assert_eq!(from_check(Ok(&off)), RowState::NotSetUp);
+        assert_eq!(
+            from_check(Ok(&off)),
+            RowState::NotSetUp { can_enable: false }
+        );
+        off.can_enable = true;
+        assert_eq!(
+            from_check(Ok(&off)),
+            RowState::NotSetUp { can_enable: true }
+        );
         assert_eq!(
             from_check(Err(&UpdateCallError::NotSetUp("add [update]".into()))),
-            RowState::NotSetUp
+            RowState::NotSetUp { can_enable: false }
         );
         assert_eq!(
             from_check(Err(&UpdateCallError::Refused(
@@ -491,8 +622,93 @@ mod tests {
         );
         assert_eq!(RowState::Behind(1).label(), "1 commit behind");
         assert_eq!(RowState::Behind(4).label(), "4 commits behind");
-        assert_eq!(RowState::NotSetUp.label(), "Not set up (method none)");
+        assert_eq!(
+            RowState::NotSetUp { can_enable: true }.label(),
+            "Updates are off"
+        );
         assert_eq!(RowState::Failed("dirty".into()).label(), "Failed: dirty");
+    }
+
+    fn behind(n: u32) -> UpdateStatus {
+        let mut status = status(UpdateRunState::Idle, None, "");
+        status.available = Some(AvailableUpdate {
+            commit: "b".repeat(40),
+            behind: n,
+            subjects: vec![],
+            checked_at: at(0),
+        });
+        status
+    }
+
+    #[test]
+    fn the_background_read_only_changes_rows_with_something_new() {
+        // Nothing shown yet: the first read fills the row.
+        assert_eq!(from_poll(None, Ok(&behind(2))), Some(RowState::Behind(2)));
+        // The same answer again changes nothing (no repaint).
+        assert_eq!(from_poll(Some(&RowState::Behind(2)), Ok(&behind(2))), None);
+        assert_eq!(
+            from_poll(Some(&RowState::Behind(2)), Ok(&behind(3))),
+            Some(RowState::Behind(3))
+        );
+        // Asleep or offline: the row keeps what it last said.
+        let asleep = UpdateCallError::Unreachable("no route".into());
+        assert_eq!(from_poll(Some(&RowState::Behind(2)), Err(&asleep)), None);
+        assert_eq!(from_poll(None, Err(&asleep)), None);
+        // Why the last update failed stays until something else happens there.
+        let mut failed = behind(2);
+        failed.last_run.state = UpdateRunState::Failed;
+        assert_eq!(
+            from_poll(Some(&RowState::Failed("dirty".into())), Ok(&failed)),
+            None
+        );
+        assert_eq!(
+            from_poll(Some(&RowState::Failed("dirty".into())), Ok(&behind(2))),
+            Some(RowState::Behind(2)),
+            "a newer check replaces an old failure"
+        );
+        // "Updated" stays until there is a newer update.
+        let done = status(UpdateRunState::Succeeded, Some(1), "Updated to b");
+        assert_eq!(
+            from_poll(Some(&RowState::Updated("Updated to b".into())), Ok(&done)),
+            None
+        );
+        let mut newer = behind(1);
+        newer.last_run.state = UpdateRunState::Succeeded;
+        assert_eq!(
+            from_poll(Some(&RowState::Updated("Updated to b".into())), Ok(&newer)),
+            Some(RowState::Behind(1))
+        );
+
+        let mut u = UpdatesState::default();
+        assert_eq!(waiting(&u), 0);
+        u.rows.insert("a".into(), RowState::Behind(2));
+        u.rows.insert("b".into(), RowState::UpToDate);
+        u.rows.insert("c".into(), RowState::Behind(1));
+        assert_eq!(waiting(&u), 2);
+    }
+
+    #[tokio::test]
+    async fn turn_on_enables_then_checks_and_an_old_backend_keeps_the_hint() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let studio = Arc::new(Fake {
+            key: "studio".into(),
+            log: log.clone(),
+            start: Ok(behind(4)),
+            statuses: Mutex::new(vec![Ok(behind(4))]),
+            enabled: Ok(status(UpdateRunState::Idle, None, "")),
+        });
+        let (report, seen) = recorder();
+        enable_one(studio, report.clone()).await;
+        assert_eq!(*log.lock().unwrap(), vec!["enable:studio", "check:studio"]);
+        assert_eq!(last(&seen.lock().unwrap(), "studio"), RowState::Behind(4));
+
+        // A backend from before the enable route.
+        let old = Fake::machine("old", &log, Ok(behind(1)), vec![Ok(behind(1))]);
+        enable_one(old, report).await;
+        assert_eq!(
+            last(&seen.lock().unwrap(), "old"),
+            RowState::NotSetUp { can_enable: false }
+        );
     }
 
     #[test]
@@ -530,6 +746,8 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
         start: Result<UpdateStatus, UpdateCallError>,
         statuses: Mutex<Vec<Result<UpdateStatus, UpdateCallError>>>,
+        /// What "Turn on" answers.
+        enabled: Result<UpdateStatus, UpdateCallError>,
     }
 
     impl Fake {
@@ -544,6 +762,7 @@ mod tests {
                 log: log.clone(),
                 start,
                 statuses: Mutex::new(statuses),
+                enabled: Err(UpdateCallError::TooOld),
             })
         }
 
@@ -584,6 +803,12 @@ mod tests {
         fn check(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>> {
             self.note("check");
             let answer = self.start.clone();
+            Box::pin(async move { answer })
+        }
+
+        fn enable(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>> {
+            self.note("enable");
+            let answer = self.enabled.clone();
             Box::pin(async move { answer })
         }
     }
@@ -708,7 +933,7 @@ mod tests {
             last(&seen, "mini"),
             RowState::Failed("The checkout has local changes".into())
         );
-        assert_eq!(last(&seen, "off"), RowState::NotSetUp);
+        assert_eq!(last(&seen, "off"), RowState::NotSetUp { can_enable: false });
         assert_eq!(
             last(&seen, THIS_MAC),
             RowState::Updated("Updated to b; ZLO reopened.".into())
@@ -782,7 +1007,7 @@ mod tests {
         check_all(vec![a, b], report).await;
         let seen = seen.lock().unwrap().clone();
         assert_eq!(last(&seen, "a"), RowState::Behind(2));
-        assert_eq!(last(&seen, "b"), RowState::NotSetUp);
+        assert_eq!(last(&seen, "b"), RowState::NotSetUp { can_enable: false });
         assert!(seen.contains(&("a".into(), RowState::Checking)));
     }
 }

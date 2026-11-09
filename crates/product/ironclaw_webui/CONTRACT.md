@@ -166,6 +166,7 @@ build steps come only from the host's `[update]` config.
 |---|---|---|
 | `GET /api/operator/update` | 120/min per caller | `UpdateStatus`: method, running build (version, commit), what the last check found (`available`, `null` when nothing is newer), and the last job (`idle`/`running`/`succeeded`/`failed`, times, message, log tail). Read from disk, so it survives the backend restarting itself. |
 | `POST /api/operator/update/check` | 10/min per caller | Fetch and answer the refreshed status; `409 not_configured` (message says how to enable it); `502 check_failed` with the reason (dirty, diverged, wrong branch, fetch failed). |
+| `POST /api/operator/update/enable` | 5/min per caller | Turn self-update on from the source checkout this backend was built from (the path comes from the binary; the request has no body) and answer the status. Already on: a no-op. `409 no_checkout` with what to run instead when the backend has no usable checkout. `UpdateStatus.can_enable` says beforehand whether this will work. |
 | `POST /api/operator/update` | 5/min per caller | `202` + status with `last_run.state = running`: the job runs detached. `409 update_running` while a job holds the lock; `409 not_configured`. |
 
 Tests: `tests/self_update_routes.rs` (operator-only, `202` then `409`, a

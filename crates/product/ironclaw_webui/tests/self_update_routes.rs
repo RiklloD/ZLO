@@ -21,8 +21,8 @@ use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use chrono::{TimeZone, Utc};
 use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, UserId};
 use ironclaw_product_contracts::self_update::{
-    BuildInfo, OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_PATH, UpdateMethod, UpdateRun,
-    UpdateRunState, UpdateStatus,
+    BuildInfo, OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_PATH,
+    UpdateMethod, UpdateRun, UpdateRunState, UpdateStatus,
 };
 use ironclaw_webui::{
     SelfUpdateError, SelfUpdateService, WebuiAuthentication, WebuiAuthenticator, WebuiServeConfig,
@@ -67,6 +67,10 @@ struct FakeUpdates {
     calls: Mutex<Vec<&'static str>>,
     running: Mutex<bool>,
     configured: bool,
+    /// Turned on through the enable route.
+    enabled: Mutex<bool>,
+    /// This backend knows the checkout it was built from.
+    has_checkout: bool,
     finished: Mutex<Option<UpdateRun>>,
 }
 
@@ -94,8 +98,10 @@ impl FakeUpdates {
             },
             None => UpdateRun::default(),
         };
+        let on = self.configured || *self.enabled.lock().expect("lock");
         UpdateStatus {
-            method: if self.configured {
+            can_enable: !on && self.has_checkout,
+            method: if on {
                 UpdateMethod::Source
             } else {
                 UpdateMethod::None
@@ -138,6 +144,17 @@ impl SelfUpdateService for FakeUpdates {
         }
         *running = true;
         drop(running);
+        Ok(self.snapshot())
+    }
+
+    async fn enable(&self) -> Result<UpdateStatus, SelfUpdateError> {
+        self.calls.lock().expect("lock").push("enable");
+        if !self.configured && !self.has_checkout {
+            return Err(SelfUpdateError::NoCheckout(
+                "Run `zlo update enable --repo /path/to/checkout` on this machine.".into(),
+            ));
+        }
+        *self.enabled.lock().expect("lock") = true;
         Ok(self.snapshot())
     }
 }
@@ -189,6 +206,7 @@ async fn every_route_is_operator_only() {
         (Method::GET, OPERATOR_UPDATE_PATH),
         (Method::POST, OPERATOR_UPDATE_PATH),
         (Method::POST, OPERATOR_UPDATE_CHECK_PATH),
+        (Method::POST, OPERATOR_UPDATE_ENABLE_PATH),
     ] {
         let (status, _) = send(&app, request(method.clone(), path, None, None)).await;
         assert_eq!(
@@ -269,11 +287,7 @@ async fn method_none_is_a_409_that_says_how_to_enable_it() {
         assert_eq!(status, StatusCode::CONFLICT, "{path}");
         assert_eq!(body["error"], "not_configured");
         let message = body["message"].as_str().expect("message");
-        assert!(
-            message.contains("[update] method = \"source\""),
-            "{message}"
-        );
-        assert!(message.contains("repo"), "{message}");
+        assert!(message.contains("zlo update enable"), "{message}");
     }
     let (_, body) = send(
         &app,
@@ -281,6 +295,80 @@ async fn method_none_is_a_409_that_says_how_to_enable_it() {
     )
     .await;
     assert_eq!(body["method"], "none");
+}
+
+#[tokio::test]
+async fn enable_turns_updates_on_from_the_backends_own_checkout() {
+    let service = Arc::new(FakeUpdates {
+        has_checkout: true,
+        ..FakeUpdates::default()
+    });
+    let app = app(Arc::clone(&service));
+    let get = || request(Method::GET, OPERATOR_UPDATE_PATH, Some(OPERATOR), None);
+    let (_, before) = send(&app, get()).await;
+    assert_eq!(before["method"], "none");
+    assert_eq!(before["can_enable"], true);
+
+    let (status, body) = send(
+        &app,
+        request(
+            Method::POST,
+            OPERATOR_UPDATE_ENABLE_PATH,
+            Some(OPERATOR),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["method"], "source");
+    assert_eq!(body["can_enable"], false);
+    let (_, after) = send(&app, get()).await;
+    assert_eq!(after["method"], "source", "it stays on");
+
+    // A body (a path someone would like to name) is refused before the port.
+    let (status, _) = send(
+        &app,
+        request(
+            Method::POST,
+            OPERATOR_UPDATE_ENABLE_PATH,
+            Some(OPERATOR),
+            Some(json!({ "repo": "/tmp/evil" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(service.calls(), vec!["status", "enable", "status"]);
+}
+
+#[tokio::test]
+async fn enable_without_a_checkout_is_a_409_that_says_what_to_run() {
+    let service = Arc::new(FakeUpdates::default());
+    let app = app(Arc::clone(&service));
+    let (status, body) = send(
+        &app,
+        request(
+            Method::POST,
+            OPERATOR_UPDATE_ENABLE_PATH,
+            Some(OPERATOR),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "no_checkout");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("zlo update enable --repo")),
+        "{body}"
+    );
+    let (_, status) = send(
+        &app,
+        request(Method::GET, OPERATOR_UPDATE_PATH, Some(OPERATOR), None),
+    )
+    .await;
+    assert_eq!(status["method"], "none");
+    assert_eq!(status["can_enable"], false);
 }
 
 #[tokio::test]

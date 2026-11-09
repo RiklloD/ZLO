@@ -81,7 +81,8 @@ Imported files are readable by their owner only.
 
 | Command | What it does |
 | --- | --- |
-| `zlo update` | Update this machine from its source checkout: fast-forward pull, rebuild, reinstall, restart |
+| `zlo update enable` | Turn self-update on from the checkout this ZLO was built from (`--repo <checkout>` to name another, `--branch <name>` to follow another branch); takes effect at once. `zlo update disable` turns it off |
+| `zlo update` | Update this machine from its source checkout: fast-forward pull, rebuild only when the new commits change what this machine runs, reinstall, restart |
 
 `zlo update --check` fetches and reports how many commits the running build is
 behind, with their subjects, and changes nothing; `--json` prints the same status the

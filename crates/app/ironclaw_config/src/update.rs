@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config_file::RebornConfigFileError;
+use crate::config_file::{
+    RebornConfigFileError, RebornConfigFileUpdateError, acquire_update_lock, load_edit_document,
+    write_edit_document,
+};
 
 /// `[update] method`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -92,6 +95,34 @@ impl UpdateSection {
     }
 }
 
+/// Replace the `[update]` table in `path` with `section`, keeping every
+/// other section and its comments. The result is re-parsed and validated
+/// before the atomic write, so a bad section never lands on disk.
+pub fn write_update_section(
+    path: &Path,
+    section: &UpdateSection,
+) -> Result<(), RebornConfigFileUpdateError> {
+    let _lock = acquire_update_lock(path)?;
+    let mut doc = load_edit_document(path)?;
+    let mut table = toml_edit::Table::new();
+    if let Some(method) = section.method {
+        let method = match method {
+            UpdateMethodSetting::Source => "source",
+            UpdateMethodSetting::None => "none",
+        };
+        table.insert("method", toml_edit::value(method));
+    }
+    if let Some(repo) = section.repo.as_deref().and_then(Path::to_str) {
+        table.insert("repo", toml_edit::value(repo));
+    }
+    if let Some(branch) = &section.branch {
+        table.insert("branch", toml_edit::value(branch.as_str()));
+    }
+    doc.as_table_mut()
+        .insert("update", toml_edit::Item::Table(table));
+    write_edit_document(path, &doc)
+}
+
 /// A branch or remote name safe to hand to git as one argument: ASCII
 /// letters, digits, `.`, `_`, `-` and `/`, not starting with `-` or `/`,
 /// with no `..`, `//`, trailing `/` or `.lock` suffix, at most 200 bytes.
@@ -156,6 +187,49 @@ mod tests {
                 .and_then(|s| s.branch),
             Some("rune-port".into())
         );
+    }
+
+    #[test]
+    fn write_keeps_other_sections_and_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# operator note\n[webui]\nlisten_port = 3000\n").expect("seed");
+        let section = UpdateSection {
+            method: Some(UpdateMethodSetting::Source),
+            repo: Some(PathBuf::from("/src/ironclaw")),
+            branch: None,
+        };
+        write_update_section(&path, &section).expect("write");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains("# operator note"), "{text}");
+        let file = RebornConfigFile::load(&path)
+            .expect("load")
+            .expect("present");
+        assert_eq!(file.update.as_ref(), Some(&section));
+        assert_eq!(file.webui.as_ref().and_then(|w| w.listen_port), Some(3000));
+
+        let off = UpdateSection {
+            method: Some(UpdateMethodSetting::None),
+            ..section
+        };
+        write_update_section(&path, &off).expect("turn off");
+        let file = RebornConfigFile::load(&path)
+            .expect("load")
+            .expect("present");
+        assert_eq!(file.update.as_ref().and_then(UpdateSection::source), None);
+        assert_eq!(
+            file.update.and_then(|u| u.repo),
+            Some(PathBuf::from("/src/ironclaw")),
+            "the checkout is remembered for the next enable"
+        );
+
+        // A relative checkout never lands on disk.
+        let bad = UpdateSection {
+            method: Some(UpdateMethodSetting::Source),
+            repo: Some(PathBuf::from("relative")),
+            branch: None,
+        };
+        assert!(write_update_section(&path, &bad).is_err());
     }
 
     #[test]

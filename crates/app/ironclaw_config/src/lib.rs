@@ -76,7 +76,10 @@ pub use remote::{
 };
 pub use retired_sections::{RetiredSectionError, RetiredSections, retired_config_key_guidance};
 pub use secrets_guard::{InlineSecretError, reject_inline_secret};
-pub use update::{SourceUpdateSettings, UpdateMethodSetting, UpdateSection, is_safe_branch_name};
+pub use update::{
+    SourceUpdateSettings, UpdateMethodSetting, UpdateSection, is_safe_branch_name,
+    write_update_section,
+};
 pub use zlo_env::{
     LEGACY_WEBUI_TOKEN_ENV, LEGACY_WEBUI_USER_ID_ENV, WEBUI_TOKEN_ENV, WEBUI_USER_ID_ENV,
     active_env_name, var_os_with_legacy,

@@ -30,7 +30,7 @@ use anyhow::Context as _;
 use ironclaw_config::{REBORN_HOME_ENV, REBORN_PROFILE_ENV, SourceUpdateSettings};
 use ironclaw_product_contracts::self_update::UpdateRunState;
 
-use super::git::Checkout;
+use super::git::{Checkout, Scope};
 use super::records::{self, RunRecord, UpdatePaths};
 
 /// Where `cargo build --release -p ironclaw --bin zlo` leaves the binary.
@@ -50,7 +50,9 @@ pub(crate) enum InstallKind {
 }
 
 impl InstallKind {
-    pub(crate) fn detect(install_path: &Path, repo: &Path) -> Self {
+    /// What the binary at `install_path` is part of: ZLO.app, or a plain
+    /// backend.
+    pub(crate) fn scope_of(install_path: &Path) -> Scope {
         let in_app_bundle = install_path
             .parent()
             .filter(|dir| dir.ends_with("Contents/MacOS"))
@@ -58,6 +60,21 @@ impl InstallKind {
             .and_then(Path::parent)
             .is_some_and(|app| app.extension().is_some_and(|ext| ext == "app"));
         if in_app_bundle && install_path.file_name().is_some_and(|n| n == "zlo-backend") {
+            Scope::App
+        } else {
+            Scope::Backend
+        }
+    }
+
+    pub(crate) fn scope(&self) -> Scope {
+        match self {
+            Self::Zlo { .. } => Scope::App,
+            Self::Binary { .. } => Scope::Backend,
+        }
+    }
+
+    pub(crate) fn detect(install_path: &Path, repo: &Path) -> Self {
+        if Self::scope_of(install_path) == Scope::App {
             Self::Zlo {
                 bundle_script: repo.join("tools/ironclaw_rune/bundle.sh"),
             }
@@ -164,6 +181,17 @@ fn steps(
     let short = short(&head);
     if input.running_commit == Some(head.as_str()) {
         return Ok(format!("Already up to date ({short})."));
+    }
+    // New commits that change nothing this computer runs (the app's sources
+    // on a plain backend, docs anywhere): no rebuild, no restart.
+    if let Some(running) = input.running_commit
+        && !checkout
+            .changes_install(input.install.scope(), running, &head)
+            .map_err(anyhow::Error::new)?
+    {
+        return Ok(format!(
+            "Up to date: nothing new for this computer (source is at {short})."
+        ));
     }
     step(
         record,
@@ -547,6 +575,69 @@ mod tests {
                 .contains("Already up to date")
         );
         assert!(host.builds.borrow().is_empty());
+    }
+
+    #[test]
+    fn commits_that_change_nothing_here_are_pulled_but_not_built() {
+        let r = repos();
+        let built = super::super::git::tests::sh(&r.checkout, &["rev-parse", "HEAD"]);
+        std::fs::create_dir_all(r.other.join("tools/ironclaw_rune/app")).expect("dirs");
+        let tip = commit(
+            &r.other,
+            "tools/ironclaw_rune/app/main.rs",
+            "app\n",
+            "App only",
+        );
+        super::super::git::tests::sh(&r.other, &["push", "-q", "origin", "main"]);
+        let home = tempfile::tempdir().expect("home");
+        let paths = UpdatePaths::new(home.path());
+        let settings = SourceUpdateSettings {
+            repo: r.checkout.clone(),
+            branch: None,
+        };
+        let run = |install: InstallKind, host: &RecordingHost| {
+            run_job(
+                JobInput {
+                    paths: &paths,
+                    settings: &settings,
+                    running_commit: Some(&built),
+                    install,
+                },
+                host,
+                &mut |_| {},
+            )
+            .expect("runs")
+            .expect("not locked")
+        };
+
+        // A plain backend: the app's sources are not its own.
+        let host = RecordingHost::default();
+        let record = run(binary(), &host);
+        assert_eq!(record.state, UpdateRunState::Succeeded);
+        assert!(
+            record
+                .message
+                .expect("message")
+                .contains("nothing new for this computer")
+        );
+        assert!(
+            host.builds.borrow().is_empty(),
+            "nothing built or restarted"
+        );
+        assert_eq!(
+            super::super::git::tests::sh(&r.checkout, &["rev-parse", "HEAD"]),
+            tip,
+            "the checkout still follows its branch"
+        );
+
+        // ZLO.app is built from them: it rebuilds.
+        let app = InstallKind::Zlo {
+            bundle_script: r.checkout.join("tools/ironclaw_rune/bundle.sh"),
+        };
+        let host = RecordingHost::default();
+        let record = run(app.clone(), &host);
+        assert_eq!(record.state, UpdateRunState::Succeeded);
+        assert_eq!(*host.builds.borrow(), vec![app]);
     }
 
     #[test]

@@ -17,6 +17,10 @@ pub const OPERATOR_UPDATE_PATH: &str = "/api/operator/update";
 /// `POST` fetches the source and answers the refreshed [`UpdateStatus`].
 pub const OPERATOR_UPDATE_CHECK_PATH: &str = "/api/operator/update/check";
 
+/// `POST` turns self-update on from the checkout this backend was built
+/// from (no body: the path comes from the binary, never from a request) and
+/// answers the refreshed [`UpdateStatus`].
+pub const OPERATOR_UPDATE_ENABLE_PATH: &str = "/api/operator/update/enable";
 /// Most commit subjects an [`AvailableUpdate`] carries.
 pub const MAX_UPDATE_SUBJECTS: usize = 20;
 /// Most characters of one commit subject.
@@ -88,6 +92,11 @@ pub struct UpdateStatus {
     /// `None` until a check ran, or when the check found nothing newer.
     pub available: Option<AvailableUpdate>,
     pub last_run: UpdateRun,
+    /// Self-update is off, and this backend knows the source checkout it was
+    /// built from: [`OPERATOR_UPDATE_ENABLE_PATH`] can turn it on. Absent
+    /// from older backends (reads as `false`).
+    #[serde(default)]
+    pub can_enable: bool,
 }
 
 /// The `error` code of a refused update call.
@@ -100,6 +109,9 @@ pub enum UpdateErrorCode {
     UpdateRunning,
     /// The fetch or the checkout's state refused the check; `message` says why.
     CheckFailed,
+    /// Self-update could not be turned on from here: this backend was not
+    /// built from a checkout that is still there; `message` says what to do.
+    NoCheckout,
 }
 
 impl UpdateErrorCode {
@@ -108,6 +120,7 @@ impl UpdateErrorCode {
             Self::NotConfigured => "not_configured",
             Self::UpdateRunning => "update_running",
             Self::CheckFailed => "check_failed",
+            Self::NoCheckout => "no_checkout",
         }
     }
 }
@@ -141,12 +154,22 @@ mod tests {
                 "finished_at": "2026-11-08T21:02:00Z",
                 "message": "The checkout has local changes.",
                 "log_tail": "git status\n M a.rs"
-            }
+            },
+            "can_enable": false
         });
         let parsed: UpdateStatus = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(parsed.last_run.state, UpdateRunState::Failed);
         assert_eq!(serde_json::to_value(&parsed).unwrap(), json);
         assert_eq!(UpdateErrorCode::UpdateRunning.as_str(), "update_running");
+        assert_eq!(
+            serde_json::to_value(UpdateErrorCode::NoCheckout).unwrap(),
+            UpdateErrorCode::NoCheckout.as_str()
+        );
+        // An older backend's status has no `can_enable`.
+        let mut older = json;
+        older.as_object_mut().unwrap().remove("can_enable");
+        let parsed: UpdateStatus = serde_json::from_value(older).unwrap();
+        assert!(!parsed.can_enable);
         assert_eq!(
             serde_json::to_value(UpdateErrorCode::NotConfigured).unwrap(),
             UpdateErrorCode::NotConfigured.as_str()

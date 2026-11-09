@@ -1923,9 +1923,8 @@ fn update_is_refused_with_the_enable_hint_until_configured() {
             "{args:?} must refuse without [update]"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("[update]"), "{args:?} stderr: {stderr}");
         assert!(
-            stderr.contains("method = \"source\""),
+            stderr.contains("zlo update enable"),
             "{args:?} stderr: {stderr}"
         );
     }
@@ -1946,6 +1945,114 @@ fn update_is_refused_with_the_enable_hint_until_configured() {
         "a refused or read-only update creates no update records"
     );
     assert!(!v1_base_dir.exists(), "update never touches v1 state");
+}
+
+/// `zlo update enable --repo` / `disable` through the real binary, against a
+/// temp home and a temp git checkout (no network: enabling only reads the
+/// checkout).
+#[test]
+fn update_enable_and_disable_write_the_update_section() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("zlo-home");
+    std::fs::create_dir_all(&home).expect("home");
+    std::fs::write(home.join("config.toml"), "# mine\n").expect("config");
+    let checkout = temp.path().join("checkout");
+    std::fs::create_dir_all(&checkout).expect("checkout");
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&checkout)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(checkout.join("README"), "one\n").expect("file");
+    git(&["add", "README"]);
+    git(&["commit", "-q", "-m", "First"]);
+    let run = |args: &[&str]| {
+        reborn_command()
+            .args(args)
+            .env("HOME", temp.path())
+            .env("ZLO_HOME", &home)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .output()
+            .expect("zlo update should run")
+    };
+
+    // Not a checkout: refused, nothing written.
+    let not_git = temp.path().join("plain");
+    std::fs::create_dir_all(&not_git).expect("plain");
+    let refused = run(&[
+        "update",
+        "enable",
+        "--repo",
+        not_git.to_str().expect("utf8"),
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("not a git checkout"),
+        "stderr: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("config.toml")).expect("config"),
+        "# mine\n"
+    );
+
+    // A checkout with nowhere to fetch from: refused too.
+    let repo_arg = checkout.to_str().expect("utf8");
+    let no_remote = run(&["update", "enable", "--repo", repo_arg]);
+    assert!(!no_remote.status.success());
+    assert!(
+        String::from_utf8_lossy(&no_remote.stderr).contains("no remote to update from"),
+        "stderr: {}",
+        String::from_utf8_lossy(&no_remote.stderr)
+    );
+    let origin = temp.path().join("origin.git");
+    git(&["init", "-q", "--bare", origin.to_str().expect("utf8")]);
+    git(&["remote", "add", "origin", origin.to_str().expect("utf8")]);
+
+    let enabled = run(&["update", "enable", "--repo", repo_arg]);
+    assert!(
+        enabled.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&enabled.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&enabled.stdout);
+    assert!(stdout.contains("Self-update is on"), "stdout: {stdout}");
+    assert!(stdout.contains("origin/main"), "stdout: {stdout}");
+    let config = std::fs::read_to_string(home.join("config.toml")).expect("config");
+    assert!(config.contains("# mine"), "{config}");
+    assert!(config.contains("method = \"source\""), "{config}");
+    let status = run(&["update", "--check", "--json"]);
+    // The check itself fails (the remote has no such branch yet), but the
+    // method reads as on.
+    assert!(!status.status.success());
+
+    let disabled = run(&["update", "disable"]);
+    assert!(disabled.status.success());
+    let config = std::fs::read_to_string(home.join("config.toml")).expect("config");
+    assert!(config.contains("method = \"none\""), "{config}");
+    assert!(
+        config.contains("repo = "),
+        "the checkout is remembered: {config}"
+    );
+    let off = run(&["update", "--check", "--json"]);
+    assert!(off.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&off.stdout).expect("json");
+    assert_eq!(json["method"], "none");
 }
 
 #[test]
