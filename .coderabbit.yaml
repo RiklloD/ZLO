@@ -30,9 +30,6 @@ reviews:
   path_filters:
     - "!**/Cargo.lock"
     - "!CHANGELOG.md" # maintained by release-plz
-    - "!ironclaw.bash" # clap_complete-generated completions
-    - "!ironclaw.fish"
-    - "!ironclaw.zsh"
     - "!README.ja.md" # translations; review the English source
     - "!README.ko.md"
     - "!README.ru.md"

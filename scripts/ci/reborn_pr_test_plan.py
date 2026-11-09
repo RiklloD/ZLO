@@ -548,9 +548,6 @@ PR_STATIC_CONTROL_PATHS = {
     "railway.toml",
     "codecov.yml",
     #     Shipped artifacts with no test coverage of their own:
-    "ironclaw.bash",
-    "ironclaw.fish",
-    "ironclaw.zsh",
     "ironclaw.png",
     "LICENSE-APACHE",
     "LICENSE-MIT",

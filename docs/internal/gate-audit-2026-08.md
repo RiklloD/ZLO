@@ -198,7 +198,7 @@ them** (`trace_commons/src/contribution/mod.rs`, `capabilities/src/host/mod.rs`)
 | `quality_gate_strict.sh` | **DELETE (recommend)** | Zero references anywhere; superseded by `quality_gate.sh` |
 | `check-e2e-matrix-files.sh` | **DELETE — done in this PR** | Zero references; default target `.github/workflows/e2e.yml` was deleted with the v1 monolith (`b6da0272a8`) |
 | `check-boundaries.sh` | **DELETE — done in this PR** | Measured broken on a clean tree (recorded 2026-08-05); never run by CI; two guidance files claimed it "enforces" gating it never enforced |
-| `test-ci-artifact-naming.sh`, `test_cut_ironclaw_release.py`, `test-import-reborn-run-artifact.py`, `test-reset-extension-state.sh`, `test-pre-commit-safety.sh`, `tests/test_check_reborn_responses_e2e_manifest.py` | **KEEP-FIX (wire or delete)** | Self-tests that run in **no workflow** — the exact shape that produced the 204-dark-test find. `test-pre-commit-safety.sh` is the highest-value wire-up (its subject runs on every hook-installed commit) |
+| `test_cut_ironclaw_release.py`, `test-import-reborn-run-artifact.py`, `test-reset-extension-state.sh`, `test-pre-commit-safety.sh`, `tests/test_check_reborn_responses_e2e_manifest.py` | **KEEP-FIX (wire or delete)** | Self-tests that run in **no workflow** — the exact shape that produced the 204-dark-test find. `test-pre-commit-safety.sh` is the highest-value wire-up (its subject runs on every hook-installed commit) |
 
 ---
 

@@ -128,7 +128,7 @@ export IRONCLAW_REBORN_HOME="$HOME/.ironclaw-reborn-demo"
 # 2. Configure a model route. NEAR AI shown here; swap the provider id and key
 #    env var for any row in the table below. set-provider records the credential
 #    env-var NAME in config.toml; the secret VALUE stays in the environment.
-cargo run -q -p ironclaw --bin ironclaw -- \
+cargo run -q -p ironclaw --bin zlo -- \
   models set-provider nearai
 export NEARAI_API_KEY="your-key-here"
 
@@ -141,7 +141,7 @@ export IRONCLAW_REBORN_WEBUI_TOKEN="$(openssl rand -hex 32)"   # bearer token yo
 export IRONCLAW_REBORN_WEBUI_USER_ID="reborn-cli"             # optional; must match [identity].default_owner if set
 
 # 4. Launch.
-cargo run -q -p ironclaw --bin ironclaw -- serve
+cargo run -q -p ironclaw --bin zlo -- serve
 ```
 
 Then open **`http://127.0.0.1:3000/`** and log in with the
@@ -171,7 +171,7 @@ API-key providers it records that provider's credential env-var name in
 So to use Anthropic instead of the quick-start example, swap step 2 for:
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- \
+cargo run -q -p ironclaw --bin zlo -- \
   models set-provider anthropic
 export ANTHROPIC_API_KEY="your-key-here"
 ```
@@ -261,9 +261,9 @@ returns an error and a non-zero exit instead of resolving Reborn home, reading v
 config, or printing channel data:
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- channels list
-cargo run -q -p ironclaw --bin ironclaw -- channels list --json
-cargo run -q -p ironclaw --bin ironclaw -- channels list --verbose
+cargo run -q -p ironclaw --bin zlo -- channels list
+cargo run -q -p ironclaw --bin zlo -- channels list --json
+cargo run -q -p ironclaw --bin zlo -- channels list --verbose
 ```
 
 All three forms (default/`--json`/`--verbose`) print the same message to
@@ -282,10 +282,10 @@ longer exists; do not implement against it.
 Searches and manages local-dev Reborn extensions through the same lifecycle facade exposed to product surfaces. Available extension packages are read from `/system/extensions`, which maps to `<reborn-home>/local-dev/system/extensions` for the local-dev profile.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- extension search github
-cargo run -q -p ironclaw --bin ironclaw -- extension search github --json
-cargo run -q -p ironclaw --bin ironclaw -- extension install github-mcp
-cargo run -q -p ironclaw --bin ironclaw -- extension remove github-mcp
+cargo run -q -p ironclaw --bin zlo -- extension search github
+cargo run -q -p ironclaw --bin zlo -- extension search github --json
+cargo run -q -p ironclaw --bin zlo -- extension install github-mcp
+cargo run -q -p ironclaw --bin zlo -- extension remove github-mcp
 ```
 
 The commands are scoped to Reborn boot/config resolution and do not create or read v1 state directories.
@@ -306,11 +306,11 @@ Searches the signed IronHub catalog and installs catalog tools or skills through
 the current Reborn extension and skill managers:
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- ironhub search github
-cargo run -q -p ironclaw --bin ironclaw -- ironhub list --kind skill
-cargo run -q -p ironclaw --bin ironclaw -- ironhub info github-tool --kind tool
-cargo run -q -p ironclaw --bin ironclaw -- ironhub install github-tool --kind tool
-cargo run -q -p ironclaw --bin ironclaw -- ironhub install private-tool \
+cargo run -q -p ironclaw --bin zlo -- ironhub search github
+cargo run -q -p ironclaw --bin zlo -- ironhub list --kind skill
+cargo run -q -p ironclaw --bin zlo -- ironhub info github-tool --kind tool
+cargo run -q -p ironclaw --bin zlo -- ironhub install github-tool --kind tool
+cargo run -q -p ironclaw --bin zlo -- ironhub install private-tool \
   --private-manifest-url-file /secure/path/ironhub-manifest-url
 ```
 
@@ -347,8 +347,8 @@ within a 300-second drift window and consume their nonces durably.
 Generates shell completion scripts without resolving Reborn home, reading v1 state, or creating directories.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- completion --shell zsh > ironclaw.zsh
-cargo run -q -p ironclaw --bin ironclaw -- completion --shell bash > ironclaw.bash
+cargo run -q -p ironclaw --bin zlo -- completion --shell zsh > zlo.zsh
+cargo run -q -p ironclaw --bin zlo -- completion --shell bash > zlo.bash
 ```
 
 The zsh output keeps the v1 CLI guard around `compdef` so the generated script is safe when zsh completion functions are not loaded yet.
@@ -358,7 +358,7 @@ The zsh output keeps the v1 CLI guard around `compdef` so the generated script i
 Shows the resolved Reborn state root, its source, selected profile, and explicit v1-state status without creating directories.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- config path
+cargo run -q -p ironclaw --bin zlo -- config path
 ```
 
 Expected fields include:
@@ -376,7 +376,7 @@ state or seed config files.
 Validates and reports Reborn boot configuration without creating state directories or starting runtime services.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- doctor
+cargo run -q -p ironclaw --bin zlo -- doctor
 ```
 
 Expected fields include:
@@ -394,9 +394,9 @@ wired yet, so the command stays visible but invoking `hooks list` errors instead
 of reporting hook data:
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- hooks list
-cargo run -q -p ironclaw --bin ironclaw -- hooks list --json
-cargo run -q -p ironclaw --bin ironclaw -- hooks list --verbose
+cargo run -q -p ironclaw --bin zlo -- hooks list
+cargo run -q -p ironclaw --bin zlo -- hooks list --json
+cargo run -q -p ironclaw --bin zlo -- hooks list --verbose
 ```
 
 ```
@@ -409,9 +409,9 @@ Same treatment: the Reborn log source is not wired yet, so `logs` stays
 visible but invoking it errors instead of reporting log data:
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- logs
-cargo run -q -p ironclaw --bin ironclaw -- logs --json
-cargo run -q -p ironclaw --bin ironclaw -- logs --verbose
+cargo run -q -p ironclaw --bin zlo -- logs
+cargo run -q -p ironclaw --bin zlo -- logs --json
+cargo run -q -p ironclaw --bin zlo -- logs --verbose
 ```
 
 ```
@@ -429,9 +429,9 @@ remaining setup work. It does not call into v1 `src/setup`, v1 database
 config, v1 channels, or v1 import state.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- onboard
-cargo run -q -p ironclaw --bin ironclaw -- onboard --dry-run
-cargo run -q -p ironclaw --bin ironclaw -- onboard --force
+cargo run -q -p ironclaw --bin zlo -- onboard
+cargo run -q -p ironclaw --bin zlo -- onboard --dry-run
+cargo run -q -p ironclaw --bin zlo -- onboard --force
 ```
 
 `--dry-run` reports what would be initialized without writing files.
@@ -445,10 +445,10 @@ Shows Reborn model purpose slots and route status, and configures the default
 LLM route.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- models list
-cargo run -q -p ironclaw --bin ironclaw -- models list --json
-cargo run -q -p ironclaw --bin ironclaw -- models status
-cargo run -q -p ironclaw --bin ironclaw -- models status --json
+cargo run -q -p ironclaw --bin zlo -- models list
+cargo run -q -p ironclaw --bin zlo -- models list --json
+cargo run -q -p ironclaw --bin zlo -- models status
+cargo run -q -p ironclaw --bin zlo -- models status --json
 ```
 
 `models status` reports the configured default route, including the exact env
@@ -478,8 +478,8 @@ get no `api_key_env`). `<provider>` is a provider id or alias (`openai`,
 provider's catalog default.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- models set-provider openai --model gpt-5-mini
-cargo run -q -p ironclaw --bin ironclaw -- models set-provider nearai --model deepseek-ai/DeepSeek-V4-Flash
+cargo run -q -p ironclaw --bin zlo -- models set-provider openai --model gpt-5-mini
+cargo run -q -p ironclaw --bin zlo -- models set-provider nearai --model deepseek-ai/DeepSeek-V4-Flash
 ```
 
 The secret value still lives in the environment under the catalog's
@@ -497,8 +497,8 @@ build of the binary without `RebornProviderAdmin` linked in.
 Lists the supported Reborn boot profiles without resolving Reborn home, reading v1 state, or creating directories.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- profile list
-cargo run -q -p ironclaw --bin ironclaw -- profile list --json
+cargo run -q -p ironclaw --bin zlo -- profile list
+cargo run -q -p ironclaw --bin zlo -- profile list --json
 ```
 
 Supported profiles:
@@ -519,14 +519,14 @@ Select a profile with `IRONCLAW_REBORN_PROFILE=<profile>`.
 Starts the standalone Reborn runtime and reads messages from stdin. The no-profile path targets the planned AgentLoop runtime (`reborn-planned-default`). Without model provider environment variables, the runtime still starts but messages fail cleanly because no LLM gateway is wired.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- run
-cargo run -q -p ironclaw --bin ironclaw -- run --message "hello"
+cargo run -q -p ironclaw --bin zlo -- run
+cargo run -q -p ironclaw --bin zlo -- run --message "hello"
 ```
 
 Use `--dry-run` for the side-effect-free readiness snapshot:
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- run --dry-run
+cargo run -q -p ironclaw --bin zlo -- run --dry-run
 ```
 
 When `$IRONCLAW_REBORN_HOME/config.toml` is missing, the first stateful
@@ -587,7 +587,7 @@ turns from stdin. Same runtime as `run`, without the WebUI listener. Accepts
 `--confirm-host-access` for `local-dev-yolo`.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- repl
+cargo run -q -p ironclaw --bin zlo -- repl
 ```
 
 ### `serve`
@@ -599,8 +599,8 @@ See [Running with the WebUI (`serve`)](#running-with-the-webui-serve) for the
 full walkthrough, auth setup, common startup errors, and an API smoke test.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- serve
-cargo run -q -p ironclaw --bin ironclaw -- serve --host 127.0.0.1 --port 3000
+cargo run -q -p ironclaw --bin zlo -- serve
+cargo run -q -p ironclaw --bin zlo -- serve --host 127.0.0.1 --port 3000
 ```
 
 ### `skills list`
@@ -615,9 +615,9 @@ discovery paths, and a missing storage root is reported as an empty skill list
 without creating directories.
 
 ```bash
-cargo run -q -p ironclaw --bin ironclaw -- skills list
-cargo run -q -p ironclaw --bin ironclaw -- skills list --json
-cargo run -q -p ironclaw --bin ironclaw -- skills list --verbose
+cargo run -q -p ironclaw --bin zlo -- skills list
+cargo run -q -p ironclaw --bin zlo -- skills list --json
+cargo run -q -p ironclaw --bin zlo -- skills list --verbose
 ```
 
 Expected fields include:
@@ -671,7 +671,7 @@ Example:
 ```bash
 IRONCLAW_REBORN_HOME="$PWD/.reborn-home" \
 IRONCLAW_REBORN_PROFILE=production \
-cargo run -q -p ironclaw --bin ironclaw -- doctor
+cargo run -q -p ironclaw --bin zlo -- doctor
 ```
 
 ## Local smoke checks
@@ -685,20 +685,20 @@ cargo test -p ironclaw_config
 cargo test -p ironclaw_turn_runner model_slots_are_exposed_in_cli_display_order
 cargo test -p ironclaw_architecture_tests reborn
 cargo clippy -p ironclaw --all-targets -- -D warnings
-cargo run -q -p ironclaw --bin ironclaw -- --help
+cargo run -q -p ironclaw --bin zlo -- --help
 # channels/hooks/logs are disabled — these are expected to exit non-zero
 # with "is not implemented yet", not to succeed.
-cargo run -q -p ironclaw --bin ironclaw -- channels list; echo "exit: $?"
-cargo run -q -p ironclaw --bin ironclaw -- completion --shell zsh >"$(mktemp -d)/ironclaw.zsh"
+cargo run -q -p ironclaw --bin zlo -- channels list; echo "exit: $?"
+cargo run -q -p ironclaw --bin zlo -- completion --shell zsh >"$(mktemp -d)/zlo.zsh"
 IRONCLAW_REBORN_HOME="$(mktemp -d)/reborn-home" \
-  cargo run -q -p ironclaw --bin ironclaw -- config path
-cargo run -q -p ironclaw --bin ironclaw -- hooks list; echo "exit: $?"
-cargo run -q -p ironclaw --bin ironclaw -- logs; echo "exit: $?"
-cargo run -q -p ironclaw --bin ironclaw -- models status
-cargo run -q -p ironclaw --bin ironclaw -- profile list
+  cargo run -q -p ironclaw --bin zlo -- config path
+cargo run -q -p ironclaw --bin zlo -- hooks list; echo "exit: $?"
+cargo run -q -p ironclaw --bin zlo -- logs; echo "exit: $?"
+cargo run -q -p ironclaw --bin zlo -- models status
+cargo run -q -p ironclaw --bin zlo -- profile list
 IRONCLAW_REBORN_HOME="$(mktemp -d)/reborn-home" \
-  cargo run -q -p ironclaw --bin ironclaw -- run
-cargo run -q -p ironclaw --bin ironclaw -- skills list
+  cargo run -q -p ironclaw --bin zlo -- run
+cargo run -q -p ironclaw --bin zlo -- skills list
 ```
 
 ## Adding commands
