@@ -598,19 +598,6 @@ fn redacted_http_url_origin(url: &str) -> String {
     format!("{scheme}://{host}")
 }
 
-pub trait WasmHostWorkspace: Send + Sync {
-    fn read(&self, path: &str) -> Option<String>;
-}
-
-#[derive(Debug, Default)]
-pub struct DenyWasmHostWorkspace;
-
-impl WasmHostWorkspace for DenyWasmHostWorkspace {
-    fn read(&self, _path: &str) -> Option<String> {
-        None
-    }
-}
-
 pub trait WasmHostSecrets: Send + Sync {
     fn exists(&self, name: &str) -> bool;
 }
@@ -621,21 +608,6 @@ pub struct DenyWasmHostSecrets;
 impl WasmHostSecrets for DenyWasmHostSecrets {
     fn exists(&self, _name: &str) -> bool {
         false
-    }
-}
-
-pub trait WasmHostTools: Send + Sync {
-    fn invoke(&self, alias: &str, params_json: &str) -> Result<String, WasmHostError>;
-}
-
-#[derive(Debug, Default)]
-pub struct DenyWasmHostTools;
-
-impl WasmHostTools for DenyWasmHostTools {
-    fn invoke(&self, _alias: &str, _params_json: &str) -> Result<String, WasmHostError> {
-        Err(WasmHostError::Unavailable(
-            "WASM tool invocation is not configured".to_string(),
-        ))
     }
 }
 
@@ -659,9 +631,7 @@ impl WasmHostClock for SystemWasmHostClock {
 #[derive(Clone)]
 pub struct WitToolHost {
     pub(crate) http: Arc<dyn WasmHostHttp>,
-    pub(crate) workspace: Arc<dyn WasmHostWorkspace>,
     pub(crate) secrets: Arc<dyn WasmHostSecrets>,
-    pub(crate) tools: Arc<dyn WasmHostTools>,
     pub(crate) clock: Arc<dyn WasmHostClock>,
 }
 
@@ -669,9 +639,7 @@ impl WitToolHost {
     pub fn deny_all() -> Self {
         Self {
             http: Arc::new(DenyWasmHostHttp),
-            workspace: Arc::new(DenyWasmHostWorkspace),
             secrets: Arc::new(DenyWasmHostSecrets),
-            tools: Arc::new(DenyWasmHostTools),
             clock: Arc::new(SystemWasmHostClock),
         }
     }
@@ -684,27 +652,11 @@ impl WitToolHost {
         self
     }
 
-    pub fn with_workspace<T>(mut self, workspace: Arc<T>) -> Self
-    where
-        T: WasmHostWorkspace + 'static,
-    {
-        self.workspace = workspace;
-        self
-    }
-
     pub fn with_secrets<T>(mut self, secrets: Arc<T>) -> Self
     where
         T: WasmHostSecrets + 'static,
     {
         self.secrets = secrets;
-        self
-    }
-
-    pub fn with_tools<T>(mut self, tools: Arc<T>) -> Self
-    where
-        T: WasmHostTools + 'static,
-    {
-        self.tools = tools;
         self
     }
 

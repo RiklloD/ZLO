@@ -25,13 +25,14 @@ permitted to hold one.
   `WitToolExecution`/`PreparedWitTool`, `WitToolRuntimeConfig`,
   `WIT_TOOL_VERSION`, `TOOL_WIT`; errors `WasmError`/`WasmHostError`.
 - Host-import traits, each deny-by-default: `WasmHostHttp`,
-  `WasmHostWorkspace`, `WasmHostSecrets`, `WasmHostTools`, `WasmHostClock`
+  `WasmHostSecrets`, `WasmHostClock`; the `workspace-read` and `tool-invoke`
+  imports have no adapter and are always denied
   (with `Deny*`/`Recording*`/`System*` implementations — not a full matrix;
   re-derive with `rg -n "pub struct (Deny|Recording|System)" src/`), plus
   staged credential handoff (`WasmStagedRuntimeCredential(s)`,
   `WasmRuntimeCredentialProvider`).
-- `wasm_sandbox_core` — engine setup, epoch ticker, minimal WASI p2 linker,
-  limits, store-core helpers; deliberately domain-free.
+- `wasm_sandbox_core` — engine setup, epoch ticker and limits; deliberately
+  domain-free.
 - The ABI: `wit/tool.wit` (`near:agent@0.4.1`, typed `wit-result`-shaped
   `WitToolOutcome::Success`/`Failure` responses) is the sole supported tool
   contract. `wit/channel.wit` remains `near:agent@0.3.1`; the same WIT package

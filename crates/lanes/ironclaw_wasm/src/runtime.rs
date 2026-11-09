@@ -3,10 +3,10 @@ use std::time::Instant;
 
 use ironclaw_safety::LeakDetector;
 use wasmtime::component::Linker;
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Engine, Store};
 
 use crate::bindings;
-use crate::config::{EPOCH_TICK_INTERVAL, WIT_TOOL_VERSION, WitToolRuntimeConfig};
+use crate::config::{WIT_TOOL_VERSION, WitToolRuntimeConfig};
 use crate::error::WasmError;
 use crate::host::WitToolHost;
 use crate::store::StoreData;
@@ -14,7 +14,9 @@ use crate::types::{
     PreparedWitTool, WitErrorKind, WitGuestFailure, WitToolExecution, WitToolOutcome,
     WitToolRequest,
 };
-use crate::wasm_sandbox_core::SandboxLimits;
+use crate::wasm_sandbox_core::{
+    EPOCH_TICK_INTERVAL, SandboxError, SandboxLimits, component_engine,
+};
 
 /// Shared leak-detector registry (well-known vendor API-token shapes,
 /// PEM/SSH keys, bearer/JWT, …) used to scrub guest-authored error text
@@ -71,17 +73,9 @@ pub struct WitToolRuntime {
 
 impl WitToolRuntime {
     pub fn new(config: WitToolRuntimeConfig) -> Result<Self, WasmError> {
-        let mut wasmtime_config = Config::new();
-        wasmtime_config.wasm_component_model(true);
-        wasmtime_config.wasm_threads(false);
-        wasmtime_config.consume_fuel(true);
-        wasmtime_config.epoch_interruption(true);
-        wasmtime_config.debug_info(false);
-
-        let engine = Engine::new(&wasmtime_config)
-            .map_err(|error| WasmError::EngineCreationFailed(error.to_string()))?;
-        spawn_epoch_ticker(engine.clone())?;
-
+        let engine = component_engine("reborn-wasm-epoch-ticker").map_err(
+            |SandboxError::EngineCreationFailed(reason)| WasmError::EngineCreationFailed(reason),
+        )?;
         Ok(Self { engine, config })
     }
 
@@ -232,19 +226,6 @@ fn map_error_kind(kind: bindings::exports::near::agent::tool::ErrorKind) -> WitE
         WitKind::Client => WitErrorKind::Client,
         WitKind::OperationFailed => WitErrorKind::OperationFailed,
     }
-}
-
-fn spawn_epoch_ticker(engine: Engine) -> Result<(), WasmError> {
-    std::thread::Builder::new()
-        .name("reborn-wasm-epoch-ticker".into())
-        .spawn(move || {
-            loop {
-                std::thread::sleep(EPOCH_TICK_INTERVAL);
-                engine.increment_epoch();
-            }
-        })
-        .map(|_| ())
-        .map_err(|error| WasmError::EngineCreationFailed(error.to_string()))
 }
 
 fn elapsed_millis(started: Instant) -> u64 {

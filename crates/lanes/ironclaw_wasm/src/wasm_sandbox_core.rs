@@ -1,18 +1,10 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use wasmtime::component::Linker;
-use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime::{Config, Engine};
 
 pub use ironclaw_wasm_limiter::WasmResourceLimiter;
-pub use wasmtime_wasi::{WasiCtxView as MinimalWasiCtxView, WasiView as MinimalWasiView};
 
-/// Runtime-specific store data exposes the shared v1-style limiter to Wasmtime.
-pub trait SandboxStoreData {
-    fn sandbox_limiter(&mut self) -> &mut WasmResourceLimiter;
-}
-
-/// v1-compatible epoch tick interval used as backup timeout mechanism.
+/// Epoch tick interval used as the backup timeout mechanism.
 pub const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(500);
 
 const DEFAULT_MEMORY_BYTES: u64 = 10 * 1024 * 1024;
@@ -57,51 +49,6 @@ impl SandboxLimits {
 pub enum SandboxError {
     #[error("failed to create WASM engine: {0}")]
     EngineCreationFailed(String),
-    #[error("failed to configure WASM store: {0}")]
-    StoreConfiguration(String),
-    #[error("failed to configure WASM linker: {0}")]
-    LinkerConfiguration(String),
-}
-
-/// Store-owned v1-style sandbox state: resource limiter plus minimal WASI p2.
-pub struct SandboxStoreCore {
-    limiter: WasmResourceLimiter,
-    wasi: WasiCtx,
-    table: ResourceTable,
-    deadline: Option<Instant>,
-}
-
-impl SandboxStoreCore {
-    pub fn new(memory_limit: u64, timeout: Duration) -> Self {
-        Self {
-            limiter: WasmResourceLimiter::new(memory_limit),
-            wasi: WasiCtxBuilder::new().build(),
-            table: ResourceTable::new(),
-            deadline: Instant::now().checked_add(timeout),
-        }
-    }
-
-    pub fn limiter_mut(&mut self) -> &mut WasmResourceLimiter {
-        &mut self.limiter
-    }
-
-    pub fn deadline_exceeded(&self) -> bool {
-        self.deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-    }
-
-    pub fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.wasi,
-            table: &mut self.table,
-        }
-    }
-}
-
-impl WasiView for SandboxStoreCore {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        self.ctx()
-    }
 }
 
 pub fn component_engine(thread_name: impl Into<String>) -> Result<Engine, SandboxError> {
@@ -113,7 +60,7 @@ pub fn component_engine(thread_name: impl Into<String>) -> Result<Engine, Sandbo
     Ok(engine)
 }
 
-pub fn configure_component_engine(config: &mut Config) {
+fn configure_component_engine(config: &mut Config) {
     config.consume_fuel(true);
     config.epoch_interruption(true);
     config.wasm_component_model(true);
@@ -130,7 +77,7 @@ pub fn configure_component_engine(config: &mut Config) {
 /// `Engine` clone for the lifetime of the process — a real problem for tests
 /// and for long-running hosts that rebuild runtimes (config reloads,
 /// per-installation runtimes, etc.).
-pub fn spawn_epoch_ticker(
+fn spawn_epoch_ticker(
     engine: &Engine,
     thread_name: impl Into<String>,
 ) -> Result<(), SandboxError> {
@@ -150,44 +97,10 @@ pub fn spawn_epoch_ticker(
         .map_err(|error| SandboxError::EngineCreationFailed(error.to_string()))
 }
 
-pub fn configure_store<T>(store: &mut Store<T>, limits: &SandboxLimits) -> Result<(), SandboxError>
-where
-    T: SandboxStoreData + 'static,
-{
-    store
-        .set_fuel(limits.fuel)
-        .map_err(|error| SandboxError::StoreConfiguration(error.to_string()))?;
-    store.epoch_deadline_trap();
-    let ticks = (limits.timeout.as_millis() / EPOCH_TICK_INTERVAL.as_millis()).max(1) as u64;
-    store.set_epoch_deadline(ticks);
-    store.limiter(|data| data.sandbox_limiter());
-    Ok(())
-}
-
-pub fn add_minimal_wasi_to_linker<T>(linker: &mut Linker<T>) -> Result<(), SandboxError>
-where
-    T: WasiView,
-{
-    wasmtime_wasi::p2::add_to_linker_sync(linker)
-        .map_err(|error| SandboxError::LinkerConfiguration(error.to_string()))
-}
-
-pub fn elapsed_millis(started: Instant) -> u64 {
-    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
-}
-
 #[cfg(test)]
 mod tests {
     use ironclaw_wasm_limiter::WasmResourceLimiter;
     use wasmtime::ResourceLimiter;
-
-    use super::SandboxStoreCore;
-
-    #[test]
-    fn minimal_wasi_store_starts_without_deadline_exceeded() {
-        let core = SandboxStoreCore::new(1024 * 1024, std::time::Duration::from_secs(1));
-        assert!(!core.deadline_exceeded());
-    }
 
     #[test]
     fn limiter_tracks_aggregate_growth_across_memories() {
@@ -198,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn limiter_allows_component_model_internal_resources_like_v1() {
+    fn limiter_allows_component_model_internal_resources() {
         let limiter = WasmResourceLimiter::new(1024);
         assert_eq!(limiter.instances(), 10);
         assert_eq!(limiter.tables(), 10);

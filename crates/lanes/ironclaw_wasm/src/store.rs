@@ -93,17 +93,6 @@ impl StoreData {
         self.host.clock.now_millis()
     }
 
-    fn workspace_read_core(&mut self, path: String) -> Option<String> {
-        if self.deadline_exceeded() {
-            return None;
-        }
-        let result = self.host.workspace.read(&path);
-        if self.deadline_exceeded() {
-            return None;
-        }
-        result
-    }
-
     fn http_request_core(
         &mut self,
         method: String,
@@ -141,19 +130,10 @@ impl StoreData {
         }
     }
 
-    fn tool_invoke_core(&mut self, alias: String, params_json: String) -> Result<String, String> {
-        if let Some(error) = self.deadline_error() {
-            return Err(error);
-        }
-        let result = self
-            .host
-            .tools
-            .invoke(&alias, &params_json)
-            .map_err(|error| error.to_string());
-        if let Some(error) = self.deadline_error() {
-            return Err(error);
-        }
-        result
+    fn tool_invoke_core(&mut self) -> Result<String, String> {
+        Err(self
+            .deadline_error()
+            .unwrap_or_else(|| "WASM tool invocation is not configured".to_string()))
     }
 
     fn secret_exists_core(&mut self, name: String) -> bool {
@@ -184,8 +164,8 @@ impl bindings::near::agent::host::Host for StoreData {
         self.now_millis_core()
     }
 
-    fn workspace_read(&mut self, path: String) -> Option<String> {
-        self.workspace_read_core(path)
+    fn workspace_read(&mut self, _path: String) -> Option<String> {
+        None
     }
 
     fn http_request(
@@ -208,8 +188,8 @@ impl bindings::near::agent::host::Host for StoreData {
             .map_err(wit_http_failure)
     }
 
-    fn tool_invoke(&mut self, alias: String, params_json: String) -> Result<String, String> {
-        self.tool_invoke_core(alias, params_json)
+    fn tool_invoke(&mut self, _alias: String, _params_json: String) -> Result<String, String> {
+        self.tool_invoke_core()
     }
 
     fn secret_exists(&mut self, name: String) -> bool {
