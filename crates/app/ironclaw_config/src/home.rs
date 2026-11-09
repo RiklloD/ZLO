@@ -5,7 +5,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::home_migration::{HomeMigration, migrate_legacy_home};
+use crate::home_migration::{HomeMigration, current_data_location, migrate_legacy_home};
 
 /// Environment variable that selects the ZLO state root (default `~/.zlo`).
 pub const REBORN_HOME_ENV: &str = "ZLO_HOME";
@@ -65,6 +65,48 @@ impl RebornHome {
             env::var_os(V1_BASE_DIR_ENV),
         )?
         .migrate_if_default()
+    }
+
+    /// [`Self::resolve_from_env`] without the first-run move: when the
+    /// default applies and the pre-ZLO `~/.ironclaw/reborn` still holds the
+    /// data, that folder is returned instead of an empty `~/.zlo`. Only for
+    /// callers that read (a log viewer, connection discovery); a caller that
+    /// writes or starts the backend must use [`Self::resolve_from_env`].
+    pub fn resolve_from_env_without_migrating() -> Result<Self, RebornConfigError> {
+        let (explicit, explicit_source) = explicit_home(
+            env::var_os(REBORN_HOME_ENV),
+            env::var_os(LEGACY_REBORN_HOME_ENV),
+        );
+        Ok(Self::resolve_with_source(
+            explicit,
+            explicit_source,
+            env::var_os("HOME"),
+            env::var_os("USERPROFILE"),
+            env::var_os(V1_BASE_DIR_ENV),
+        )?
+        .locate_without_migrating())
+    }
+
+    /// [`Self::resolve_from_env_without_migrating`] with the environment
+    /// passed in.
+    pub fn resolve_from_env_parts_without_migrating(
+        reborn_home: Option<OsString>,
+        home: Option<OsString>,
+        userprofile: Option<OsString>,
+    ) -> Result<Self, RebornConfigError> {
+        Ok(
+            Self::resolve_from_env_parts(reborn_home, home, userprofile)?
+                .locate_without_migrating(),
+        )
+    }
+
+    fn locate_without_migrating(mut self) -> Self {
+        if self.source == RebornHomeSource::Default
+            && let Some(user_home) = self.path.parent()
+        {
+            self.path = current_data_location(user_home);
+        }
+        self
     }
 
     /// Pure resolution: `reborn_home` is treated as `ZLO_HOME`. Never

@@ -280,3 +280,33 @@ fn concurrent_starts_migrate_exactly_once() {
             .is_symlink()
     );
 }
+
+#[test]
+fn read_only_resolution_finds_unmoved_data_without_moving_it() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let legacy = seed_legacy(temp.path());
+
+    let home =
+        RebornHome::resolve_from_env_parts_without_migrating(None, Some(temp.path().into()), None)
+            .expect("resolves");
+
+    assert_eq!(home.path(), legacy, "points at where the data is");
+    assert_eq!(home.migration(), &HomeMigration::NotNeeded);
+    assert!(fs::symlink_metadata(&legacy).expect("legacy").is_dir());
+    assert!(!temp.path().join(".zlo").exists(), "nothing moved");
+
+    // After the move, the read-only path follows the data to ~/.zlo.
+    resolve(temp.path()).expect("migrate");
+    let home =
+        RebornHome::resolve_from_env_parts_without_migrating(None, Some(temp.path().into()), None)
+            .expect("resolves");
+    assert_eq!(home.path(), temp.path().join(".zlo"));
+
+    // Fresh install: ~/.zlo, nothing created.
+    let fresh = tempfile::tempdir().expect("tempdir");
+    let home =
+        RebornHome::resolve_from_env_parts_without_migrating(None, Some(fresh.path().into()), None)
+            .expect("resolves");
+    assert_eq!(home.path(), fresh.path().join(".zlo"));
+    assert!(!fresh.path().join(".zlo").exists());
+}

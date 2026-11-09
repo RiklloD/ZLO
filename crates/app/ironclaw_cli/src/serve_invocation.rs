@@ -148,6 +148,10 @@ mod tests {
     #[test]
     fn resolves_current_exe_as_an_existing_absolute_path() {
         let _lock = crate::runtime::test_env::lock_runtime_env();
+        // An explicit home: resolving the default one would run the
+        // first-run data-folder move against the developer's real $HOME.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvPairGuard::set_home_only(tmp.path());
         let invocation = serve_invocation().expect("serve_invocation must resolve");
         assert!(invocation.exe.is_absolute());
         assert!(invocation.exe.exists());

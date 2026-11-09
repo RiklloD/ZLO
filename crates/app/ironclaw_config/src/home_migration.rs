@@ -96,6 +96,20 @@ pub fn migrate_legacy_home(user_home: &Path) -> Result<HomeMigration, RebornConf
     }
 }
 
+/// Where the data lives right now, without moving anything: the pre-ZLO
+/// folder while it still holds the data and `~/.zlo` does not, else
+/// `~/.zlo`. For read-only callers (log viewers, connection discovery);
+/// anything that will write or start a backend uses [`migrate_legacy_home`].
+pub(crate) fn current_data_location(user_home: &Path) -> PathBuf {
+    let paths = Paths::new(user_home);
+    match paths.state() {
+        Ok(State::NeedsMove) => paths.legacy,
+        Ok(_) => paths.current,
+        // silent-ok: a read-only probe; the migrating path reports the error
+        Err(_) => paths.current,
+    }
+}
+
 struct Paths {
     legacy_parent: PathBuf,
     legacy: PathBuf,
