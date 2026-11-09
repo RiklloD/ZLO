@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use ironclaw_product_contracts::self_update::{
-    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_PATH, UpdateErrorCode,
-    UpdateStatus,
+    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_DISABLE_PATH, OPERATOR_UPDATE_ENABLE_PATH,
+    OPERATOR_UPDATE_PATH, UpdateErrorCode, UpdateStatus,
 };
 use reqwest::Method;
 use serde::Deserialize;
@@ -117,6 +117,13 @@ impl Client {
             .await
     }
 
+    /// `POST /api/operator/update/disable`: turn self-update off there. A
+    /// backend that predates the route answers [`UpdateCallError::TooOld`].
+    pub async fn disable_update(&self) -> Result<UpdateStatus, UpdateCallError> {
+        self.update_call(Method::POST, OPERATOR_UPDATE_DISABLE_PATH, CALL_TIMEOUT)
+            .await
+    }
+
     /// `POST /api/operator/update`: start the update (`202`).
     pub async fn start_update(&self) -> Result<UpdateStatus, UpdateCallError> {
         self.update_call(Method::POST, OPERATOR_UPDATE_PATH, CALL_TIMEOUT)
@@ -151,7 +158,9 @@ mod tests {
         c.check_update().await.unwrap();
         c.start_update().await.unwrap();
         c.enable_update().await.unwrap();
+        c.disable_update().await.unwrap();
         let seen = seen.lock().unwrap();
+        assert_eq!(seen[4].line, "POST /api/operator/update/disable HTTP/1.1");
         assert_eq!(seen[0].line, "GET /api/operator/update HTTP/1.1");
         assert_eq!(seen[1].line, "POST /api/operator/update/check HTTP/1.1");
         assert_eq!(seen[2].line, "POST /api/operator/update HTTP/1.1");

@@ -27,7 +27,9 @@ Each machine updates from its own source checkout. A machine that built ZLO from
 - **In ZLO:** Settings → Computers. A computer with updates off shows **Updates are off** and a **Turn on** button.
 - **In a terminal on that machine:** `zlo update enable`.
 
-Both take effect at once; nothing restarts. `zlo update disable` turns updates off again.
+Both take effect at once; nothing restarts.
+
+To turn updates off again, click **Turn off** on that computer's row, or run `zlo update disable` there. The computer stops checking and is left out of **Update all machines**. It remembers its checkout, so **Turn on** brings back the same one.
 
 **Turn on** is only offered when it will work: the checkout ZLO was built from is still there, still holds the commit this build came from, belongs to you, and is on a branch with a remote. If not (ZLO came from a prebuilt binary, or the checkout moved or was replaced), it isn't offered. Clone the source there and name it:
 

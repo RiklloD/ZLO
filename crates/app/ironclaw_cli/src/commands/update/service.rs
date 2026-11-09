@@ -152,9 +152,35 @@ impl SourceSelfUpdate {
     /// Whether the enable route would work right now: the same vetting
     /// enable itself does (a few local git reads, no network).
     fn can_enable(&self) -> bool {
+        if let Some((repo, branch)) = self.recorded_checkout() {
+            return Checkout::open(&repo)
+                .and_then(|c| c.tracking(branch.as_deref()))
+                .is_ok();
+        }
         self.enable_target().is_some_and(|(_, checkout)| {
             Checkout::open_build_checkout(checkout, self.build.commit.as_deref()).is_ok()
         })
+    }
+
+    /// The checkout a turned-off `[update]` still names: the one this
+    /// machine followed before, which enable turns back on.
+    fn recorded_checkout(&self) -> Option<(PathBuf, Option<String>)> {
+        match &self.settings {
+            Settings::File(config_path) => super::recorded_checkout(config_path),
+            Settings::Fixed(_) => None,
+        }
+    }
+
+    /// Turn self-update off, keeping the checkout on record. A job that is
+    /// already running finishes: it read its settings when it started.
+    fn disable_blocking(&self) -> Result<UpdateStatus, SelfUpdateError> {
+        if self.configured() {
+            let Settings::File(config_path) = &self.settings else {
+                return Err(SelfUpdateError::Unavailable);
+            };
+            super::disable_source(config_path).map_err(unavailable)?;
+        }
+        self.status_blocking().map_err(unavailable)
     }
 
     pub(crate) fn status_blocking(&self) -> anyhow::Result<UpdateStatus> {
@@ -243,6 +269,19 @@ impl SourceSelfUpdate {
     /// Nothing here comes from a request.
     fn enable_blocking(&self) -> Result<UpdateStatus, SelfUpdateError> {
         if self.configured() {
+            return self.status_blocking().map_err(unavailable);
+        }
+        let refused = |error: anyhow::Error| match error.downcast::<GitRefusal>() {
+            Ok(refusal) => {
+                SelfUpdateError::NoCheckout(format!("{refusal} {}", super::NO_CHECKOUT_HINT))
+            }
+            Err(other) => unavailable(other),
+        };
+        // Turned off earlier: back on from the checkout it followed then.
+        if let (Settings::File(config_path), Some((repo, branch))) =
+            (&self.settings, self.recorded_checkout())
+        {
+            super::enable_source(config_path, &repo, branch).map_err(refused)?;
             return self.status_blocking().map_err(unavailable);
         }
         let Some((config_path, checkout)) = self.enable_target() else {
@@ -357,6 +396,11 @@ impl SelfUpdateService for SelfUpdateRoutes {
     async fn enable(&self) -> Result<UpdateStatus, SelfUpdateError> {
         let _guard = self.0.starting.lock().await;
         blocking(&self.0, SourceSelfUpdate::enable_blocking).await
+    }
+
+    async fn disable(&self) -> Result<UpdateStatus, SelfUpdateError> {
+        let _guard = self.0.starting.lock().await;
+        blocking(&self.0, SourceSelfUpdate::disable_blocking).await
     }
 }
 
@@ -562,6 +606,29 @@ mod tests {
         // Enabling again changes nothing.
         assert_eq!(
             routes.enable().await.expect("again").method,
+            UpdateMethod::Source
+        );
+        // Turned off through the port: off at once, the checkout stays on
+        // record, and turning it on again follows the same one.
+        let off = routes.disable().await.expect("disable");
+        assert_eq!(off.method, UpdateMethod::None);
+        assert!(
+            off.can_enable,
+            "the recorded checkout can be turned back on"
+        );
+        assert_eq!(
+            routes.start().await.expect_err("off"),
+            SelfUpdateError::NotConfigured
+        );
+        assert_eq!(
+            routes.disable().await.expect("again").method,
+            UpdateMethod::None,
+            "turning off twice changes nothing"
+        );
+        let config = std::fs::read_to_string(home.path().join("config.toml")).expect("config");
+        assert!(config.contains("# mine"), "{config}");
+        assert_eq!(
+            routes.enable().await.expect("back on").method,
             UpdateMethod::Source
         );
         // Turned off by hand: the running backend follows the file.

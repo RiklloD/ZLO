@@ -154,6 +154,30 @@ fn write_source_section(
     Ok((SourceUpdateSettings { repo, branch }, tracking))
 }
 
+/// Write `[update] method = "none"`, keeping the recorded checkout and
+/// branch so turning self-update back on follows the same source.
+pub(crate) fn disable_source(config_path: &Path) -> anyhow::Result<()> {
+    let existing = RebornConfigFile::load(config_path)
+        .with_context(|| format!("read {}", config_path.display()))?
+        .and_then(|file| file.update)
+        .unwrap_or_default();
+    write_update_section(
+        config_path,
+        &UpdateSection {
+            method: Some(UpdateMethodSetting::None),
+            ..existing
+        },
+    )
+    .with_context(|| format!("write [update] to {}", config_path.display()))
+}
+
+/// The checkout a turned-off `[update]` still records (set earlier on this
+/// machine by `zlo update enable`, never by a request).
+pub(crate) fn recorded_checkout(config_path: &Path) -> Option<(PathBuf, Option<String>)> {
+    let section = RebornConfigFile::load(config_path).ok()??.update?; // silent-ok: an unreadable config records no checkout
+    Some((section.repo?, section.branch))
+}
+
 /// `[update]` from the home's config.toml, `None` for method none.
 pub(crate) fn source_settings(
     config_file: Option<&RebornConfigFile>,
@@ -204,15 +228,7 @@ impl UpdateCommand {
                 return Ok(());
             }
             Some(UpdateAction::Disable) => {
-                let existing = config_file.and_then(|file| file.update).unwrap_or_default();
-                write_update_section(
-                    &config_path,
-                    &UpdateSection {
-                        method: Some(UpdateMethodSetting::None),
-                        ..existing
-                    },
-                )
-                .with_context(|| format!("write [update] to {}", config_path.display()))?;
+                disable_source(&config_path)?;
                 println!("Self-update is off.");
                 return Ok(());
             }

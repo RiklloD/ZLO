@@ -21,6 +21,10 @@ pub const OPERATOR_UPDATE_CHECK_PATH: &str = "/api/operator/update/check";
 /// from (no body: the path comes from the binary, never from a request) and
 /// answers the refreshed [`UpdateStatus`].
 pub const OPERATOR_UPDATE_ENABLE_PATH: &str = "/api/operator/update/enable";
+/// `POST` turns self-update off (no body; already off: a no-op) and answers
+/// the refreshed [`UpdateStatus`]. The checkout stays recorded, so enable
+/// turns the same one back on.
+pub const OPERATOR_UPDATE_DISABLE_PATH: &str = "/api/operator/update/disable";
 /// Most commit subjects an [`AvailableUpdate`] carries.
 pub const MAX_UPDATE_SUBJECTS: usize = 20;
 /// Most characters of one commit subject.

@@ -36,8 +36,8 @@ use ironclaw_host_api::ingress::{
 };
 use ironclaw_host_ingress::ProtectedRouteMount;
 use ironclaw_product_contracts::self_update::{
-    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_PATH, UpdateErrorCode,
-    UpdateStatus,
+    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_DISABLE_PATH, OPERATOR_UPDATE_ENABLE_PATH,
+    OPERATOR_UPDATE_PATH, UpdateErrorCode, UpdateStatus,
 };
 use serde::Serialize;
 
@@ -93,14 +93,18 @@ pub trait SelfUpdateService: Send + Sync {
     /// Turn self-update on from the checkout this backend was built from
     /// (already on: a no-op) and answer the status.
     async fn enable(&self) -> Result<UpdateStatus, SelfUpdateError>;
+    /// Turn self-update off (already off: a no-op) and answer the status.
+    /// A job that is already running finishes.
+    async fn disable(&self) -> Result<UpdateStatus, SelfUpdateError>;
 }
 
-/// Bearer-authed mount of the four routes over `service`.
+/// Bearer-authed mount of the five routes over `service`.
 pub fn self_update_route_mount(service: Arc<dyn SelfUpdateService>) -> ProtectedRouteMount {
     let router = Router::new()
         .route(OPERATOR_UPDATE_PATH, get(get_status).post(start_update))
         .route(OPERATOR_UPDATE_CHECK_PATH, post(check_update))
         .route(OPERATOR_UPDATE_ENABLE_PATH, post(enable_update))
+        .route(OPERATOR_UPDATE_DISABLE_PATH, post(disable_update))
         .with_state(service);
     ProtectedRouteMount::new(router, route_descriptors())
 }
@@ -211,6 +215,19 @@ async fn enable_update(
     }
 }
 
+async fn disable_update(
+    State(service): State<Arc<dyn SelfUpdateService>>,
+    capabilities: Option<Extension<WebUiV2Capabilities>>,
+) -> Response {
+    if !is_operator(capabilities) {
+        return operator_required();
+    }
+    match service.disable().await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => service_error(error),
+    }
+}
+
 fn route_descriptors() -> Vec<IngressRouteDescriptor> {
     vec![
         descriptor(
@@ -235,6 +252,12 @@ fn route_descriptors() -> Vec<IngressRouteDescriptor> {
             "webui.operator.update_enable",
             NetworkMethod::Post,
             OPERATOR_UPDATE_ENABLE_PATH,
+            ENABLE_MAX_REQUESTS,
+        ),
+        descriptor(
+            "webui.operator.update_disable",
+            NetworkMethod::Post,
+            OPERATOR_UPDATE_DISABLE_PATH,
             ENABLE_MAX_REQUESTS,
         ),
     ]

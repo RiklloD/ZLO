@@ -179,6 +179,7 @@ pub(crate) trait Machine: Send + Sync {
     fn status(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>>;
     fn check(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>>;
     fn enable(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>>;
+    fn disable(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>>;
 }
 
 pub(crate) type Report = Arc<dyn Fn(String, RowState) + Send + Sync>;
@@ -398,6 +399,10 @@ impl Machine for LiveMachine {
     fn enable(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>> {
         Box::pin(self.call(|c| Box::pin(c.enable_update())))
     }
+
+    fn disable(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>> {
+        Box::pin(self.call(|c| Box::pin(c.disable_update())))
+    }
 }
 
 // ── the page's actions ───────────────────────────────────────────────────
@@ -530,18 +535,59 @@ pub fn poll(s: &mut State) {
 /// "Turn on" for one computer: its backend turns self-update on from the
 /// checkout it was built from, then checks.
 pub fn enable(s: &mut State, key: &str) {
-    if s.fixture || s.remote.updates.updating {
-        return;
+    if let Some((net, machine, report)) = one(s, key) {
+        net.spawn(enable_one(machine, report));
     }
-    let Some(net) = super::net() else {
-        return;
-    };
+}
+
+/// "Turn off" for one computer: it stops checking and is left out of
+/// "Update all machines" until turned on again.
+pub fn disable(s: &mut State, key: &str) {
+    if let Some((net, machine, report)) = one(s, key) {
+        net.spawn(disable_one(machine, report));
+    }
+}
+
+/// The machine `key` names, with what a single-computer action needs.
+fn one(
+    s: &State,
+    key: &str,
+) -> Option<(&'static tokio::runtime::Runtime, Arc<dyn Machine>, Report)> {
+    if s.fixture || s.remote.updates.updating {
+        return None;
+    }
+    let net = super::net()?;
     let Fleet { remotes, this_mac } = machines(s);
-    let Some(machine) = remotes.into_iter().chain(this_mac).find(|m| m.key() == key) else {
-        return;
+    let machine = remotes
+        .into_iter()
+        .chain(this_mac)
+        .find(|m| m.key() == key)?;
+    Some((net, machine, reporter(s)))
+}
+
+/// Whether "Turn off" is offered on a row: updates are on there and
+/// nothing is in flight.
+pub fn can_turn_off(row: &RowState) -> bool {
+    matches!(
+        row,
+        RowState::UpToDate | RowState::Behind(_) | RowState::Updated(_)
+    )
+}
+
+pub(crate) async fn disable_one(m: Arc<dyn Machine>, report: Report) {
+    let key = m.key().to_string();
+    let before = m.status().await;
+    report(key.clone(), RowState::Checking);
+    let row = match m.disable().await {
+        Ok(status) => from_check(Ok(&status)),
+        // A backend without the route: nothing changed there.
+        Err(UpdateCallError::TooOld) => match before {
+            Ok(status) => from_check(Ok(&status)),
+            Err(e) => RowState::Failed(e.to_string()),
+        },
+        Err(e) => RowState::Failed(e.to_string()),
     };
-    let report = reporter(s);
-    net.spawn(enable_one(machine, report));
+    report(key, row);
 }
 
 pub(crate) async fn enable_one(m: Arc<dyn Machine>, report: Report) {
@@ -707,6 +753,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turn_off_reads_as_off_and_an_old_backend_keeps_its_row() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (report, seen) = recorder();
+        let studio = Arc::new(Fake {
+            key: "studio".into(),
+            log: log.clone(),
+            start: Ok(behind(4)),
+            statuses: Mutex::new(vec![Ok(behind(4))]),
+            enabled: Ok(status(UpdateRunState::Idle, None, "")),
+        });
+        disable_one(studio, report.clone()).await;
+        assert_eq!(
+            last(&seen.lock().unwrap(), "studio"),
+            RowState::NotSetUp { can_enable: true },
+            "off, and Turn on is offered again"
+        );
+        assert!(log.lock().unwrap().contains(&"disable:studio".to_string()));
+        // Predates the route: still on there, so the row says what it is.
+        let old = Fake::machine("old", &log, Ok(behind(2)), vec![Ok(behind(2))]);
+        disable_one(old, report).await;
+        assert_eq!(last(&seen.lock().unwrap(), "old"), RowState::Behind(2));
+        // Offered only where updates are on and nothing is in flight.
+        assert!(can_turn_off(&RowState::Behind(2)));
+        assert!(!can_turn_off(&RowState::NotSetUp { can_enable: true }));
+        assert!(!can_turn_off(&RowState::Updating(String::new())));
+        assert!(!can_turn_off(&RowState::Checking));
+    }
+
+    #[tokio::test]
     async fn turn_on_enables_then_checks_and_an_old_backend_keeps_the_hint() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let studio = Arc::new(Fake {
@@ -828,6 +903,17 @@ mod tests {
         fn enable(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>> {
             self.note("enable");
             let answer = self.enabled.clone();
+            Box::pin(async move { answer })
+        }
+
+        fn disable(&self) -> BoxFuture<'_, Result<UpdateStatus, UpdateCallError>> {
+            self.note("disable");
+            // The same shape of answer as enable: off, or too old.
+            let answer = self.enabled.clone().map(|mut status| {
+                status.method = UpdateMethod::None;
+                status.can_enable = true;
+                status
+            });
             Box::pin(async move { answer })
         }
     }

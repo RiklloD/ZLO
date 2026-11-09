@@ -21,8 +21,9 @@ use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use chrono::{TimeZone, Utc};
 use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, UserId};
 use ironclaw_product_contracts::self_update::{
-    BuildInfo, OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_PATH,
-    UpdateMethod, UpdateRun, UpdateRunState, UpdateStatus,
+    BuildInfo, OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_DISABLE_PATH,
+    OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_PATH, UpdateMethod, UpdateRun, UpdateRunState,
+    UpdateStatus,
 };
 use ironclaw_webui::{
     SelfUpdateError, SelfUpdateService, WebuiAuthentication, WebuiAuthenticator, WebuiServeConfig,
@@ -69,6 +70,7 @@ struct FakeUpdates {
     configured: bool,
     /// Turned on through the enable route.
     enabled: Mutex<bool>,
+    disabled: Mutex<bool>,
     /// This backend knows the checkout it was built from.
     has_checkout: bool,
     finished: Mutex<Option<UpdateRun>>,
@@ -98,7 +100,8 @@ impl FakeUpdates {
             },
             None => UpdateRun::default(),
         };
-        let on = self.configured || *self.enabled.lock().expect("lock");
+        let on = (self.configured || *self.enabled.lock().expect("lock"))
+            && !*self.disabled.lock().expect("lock");
         UpdateStatus {
             can_enable: !on && self.has_checkout,
             method: if on {
@@ -155,6 +158,13 @@ impl SelfUpdateService for FakeUpdates {
             ));
         }
         *self.enabled.lock().expect("lock") = true;
+        *self.disabled.lock().expect("lock") = false;
+        Ok(self.snapshot())
+    }
+
+    async fn disable(&self) -> Result<UpdateStatus, SelfUpdateError> {
+        self.calls.lock().expect("lock").push("disable");
+        *self.disabled.lock().expect("lock") = true;
         Ok(self.snapshot())
     }
 }
@@ -207,6 +217,7 @@ async fn every_route_is_operator_only() {
         (Method::POST, OPERATOR_UPDATE_PATH),
         (Method::POST, OPERATOR_UPDATE_CHECK_PATH),
         (Method::POST, OPERATOR_UPDATE_ENABLE_PATH),
+        (Method::POST, OPERATOR_UPDATE_DISABLE_PATH),
     ] {
         let (status, _) = send(&app, request(method.clone(), path, None, None)).await;
         assert_eq!(
@@ -338,6 +349,31 @@ async fn enable_turns_updates_on_from_the_backends_own_checkout() {
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(service.calls(), vec!["status", "enable", "status"]);
+
+    // Turned off again from the same place, and back on.
+    let post = |path| request(Method::POST, path, Some(OPERATOR), None);
+    let (status, off) = send(&app, post(OPERATOR_UPDATE_DISABLE_PATH)).await;
+    assert_eq!(status, StatusCode::OK, "{off}");
+    assert_eq!(off["method"], "none");
+    assert_eq!(
+        off["can_enable"], true,
+        "the same checkout can be turned back on"
+    );
+    let (_, after) = send(&app, get()).await;
+    assert_eq!(after["method"], "none", "it stays off");
+    let (_, on) = send(&app, post(OPERATOR_UPDATE_ENABLE_PATH)).await;
+    assert_eq!(on["method"], "source");
+    let (status, _) = send(
+        &app,
+        request(
+            Method::POST,
+            OPERATOR_UPDATE_DISABLE_PATH,
+            Some(OPERATOR),
+            Some(json!({ "anything": true })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]

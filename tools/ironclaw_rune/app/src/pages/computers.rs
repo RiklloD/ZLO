@@ -774,6 +774,17 @@ fn update_line(s: &State, k: &Kit, key: &str) -> Option<El> {
             false,
             move |s| updates::enable(s, &key),
         ));
+    } else if updates::can_turn_off(state) {
+        let key = key.to_string();
+        line = line.child(press_button(
+            k,
+            &format!("update-off-{key}"),
+            "Turn off",
+            Btn::Ghost,
+            None,
+            false,
+            move |s| updates::disable(s, &key),
+        ));
     }
     Some(line)
 }
