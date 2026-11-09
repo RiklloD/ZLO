@@ -12,38 +12,32 @@ The desktop app matters to me as much as the agent behind it. I want something l
 
 This is my own working setup and a place to try ideas. It isn't a promise of a polished release or support for every machine.
 
-## What I'm working with
+## What it does
 
-- A native, GPU-rendered Rust interface using Rune. No Electron and no always-on embedded browser. Browser and document views are created when needed.
-- Chats, profiles, model selection, and an orchestrator for delegating work to other agents.
-- Tools, skills, memory, and MCP integrations through the IronClaw backend.
-- Computer use through my fork of the [computer-use engine](https://github.com/RiklloD/hermes-plugin-computer-use-plus).
-- Approval controls so I can choose between being asked first and giving a profile full access. Automatic approval is off by default.
+- **A native interface.** GPU-rendered Rust with Rune. No Electron and no always-on embedded browser; browser and document views are created only when needed.
+- **Chats, profiles and models.** Pick the model per task, keep separate profiles, and delegate work to other agents through the orchestrator, including Codex and Claude Code.
+- **Tools, skills, memory and MCP** through the IronClaw backend.
+- **Computer use** through my fork of the [computer-use engine](https://github.com/RiklloD/hermes-plugin-computer-use-plus).
+- **Approvals.** Each profile is either asked first or given full access. Automatic approval is off by default.
+- **Work on other computers.** The backend can run on another machine, such as a Mac mini or a Linux server, while ZLO on your laptop is only the window. Machines connect over Tailscale or SSH. See [Using another computer](tools/ironclaw_rune/docs/remote-computers.md).
 
 I'm changing the app as I use it. The code and development notes are a better guide to its current state than a fixed feature checklist.
 
 ## How it runs
 
-ZLO bundles the desktop window, backend, and computer-use helper in one macOS app. The window starts the backend as a child process. Quitting the app stops the backend and orchestrator too. I don't run a separate always-on service for it.
+ZLO has two halves: the **window** (the Rune app) and the **backend** (IronClaw, which runs the agent, its tools and its memory). They talk over authenticated HTTP. Where the backend runs is up to you:
 
-The desktop talks to the backend over authenticated HTTP. My local setup uses libSQL, with state under `~/.ironclaw/reborn`, rather than a separate PostgreSQL server.
+| Setup | What runs where | When to use it |
+| --- | --- | --- |
+| **All on this Mac** (the default) | ZLO starts its own backend as a child process and stops it when you quit. | One machine, nothing to set up. |
+| **Backend on another computer** | The backend runs on a server or another Mac. ZLO connects to it over your tailnet or SSH. | Keep the agent running while the laptop sleeps, or work on a machine with more power, your repos, or a better connection. |
+| **App only** (ZLO Light) | A build of ZLO without a backend inside. It only ever connects to other computers. | A laptop that should never run agents itself. |
 
-Local storage doesn't mean every task stays on the machine. Using a remote model or an external integration sends the data needed for that request to that provider. Computer use also needs the relevant macOS permissions.
+You can switch between computers in **Settings → Computers**. ZLO works on one computer at a time. Each computer has its own threads, memory, settings and provider keys, because those live with its backend.
 
-## Finding your way around
+State lives under `~/.ironclaw/reborn` on whichever machine runs the backend, in libSQL rather than a separate PostgreSQL server.
 
-| Path | What's there |
-| --- | --- |
-| [`tools/ironclaw_rune/`](tools/ironclaw_rune/) | The desktop app and its separate Cargo workspace |
-| [`tools/ironclaw_rune/app/`](tools/ironclaw_rune/app/) | Rune interface, native views, preferences, and backend supervision |
-| [`tools/ironclaw_rune/client/`](tools/ironclaw_rune/client/) | Typed HTTP client for the desktop |
-| [`crates/`](crates/) | IronClaw backend and my extensions to it |
-| [`crates/product/ironclaw_webui/`](crates/product/ironclaw_webui/) | The HTTP gateway used by ZLO |
-| [`AGENTS.md`](AGENTS.md) | Repository rules for working with coding agents |
-
-The React frontend inherited from IronClaw isn't ZLO's desktop interface. The gateway behind it is still used.
-
-You'll also see `ironclaw_*`, `.ironclaw`, and some older Numoh names in the code. ZLO is the app's name; I haven't renamed every internal crate, data path, or signing identifier. Keeping those stable makes upstream merges and macOS permissions easier to maintain.
+Local storage doesn't mean every task stays on the machine. Using a remote model or an external integration sends the data that request needs to that provider. Computer use needs the relevant macOS permissions on the machine where the backend runs.
 
 ## Install
 
@@ -53,7 +47,40 @@ On an Apple Silicon Mac, paste this into Terminal:
 curl -fsSL https://raw.githubusercontent.com/RiklloD/zlo/main/install.sh | sh
 ```
 
-It builds ZLO from source and installs it to `~/Applications/ZLO.app`. If the Xcode command-line tools are missing, it opens their installer and asks you to run the command again. It installs Rust if you don't have it. The first build takes 10 to 20 minutes. Run the same command again to update. Without an Apple Development signing identity the app is signed ad-hoc, so macOS asks for Accessibility and Screen Recording again after each update.
+It builds ZLO from source and installs it to `~/Applications/ZLO.app`. If the Xcode command-line tools are missing, it opens their installer and asks you to run the command again. It installs Rust if you don't have it. The first build takes 10 to 20 minutes. Run the same command again to update.
+
+To build a branch other than `main`, set `ZLO_REF`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RiklloD/zlo/main/install.sh | ZLO_REF=rune-port sh
+```
+
+Without an Apple Development signing identity the app is signed ad-hoc, so macOS asks for Accessibility and Screen Recording again after each update.
+
+## Using another computer
+
+The short version, for a server on your tailnet:
+
+```sh
+# On the server
+ironclaw onboard            # providers and keys
+ironclaw service install    # start at boot
+ironclaw remote enable      # publish it on your tailnet (never the internet)
+ironclaw service restart
+```
+
+Then open ZLO on your Mac, go to **Settings → Computers**, and click **Connect** next to the server under "Found on your tailnet".
+
+[**Using another computer**](tools/ironclaw_rune/docs/remote-computers.md) covers the whole setup:
+
+- setting up a Linux server or a second Mac;
+- pairing with one click, with a code, or over SSH;
+- managing paired devices;
+- what works remotely;
+- how the connection is secured;
+- troubleshooting.
+
+[**Keeping machines updated**](tools/ironclaw_rune/docs/updates.md) explains "Update all machines" and `ironclaw update`.
 
 ## Building from source
 
@@ -65,31 +92,54 @@ cd zlo
 sh tools/ironclaw_rune/bundle.sh
 ```
 
-The script builds the backend and desktop, downloads and verifies the pinned computer-use engine, signs the bundle, and installs it to `~/Applications/ZLO.app`. It replaces an existing local installation and quits the app first if it's running. It reopens the app if it was open before the install.
+The script builds the backend and desktop, downloads and verifies the pinned computer-use engine, signs the bundle, and installs it to `~/Applications/ZLO.app`. It replaces an existing installation, quitting the app first if it's running, and reopens it if it was open.
 
-To build the bundle without installing it:
+| Command | Result |
+| --- | --- |
+| `sh tools/ironclaw_rune/bundle.sh` | Build, install to `~/Applications/ZLO.app`, reopen |
+| `sh tools/ironclaw_rune/bundle.sh --no-install` | Build only, to `tools/ironclaw_rune/target/ZLO.app` |
+| `sh tools/ironclaw_rune/bundle.sh --light` | Build and install **ZLO Light.app**, which has no backend and no computer-use engine. It's a separate app, so it never replaces ZLO. |
+
+The backend on its own (for a server) builds with:
 
 ```sh
-sh tools/ironclaw_rune/bundle.sh --no-install
+cargo build --release -p ironclaw     # binary at target/release/ironclaw
 ```
-
-The bundle lands at `tools/ironclaw_rune/target/ZLO.app`.
 
 For changes to the desktop workspace:
 
 ```sh
 cd tools/ironclaw_rune
 cargo check
-cargo clippy -p ironclaw_rune -p zlo_client --all-targets -- -D warnings
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
 Read [`AGENTS.md`](AGENTS.md) and the owning crate's guidance before changing backend code.
+
+## Finding your way around
+
+| Path | What's there |
+| --- | --- |
+| [`tools/ironclaw_rune/`](tools/ironclaw_rune/) | The desktop app and its separate Cargo workspace |
+| [`tools/ironclaw_rune/app/`](tools/ironclaw_rune/app/) | Rune interface, native views, preferences, backend supervision, and the computers list (`src/remote*`, `src/pages/computers*`) |
+| [`tools/ironclaw_rune/client/`](tools/ironclaw_rune/client/) | Typed HTTP client for the desktop, including pairing, Tailscale discovery, SSH and Keychain |
+| [`tools/ironclaw_rune/docs/`](tools/ironclaw_rune/docs/) | User guides: other computers, updates |
+| [`crates/`](crates/) | IronClaw backend and my extensions to it |
+| [`crates/product/ironclaw_webui/`](crates/product/ironclaw_webui/) | The HTTP gateway ZLO talks to, including pairing, devices and the Tailscale identity listener |
+| [`crates/app/ironclaw_cli/`](crates/app/ironclaw_cli/) | The `ironclaw` binary: `serve`, `remote`, `pair`, `devices`, `update`, `service` |
+| [`docs/internal/plans/2026-11-08-zlo-remote-environments.md`](docs/internal/plans/2026-11-08-zlo-remote-environments.md) | Design and wire contract for remote computers |
+| [`AGENTS.md`](AGENTS.md) | Repository rules for working with coding agents |
+
+The React frontend inherited from IronClaw isn't ZLO's desktop interface. The gateway behind it is still used.
+
+You'll also see `ironclaw_*`, `.ironclaw`, and some older Numoh names in the code. ZLO is the app's name; I haven't renamed every internal crate, data path, or signing identifier. Keeping those stable makes upstream merges and macOS permissions easier to maintain.
 
 ## Where it comes from
 
 ZLO is my personal fork of [IronClaw](https://github.com/nearai/ironclaw), built by [NEAR AI](https://github.com/nearai). I built my desktop app on that foundation and continue to change the backend for my own use. The agent runtime, security machinery, and much of this repository come from their work.
 
-The interface uses [Rune](https://github.com/anomalyco/rune). An earlier version of the app was built on [GPUI](https://www.gpui.rs/), the Rust UI framework developed for Zed; it is archived on the `archive/gpui` branch (tag `gpui-final`). The computer-use helper comes from [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus).
+The interface uses [Rune](https://github.com/anomalyco/rune). An earlier version of the app was built on [GPUI](https://www.gpui.rs/), the Rust UI framework developed for Zed; it is archived on the `archive/gpui` branch (tag `gpui-final`). The computer-use helper comes from [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus). The way ZLO connects to other computers follows [T3 Code](https://github.com/pingdotgg/t3code)'s remote environments, with Tailscale in place of its hosted relay.
 
 This repository is my project, not an official IronClaw or NEAR AI release.
 
