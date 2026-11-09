@@ -10,10 +10,10 @@
 //! - [`RebornBootConfig`] — home + profile resolved from env vars at
 //!   process start. The original API; unchanged.
 //! - [`RebornConfigFile`] — the operator-edited TOML at
-//!   `$IRONCLAW_REBORN_HOME/config.toml`. Read once at process start;
+//!   `$ZLO_HOME/config.toml`. Read once at process start;
 //!   provides the *selection* layer of the three-layer config model
 //!   (catalog → selection → runtime config). See `config_file.rs`.
-//! - Provider catalog — lives in `$IRONCLAW_REBORN_HOME/providers.json`
+//! - Provider catalog — lives in `$ZLO_HOME/providers.json`
 //!   in the v1 `providers.json` shape. This crate exposes the path via
 //!   [`RebornHome::providers_file_path`]; loading the file goes through
 //!   `ironclaw_llm::ProviderRegistry` in the composition root (this
@@ -28,11 +28,13 @@ mod config_file;
 mod config_seed;
 mod doctor;
 mod home;
+mod home_migration;
 mod profile;
 mod remote;
 mod retired_sections;
 mod secrets_guard;
 mod update;
+mod zlo_env;
 
 pub use boot::RebornBootConfig;
 pub use budget::{
@@ -58,8 +60,16 @@ pub use config_seed::{
     RebornConfigSeedError, RebornConfigSeedOutcome, seed_default_config_file_if_missing,
 };
 pub use doctor::RebornDoctorReport;
-pub use home::{REBORN_HOME_ENV, RebornConfigError, RebornHome, RebornHomeSource};
-pub use profile::{REBORN_PROFILE_ENV, RebornProfile};
+pub use home::{
+    DEFAULT_HOME_DIR_NAME, LEGACY_REBORN_HOME_ENV, REBORN_HOME_ENV, RebornConfigError, RebornHome,
+    RebornHomeSource,
+};
+pub use home_migration::{
+    HomeMigration, MIGRATION_PENDING_MARKER, legacy_home_path, migrate_legacy_home,
+};
+pub use profile::{
+    LEGACY_REBORN_PROFILE_ENV, REBORN_PROFILE_ENV, RebornProfile, profile_env_value,
+};
 pub use remote::{
     DEFAULT_REMOTE_HTTPS_PORT, DEFAULT_REMOTE_IDENTITY_PORT, RemoteSection, RemoteSettings,
     write_remote_section,
@@ -67,3 +77,7 @@ pub use remote::{
 pub use retired_sections::{RetiredSectionError, RetiredSections, retired_config_key_guidance};
 pub use secrets_guard::{InlineSecretError, reject_inline_secret};
 pub use update::{SourceUpdateSettings, UpdateMethodSetting, UpdateSection, is_safe_branch_name};
+pub use zlo_env::{
+    LEGACY_WEBUI_TOKEN_ENV, LEGACY_WEBUI_USER_ID_ENV, WEBUI_TOKEN_ENV, WEBUI_USER_ID_ENV,
+    active_env_name, var_os_with_legacy,
+};

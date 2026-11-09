@@ -1,6 +1,6 @@
-use std::{env, ffi::OsString};
+use std::ffi::OsString;
 
-use crate::{REBORN_PROFILE_ENV, RebornConfigError, RebornHome, RebornProfile};
+use crate::{RebornConfigError, RebornHome, RebornProfile, profile::profile_env_value};
 
 /// Fully resolved boot configuration for the standalone Reborn binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,7 +16,7 @@ impl RebornBootConfig {
 
     pub fn resolve_from_env() -> Result<Self, RebornConfigError> {
         let home = RebornHome::resolve_from_env()?;
-        let profile = RebornProfile::from_env_value(env::var_os(REBORN_PROFILE_ENV))?;
+        let profile = RebornProfile::from_env_value(profile_env_value())?;
         Ok(Self { home, profile })
     }
 

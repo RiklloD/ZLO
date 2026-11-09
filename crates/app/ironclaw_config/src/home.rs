@@ -5,15 +5,27 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-/// Environment variable that selects the standalone Reborn state root.
-pub const REBORN_HOME_ENV: &str = "IRONCLAW_REBORN_HOME";
+use crate::home_migration::{HomeMigration, migrate_legacy_home};
+
+/// Environment variable that selects the ZLO state root (default `~/.zlo`).
+pub const REBORN_HOME_ENV: &str = "ZLO_HOME";
+
+/// Pre-ZLO name of [`REBORN_HOME_ENV`]; still honored when `ZLO_HOME` is
+/// unset so existing launchd plists, systemd units and scripts keep working.
+pub const LEGACY_REBORN_HOME_ENV: &str = "IRONCLAW_REBORN_HOME";
+
+/// Folder under the user's home directory that holds the ZLO state root.
+pub const DEFAULT_HOME_DIR_NAME: &str = ".zlo";
 
 const V1_BASE_DIR_ENV: &str = "IRONCLAW_BASE_DIR";
 
 /// Source used to resolve [`RebornHome`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebornHomeSource {
+    /// `ZLO_HOME`.
     Env,
+    /// The legacy `IRONCLAW_REBORN_HOME` alias.
+    LegacyEnv,
     Default,
 }
 
@@ -21,6 +33,7 @@ impl RebornHomeSource {
     pub fn label(self) -> &'static str {
         match self {
             Self::Env => REBORN_HOME_ENV,
+            Self::LegacyEnv => LEGACY_REBORN_HOME_ENV,
             Self::Default => "default",
         }
     }
@@ -31,47 +44,86 @@ impl RebornHomeSource {
 pub struct RebornHome {
     path: PathBuf,
     source: RebornHomeSource,
+    migration: HomeMigration,
 }
 
 impl RebornHome {
+    /// Resolve the home from the process environment, moving a pre-ZLO
+    /// `~/.ironclaw/reborn` to `~/.zlo` first when the default applies (see
+    /// `home_migration.rs`). An explicit `ZLO_HOME`/`IRONCLAW_REBORN_HOME`
+    /// is used as-is and never migrated.
     pub fn resolve_from_env() -> Result<Self, RebornConfigError> {
-        Self::resolve_from_env_parts_with_v1_base(
+        let (explicit, explicit_source) = explicit_home(
             env::var_os(REBORN_HOME_ENV),
+            env::var_os(LEGACY_REBORN_HOME_ENV),
+        );
+        Self::resolve_with_source(
+            explicit,
+            explicit_source,
             env::var_os("HOME"),
             env::var_os("USERPROFILE"),
             env::var_os(V1_BASE_DIR_ENV),
-        )
+        )?
+        .migrate_if_default()
     }
 
+    /// Pure resolution: `reborn_home` is treated as `ZLO_HOME`. Never
+    /// touches the filesystem beyond the v1-root overlap probe.
     pub fn resolve_from_env_parts(
         reborn_home: Option<OsString>,
         home: Option<OsString>,
         userprofile: Option<OsString>,
     ) -> Result<Self, RebornConfigError> {
-        Self::resolve_from_env_parts_with_v1_base(reborn_home, home, userprofile, None)
+        Self::resolve_with_source(reborn_home, RebornHomeSource::Env, home, userprofile, None)
     }
 
-    fn resolve_from_env_parts_with_v1_base(
+    /// [`Self::resolve_from_env_parts`] plus the same legacy-home migration
+    /// [`Self::resolve_from_env`] performs. This is the production path with
+    /// the environment passed in, so tests can drive it against a temp home.
+    pub fn resolve_from_env_parts_migrating(
         reborn_home: Option<OsString>,
+        home: Option<OsString>,
+        userprofile: Option<OsString>,
+    ) -> Result<Self, RebornConfigError> {
+        Self::resolve_from_env_parts(reborn_home, home, userprofile)?.migrate_if_default()
+    }
+
+    fn migrate_if_default(mut self) -> Result<Self, RebornConfigError> {
+        if self.source != RebornHomeSource::Default {
+            return Ok(self);
+        }
+        let Some(user_home) = self.path.parent() else {
+            return Ok(self); // unreachable: default homes are `<HOME>/.zlo`
+        };
+        self.migration = migrate_legacy_home(user_home)?;
+        Ok(self)
+    }
+
+    fn resolve_with_source(
+        reborn_home: Option<OsString>,
+        explicit_source: RebornHomeSource,
         home: Option<OsString>,
         userprofile: Option<OsString>,
         v1_base_dir: Option<OsString>,
     ) -> Result<Self, RebornConfigError> {
         if let Some(raw_home) = reborn_home {
-            validate_non_empty(&raw_home, REBORN_HOME_ENV)?;
+            let name = explicit_source.label();
+            validate_non_empty(&raw_home, name)?;
             let path = PathBuf::from(raw_home);
-            validate_absolute(&path, REBORN_HOME_ENV)?;
-            validate_no_parent_components(&path, REBORN_HOME_ENV)?;
-            validate_not_root(&path, REBORN_HOME_ENV)?;
+            validate_absolute(&path, name)?;
+            validate_no_parent_components(&path, name)?;
+            validate_not_root(&path, name)?;
             validate_not_v1_state_root(
                 &path,
+                name,
                 home.as_ref(),
                 userprofile.as_ref(),
                 v1_base_dir.as_ref(),
             )?;
             return Ok(Self {
                 path,
-                source: RebornHomeSource::Env,
+                source: explicit_source,
+                migration: HomeMigration::NotNeeded,
             });
         }
 
@@ -85,6 +137,7 @@ impl RebornHome {
                     return Ok(Self {
                         path,
                         source: RebornHomeSource::Default,
+                        migration: HomeMigration::NotNeeded,
                     });
                 }
                 Err(error) => {
@@ -114,6 +167,12 @@ impl RebornHome {
         self.source.label()
     }
 
+    /// What resolution did about a pre-ZLO `~/.ironclaw/reborn`; callers
+    /// surface [`HomeMigration::notice`] to the user.
+    pub fn migration(&self) -> &HomeMigration {
+        &self.migration
+    }
+
     /// Absolute path of the operator-edited boot config TOML.
     ///
     /// `$IRONCLAW_REBORN_HOME/config.toml`. The file is **optional**:
@@ -137,6 +196,18 @@ impl RebornHome {
     }
 }
 
+/// `ZLO_HOME` wins; the legacy `IRONCLAW_REBORN_HOME` applies only when it
+/// is unset.
+fn explicit_home(
+    zlo_home: Option<OsString>,
+    legacy_home: Option<OsString>,
+) -> (Option<OsString>, RebornHomeSource) {
+    match zlo_home {
+        Some(value) => (Some(value), RebornHomeSource::Env),
+        None => (legacy_home, RebornHomeSource::LegacyEnv),
+    }
+}
+
 fn validate_non_empty(value: &OsString, name: &'static str) -> Result<(), RebornConfigError> {
     if value.as_os_str().is_empty() {
         return Err(RebornConfigError::EmptyPath { name });
@@ -153,7 +224,7 @@ fn default_home_from_candidate(
     validate_absolute(&path, label)?;
     validate_no_parent_components(&path, label)?;
     validate_not_root(&path, label)?;
-    Ok(path.join(".ironclaw").join("reborn"))
+    Ok(path.join(DEFAULT_HOME_DIR_NAME))
 }
 
 fn validate_absolute(path: &Path, name: &'static str) -> Result<(), RebornConfigError> {
@@ -181,6 +252,7 @@ fn validate_no_parent_components(path: &Path, name: &'static str) -> Result<(), 
 
 fn validate_not_v1_state_root(
     path: &Path,
+    name: &'static str,
     home: Option<&OsString>,
     userprofile: Option<&OsString>,
     v1_base_dir: Option<&OsString>,
@@ -199,7 +271,7 @@ fn validate_not_v1_state_root(
     {
         if paths_overlap(path, candidate) {
             return Err(RebornConfigError::V1StateRoot {
-                name: REBORN_HOME_ENV,
+                name,
                 path: path.to_path_buf(),
             });
         }
@@ -295,13 +367,37 @@ fn validate_not_root(path: &Path, name: &'static str) -> Result<(), RebornConfig
 /// Error returned when standalone Reborn boot configuration is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RebornConfigError {
-    EmptyPath { name: &'static str },
-    RelativePath { name: &'static str, path: PathBuf },
-    ParentPath { name: &'static str, path: PathBuf },
-    RootPath { name: &'static str, path: PathBuf },
-    V1StateRoot { name: &'static str, path: PathBuf },
+    EmptyPath {
+        name: &'static str,
+    },
+    RelativePath {
+        name: &'static str,
+        path: PathBuf,
+    },
+    ParentPath {
+        name: &'static str,
+        path: PathBuf,
+    },
+    RootPath {
+        name: &'static str,
+        path: PathBuf,
+    },
+    V1StateRoot {
+        name: &'static str,
+        path: PathBuf,
+    },
     MissingHome,
-    InvalidProfile { name: &'static str, value: String },
+    InvalidProfile {
+        name: &'static str,
+        value: String,
+    },
+    /// Moving the pre-ZLO `~/.ironclaw/reborn` to `~/.zlo` failed. ZLO
+    /// refuses to start on an empty home while the data sits elsewhere.
+    HomeMigration {
+        from: PathBuf,
+        to: PathBuf,
+        reason: String,
+    },
 }
 
 impl fmt::Display for RebornConfigError {
@@ -330,8 +426,60 @@ impl fmt::Display for RebornConfigError {
                 formatter,
                 "{name} must be one of local-dev, local-dev-yolo, hosted-single-tenant, hosted-single-tenant-volume, production, migration-dry-run; got {value:?}"
             ),
+            Self::HomeMigration { from, to, reason } => write!(
+                formatter,
+                "could not move the IronClaw data folder {} to the ZLO data folder {}: {reason}. \
+                 Nothing was deleted. Move it by hand (`mv {} {} && ln -s {} {}`), or set \
+                 {REBORN_HOME_ENV}={} to keep using it where it is.",
+                from.display(),
+                to.display(),
+                from.display(),
+                to.display(),
+                to.display(),
+                from.display(),
+                from.display(),
+            ),
         }
     }
 }
 
 impl error::Error for RebornConfigError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zlo_home_wins_over_the_legacy_alias() {
+        let (value, source) = explicit_home(Some("/a".into()), Some("/b".into()));
+        assert_eq!(value, Some(OsString::from("/a")));
+        assert_eq!(source, RebornHomeSource::Env);
+    }
+
+    #[test]
+    fn legacy_alias_is_honored_and_named_in_errors() {
+        let (value, source) = explicit_home(None, Some("relative".into()));
+        assert_eq!(source, RebornHomeSource::LegacyEnv);
+        let error = RebornHome::resolve_with_source(value, source, None, None, None)
+            .expect_err("relative path rejected");
+        assert_eq!(
+            error,
+            RebornConfigError::RelativePath {
+                name: LEGACY_REBORN_HOME_ENV,
+                path: PathBuf::from("relative"),
+            }
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = RebornHome::resolve_with_source(
+            Some(temp.path().join("old").into_os_string()),
+            RebornHomeSource::LegacyEnv,
+            None,
+            None,
+            None,
+        )
+        .expect("absolute legacy home resolves");
+        assert_eq!(home.source_label(), LEGACY_REBORN_HOME_ENV);
+        assert_eq!(home.path(), temp.path().join("old"));
+    }
+}

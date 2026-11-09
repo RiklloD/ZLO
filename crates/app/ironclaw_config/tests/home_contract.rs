@@ -23,7 +23,7 @@ fn explicit_reborn_home_wins_and_must_not_create_directories() {
 #[test]
 fn default_reborn_home_is_scoped_under_user_home() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let expected = temp.path().join(".ironclaw").join("reborn");
+    let expected = temp.path().join(".zlo");
 
     let home = RebornHome::resolve_from_env_parts(None, Some(temp.path().into()), None)
         .expect("absolute HOME should resolve default Reborn home");
@@ -37,7 +37,7 @@ fn default_reborn_home_is_scoped_under_user_home() {
 #[test]
 fn userprofile_is_used_only_when_home_is_absent() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let expected = temp.path().join(".ironclaw").join("reborn");
+    let expected = temp.path().join(".zlo");
 
     let home = RebornHome::resolve_from_env_parts(None, None, Some(temp.path().into()))
         .expect("absolute USERPROFILE should resolve default Reborn home");
@@ -48,7 +48,7 @@ fn userprofile_is_used_only_when_home_is_absent() {
 #[test]
 fn userprofile_is_used_when_home_is_empty_or_invalid() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let expected = temp.path().join(".ironclaw").join("reborn");
+    let expected = temp.path().join(".zlo");
 
     let empty_home =
         RebornHome::resolve_from_env_parts(None, Some(OsString::new()), Some(temp.path().into()))

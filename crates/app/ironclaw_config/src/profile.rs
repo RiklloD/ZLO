@@ -2,8 +2,17 @@ use std::{ffi::OsString, str::FromStr};
 
 use crate::RebornConfigError;
 
-/// Environment variable that selects the standalone Reborn boot profile.
-pub const REBORN_PROFILE_ENV: &str = "IRONCLAW_REBORN_PROFILE";
+/// Environment variable that selects the boot profile.
+pub const REBORN_PROFILE_ENV: &str = "ZLO_PROFILE";
+
+/// Pre-ZLO name of [`REBORN_PROFILE_ENV`]; read when `ZLO_PROFILE` is unset.
+pub const LEGACY_REBORN_PROFILE_ENV: &str = "IRONCLAW_REBORN_PROFILE";
+
+/// The profile selector from the environment: `ZLO_PROFILE`, else the
+/// legacy `IRONCLAW_REBORN_PROFILE`.
+pub fn profile_env_value() -> Option<OsString> {
+    crate::zlo_env::var_os_with_legacy(REBORN_PROFILE_ENV, LEGACY_REBORN_PROFILE_ENV)
+}
 
 /// Coarse boot profile for the standalone Reborn binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
