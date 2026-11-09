@@ -148,8 +148,6 @@ impl AdmissionRejectionReason {
 pub struct AdmissionRejection {
     pub reason: AdmissionRejectionReason,
     pub retry_after_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capacity_denial: Option<crate::TurnAdmissionCapacityDenial>,
 }
 
 impl AdmissionRejection {
@@ -157,18 +155,11 @@ impl AdmissionRejection {
         Self {
             reason,
             retry_after_ms: None,
-            capacity_denial: None,
         }
     }
 
     pub fn with_retry_after_ms(mut self, retry_after_ms: u64) -> Self {
         self.retry_after_ms = Some(retry_after_ms);
-        self
-    }
-
-    pub fn with_capacity_denial(mut self, denial: crate::TurnAdmissionCapacityDenial) -> Self {
-        self.retry_after_ms = denial.retry_after_ms;
-        self.capacity_denial = Some(denial);
         self
     }
 }
