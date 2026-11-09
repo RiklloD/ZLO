@@ -7771,9 +7771,14 @@ fn export_then_import_moves_a_setup_between_two_temp_homes() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Imported the setup"), "stdout: {stdout}");
     assert!(target.join("providers.json").is_file());
-    assert!(
-        !target.join("webui-token").exists(),
-        "the token stays behind"
+    // The source's token stays behind; this computer gets its own, so
+    // `zlo service start` works right after the import.
+    let token = std::fs::read_to_string(target.join("webui-token")).expect("target token");
+    assert!(token.trim().len() >= 32, "a full-strength token");
+    assert_ne!(
+        token,
+        std::fs::read_to_string(source.join("webui-token")).unwrap_or_default(),
+        "not the source's token"
     );
     let aside: Vec<_> = std::fs::read_dir(&target_home)
         .expect("home")
@@ -7786,6 +7791,72 @@ fn export_then_import_moves_a_setup_between_two_temp_homes() {
         .collect();
     assert_eq!(aside.len(), 1, "the old setup was moved aside");
     assert!(aside[0].path().join("config.toml").is_file());
+}
+
+#[test]
+fn pairing_commands_are_listed_and_describe_themselves() {
+    let help = Command::new(reborn_bin())
+        .arg("--help")
+        .output()
+        .expect("zlo --help should run");
+    let stdout = String::from_utf8_lossy(&help.stdout);
+    for (command, expects) in [
+        ("pair", "--json"),
+        ("devices", "revoke"),
+        ("remote", "enable"),
+    ] {
+        assert!(stdout.contains(command), "{command} missing: {stdout}");
+        let output = Command::new(reborn_bin())
+            .arg(command)
+            .arg("--help")
+            .output()
+            .expect("subcommand --help should run");
+        assert!(output.status.success(), "{command} --help failed");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains(expects), "{command} --help: {text}");
+    }
+}
+
+#[test]
+fn pair_and_devices_fail_cleanly_without_a_running_backend() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join(".zlo");
+    std::fs::create_dir_all(&home).expect("home");
+    // A port nothing listens on: bound, read, released.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("addr")
+        .port();
+    std::fs::write(
+        home.join("config.toml"),
+        format!("[webui]\nlisten_port = {port}\n"),
+    )
+    .expect("config");
+    for command in ["pair", "devices"] {
+        let output = reborn_command()
+            .env("HOME", temp.path())
+            .env("ZLO_HOME", &home)
+            .arg(command)
+            .output()
+            .expect("command runs");
+        assert!(!output.status.success(), "{command} needs a backend");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).trim().is_empty(),
+            "{command} prints no code or list without a backend"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("panicked"),
+            "{command} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut left: Vec<_> = std::fs::read_dir(&home)
+        .expect("home")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    left.sort();
+    assert_eq!(left, ["config.toml"], "nothing was written to the home");
 }
 
 #[test]

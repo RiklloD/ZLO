@@ -9,8 +9,9 @@
 //!
 //! Safety properties:
 //!
-//! - **Never deletes data.** The only removal is of the empty
-//!   `~/.zlo` directory `rename(2)` replaces, and of the pending marker.
+//! - **Never deletes data.** The only removals are of the empty `~/.zlo`
+//!   directory `rename(2)` replaces (and a Finder `.DS_Store` in it), and
+//!   of the pending marker.
 //! - **Idempotent.** A migrated home (legacy path is a link to `~/.zlo`) is
 //!   a no-op on every later start.
 //! - **Concurrent-start safe.** The ZLO app and the backend may resolve the
@@ -33,6 +34,7 @@ use crate::home::{DEFAULT_HOME_DIR_NAME, RebornConfigError};
 const LEGACY_PARENT_DIR: &str = ".ironclaw";
 const LEGACY_HOME_DIR: &str = "reborn";
 const LOCK_FILE_NAME: &str = ".zlo-migration.lock";
+const FINDER_METADATA: &str = ".DS_Store";
 /// Written into the legacy folder right before the move; removed once the
 /// compatibility link exists.
 pub const MIGRATION_PENDING_MARKER: &str = ".zlo-migration-pending";
@@ -207,9 +209,16 @@ impl Paths {
         }
     }
 
+    /// Empty, or holding only Finder's `.DS_Store` (opening the folder in
+    /// Finder makes one; it is not data).
     fn is_empty_dir(&self, path: &Path) -> Result<bool, RebornConfigError> {
-        let mut entries = fs::read_dir(path).map_err(|error| self.io_error("list", path, error))?;
-        Ok(entries.next().is_none())
+        for entry in fs::read_dir(path).map_err(|error| self.io_error("list", path, error))? {
+            let entry = entry.map_err(|error| self.io_error("list", path, error))?;
+            if entry.file_name() != FINDER_METADATA {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn migrate_locked(&self) -> Result<HomeMigration, RebornConfigError> {
@@ -245,6 +254,22 @@ impl Paths {
         let marker = self.legacy.join(MIGRATION_PENDING_MARKER);
         fs::write(&marker, self.current.to_string_lossy().as_bytes())
             .map_err(|error| self.io_error("write", &marker, error))?;
+
+        // `rename(2)` only replaces an empty folder: drop the Finder
+        // metadata `is_empty_dir` looked past.
+        let finder = self.current.join(FINDER_METADATA);
+        match fs::remove_file(&finder) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            // `~/.zlo` is a file, or absent: the rename reports what matters.
+            Err(error) if error.kind() == io::ErrorKind::NotADirectory => {}
+            Err(error) => {
+                let reason = format!("remove {}: {error}", finder.display());
+                // silent-ok: best-effort cleanup; the removal error is returned
+                let _ = fs::remove_file(&marker);
+                return Err(self.error(reason));
+            }
+        }
 
         if let Err(error) = fs::rename(&self.legacy, &self.current) {
             // Nothing moved; leave the folder exactly as it was.

@@ -130,6 +130,23 @@ fn empty_zlo_folder_does_not_hide_existing_data() {
 }
 
 #[test]
+fn zlo_folder_holding_only_finder_metadata_does_not_hide_existing_data() {
+    // Opening an empty ~/.zlo in Finder leaves a `.DS_Store` in it. That is
+    // not data: the old folder must still move.
+    let temp = tempfile::tempdir().expect("tempdir");
+    seed_legacy(temp.path());
+    let zlo = temp.path().join(".zlo");
+    fs::create_dir(&zlo).expect("zlo");
+    fs::write(zlo.join(".DS_Store"), b"finder").expect("finder metadata");
+
+    let home = resolve(temp.path()).expect("migration succeeds");
+
+    assert!(matches!(home.migration(), HomeMigration::Migrated { .. }));
+    assert!(home.path().join("config.toml").is_file());
+    assert!(legacy(temp.path()).join("config.toml").is_file());
+}
+
+#[test]
 fn both_folders_with_data_use_zlo_and_leave_old_untouched() {
     let temp = tempfile::tempdir().expect("tempdir");
     let legacy = seed_legacy(temp.path());

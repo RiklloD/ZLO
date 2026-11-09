@@ -371,6 +371,23 @@ async fn status_diff_stage_and_unstage_read_back() {
 }
 
 #[tokio::test]
+async fn discarding_a_staged_rename_puts_the_old_file_back() {
+    let f = fixture(false).await;
+    sh(&f.repo, "git mv a.txt b.txt");
+    for path in ["b.txt", "a.txt"] {
+        f.change(ThreadGitAction::Discard { path: path.into() })
+            .await
+            .unwrap();
+    }
+    assert!(f.status().await.changes.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
+        "one\n"
+    );
+    assert!(!f.repo.join("b.txt").exists());
+}
+
+#[tokio::test]
 async fn paths_outside_the_thread_repository_are_refused_before_git_runs() {
     let f = fixture(false).await;
     let outside = f.repo.parent().unwrap().join("secret.txt");
