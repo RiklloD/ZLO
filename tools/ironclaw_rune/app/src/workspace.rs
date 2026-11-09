@@ -356,12 +356,12 @@ fn friendly_unreachable(message: &str, runs_local: bool) -> String {
     if runs_local {
         format!(
             "{message}\n\nIronClaw starts its service when the app opens. If this persists, \
-             run `ironclaw service install` once, then try again."
+             run `zlo service install` once, then try again."
         )
     } else {
         format!(
             "{message}\n\n\"Run IronClaw on this Mac\" is off in Settings → Computers, so ZLO does not start it. \
-             Start `ironclaw serve` yourself, turn the switch on, or pick another computer."
+             Start `zlo serve` yourself, turn the switch on, or pick another computer."
         )
     }
 }
@@ -825,7 +825,7 @@ mod tests {
 
     #[test]
     fn an_unreachable_mac_says_what_to_do() {
-        assert!(friendly_unreachable("down", true).contains("ironclaw service install"));
+        assert!(friendly_unreachable("down", true).contains("zlo service install"));
         assert!(friendly_unreachable("down", false).contains("Run IronClaw on this Mac"));
     }
 }

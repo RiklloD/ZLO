@@ -2,9 +2,10 @@
 //! stays on its loopback, and ZLO reaches it through the user's own SSH
 //! key with the system `ssh`.
 //!
-//! - Pairing: `ssh user@host ironclaw pair --json` (then
-//!   `~/.ironclaw/bin/ironclaw`, where installs put it) prints a one-time
-//!   code; it is redeemed through the tunnel like any other code.
+//! - Pairing: `ssh user@host zlo pair --json` (then `~/.zlo/bin/zlo`, where
+//!   installs put it, then the pre-ZLO `ironclaw` names for computers that
+//!   have not updated yet) prints a one-time code; it is redeemed through
+//!   the tunnel like any other code.
 //! - The tunnel: `ssh -N -L 127.0.0.1:<free port>:127.0.0.1:<backend port>
 //!   user@host`, and the client talks to `http://127.0.0.1:<free port>`
 //!   (loopback http passes the transport rule).
@@ -26,7 +27,7 @@ use crate::environments::{host_of, normalize_code};
 
 /// The system client (never one found on `PATH`).
 pub const SSH: &str = "/usr/bin/ssh";
-/// `ironclaw serve`'s default port, on the computer's loopback.
+/// `zlo serve`'s default port, on the computer's loopback.
 pub const DEFAULT_BACKEND_PORT: u16 = 3000;
 const DEFAULT_SSH_PORT: u16 = 22;
 const CONNECT_TIMEOUT_SECS: u32 = 8;
@@ -35,8 +36,11 @@ pub const TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// What runs on the computer to make a pairing code, in order: on `PATH`,
 /// then where the installer puts it (a non-interactive SSH session often
-/// has no `~/.ironclaw/bin` on its `PATH`).
-pub const REMOTE_PAIR_COMMANDS: [&str; 2] = [
+/// has no `~/.zlo/bin` on its `PATH`), then the same two under the pre-ZLO
+/// `ironclaw` name, for a computer that has not updated yet.
+pub const REMOTE_PAIR_COMMANDS: [&str; 4] = [
+    "zlo pair --json",
+    "~/.zlo/bin/zlo pair --json",
     "ironclaw pair --json",
     "~/.ironclaw/bin/ironclaw pair --json",
 ];
@@ -235,7 +239,7 @@ pub struct Ran {
     pub stderr: Vec<u8>,
 }
 
-/// What `ironclaw pair --json` printed.
+/// What `zlo pair --json` printed.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RemoteCode {
     /// `XXXX-XXXX-XXXX`.
@@ -377,7 +381,7 @@ where
             "this IronClaw has no `pair` command yet. Update IronClaw there.".to_string()
         } else if line.is_empty() {
             format!(
-                "it exited with {:?}. Is `ironclaw serve` running there?",
+                "it exited with {:?}. Is `zlo serve` running there?",
                 ran.code
             )
         } else {
@@ -541,7 +545,7 @@ mod tests {
                 "-T",
                 "--",
                 "me@box",
-                "ironclaw pair --json",
+                "zlo pair --json",
             ]
         );
     }
@@ -592,7 +596,7 @@ mod tests {
 
     #[test]
     fn pair_json_is_read_as_the_cli_prints_it() {
-        // `ironclaw pair --json` is `serde_json::to_string_pretty` of
+        // `zlo pair --json` is `serde_json::to_string_pretty` of
         // `{code, expires_at, link}`: one key per line.
         let printed = serde_json::to_string_pretty(&serde_json::json!({
             "code": "7KQ2-M9XD-4TRA",
@@ -617,13 +621,30 @@ mod tests {
     const PAIR: &str = r#"{"code":"7KQ2-M9XD-4TRA","expires_at":"2026-11-08T21:05:00Z","link":"http://127.0.0.1:3000/pair#code=7KQ2-M9XD-4TRA"}"#;
 
     #[test]
-    fn the_installed_binary_is_tried_when_ironclaw_is_not_on_path() {
+    fn the_installed_binary_is_tried_when_zlo_is_not_on_path() {
         let t = target("me@box");
         let mut calls = Vec::new();
         let code = remote_pair_code(&t, |args| {
             calls.push(args.last().cloned().unwrap_or_default());
             Ok(if calls.len() == 1 {
-                ran(127, "", "zsh:1: command not found: ironclaw")
+                ran(127, "", "zsh:1: command not found: zlo")
+            } else {
+                ran(0, PAIR, "")
+            })
+        })
+        .unwrap();
+        assert_eq!(code.code, "7KQ2-M9XD-4TRA");
+        assert_eq!(calls, REMOTE_PAIR_COMMANDS[..2]);
+    }
+
+    #[test]
+    fn an_older_remote_still_pairs_through_its_ironclaw_command() {
+        let t = target("me@box");
+        let mut calls = Vec::new();
+        let code = remote_pair_code(&t, |args| {
+            calls.push(args.last().cloned().unwrap_or_default());
+            Ok(if calls.len() < 4 {
+                ran(127, "", "zsh:1: command not found")
             } else {
                 ran(0, PAIR, "")
             })
@@ -631,6 +652,7 @@ mod tests {
         .unwrap();
         assert_eq!(code.code, "7KQ2-M9XD-4TRA");
         assert_eq!(calls, REMOTE_PAIR_COMMANDS);
+        assert_eq!(calls[3], "~/.ironclaw/bin/ironclaw pair --json");
 
         let err = remote_pair_code(&t, |_| Ok(ran(127, "", "command not found"))).unwrap_err();
         assert_eq!(err, SshError::NotInstalled("box".into()));

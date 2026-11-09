@@ -184,7 +184,7 @@ fn render_service(s: &State, k: &Kit) -> El {
         if svc.state != RebornServiceLifecycleState::Running {
             reported = reported.child(muted(
                 p,
-                "This gateway is answering, so it runs, probably outside the service manager (`ironclaw serve` in a terminal).",
+                "This gateway is answering, so it runs, probably outside the service manager (`zlo serve` in a terminal).",
             ));
         }
         if let Some(r) = &svc.remediation {

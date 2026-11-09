@@ -473,7 +473,7 @@ pub fn fixture_settings_nav(s: &mut State) {
 pub fn fixture_disconnected(s: &mut State) {
     base(s);
     s.conn = Conn::Failed {
-        message: "error sending request: connection refused\n\nIronClaw starts its service when the app opens. If this persists, run `ironclaw service install` once, then try again.".into(),
+        message: "error sending request: connection refused\n\nIronClaw starts its service when the app opens. If this persists, run `zlo service install` once, then try again.".into(),
         retry_in: Some(10),
     };
 }

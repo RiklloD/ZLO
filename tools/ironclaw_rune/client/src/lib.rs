@@ -1,6 +1,6 @@
 //! UI-free client for the IronClaw WebChat v2 gateway.
 //!
-//! The desktop app talks to `ironclaw serve` exactly like the browser does:
+//! The desktop app talks to `zlo serve` exactly like the browser does:
 //! bearer-authenticated HTTP for reads and mutations, SSE for live thread
 //! events. Nothing here knows about the UI toolkit, so it can be tested and
 //! reused on its own, and a Rune upgrade never touches it.
@@ -41,7 +41,7 @@ pub mod wire;
 
 pub use api::{Client, GateDecision, client_action_id};
 pub use backend::Backend;
-pub use connection::{Connection, Token, reborn_home};
+pub use connection::{Connection, Token, prepare_reborn_home, reborn_home};
 pub use error::{ApiErrorBody, ClientError};
 pub use pages::{AutomationAction, FilePreview, PREVIEW_LIMIT_BYTES};
 pub use stream::{EventStream, StreamMessage, StreamStatus};

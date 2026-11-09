@@ -433,7 +433,7 @@ pub fn add_computer(s: &State, k: &Kit) -> El {
     }
     out.child(muted(
         p,
-        "On the other computer: ZLO → Settings → Computers → Pair a device, or run `ironclaw pair`. Turn on remote access there first (`ironclaw remote enable`). Over SSH, IronClaw stays private on that computer and your SSH key does the pairing.",
+        "On the other computer: ZLO → Settings → Computers → Pair a device, or run `zlo pair`. Turn on remote access there first (`zlo remote enable`). Over SSH, IronClaw stays private on that computer and your SSH key does the pairing.",
     ))
 }
 

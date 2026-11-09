@@ -315,7 +315,9 @@ pub fn sync_index(s: &mut State, key: Option<IndexKey>, menu_of: MenuOf) {
 
 /// A remote backend's index as a listing rooted at its workspace path, so
 /// a picked file mentions `/workspace/<path>`.
-pub fn remote_listing(index: zlo_client::workspace_views::RebornProjectFsIndexResponse) -> FileIndex {
+pub fn remote_listing(
+    index: zlo_client::workspace_views::RebornProjectFsIndexResponse,
+) -> FileIndex {
     use zlo_client::workspace_views::ProjectFsEntryKind;
     let files = index
         .entries

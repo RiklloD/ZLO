@@ -311,7 +311,7 @@ fn close_terminal(s: &mut State) {
                 return;
             }
             if !crate::service::restart() {
-                // A gateway this app did not start (`ironclaw serve`).
+                // A gateway this app did not start (`zlo serve`).
                 refresh(s);
                 s.onboarding.agents.agent_notice = Some(format!(
                     "{} is installed. Restart IronClaw so it finds it.",

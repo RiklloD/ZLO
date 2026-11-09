@@ -368,7 +368,7 @@ async fn environment(
             }
             Err(ClientError::Network(_)) if tunnel.is_some() => {
                 last = Problem::Unreachable(format!(
-                    "The SSH tunnel to {label} is open, but IronClaw isn't answering there. Check that `ironclaw serve` runs on {label}."
+                    "The SSH tunnel to {label} is open, but IronClaw isn't answering there. Check that `zlo serve` runs on {label}."
                 ));
             }
             Err(ClientError::Network(_)) => {
@@ -489,7 +489,7 @@ fn problem_of(computer: &Computer, e: &ClientError) -> Problem {
             r.label
         )),
         (e, Computer::ThisMac) if e.is_unauthorized() => Problem::Blocked(format!(
-            "{e}\n\nThe WebUI token was rejected. Re-run `ironclaw onboard` to refresh it."
+            "{e}\n\nThe WebUI token was rejected. Re-run `zlo onboard` to refresh it."
         )),
         (e, _) => Problem::Blocked(e.to_string()),
     }

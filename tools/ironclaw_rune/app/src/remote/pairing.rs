@@ -198,7 +198,7 @@ pub fn submit(s: &mut State) {
     }
 }
 
-/// "Connect" over SSH: `ssh user@host ironclaw pair --json` makes a code
+/// "Connect" over SSH: `ssh user@host zlo pair --json` makes a code
 /// with the person's own key, a tunnel opens to the computer's loopback
 /// backend, and the code is redeemed through it (`zlo_client::ssh`).
 pub fn submit_ssh(s: &mut State) {
@@ -237,7 +237,7 @@ pub fn submit_ssh(s: &mut State) {
         .map_err(|e| match e {
             // The tunnel's own address means nothing to the person.
             PairError::Unreachable(_) | PairError::NotIronClaw(_) => PairError::Other(format!(
-                "The SSH tunnel to {host} is open, but IronClaw isn't answering there. Check that `ironclaw serve` runs on {host}."
+                "The SSH tunnel to {host} is open, but IronClaw isn't answering there. Check that `zlo serve` runs on {host}."
             )),
             e => e,
         })
@@ -573,9 +573,8 @@ fn run_remote_command(on: bool) -> Result<Option<EnableReport>, String> {
     };
     let mut cmd = std::process::Command::new(&binary);
     cmd.args(args).stdin(std::process::Stdio::null());
-    if let Ok(home) = zlo_client::reborn_home() {
-        cmd.env("IRONCLAW_REBORN_HOME", home);
-    }
+    let home = zlo_client::prepare_reborn_home().map_err(|e| e.to_string())?;
+    crate::service::set_home_env(&mut cmd, &home);
     let out = cmd
         .output()
         .map_err(|e| format!("Could not run IronClaw ({}): {e}", binary.display()))?;

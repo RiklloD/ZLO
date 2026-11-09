@@ -17,9 +17,8 @@ use ironclaw_product_contracts::product_wire::{
 use ironclaw_product_contracts::workspace_views::{
     FsMount, RebornCreateProjectRequest, RebornFsListResponse, RebornFsMountsResponse,
     RebornFsStatResponse, RebornListProjectsResponse, RebornProjectFsIndexResponse,
-    RebornProjectFsListResponse,
-    RebornProjectFsStatResponse, RebornProjectResponse, RebornProjectState,
-    RebornUpdateProjectRequest,
+    RebornProjectFsListResponse, RebornProjectFsStatResponse, RebornProjectResponse,
+    RebornProjectState, RebornUpdateProjectRequest,
 };
 use reqwest::Method;
 

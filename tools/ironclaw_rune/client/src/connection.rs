@@ -1,13 +1,12 @@
-//! Finds the local gateway and its bearer token the same way `ironclaw serve`
+//! Finds the local gateway and its bearer token the same way `zlo serve`
 //! resolves them, so the desktop app connects with zero configuration.
 //!
 //! Precedence, highest first:
 //! - URL: `IRONCLAW_DESKTOP_URL`, else `http://{listen_host}:{listen_port}`
-//!   from `$IRONCLAW_REBORN_HOME/config.toml` `[webui]`, else
-//!   `http://127.0.0.1:3000`.
+//!   from `$ZLO_HOME/config.toml` `[webui]`, else `http://127.0.0.1:3000`.
 //! - Token: the env var named by `[webui] env_token_var` (default
-//!   `IRONCLAW_REBORN_WEBUI_TOKEN`), else `$IRONCLAW_REBORN_HOME/webui-token`
-//!   (written by `ironclaw onboard`).
+//!   `ZLO_WEBUI_TOKEN`, or the older `IRONCLAW_REBORN_WEBUI_TOKEN`), else
+//!   `$ZLO_HOME/webui-token` (written by `zlo onboard`).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -18,7 +17,6 @@ use crate::error::ClientError;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 3000;
-const DEFAULT_TOKEN_VAR: &str = "IRONCLAW_REBORN_WEBUI_TOKEN";
 const TOKEN_FILENAME: &str = "webui-token";
 /// Same cap the CLI applies before trusting the file.
 const TOKEN_FILE_MAX_BYTES: u64 = 4096;
@@ -69,15 +67,38 @@ struct WebuiSection {
     env_token_var: Option<String>,
 }
 
-/// `$IRONCLAW_REBORN_HOME`, else `~/.ironclaw/reborn`.
+/// The data folder, for reading: `$ZLO_HOME` (or the older
+/// `$IRONCLAW_REBORN_HOME`), else `~/.zlo` — or the pre-ZLO
+/// `~/.ironclaw/reborn` while the data still sits there. Never moves
+/// anything; [`prepare_reborn_home`] does, before a backend starts.
 pub fn reborn_home() -> Result<PathBuf, ClientError> {
-    if let Some(home) = std::env::var_os("IRONCLAW_REBORN_HOME").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(home));
+    ironclaw_config::RebornHome::resolve_from_env_without_migrating()
+        .map(ironclaw_config::RebornHome::into_path)
+        .map_err(|error| ClientError::Config(error.to_string()))
+}
+
+/// The data folder a backend is about to use. Resolved by the backend's own
+/// `ironclaw_config`, which on first run moves a pre-ZLO
+/// `~/.ironclaw/reborn` to `~/.zlo` (leaving a link), so ZLO never starts a
+/// backend on an empty folder while the data sits in the old one. A failed
+/// move is an error, not a silent empty home.
+pub fn prepare_reborn_home() -> Result<PathBuf, ClientError> {
+    let home = ironclaw_config::RebornHome::resolve_from_env()
+        .map_err(|error| ClientError::Config(error.to_string()))?;
+    if let Some(notice) = home.migration().notice() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| tracing::warn!("{notice}"));
     }
-    let home = std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| ClientError::Config("HOME is not set".into()))?;
-    Ok(PathBuf::from(home).join(".ironclaw").join("reborn"))
+    Ok(home.into_path())
+}
+
+/// `ZLO_WEBUI_TOKEN`, or the older name when only that one is set — the
+/// same default `zlo serve` reads.
+fn default_token_var() -> &'static str {
+    ironclaw_config::active_env_name(
+        ironclaw_config::WEBUI_TOKEN_ENV,
+        ironclaw_config::LEGACY_WEBUI_TOKEN_ENV,
+    )
 }
 
 impl Connection {
@@ -104,7 +125,7 @@ impl Connection {
             .webui
             .env_token_var
             .as_deref()
-            .unwrap_or(DEFAULT_TOKEN_VAR);
+            .unwrap_or(default_token_var());
         if let Ok(value) = std::env::var(token_var)
             && !value.trim().is_empty()
         {
@@ -141,7 +162,7 @@ fn read_token_file(path: &Path) -> Result<Token, ClientError> {
     let meta = std::fs::metadata(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             ClientError::Config(format!(
-                "no WebUI token at {}. Run `ironclaw onboard` first.",
+                "no WebUI token at {}. Run `zlo onboard` first.",
                 path.display()
             ))
         } else {

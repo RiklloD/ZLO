@@ -23,6 +23,9 @@ zlo_client = { path = "client" }
 ironclaw_product_contracts = { path = "../../crates/contracts/ironclaw_product_contracts" }
 ironclaw_host_api = { path = "../../crates/contracts/ironclaw_host_api" }
 ironclaw_extension_contracts = { path = "../../crates/contracts/ironclaw_extension_contracts" }
+# Boot config: ZLO resolves (and, on first run, migrates) the data folder with
+# the exact code the backend uses, so the two never disagree. No workspace deps.
+ironclaw_config = { path = "../../crates/app/ironclaw_config" }
 
 # Pinned rev of Rune's fast-forward-only `dev` branch. Bump on purpose.
 rune = { git = "https://github.com/anomalyco/rune", rev = "53c7f60f51ce12bd5da53145d9d86ce1552324e4", features = ["native-file-dialog"] }

@@ -34,7 +34,7 @@ const POLL_EVERY: Duration = Duration::from_secs(3);
 const GIVE_UP_AFTER: Duration = Duration::from_secs(45 * 60);
 
 /// How to turn self-update on, for a computer that has it off.
-pub const ENABLE_HINT: &str = "On that computer, add to ~/.ironclaw/reborn/config.toml:  [update]  method = \"source\"  repo = \"/path/to/ironclaw\"  — then restart IronClaw there.";
+pub const ENABLE_HINT: &str = "On that computer, add to ~/.zlo/config.toml (~/.ironclaw/reborn/config.toml before ZLO's rename):  [update]  method = \"source\"  repo = \"/path/to/ironclaw\"  — then restart IronClaw there.";
 
 /// What one computer's row says about updates.
 #[derive(Clone, Debug, PartialEq, Eq)]

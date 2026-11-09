@@ -1,7 +1,7 @@
 //! Finding IronClaw on the user's tailnet: `tailscale status --json` lists
 //! the peers, and each online peer's descriptor is probed at
 //! `https://<MagicDNS name>/.well-known/ironclaw/environment` (the
-//! `tailscale serve` URL `ironclaw remote enable` sets up).
+//! `tailscale serve` URL `zlo remote enable` sets up).
 //!
 //! On macOS the CLI is the app's own binary
 //! (`/Applications/Tailscale.app/Contents/MacOS/Tailscale`), not on `PATH`.

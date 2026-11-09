@@ -6,7 +6,8 @@
 //! asks for Accessibility and Screen Recording once, for ZLO.
 //!
 //! A backend that exits on its own is restarted with backoff. Outside the app
-//! bundle (`cargo run`) the installed `~/.ironclaw/bin/ironclaw` is used.
+//! bundle (`cargo run`) the installed `~/.zlo/bin/zlo` is used (or a pre-ZLO
+//! `~/.ironclaw/bin/ironclaw`).
 //!
 //! Nothing starts or restarts unless the app said it may
 //! ([`set_allowed`], from `remote::sync_local_backend`): never while
@@ -21,8 +22,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-/// The launchd job older installs used; retired on first start.
-const LEGACY_LABEL: &str = "com.ironclaw.reborn";
+/// launchd jobs that would run a second backend beside this app's child:
+/// the pre-ZLO `ironclaw service` label and `zlo service`'s own. Retired on
+/// start.
+const LAUNCHD_LABELS: [&str; 2] = ["com.ironclaw.reborn", "com.zlo.serve"];
 const PID_FILE: &str = "zlo-backend.pid";
 const STOP_GRACE: Duration = Duration::from_secs(6);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -77,7 +80,15 @@ fn paths() -> Option<Paths> {
     if std::env::var_os("IRONCLAW_DESKTOP_URL").is_some_and(|v| !v.is_empty()) {
         return None;
     }
-    let home = zlo_client::reborn_home().ok()?;
+    let home = match zlo_client::prepare_reborn_home() {
+        Ok(home) => home,
+        Err(error) => {
+            // Never start the backend on a home we could not resolve (for
+            // example a failed move of the old data folder): say why instead.
+            tracing::error!(%error, "not starting the local backend");
+            return None;
+        }
+    };
     Some(Paths {
         backend: backend_binary()?,
         home,
@@ -90,8 +101,9 @@ pub fn backend_binary() -> Option<PathBuf> {
     let bundled = std::env::current_exe()
         .ok()
         .and_then(|exe| Some(exe.parent()?.join("zlo-backend")));
-    let installed = dirs::home_dir().map(|h| h.join(".ironclaw/bin/ironclaw"));
-    [bundled, installed]
+    let installed = dirs::home_dir().map(|h| h.join(".zlo/bin/zlo"));
+    let legacy = dirs::home_dir().map(|h| h.join(".ironclaw/bin/ironclaw"));
+    [bundled, installed, legacy]
         .into_iter()
         .flatten()
         .find(|p| p.is_file())
@@ -140,7 +152,7 @@ pub fn start() {
     std::thread::Builder::new()
         .name("zlo-backend".into())
         .spawn(move || {
-            retire_launchd_job();
+            retire_launchd_jobs(&paths.home);
             stop_stale(&paths.home);
             supervise(&sup, &paths);
             sup.running.store(false, Ordering::SeqCst);
@@ -276,9 +288,10 @@ fn spawn(paths: &Paths) -> std::io::Result<Child> {
             .append(true)
             .open(logs.join(name))
     };
-    Command::new(&paths.backend)
-        .arg("serve")
-        .env("IRONCLAW_REBORN_HOME", &paths.home)
+    let mut command = Command::new(&paths.backend);
+    command.arg("serve");
+    set_home_env(&mut command, &paths.home);
+    command
         .current_dir(&workspace)
         .stdin(Stdio::null())
         .stdout(log("serve.stdout.log")?)
@@ -290,6 +303,14 @@ fn terminate(pid: u32) {
     let _ = Command::new("/bin/kill")
         .args(["-TERM", &pid.to_string()])
         .status();
+}
+
+/// Point a backend command at `home`: `ZLO_HOME`, plus the pre-ZLO
+/// `IRONCLAW_REBORN_HOME` for an older installed binary that only knows it.
+pub fn set_home_env(command: &mut Command, home: &Path) {
+    command
+        .env("ZLO_HOME", home)
+        .env("IRONCLAW_REBORN_HOME", home);
 }
 
 /// A backend left over from a crashed ZLO still holds the port.
@@ -331,29 +352,32 @@ fn stop_stale(home: &Path) {
 }
 
 /// Older installs ran the backend as a launchd job. Unload it (`-w` keeps it
-/// from starting at login) and move its plist next to the backend's data, so
-/// two backends never fight over the port.
-fn retire_launchd_job() {
+/// from starting at login) and move its plist next to the backend's data
+/// (`<data>/retired-<label>.plist`), so two backends never fight over the
+/// port.
+fn retire_launchd_jobs(data: &Path) {
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    let plist = home
-        .join("Library/LaunchAgents")
-        .join(format!("{LEGACY_LABEL}.plist"));
-    if !plist.exists() {
-        return;
-    }
-    let _ = Command::new("/bin/launchctl")
-        .args(["unload", "-w"])
-        .arg(&plist)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let kept = home.join(".ironclaw/reborn/retired-launchd.plist");
-    match fs::rename(&plist, &kept) {
-        Ok(()) => tracing::debug!(kept = %kept.display(), "retired the old launchd backend job"),
-        Err(e) => tracing::warn!(error = %e, "could not move the old launchd plist"),
+    for label in LAUNCHD_LABELS {
+        let plist = home
+            .join("Library/LaunchAgents")
+            .join(format!("{label}.plist"));
+        if !plist.exists() {
+            continue;
+        }
+        let _ = Command::new("/bin/launchctl")
+            .args(["unload", "-w"])
+            .arg(&plist)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let kept = data.join(format!("retired-{label}.plist"));
+        match fs::rename(&plist, &kept) {
+            Ok(()) => tracing::debug!(kept = %kept.display(), "retired a launchd backend job"),
+            Err(e) => tracing::warn!(error = %e, "could not move a launchd backend plist"),
+        }
     }
 }
 

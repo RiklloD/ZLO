@@ -17,8 +17,9 @@
 # Signing: IRONCLAW_SIGN_IDENTITY, else the first "Apple Development"
 # identity; ZLO_ALLOW_ADHOC=1 forces ad-hoc signing.
 #
-# The backend is built from this repo (cargo build --release -p ironclaw)
-# unless ZLO_BACKEND=/path/to/ironclaw names a binary to copy (for example
+# The backend is built from this repo (cargo build --release -p ironclaw
+# --bin zlo: the package keeps its IronClaw name, the binary is `zlo`)
+# unless ZLO_BACKEND=/path/to/zlo names a binary to copy (for example
 # ~/Applications/ZLO.app/Contents/MacOS/zlo-backend). The engine is the pinned
 # release, cached in ~/Library/Caches/ZLO and checksum verified, unless
 # ZLO_ENGINE_APP=/path/to/Some.app names a local build.
@@ -67,8 +68,8 @@ engine_name="ZLO Computer Use.app"
 if [ -z "$light" ]; then
   backend="${ZLO_BACKEND:-}"
   if [ -z "$backend" ]; then
-    (cd "$repo" && SKIP_FRONTEND_BUILD= cargo build --release -p ironclaw)
-    backend="$repo/target/release/ironclaw"
+    (cd "$repo" && SKIP_FRONTEND_BUILD= cargo build --release -p ironclaw --bin zlo)
+    backend="$repo/target/release/zlo"
   fi
   [ -f "$backend" ] || { echo "no backend binary at $backend" >&2; exit 1; }
 fi

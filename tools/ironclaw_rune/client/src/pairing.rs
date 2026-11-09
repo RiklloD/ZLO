@@ -56,7 +56,7 @@ pub enum PairError {
     #[error("That computer turned the token down. Make a pairing code there instead.")]
     TokenRefused,
     #[error(
-        "{0} has no secure address yet. On it, run `ironclaw remote enable`, then pair with a code."
+        "{0} has no secure address yet. On it, run `zlo remote enable`, then pair with a code."
     )]
     NoSecureRoute(String),
     #[error(transparent)]
