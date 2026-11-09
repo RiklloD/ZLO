@@ -139,16 +139,6 @@ export async function fetchSettingsExport() {
     precedence: optionalUnknownArrayField(data, "precedence", "tool settings"),
   };
 }
-export async function fetchSetting(key) {
-  if (key === AUTO_APPROVE_KEY) {
-    const data = await fetchSettingsExport();
-    // Default ON when unset, mirroring backend AUTO_APPROVE_DEFAULT_ENABLED.
-    return data.settings[AUTO_APPROVE_KEY] ?? true;
-  }
-  const data = await apiFetch(`${OPERATOR_CONFIG_BASE}/${encodeURIComponent(key)}`);
-  return recordField(data, "entry", "operator config").value ?? null;
-}
-
 type SettingEntry = {
   key: string;
   value: unknown;

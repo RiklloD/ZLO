@@ -24,19 +24,6 @@ export const primaryRoutes = [
   { id: "admin", path: "/admin", labelKey: "nav.admin", hidden: false },
 ];
 
-export const routeSectionDefs = [
-  {
-    labelKey: "nav.sectionWork",
-    ids: primaryRoutes
-      .filter(({ id }) => !["extensions", "logs", "settings", "admin"].includes(id))
-      .map(({ id }) => id),
-  },
-  {
-    labelKey: "nav.sectionSystem",
-    ids: ["extensions", "logs", "settings", "admin"],
-  },
-];
-
 export const SETTINGS_SUB_ROUTES = [
   // Inference's lib/*-api.ts (LLM providers) calls the real v2
   // `/api/webchat/v2/llm/*` endpoints.
@@ -68,7 +55,3 @@ export const EXPANDABLE_SUB_ROUTES = {
   extensions: EXTENSIONS_SUB_ROUTES,
   admin: ADMIN_SUB_ROUTES,
 };
-
-export function routeForId(id) {
-  return primaryRoutes.find((route) => route.id === id) || primaryRoutes[0];
-}
