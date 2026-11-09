@@ -19,9 +19,9 @@ use ironclaw_host_api::{
 };
 use ironclaw_loop_contracts::{
     AgentLoopHostError, AgentLoopHostErrorKind, AgentLoopHostErrorReasonKind,
-    AppendCapabilityResultRef, AssistantReply, BeginAssistantDraft, CapabilityDeniedReasonKind,
-    CapabilityInputIssue, CapabilityInputRef, CapabilityResultIntrinsicOutcome,
-    CapabilitySurfaceVersion, EphemeralInstructionMaterializationStore, FinalizeAssistantMessage,
+    AppendCapabilityResultRef, AssistantReply, CapabilityDeniedReasonKind, CapabilityInputIssue,
+    CapabilityInputRef, CapabilityResultIntrinsicOutcome, CapabilitySurfaceVersion,
+    EphemeralInstructionMaterializationStore, FinalizeAssistantMessage,
     InMemoryLoopHostMilestoneSink, InMemoryRunProfileResolver, LoopCapabilityPort,
     LoopContextBundle, LoopContextCompactionKind, LoopContextMessage, LoopContextPort,
     LoopContextRequest, LoopContextSnippet, LoopDriverNoteKind, LoopHostMilestoneKind,
@@ -33,8 +33,7 @@ use ironclaw_loop_contracts::{
     PersonalContextPolicy, PromptMode, PromptSkillContextMetadata, ProviderToolCallReference,
     ProviderToolCallReplay, ProviderToolDefinition, RunProfileResolutionRequest,
     RunProfileResolver, SkillName, SkillTrustLevel, SkillVisibility, ToolObservationDetail,
-    ToolObservationStatus, UpdateAssistantDraft, VisibleCapabilityRequest,
-    VisibleCapabilitySurface, resolution,
+    ToolObservationStatus, VisibleCapabilityRequest, VisibleCapabilitySurface, resolution,
 };
 use ironclaw_loop_host::{
     EmptyLoopCapabilityPort, HostIdentityContextBuildError, HostIdentityContextCandidate,
@@ -4297,57 +4296,6 @@ async fn transcript_port_finalize_is_idempotent_under_concurrent_duplicate_calls
     assert_eq!(finalized.len(), 1);
     assert_eq!(finalized[0].status, MessageStatus::Finalized);
     assert_eq!(finalized[0].content.as_deref(), Some("concurrent reply"));
-}
-
-#[tokio::test]
-async fn transcript_port_rejects_draft_updates_from_other_runs() {
-    let fixture = ThreadFixture::new().await;
-    let run_a = ThreadBackedLoopTranscriptPort::new(
-        Arc::clone(&fixture.thread_service),
-        fixture.thread_scope.clone(),
-        fixture.run_context.clone(),
-    );
-    let draft_ref = run_a
-        .begin_assistant_draft(BeginAssistantDraft {
-            reply: AssistantReply {
-                content: "run A draft".to_string(),
-            },
-        })
-        .await
-        .unwrap();
-    let mut run_b_context = fixture.run_context.clone();
-    run_b_context.run_id = TurnRunId::new();
-    let run_b = ThreadBackedLoopTranscriptPort::new(
-        Arc::clone(&fixture.thread_service),
-        fixture.thread_scope.clone(),
-        run_b_context,
-    );
-
-    let error = run_b
-        .update_assistant_draft(UpdateAssistantDraft {
-            message_ref: draft_ref,
-            reply: AssistantReply {
-                content: "run B overwrite".to_string(),
-            },
-        })
-        .await
-        .unwrap_err();
-
-    assert_eq!(error.kind, AgentLoopHostErrorKind::InvalidInvocation);
-    let history = fixture
-        .thread_service
-        .list_thread_history(ThreadHistoryRequest {
-            scope: fixture.thread_scope.clone(),
-            thread_id: fixture.thread_id.clone(),
-        })
-        .await
-        .unwrap();
-    let assistant = history
-        .messages
-        .iter()
-        .find(|message| message.kind == MessageKind::Assistant)
-        .expect("assistant draft must exist");
-    assert_eq!(assistant.content.as_deref(), Some("run A draft"));
 }
 
 #[tokio::test]

@@ -120,7 +120,7 @@ fn trace_host_factory_latency_error<E: ?Sized>(
 }
 
 use ironclaw_loop_contracts::{
-    AgentLoopHostError, AgentLoopHostErrorKind, AppendCapabilityResultRef, BeginAssistantDraft,
+    AgentLoopHostError, AgentLoopHostErrorKind, AppendCapabilityResultRef,
     CommunicationContextProvider, EphemeralInstructionMaterializationStore,
     FinalizeAssistantMessage, HookMilestoneSink, InstructionBundleMaterializedMessage,
     InstructionMaterializationStore, InstructionSafetyContext, LoadCheckpointPayloadRequest,
@@ -135,8 +135,8 @@ use ironclaw_loop_contracts::{
     LoopRequestBatch, LoopRunContext, LoopRunInfoPort, LoopRuntimeContext, LoopTranscriptPort,
     MemoryPromptContextService, NoOpBudgetAccountant, NoOpPolicyGuard, ProviderToolCall,
     ProviderToolDefinition, RegisterProviderToolCallRequest, RunScopedHookMilestoneSink,
-    StageCheckpointPayloadRequest, SystemInferencePort, UpdateAssistantDraft,
-    VisibleCapabilityRequest, VisibleCapabilitySurface,
+    StageCheckpointPayloadRequest, SystemInferencePort, VisibleCapabilityRequest,
+    VisibleCapabilitySurface,
 };
 use ironclaw_turns::{
     AgentTurnRuntimePort, AgentTurnSpawnTreeRuntimePort, LoopCheckpointStore, RunProfileId,
@@ -2567,20 +2567,6 @@ impl LoopCapabilityPort for RebornLoopDriverHost {
 
 #[async_trait]
 impl LoopTranscriptPort for RebornLoopDriverHost {
-    async fn begin_assistant_draft(
-        &self,
-        request: BeginAssistantDraft,
-    ) -> Result<ironclaw_turns::LoopMessageRef, AgentLoopHostError> {
-        self.transcript.begin_assistant_draft(request).await
-    }
-
-    async fn update_assistant_draft(
-        &self,
-        request: UpdateAssistantDraft,
-    ) -> Result<(), AgentLoopHostError> {
-        self.transcript.update_assistant_draft(request).await
-    }
-
     async fn finalize_assistant_message(
         &self,
         request: FinalizeAssistantMessage,

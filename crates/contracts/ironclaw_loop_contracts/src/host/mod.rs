@@ -59,7 +59,7 @@ pub use refs::{
 };
 pub use run_context::{LoopModelRouteSnapshot, LoopRunContext, LoopRunInfoPort};
 pub use transcript::{
-    AppendCapabilityResultRef, BeginAssistantDraft, CapabilityResultIntrinsicOutcome,
-    FinalizeAssistantMessage, LoopTranscriptPort, UpdateAssistantDraft,
+    AppendCapabilityResultRef, CapabilityResultIntrinsicOutcome, FinalizeAssistantMessage,
+    LoopTranscriptPort,
 };
 pub use validate::{sanitize_model_visible_text, validate_model_route_component_value};

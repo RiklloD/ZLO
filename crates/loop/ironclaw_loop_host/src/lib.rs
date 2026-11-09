@@ -212,7 +212,7 @@ use ironclaw_host_api::ids::{CapabilityId, RunId};
 use ironclaw_host_api::turn::TurnLeaseToken;
 use ironclaw_loop_contracts::{
     AgentLoopHostError, AgentLoopHostErrorKind, AgentLoopHostErrorReasonKind,
-    AppendCapabilityResultRef, AssistantReply, BeginAssistantDraft, CapabilityDeniedReasonKind,
+    AppendCapabilityResultRef, AssistantReply, CapabilityDeniedReasonKind,
     CapabilityResultIntrinsicOutcome, CapabilitySurfaceVersion, FinalizeAssistantMessage,
     InstructionMaterializationStore, LoopCapabilityPort, LoopContextBundle,
     LoopContextCompactionKind, LoopContextCompactionMetadata, LoopContextMessage, LoopContextPort,
@@ -222,21 +222,19 @@ use ironclaw_loop_contracts::{
     LoopPromptBundleAuthority, LoopRequest, LoopRequestBatch, LoopRunContext, LoopRunInfoPort,
     LoopSafeSummary, LoopTranscriptPort, MemoryPromptContextLoad, MemoryPromptContextService,
     ModelProfileId, ModelStreamChunk, ParentLoopOutput, PromptMode, SystemInferenceContextMessage,
-    SystemInferenceContextRole, UpdateAssistantDraft, VisibleCapabilityRequest,
-    VisibleCapabilitySurface, resolution, sanitize_model_visible_text,
-    sort_instruction_snippets_for_prompt,
+    SystemInferenceContextRole, VisibleCapabilityRequest, VisibleCapabilitySurface, resolution,
+    sanitize_model_visible_text, sort_instruction_snippets_for_prompt,
 };
 use ironclaw_outbound::{
     OutboundError, ReplyAttachmentHandle, ReplyAttachmentIntent, ReplyAttachmentIntentPort,
 };
 use ironclaw_threads::{
-    AppendAssistantDraftRequest, AppendFinalizedAssistantMessageRequest,
-    AppendToolResultReferenceRequest, AttachmentKind, AttachmentRef, ContextMessage,
-    FinalizedAssistantMessageByRunRequest, LoadContextMessagesRequest, LoadContextWindowRequest,
-    MessageContent, MessageKind, MessageStatus, ProviderToolCallReferenceEnvelope,
-    SessionThreadError, SessionThreadService, SummaryArtifact, ThreadHistoryRequest,
-    ThreadMessageId, ThreadMessageRecord, ThreadScope, ToolResultIntrinsicOutcome,
-    ToolResultReferenceEnvelope, ToolResultSafeSummary, UpdateAssistantDraftRequest,
+    AppendFinalizedAssistantMessageRequest, AppendToolResultReferenceRequest, AttachmentKind,
+    AttachmentRef, ContextMessage, FinalizedAssistantMessageByRunRequest,
+    LoadContextMessagesRequest, LoadContextWindowRequest, MessageContent, MessageKind,
+    MessageStatus, ProviderToolCallReferenceEnvelope, SessionThreadError, SessionThreadService,
+    SummaryArtifact, ThreadHistoryRequest, ThreadMessageId, ThreadMessageRecord, ThreadScope,
+    ToolResultIntrinsicOutcome, ToolResultReferenceEnvelope, ToolResultSafeSummary,
 };
 use ironclaw_turns::{
     AgentTurnSpawnTreeRuntimePort, LoopGateRef, LoopMessageRef, TurnId, TurnRunId, TurnRunRecord,
@@ -1082,45 +1080,6 @@ impl<S> LoopTranscriptPort for ThreadBackedLoopTranscriptPort<S>
 where
     S: SessionThreadService + ?Sized + Send + Sync,
 {
-    async fn begin_assistant_draft(
-        &self,
-        request: BeginAssistantDraft,
-    ) -> Result<LoopMessageRef, AgentLoopHostError> {
-        validate_thread_scope_for_run(&self.thread_scope, &self.run_context)?;
-        self.ensure_run_lease_is_current().await?;
-        let draft = self
-            .thread_service
-            .append_assistant_draft(AppendAssistantDraftRequest {
-                scope: self.thread_scope.clone(),
-                thread_id: self.run_context.thread_id.clone(),
-                turn_run_id: self.run_context.run_id.to_string(),
-                content: MessageContent::text(request.reply.content),
-            })
-            .await
-            .map_err(transcript_write_error)?;
-        message_ref(draft.message_id)
-    }
-
-    async fn update_assistant_draft(
-        &self,
-        request: UpdateAssistantDraft,
-    ) -> Result<(), AgentLoopHostError> {
-        validate_thread_scope_for_run(&self.thread_scope, &self.run_context)?;
-        self.ensure_run_lease_is_current().await?;
-        let message_id = message_id_from_ref(&request.message_ref)?;
-        self.load_current_run_message(message_id).await?;
-        self.thread_service
-            .update_assistant_draft(UpdateAssistantDraftRequest {
-                scope: self.thread_scope.clone(),
-                thread_id: self.run_context.thread_id.clone(),
-                message_id,
-                content: MessageContent::text(request.reply.content),
-            })
-            .await
-            .map_err(transcript_write_error)?;
-        Ok(())
-    }
-
     async fn finalize_assistant_message(
         &self,
         request: FinalizeAssistantMessage,
@@ -1320,33 +1279,6 @@ where
         }
         emitted_refs.insert(message_ref.as_str().to_string());
         Ok(())
-    }
-
-    async fn load_current_run_message(
-        &self,
-        message_id: ThreadMessageId,
-    ) -> Result<ThreadMessageRecord, AgentLoopHostError> {
-        let history = self
-            .thread_service
-            .list_thread_history(ThreadHistoryRequest {
-                scope: self.thread_scope.clone(),
-                thread_id: self.run_context.thread_id.clone(),
-            })
-            .await
-            .map_err(transcript_write_error)?;
-        let message = history
-            .messages
-            .into_iter()
-            .find(|message| message.message_id == message_id)
-            .ok_or_else(invalid_transcript_ref_error)?;
-        let expected_run_id = self.run_context.run_id.to_string();
-        if message.turn_run_id.as_deref() != Some(expected_run_id.as_str()) {
-            return Err(AgentLoopHostError::new(
-                AgentLoopHostErrorKind::InvalidInvocation,
-                "transcript message does not belong to this loop run",
-            ));
-        }
-        Ok(message)
     }
 
     async fn already_finalized_matching_reply_for_current_run(

@@ -20,8 +20,7 @@ use async_trait::async_trait;
 use ironclaw_host_api::ids::TenantId;
 use ironclaw_host_api::turn::LoopMessageRef;
 use ironclaw_loop_contracts::{
-    AgentLoopHostError, AppendCapabilityResultRef, BeginAssistantDraft, FinalizeAssistantMessage,
-    LoopTranscriptPort, UpdateAssistantDraft,
+    AgentLoopHostError, AppendCapabilityResultRef, FinalizeAssistantMessage, LoopTranscriptPort,
 };
 
 use crate::dispatch::HookDispatcher;
@@ -52,20 +51,6 @@ impl HookedLoopTranscriptPort {
 
 #[async_trait]
 impl LoopTranscriptPort for HookedLoopTranscriptPort {
-    async fn begin_assistant_draft(
-        &self,
-        request: BeginAssistantDraft,
-    ) -> Result<LoopMessageRef, AgentLoopHostError> {
-        self.inner.begin_assistant_draft(request).await
-    }
-
-    async fn update_assistant_draft(
-        &self,
-        request: UpdateAssistantDraft,
-    ) -> Result<(), AgentLoopHostError> {
-        self.inner.update_assistant_draft(request).await
-    }
-
     async fn finalize_assistant_message(
         &self,
         request: FinalizeAssistantMessage,

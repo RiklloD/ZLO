@@ -12,17 +12,6 @@ use super::error::{AgentLoopHostError, unsupported_host_method};
 use super::model::AssistantReply;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BeginAssistantDraft {
-    pub reply: AssistantReply,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpdateAssistantDraft {
-    pub message_ref: LoopMessageRef,
-    pub reply: AssistantReply,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalizeAssistantMessage {
     pub reply: AssistantReply,
 }
@@ -47,20 +36,6 @@ pub enum CapabilityResultIntrinsicOutcome {
 
 #[async_trait]
 pub trait LoopTranscriptPort: Send + Sync {
-    async fn begin_assistant_draft(
-        &self,
-        _request: BeginAssistantDraft,
-    ) -> Result<LoopMessageRef, AgentLoopHostError> {
-        Err(unsupported_host_method("begin_assistant_draft"))
-    }
-
-    async fn update_assistant_draft(
-        &self,
-        _request: UpdateAssistantDraft,
-    ) -> Result<(), AgentLoopHostError> {
-        Err(unsupported_host_method("update_assistant_draft"))
-    }
-
     async fn finalize_assistant_message(
         &self,
         request: FinalizeAssistantMessage,
