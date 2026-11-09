@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install ZLO from source on an Apple Silicon Mac:
 #
-#   curl -fsSL https://raw.githubusercontent.com/RiklloD/zlo/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 #
 # Checks for the Xcode command-line tools, installs Rust through rustup if
 # it is missing, clones (or updates) the repo and runs bundle.sh, which
@@ -17,7 +17,7 @@
 # Everything sits in main() so a cut-off download runs nothing.
 main() {
   set -eu
-  repo_url=https://github.com/RiklloD/zlo.git
+  repo_url=https://github.com/RiklloD/ZLO.git
   src="${ZLO_SRC:-$HOME/Library/Caches/ZLO/src}"
   ref="${ZLO_REF:-main}"
 

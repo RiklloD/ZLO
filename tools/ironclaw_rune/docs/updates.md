@@ -14,7 +14,7 @@ ZLO is built from source, so updating a machine means pulling this repository an
 Run the installer again:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/RiklloD/zlo/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 ```
 
 or, from your checkout, `git pull && sh tools/ironclaw_rune/bundle.sh`. Both rebuild ZLO and its backend, reinstall the app, and reopen it.

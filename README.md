@@ -42,7 +42,7 @@ Local storage doesn't mean every task stays on the machine. Using a remote model
 On an Apple Silicon Mac, paste this into Terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/RiklloD/zlo/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 ```
 
 It builds ZLO from source and installs it to `~/Applications/ZLO.app`. If the Xcode command-line tools are missing, it opens their installer and asks you to run the command again. It installs Rust if you don't have it. The first build takes 10 to 20 minutes. Run the same command again to update.
@@ -50,7 +50,7 @@ It builds ZLO from source and installs it to `~/Applications/ZLO.app`. If the Xc
 To build a branch other than `main`, set `ZLO_REF`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/RiklloD/zlo/main/install.sh | ZLO_REF=rune-port sh
+curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | ZLO_REF=my-branch sh
 ```
 
 Without an Apple Development signing identity the app is signed ad-hoc, so macOS asks for Accessibility and Screen Recording again after each update.
@@ -85,7 +85,7 @@ Then open ZLO on your Mac, go to **Settings → Computers**, and click **Connect
 This is a macOS development setup, not a cross-platform installer. It needs Xcode command-line tools, Rust through rustup, and an Apple Development signing identity. The repository pins the Rust toolchain in [`rust-toolchain.toml`](rust-toolchain.toml). The bundled computer-use engine currently targets Apple Silicon.
 
 ```sh
-git clone https://github.com/RiklloD/zlo.git
+git clone https://github.com/RiklloD/ZLO.git
 cd zlo
 sh tools/ironclaw_rune/bundle.sh
 ```

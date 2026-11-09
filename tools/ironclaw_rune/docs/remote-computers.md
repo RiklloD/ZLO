@@ -56,7 +56,7 @@ curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
 
 # 2. Build IronClaw (needs Rust from rustup, Node.js and pnpm for the bundled web assets)
-git clone https://github.com/RiklloD/zlo.git ~/src/zlo
+git clone https://github.com/RiklloD/ZLO.git ~/src/zlo
 cd ~/src/zlo
 cargo build --release -p ironclaw
 mkdir -p ~/.ironclaw/bin
@@ -85,7 +85,7 @@ Computer use is macOS-only. On a Linux backend, ZLO shows it as unavailable.
 
 ```sh
 brew install tailscale    # or the Tailscale app, signed in
-git clone https://github.com/RiklloD/zlo.git ~/src/zlo && cd ~/src/zlo
+git clone https://github.com/RiklloD/ZLO.git ~/src/zlo && cd ~/src/zlo
 cargo build --release -p ironclaw
 mkdir -p ~/.ironclaw/bin && cp target/release/ironclaw ~/.ironclaw/bin/
 ~/.ironclaw/bin/ironclaw onboard
