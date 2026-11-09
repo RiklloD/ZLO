@@ -4,7 +4,7 @@
 //! The old names keep working: each lookup reads the new name first and
 //! falls back to the old one, so existing service units, shell profiles and
 //! scripts need no edit. Deployment-only knobs (Postgres URLs, runner
-//! limits, Railway, Slack, …) keep their `IRONCLAW_REBORN_*` names.
+//! limits, hosting, channels, …) keep their `IRONCLAW_REBORN_*` names.
 
 use std::{env, ffi::OsString};
 
