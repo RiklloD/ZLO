@@ -34,6 +34,13 @@ owns the concept.
   service methods, never raw substrate handles (test-support accessors are
   `#[cfg(any(test, feature = "test-support"))]` and ship zero bytes in
   production).
+- `setup_transfer` (`src/setup_transfer.rs`) — the storage half of the
+  binary's `zlo export` / `zlo import`: a `VACUUM INTO` snapshot of the
+  standalone database with this machine's environment-access records left
+  out, the home-path rewrite applied to the path-bearing record columns,
+  the import summary, and reading/installing the secrets master key. It
+  lives here because composition owns the standalone database file and the
+  master-key resolution; the archive format stays in the binary.
 - The token-minting port the binary implements (`AdminApiTokenMinter` is
   declared in `ironclaw_product_contracts::admin_users`; composition defines
   the seam and deliberately does not satisfy it).

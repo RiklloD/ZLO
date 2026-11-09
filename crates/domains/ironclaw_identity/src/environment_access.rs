@@ -44,7 +44,11 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-const ENVIRONMENT_ROOT: &str = "/tenant-shared/reborn-environment";
+/// Scoped root of this installation's environment identity, pairing codes
+/// and device grants. Public so a setup export can leave these records out:
+/// a moved setup must get its own identity and devices on the new machine.
+pub const ENVIRONMENT_ACCESS_ROOT: &str = "/tenant-shared/reborn-environment";
+const ENVIRONMENT_ROOT: &str = ENVIRONMENT_ACCESS_ROOT;
 /// How long an issued pairing code stays redeemable.
 pub const PAIRING_CODE_TTL: Duration = Duration::minutes(5);
 /// `last_seen_at` is rewritten at most this often per device.

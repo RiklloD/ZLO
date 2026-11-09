@@ -868,7 +868,7 @@ pub async fn open_standalone_secret_store(
 
 /// Where a resolved standalone master key came from, used to name the source in
 /// fail-loud error messages.
-enum MasterKeySource {
+pub(crate) enum MasterKeySource {
     File(PathBuf),
     Env,
     Keychain,
@@ -883,7 +883,7 @@ enum MasterKeySource {
 /// layers deep in `SecretsCrypto::new`, with no pointer to the file the
 /// operator must fix. See `.claude/rules/error-handling.md` (fail loud, name
 /// the operation).
-fn validate_resolved_master_key(
+pub(crate) fn validate_resolved_master_key(
     key: &str,
     source: &MasterKeySource,
 ) -> Result<(), RebornBuildError> {
@@ -1040,7 +1040,10 @@ async fn resolve_standalone_secret_master_key_with_env(
     Ok(ironclaw_secrets::SecretMaterial::from(key))
 }
 
-fn write_standalone_secret_master_key(path: &Path, key: &str) -> Result<(), RebornBuildError> {
+pub(crate) fn write_standalone_secret_master_key(
+    path: &Path,
+    key: &str,
+) -> Result<(), RebornBuildError> {
     #[cfg(unix)]
     {
         use std::io::Write as _;
