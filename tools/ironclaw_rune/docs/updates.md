@@ -21,7 +21,7 @@ or, from your checkout, `git pull && sh tools/ironclaw_rune/bundle.sh`. Both reb
 
 ## Turn on self-update for a machine
 
-Each machine updates from its own source checkout. Tell it where that checkout is in `~/.ironclaw/reborn/config.toml`:
+Each machine updates from its own source checkout. Tell it where that checkout is in `~/.zlo/config.toml`:
 
 ```toml
 [update]
@@ -30,7 +30,7 @@ repo = "/home/you/src/zlo"     # absolute path to the checkout
 # branch = "main"              # optional; defaults to the branch checked out
 ```
 
-Restart the backend afterwards: `ironclaw service restart`, or quit and reopen ZLO on a Mac that runs it.
+Restart the backend afterwards: `zlo service restart`, or quit and reopen ZLO on a Mac that runs it.
 
 The settings come only from this file. Nothing a client sends can change the command, path or branch an update uses.
 
@@ -50,9 +50,9 @@ A computer reached only over SSH can be updated only while it's the computer in 
 On any machine:
 
 ```sh
-ironclaw update --check     # how far behind, with the newest commit subjects
-ironclaw update             # pull and rebuild in the foreground
-ironclaw update --json      # machine-readable output
+zlo update --check     # how far behind, with the newest commit subjects
+zlo update             # pull and rebuild in the foreground
+zlo update --json      # machine-readable output
 ```
 
 What "rebuild" means depends on how the machine runs IronClaw:
@@ -60,9 +60,11 @@ What "rebuild" means depends on how the machine runs IronClaw:
 | Installed as | An update runs |
 | --- | --- |
 | ZLO on a Mac (the backend inside `ZLO.app`) | `tools/ironclaw_rune/bundle.sh` from the checkout, which rebuilds, reinstalls and reopens ZLO |
-| `ironclaw` on its own (`~/.ironclaw/bin/ironclaw`, a service) | `cargo build --release -p ironclaw`, replaces the binary atomically, then restarts `ironclaw service` if it's installed (otherwise it tells you to restart `ironclaw serve`) |
+| `zlo` on its own (`~/.zlo/bin/zlo`, a service) | `cargo build --release -p ironclaw --bin zlo`, replaces the binary atomically, then restarts `zlo service` if it's installed (otherwise it tells you to restart `zlo serve`) |
 
-A remote update runs as a separate process that outlives the backend's restart. It keeps its progress in `~/.ironclaw/reborn/update/`, and only one update runs at a time.
+A remote update runs as a separate process that outlives the backend's restart. It keeps its progress in `~/.zlo/update/`, and only one update runs at a time.
+
+**The first update after the rename, on a machine that runs the backend on its own.** A pre-rename `ironclaw update` builds the new code but then looks for `target/release/ironclaw`, which the build no longer produces. Update such a machine once by hand: `git pull && cargo build --release -p ironclaw`, `mkdir -p ~/.zlo/bin && cp target/release/zlo ~/.zlo/bin/`, then `~/.zlo/bin/zlo service install`. That installs the `zlo` service and retires the old `ironclaw` one; later updates work from ZLO again. ZLO on a Mac needs nothing: its update runs `bundle.sh`, which knows the new name.
 
 ## What an update refuses to do
 
@@ -81,6 +83,6 @@ Untracked files don't block an update. Commit, stash or move your local work, th
 
 **"failed: … local changes"**: someone edited the checkout on that machine. Run `git status` there.
 
-**A machine is stuck on "updating…"**: run `ironclaw update --check` there, and look at `~/.ironclaw/reborn/update/run.json`. A run whose process is gone is reported as failed after 30 seconds.
+**A machine is stuck on "updating…"**: run `zlo update --check` there, and look at `~/.zlo/update/run.json`. A run whose process is gone is reported as failed after 30 seconds.
 
 **After updating, ZLO says a computer is older or newer than it**: the protocol versions differ until both sides run the same build. Update the other side too.

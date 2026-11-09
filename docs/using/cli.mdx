@@ -1,15 +1,20 @@
 ---
 title: "CLI Reference"
-description: "Every command the ironclaw binary provides"
+description: "Every command the zlo binary provides"
 icon: terminal
 ---
 
-IronClaw ships as a single binary named `ironclaw`. Every command is a subcommand — running
-`ironclaw` on its own prints usage and exits without starting anything.
+ZLO's backend ships as a single binary named `zlo` (built from the `ironclaw` Cargo
+package: `cargo build --release -p ironclaw`). Every command is a subcommand — running
+`zlo` on its own prints usage and exits without starting anything.
+
+Its data folder is `~/.zlo` (override with `ZLO_HOME`). On first run, an existing
+`~/.ironclaw/reborn` is moved there and the old path is left as a link to it. The older
+`IRONCLAW_REBORN_*` variable names keep working.
 
 ```bash
-ironclaw --help
-ironclaw --version
+zlo --help
+zlo --version
 ```
 
 ---
@@ -18,14 +23,14 @@ ironclaw --version
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw serve` | Start the [web interface](/using/webui) on `127.0.0.1:3000` |
-| `ironclaw repl` | Start an interactive terminal session with the agent |
-| `ironclaw run -m "<message>"` | Send a single message and exit |
-| `ironclaw status` | Print a runtime status snapshot |
-| `ironclaw doctor` | Check configuration and driver health without creating state |
+| `zlo serve` | Start the [web interface](/using/webui) on `127.0.0.1:3000` |
+| `zlo repl` | Start an interactive terminal session with the agent |
+| `zlo run -m "<message>"` | Send a single message and exit |
+| `zlo status` | Print a runtime status snapshot |
+| `zlo doctor` | Check configuration and driver health without creating state |
 
 ```bash
-ironclaw run -m "What changed in my repo today?"
+zlo run -m "What changed in my repo today?"
 ```
 
 `doctor` is the first thing to run when something isn't working. It reports your home
@@ -38,13 +43,13 @@ driver initialized.
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw pair` | Issue a one-time pairing code (five minutes, single use) and a pairing link for another device |
-| `ironclaw devices` | List paired devices; `ironclaw devices revoke <id or label>` or `--all` revokes them |
-| `ironclaw remote enable` | Publish this backend on your own tailnet with `tailscale serve` (never Funnel); `remote status` and `remote disable` manage it |
+| `zlo pair` | Issue a one-time pairing code (five minutes, single use) and a pairing link for another device |
+| `zlo devices` | List paired devices; `zlo devices revoke <id or label>` or `--all` revokes them |
+| `zlo remote enable` | Publish this backend on your own tailnet with `tailscale serve` (never Funnel); `remote status` and `remote disable` manage it |
 
-`pair` and `devices` talk to the running `ironclaw serve` on this machine. A revoked
+`pair` and `devices` talk to the running `zlo serve` on this machine. A revoked
 device stops working at once, including after a restart. `remote enable` needs Tailscale
-running and signed in; restart `ironclaw serve` afterwards so it starts the listener
+running and signed in; restart `zlo serve` afterwards so it starts the listener
 Tailscale forwards to. When other people have login accounts on the machine, one-click
 pairing from your tailnet stays off unless you pass `--trust-local-users`.
 
@@ -54,9 +59,9 @@ pairing from your tailnet stays off unless you pass `--trust-local-users`.
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw update` | Update this machine from its source checkout: fast-forward pull, rebuild, reinstall, restart |
+| `zlo update` | Update this machine from its source checkout: fast-forward pull, rebuild, reinstall, restart |
 
-`ironclaw update --check` fetches and reports how many commits the running build is
+`zlo update --check` fetches and reports how many commits the running build is
 behind, with their subjects, and changes nothing; `--json` prints the same status the
 desktop app reads. Updates are off until `config.toml` names the checkout:
 
@@ -70,9 +75,9 @@ repo = "/path/to/ironclaw"   # the checkout this binary is built from
 Only fast-forward pulls run: a checkout with local changes, or with commits the remote
 does not have, is refused with the reason. The `zlo-backend` inside a ZLO.app is rebuilt
 with the checkout's `tools/ironclaw_rune/bundle.sh`, which reinstalls ZLO and reopens it;
-any other install is rebuilt with `cargo build --release -p ironclaw` and its binary
-replaced in place, then `ironclaw service` is restarted when it is installed (otherwise
-restart `ironclaw serve` yourself). The outcome and a log are kept under
+any other install is rebuilt with `cargo build --release -p ironclaw --bin zlo` and its binary
+replaced in place, then `zlo service` is restarted when it is installed (otherwise
+restart `zlo serve` yourself). The outcome and a log are kept under
 `<home>/update/`, so ZLO's "Update all machines" can read them after the restart.
 
 ---
@@ -81,17 +86,17 @@ restart `ironclaw serve` yourself). The outcome and a log are kept under
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw onboard` | One-time setup — see [Onboard](/onboard) |
-| `ironclaw config path` | Show resolved configuration paths without creating state |
-| `ironclaw config init` | Write a commented `config.toml` and `providers.json` stub |
-| `ironclaw config list` | List every configuration key and its current value |
-| `ironclaw config get <key>` | Read one value by dot-separated key |
-| `ironclaw config set <key> [value]` | Write one value; secret keys omit it and prompt |
-| `ironclaw profile list` | List the available boot profiles |
+| `zlo onboard` | One-time setup — see [Onboard](/onboard) |
+| `zlo config path` | Show resolved configuration paths without creating state |
+| `zlo config init` | Write a commented `config.toml` and `providers.json` stub |
+| `zlo config list` | List every configuration key and its current value |
+| `zlo config get <key>` | Read one value by dot-separated key |
+| `zlo config set <key> [value]` | Write one value; secret keys omit it and prompt |
+| `zlo profile list` | List the available boot profiles |
 
 ```bash
-ironclaw config get llm.default.provider_id
-ironclaw config set google.client_id <your-client-id>
+zlo config get llm.default.provider_id
+zlo config set google.client_id <your-client-id>
 ```
 
 `config init` refuses to overwrite existing files unless you pass `--force`.
@@ -102,7 +107,7 @@ and `webui.token --rotate`, routing each to the configuration file, the encrypte
 store, or the web token file. Other supported settings are edited in `config.toml`
 directly; retired keys such as `slack.enabled` are refused with migration guidance.
 
-`config set` does not restart the running instance — it prints `to apply: ironclaw service
+`config set` does not restart the running instance — it prints `to apply: zlo service
 restart`. See [Configuration](/capabilities/configuration).
 
 ---
@@ -111,15 +116,15 @@ restart`. See [Configuration](/capabilities/configuration).
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw models list` | List available inference providers, or show one |
-| `ironclaw models status` | Show which model route is active |
-| `ironclaw models set <model>` | Set the default model for the active provider |
-| `ironclaw models set-provider <provider>` | Set the default provider |
+| `zlo models list` | List available inference providers, or show one |
+| `zlo models status` | Show which model route is active |
+| `zlo models set <model>` | Set the default model for the active provider |
+| `zlo models set-provider <provider>` | Set the default provider |
 
 ```bash
-ironclaw models list
-ironclaw models set-provider anthropic --model claude-sonnet-4-20250514
-ironclaw models status
+zlo models list
+zlo models set-provider anthropic --model claude-sonnet-4-20250514
+zlo models status
 ```
 
 See [Inference Providers](/capabilities/llm-providers) for the full catalog.
@@ -130,17 +135,17 @@ See [Inference Providers](/capabilities/llm-providers) for the full catalog.
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw extension search <query>` | Search available extension packages |
-| `ironclaw extension install <name>` | Install an extension package |
-| `ironclaw extension remove <name>` | Remove an installed extension |
-| `ironclaw ironhub search [query]` | Search the signed IronHub catalog (aliases: `iron-hub`, `hub`) |
-| `ironclaw ironhub list` | List available IronHub tools or skills |
-| `ironclaw ironhub info <name>` | Show one IronHub catalog entry |
-| `ironclaw ironhub install <name>` | Install an IronHub tool or skill |
-| `ironclaw skills list` | List configured skills |
-| `ironclaw hooks list` | *Not implemented yet* — reports that and exits |
-| `ironclaw channels list` | *Not implemented yet* — reports that and exits |
-| `ironclaw logs` | *Not implemented yet* — reports that and exits |
+| `zlo extension search <query>` | Search available extension packages |
+| `zlo extension install <name>` | Install an extension package |
+| `zlo extension remove <name>` | Remove an installed extension |
+| `zlo ironhub search [query]` | Search the signed IronHub catalog (aliases: `iron-hub`, `hub`) |
+| `zlo ironhub list` | List available IronHub tools or skills |
+| `zlo ironhub info <name>` | Show one IronHub catalog entry |
+| `zlo ironhub install <name>` | Install an IronHub tool or skill |
+| `zlo skills list` | List configured skills |
+| `zlo hooks list` | *Not implemented yet* — reports that and exits |
+| `zlo channels list` | *Not implemented yet* — reports that and exits |
+| `zlo logs` | *Not implemented yet* — reports that and exits |
 
 Add `--verbose` to `skills list` for extra detail.
 
@@ -156,12 +161,12 @@ For service logs, read the files directly — see [Run as a Service](/using/serv
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw service install` | Install the OS service (launchd or systemd) |
-| `ironclaw service start` | Start the installed service |
-| `ironclaw service stop` | Stop the running service |
-| `ironclaw service restart` | Restart, or start if stopped |
-| `ironclaw service status` | Show service status |
-| `ironclaw service uninstall` | Remove the service and its unit file |
+| `zlo service install` | Install the OS service (launchd or systemd) |
+| `zlo service start` | Start the installed service |
+| `zlo service stop` | Stop the running service |
+| `zlo service restart` | Restart, or start if stopped |
+| `zlo service status` | Show service status |
+| `zlo service uninstall` | Remove the service and its unit file |
 
 See [Run as a Service](/using/service).
 
@@ -175,21 +180,21 @@ manager for them to drive. Restart a hosted agent from the
 
 ## Trace Commons
 
-`ironclaw traces` manages optional, redacted contribution of your agent traces. It is off
+`zlo traces` manages optional, redacted contribution of your agent traces. It is off
 until you explicitly opt in.
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw traces status` | Show your current contribution policy |
-| `ironclaw traces opt-in` / `opt-out` | Turn contribution on or off |
-| `ironclaw traces preview <file>` | Preview a redacted contribution envelope |
-| `ironclaw traces submit` / `enqueue` / `flush-queue` | Submit contributions |
-| `ironclaw traces queue-status` | Show local queue diagnostics |
-| `ironclaw traces credit` | Show credit totals and explanations |
-| `ironclaw traces list-submissions` / `revoke` | Review or withdraw past contributions |
-| `ironclaw traces enroll-instance` | Enroll an entire instance with an operator invite link |
-| `ironclaw traces profile set` / `withdraw` / `token` | Manage the optional public community profile |
-| `ironclaw traces ingest-health` | Check an ingestion service health endpoint |
+| `zlo traces status` | Show your current contribution policy |
+| `zlo traces opt-in` / `opt-out` | Turn contribution on or off |
+| `zlo traces preview <file>` | Preview a redacted contribution envelope |
+| `zlo traces submit` / `enqueue` / `flush-queue` | Submit contributions |
+| `zlo traces queue-status` | Show local queue diagnostics |
+| `zlo traces credit` | Show credit totals and explanations |
+| `zlo traces list-submissions` / `revoke` | Review or withdraw past contributions |
+| `zlo traces enroll-instance` | Enroll an entire instance with an operator invite link |
+| `zlo traces profile set` / `withdraw` / `token` | Manage the optional public community profile |
+| `zlo traces ingest-health` | Check an ingestion service health endpoint |
 
 See [Trace Commons](/capabilities/traces).
 
@@ -199,8 +204,8 @@ See [Trace Commons](/capabilities/traces).
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw completion --shell <shell>` | Print a completion script for `bash`, `zsh`, `fish`, `elvish`, or `powershell` |
+| `zlo completion --shell <shell>` | Print a completion script for `bash`, `zsh`, `fish`, `elvish`, or `powershell` |
 
 ```bash
-ironclaw completion --shell zsh > "${fpath[1]}/_ironclaw"
+zlo completion --shell zsh > "${fpath[1]}/_zlo"
 ```

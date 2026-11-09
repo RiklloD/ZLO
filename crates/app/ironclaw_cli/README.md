@@ -1,8 +1,8 @@
 # ironclaw (the CLI crate)
 
 The shipped binary — the one directory whose name and package name differ:
-the directory is `crates/app/ironclaw_cli`, the **package and binary are
-`ironclaw`** (PROPOSAL §5.1). It owns the command surface, the serve-loop
+the directory is `crates/app/ironclaw_cli`, the **package is `ironclaw`** (PROPOSAL
+§5.1) and the **binary is `zlo`**, the command ZLO users type. It owns the command surface, the serve-loop
 sequence (assemble a deployment, obtain a product surface, start the web
 gateway), the binding tables that link concrete extension packages, a small
 set of first-party registrars, credential-visibility policy, and the
@@ -10,7 +10,7 @@ administrative token minter. It is the leaf of every dependency chain: nothing
 in the workspace imports it.
 
 - **Family / layer:** `app` / `app` · **Package:** `ironclaw` (binary
-  `ironclaw`) · **Manifest:** `crates/app/ironclaw_cli/Cargo.toml`
+  `zlo`) · **Manifest:** `crates/app/ironclaw_cli/Cargo.toml`
 - **Use this when:** adding a command, changing serve wiring, linking a
   concrete extension package, or changing what the binary registers.
 - **Don't use this when:** the change is domain behavior — every command is a
@@ -25,7 +25,7 @@ None consumed in the workspace — it is a binary. Its own structure:
 - `src/cli.rs` — the clap root; `src/commands/` — one command per file,
   dispatched through `Command::execute`; `src/context.rs` —
   `RebornCliContext` boot state.
-- `src/commands/serve.rs` — `ironclaw serve`, driving
+- `src/commands/serve.rs` — `zlo serve`, driving
   `ironclaw_composition::build_reborn_runtime` and
   `ironclaw_webui::serve_webui_v2`.
 - `src/runtime/native_extensions.rs` — the sanctioned concrete-extension

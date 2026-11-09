@@ -7,7 +7,7 @@
 The assembly root, the shipped artifact, the boot-configuration leaf, and the
 enforcement suite. `ironclaw_composition` constructs every other family's
 owners into a running deployment; `ironclaw_cli` produces the binary an
-operator runs (package and binary name `ironclaw`); `ironclaw_config` is the
+operator runs (package `ironclaw`, binary `zlo`); `ironclaw_config` is the
 boot contract they read; `ironclaw_architecture_tests` fails the build when any
 crate's dependency graph or public surface drifts from the declared model.
 Seeing everything is not license to become anything: **composition holds
@@ -22,7 +22,7 @@ owns the concept.
 | Crate | Charter (one line) | Go here when |
 | --- | --- | --- |
 | [`ironclaw_composition`](./ironclaw_composition) | The assembly root: deployment selection, storage-backend choice, owner-factory invocation, readiness, service-graph handles | You are wiring an owning crate's factory into a deployment |
-| [`ironclaw_cli`](./ironclaw_cli) | The binary `ironclaw`: command surface, serve wiring, concrete-extension binding tables, first-party registrars, the admin token minter | You are adding a command or linking a concrete package |
+| [`ironclaw_cli`](./ironclaw_cli) | The binary `zlo` (package `ironclaw`): command surface, serve wiring, concrete-extension binding tables, first-party registrars, the admin token minter | You are adding a command or linking a concrete package |
 | [`ironclaw_config`](./ironclaw_config) | Boot contract: home/profile/boot resolution, `config.toml` schema, seeding, inline-secret rejection, retired-section gravestones | You are changing what an operator can put in `config.toml` |
 | [`ironclaw_architecture_tests`](./ironclaw_architecture_tests) | Test-only mechanical enforcement of every boundary the design record claims | You are arming (or re-deriving) a boundary as a test |
 

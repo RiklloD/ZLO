@@ -33,7 +33,7 @@ ZLO has two halves: the **window** (the Rune app) and the **backend** (IronClaw,
 
 You can switch between computers in **Settings → Computers**. ZLO works on one computer at a time. Each computer has its own threads, memory, settings and provider keys, because those live with its backend.
 
-State lives under `~/.ironclaw/reborn` on whichever machine runs the backend, in libSQL rather than a separate PostgreSQL server.
+State lives under `~/.zlo` on whichever machine runs the backend (set `ZLO_HOME` to put it elsewhere), in libSQL rather than a separate PostgreSQL server. An older install's `~/.ironclaw/reborn` moves there on first start, and the old path stays as a link so nothing that remembers it breaks.
 
 Local storage doesn't mean every task stays on the machine. Using a remote model or an external integration sends the data that request needs to that provider. Computer use needs the relevant macOS permissions on the machine where the backend runs.
 
@@ -61,10 +61,10 @@ The short version, for a server on your tailnet:
 
 ```sh
 # On the server
-ironclaw onboard            # providers and keys
-ironclaw service install    # start at boot
-ironclaw remote enable      # publish it on your tailnet (never the internet)
-ironclaw service restart
+zlo onboard            # providers and keys
+zlo service install    # start at boot
+zlo remote enable      # publish it on your tailnet (never the internet)
+zlo service restart
 ```
 
 Then open ZLO on your Mac, go to **Settings → Computers**, and click **Connect** next to the server under "Found on your tailnet".
@@ -78,7 +78,7 @@ Then open ZLO on your Mac, go to **Settings → Computers**, and click **Connect
 - how the connection is secured;
 - troubleshooting.
 
-[**Keeping machines updated**](tools/ironclaw_rune/docs/updates.md) explains "Update all machines" and `ironclaw update`.
+[**Keeping machines updated**](tools/ironclaw_rune/docs/updates.md) explains "Update all machines" and `zlo update`.
 
 ## Building from source
 
@@ -101,7 +101,7 @@ The script builds the backend and desktop, downloads and verifies the pinned com
 The backend on its own (for a server) builds with:
 
 ```sh
-cargo build --release -p ironclaw     # binary at target/release/ironclaw
+cargo build --release -p ironclaw     # binary at target/release/zlo
 ```
 
 For changes to the desktop workspace:
@@ -125,13 +125,13 @@ Read [`AGENTS.md`](AGENTS.md) and the owning crate's guidance before changing ba
 | [`tools/ironclaw_rune/docs/`](tools/ironclaw_rune/docs/) | User guides: other computers, updates |
 | [`crates/`](crates/) | IronClaw backend and my extensions to it |
 | [`crates/product/ironclaw_webui/`](crates/product/ironclaw_webui/) | The HTTP gateway ZLO talks to, including pairing, devices and the Tailscale identity listener |
-| [`crates/app/ironclaw_cli/`](crates/app/ironclaw_cli/) | The `ironclaw` binary: `serve`, `remote`, `pair`, `devices`, `update`, `service` |
+| [`crates/app/ironclaw_cli/`](crates/app/ironclaw_cli/) | The `zlo` binary: `serve`, `remote`, `pair`, `devices`, `update`, `service` |
 | [`docs/internal/plans/2026-11-08-zlo-remote-environments.md`](docs/internal/plans/2026-11-08-zlo-remote-environments.md) | Design and wire contract for remote computers |
 | [`AGENTS.md`](AGENTS.md) | Repository rules for working with coding agents |
 
 The React frontend inherited from IronClaw isn't ZLO's desktop interface. The gateway behind it is still used.
 
-You'll also see `ironclaw_*`, `.ironclaw`, and some older Numoh names in the code. ZLO is the app's name; I haven't renamed every internal crate, data path, or signing identifier. Keeping those stable makes upstream merges and macOS permissions easier to maintain.
+The command you type (`zlo`) and the data folder (`~/.zlo`) are ZLO's. Internal crates keep their IronClaw names (`ironclaw_*`, and the Cargo package `ironclaw` that builds `zlo`), as do the CLI agents' working folders under `~/.ironclaw/` and some older Numoh signing identifiers. Keeping those stable makes upstream merges and macOS permissions easier to maintain.
 
 ## Where it comes from
 

@@ -3,7 +3,7 @@
 //! Pins both directions: every visible subcommand from `--help` has a doc
 //! table row (any visible alias form counts), and every documented command
 //! path — nested commands included — exists in the binary
-//! (`ironclaw <path> --help` must succeed). Flag-level coverage is
+//! (`zlo <path> --help` must succeed). Flag-level coverage is
 //! deliberately out of scope (flags churn too fast; recorded as a
 //! follow-up), and there is no zh mirror of this page.
 
@@ -73,13 +73,13 @@ fn help_subcommands() -> BTreeSet<String> {
     commands
 }
 
-/// The leading command words of every `` `ironclaw <words>` `` table row in
+/// The leading command words of every `` `zlo <words>` `` table row in
 /// the doc — the full path up to the first flag or placeholder. Fenced usage
 /// examples are not rows and are not extracted.
 fn documented_command_paths(doc: &str) -> Vec<Vec<String>> {
     let mut paths = Vec::new();
     for line in doc.lines() {
-        let Some(rest) = line.trim_start().strip_prefix("| `ironclaw ") else {
+        let Some(rest) = line.trim_start().strip_prefix("| `zlo ") else {
             continue;
         };
         let Some(command_text) = rest.split('`').next() else {
@@ -133,7 +133,7 @@ fn cli_reference_documents_every_subcommand_and_no_retired_ones() {
     assert!(
         undocumented.is_empty(),
         "subcommands missing from docs/using/cli.mdx: {undocumented:?} — add a \
-         `| `ironclaw <command>` | ... |` row for each (any visible alias form \
+         `| `zlo <command>` | ... |` row for each (any visible alias form \
          counts); every subcommand missing means the row extractor broke",
     );
 

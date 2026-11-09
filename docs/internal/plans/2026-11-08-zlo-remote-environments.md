@@ -11,7 +11,7 @@ built (phase 7 rows below). Remote git and terminal are built (phase 7,
 computers, the `tailscale whois` cross-check, a terminal QR.
 
 Live check on the dev Mac (2026-11-08, throwaway backend, real Tailscale,
-`--https-port 8443`): `ironclaw remote enable` served
+`--https-port 8443`): `zlo remote enable` served
 `https://<mac>.ts.net:8443 → 127.0.0.1:3001`; ZLO's own client code
 (`zlo_client::pairing`) paired in one click over the tailnet, minted a code
 with the device token, paired a second device with it, got `invalid_code`
@@ -27,7 +27,7 @@ Any machine can play any role:
 
 | Role | Runs | Example |
 |---|---|---|
-| Backend only | `ironclaw serve` as a login service, no app | Mac mini, Linux box, VPS |
+| Backend only | `zlo serve` as a login service, no app | Mac mini, Linux box, VPS |
 | Both | ZLO plus the backend it starts | your main Mac (today's setup) |
 | App only | ZLO with no local backend, connected to a paired machine | laptop |
 
@@ -101,11 +101,11 @@ push notifications through a relay (later, if ever).
 - The backend has signed session tokens (`SignedTokenSessionStore`), but
   their revocation list is in memory and clears on restart
   (`crates/product/ironclaw_webui/src/signed_session_login.rs`).
-- `ironclaw serve` refuses a non-loopback listener when the runtime gives
+- `zlo serve` refuses a non-loopback listener when the runtime gives
   the agent full access to the host
   (`crates/app/ironclaw_cli/src/commands/serve.rs`,
   `reject_non_loopback_privileged_local_runtime`). This stays.
-- `ironclaw service` installs launchd/systemd units
+- `zlo service` installs launchd/systemd units
   (`crates/app/ironclaw_cli/src/commands/service/`).
 - Backend file endpoints already exist: project files, filesystem browse and
   read (`crates/product/ironclaw_webui/src/webui_v2/handlers.rs`,
@@ -273,8 +273,8 @@ branch = "rune-port"          # optional; default: the checkout's current branch
   the upstream lacks is refused with a message; the configured branch must
   be the one checked out.
 - The job runs detached from the backend: the backend copies its binary to
-  `<reborn_home>/update/ironclaw-updater` and starts
-  `ironclaw-updater update --run-job --install-path <its own path>` in a new
+  `<reborn_home>/update/zlo-updater` and starts
+  `zlo-updater update --run-job --install-path <its own path>` in a new
   process group (Linux under systemd: its own `systemd-run --user` unit),
   output appended to `update.log`. It holds `update.lock` (an OS file lock)
   for its life and writes `run.json`, so the restarted backend reports the
@@ -283,9 +283,9 @@ branch = "rune-port"          # optional; default: the checkout's current branch
   `tools/ironclaw_rune/bundle.sh` (installs ZLO.app, reopens it, ZLO starts
   the new backend); any other binary is rebuilt with
   `cargo build --release -p ironclaw`, replaced atomically, and restarted
-  through `ironclaw service` when installed (else the message says to
-  restart `ironclaw serve`).
-- CLI: `ironclaw update [--check] [--json]` runs the same check / job in the
+  through `zlo service` when installed (else the message says to
+  restart `zlo serve`).
+- CLI: `zlo update [--check] [--json]` runs the same check / job in the
   foreground.
 
 ### `[remote]` config and the identity listener
@@ -300,19 +300,19 @@ tailnet_url = "https://loriks-macbook-pro.tail9915dd.ts.net"
 https_port = 443
 ```
 
-When `enabled`, `ironclaw serve` also binds `127.0.0.1:<identity_port>`
+When `enabled`, `zlo serve` also binds `127.0.0.1:<identity_port>`
 with the same router and middleware, plus the identity extension. The
 loopback-only rule for the main listener is unchanged.
 
 ### CLI
 
 ```
-ironclaw remote enable [--https-port 443] [--trust-local-users] [--json]
-ironclaw remote status [--json]
-ironclaw remote disable
-ironclaw pair [--json]              # prints code, expiry, link, QR
-ironclaw devices [--json]
-ironclaw devices revoke <device_id|label> | --all
+zlo remote enable [--https-port 443] [--trust-local-users] [--json]
+zlo remote status [--json]
+zlo remote disable
+zlo pair [--json]              # prints code, expiry, link, QR
+zlo devices [--json]
+zlo devices revoke <device_id|label> | --all
 ```
 
 - `remote enable`: find Tailscale (`tailscale` on `PATH`, else
@@ -360,7 +360,7 @@ node was online, so a second machine has not been tested yet.
 
 1. **Unix socket target: does not work on macOS.** `tailscale serve
    unix:/path` is accepted and listed, but every request returns 502, both
-   for a socket under `~/.ironclaw/reborn/` and under `/tmp`; the socket
+   for a socket under the data folder (`~/.zlo/`, formerly `~/.ironclaw/reborn/`) and under `/tmp`; the socket
    itself answers a direct `curl --unix-socket`. The sandboxed extension
    cannot reach it. (Linux `tailscaled` likely can; not tested.) **Decision:
    the serve target is a dedicated loopback TCP port.**
@@ -464,8 +464,8 @@ Status (2026-11-08): backend + CLI built. Records and the single-use CAS in
 `ironclaw_identity::environment_access` behind the
 `EnvironmentAccessService` port (`ironclaw_product_contracts`), opened by
 `RebornRuntime::open_environment_access`; routes and
-`DeviceTokenAuthenticator` in `ironclaw_webui`; `ironclaw pair` /
-`ironclaw devices [revoke]` in the CLI (no QR: no QR crate in the tree).
+`DeviceTokenAuthenticator` in `ironclaw_webui`; `zlo pair` /
+`zlo devices [revoke]` in the CLI (no QR: no QR crate in the tree).
 `POST /api/auth/pairing-codes` returns `{code, expires_at}`; the CLI builds
 the link. `local_operator` pairing is not implemented. ZLO side pending.
 
@@ -504,10 +504,10 @@ contract if records live there; run `ironclaw_architecture_tests`):
 CLI (`crates/app/ironclaw_cli`):
 
 ```
-ironclaw pair [--json]          # code + link + terminal QR, 5 minutes
-ironclaw devices                # list
-ironclaw devices revoke <name|id>
-ironclaw devices revoke --all
+zlo pair [--json]          # code + link + terminal QR, 5 minutes
+zlo devices                # list
+zlo devices revoke <name|id>
+zlo devices revoke --all
 ```
 
 ZLO:
@@ -532,7 +532,7 @@ Status (2026-11-08): backend + CLI built, except the `tailscale whois`
 cross-check of `X-Forwarded-For` (not done; the identity header is trusted
 on the loopback identity listener only, per phase 0). `[remote]` in
 `ironclaw_config` (no `serve_target` key: the target is always
-`http://127.0.0.1:<identity_port>`); `ironclaw remote enable|status|disable`
+`http://127.0.0.1:<identity_port>`); `zlo remote enable|status|disable`
 with the Tailscale CLI in `crates/app/ironclaw_cli/src/tailscale.rs`; the
 other-local-accounts check runs on every `serve` start as well as at
 `enable`. Not yet run against a real tailnet (tested with a fake CLI). ZLO
@@ -543,11 +543,11 @@ Backend side (`ironclaw_cli` for the commands, `ironclaw_config` for
 the Tailscale daemon go through a small adapter, not ad-hoc in handlers):
 
 ```
-ironclaw remote enable     # check Tailscale, start the identity listener,
+zlo remote enable     # check Tailscale, start the identity listener,
                            # run `tailscale serve --bg --https=443 <target>`,
                            # record the owner's tailnet login
-ironclaw remote status     # URL, owner, paired devices, serve state
-ironclaw remote disable    # `tailscale serve --https=<port> off` (never `reset`), stop the listener
+zlo remote status     # URL, owner, paired devices, serve state
+zlo remote disable    # `tailscale serve --https=<port> off` (never `reset`), stop the listener
 ```
 
 - `[remote]` in `config.toml`: `enabled`, `owner_logins`, `serve_target`.
@@ -719,7 +719,7 @@ Built (2026-11-08):
 
 - **SSH route** (for people without Tailscale, from Hermes): ZLO runs
   `ssh -N -L <local>:127.0.0.1:<port> user@host`, then
-  `ssh user@host ironclaw pair --json` to get a code over the user's own key,
+  `ssh user@host zlo pair --json` to get a code over the user's own key,
   and redeems it through the tunnel. Tunnel opened on demand, closed with the
   connection.
 - **Update all machines** (from Hermes): each remote updates itself through
@@ -734,7 +734,8 @@ Shipped in ZLO (2026-11-08):
   field (`user@host[:port]`). ZLO runs `/usr/bin/ssh` with
   `BatchMode=yes, ConnectTimeout=8`, arguments as a list after `--`, the
   target checked first (no whitespace, leading `-` or shell characters):
-  `ironclaw pair --json`, then `~/.ironclaw/bin/ironclaw pair --json`;
+  `zlo pair --json`, then `~/.zlo/bin/zlo pair --json`, then the pre-rename
+  `ironclaw pair --json` and `~/.ironclaw/bin/ironclaw pair --json`;
   then `ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:<free>:127.0.0.1:<port>`
   and the code is redeemed through the tunnel. The backend port comes from
   the `pair` link when it names the loopback listener, else 3000. Saved
@@ -767,7 +768,7 @@ Shipped in ZLO (2026-11-08):
 
 ## Security invariants (checked in every phase)
 
-- Backend stays on loopback; remote reach only through `ironclaw remote
+- Backend stays on loopback; remote reach only through `zlo remote
   enable` (Tailscale) or SSH. Never Funnel, never `0.0.0.0` with full host
   access.
 - Pairing gives identity, not extra power: approvals, capability checks and

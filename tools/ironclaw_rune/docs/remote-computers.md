@@ -21,7 +21,7 @@ ZLO is a window onto an IronClaw backend. By default that backend runs on the sa
 │ ZLO (window) │ ───────────────────────────► │ tailscale serve (port 443)    │
 │              │   (WireGuard, end to end)    │        │                      │
 │ Keychain:    │                              │        ▼                      │
-│ device token │                              │ ironclaw serve                │
+│ device token │                              │ zlo serve                │
 └──────────────┘                              │   127.0.0.1:3000  main        │
                                               │   127.0.0.1:3001  tailnet     │
                                               │ threads, memory, keys, repos  │
@@ -42,7 +42,7 @@ This follows [T3 Code](https://github.com/pingdotgg/t3code)'s remote environment
 - **Your repos on the backend computer.** The agent works on that machine's files, so the projects it should touch need to be there.
 - **Codex or Claude Code**, if you use them, installed and logged in on the backend computer.
 
-The backend you build is the same one ZLO bundles (`ZLO.app/Contents/MacOS/zlo-backend` is `cargo build --release -p ironclaw` from this repository). `ironclaw service` also runs it the same way ZLO does: from the same home folder (`~/.ironclaw/reborn`), with the same working folder (`~/.ironclaw/reborn/workspace`). The only piece missing outside `ZLO.app` is the computer-use engine.
+The backend you build is the same one ZLO bundles (`ZLO.app/Contents/MacOS/zlo-backend` is `target/release/zlo` from `cargo build --release -p ironclaw` in this repository). `zlo service` also runs it the same way ZLO does: from the same data folder (`~/.zlo`), with the same working folder (`~/.zlo/workspace`). The only piece missing outside `ZLO.app` is the computer-use engine.
 
 What doesn't move: threads, memory and keys on your Mac stay on your Mac. A new backend computer starts empty.
 
@@ -55,31 +55,31 @@ What doesn't move: threads, memory and keys on your Mac stay on your Mac. A new 
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
 
-# 2. Build IronClaw (needs Rust from rustup, Node.js and pnpm for the bundled web assets)
+# 2. Build the backend (needs Rust from rustup, Node.js and pnpm for the bundled web assets)
 git clone https://github.com/RiklloD/ZLO.git ~/src/zlo
 cd ~/src/zlo
-cargo build --release -p ironclaw
-mkdir -p ~/.ironclaw/bin
-cp target/release/ironclaw ~/.ironclaw/bin/ironclaw
-export PATH="$HOME/.ironclaw/bin:$PATH"   # add this to your shell profile
+cargo build --release -p ironclaw         # the package is still called ironclaw; the binary is zlo
+mkdir -p ~/.zlo/bin
+cp target/release/zlo ~/.zlo/bin/zlo
+export PATH="$HOME/.zlo/bin:$PATH"        # add this to your shell profile
 
 # 3. Set it up and run it at boot (systemd user service)
-ironclaw onboard
-ironclaw service install
+zlo onboard
+zlo service install
 loginctl enable-linger "$USER"            # keep it running after you log out
 
 # 4. Publish it on your tailnet
-ironclaw remote enable
-ironclaw service restart
+zlo remote enable
+zlo service restart
 ```
 
-`ironclaw remote enable` prints the address, for example `https://studio.tail1234.ts.net`, and whether one-click pairing is on.
+`zlo remote enable` prints the address, for example `https://studio.tail1234.ts.net`, and whether one-click pairing is on.
 
 Computer use is macOS-only. On a Linux backend, ZLO shows it as unavailable.
 
 ### Another Mac
 
-**With ZLO on it.** Open ZLO on that Mac, go to **Settings → Computers**, and turn on **Let my other devices use this Mac**. ZLO runs `ironclaw remote enable` and restarts its backend. The backend runs while ZLO is open there.
+**With ZLO on it.** Open ZLO on that Mac, go to **Settings → Computers**, and turn on **Let my other devices use this Mac**. ZLO runs `zlo remote enable` and restarts its backend. The backend runs while ZLO is open there.
 
 **Without ZLO**, as a service that runs at login:
 
@@ -87,19 +87,19 @@ Computer use is macOS-only. On a Linux backend, ZLO shows it as unavailable.
 brew install tailscale    # or the Tailscale app, signed in
 git clone https://github.com/RiklloD/ZLO.git ~/src/zlo && cd ~/src/zlo
 cargo build --release -p ironclaw
-mkdir -p ~/.ironclaw/bin && cp target/release/ironclaw ~/.ironclaw/bin/
-~/.ironclaw/bin/ironclaw onboard
-~/.ironclaw/bin/ironclaw service install       # launchd
-~/.ironclaw/bin/ironclaw remote enable
-~/.ironclaw/bin/ironclaw service restart
+mkdir -p ~/.zlo/bin && cp target/release/zlo ~/.zlo/bin/
+~/.zlo/bin/zlo onboard
+~/.zlo/bin/zlo service install       # launchd
+~/.zlo/bin/zlo remote enable
+~/.zlo/bin/zlo service restart
 ```
 
-Computer use needs the engine that ships inside `ZLO.app`, so a Mac running `ironclaw` on its own has none. If you want the agent to use that Mac's screen, run ZLO there instead (the "With ZLO on it" setup above) and grant it Accessibility and Screen Recording. Your laptop then shows whether that machine is ready.
+Computer use needs the engine that ships inside `ZLO.app`, so a Mac running `zlo` on its own has none. If you want the agent to use that Mac's screen, run ZLO there instead (the "With ZLO on it" setup above) and grant it Accessibility and Screen Recording. Your laptop then shows whether that machine is ready.
 
 ### Check it from the server
 
 ```sh
-ironclaw remote status
+zlo remote status
 ```
 
 The output shows the tailnet address, the owner (your Tailscale login), whether `tailscale serve` is running, and how many devices are paired.
@@ -113,16 +113,16 @@ Open **Settings → Computers** on your laptop. There are three ways to add a co
 **2. With a pairing code.** Use this when one-click is off on that machine, or the machine belongs to someone else on your tailnet. On the backend computer, run:
 
 ```sh
-ironclaw pair
+zlo pair
 ```
 
 It prints a code like `7KQ2-M9XD-4TRA`, valid for 5 minutes and usable once, and a link like `https://studio.tail1234.ts.net/pair#code=7KQ2-M9XD-4TRA`. Paste either into **Pairing link or code** and click **Pair**. ZLO on that machine can do the same from **Settings → Computers → Pair a device**.
 
-**3. Over SSH, without Tailscale.** Enter `user@host` (or `user@host:port`) in **Over SSH, without Tailscale**. ZLO runs `ironclaw pair --json` on that machine over SSH, opens a tunnel, and pairs through it. You need:
+**3. Over SSH, without Tailscale.** Enter `user@host` (or `user@host:port`) in **Over SSH, without Tailscale**. ZLO runs `zlo pair --json` on that machine over SSH, opens a tunnel, and pairs through it. You need:
 
 - an SSH key that logs in without a password (ZLO never asks for one);
 - the host already known to SSH. Run `ssh user@host` once in Terminal first, because ZLO refuses unknown host keys;
-- `ironclaw` on the remote machine's `PATH`, or in `~/.ironclaw/bin/`.
+- `zlo` on the remote machine's `PATH`, or in `~/.zlo/bin/`. A machine that has not updated since the rename still pairs through its `ironclaw` command (on `PATH` or in `~/.ironclaw/bin/`).
 
 After pairing, the computer appears under **Other computers** with its state: **Connected**, **Connecting…**, **Asleep** (offline on the tailnet) or **Not connected** with the reason. Click **Connect** to work on it, or **Remove** to forget it on this Mac. Remove deletes only the local token and entry; the computer and its data are untouched.
 
@@ -138,9 +138,9 @@ On the computer you're connected to, **Settings → Computers** has two more sec
 From a terminal on the backend computer:
 
 ```sh
-ironclaw devices                     # list
-ironclaw devices revoke "MacBook Air"   # by name or id
-ironclaw devices revoke --all
+zlo devices                     # list
+zlo devices revoke "MacBook Air"   # by name or id
+zlo devices revoke --all
 ```
 
 People on the same tailnet who aren't you can't use one-click pairing. They need a code from you, or their own IronClaw.
@@ -183,19 +183,19 @@ Nothing that belongs to the backend runs on your Mac: no local git, shell, file 
 - **Pairing codes** are random, valid for 5 minutes, usable once, and stored only as a hash. Wrong codes all get the same answer, and the pairing routes are rate-limited.
 - **Device tokens** are stored only as a hash on the backend and in the Keychain on your Mac. Revoking one is permanent and survives restarts.
 - **One-click pairing trusts your Tailscale login.** That login is read only on a second loopback port that `tailscale serve` targets. The normal port removes any `Tailscale-*` headers a client sends.
-- **One-click pairing is off on shared machines.** If the backend machine has other login accounts, or user accounts from LDAP, SSSD or similar, one-click is off and a code is needed, because another local user could otherwise reach that port. `ironclaw remote enable --trust-local-users` turns it on anyway.
+- **One-click pairing is off on shared machines.** If the backend machine has other login accounts, or user accounts from LDAP, SSSD or similar, one-click is off and a code is needed, because another local user could otherwise reach that port. `zlo remote enable --trust-local-users` turns it on anyway.
 - **A paired device has full operator access**, the same as the backend's own token. Pair only your own devices, and revoke any you lose.
 
 ## Troubleshooting
 
 **The computer doesn't show under "Found on your tailnet".**
-Check that Tailscale is running on both machines and signed in to the same account (`tailscale status`). On the backend, run `ironclaw remote status`; serve should say "serving". If ZLO can't find Tailscale on your Mac, discovery is hidden, but codes and SSH still work.
+Check that Tailscale is running on both machines and signed in to the same account (`tailscale status`). On the backend, run `zlo remote status`; serve should say "serving". If ZLO can't find Tailscale on your Mac, discovery is hidden, but codes and SSH still work.
 
 **"belongs to someone else on your tailnet" or "One-click pairing is off".**
-Run `ironclaw pair` on the backend and use the code.
+Run `zlo pair` on the backend and use the code.
 
 **"has no secure address yet".**
-Run `ironclaw remote enable` on that computer, then `ironclaw service restart`.
+Run `zlo remote enable` on that computer, then `zlo service restart`.
 
 **"turned this Mac's token down (it may have been revoked)".**
 Pair again with a code.
@@ -210,21 +210,21 @@ ZLO never types passwords. Set up a key with `ssh-copy-id user@host`, then run `
 `~/Library/Application Support/ZLO/environments.json` is damaged. Fix or delete it, or click **Use this Mac** on that screen. The file is set aside, not deleted.
 
 **Turn remote access off.**
-On the backend, run `ironclaw remote disable`, then `ironclaw service restart`. It removes only IronClaw's own `tailscale serve` entry.
+On the backend, run `zlo remote disable`, then `zlo service restart`. It removes only IronClaw's own `tailscale serve` entry.
 
 ## Command reference
 
 | Command | What it does |
 | --- | --- |
-| `ironclaw remote enable [--https-port 443] [--trust-local-users] [--json]` | Publish the backend on your tailnet with `tailscale serve`, record you as its owner, write `[remote]` in `config.toml` |
-| `ironclaw remote status [--json]` | Address, owner, serve state, paired devices |
-| `ironclaw remote disable` | Stop publishing it (only IronClaw's own serve entry) |
-| `ironclaw pair [--json]` | A one-time pairing code and link, valid 5 minutes |
-| `ironclaw devices [--json]` | List paired devices |
-| `ironclaw devices revoke <id-or-name>` / `--all` | Revoke devices |
-| `ironclaw service install \| start \| stop \| restart \| status \| uninstall` | Run the backend as a launchd or systemd service |
+| `zlo remote enable [--https-port 443] [--trust-local-users] [--json]` | Publish the backend on your tailnet with `tailscale serve`, record you as its owner, write `[remote]` in `config.toml` |
+| `zlo remote status [--json]` | Address, owner, serve state, paired devices |
+| `zlo remote disable` | Stop publishing it (only IronClaw's own serve entry) |
+| `zlo pair [--json]` | A one-time pairing code and link, valid 5 minutes |
+| `zlo devices [--json]` | List paired devices |
+| `zlo devices revoke <id-or-name>` / `--all` | Revoke devices |
+| `zlo service install \| start \| stop \| restart \| status \| uninstall` | Run the backend as a launchd or systemd service |
 
-The `[remote]` section `remote enable` writes to `~/.ironclaw/reborn/config.toml`:
+The `[remote]` section `remote enable` writes to `~/.zlo/config.toml`:
 
 ```toml
 [remote]

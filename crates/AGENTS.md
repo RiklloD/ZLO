@@ -41,7 +41,7 @@ Do not eagerly load every crate guide. Route, then read.
 | [`loop/`](./loop/AGENTS.md) | Replaceable agent behavior and its hosting: agent_loop, loop_host, turn_runner, hooks. | You are changing what the agent decides next, or the drivers/port adapters that host it. |
 | [`extensions/`](./extensions/AGENTS.md) | Everything "installable package": manifest registry, generic host, product-side manager, shared support, and `packages/` — one self-contained directory per package, the only place vendor names may appear. | You are adding or changing an integration, its manifest, or extension lifecycle machinery. |
 | [`product/`](./product/AGENTS.md) | First-party userland above the kernel: assistant, operator, openai_compat, webui, host_ingress. | You are changing user-facing behavior, a transport, or ProductSurface orchestration. |
-| [`app/`](./app/AGENTS.md) | Assembly and enforcement: composition, the binary `ironclaw`, boot config, architecture tests. | You are wiring services/backends together or arming a workspace-wide gate. |
+| [`app/`](./app/AGENTS.md) | Assembly and enforcement: composition, the binary `zlo` (package `ironclaw`), boot config, architecture tests. | You are wiring services/backends together or arming a workspace-wide gate. |
 
 Three sound alike, and the cut is the model: **domains** are what the system
 *knows* (records), **loop** is what the agent *decides* (untrusted strategy),

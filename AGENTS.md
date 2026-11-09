@@ -4,7 +4,7 @@
 
 `AGENTS.md` is the canonical agent contract for this repository — the commands, hard invariants, and routing an agent cannot infer from the tree. It is not the full architecture specification: before changing a complex area, read the owning crate's `AGENTS.md`, then its `CONTRACT.md` or `README.md` when present; cross-crate behavior is specified under `docs/internal/reborn/contracts/`. (`CLAUDE.md` files are Claude Code adapters and pointer stubs; content lives here and in the files this one names.)
 
-All product work belongs in the Reborn workspace under `crates/`; the shipping binary is `ironclaw` from the `ironclaw` package in `crates/app/ironclaw_cli`. `crates/AGENTS.md` is the routing map into the ten crate families. The repo skills under `.claude/skills/` (`ironclaw-reborn-orientation`, `reborn-feature`, `ironclaw-reborn-architecture-review`, `ironclaw-reborn-testing`, `reborn-extension-surfaces`) are plain Markdown — read the `SKILL.md` directly if your harness does not load Claude skills. The same applies to the path-scoped rules in `.claude/rules/*.md` (`ls .claude/rules/` for the full set): each is canonical for its topic — architecture/layer matrix, cargo features, database parity, error handling, events, guidance maintenance, lifecycle, review discipline, safety/sandbox, runtime-skill spec, testing tiers, tools and tool evidence, types and type placement. Claude Code auto-loads them by path; other harnesses must read the matching rule before changing files it covers.
+All product work belongs in the Reborn workspace under `crates/`; the shipping binary is `zlo` (the command ZLO users type) from the `ironclaw` package in `crates/app/ironclaw_cli`; its data folder is `~/.zlo` (`ZLO_HOME`), resolved and migrated from `~/.ironclaw/reborn` in `crates/app/ironclaw_config/src/home.rs`. `crates/AGENTS.md` is the routing map into the ten crate families. The repo skills under `.claude/skills/` (`ironclaw-reborn-orientation`, `reborn-feature`, `ironclaw-reborn-architecture-review`, `ironclaw-reborn-testing`, `reborn-extension-surfaces`) are plain Markdown — read the `SKILL.md` directly if your harness does not load Claude skills. The same applies to the path-scoped rules in `.claude/rules/*.md` (`ls .claude/rules/` for the full set): each is canonical for its topic — architecture/layer matrix, cargo features, database parity, error handling, events, guidance maintenance, lifecycle, review discipline, safety/sandbox, runtime-skill spec, testing tiers, tools and tool evidence, types and type placement. Claude Code auto-loads them by path; other harnesses must read the matching rule before changing files it covers.
 
 ## Build, run, debug
 
@@ -12,7 +12,7 @@ All product work belongs in the Reborn workspace under `crates/`; the shipping b
 cargo fmt                                                       # format
 cargo clippy --all --benches --tests --examples --all-features -- -D warnings  # lint (zero warnings; CI denies warnings — an unflagged run exits 0 with them)
 cargo test                                                      # unit + integration suites (Postgres legs self-provision testcontainers; skipped without Docker)
-RUST_LOG=ironclaw=debug cargo run -p ironclaw -- serve          # run the serve binary (add tower_http=debug for HTTP logging)
+RUST_LOG=ironclaw=debug cargo run -p ironclaw -- serve          # run the serve binary, `zlo` (add tower_http=debug for HTTP logging)
 ```
 
 The workspace-root `integration` feature is empty with zero consumers — a bare root `cargo test --features integration` adds nothing. Backend-heavy gated suites are crate-level (e.g. `cargo test -p ironclaw_hooks --features integration,test-support`). E2E suite: `tests/e2e/AGENTS.md`.
@@ -151,7 +151,7 @@ Adding a channel means adding one capability surface of an extension — a `[cha
 
 ```
 crates/                     # all production code, by family (crates/AGENTS.md is the map)
-├── app/                    # ironclaw_cli (binary `ironclaw`), ironclaw_composition, ironclaw_config, ironclaw_architecture_tests
+├── app/                    # ironclaw_cli (binary `zlo`), ironclaw_composition, ironclaw_config, ironclaw_architecture_tests
 ├── contracts/              # ironclaw_host_api, ironclaw_common, ironclaw_extension_contracts, ironclaw_product_contracts, …
 ├── domains/                # ironclaw_llm, ironclaw_skills, ironclaw_threads, ironclaw_auth, ironclaw_memory, …
 ├── events/                 # ironclaw_event_log / _projections / _store / _streams

@@ -642,8 +642,12 @@ Reborn must not use the current v1 IronClaw state root by default.
 
 Home resolution precedence:
 
-1. `IRONCLAW_REBORN_HOME`
-2. `~/.ironclaw/reborn`
+1. `ZLO_HOME`
+2. `IRONCLAW_REBORN_HOME` (legacy alias)
+3. `~/.zlo` — when it is absent and `~/.ironclaw/reborn` exists, the first
+   resolution renames the old folder to `~/.zlo` under a lock and leaves
+   `~/.ironclaw/reborn` as a link to it (`crates/app/ironclaw_config/src/home_migration.rs`;
+   contract tests in `crates/app/ironclaw_config/tests/home_migration_contract.rs`).
 
 The resolver rejects unsafe or misleading homes, including empty paths, relative paths, filesystem root, parent-directory components, and known v1 state-root aliases such as `$HOME/.ironclaw` or `IRONCLAW_BASE_DIR`.
 
@@ -711,7 +715,7 @@ Short version:
 2. register it in `commands::Command`;
 3. resolve and pass `RebornCliContext` from dispatch only when the command needs boot config;
 4. keep pure commands independent from Reborn home resolution;
-5. add a binary smoke test through `env!("CARGO_BIN_EXE_ironclaw")`;
+5. add a binary smoke test through `env!("CARGO_BIN_EXE_zlo")`;
 6. avoid v1 runtime imports and v1 state mutation unless explicitly scoped and guarded.
 
 Do not port the current `src/cli/*` command tree wholesale. Port commands one at a time, starting with Reborn-owned or read-only surfaces.
