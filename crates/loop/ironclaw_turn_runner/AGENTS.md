@@ -33,7 +33,7 @@ anchors, by category:
   claiming/heartbeat/lease mechanics live in the kernel; this file adapts them
   to turn vocabulary.
 - `planned_driver.rs`, `planned_driver_factory.rs`, `driver_registry.rs`, and
-  `text_loop_driver.rs` — driver behavior, registration, and readiness.
+  `text_loop_driver.rs` — driver behavior and registration.
 - `loop_driver_host.rs` — concrete loop host-port composition for claimed
   runs; `runtime.rs` — planned-runtime composition and the capability-port
   decorator chain (the decorator *ordering* is this crate's by charter).
@@ -44,12 +44,6 @@ anchors, by category:
 - `subagent/` incl. `subagent/await_edge/` — spawn admission and the
   await-edge machinery: store = journal-edge projection, resolver = loop-tier
   responsibility (PROPOSAL §12.13 D-S; see `README.md`).
-- `production_readiness.rs` — **no production caller**; a pure reporting slice
-  awaiting either a startup gate or deletion — tracked by
-  `docs/internal/reborn/target-architecture/CHECKLIST.md`'s WS4 row (line
-  ~310, "delete `production_readiness` (no production caller) or wire it")
-  and its WS8 "Modules" row (line ~515, deletion cascade into
-  `driver_registry.rs` measured), not yet closed.
 
 Also present but not detailed above (`ls src/` has the current set):
 `after_turn_memory.rs`, `failure_categories.rs`, `failure_summary.rs`,
@@ -115,7 +109,7 @@ the registered `ProcessKind::AgentTurn` executor, and the two
 
 - Fast local check: `cargo test -p ironclaw_turn_runner`
 - Run specific integration tests when touched: `driver_registry`,
-  `planned_driver_e2e`, `production_readiness`. (The `llm_gateway` and
+  `planned_driver_e2e`. (The `llm_gateway` and
   `model_routes` targets moved to `ironclaw_loop_host`.)
 - Boundary check after dependency/API changes:
   `cargo test -p ironclaw_architecture_tests`
