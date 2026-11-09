@@ -7,16 +7,9 @@ const { apiListProjects, apiListThreads } = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../lib/api", () => ({
-  addProjectMember: vi.fn(),
-  createProject: vi.fn(),
-  deleteProject: vi.fn(),
   getProject: vi.fn(),
-  listProjectMembers: vi.fn(),
   listProjects: apiListProjects,
   listThreads: apiListThreads,
-  removeProjectMember: vi.fn(),
-  updateProject: vi.fn(),
-  updateProjectMemberRole: vi.fn(),
 }));
 
 import {
