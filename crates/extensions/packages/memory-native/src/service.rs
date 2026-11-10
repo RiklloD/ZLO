@@ -196,8 +196,7 @@ impl NativeMemoryService {
         let search_request = MemorySearchRequest::new(&request.query)
             .map_err(MemoryServiceError::input_from)?
             .with_limit(request.limit)
-            .with_pre_fusion_limit(request.limit.max(20))
-            .with_vector(false);
+            .with_pre_fusion_limit(request.limit.max(20));
         let results = self
             .backend
             .search(&context, search_request)
@@ -205,7 +204,7 @@ impl NativeMemoryService {
             .map_err(MemoryServiceError::operation_from)?
             .into_iter()
             .map(|result| MemoryServiceSearchResult {
-                is_hybrid_match: result.is_hybrid(),
+                is_hybrid_match: false,
                 content: result.snippet,
                 score: result.score,
                 path: result.path.relative_path().to_string(),
@@ -806,14 +805,7 @@ impl NativeMemoryService {
         let search_request = MemorySearchRequest::new(&request.query)
             .map_err(MemoryServiceError::input_from)?
             .with_limit(fetch_limit)
-            .with_pre_fusion_limit(fetch_limit.max(20))
-            // Full-text only: the native backend declares vector_search=false and
-            // fails closed on a vector request (matches the `search` method).
-            // FTS-only is intentional and correct for this provider — no
-            // embeddings are wired, so a vector request would fail closed and
-            // return nothing. A vector-capable provider sets this in its own
-            // lane methods.
-            .with_vector(false);
+            .with_pre_fusion_limit(fetch_limit.max(20));
         let mut results = self
             .backend
             .search(&context, search_request)

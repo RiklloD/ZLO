@@ -66,8 +66,6 @@ pub struct MemoryBackendCapabilities {
     /// Backend enforces prompt-write safety for protected write and append operations.
     pub prompt_write_safety: bool,
     pub full_text_search: bool,
-    pub vector_search: bool,
-    pub embeddings: bool,
     pub graph_memory: bool,
     pub delete: bool,
     pub transactions: bool,
@@ -96,16 +94,6 @@ impl MemoryBackendCapabilities {
 
     pub fn set_full_text_search(mut self, full_text_search: bool) -> Self {
         self.full_text_search = full_text_search;
-        self
-    }
-
-    pub fn set_vector_search(mut self, vector_search: bool) -> Self {
-        self.vector_search = vector_search;
-        self
-    }
-
-    pub fn set_embeddings(mut self, embeddings: bool) -> Self {
-        self.embeddings = embeddings;
         self
     }
 
@@ -1004,55 +992,11 @@ where
         context: &MemoryContext,
         request: MemorySearchRequest,
     ) -> Result<Vec<MemorySearchResult>, FilesystemError> {
-        if (request.full_text() || request.vector())
-            && !self.capabilities.full_text_search
-            && !self.capabilities.vector_search
-        {
+        if !self.capabilities.full_text_search {
             return Err(memory_backend_unsupported(
                 context.scope(),
                 FilesystemOperation::ReadFile,
                 "memory backend does not support search",
-            ));
-        }
-        if request.full_text() && !self.capabilities.full_text_search {
-            return Err(memory_backend_unsupported(
-                context.scope(),
-                FilesystemOperation::ReadFile,
-                "memory backend does not support full-text search",
-            ));
-        }
-        if request.vector() && !self.capabilities.vector_search {
-            return Err(memory_backend_unsupported(
-                context.scope(),
-                FilesystemOperation::ReadFile,
-                "memory backend does not support vector search",
-            ));
-        }
-        if !request.full_text() && (!request.vector() || request.query_embedding().is_none()) {
-            return Err(memory_backend_unsupported(
-                context.scope(),
-                FilesystemOperation::ReadFile,
-                "memory backend does not support search",
-            ));
-        }
-
-        // No embedding provider port exists: this backend never generated
-        // query vectors (the port had zero implementations and was deleted in
-        // WS0 — restoring generated vector search is PROPOSAL §12.10). A
-        // vector search must therefore arrive with a caller-supplied
-        // embedding; both fail-closed messages are preserved verbatim.
-        if request.vector()
-            && self.capabilities.vector_search
-            && request.query_embedding().is_none()
-        {
-            return Err(memory_backend_unsupported(
-                context.scope(),
-                FilesystemOperation::ReadFile,
-                if self.capabilities.embeddings {
-                    "memory backend cannot generate query embeddings"
-                } else {
-                    "memory backend does not support embedding generation"
-                },
             ));
         }
 
@@ -1078,8 +1022,8 @@ where
             MemorySignificantEvent::search_performed(
                 context.scope(),
                 MemorySignificantEventSource::RepositoryMemoryBackend,
-                request.full_text(),
-                request.vector(),
+                true,
+                false,
                 results.len() as u64,
             )
             .with_audit_context(context.audit_context()),
@@ -1109,15 +1053,6 @@ mod tests {
     fn make_backend() -> RepositoryMemoryBackend<InMemoryMemoryDocumentRepository> {
         let repo = Arc::new(InMemoryMemoryDocumentRepository::new());
         RepositoryMemoryBackend::new(repo).without_prompt_write_safety_policy()
-    }
-
-    fn make_search_backend(
-        capabilities: MemoryBackendCapabilities,
-    ) -> RepositoryMemoryBackend<InMemoryMemoryDocumentRepository> {
-        let repo = Arc::new(InMemoryMemoryDocumentRepository::new());
-        RepositoryMemoryBackend::new(repo)
-            .without_prompt_write_safety_policy()
-            .with_capabilities(capabilities)
     }
 
     // Regression: backend callers cannot use an authorized context for one
@@ -1204,51 +1139,6 @@ mod tests {
                 .list_documents(&alpha_context(), alpha_path().scope())
                 .await
                 .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn vector_request_fails_closed_when_vector_search_is_unsupported() {
-        let backend = make_search_backend(
-            MemoryBackendCapabilities::default()
-                .set_full_text_search(true)
-                .set_vector_search(false)
-                .set_embeddings(true),
-        );
-        let request = MemorySearchRequest::new("query").unwrap();
-        let err = backend.search(&alpha_context(), request).await.unwrap_err();
-        assert!(err.to_string().contains("vector search"));
-    }
-
-    #[tokio::test]
-    async fn vector_request_fails_closed_when_embedding_generation_is_disabled() {
-        let backend = make_search_backend(
-            MemoryBackendCapabilities::default()
-                .set_full_text_search(true)
-                .set_vector_search(true)
-                .set_embeddings(false),
-        );
-        let request = MemorySearchRequest::new("query").unwrap();
-        let err = backend.search(&alpha_context(), request).await.unwrap_err();
-        assert!(err.to_string().contains("embedding generation"));
-    }
-
-    #[tokio::test]
-    async fn full_text_only_search_ignores_stale_query_embedding_dimension() {
-        let backend = make_search_backend(
-            MemoryBackendCapabilities::default()
-                .set_full_text_search(true)
-                .set_vector_search(true)
-                .set_embeddings(true),
-        );
-        let request = MemorySearchRequest::new("query")
-            .unwrap()
-            .with_vector(false)
-            .with_query_embedding(vec![1.0]);
-        let err = backend.search(&alpha_context(), request).await.unwrap_err();
-        assert!(
-            !err.to_string().contains("dimension"),
-            "full-text-only retry must not validate stale vector dimensions: {err}"
         );
     }
 }

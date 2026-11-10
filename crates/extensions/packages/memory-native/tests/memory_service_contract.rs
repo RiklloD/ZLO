@@ -1246,7 +1246,6 @@ fn search_result_with_agent(
         score,
         snippet: snippet.to_string(),
         full_text_rank: Some(1),
-        vector_rank: None,
     }
 }
 

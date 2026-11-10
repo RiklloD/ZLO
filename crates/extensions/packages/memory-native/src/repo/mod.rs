@@ -40,7 +40,7 @@ pub enum MemoryWriteOutcome {
 /// Repository for file-shaped memory documents.
 ///
 /// Implementations own the actual source of truth, such as the existing
-/// `memory_documents` table. Search chunks and embeddings should be updated by
+/// `memory_documents` table. Search chunks should be updated by
 /// the memory service/indexer, not by generic filesystem routing code.
 #[async_trait]
 pub trait MemoryDocumentRepository: Send + Sync {
@@ -117,8 +117,8 @@ pub trait MemoryDocumentRepository: Send + Sync {
     /// flips `skip_indexing` from `true` back to `false`, the document
     /// stays unindexed until the caller drives a reindex itself
     /// (e.g. by re-writing the document body, or by calling the
-    /// indexer directly). The repo has no access to chunkers or
-    /// embedding providers and therefore cannot do this on its own
+    /// indexer directly). The repo has no access to chunkers and
+    /// therefore cannot do this on its own
     /// (zmanian #3180 MED `native_libsql.rs:491`).
     async fn write_document_metadata(
         &self,

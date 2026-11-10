@@ -31,7 +31,7 @@ pub use repo::{
     MemoryDocumentHistory, MemoryDocumentRepository, MemoryWriteOutcome,
 };
 pub use safety::DefaultPromptWriteSafetyPolicy;
-pub use search::{FusionStrategy, MemorySearchRequest, MemorySearchResult};
+pub use search::{MemorySearchRequest, MemorySearchResult};
 pub use service::{
     MEMORY_ASSETS, MEMORY_CURATION_PASS_PROMPT, MEMORY_CURATION_PASS_PROMPT_REF, MEMORY_GUIDANCE,
     MEMORY_GUIDANCE_DOC_REF, NativeMemoryService, OwnerWriteOutcome, resolve_target_path,

@@ -5,7 +5,7 @@
 //! single Reborn-native memory repository — the per-backend
 //! `Reborn{LibSql,Postgres}MemoryDocumentRepository` SQL repos were
 //! collapsed onto this implementation once `ironclaw_filesystem` grew
-//! native FTS, vector, and CAS support.
+//! native FTS and CAS support.
 //!
 //! ## Storage layout
 //!
@@ -47,7 +47,7 @@ use crate::indexer::{MemoryChunkReplaceOutcome, MemoryDocumentIndexRepository};
 use crate::metadata::{MemoryWriteOptions, find_nearest_config, is_config_path};
 use crate::path::{memory_error, valid_memory_path};
 use crate::search::{
-    MemorySearchRequest, MemorySearchResult, RankedMemorySearchResult, fuse_memory_search_results,
+    MemorySearchRequest, MemorySearchResult, RankedMemorySearchResult, rank_memory_search_results,
 };
 use ironclaw_memory::DocumentMetadata;
 use ironclaw_memory::{MemoryDocumentPath, MemoryDocumentScope};
@@ -119,17 +119,13 @@ where
         IndexKey::new(name).unwrap_or_else(|_| unreachable!("{name} is a valid index key"))
     }
 
-    /// Declare the FTS and Vector indexes the search path needs. libSQL
-    /// and Postgres only translate `Filter::Fts` / `Filter::VectorNearest`
-    /// once a matching index has been registered; without this the search
-    /// silently degrades to `Unsupported`. Tolerates `Unsupported` for
-    /// backends that don't materialize indexes (the in-memory backend
-    /// still serves both filter kinds via in-memory scan).
-    async fn ensure_search_indexes(
-        &self,
-        prefix: &VirtualPath,
-        embedding_dim: Option<u32>,
-    ) -> Result<(), FilesystemError> {
+    /// Declare the FTS index the search path needs. libSQL and Postgres
+    /// only translate `Filter::FtsRanked` once a matching index has been
+    /// registered; without this the search silently degrades to
+    /// `Unsupported`. Tolerates `Unsupported` for backends that don't
+    /// materialize indexes (the in-memory backend still serves the filter
+    /// via in-memory scan).
+    async fn ensure_search_indexes(&self, prefix: &VirtualPath) -> Result<(), FilesystemError> {
         let fts = IndexSpec::new(
             IndexName::new("memory_chunks_content_fts")
                 .unwrap_or_else(|_| unreachable!("valid index name")),
@@ -137,22 +133,9 @@ where
             IndexKind::Fts,
         );
         match self.filesystem.ensure_index(prefix, &fts).await {
-            Ok(()) | Err(FilesystemError::Unsupported { .. }) => {}
-            Err(error) => return Err(error),
+            Ok(()) | Err(FilesystemError::Unsupported { .. }) => Ok(()),
+            Err(error) => Err(error),
         }
-        if let Some(dim) = embedding_dim {
-            let vector = IndexSpec::new(
-                IndexName::new("memory_chunks_embedding_vector")
-                    .unwrap_or_else(|_| unreachable!("valid index name")),
-                vec![Self::index_key(fs_keys::EMBEDDING)],
-                IndexKind::Vector { dim },
-            );
-            match self.filesystem.ensure_index(prefix, &vector).await {
-                Ok(()) | Err(FilesystemError::Unsupported { .. }) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
     }
 
     fn document_virtual_path(
@@ -1028,67 +1011,35 @@ where
             )
         })?;
 
-        // Declare the FTS / Vector
-        // indexes the query path requires. libSQL / Postgres backends
-        // need the index registered before they translate `Filter::Fts`
-        // / `Filter::VectorNearest` to a native query — without it they
-        // return `Unsupported` and the search silently degrades. Tolerate
-        // `Unsupported` for backends that don't support these index
-        // kinds (the in-memory backend still serves FTS over a scan).
-        self.ensure_search_indexes(&prefix, request.query_embedding_dim())
-            .await?;
+        // Declare the FTS index the query path requires. libSQL / Postgres
+        // backends need the index registered before they translate
+        // `Filter::FtsRanked` to a native query — without it they return
+        // `Unsupported` and the search silently degrades. Tolerate
+        // `Unsupported` for backends that don't support this index kind
+        // (the in-memory backend still serves FTS over a scan).
+        self.ensure_search_indexes(&prefix).await?;
 
-        let full_text_results = if request.full_text() {
-            // #7185: memory recall is conversational — the query is a whole
-            // user sentence, and requiring EVERY content term (`Filter::Fts`)
-            // means a paraphrased question almost never matches the stored
-            // wording. `Filter::FtsRanked` matches on any content term and
-            // orders by backend relevance (bm25 / ts_rank), which is what the
-            // rank-then-fuse step below already assumes it is being handed.
-            let filter = Filter::FtsRanked {
-                key: Self::index_key(fs_keys::CONTENT),
-                query: request.query().to_string(),
-                limit: request.pre_fusion_limit().min(Page::MAX_LIMIT as usize) as u32,
-            };
-            // `FtsRanked` overrides `Page::limit` (it is a top-k operation);
-            // the bounded page still satisfies the API.
-            let page = Page::new(
-                0,
-                request.pre_fusion_limit().min(Page::MAX_LIMIT as usize) as u32,
-            );
-            let entries = self.filesystem.query(&prefix, &filter, page).await?;
-            Self::map_chunk_hits_to_ranked_results(scope, entries)
-        } else {
-            Vec::new()
+        // #7185: memory recall is conversational — the query is a whole
+        // user sentence, and requiring EVERY content term (`Filter::Fts`)
+        // means a paraphrased question almost never matches the stored
+        // wording. `Filter::FtsRanked` matches on any content term and
+        // orders by backend relevance (bm25 / ts_rank), which is what the
+        // ranking step below assumes it is being handed.
+        let filter = Filter::FtsRanked {
+            key: Self::index_key(fs_keys::CONTENT),
+            query: request.query().to_string(),
+            limit: request.pre_fusion_limit().min(Page::MAX_LIMIT as usize) as u32,
         };
-
-        let vector_results = if request.vector() {
-            if let Some(embedding) = request.query_embedding() {
-                let filter = Filter::VectorNearest {
-                    key: Self::index_key(fs_keys::EMBEDDING),
-                    embedding: embedding.to_vec(),
-                    limit: request.pre_fusion_limit() as u32,
-                };
-                // `VectorNearest` overrides `Page::limit`; the limit on
-                // the filter is what drives top-k. We still pass a
-                // bounded page to satisfy the API.
-                let page = Page::new(
-                    0,
-                    request.pre_fusion_limit().min(Page::MAX_LIMIT as usize) as u32,
-                );
-                let entries = self.filesystem.query(&prefix, &filter, page).await?;
-                Self::map_chunk_hits_to_ranked_results(scope, entries)
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
-
-        Ok(fuse_memory_search_results(
-            full_text_results,
-            vector_results,
-            request,
+        // `FtsRanked` overrides `Page::limit` (it is a top-k operation);
+        // the bounded page still satisfies the API.
+        let page = Page::new(
+            0,
+            request.pre_fusion_limit().min(Page::MAX_LIMIT as usize) as u32,
+        );
+        let entries = self.filesystem.query(&prefix, &filter, page).await?;
+        Ok(rank_memory_search_results(
+            Self::map_chunk_hits_to_ranked_results(scope, entries),
+            request.limit(),
         ))
     }
 }
@@ -1764,7 +1715,7 @@ mod tests {
         .await
         .unwrap();
 
-        let request = search_request("alpha").with_vector(false);
+        let request = search_request("alpha");
         let results = repo
             .search_documents(alpha.scope(), &request)
             .await
@@ -1772,49 +1723,6 @@ mod tests {
         assert_eq!(results.len(), 1, "FTS must filter out non-matching chunks");
         assert_eq!(results[0].path.relative_path(), "notes/alpha.md");
         assert!(results[0].full_text_rank.is_some());
-        assert!(results[0].vector_rank.is_none());
-    }
-
-    #[tokio::test]
-    async fn search_fuses_full_text_and_vector_branches_when_both_match() {
-        let (_, repo) = fresh_repo();
-        let alpha = doc("notes/alpha.md");
-        let beta = doc("notes/beta.md");
-        repo.write_document(&alpha, b"alpha").await.unwrap();
-        repo.write_document(&beta, b"beta").await.unwrap();
-        // Chunks with explicit embeddings so vector ranking is
-        // deterministic. Query embedding is closest to alpha's vector.
-        repo.replace_document_chunks_if_current(
-            &alpha,
-            &content_sha256("alpha"),
-            &[MemoryChunkWrite {
-                content: "alpha".to_string(),
-                embedding: Some(vec![1.0, 0.0, 0.0]),
-            }],
-        )
-        .await
-        .unwrap();
-        repo.replace_document_chunks_if_current(
-            &beta,
-            &content_sha256("beta"),
-            &[MemoryChunkWrite {
-                content: "beta".to_string(),
-                embedding: Some(vec![0.0, 1.0, 0.0]),
-            }],
-        )
-        .await
-        .unwrap();
-
-        let request = search_request("alpha").with_query_embedding(vec![0.99, 0.01, 0.0]);
-        let results = repo
-            .search_documents(alpha.scope(), &request)
-            .await
-            .unwrap();
-        let alpha_result = results
-            .iter()
-            .find(|r| r.path.relative_path() == "notes/alpha.md")
-            .expect("alpha must rank");
-        assert!(alpha_result.is_hybrid(), "alpha should fuse FTS + vector");
     }
 
     #[tokio::test]

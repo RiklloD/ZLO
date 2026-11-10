@@ -174,11 +174,9 @@ where
             .await?;
             return Ok(());
         }
-        // Text-only chunks: with the never-implemented embedding port gone
-        // (WS0), indexing has no vector lane to fail — chunk rows are always
-        // persisted with `embedding = NULL` under the content-hash guard, so
-        // full-text search stays current. Restoring generated vectors is
-        // PROPOSAL §12.10.
+        // Text-only chunks: chunk rows are always persisted with
+        // `embedding = NULL` under the content-hash guard, so full-text
+        // search stays current.
         let chunks = build_chunk_writes(chunk_texts);
         // **Re-resolve metadata immediately before the final replace.**
         // A concurrent metadata write that flips `skip_indexing=true`
