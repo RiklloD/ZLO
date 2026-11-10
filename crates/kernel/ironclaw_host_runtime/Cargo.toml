@@ -19,7 +19,6 @@ aws-lc-rs = "1"
 base64 = "0.23.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
-deadpool-postgres = "0.14"
 futures-util = "0.3"
 dirs = "6"
 hex = "0.4"
@@ -72,7 +71,6 @@ static_assertions = "1"
 thiserror = "2"
 # — needed directly to compute the CA's leaf-cert validity window.
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
-tokio-util = { version = "0.7" }
 tracing = "0.1"
 url = "2"
 uuid = { version = "1", features = ["v4"] }

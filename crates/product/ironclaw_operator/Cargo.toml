@@ -17,7 +17,6 @@ layer = "products"
 async-trait = "0.1"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
-fs4 = "1.1"
 ironclaw_common = { path = "../../contracts/ironclaw_common" }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem" }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }

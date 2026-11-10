@@ -31,7 +31,6 @@ secrecy = "0.10"
 serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "2"
-tar = "0.4"
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "process", "rt", "sync", "time"] }
 tracing = "0.1"

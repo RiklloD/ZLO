@@ -66,7 +66,6 @@ ironclaw_orchestrator = { path = "../../domains/ironclaw_orchestrator", version 
 ironclaw_cli_providers = { path = "../../domains/ironclaw_cli_providers", version = "0.1.0" }
 ironclaw_supermemory = { path = "../../domains/ironclaw_supermemory", version = "0.1.0" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
-ironclaw_memory = { path = "../../domains/ironclaw_memory", version = "0.1.0" }
 ironclaw_hooks = { path = "../../loop/ironclaw_hooks", version = "0.1.0" }
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
