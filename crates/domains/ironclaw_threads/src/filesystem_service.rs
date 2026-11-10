@@ -303,7 +303,7 @@ where
         let messages = vec![message.clone()];
         let context = ContextWindow {
             thread_id: thread_id.clone(),
-            messages: context_messages_with_summary_replacements(&messages, &[]),
+            messages: context_messages_with_summary_replacements(messages.iter(), &[]),
             recent_window_truncation: None,
         };
         if let Ok(mut cache) = self.one_shot_context_windows.lock() {
@@ -1123,8 +1123,8 @@ where
                     .collect::<Result<Vec<_>, _>>()?,
             );
 
-            let chronological = newest_first.iter().rev().cloned().collect::<Vec<_>>();
-            let context = context_messages_with_summary_replacements(&chronological, summaries);
+            let context =
+                context_messages_with_summary_replacements(newest_first.iter().rev(), summaries);
             let oldest_loaded_sequence = newest_first
                 .last()
                 .map(|message| message.sequence)

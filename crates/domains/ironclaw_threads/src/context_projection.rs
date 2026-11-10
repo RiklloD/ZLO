@@ -60,12 +60,17 @@ fn is_model_context_visible(message: &ThreadMessageRecord) -> bool {
 
 const REDACTED_SUMMARY_CONTENT: &str = "[redacted]";
 
-pub(crate) fn context_messages_with_summary_replacements(
-    messages: &[ThreadMessageRecord],
+/// `messages` is a chronological, re-iterable borrowed view, so a caller that
+/// holds its rows in another order projects them without copying.
+pub(crate) fn context_messages_with_summary_replacements<'a, M>(
+    messages: M,
     summaries: &[SummaryArtifact],
-) -> Vec<ContextMessage> {
+) -> Vec<ContextMessage>
+where
+    M: Iterator<Item = &'a ThreadMessageRecord> + Clone,
+{
     if let Some(barrier) = newest_context_barrier(summaries, |summary| {
-        !summary_covers_hidden_content(messages, summary)
+        !summary_covers_hidden_content(messages.clone(), summary)
     }) {
         let mut context = vec![ContextMessage {
             message_id: None,
@@ -78,7 +83,6 @@ pub(crate) fn context_messages_with_summary_replacements(
         }];
         context.extend(
             messages
-                .iter()
                 .filter(|message| {
                     message.sequence > barrier.end_sequence && is_model_context_visible(message)
                 })
@@ -92,15 +96,12 @@ pub(crate) fn context_messages_with_summary_replacements(
 
     let replacement_summaries = sorted_context_summaries(summaries, |summary| {
         summary.model_context_policy == Some(SummaryModelContextPolicy::ReplaceRangeWhenSelected)
-            && !summary_covers_hidden_content(messages, summary)
+            && !summary_covers_hidden_content(messages.clone(), summary)
     });
     let mut skip_through = 0u64;
     let mut emitted_summaries = HashSet::new();
     let mut context = Vec::new();
-    for message in messages
-        .iter()
-        .filter(|message| is_model_context_visible(message))
-    {
+    for message in messages.filter(|message| is_model_context_visible(message)) {
         if message.sequence <= skip_through {
             continue;
         }
@@ -224,11 +225,11 @@ fn can_resurface_as_model_visible(message: &ThreadMessageRecord) -> bool {
     )
 }
 
-fn summary_covers_hidden_content(
-    messages: &[ThreadMessageRecord],
+fn summary_covers_hidden_content<'a>(
+    mut messages: impl Iterator<Item = &'a ThreadMessageRecord>,
     summary: &SummaryArtifact,
 ) -> bool {
-    messages.iter().any(|message| {
+    messages.any(|message| {
         summary.start_sequence <= message.sequence
             && message.sequence <= summary.end_sequence
             && !is_model_context_visible(message)
