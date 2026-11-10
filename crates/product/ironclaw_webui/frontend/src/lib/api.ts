@@ -1030,37 +1030,6 @@ export function setupExtension<T = ApiRecord>(
   );
 }
 
-// --- TODO stubs for v1-shaped helpers brought-back code still imports ---
-//
-// Issue #3886 Hard Non-Goal: the browser must not call legacy
-// gateway routes without a v2 counterpart. The functions below
-// preserve the fork's import surface so the admin/settings/extensions
-// pages render, but they return empty/null data without sending any
-// HTTP request. When a v2 equivalent lands, replace the stub body
-// with the real wire call.
-
-export function gatewayStatus(): Promise<{
-  engine_v2_enabled: boolean;
-  restart_enabled: boolean;
-  total_connections: null;
-  llm_backend: null;
-  llm_model: null;
-  extensions?: ApiRecord[];
-  todo: boolean;
-}> {
-  // TODO: requires v2 gateway-status endpoint. Returning a zeroed
-  // shape so any consumer reading `data.engine_v2_enabled`,
-  // `data.llm_backend`, etc. resolves cleanly to falsey values.
-  return Promise.resolve({
-    engine_v2_enabled: false,
-    restart_enabled: false,
-    total_connections: null,
-    llm_backend: null,
-    llm_model: null,
-    todo: true,
-  });
-}
-
 // --- v2 auth surface ---
 //
 // The host mounts `webui_v2_auth_router` from

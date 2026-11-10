@@ -203,7 +203,6 @@ function renderProviderManagement({
   );
   const rendered = exports.ProviderManagement({
     settings: {},
-    gatewayStatus: {},
     searchQuery,
   });
   const cardProps = findComponentNodes(rendered, ProviderCard).map((node) =>

@@ -25,7 +25,6 @@ import { matchCommand } from "./lib/chat-commands";
 import { channelConnectionDisplayName } from "../../lib/channel-connection-events";
 import { channelConnectionFromGate, gateIsDeviceLink } from "./lib/gates";
 import { NEW_DRAFT_KEY } from "./lib/draft-store";
-import { buildRuntimeContext } from "./lib/runtime-context";
 import { buildScopedLogsPath } from "../logs/lib/logs-data";
 import { useInterfacePreferences } from "../../lib/interface-preferences";
 import {
@@ -110,7 +109,6 @@ export function Chat({
   isCreatingThread,
   composerDraft = "",
   composerResetKey = "",
-  gatewayStatus,
   regressionArtifactExportEnabled = false,
   globalAutoApproveEnabled = false,
   pendingRenderedNotification = null,
@@ -152,14 +150,6 @@ export function Chat({
     onConnectionStatusChange?.(sseStatus);
   }, [onConnectionStatusChange, sseStatus]);
 
-  const activeThread = React.useMemo(
-    () => threads.find((thread) => thread.id === activeThreadId) || null,
-    [threads, activeThreadId]
-  );
-  const runtimeContext = React.useMemo(
-    () => buildRuntimeContext({ gatewayStatus, activeThread }),
-    [gatewayStatus, activeThread]
-  );
   const activeThreadHasGate = Boolean(activeThreadId) && Boolean(pendingGate);
   // A channel connection gate is a host-issued PAIRING gate that carries the
   // manifest-derived `connection` context (provider names never select
@@ -495,7 +485,6 @@ export function Chat({
             initialText={composerDraft}
             resetKey={composerResetKey}
             draftKey={composerDraftKey}
-            context={runtimeContext}
             statusText={composerStatusText}
             canCancel={canCancelRun}
             onCancel={handleCancelRun}
@@ -628,7 +617,6 @@ export function Chat({
             initialText={composerDraft}
             resetKey={composerResetKey}
             draftKey={composerDraftKey}
-            context={runtimeContext}
             statusText={composerStatusText}
             canCancel={canCancelRun}
             onCancel={handleCancelRun}

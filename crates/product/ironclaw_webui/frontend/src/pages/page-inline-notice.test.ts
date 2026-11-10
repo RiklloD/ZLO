@@ -17,7 +17,7 @@ const NOTICE_CONSUMERS = [
   ["./automations/components/notification-channels-panel.tsx", 3],
   ["./settings/settings-page.tsx", 1],
   ["./settings/components/settings-toolbar.tsx", 1],
-  ["./settings/components/restart-banner.tsx", 3],
+  ["./settings/components/restart-banner.tsx", 1],
   ["./settings/components/skills-tab.tsx", 2],
   ["./settings/components/provider-management.tsx", 2],
   ["./settings/components/tools-tab.tsx", 2],

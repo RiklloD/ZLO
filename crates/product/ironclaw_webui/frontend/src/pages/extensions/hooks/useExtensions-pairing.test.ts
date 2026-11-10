@@ -38,7 +38,6 @@ function contextFor(mutationState, queryCalls) {
     fetchExtensionRegistry: () => {},
     fetchExtensionSetup: () => {},
     fetchExtensions: () => {},
-    gatewayStatus: () => {},
     globalThis: {},
     // The real surface-taxonomy helper: grouping and install routing must key
     // off declared channel surfaces, exactly as production does.

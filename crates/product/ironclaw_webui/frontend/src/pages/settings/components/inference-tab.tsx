@@ -16,7 +16,6 @@ import { ModelCapabilityBadges } from "./model-capability-badges";
 type InferenceTabProps = {
   isAdmin?: boolean;
   settings: Record<string, unknown> & { selected_model?: string };
-  gatewayStatus?: { llm_backend?: string; llm_model?: string } | null;
   onSave: (key: string, value: unknown) => void;
   savedKeys: Record<string, boolean>;
   isLoading: boolean;
@@ -26,7 +25,6 @@ type InferenceTabProps = {
 export function InferenceTab({
   isAdmin = false,
   settings,
-  gatewayStatus,
   onSave,
   savedKeys,
   isLoading,
@@ -34,12 +32,10 @@ export function InferenceTab({
 }: InferenceTabProps) {
   const t = useT();
   // Source the active backend/model from the `/llm/providers` snapshot (the
-  // same query the provider list below renders from) rather than the empty
-  // settings/gatewayStatus stubs, which left the Model field showing "—".
+  // same query the provider list below renders from).
   // Shares the `["llm-providers"]` react-query cache, so no extra fetch.
   const providerState = useLlmProviders({
     settings,
-    gatewayStatus,
     enabled: isAdmin,
   });
   const { activeProviderId, selectedModel, providers, hasActiveProvider } = providerState;
@@ -129,7 +125,6 @@ export function InferenceTab({
       (
         <ProviderManagement
           settings={settings}
-          gatewayStatus={gatewayStatus}
           searchQuery={searchQuery}
         />
       )}

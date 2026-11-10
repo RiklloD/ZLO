@@ -38,7 +38,6 @@ export function ChatInput({
   resetKey = "",
   draftKey = NEW_DRAFT_KEY,
   variant = "dock",
-  context = {},
   statusText = "",
 }) {
   const t = useT();

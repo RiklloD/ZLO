@@ -34,8 +34,6 @@ export function SettingsPage() {
   const t = useT();
   const { tab: requestedTab } = useParams();
   const {
-    gatewayStatus,
-    gatewayStatusQuery,
     isAdmin = false,
     theme,
     setTheme,
@@ -64,7 +62,6 @@ export function SettingsPage() {
     inference: (<InferenceTab
       isAdmin={isAdmin}
       settings={settings}
-      gatewayStatus={gatewayStatus}
       onSave={save}
       savedKeys={savedKeys}
       isLoading={isLoading}
@@ -101,11 +98,7 @@ export function SettingsPage() {
       <PageStack>
             {needsRestart &&
             (<div className="sticky top-0 z-20 -mx-4 -mt-4 mb-1 bg-[color-mix(in_srgb,var(--v2-canvas)_92%,transparent)] px-4 pt-4 backdrop-blur sm:-mx-6 sm:px-6">
-              <RestartBanner
-                visible={true}
-                gatewayStatus={gatewayStatus}
-                gatewayStatusQuery={gatewayStatusQuery}
-              />
+              <RestartBanner />
             </div>)}
 
             {saveError &&

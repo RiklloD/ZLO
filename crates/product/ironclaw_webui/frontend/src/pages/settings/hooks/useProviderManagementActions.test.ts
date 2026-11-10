@@ -56,7 +56,6 @@ function createHarness() {
       hookCursor = 0;
       return exports.useProviderManagementActions({
         settings: {},
-        gatewayStatus: {},
         searchQuery: "",
         t: (key) => key,
       });

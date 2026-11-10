@@ -13,8 +13,8 @@ import { shouldRouteToOnboarding } from "./onboarding-gate";
 
 test("a failed providers query (e.g. gated 404 under SSO) does NOT force onboarding", () => {
   // The regression this fix exists for: SSO users with a boot-configured
-  // provider were trapped on /welcome because /llm/providers 404s and the
-  // gatewayStatus.llm_backend stub is null, so hasActiveProvider is false.
+  // provider were trapped on /welcome because /llm/providers 404s, so
+  // hasActiveProvider is false.
   // A failed query can't prove "no provider", so we must not onboard.
   assert.equal(
     shouldRouteToOnboarding({
