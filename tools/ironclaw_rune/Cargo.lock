@@ -1119,16 +1119,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs4"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e72ed92b67c146290f88e9c89d60ca163ea417a446f61ffd7b72df3e7f1dfd5"
-dependencies = [
- "rustix 1.1.6",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1720,7 +1710,6 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 name = "ironclaw_config"
 version = "0.1.0"
 dependencies = [
- "fs4",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -1739,7 +1728,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "uuid",
  "zeroize",
 ]
 
