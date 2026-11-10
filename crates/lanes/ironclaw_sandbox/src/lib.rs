@@ -9,16 +9,16 @@
 //!   model-supplied plans through [`ValidatedSandboxProcessPlan`] before
 //!   dispatching them under
 //!   [`ironclaw_host_api::capability::PROCESS_SANDBOX_CAPABILITY_ID`].
-//! - [`sandbox_process`] — the Docker/broker/credential-firewall/CA execution
+//! - [`sandbox_process`] — the Docker/broker/managed-egress/CA execution
 //!   machinery behind [`ironclaw_host_api::process::SandboxCommandTransport`].
 //! - [`script`] — the script lane and its Docker execution path.
 //!
 //! **Why one crate:** the `bollard`/`rcgen`/`libc` cone stays isolated in the
-//! runtimes layer instead of sitting in the kernel, and the W6 egress-proxy /
-//! sandbox work has a single owner.
+//! runtimes layer instead of sitting in the kernel, and the sandbox work has a
+//! single owner.
 //!
-//! **Never:** ambient credentials (the credential-firewall design stays), and
-//! no direct process spawning outside the transport seam.
+//! **Never:** ambient credentials (secret values stay behind the broker/lease
+//! seams), and no direct process spawning outside the transport seam.
 //!
 //! ## Wiring status
 //!

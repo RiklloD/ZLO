@@ -2,7 +2,7 @@
 
 The sandboxed-process lane. Merged in WS3 from `ironclaw_process_sandbox`
 (plan contract), `ironclaw_host_runtime::sandbox_process` (Docker / broker /
-credential-firewall / CA), and `ironclaw_scripts` (script lane + Docker
+CA), and `ironclaw_scripts` (script lane + Docker
 execution path). PROPOSAL §6.6.4.
 
 ## Why one crate
@@ -44,15 +44,15 @@ through `SandboxCommandTransport`; the script-runtime lane remains separate.
   tool/cache state.
 - `sandbox_process` — the execution machinery behind
   `ironclaw_host_api::process::SandboxCommandTransport`: Docker connect, network
-  broker and allowlist, credential firewall, container identity, the sandbox CA,
-  mounts, scope/user keys, shell limits, activity registry.
+  broker and allowlist, managed egress, container identity, the sandbox root
+  CA, mounts, scope/user keys, shell limit defaults, activity registry.
 - `script` — `ScriptRuntime`, the `ScriptExecutor`/`ScriptBackend` traits,
   `DockerScriptBackend`, `ScriptRuntimeHttpAdapter`, and the normalized
   request/result/error types.
 
 ## Do not move in here
 
-- Ambient credentials. The credential-firewall design stays: secret values live
+- Ambient credentials. Secret values live
   behind broker/lease seams and redaction helpers, and never appear in plan
   JSON, validation errors, debug output, or logs.
 - Dispatcher composition. This crate must not expose `RuntimeAdapter`-shaped
@@ -63,6 +63,12 @@ through `SandboxCommandTransport`; the script-runtime lane remains separate.
   dispatcher/process/resource policy.
 - Docker mount-root or executor configuration: that belongs with whatever crate
   eventually wires a real backend.
+
+- An in-host credential-injecting proxy. It is not planned for this product;
+  its scaffolding (host-side credential firewall, connection attribution, leaf
+  certificate issuing) was deleted. Credentialed egress goes through managed
+  egress: the trusted proxy sidecar receives the root CA key and does its own
+  TLS.
 
 ## Known debt
 

@@ -3,8 +3,8 @@
 The sandboxed-process execution lane: a typed plan contract for what an OS
 process invocation may do, and the container-backed machinery that executes a
 validated plan behind the kernel's `SandboxCommandTransport` seam — Docker
-connect, network broker and allowlist, credential firewall, container identity,
-the per-tenant sandbox CA, mounts, and scope/user keys. The
+connect, network broker and allowlist, managed egress, container identity,
+the per-tenant sandbox root CA, mounts, and scope/user keys. The
 `bollard`/`rcgen`/`libc` cone lives here and nowhere else in the workspace;
 keeping it (and the elevated review scrutiny it deserves) out of the kernel is
 the point of the crate.

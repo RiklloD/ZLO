@@ -3,10 +3,7 @@
 //!
 //! This module only gates on daemon reachability ([`docker_available`]) —
 //! whether an image the test needs is present is each caller's own concern.
-//! `attribution.rs`'s real-Docker test pulls `busybox:1.36` itself before
-//! using it; a caller that instead needs the locally-built `ironclaw-worker`
-//! image (e.g. `exec_transport`, which declares this same file via `#[path]`
-//! — see `attribution.rs`'s module-level comment on its own declaration) is
+//! A caller that needs the locally-built `ironclaw-worker` image is
 //! responsible for ensuring that image is present. Callers MUST skip with a
 //! visible "SKIP: ..." line on `eprintln!` when either the daemon or their
 //! own image precondition fails, never a silent pass — a quietly vanishing

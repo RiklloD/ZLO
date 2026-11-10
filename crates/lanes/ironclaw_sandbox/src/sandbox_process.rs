@@ -32,7 +32,6 @@ mod broker;
 mod ca;
 mod connect;
 mod container_identity;
-mod credential_firewall;
 mod key_codec;
 mod managed_egress;
 mod mounts;
@@ -48,7 +47,6 @@ use managed_egress::{ManagedEgressBundle, ManagedEgressConfig, ManagedEgressRunt
 
 // `user_key` is the shared per-user workspace and local Docker container
 // identity. Railway keeps its existing backend-specific lifecycle.
-mod attribution;
 mod registry;
 mod user_key;
 

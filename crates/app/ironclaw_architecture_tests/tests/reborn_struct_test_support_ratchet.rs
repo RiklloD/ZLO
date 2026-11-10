@@ -132,30 +132,6 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         path: "crates/ironclaw_extension_host/src/channel_pairing.rs",
         count: 1,
     },
-    // Unwired sandbox credential-firewall primitives (W5/W8). Retire these
-    // three entries when the remaining consumers land and the
-    // `#[allow(dead_code)]` attributes come off — the `removed` assertion
-    // below only shrinks this baseline if the attributes are actually
-    // deleted, not merely left in place.
-    FrozenPathCount {
-        category: "dead-code",
-        item_kind: "method",
-        path: "crates/ironclaw_sandbox/src/sandbox_process/ca.rs",
-        count: 3,
-    },
-    // Same W6 retirement trigger as the `ca.rs` entry above.
-    FrozenPathCount {
-        category: "dead-code",
-        item_kind: "method",
-        path: "crates/ironclaw_sandbox/src/sandbox_process/credential_firewall.rs",
-        count: 5,
-    },
-    FrozenPathCount {
-        category: "dead-code",
-        item_kind: "method",
-        path: "crates/ironclaw_sandbox/src/sandbox_process/attribution.rs",
-        count: 4,
-    },
     FrozenPathCount {
         category: "test-support",
         item_kind: "field",
@@ -326,18 +302,6 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         path: "crates/ironclaw_host_api/src/product_adapter/auth.rs",
         count: 2,
     },
-    FrozenPathCount {
-        category: "test-support",
-        item_kind: "method",
-        path: "crates/ironclaw_sandbox/src/sandbox_process/ca.rs",
-        count: 2,
-    },
-    FrozenPathCount {
-        category: "test-support",
-        item_kind: "method",
-        path: "crates/ironclaw_sandbox/src/sandbox_process/credential_firewall.rs",
-        count: 1,
-    },
     // WS3 split `obligations.rs` into one module per chartered owner; the
     // single frozen test-support method travelled to the staged-handoff owner.
     // Repointed, not re-baselined: the count is unchanged at 1.
@@ -345,12 +309,6 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         category: "test-support",
         item_kind: "method",
         path: "crates/ironclaw_host_runtime/src/obligations/staged_handoffs.rs",
-        count: 1,
-    },
-    FrozenPathCount {
-        category: "test-support",
-        item_kind: "method",
-        path: "crates/ironclaw_sandbox/src/sandbox_process/attribution.rs",
         count: 1,
     },
     FrozenPathCount {
