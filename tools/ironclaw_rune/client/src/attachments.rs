@@ -329,6 +329,18 @@ mod tests {
         assert_eq!(format_bytes(1536), "1.5 KB");
     }
 
+    #[test]
+    fn byte_sizes_step_up_a_unit_at_each_1024() {
+        const MB: u64 = 1024 * 1024;
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(MB - 1), "1024.0 KB");
+        assert_eq!(format_bytes(MB), "1.0 MB");
+        assert_eq!(format_bytes(1024 * MB), "1.0 GB");
+        assert_eq!(format_bytes(5000 * 1024 * MB), "5000.0 GB");
+    }
+
     fn limits(max_file_bytes: u64) -> AttachmentLimits {
         AttachmentLimits {
             accept: ["text/plain", ".txt"].map(String::from).to_vec(),

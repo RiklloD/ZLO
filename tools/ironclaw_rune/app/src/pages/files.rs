@@ -269,7 +269,10 @@ fn render_preview(s: &State, k: &Kit) -> El {
         Some(Err(e)) => error_line(p, e),
         Some(Ok(FilePreview::TooLarge { size_bytes })) => empty_state(
             p,
-            format!("{} is too large to preview here.", jobs::size(*size_bytes)),
+            format!(
+                "{} is too large to preview here.",
+                zlo_client::attachments::format_bytes(*size_bytes)
+            ),
         ),
         Some(Ok(FilePreview::Binary {
             mime_type,
@@ -278,7 +281,7 @@ fn render_preview(s: &State, k: &Kit) -> El {
             p,
             format!(
                 "Binary file ({mime_type}, {}). No preview.",
-                jobs::size(*size_bytes)
+                zlo_client::attachments::format_bytes(*size_bytes)
             ),
         ),
         Some(Ok(FilePreview::Text {

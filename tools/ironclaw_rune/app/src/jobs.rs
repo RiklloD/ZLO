@@ -188,14 +188,6 @@ pub fn when(at: DateTime<Utc>) -> String {
     at.with_timezone(&Local).format("%d.%m. %H:%M").to_string()
 }
 
-pub fn size(bytes: u64) -> String {
-    match bytes {
-        b if b < 1024 => format!("{b} B"),
-        b if b < 1024 * 1024 => format!("{:.1} KB", b as f64 / 1024.),
-        b => format!("{:.1} MB", b as f64 / (1024. * 1024.)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Generation, Instance};

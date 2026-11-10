@@ -35,6 +35,9 @@ use crate::jobs::Generation;
 use crate::onboarding::gateway::Computer;
 use crate::state::{Conn, State};
 
+/// How long a computer gets to answer with its descriptor.
+const DESCRIPTOR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
 pub use connect::{connect, switch_to};
 
 /// Every async gateway completion is tagged with the connection it was

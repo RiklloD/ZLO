@@ -201,11 +201,11 @@ fn render(s: &State, k: &Kit, opened: &Opened, key: &str) -> El {
         Preview::Failed(e) => ui::para(e.clone(), sm(), p.danger),
         Preview::TooLarge(size) => note(format!(
             "{} is too large to show here. Open it in its app.",
-            crate::jobs::size(*size)
+            zlo_client::attachments::format_bytes(*size)
         )),
         Preview::Binary(size) => note(format!(
             "Binary file, {}. Open it in its app.",
-            crate::jobs::size(*size)
+            zlo_client::attachments::format_bytes(*size)
         )),
         Preview::Native => crate::native_view::surface(crate::native_view::Slot::Preview),
         Preview::Image(pixels, aspect) => el()
