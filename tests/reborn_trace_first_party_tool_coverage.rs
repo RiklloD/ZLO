@@ -14,16 +14,17 @@ use ironclaw_host_runtime::{
     GLOB_CAPABILITY_ID, GREP_CAPABILITY_ID, HTTP_CAPABILITY_ID, HTTP_SAVE_CAPABILITY_ID,
     JSON_CAPABILITY_ID, LIST_DIR_CAPABILITY_ID, MEMORY_READ_CAPABILITY_ID,
     MEMORY_SEARCH_CAPABILITY_ID, MEMORY_TREE_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID,
-    PROFILE_SET_CAPABILITY_ID, READ_FILE_CAPABILITY_ID, SHELL_CAPABILITY_ID,
-    SKILL_AUTO_ACTIVATE_SET_CAPABILITY_ID, SKILL_INSTALL_CAPABILITY_ID, SKILL_LIST_CAPABILITY_ID,
-    SKILL_REMOVE_CAPABILITY_ID, SKILL_UPDATE_CAPABILITY_ID, SPAWN_SUBAGENT_CAPABILITY_ID,
-    TIME_CAPABILITY_ID, TRACE_COMMONS_ACCOUNT_LOGIN_LINK_CAPABILITY_ID,
-    TRACE_COMMONS_CREDITS_CAPABILITY_ID, TRACE_COMMONS_ONBOARD_CAPABILITY_ID,
-    TRACE_COMMONS_PROFILE_SET_CAPABILITY_ID, TRACE_COMMONS_PROFILE_TOKEN_CAPABILITY_ID,
-    TRACE_COMMONS_STATUS_CAPABILITY_ID, TRIGGER_CREATE_CAPABILITY_ID, TRIGGER_LIST_CAPABILITY_ID,
-    TRIGGER_PAUSE_CAPABILITY_ID, TRIGGER_REMOVE_CAPABILITY_ID, TRIGGER_RESUME_CAPABILITY_ID,
-    TRIGGER_RUN_CAPABILITY_ID, TRIGGER_STATUS_CAPABILITY_ID, WRITE_FILE_CAPABILITY_ID,
-    builtin_first_party_package, native_memory_first_party_package,
+    PLAN_UPDATE_CAPABILITY_ID, PROFILE_SET_CAPABILITY_ID, READ_FILE_CAPABILITY_ID,
+    SHELL_CAPABILITY_ID, SKILL_AUTO_ACTIVATE_SET_CAPABILITY_ID, SKILL_INSTALL_CAPABILITY_ID,
+    SKILL_LIST_CAPABILITY_ID, SKILL_REMOVE_CAPABILITY_ID, SKILL_UPDATE_CAPABILITY_ID,
+    SPAWN_SUBAGENT_CAPABILITY_ID, TIME_CAPABILITY_ID,
+    TRACE_COMMONS_ACCOUNT_LOGIN_LINK_CAPABILITY_ID, TRACE_COMMONS_CREDITS_CAPABILITY_ID,
+    TRACE_COMMONS_ONBOARD_CAPABILITY_ID, TRACE_COMMONS_PROFILE_SET_CAPABILITY_ID,
+    TRACE_COMMONS_PROFILE_TOKEN_CAPABILITY_ID, TRACE_COMMONS_STATUS_CAPABILITY_ID,
+    TRIGGER_CREATE_CAPABILITY_ID, TRIGGER_LIST_CAPABILITY_ID, TRIGGER_PAUSE_CAPABILITY_ID,
+    TRIGGER_REMOVE_CAPABILITY_ID, TRIGGER_RESUME_CAPABILITY_ID, TRIGGER_RUN_CAPABILITY_ID,
+    TRIGGER_STATUS_CAPABILITY_ID, WRITE_FILE_CAPABILITY_ID, builtin_first_party_package,
+    native_memory_first_party_package,
 };
 use ironclaw_loop_contracts::LoopHostMilestoneKind;
 use ironclaw_loop_host::{HostManagedModelMessageRole, HostManagedModelResponse};
@@ -57,6 +58,9 @@ const REBORN_FIRST_PARTY_E2E_COVERED_CAPABILITIES: &[&str] = &[
     MEMORY_READ_CAPABILITY_ID,
     MEMORY_TREE_CAPABILITY_ID,
     PROFILE_SET_CAPABILITY_ID,
+    // The native agent loop's checklist (PLAN-FORMS); driven through the
+    // composed host runtime by `reborn_trace_plan_update_first_party_tool_parity`.
+    PLAN_UPDATE_CAPABILITY_ID,
     SHELL_CAPABILITY_ID,
     READ_FILE_CAPABILITY_ID,
     WRITE_FILE_CAPABILITY_ID,
@@ -974,6 +978,73 @@ async fn reborn_trace_profile_set_first_party_tool_parity() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].capability_id, profile_set);
     assert_eq!(results[0].output["status"], serde_json::json!("ok"));
+    harness.assert_model_exhausted();
+
+    harness.shutdown().await;
+}
+
+/// The native agent's checklist: a model `builtin.plan_update` call crosses
+/// the composed host runtime ungated (auto-approve off) and its progress
+/// reaches the recorded capability result.
+#[tokio::test]
+async fn reborn_trace_plan_update_first_party_tool_parity() {
+    let plan_update = CapabilityId::new(PLAN_UPDATE_CAPABILITY_ID).expect("valid capability id");
+    let model_gateway = RebornTraceReplayModelGateway::with_scripted_steps([
+        RebornModelReplayStep::ProviderToolCalls {
+            calls: vec![RebornScriptedProviderToolCall::new(
+                plan_update.clone(),
+                "call_plan_update_first_party",
+                serde_json::json!({"entries": [
+                    {"content": "Find the bug", "status": "completed"},
+                    {"content": "Fix it", "status": "in_progress", "active_form": "Fixing it"}
+                ]}),
+            )],
+            expected_tool_results: Vec::new(),
+        },
+        RebornModelReplayStep::Response {
+            response: HostManagedModelResponse::assistant_reply("plan update trace complete"),
+            expected_tool_results: Vec::new(),
+        },
+    ]);
+    let mut harness = RebornBinaryE2EHarness::with_host_runtime_plan_capabilities(
+        "room-trace-plan-update-first-party-tool",
+        model_gateway,
+    )
+    .await
+    .expect("harness");
+    harness.start();
+
+    let submitted = harness
+        .submit_text(
+            "event-trace-plan-update-first-party-tool",
+            "exercise plan update first-party tool",
+        )
+        .await
+        .expect("submit text");
+    harness
+        .wait_for_status_with_config(
+            submitted.run_id,
+            TurnStatus::Completed,
+            host_runtime_tool_wait(),
+        )
+        .await
+        .expect("completed run");
+    harness
+        .assert_final_reply("plan update trace complete")
+        .await
+        .expect("final reply");
+
+    let invocations = harness.capability_invocations();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].capability_id, plan_update);
+
+    let results = harness.capability_results();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].capability_id, plan_update);
+    assert_eq!(
+        results[0].output["progress"],
+        serde_json::json!({"completed": 1, "total": 2})
+    );
     harness.assert_model_exhausted();
 
     harness.shutdown().await;
