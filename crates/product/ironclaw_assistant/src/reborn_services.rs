@@ -2524,9 +2524,8 @@ pub struct RebornServices<
     notification_inbox: Arc<dyn NotificationInboxStorePort>,
     legacy_approval_backfill_attempted: Arc<StdMutex<HashSet<LegacyApprovalBackfillKey>>>,
     session_inbound_ledger: Arc<dyn crate::ledger::IdempotencyLedger>,
-    /// The session lane's product surface, built once. Every input is an
-    /// immutable builder-wired `Arc`, so rebuilding it per `submit_turn`
-    /// only allocated — on the browser's primary send path.
+    /// The session lane's product surface, built once: every input is an
+    /// immutable builder-wired `Arc`.
     session_inbound_surface: Arc<std::sync::OnceLock<Arc<DefaultProductSurface>>>,
     session_channels:
         Option<Arc<dyn ironclaw_product_contracts::session_ingress::SessionChannelDirectory>>,
@@ -2569,24 +2568,6 @@ impl RebornServices<UnavailableProductCapabilityInvoker, UnavailableRebornViewPr
             thread_service,
             turn_coordinator,
             UnavailableProductCapabilityInvoker,
-            UnavailableRebornViewProvider,
-        )
-    }
-}
-
-impl<I> RebornServices<I, UnavailableRebornViewProvider>
-where
-    I: ProductCapabilityInvoker + Clone + 'static,
-{
-    pub fn new_with_product_capability_invoker(
-        thread_service: Arc<dyn SessionThreadService>,
-        turn_coordinator: Arc<dyn TurnCoordinator>,
-        product_capability_invoker: I,
-    ) -> Self {
-        Self::new_with_product_ports(
-            thread_service,
-            turn_coordinator,
-            product_capability_invoker,
             UnavailableRebornViewProvider,
         )
     }
@@ -3234,17 +3215,6 @@ where
         ledger: Arc<dyn crate::ledger::IdempotencyLedger>,
     ) -> Self {
         self.session_inbound_ledger = ledger;
-        self
-    }
-
-    pub fn with_skill_activation_recorder<F>(mut self, recorder: F) -> Self
-    where
-        F: Fn(&TurnScope, &AcceptedMessageRef, &str) -> Result<(), ProductSurfaceError>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.skill_activation_recorder = Some(Arc::new(recorder));
         self
     }
 

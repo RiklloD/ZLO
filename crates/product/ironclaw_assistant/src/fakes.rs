@@ -26,7 +26,6 @@ use ironclaw_product_contracts::binding::{
     ProductBindingResolver, ProductConversationRouteKind, ResolveBindingRequest, ResolvedBinding,
 };
 use ironclaw_product_contracts::error::ProductOperationFailure;
-#[allow(dead_code)]
 pub fn rejecting_product_surface_error() -> ProductSurfaceError {
     ProductSurfaceError {
         code: ProductSurfaceErrorCode::Internal,

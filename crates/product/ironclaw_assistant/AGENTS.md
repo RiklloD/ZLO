@@ -57,9 +57,7 @@ and **three** by `ironclaw_extension_manager`
 (`ChannelConfigProductService`, `LifecycleProductService`,
 `RebornViewProvider` — moved there when the `ironclaw_extension_manager` split
 took the lifecycle product service, the admin-configuration view provider, and
-the channel-config product service out of the host; WS2.1 moved nine and WS2.2
-added the shared-route resolver — since reshaped admission-only as
-`SharedConversationAdmission` — once the boundary error made it declarable).
+the channel-config product service out of the host).
 That test is the enforced inventory for those twelve; this list is prose and
 defers to it. Two more ports moved out under the same PROPOSAL §6.1.3 effort
 but are **not** in that gate's inventory: `AdminUserService` (concrete
@@ -100,8 +98,7 @@ a row to `INVERTED_PORT_IMPLEMENTORS` in that gate.
 What this crate kept from the operator move, and why: the frozen view
 descriptors (`LLM_CONFIG_VIEW`, `LOGS_VIEW`, `OPERATOR_LOGS_VIEW`) because the
 concrete inventory is product's; the fail-closed `Unsupported*` services and the
-`Static*` doubles because a default *implementation* is not a contract; the
-and the
+`Static*` doubles because a default *implementation* is not a contract; and the
 `RebornOperator*` command-plane envelope that wraps the moved DTOs. The
 `LlmConfigServiceError` → `ProductSurfaceError` status table has one home, the
 `impl From` in `ironclaw_product_contracts::operator_llm`; call sites here use
@@ -160,14 +157,9 @@ Must NOT depend on: `ironclaw_extension_registry`,
 
 All six are now *enforced* — the `ironclaw_assistant` `BoundaryRule` in
 `crates/app/ironclaw_architecture_tests/tests/reborn_dependency_boundaries.rs` is the
-arbiter, and this list is a copy of it. Until WS5, `ironclaw_extension_registry` was on
-this list and **not** on the enforced one, and the crate held the dependency:
-`adapter_registry` was its only consumer. Moving that module to its chartered
-owners (schema → `ironclaw_extension_contracts::product_adapter_section`,
-manifest contract + resolved projection →
-`ironclaw_extension_registry::host_api::product_adapter`) dropped the manifest entry and
-closed the contradiction PROPOSAL §6.9.1 recorded. A product-tier crate that
-needs manifest vocabulary imports the contracts crate, never the registry.
+arbiter, and this list is a copy of it. A product-tier crate that needs manifest
+vocabulary imports the contracts crate
+(`ironclaw_extension_contracts::product_adapter_section`), never the registry.
 
 Also not this crate's to own: product adapter transport/rendering logic,
 host-runtime execution, capability dispatch, and storage backend details.
@@ -275,9 +267,7 @@ installation configuration, never from inbound adapter payloads. Default
 `AgentId`/`ProjectId` for first-contact product turns are also trusted
 installation configuration, not external hints, and must be persisted into the
 canonical conversation binding on first bind rather than overlaid on every
-resolve. Thread hints in subscription requests may narrow to the already
-resolved binding only; they are not authority to switch threads or tenants.
-Projection/subscription resolution is lookup-only and must not create bindings,
+resolve. Binding lookups are lookup-only and must not create bindings,
 threads, or external-event route reservations.
 A run acts as its invoker: a shared conversation is ONE canonical thread
 (conversation-keyed — the Slack thread, the Telegram chat/topic) owned by

@@ -1456,8 +1456,6 @@ where
         context: &crate::synthetic::UserTurnContext,
         stages: &mut UserTurnStageDurations,
     ) -> Result<(), OperationFailure> {
-        self.thread_service
-            .clear_thread_index_cache_for_scope(&context.thread_scope);
         let expected = thread_list_threads_for_owner(
             args.thread_list_threads,
             args.thread_list_users,

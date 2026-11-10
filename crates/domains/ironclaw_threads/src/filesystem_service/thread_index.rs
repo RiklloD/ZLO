@@ -736,7 +736,7 @@ where
                     // completion marker, so swallowing a read failure records a
                     // backfill that never happened and no later pass retries it.
                     index.derived_title = self
-                        .first_user_message_for_title(scope, thread_id, stored.next_sequence)
+                        .first_user_message_for_title(scope, thread_id)
                         .await?
                         .and_then(|message| message.content.as_deref().map(str::to_string))
                         .and_then(|content| crate::title::derive_title_from_message(&content));
@@ -1277,7 +1277,6 @@ mod tests {
             })
             .await
             .unwrap();
-        service.clear_thread_index_cache_for_scope(&request_scope);
 
         let listed = service
             .list_threads_for_scope(ListThreadsForScopeRequest {

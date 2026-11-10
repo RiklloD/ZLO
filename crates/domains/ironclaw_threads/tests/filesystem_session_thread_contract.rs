@@ -984,7 +984,6 @@ async fn filesystem_delete_thread_retry_cleans_stale_thread_index_row() {
         )
         .await
         .expect("test setup removes source thread root but leaves derived index row");
-    service.clear_thread_index_cache_for_scope(&request_scope);
 
     let retry_error = service
         .delete_thread(&request_scope, &thread.thread_id)
@@ -1043,7 +1042,6 @@ async fn filesystem_list_threads_skips_stale_thread_index_after_partial_delete()
         )
         .await
         .expect("test setup removes source thread root but leaves derived index row");
-    service.clear_thread_index_cache_for_scope(&request_scope);
     service
         .migrate_thread_index_for_scope(&request_scope)
         .await
@@ -3848,7 +3846,6 @@ async fn filesystem_explicit_migration_rebuilds_missing_thread_index_rows() {
             .await
             .expect("test setup removes derived index row");
     }
-    service.clear_thread_index_cache_for_scope(&scope);
     assert_eq!(
         service
             .migrate_thread_index_for_scope(&scope)
@@ -3872,7 +3869,6 @@ async fn filesystem_explicit_migration_rebuilds_missing_thread_index_rows() {
         .collect();
     assert_eq!(ids, ["legacy-002", "legacy-001"]);
 
-    service.clear_thread_index_cache_for_scope(&scope);
     let listed_again = service
         .list_threads_for_scope(ListThreadsForScopeRequest {
             scope,
@@ -4032,7 +4028,6 @@ async fn filesystem_list_threads_merges_partial_thread_index_with_source_rows() 
         )
         .await
         .expect("test setup removes one derived index row");
-    service.clear_thread_index_cache_for_scope(&scope);
     service
         .migrate_thread_index_for_scope(&scope)
         .await
@@ -5017,7 +5012,6 @@ async fn filesystem_explicit_migration_retries_after_source_read_error() {
             .nth(1)
             .backend("thread record reads disabled once by contract test"),
     );
-    service.clear_thread_index_cache_for_scope(&scope);
     assert!(
         service
             .migrate_thread_index_for_scope(&scope)
@@ -5025,7 +5019,6 @@ async fn filesystem_explicit_migration_retries_after_source_read_error() {
             .is_err()
     );
 
-    service.clear_thread_index_cache_for_scope(&scope);
     service
         .migrate_thread_index_for_scope(&scope)
         .await

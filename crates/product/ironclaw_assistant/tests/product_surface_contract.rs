@@ -70,10 +70,6 @@ use ironclaw_product_contracts::inbound::{
     ProjectionSubscriptionPayload, ScopedApprovalResolutionPayload, TrustedInboundContext,
     UserMessagePayload,
 };
-use ironclaw_product_contracts::outbound::ProjectionCursor;
-use ironclaw_product_contracts::projection::{
-    ProductProjectionReadInput, ProductProjectionSubject, ProductProjectionSubscribeInput,
-};
 use ironclaw_product_contracts::shared_admission::{
     SharedConversationAdmission, SharedConversationAdmissionRequest,
 };
@@ -3688,227 +3684,7 @@ async fn projection_read_via_submit_inbound_rejects_before_mutating_ledger() {
 }
 
 #[tokio::test]
-async fn projection_read_resolves_external_refs_through_read_door() {
-    let (workflow, inbound, ledger, binding_service) = build_workflow_with_binding();
-    let binding = fake_binding();
-    let cursor = ProjectionCursor::new("cursor:projection-read-1").expect("valid cursor");
-    let envelope = sample_envelope_with_payload(
-        "projection-read-1",
-        ProductInboundPayload::ProjectionRead(
-            ProjectionReadPayload::new(
-                Some(binding.thread_id.as_str().to_string()),
-                Some(cursor.clone()),
-                Some(50),
-            )
-            .expect("valid read"),
-        ),
-    );
-    binding_service.program_binding(envelope.source_binding_key(), binding.clone());
-    let input = ProductProjectionReadInput::from_inbound_envelope(&envelope).expect("read input");
-
-    let read = workflow
-        .read_projection(input)
-        .await
-        .expect("projection read");
-
-    assert_eq!(read.actor.user_id, binding.actor_user_id);
-    assert_eq!(read.scope.tenant_id, binding.tenant_id);
-    assert_eq!(read.scope.agent_id, binding.agent_id);
-    assert_eq!(read.scope.project_id, binding.project_id);
-    assert_eq!(read.scope.thread_id, binding.thread_id);
-    assert_eq!(read.after_cursor, Some(cursor));
-    assert_eq!(read.limit, Some(50));
-    assert_eq!(binding_service.resolve_count(), 1);
-    assert_eq!(inbound.accepted_count(), 0);
-    assert_eq!(ledger.settled_count(), 0);
-    assert_eq!(ledger.in_flight_count(), 0);
-    assert_eq!(ledger.released_count(), 0);
-}
-
-#[tokio::test]
-async fn projection_read_accepts_canonical_subject_without_inbound_envelope() {
-    let (workflow, inbound, ledger, binding_service) = build_workflow_with_binding();
-    let binding = fake_binding();
-    let actor = TurnActor::new(binding.actor_user_id.clone());
-    let scope = TurnScope::new(
-        binding.tenant_id.clone(),
-        binding.agent_id.clone(),
-        binding.project_id.clone(),
-        binding.thread_id.clone(),
-    );
-    let cursor = ProjectionCursor::new("cursor:canonical-read").expect("valid cursor");
-
-    let read = workflow
-        .read_projection(ProductProjectionReadInput::new(
-            ProductProjectionSubject::canonical(actor.clone(), scope.clone()),
-            Some(binding.thread_id.as_str().to_string()),
-            Some(cursor.clone()),
-            Some(10),
-        ))
-        .await
-        .expect("canonical projection read");
-
-    assert_eq!(read.actor, actor);
-    assert_eq!(read.scope, scope);
-    assert_eq!(read.after_cursor, Some(cursor));
-    assert_eq!(read.limit, Some(10));
-    assert_eq!(binding_service.resolve_count(), 0);
-    assert_eq!(inbound.accepted_count(), 0);
-    assert_eq!(ledger.settled_count(), 0);
-    assert_eq!(ledger.in_flight_count(), 0);
-    assert_eq!(ledger.released_count(), 0);
-}
-
-#[tokio::test]
-async fn projection_subscription_resolves_through_binding_service() {
-    let (workflow, inbound, ledger, binding_service) = build_workflow_with_binding();
-    let binding = fake_binding();
-    let cursor = ProjectionCursor::new("cursor:projection-1").expect("valid cursor");
-    let envelope = sample_envelope_with_payload(
-        "projection-1",
-        ProductInboundPayload::SubscriptionRequest(
-            ProjectionSubscriptionPayload::new(
-                Some(binding.thread_id.as_str().to_string()),
-                Some(cursor.clone()),
-            )
-            .expect("valid subscription"),
-        ),
-    );
-    binding_service.program_binding(envelope.source_binding_key(), binding.clone());
-
-    let input =
-        ProductProjectionSubscribeInput::from_inbound_envelope(&envelope).expect("subscribe input");
-    let subscription = workflow
-        .subscribe_projection(input)
-        .await
-        .expect("projection subscription");
-
-    assert_eq!(subscription.actor.user_id, binding.actor_user_id);
-    assert_eq!(subscription.scope.tenant_id, binding.tenant_id);
-    assert_eq!(subscription.scope.agent_id, binding.agent_id);
-    assert_eq!(subscription.scope.project_id, binding.project_id);
-    assert_eq!(subscription.scope.thread_id, binding.thread_id);
-    assert_eq!(subscription.after_cursor, Some(cursor));
-    assert_eq!(binding_service.resolve_count(), 1);
-    assert_eq!(inbound.accepted_count(), 0);
-    assert_eq!(ledger.settled_count(), 0);
-    assert_eq!(ledger.in_flight_count(), 0);
-    assert_eq!(ledger.released_count(), 0);
-}
-
-#[tokio::test]
-async fn projection_subscription_accepts_canonical_subject_without_inbound_envelope() {
-    let (workflow, inbound, ledger, binding_service) = build_workflow_with_binding();
-    let binding = fake_binding();
-    let actor = TurnActor::new(binding.actor_user_id.clone());
-    let scope = TurnScope::new(
-        binding.tenant_id.clone(),
-        binding.agent_id.clone(),
-        binding.project_id.clone(),
-        binding.thread_id.clone(),
-    );
-    let cursor = ProjectionCursor::new("cursor:canonical-subscribe").expect("valid cursor");
-
-    let subscription = workflow
-        .subscribe_projection(ProductProjectionSubscribeInput::new(
-            ProductProjectionSubject::canonical(actor.clone(), scope.clone()),
-            Some(binding.thread_id.as_str().to_string()),
-            Some(cursor.clone()),
-        ))
-        .await
-        .expect("canonical projection subscription");
-
-    assert_eq!(subscription.actor, actor);
-    assert_eq!(subscription.scope, scope);
-    assert_eq!(subscription.after_cursor, Some(cursor));
-    assert_eq!(binding_service.resolve_count(), 0);
-    assert_eq!(inbound.accepted_count(), 0);
-    assert_eq!(ledger.settled_count(), 0);
-    assert_eq!(ledger.in_flight_count(), 0);
-    assert_eq!(ledger.released_count(), 0);
-}
-
-#[test]
-fn projection_input_rejects_non_subscription_payload() {
-    // The typed projection door starts at ProductProjectionSubscribeInput:
-    // a non-subscription envelope is rejected at conversion, before any
-    // workflow call.
-    let err = ProductProjectionSubscribeInput::from_inbound_envelope(&sample_envelope(
-        "projection-non-subscription",
-    ))
-    .expect_err("non-subscription payload rejects");
-
-    assert!(matches!(
-        err,
-        ProductAdapterError::MalformedInboundPayload { .. }
-    ));
-}
-
-#[tokio::test]
-async fn projection_subscription_rejects_mismatched_thread_hint() {
-    let (workflow, _inbound, _ledger, binding_service) = build_workflow_with_binding();
-    let binding = fake_binding();
-    let envelope = sample_envelope_with_payload(
-        "projection-mismatch",
-        ProductInboundPayload::SubscriptionRequest(
-            ProjectionSubscriptionPayload::new(Some("thread:other".into()), None)
-                .expect("valid subscription"),
-        ),
-    );
-    binding_service.program_binding(envelope.source_binding_key(), binding);
-
-    let err = workflow
-        .subscribe_projection(
-            ProductProjectionSubscribeInput::from_inbound_envelope(&envelope)
-                .expect("projection input"),
-        )
-        .await
-        .expect_err("mismatched hint rejects");
-
-    match err {
-        ProductAdapterError::SurfaceRejected {
-            kind,
-            status_code,
-            retryable,
-            ..
-        } => {
-            assert_eq!(kind, ProductSurfaceRejectionKind::InvalidRequest);
-            assert_eq!(status_code, 400);
-            assert!(!retryable);
-        }
-        other => panic!("expected workflow rejection, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn projection_subscription_rejects_malformed_thread_hint() {
-    let (workflow, _inbound, _ledger, binding_service) = build_workflow_with_binding();
-    let binding = fake_binding();
-    let envelope = sample_envelope_with_payload(
-        "projection-malformed-hint",
-        ProductInboundPayload::SubscriptionRequest(
-            ProjectionSubscriptionPayload::new(Some("thread/invalid".into()), None)
-                .expect("adapter accepts opaque hint"),
-        ),
-    );
-    binding_service.program_binding(envelope.source_binding_key(), binding);
-
-    let err = workflow
-        .subscribe_projection(
-            ProductProjectionSubscribeInput::from_inbound_envelope(&envelope)
-                .expect("projection input"),
-        )
-        .await
-        .expect_err("malformed hint rejects");
-
-    assert!(matches!(
-        err,
-        ProductAdapterError::MalformedInboundPayload { .. }
-    ));
-}
-
-#[tokio::test]
-async fn projection_subscription_requires_existing_conversation_binding() {
+async fn lookup_binding_requires_an_existing_conversation_binding_and_creates_none() {
     let conversations = Arc::new(InMemoryConversationServices::default());
     conversations
         .pair_external_actor(
@@ -3929,35 +3705,19 @@ async fn projection_subscription_requires_existing_conversation_binding() {
             Some("project:alpha"),
         )],
     );
-    let workflow = DefaultProductSurface::new(
-        Arc::new(FakeInboundTurnService::new()),
-        Arc::new(InMemoryIdempotencyLedger::new()),
-        Arc::new(binding),
-    );
-    let envelope = sample_envelope_with_payload(
-        "projection-missing-binding",
-        ProductInboundPayload::SubscriptionRequest(
-            ProjectionSubscriptionPayload::new(None, None).expect("valid subscription"),
-        ),
-    );
+    let request = ResolveBindingRequest::from_envelope(&sample_envelope("lookup-missing-binding"))
+        .expect("verified envelope binding request");
 
-    let err = workflow
-        .subscribe_projection(
-            ProductProjectionSubscribeInput::from_inbound_envelope(&envelope)
-                .expect("projection input"),
-        )
-        .await
-        .expect_err("subscription must not create a missing binding");
-
-    assert!(matches!(
-        err,
-        ProductAdapterError::SurfaceRejected {
-            kind: ProductSurfaceRejectionKind::ScopeNotFound,
-            status_code: 404,
-            retryable: false,
-            ..
-        }
-    ));
+    for attempt in ["first", "repeated"] {
+        let err = binding
+            .lookup_binding(request.clone())
+            .await
+            .expect_err("lookup must not create a missing binding");
+        assert!(
+            matches!(err, ProductOperationFailure::BindingRequired { .. }),
+            "{attempt} lookup: {err:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -4062,9 +3822,11 @@ async fn preconfigured_actor_binding_rejects_unconfigured_actor() {
         AgentId::new("agent:alpha").expect("agent"),
         Some(ProjectId::new("project:alpha").expect("project")),
     )
-    .with_preconfigured_actor_binding(
-        ExternalActorRef::new("test", "different-user", None::<String>).expect("actor"),
-        UserId::new("user:alice").expect("user"),
+    .with_preconfigured_actor_bindings(
+        [(
+            ExternalActorRef::new("test", "different-user", None::<String>).expect("actor"),
+            UserId::new("user:alice").expect("user"),
+        )],
         actor_pairings,
     );
     let resolver = StaticProductInstallationResolver::new([(
@@ -4812,34 +4574,20 @@ async fn concrete_product_surface_persists_first_bind_default_scope() {
             Some("project:beta"),
         )],
     );
-    let workflow_beta = DefaultProductSurface::new(
-        Arc::new(FakeInboundTurnService::new()),
-        Arc::new(InMemoryIdempotencyLedger::new()),
-        Arc::new(binding_beta),
-    );
-    let subscription = workflow_beta
-        .subscribe_projection(
-            ProductProjectionSubscribeInput::from_inbound_envelope(&sample_envelope_with_payload(
-                "projection-existing-scope",
-                ProductInboundPayload::SubscriptionRequest(
-                    ProjectionSubscriptionPayload::new(None, None).expect("valid subscription"),
-                ),
-            ))
-            .expect("projection input"),
+    let resolved = binding_beta
+        .lookup_binding(
+            ResolveBindingRequest::from_envelope(&sample_envelope("lookup-existing-scope"))
+                .expect("verified envelope binding request"),
         )
         .await
         .expect("existing binding resolves");
 
     assert_eq!(
-        subscription.scope.agent_id.as_ref().map(AgentId::as_str),
+        resolved.agent_id.as_ref().map(AgentId::as_str),
         Some("agent:alpha")
     );
     assert_eq!(
-        subscription
-            .scope
-            .project_id
-            .as_ref()
-            .map(ProjectId::as_str),
+        resolved.project_id.as_ref().map(ProjectId::as_str),
         Some("project:alpha")
     );
 }
@@ -5477,9 +5225,11 @@ async fn shared_lookup_binding_rejects_existing_binding_when_resolved_actor_diff
         Some(ProjectId::new("project:alpha").expect("project")),
     )
     .with_shared_conversation_admission(Arc::new(AdmitAllSharedAdmission))
-    .with_preconfigured_actor_binding(
-        ExternalActorRef::new("test", "user1", None::<String>).expect("actor"),
-        UserId::new("user:bob").expect("user"),
+    .with_preconfigured_actor_bindings(
+        [(
+            ExternalActorRef::new("test", "user1", None::<String>).expect("actor"),
+            UserId::new("user:bob").expect("user"),
+        )],
         actor_pairings,
     );
     let resolver = StaticProductInstallationResolver::new([(
@@ -6522,9 +6272,11 @@ fn product_binding_service_with_preconfigured_actor(
         AgentId::new("agent:alpha").expect("agent"),
         Some(ProjectId::new("project:alpha").expect("project")),
     )
-    .with_preconfigured_actor_binding(
-        ExternalActorRef::new("test", "user1", None::<String>).expect("actor"),
-        UserId::new(user_id).expect("user"),
+    .with_preconfigured_actor_bindings(
+        [(
+            ExternalActorRef::new("test", "user1", None::<String>).expect("actor"),
+            UserId::new(user_id).expect("user"),
+        )],
         actor_pairings,
     );
     let resolver = StaticProductInstallationResolver::new([(

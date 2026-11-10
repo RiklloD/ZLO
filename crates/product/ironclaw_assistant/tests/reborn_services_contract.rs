@@ -4155,7 +4155,7 @@ async fn submit_turn_records_skill_activation_message_before_turn_wake() {
     let coordinator = Arc::new(FakeTurnCoordinator::default());
     let recorded = Arc::new(Mutex::new(Vec::new()));
     let recorded_for_hook = Arc::clone(&recorded);
-    let services = session_services(threads, coordinator.clone()).with_skill_activation_recorder(
+    let services = session_services(threads, coordinator.clone()).with_skill_activation_hooks(
         move |scope, accepted_message_ref, message| {
             recorded_for_hook.lock().expect("lock").push((
                 scope.thread_id.as_str().to_string(),
@@ -4164,6 +4164,7 @@ async fn submit_turn_records_skill_activation_message_before_turn_wake() {
             ));
             Ok(())
         },
+        |_, _| Ok(()),
     );
     create_thread_for(&services, caller(), "thread-alpha").await;
 
@@ -4267,8 +4268,8 @@ async fn busy_submit_clears_skill_activation_message() {
 async fn submit_turn_returns_internal_when_skill_activation_recorder_fails() {
     let threads: Arc<dyn SessionThreadService> = Arc::new(InMemorySessionThreadService::default());
     let coordinator = Arc::new(FakeTurnCoordinator::default());
-    let services =
-        session_services(threads, coordinator.clone()).with_skill_activation_recorder(|_, _, _| {
+    let services = session_services(threads, coordinator.clone()).with_skill_activation_hooks(
+        |_, _, _| {
             Err(ironclaw_product_contracts::surface::ProductSurfaceError {
                 code: ProductSurfaceErrorCode::Internal,
                 kind: ProductSurfaceErrorKind::Internal,
@@ -4277,7 +4278,9 @@ async fn submit_turn_returns_internal_when_skill_activation_recorder_fails() {
                 field: None,
                 validation_code: None,
             })
-        });
+        },
+        |_, _| Ok(()),
+    );
     create_thread_for(&services, caller(), "thread-alpha").await;
 
     let err = services
@@ -8527,10 +8530,11 @@ async fn automation_run_capability_distinguishes_submitted_from_replayed() {
             },
         ));
         let result_invoker = RecordingProductResultInvoker::default();
-        let services = RebornServices::new_with_product_capability_invoker(
+        let services = RebornServices::new_with_product_ports(
             Arc::new(InMemorySessionThreadService::default()),
             Arc::new(FakeTurnCoordinator::default()),
             result_invoker.clone(),
+            ironclaw_assistant::UnavailableRebornViewProvider,
         )
         .with_session_channel_directory(Arc::new(StaticSessionChannelDirectory {
             session_channels: vec!["web-app"],
@@ -12164,7 +12168,7 @@ fn services_with_operator_approval_config_stores(
         ironclaw_approvals::test_support::in_memory_backed_capability_permission_override_store(),
     );
     let tools = Arc::new(operator_config_test_tools());
-    RebornServices::new_with_product_capability_invoker(
+    RebornServices::new_with_product_ports(
         Arc::new(InMemorySessionThreadService::default()),
         Arc::new(FakeTurnCoordinator::default()),
         OperatorConfigAutoApproveInvoker {
@@ -12173,6 +12177,7 @@ fn services_with_operator_approval_config_stores(
             persistent_policies: Arc::clone(&persistent_policies),
             tools: Arc::clone(&tools),
         },
+        ironclaw_assistant::UnavailableRebornViewProvider,
     )
     .with_operator_approval_config(
         overrides,
@@ -18200,7 +18205,10 @@ async fn execute_new_creates_a_fresh_thread_and_returns_an_open_thread_effect() 
         Some("New conversation")
     );
     let effect = response.effect.expect("new returns a navigation effect");
-    let new_thread_id = effect.open_thread_id().expect("open-thread effect");
+    let ironclaw_assistant::RebornProductCommandEffect::OpenThread {
+        thread_id: new_thread_id,
+    } = &effect;
+    let new_thread_id = new_thread_id.as_str();
     assert_ne!(new_thread_id, "thread-before-new");
     let timeline = services
         .get_timeline(caller(), RebornTimelineRequest::new(new_thread_id))

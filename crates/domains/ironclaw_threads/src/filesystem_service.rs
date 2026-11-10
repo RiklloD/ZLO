@@ -292,8 +292,6 @@ where
         self
     }
 
-    pub fn clear_thread_index_cache_for_scope(&self, _scope: &ThreadScope) {}
-
     fn seed_one_shot_context_window(
         &self,
         scope: &ThreadScope,
@@ -1258,7 +1256,6 @@ where
         &self,
         scope: &ThreadScope,
         thread_id: &ThreadId,
-        _next_sequence: u64,
     ) -> Result<Option<ThreadMessageRecord>, SessionThreadError> {
         let Some(message_id) = MessageLookupIndexStore::new(self.filesystem.as_ref())
             .read_first_user(scope, thread_id)
@@ -4049,7 +4046,7 @@ where
         // derived from their first user message. We collect their page
         // indices here and fan-out the indexed first-user reads below so
         // we don't serialize N transcript probes inline.
-        let mut needs_title: Vec<(usize, ThreadId, u64)> = Vec::new();
+        let mut needs_title: Vec<(usize, ThreadId)> = Vec::new();
         for index in &listed {
             // Prepared-context (unbound/subagent) threads are working state,
             // not conversations: excluded from listings on every backend. The
@@ -4067,7 +4064,7 @@ where
                     Some(derived) => record.title = Some(derived.clone()),
                     // Row predates write-time derivation: probe for this
                     // response; the migration backfills the label durably.
-                    None => needs_title.push((idx, record.thread_id.clone(), index.next_sequence)),
+                    None => needs_title.push((idx, record.thread_id.clone())),
                 }
             }
             page.push(record);
@@ -4087,12 +4084,10 @@ where
                 ThreadId,
                 Result<Option<ThreadMessageRecord>, SessionThreadError>,
             )> = futures::stream::iter(needs_title)
-                .map(|(idx, thread_id, next_sequence)| {
+                .map(|(idx, thread_id)| {
                     let scope = request.scope.clone();
                     async move {
-                        let result = self
-                            .first_user_message_for_title(&scope, &thread_id, next_sequence)
-                            .await;
+                        let result = self.first_user_message_for_title(&scope, &thread_id).await;
                         (idx, thread_id, result)
                     }
                 })
