@@ -121,14 +121,11 @@ emit_audit.summary = "polymarket hook failed"
 
 ### Phase 5 implementation notes
 
-- The Reborn wiring uses a pull-driven durable-log consumer rather than
-  dispatching from the event emit path. The default poll interval is 50ms and
-  the default replay batch is 64 events; callers can tune both on
-  `EventTriggeredHookSubscription`.
-- Cursor persistence remains caller-owned for this slice: the subscription
-  starts from the supplied `EventCursor` and advances its in-memory cursor
-  while the host is alive. Restarting from the same cursor intentionally
-  gives at-least-once replay; exact-once acknowledgement is deferred.
+- The turn runner no longer has a consumer that feeds durable events to
+  these hooks: the pull-driven durable-log subscription it carried was never
+  installed by composition and has been removed. The hook kind and its
+  dispatch API remain in this crate; nothing in the shipped runtime drives
+  them.
 - Hook dispatch receives the durable `RuntimeEvent` directly. `ironclaw_hooks`
   depends on `ironclaw_event_log` as of PR #3640 — the milestone projection in
   PR #3573 covered `ironclaw_turn_runner`'s milestone wiring, but the hook crate

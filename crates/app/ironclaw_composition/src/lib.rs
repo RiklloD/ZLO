@@ -165,7 +165,7 @@ pub use ironhub_link_serve::{
 pub use observability::budget::build_default_budget_accountant;
 // consumer: composition budget contract tests · pinned by: `composition/tests/budget_e2e.rs`
 pub use observability::budget_events::BudgetEventObserver;
-// consumer: composition hook-projection tests · pinned by: `composition/tests/third_party_hook_projection.rs` (the factory type is the builder fn's return type; `observability` is private)
+// consumer: `ironclaw_cli` runtime input (`HooksActivationConfig::from_env`), composition hook-projection tests · pinned by: `composition/tests/third_party_hook_projection.rs` (the factory type is the builder fn's return type; `observability` is private)
 pub use observability::hooks::{
     HookDispatcherBuilderFactory, HookProjectionRegistry, HooksActivationConfig,
     MAX_INSTALLED_EXTENSIONS_CONSIDERED, ThirdPartyDiscoveryInput,

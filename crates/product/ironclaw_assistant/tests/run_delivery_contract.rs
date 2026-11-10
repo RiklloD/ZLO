@@ -581,6 +581,13 @@ impl OutboundStateStorePort for TerminalDeliveredWriteFailingStore {
     ) -> Result<Vec<ironclaw_outbound::ReplyPublicationRecord>, OutboundError> {
         self.inner.list_open_reply_publications(scope).await
     }
+
+    async fn list_interrupted_delivery_attempts(
+        &self,
+        scope: TurnScope,
+    ) -> Result<Vec<ironclaw_outbound::OutboundDeliveryAttempt>, OutboundError> {
+        self.inner.list_interrupted_delivery_attempts(scope).await
+    }
 }
 
 #[derive(Default)]

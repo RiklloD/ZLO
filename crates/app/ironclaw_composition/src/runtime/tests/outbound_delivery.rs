@@ -192,3 +192,105 @@ async fn production_reply_attachment_capability_registers_durable_run_intent() {
 
     runtime.shutdown().await.expect("runtime shutdown");
 }
+
+/// A crash between vendor egress and the result write leaves a one-shot
+/// attempt `Sending`. The next boot over the same storage marks it `Unknown`,
+/// the terminal-ambiguous state nothing ever resends, and leaves attempts that
+/// already reached a terminal state alone.
+#[tokio::test]
+async fn restart_marks_attempts_left_sending_by_a_crash_unknown() {
+    use ironclaw_host_api::ids::ThreadId;
+    use ironclaw_host_api::turn::{ReplyTargetBindingRef, TurnScope};
+    use ironclaw_outbound::{
+        OutboundDeliveryAttempt, OutboundDeliveryId, OutboundDeliveryStatus, OutboundPushCandidate,
+        OutboundPushKind, ProjectionUpdateRef,
+    };
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let storage = root.path().join("standalone");
+    let input = || {
+        RebornRuntimeInput::from_build_input(crate::deployment::local_filesystem_build_input(
+            "runtime-delivery-recovery-owner",
+            storage.clone(),
+        ))
+        .with_identity(RebornRuntimeIdentity {
+            tenant_id: "runtime-delivery-recovery-tenant".to_string(),
+            agent_id: "runtime-delivery-recovery-agent".to_string(),
+            source_binding_id: "runtime-delivery-recovery-source".to_string(),
+            reply_target_binding_id: "runtime-delivery-recovery-reply".to_string(),
+        })
+    };
+
+    let crashed = build_reborn_runtime(input()).await.expect("first boot");
+    assert!(
+        crashed.delivery_coordinator().is_some(),
+        "the standalone runtime owns a delivery coordinator"
+    );
+    let (store, ..) = crashed
+        .outbound_delivery_stores_for_test()
+        .expect("outbound stores");
+    let attempt = |thread: &str, status: OutboundDeliveryStatus| {
+        let scope = TurnScope::new_with_owner(
+            crashed.thread_scope.tenant_id.clone(),
+            Some(crashed.thread_scope.agent_id.clone()),
+            crashed.thread_scope.project_id.clone(),
+            ThreadId::new(thread).expect("thread id"),
+            crashed.thread_scope.owner_user_id.clone(),
+        );
+        OutboundDeliveryAttempt {
+            delivery_id: OutboundDeliveryId::new(),
+            candidate: OutboundPushCandidate {
+                tenant_id: scope.tenant_id.clone(),
+                agent_id: scope.agent_id.clone(),
+                project_id: scope.project_id.clone(),
+                thread_id: scope.thread_id.clone(),
+                turn_run_id: None,
+                target: ReplyTargetBindingRef::new("tg:-100:_:42").expect("reply target"),
+                kind: OutboundPushKind::DeliveryStatus,
+                projection_ref: ProjectionUpdateRef::new(format!("projection:{thread}"))
+                    .expect("projection ref"),
+                requires_reply_target_revalidation: false,
+            },
+            scope,
+            status,
+            attempted_at: chrono::Utc::now(),
+            failure_kind: None,
+        }
+    };
+    let interrupted = attempt("crashed-send", OutboundDeliveryStatus::Sending);
+    let delivered = attempt("finished-send", OutboundDeliveryStatus::Delivered);
+    for seeded in [&interrupted, &delivered] {
+        store
+            .record_delivery_attempt(seeded.clone())
+            .await
+            .expect("seed attempt");
+    }
+    crashed.shutdown().await.expect("first shutdown");
+
+    let restarted = build_reborn_runtime(input()).await.expect("restart");
+    let (store, ..) = restarted
+        .outbound_delivery_stores_for_test()
+        .expect("outbound stores");
+    let status_of = |seeded: &OutboundDeliveryAttempt| {
+        let store = Arc::clone(&store);
+        let scope = seeded.scope.clone();
+        let delivery_id = seeded.delivery_id;
+        async move {
+            store
+                .load_delivery_attempt(scope, delivery_id)
+                .await
+                .expect("attempt loads")
+                .expect("attempt kept")
+                .status
+        }
+    };
+    assert_eq!(
+        status_of(&interrupted).await,
+        OutboundDeliveryStatus::Unknown
+    );
+    assert_eq!(
+        status_of(&delivered).await,
+        OutboundDeliveryStatus::Delivered
+    );
+    restarted.shutdown().await.expect("restart shutdown");
+}

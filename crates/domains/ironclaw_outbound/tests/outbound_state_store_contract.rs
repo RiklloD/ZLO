@@ -1545,6 +1545,19 @@ async fn recovery_transition_never_clobbers_delivered(store: &impl OutboundState
             .await
             .unwrap()
     );
+    // Boot recovery finds it from a scope naming only the tenant and owner.
+    let boot_scope = TurnScope {
+        thread_id: ThreadId::new("boot-recovery").unwrap(),
+        ..scope.clone()
+    };
+    let listed: Vec<_> = store
+        .list_interrupted_delivery_attempts(boot_scope.clone())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|attempt| attempt.delivery_id)
+        .collect();
+    assert_eq!(listed, vec![interrupted]);
     assert!(
         store
             .recover_interrupted_delivery_attempt(RecoverInterruptedDeliveryRequest {
@@ -1554,6 +1567,14 @@ async fn recovery_transition_never_clobbers_delivered(store: &impl OutboundState
             .await
             .unwrap(),
         "a still-Sending attempt is recovered to Unknown"
+    );
+    assert!(
+        store
+            .list_interrupted_delivery_attempts(boot_scope)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an Unknown attempt is no longer interrupted"
     );
     let attempts = store.list_delivery_attempts(scope.clone()).await.unwrap();
     assert_eq!(

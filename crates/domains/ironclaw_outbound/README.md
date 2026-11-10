@@ -63,7 +63,10 @@ only through its own policy service.
   carrying them do not derive `Deserialize` (see [`AGENTS.md`](./AGENTS.md)).
 - **At-most-once:** delivery attempts reserve via CAS `Prepared → Sending`;
   scope/candidate identity mismatches are rejected before validator I/O or
-  store writes — pinned by the two contract suites below.
+  store writes — pinned by the two contract suites below. A one-shot attempt
+  a crash left `Sending` is found by `list_interrupted_delivery_attempts`
+  (tenant-wide, per owner subtree) and moved to `Unknown` by
+  `recover_interrupted_delivery_attempt`; it is never resent.
 - **Publication ownership is a lease + fence, not the send claim:** a
   progressively published reply keeps its one attempt row, whose
   `publication` substate is written only under the current fence; settlement

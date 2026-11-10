@@ -325,6 +325,59 @@ where
     }
 
     /// Every delivery row in `scope`, ordered by `(attempted_at, delivery_id)`.
+    /// Every delivery row in the caller's tenant that `keep` selects, oldest
+    /// first, served from the tenant index. `/outbound` is a per-user mount,
+    /// so this sees the owner subtree `scope` resolves to.
+    async fn list_tenant_delivery_rows(
+        &self,
+        scope: &TurnScope,
+        keep: impl Fn(&DeliveryAttemptRow) -> bool,
+    ) -> Result<Vec<DeliveryAttemptRow>, OutboundError> {
+        let resource_scope = scope.to_resource_scope();
+        let root = deliveries_root()?;
+        self.ensure_tenant_id_index(&resource_scope, &root).await?;
+        let filter = Filter::Eq {
+            key: tenant_id_index_key(),
+            value: tenant_id_index_value(&scope.tenant_id),
+        };
+        let mut rows: Vec<DeliveryAttemptRow> = Vec::new();
+        let mut offset: u64 = 0;
+        loop {
+            let page = Page::new(offset, Page::MAX_LIMIT);
+            let entries = match self
+                .filesystem
+                .query(&resource_scope, &root, &filter, page)
+                .await
+            {
+                Ok(entries) => entries,
+                Err(FilesystemError::NotFound { .. }) => break,
+                Err(error) => return Err(map_fs_error(error)),
+            };
+            let received = entries.len();
+            for versioned in entries {
+                let row = decode_delivery_attempt_row(&versioned.entry.body)?;
+                // Defence-in-depth beyond the mount prefix: keep only rows
+                // whose persisted scope names the caller's tenant, and of
+                // those only the ones `keep` selects, page by page rather
+                // than retained until the sort.
+                if row.attempt.scope.tenant_id == scope.tenant_id && keep(&row) {
+                    rows.push(row);
+                }
+            }
+            if received < Page::MAX_LIMIT as usize {
+                break;
+            }
+            offset = offset.saturating_add(received as u64);
+        }
+        rows.sort_by_key(|row| {
+            (
+                row.attempt.attempted_at,
+                row.attempt.delivery_id.to_string(),
+            )
+        });
+        Ok(rows)
+    }
+
     async fn list_delivery_rows(
         &self,
         scope: &TurnScope,
@@ -993,6 +1046,20 @@ where
             .collect())
     }
 
+    async fn list_interrupted_delivery_attempts(
+        &self,
+        scope: TurnScope,
+    ) -> Result<Vec<OutboundDeliveryAttempt>, OutboundError> {
+        Ok(self
+            .list_tenant_delivery_rows(&scope, |row| {
+                row.publication.is_none() && row.attempt.status == OutboundDeliveryStatus::Sending
+            })
+            .await?
+            .into_iter()
+            .map(|row| row.attempt)
+            .collect())
+    }
+
     async fn open_reply_publication(
         &self,
         request: OpenReplyPublicationRequest,
@@ -1270,53 +1337,13 @@ where
         &self,
         scope: TurnScope,
     ) -> Result<Vec<ReplyPublicationRecord>, OutboundError> {
-        let resource_scope = scope.to_resource_scope();
-        let root = deliveries_root()?;
-        self.ensure_tenant_id_index(&resource_scope, &root).await?;
-        let filter = Filter::Eq {
-            key: tenant_id_index_key(),
-            value: tenant_id_index_value(&scope.tenant_id),
-        };
-        let mut rows: Vec<DeliveryAttemptRow> = Vec::new();
-        let mut offset: u64 = 0;
-        loop {
-            let page = Page::new(offset, Page::MAX_LIMIT);
-            let entries = match self
-                .filesystem
-                .query(&resource_scope, &root, &filter, page)
-                .await
-            {
-                Ok(entries) => entries,
-                Err(FilesystemError::NotFound { .. }) => break,
-                Err(error) => return Err(map_fs_error(error)),
-            };
-            let received = entries.len();
-            for versioned in entries {
-                let row = decode_delivery_attempt_row(&versioned.entry.body)?;
-                // Defence-in-depth beyond the mount prefix: keep only rows
-                // whose persisted scope names the caller's tenant — and only
-                // those still carrying an `Active` publication. Settled
-                // publications and plain one-shot rows are dropped page by
-                // page here rather than retained until the sort.
-                let active_publication = row
-                    .publication
+        let rows = self
+            .list_tenant_delivery_rows(&scope, |row| {
+                row.publication
                     .as_ref()
-                    .is_some_and(|publication| publication.status.is_active());
-                if row.attempt.scope.tenant_id == scope.tenant_id && active_publication {
-                    rows.push(row);
-                }
-            }
-            if received < Page::MAX_LIMIT as usize {
-                break;
-            }
-            offset = offset.saturating_add(received as u64);
-        }
-        rows.sort_by_key(|row| {
-            (
-                row.attempt.attempted_at,
-                row.attempt.delivery_id.to_string(),
-            )
-        });
+                    .is_some_and(|publication| publication.status.is_active())
+            })
+            .await?;
         Ok(rows
             .iter()
             .filter_map(DeliveryAttemptRow::publication_record)

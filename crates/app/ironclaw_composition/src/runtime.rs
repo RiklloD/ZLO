@@ -3840,9 +3840,9 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     // Hook framework activation (#3934 + third-party projection), gated behind
     // the typed `HooksActivationConfig` carried in `RebornRuntimeInput` (master
     // flag default OFF; third-party sub-flag also default OFF). The env vars
-    // (`HOOKS_ENABLED`, `HOOKS_THIRD_PARTY_ENABLED`) are resolved ONCE at the
-    // edge that builds the input (the CLI / ingress adapter); this composition
-    // root consumes the typed config and never reads the environment itself.
+    // (`HOOKS_ENABLED`, `HOOKS_THIRD_PARTY_ENABLED`) are resolved ONCE by the
+    // CLI where it builds the runtime input; this composition root consumes
+    // the typed config and never reads the environment itself.
     //
     // Hook-only projection containment: third-party `[[hooks]]` are discovered
     // and projected into a `HookProjectionRegistry` that carries ONLY hook
@@ -4669,6 +4669,24 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
             recovery_thread_id,
             thread_scope.owner_user_id.clone(),
         );
+        // One-shot attempts a crash left `Sending` become `Unknown` (never
+        // resent). That needs sole ownership of the outbound store, which only
+        // a deployment on its own local storage root has; shared stores leave
+        // them `Sending`.
+        if deployment.uses_local_filesystem_storage() {
+            match coordinator
+                .recover_interrupted_deliveries(recovery_scope.clone())
+                .await
+            {
+                Ok(recovered) if recovered > 0 => {
+                    tracing::debug!(recovered, "marked interrupted deliveries unknown at boot")
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::debug!(%error, "interrupted delivery recovery failed at boot; attempts stay sending")
+                }
+            }
+        }
         reply_publication_recovery = Some(tokio::spawn(async move {
             match coordinator.resume_reply_publications(&recovery_scope).await {
                 Ok(resumed) if resumed > 0 => {

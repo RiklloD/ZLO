@@ -462,29 +462,30 @@ impl DeliveryCoordinator {
         }
     }
 
-    /// Crash recovery (OUT-6): every attempt still `Sending` in this scope
-    /// is marked `Unknown`; never blindly resend.
+    /// Crash recovery (OUT-6): every one-shot attempt still `Sending` in the
+    /// scope's tenant (within the per-user `/outbound` mount the scope
+    /// resolves to) is marked `Unknown`; never resent. `Unknown` is
+    /// terminal-ambiguous: a later claim of the same delivery reports it
+    /// failed instead of reopening egress.
     ///
-    /// Callers must guarantee exclusive/quiescent ownership of the scope.
-    /// Normal delivery never invokes this automatically: without a persisted
-    /// owner lease, another replica cannot distinguish a crashed send from a
-    /// live one and must leave `Sending` fail-closed.
+    /// Callers must guarantee exclusive/quiescent ownership of the scope:
+    /// composition runs this once at boot, only for deployments whose
+    /// storage root this process owns. Normal delivery never invokes it:
+    /// without a persisted owner lease, another replica cannot distinguish a
+    /// crashed send from a live one and must leave `Sending` fail-closed.
     pub async fn recover_interrupted_deliveries(
         &self,
         scope: ironclaw_turns::TurnScope,
     ) -> Result<usize, ironclaw_outbound::OutboundError> {
-        let attempts = self.store.list_delivery_attempts(scope.clone()).await?;
+        let attempts = self.store.list_interrupted_delivery_attempts(scope).await?;
         let mut recovered = 0usize;
         for attempt in attempts {
-            if attempt.status != OutboundDeliveryStatus::Sending {
-                continue;
-            }
             if self
                 .store
                 .recover_interrupted_delivery_attempt(
                     ironclaw_outbound::RecoverInterruptedDeliveryRequest {
                         delivery_id: attempt.delivery_id,
-                        scope: scope.clone(),
+                        scope: attempt.scope,
                     },
                 )
                 .await?

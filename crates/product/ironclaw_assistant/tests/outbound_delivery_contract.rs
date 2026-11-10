@@ -1145,8 +1145,15 @@ async fn coordinator_recovery_marks_interrupted_sending_attempts_unknown() {
         .await
         .unwrap();
 
-    let recovered = coordinator
-        .recover_interrupted_deliveries(scope.clone())
+    // Restart: a fresh coordinator over the same durable store recovers from
+    // the boot scope, which names the tenant and owner but not the thread.
+    let restarted = coordinator_over(&store, &adapter);
+    let boot_scope = TurnScope {
+        thread_id: ThreadId::new("boot-recovery").expect("thread id"),
+        ..scope.clone()
+    };
+    let recovered = restarted
+        .recover_interrupted_deliveries(boot_scope)
         .await
         .expect("recovery scans");
     assert_eq!(recovered, 1);
@@ -2678,5 +2685,12 @@ impl OutboundStateStorePort for TerminalDeliveredWriteFailingStore {
         scope: TurnScope,
     ) -> Result<Vec<ironclaw_outbound::ReplyPublicationRecord>, OutboundError> {
         self.inner.list_open_reply_publications(scope).await
+    }
+
+    async fn list_interrupted_delivery_attempts(
+        &self,
+        scope: TurnScope,
+    ) -> Result<Vec<ironclaw_outbound::OutboundDeliveryAttempt>, OutboundError> {
+        self.inner.list_interrupted_delivery_attempts(scope).await
     }
 }
