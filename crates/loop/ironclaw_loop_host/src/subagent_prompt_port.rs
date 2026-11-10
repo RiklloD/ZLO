@@ -114,11 +114,6 @@ impl SubagentPromptComposer {
         }
     }
 
-    pub fn with_limits(mut self, limits: SubagentPromptLimits) -> Self {
-        self.limits = limits;
-        self
-    }
-
     pub async fn compose(
         &self,
         run_context: &LoopRunContext,

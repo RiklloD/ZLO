@@ -100,11 +100,6 @@ impl HookManifestEntry {
         self
     }
 
-    pub fn with_phase(mut self, phase: HookPhase) -> Self {
-        self.phase = phase;
-        self
-    }
-
     pub fn with_priority(mut self, priority: HookPriority) -> Self {
         self.priority = priority;
         self
@@ -112,11 +107,6 @@ impl HookManifestEntry {
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
-        self
-    }
-
-    pub fn with_requires_grant(mut self, grant: impl Into<String>) -> Self {
-        self.requires_grant = Some(grant.into());
         self
     }
 }

@@ -42,25 +42,6 @@ pub struct RuntimeEnvSnapshot {
     value: Option<RuntimeEnvOverride>,
 }
 
-/// Optional secondary env lookup registered by the main crate at startup.
-///
-/// `ironclaw` keeps a separate `INJECTED_VARS` overlay populated from the
-/// encrypted secrets store (so API keys can be read without `set_var`).
-/// `ironclaw_llm` does not have direct access to that overlay, so the main
-/// crate registers a closure here that consults it. Callers of
-/// [`env_or_override`] then see the union of: real env, runtime overrides,
-/// and the registered fallback.
-type EnvFallback = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
-static SECONDARY_FALLBACK: OnceLock<EnvFallback> = OnceLock::new();
-
-/// Install a secondary env lookup. Idempotent: subsequent calls are ignored.
-pub fn register_secondary_fallback(f: impl Fn(&str) -> Option<String> + Send + Sync + 'static) {
-    // Idempotent by contract: `set` returns `Err` only when the fallback is
-    // already installed, in which case subsequent registrations are ignored.
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = SECONDARY_FALLBACK.set(Box::new(f));
-}
-
 /// Set a runtime env override (thread-safe alternative to `std::env::set_var`).
 pub fn set_runtime_env(key: &str, value: &str) {
     runtime_overrides()
@@ -124,9 +105,8 @@ pub fn restore_runtime_env(snapshot: RuntimeEnvSnapshot) {
     }
 }
 
-/// Read an env var, honoring a runtime mask first, then checking real env,
-/// runtime overrides, and any secondary fallback registered by the embedding
-/// application.
+/// Read an env var, honoring a runtime mask first, then checking real env
+/// and runtime overrides.
 ///
 /// Empty values are treated as unset at every layer.
 pub fn env_or_override(key: &str) -> Option<String> {
@@ -148,12 +128,6 @@ pub fn env_or_override(key: &str) -> Option<String> {
     }
 
     if let Some(val) = runtime_value {
-        return Some(val);
-    }
-
-    if let Some(fallback) = SECONDARY_FALLBACK.get()
-        && let Some(val) = fallback(key).filter(|v| !v.is_empty())
-    {
         return Some(val);
     }
 

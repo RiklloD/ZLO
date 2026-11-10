@@ -23,7 +23,7 @@ dependency**. The owned set is closed:
 - Attachment helpers (`AttachmentKind`, `AttachmentRef`, `IncomingAttachment`, `normalize_mime_type`) — `attachment.rs` — and the format registry — `attachment_format.rs`.
 - Base-dir/path resolution (`ironclaw_base_dir`, `compute_ironclaw_base_dir`) — `paths.rs`.
 - PKCE (`pkce.rs`) and hashing (`hashing.rs`) primitives.
-- Environment override helpers (`env_or_override`, `set_runtime_env`, `register_secondary_fallback`, `lock_env`) — `env_helpers.rs`.
+- Environment override helpers (`env_or_override`, `set_runtime_env`, `lock_env`) — `env_helpers.rs`.
 - Timezone validation (`ValidTimezone`, `deserialize_option_lenient`) — `timezone.rs`.
 - Preview truncation (`truncate_for_preview`, `truncate_preview`) — `util.rs`.
 - Crate-local public API, tests, and fixtures needed to prove that ownership.

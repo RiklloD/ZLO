@@ -231,19 +231,6 @@ where
         ))
     }
 
-    pub fn selectable_skill_runtime(
-        &self,
-        config: SkillActivationSelectorConfig,
-    ) -> FirstPartySelectableSkillsRuntime<F> {
-        if config == SkillActivationSelectorConfig::default() {
-            return self.default_selectable_runtime.clone();
-        }
-        let activation_source = self.selectable_skill_context_source(config);
-        let execution_adapter =
-            Arc::new(SkillExecutionAdapter::new(Arc::clone(&activation_source)));
-        FirstPartySelectableSkillsRuntime::new(activation_source, execution_adapter)
-    }
-
     /// As [`Self::selectable_skill_runtime_with_setup_markers`], plus staging: an activated skill's
     /// files are copied where a process can run them.
     ///

@@ -265,17 +265,6 @@ pub trait LoopModelPolicyGuard: Send + Sync {
         context: &LoopRunContext,
         request: &ModelWorkRequest,
     ) -> Result<(), LoopModelGatewayError>;
-
-    /// Return `Ok(())` to allow the call, or `Err` with
-    /// `AgentLoopHostErrorKind::PolicyDenied` and a sanitized summary.
-    async fn check_model_policy(
-        &self,
-        context: &LoopRunContext,
-        request: &LoopModelRequest,
-    ) -> Result<(), LoopModelGatewayError> {
-        self.check_model_work_policy(context, &ModelWorkRequest::for_assistant(context, request))
-            .await
-    }
 }
 
 /// A no-op policy guard that allows every model call.

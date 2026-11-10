@@ -122,11 +122,7 @@ pub enum WasmHookRuntimeError {
     CachePoisoned,
 }
 
-impl WasmHookRuntimeError {
-    pub fn module_unavailable(reason: impl Into<String>) -> Self {
-        Self::ModuleUnavailable(reason.into())
-    }
-}
+impl WasmHookRuntimeError {}
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedWasmHook {

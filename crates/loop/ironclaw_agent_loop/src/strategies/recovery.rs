@@ -461,32 +461,6 @@ impl RecoveryStrategy for DefaultRecoveryStrategy {
     }
 }
 
-fn retry_or_abort(
-    state: &LoopExecutionState,
-    attempt_class: RecoveryAttemptClass,
-    max_attempts_per_class: u32,
-    failure_kind: LoopFailureKind,
-    scope: RetryScope,
-    alteration: impl FnOnce(u32) -> Option<RetryAlteration>,
-) -> RecoveryOutcome {
-    let attempts = state.recovery_state.attempts_for(attempt_class);
-    let next = state
-        .recovery_state
-        .with_incremented_attempts_for(attempt_class);
-    if attempts >= max_attempts_per_class {
-        RecoveryOutcome::Abort {
-            recovery: next,
-            failure_kind,
-        }
-    } else {
-        RecoveryOutcome::Retry {
-            recovery: next,
-            scope,
-            alter: alteration(attempts),
-        }
-    }
-}
-
 fn recover_context_overflow_once(state: &LoopExecutionState) -> RecoveryOutcome {
     let attempt_class = RecoveryAttemptClass::ModelContextOverflow;
     let attempts = state.recovery_state.attempts_for(attempt_class);

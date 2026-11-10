@@ -85,17 +85,6 @@ impl ToolDisclosureCapabilityDecorator {
         }
     }
 
-    /// Wrap one run's capability port with disclosure using the exact
-    /// policy already resolved by the runner-private profiled factory.
-    pub fn decorate_with_policy(
-        &self,
-        run_context: &LoopRunContext,
-        inner: Arc<dyn LoopCapabilityPort>,
-        policy: Arc<CapabilitySurfacePolicy>,
-    ) -> Arc<dyn LoopCapabilityPort> {
-        self.decorate_with_policy_and_pins(run_context, inner, policy, Vec::new())
-    }
-
     /// Wrap one run with profile-owned visibility pins. Pins use canonical
     /// capability ids and are only applied after the effective authorized
     /// definitions have been fitted, so they can never grant authority.
@@ -131,7 +120,7 @@ struct ToolDisclosureCapabilityPort {
     caps: DisclosureCaps,
     mode: crate::ToolDisclosureMode,
     /// #5712/#5659-w6: the caller's effective policy, resolved once in
-    /// `ToolDisclosureCapabilityDecorator::decorate_with_policy` — narrows disclosed
+    /// `ToolDisclosureCapabilityDecorator::decorate_with_policy_and_pins` — narrows disclosed
     /// tool_search/tool_describe metadata *and* the tool_search bridge's own
     /// advertised description (the always-on catalog index).
     policy: Arc<CapabilitySurfacePolicy>,
