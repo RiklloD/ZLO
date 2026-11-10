@@ -357,8 +357,7 @@ and the auth/product-auth mounts below), not in this prose.
 Per Path A in `docs/internal/reborn/how-to-port-channel-to-reborn.md`:
 
 - No `ProductAdapter` wrapper around browser sessions.
-- No fake `ExternalActorRef` / `ProtocolAuthEvidence` /
-  `OutboundDeliverySink` / declared egress.
+- No fake `ExternalActorRef` / `ProtocolAuthEvidence` / declared egress.
 - No shared middleware with the deleted v1 ✎ `src/channels/web/` stack —
   the v2 listener was built standalone and there is no v1 binary left to
   share with.

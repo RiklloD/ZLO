@@ -80,7 +80,7 @@ async fn interactive_submit_carries_inbound_origin_not_scheduled_trigger() {
 }
 
 /// Int-tier delivery contract: a completed triggered run persists its reply in
-/// the trigger's own thread. No `OutboundDeliverySink` push happens at this
+/// the trigger's own thread. No outbound delivery push happens at this
 /// tier — the composition whole-runtime test named above covers the detached
 /// delivery hook and real Slack adapter.
 #[tokio::test]
