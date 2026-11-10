@@ -252,14 +252,14 @@ where
     // the cross-tenant read.
     //
     // The two documents use *distinct* relative paths. They previously
-    // shared `notes/needle.md`, but `fuse_memory_search_results` keys its
+    // shared `notes/needle.md`, but `rank_memory_search_results` keys its
     // accumulator solely on `relative_path` (scope is not part of the
     // key). With identical paths a leaked scope-B hit would collapse into
-    // the scope-A accumulator, and because fusion keeps the first-inserted
+    // the scope-A accumulator, and because ranking keeps the first-inserted
     // snippet (and_modify never replaces it), the "bravo" marker could be
     // discarded before the assertions run — masking the very leak this
     // test exists to catch. Distinct paths keep the leaked hit as its own
-    // result so the marker survives fusion.
+    // result so the marker survives ranking.
     let body_a = "alpha quick brown needle";
     let body_b = "bravo quick brown needle";
     let path_a = path_in(&scope_a, "notes/needle-a.md");

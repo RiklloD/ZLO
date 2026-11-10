@@ -1,4 +1,4 @@
-//! Memory search request/result types and rank-fusion helpers.
+//! Memory search request/result types and full-text result ranking.
 
 use ironclaw_host_api::error::HostApiError;
 
@@ -8,20 +8,14 @@ use ironclaw_memory::MemoryDocumentPath;
 /// from translating `usize::MAX` into an unbounded SQL `LIMIT`.
 const MAX_LIMIT: usize = 1_000;
 
-/// Upper bound on the per-branch candidate budget before fusion. 5x the
-/// final-limit ceiling leaves enough headroom for hybrid fusion to do
-/// useful re-ranking without letting an attacker request millions of rows.
+/// Upper bound on the chunk candidate budget before ranking. 5x the
+/// final-limit ceiling leaves headroom for several chunks of one document to
+/// collapse into a single result without letting an attacker request millions
+/// of rows.
 const MAX_PRE_FUSION_LIMIT: usize = 5_000;
 
-/// Strategy used to fuse full-text and vector search result ranks.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum FusionStrategy {
-    /// Reciprocal Rank Fusion, matching the current workspace default.
-    #[default]
-    Rrf,
-    /// Weighted rank-derived score fusion.
-    WeightedScore,
-}
+/// Reciprocal-rank constant: a chunk at rank `r` contributes `1 / (RANK_K + r)`.
+const RANK_K: f32 = 60.0;
 
 /// Search request passed to memory backends that expose search APIs.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,14 +23,6 @@ pub struct MemorySearchRequest {
     query: String,
     limit: usize,
     pre_fusion_limit: usize,
-    full_text: bool,
-    vector: bool,
-    query_embedding: Option<Vec<f32>>,
-    fusion_strategy: FusionStrategy,
-    rrf_k: u32,
-    min_score: f32,
-    full_text_weight: f32,
-    vector_weight: f32,
 }
 
 impl MemorySearchRequest {
@@ -53,14 +39,6 @@ impl MemorySearchRequest {
             query,
             limit: 20,
             pre_fusion_limit: 50,
-            full_text: true,
-            vector: true,
-            query_embedding: None,
-            fusion_strategy: FusionStrategy::default(),
-            rrf_k: 60,
-            min_score: 0.0,
-            full_text_weight: 0.5,
-            vector_weight: 0.5,
         })
     }
 
@@ -68,10 +46,10 @@ impl MemorySearchRequest {
         self.limit = limit.clamp(1, MAX_LIMIT);
         // Re-clamp pre_fusion_limit so the invariant `pre_fusion_limit >= limit`
         // holds regardless of builder call order: if the caller sets
-        // `with_pre_fusion_limit(2).with_limit(5)`, the pre-fusion candidate
-        // budget must also widen to at least 5, otherwise the per-branch SQL
-        // `LIMIT` would silently be smaller than the requested final limit.
-        // Also keep the upper DB-safety bound on pre_fusion_limit.
+        // `with_pre_fusion_limit(2).with_limit(5)`, the candidate budget must
+        // also widen to at least 5, otherwise the SQL `LIMIT` would silently
+        // be smaller than the requested final limit. Also keep the upper
+        // DB-safety bound on pre_fusion_limit.
         self.pre_fusion_limit = self
             .pre_fusion_limit
             .max(self.limit)
@@ -87,52 +65,6 @@ impl MemorySearchRequest {
         self
     }
 
-    pub fn with_full_text(mut self, enabled: bool) -> Self {
-        self.full_text = enabled;
-        self
-    }
-
-    pub fn with_vector(mut self, enabled: bool) -> Self {
-        self.vector = enabled;
-        self
-    }
-
-    pub fn with_query_embedding(mut self, embedding: Vec<f32>) -> Self {
-        self.query_embedding = Some(embedding);
-        self
-    }
-
-    pub fn with_fusion_strategy(mut self, strategy: FusionStrategy) -> Self {
-        self.fusion_strategy = strategy;
-        self
-    }
-
-    pub fn with_rrf_k(mut self, k: u32) -> Self {
-        self.rrf_k = k;
-        self
-    }
-
-    pub fn with_min_score(mut self, score: f32) -> Self {
-        if score.is_finite() {
-            self.min_score = score.clamp(0.0, 1.0);
-        }
-        self
-    }
-
-    pub fn with_full_text_weight(mut self, weight: f32) -> Self {
-        if weight.is_finite() && weight >= 0.0 {
-            self.full_text_weight = weight;
-        }
-        self
-    }
-
-    pub fn with_vector_weight(mut self, weight: f32) -> Self {
-        if weight.is_finite() && weight >= 0.0 {
-            self.vector_weight = weight;
-        }
-        self
-    }
-
     pub fn query(&self) -> &str {
         &self.query
     }
@@ -144,45 +76,6 @@ impl MemorySearchRequest {
     pub fn pre_fusion_limit(&self) -> usize {
         self.pre_fusion_limit
     }
-
-    pub fn full_text(&self) -> bool {
-        self.full_text
-    }
-
-    pub fn vector(&self) -> bool {
-        self.vector
-    }
-
-    pub fn query_embedding(&self) -> Option<&[f32]> {
-        self.query_embedding.as_deref()
-    }
-
-    /// Dimension of [`query_embedding`](Self::query_embedding) if set; used
-    /// by `FilesystemMemoryDocumentRepository::ensure_search_indexes` to
-    /// register a `Vector { dim }` index that matches the query.
-    pub fn query_embedding_dim(&self) -> Option<u32> {
-        self.query_embedding.as_deref().map(|v| v.len() as u32)
-    }
-
-    pub fn fusion_strategy(&self) -> FusionStrategy {
-        self.fusion_strategy
-    }
-
-    pub fn rrf_k(&self) -> u32 {
-        self.rrf_k
-    }
-
-    pub fn min_score(&self) -> f32 {
-        self.min_score
-    }
-
-    pub fn full_text_weight(&self) -> f32 {
-        self.full_text_weight
-    }
-
-    pub fn vector_weight(&self) -> f32 {
-        self.vector_weight
-    }
 }
 
 /// Search result returned by memory backends that expose search APIs.
@@ -192,21 +85,6 @@ pub struct MemorySearchResult {
     pub score: f32,
     pub snippet: String,
     pub full_text_rank: Option<u32>,
-    pub vector_rank: Option<u32>,
-}
-
-impl MemorySearchResult {
-    pub fn from_full_text(&self) -> bool {
-        self.full_text_rank.is_some()
-    }
-
-    pub fn from_vector(&self) -> bool {
-        self.vector_rank.is_some()
-    }
-
-    pub fn is_hybrid(&self) -> bool {
-        self.full_text_rank.is_some() && self.vector_rank.is_some()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -216,29 +94,18 @@ pub(crate) struct RankedMemorySearchResult {
     pub(crate) rank: u32,
 }
 
-pub(crate) fn fuse_memory_search_results(
-    full_text_results: Vec<RankedMemorySearchResult>,
-    vector_results: Vec<RankedMemorySearchResult>,
-    request: &MemorySearchRequest,
+/// Collapse ranked chunk hits into one result per document, scored by summed
+/// reciprocal rank and normalized so the best document scores `1.0`.
+pub(crate) fn rank_memory_search_results(
+    chunk_hits: Vec<RankedMemorySearchResult>,
+    limit: usize,
 ) -> Vec<MemorySearchResult> {
     use std::collections::HashMap;
 
-    #[derive(Debug)]
-    struct ResultAccumulator {
-        path: MemoryDocumentPath,
-        snippet: String,
-        score: f32,
-        full_text_rank: Option<u32>,
-        vector_rank: Option<u32>,
-    }
-
-    let mut results = HashMap::<String, ResultAccumulator>::new();
-    for result in full_text_results {
-        let score = match request.fusion_strategy() {
-            FusionStrategy::Rrf => 1.0 / (request.rrf_k() as f32 + result.rank as f32),
-            FusionStrategy::WeightedScore => request.full_text_weight() / result.rank as f32,
-        };
-        let document_key = result.path.relative_path().to_string();
+    let mut results = HashMap::<String, MemorySearchResult>::new();
+    for hit in chunk_hits {
+        let score = 1.0 / (RANK_K + hit.rank as f32);
+        let document_key = hit.path.relative_path().to_string();
         results
             .entry(document_key)
             .and_modify(|existing| {
@@ -246,76 +113,34 @@ pub(crate) fn fuse_memory_search_results(
                 existing.full_text_rank = Some(
                     existing
                         .full_text_rank
-                        .map_or(result.rank, |rank| rank.min(result.rank)),
+                        .map_or(hit.rank, |rank| rank.min(hit.rank)),
                 );
             })
-            .or_insert(ResultAccumulator {
-                path: result.path,
-                snippet: result.snippet,
+            .or_insert(MemorySearchResult {
+                path: hit.path,
                 score,
-                full_text_rank: Some(result.rank),
-                vector_rank: None,
-            });
-    }
-    for result in vector_results {
-        let score = match request.fusion_strategy() {
-            FusionStrategy::Rrf => 1.0 / (request.rrf_k() as f32 + result.rank as f32),
-            FusionStrategy::WeightedScore => request.vector_weight() / result.rank as f32,
-        };
-        let document_key = result.path.relative_path().to_string();
-        results
-            .entry(document_key)
-            .and_modify(|existing| {
-                existing.score += score;
-                existing.vector_rank = Some(
-                    existing
-                        .vector_rank
-                        .map_or(result.rank, |rank| rank.min(result.rank)),
-                );
-            })
-            .or_insert(ResultAccumulator {
-                path: result.path,
-                snippet: result.snippet,
-                score,
-                full_text_rank: None,
-                vector_rank: Some(result.rank),
+                snippet: hit.snippet,
+                full_text_rank: Some(hit.rank),
             });
     }
 
-    let mut fused = results
-        .into_values()
-        .map(|result| MemorySearchResult {
-            path: result.path,
-            score: result.score,
-            snippet: result.snippet,
-            full_text_rank: result.full_text_rank,
-            vector_rank: result.vector_rank,
-        })
-        .collect::<Vec<_>>();
-    // Normalize before applying `min_score`: raw RRF/weighted scores are tiny
-    // (e.g. `1/(60+1) ≈ 0.016` for the top RRF hit), so a caller-supplied
-    // `min_score` like `0.5` would drop every result if applied to the
-    // unnormalized values. Workspace's existing fusion normalizes first, then
-    // filters; we mirror that contract here.
-    if let Some(max_score) = fused.iter().map(|result| result.score).reduce(f32::max)
+    let mut ranked = results.into_values().collect::<Vec<_>>();
+    if let Some(max_score) = ranked.iter().map(|result| result.score).reduce(f32::max)
         && max_score > 0.0
     {
-        for result in &mut fused {
+        for result in &mut ranked {
             result.score /= max_score;
         }
     }
-    if request.min_score() > 0.0 {
-        fused.retain(|result| result.score >= request.min_score());
-    }
-    fused.sort_by(|left, right| {
+    ranked.sort_by(|left, right| {
         right
             .score
             .partial_cmp(&left.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| left.path.relative_path().cmp(right.path.relative_path()))
     });
-    fused.truncate(request.limit());
-    fused
+    ranked.truncate(limit);
+    ranked
 }
 
 #[cfg(test)]
@@ -323,7 +148,7 @@ mod tests {
     use super::*;
     use ironclaw_memory::MemoryDocumentPath;
 
-    fn ranked(_chunk_key: &str, relative_path: &str, rank: u32) -> RankedMemorySearchResult {
+    fn ranked(relative_path: &str, rank: u32) -> RankedMemorySearchResult {
         RankedMemorySearchResult {
             path: MemoryDocumentPath::new("tenant-a", "alice", None, relative_path).expect("path"),
             snippet: format!("snippet for {relative_path}"),
@@ -331,154 +156,86 @@ mod tests {
         }
     }
 
-    fn rrf_request(min_score: f32) -> MemorySearchRequest {
-        MemorySearchRequest::new("query")
-            .unwrap()
-            .with_fusion_strategy(FusionStrategy::Rrf)
-            .with_rrf_k(60)
-            .with_min_score(min_score)
-    }
-
-    fn weighted_request(min_score: f32) -> MemorySearchRequest {
-        MemorySearchRequest::new("query")
-            .unwrap()
-            .with_fusion_strategy(FusionStrategy::WeightedScore)
-            .with_full_text_weight(0.5)
-            .with_vector_weight(0.5)
-            .with_min_score(min_score)
+    fn paths(results: &[MemorySearchResult]) -> Vec<String> {
+        results
+            .iter()
+            .map(|result| result.path.relative_path().to_string())
+            .collect()
     }
 
     #[test]
-    fn fusion_ties_break_deterministically_by_path_ascending() {
-        // Two distinct chunks with identical FT rank (and no vector
-        // contribution) produce identical fusion scores. The tiebreak
-        // must order them by relative path ascending — proving
-        // hybrid-search ordering is deterministic across runs even when
-        // scores are equal.
-        let request = MemorySearchRequest::new("q").unwrap().with_limit(10);
-        let ft = vec![ranked("chunk-z", "z.md", 1), ranked("chunk-a", "a.md", 1)];
-        let fused = fuse_memory_search_results(ft, Vec::new(), &request);
-        let paths: Vec<_> = fused
-            .iter()
-            .map(|r| r.path.relative_path().to_string())
-            .collect();
+    fn ties_break_deterministically_by_path_ascending() {
+        let results = rank_memory_search_results(vec![ranked("z.md", 1), ranked("a.md", 1)], 10);
         assert_eq!(
-            paths,
+            paths(&results),
             vec!["a.md".to_string(), "z.md".to_string()],
             "tied scores must sort by path ascending"
         );
-    }
 
-    #[test]
-    fn fusion_reverses_when_path_order_flips_under_ties() {
-        // Reverse insertion order to confirm path-asc tiebreak does not
-        // depend on insertion order — the sort is genuinely stable on
-        // the path key, not coincidentally on iteration order.
-        let request = MemorySearchRequest::new("q").unwrap().with_limit(10);
-        let ft = vec![ranked("chunk-a", "a.md", 1), ranked("chunk-z", "z.md", 1)];
-        let fused = fuse_memory_search_results(ft, Vec::new(), &request);
-        let paths: Vec<_> = fused
-            .iter()
-            .map(|r| r.path.relative_path().to_string())
-            .collect();
-        assert_eq!(paths, vec!["a.md".to_string(), "z.md".to_string()]);
-    }
-
-    // Regression for PR #3180 review: `min_score` was filtering raw RRF/weighted
-    // scores before the later normalization pass. With the default RRF k=60 the
-    // top single-source raw score is ~0.016, so `min_score = 0.5` would drop
-    // every result before normalization could lift the best hit to 1.0. The
-    // contract is "filter against normalized scores", matching the existing
-    // workspace fusion.
-    #[test]
-    fn rrf_min_score_filters_normalized_scores_not_raw_rrf_values() {
-        let full_text = vec![
-            ranked("chunk-alpha", "alpha.md", 1),
-            ranked("chunk-beta", "beta.md", 2),
-            ranked("chunk-gamma", "gamma.md", 3),
-        ];
-        let request = rrf_request(0.5);
-        let fused = fuse_memory_search_results(full_text, Vec::new(), &request);
-        // Normalized to [0, 1]; min_score=0.5 should keep at least the top hit
-        // even though its raw RRF score (1/61) is far below 0.5.
-        assert!(
-            !fused.is_empty(),
-            "expected at least the top hit to survive"
-        );
-        assert_eq!(fused[0].score, 1.0);
-        for result in &fused {
-            assert!(
-                result.score >= 0.5,
-                "filtered score {} fell below min_score=0.5",
-                result.score
-            );
-        }
-    }
-
-    #[test]
-    fn weighted_min_score_filters_normalized_scores_not_raw_weighted_values() {
-        let full_text = vec![
-            ranked("chunk-alpha", "alpha.md", 1),
-            ranked("chunk-beta", "beta.md", 2),
-        ];
-        let vector = vec![
-            ranked("chunk-alpha", "alpha.md", 1),
-            ranked("chunk-gamma", "gamma.md", 3),
-        ];
-        let request = weighted_request(0.5);
-        let fused = fuse_memory_search_results(full_text, vector, &request);
-        assert!(
-            !fused.is_empty(),
-            "expected at least the top hit to survive"
-        );
-        assert_eq!(fused[0].score, 1.0);
-        for result in &fused {
-            assert!(
-                result.score >= 0.5,
-                "filtered score {} fell below min_score=0.5",
-                result.score
-            );
-        }
-    }
-
-    #[test]
-    fn min_score_zero_keeps_every_fused_result() {
-        let full_text = vec![
-            ranked("chunk-alpha", "alpha.md", 1),
-            ranked("chunk-beta", "beta.md", 2),
-            ranked("chunk-gamma", "gamma.md", 3),
-        ];
-        let fused = fuse_memory_search_results(full_text, Vec::new(), &rrf_request(0.0));
-        assert_eq!(fused.len(), 3);
-    }
-
-    #[test]
-    fn fusion_collapses_multiple_chunks_for_same_document_path() {
-        let request = MemorySearchRequest::new("q").unwrap().with_limit(10);
-        let full_text = vec![
-            ranked("doc-a-chunk-1", "same.md", 1),
-            ranked("doc-a-chunk-2", "same.md", 2),
-            ranked("doc-b-chunk-1", "other.md", 3),
-        ];
-        let vector = vec![ranked("doc-a-vector-chunk", "same.md", 1)];
-        let fused = fuse_memory_search_results(full_text, vector, &request);
-        let same_results = fused
-            .iter()
-            .filter(|result| result.path.relative_path() == "same.md")
-            .count();
+        let results = rank_memory_search_results(vec![ranked("a.md", 1), ranked("z.md", 1)], 10);
         assert_eq!(
-            same_results, 1,
-            "same document must consume one result slot"
+            paths(&results),
+            vec!["a.md".to_string(), "z.md".to_string()],
+            "the tiebreak must not depend on insertion order"
         );
-        let same = fused
-            .iter()
-            .find(|result| result.path.relative_path() == "same.md")
-            .expect("same.md result");
-        assert!(
-            same.is_hybrid(),
-            "full-text and vector chunks should fuse by document path"
+    }
+
+    #[test]
+    fn scores_are_normalized_and_ordered_by_rank() {
+        let results = rank_memory_search_results(
+            vec![
+                ranked("alpha.md", 1),
+                ranked("beta.md", 2),
+                ranked("gamma.md", 3),
+            ],
+            10,
         );
-        assert_eq!(same.full_text_rank, Some(1));
-        assert_eq!(same.vector_rank, Some(1));
+        assert_eq!(
+            paths(&results),
+            vec![
+                "alpha.md".to_string(),
+                "beta.md".to_string(),
+                "gamma.md".to_string()
+            ]
+        );
+        assert_eq!(results[0].score, 1.0);
+        assert!(results[1].score < 1.0 && results[1].score > results[2].score);
+        assert!((results[1].score - 61.0 / 62.0).abs() < 1e-6);
+        assert!((results[2].score - 61.0 / 63.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn multiple_chunks_of_one_document_collapse_into_one_result() {
+        let results = rank_memory_search_results(
+            vec![
+                ranked("other.md", 1),
+                ranked("same.md", 2),
+                ranked("same.md", 3),
+            ],
+            10,
+        );
+        assert_eq!(
+            paths(&results),
+            vec!["same.md".to_string(), "other.md".to_string()],
+            "a document's chunk scores add up and it consumes one result slot"
+        );
+        assert_eq!(results[0].full_text_rank, Some(2));
+        assert_eq!(results[1].full_text_rank, Some(1));
+    }
+
+    #[test]
+    fn results_are_truncated_to_the_limit() {
+        let results = rank_memory_search_results(
+            vec![
+                ranked("alpha.md", 1),
+                ranked("beta.md", 2),
+                ranked("gamma.md", 3),
+            ],
+            2,
+        );
+        assert_eq!(
+            paths(&results),
+            vec!["alpha.md".to_string(), "beta.md".to_string()]
+        );
     }
 }

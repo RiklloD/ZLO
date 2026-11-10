@@ -14,7 +14,7 @@
 > **Crate split (#3537 lift):** `ironclaw_memory` is now the provider-neutral
 > contract (the `MemoryService` trait, operation DTOs, and scope/path/metadata
 > value types). The concrete native implementation of the responsibilities below
-> — repository seams, chunking/indexing/embeddings/search, prompt-context
+> — repository seams, chunking/indexing/full-text search, prompt-context
 > assembly, and seeding/bootstrap/profile sync — lives in
 > `ironclaw_memory_native`. A provider crate depends on `ironclaw_memory`, never
 > the reverse.
@@ -25,7 +25,7 @@ It is responsible for:
 - repository seams for DB-backed memory documents;
 - memory backend plugin contracts;
 - metadata and `.config` inheritance;
-- chunking, indexing, embeddings, and search;
+- chunking, indexing, and full-text search;
 - memory service facades over shared backends;
 - prompt-context assembly policy;
 - seeding/bootstrap/profile sync policy;
@@ -136,9 +136,7 @@ Backend support declarations are still enforcement inputs. Unsupported behavior 
 Examples:
 
 - `file_documents = false` means file operations fail closed;
-- `full_text_search = false` means full-text search fails closed when requested;
-- `vector_search = false` means vector search fails closed when explicitly requested;
-- `embeddings = false` means host/provider embedding should not be assumed;
+- `full_text_search = false` means search fails closed;
 - plugin errors must be sanitized and scoped.
 
 The current type name is `MemoryBackendCapabilities` for implementation continuity. A future cleanup may rename it to `MemoryBackendSupport` or similar, but the contract meaning is support declaration, not extension capability authority.
@@ -194,16 +192,15 @@ Owns:
 ```text
 single-scope search
 multi-scope search
-full-text/vector/hybrid fusion
+full-text ranking
 search config defaults
 identity-document filtering
-embedding query generation
 ```
 
 Rules:
 
-- full-text + vector rank fusion uses RRF by default;
-- weighted rank fusion remains supported;
+- search is full-text only: the native provider has no vector or hybrid lane and generates no embeddings. Chunk hits are ranked by the backend, collapsed to one result per document by summed reciprocal rank, and normalized so the best document scores `1.0`;
+- the `embedding` chunk projection key stays part of the stored chunk grammar and the wire field `is_hybrid_match` stays on search results (always `false` from the native provider), so existing stores and clients keep working;
 - secondary-scope identity/system-prompt documents are excluded from search results;
 - Postgres should implement unified multi-scope search when practical;
 - libSQL may use per-scope merge but must document score comparability limits.
@@ -367,7 +364,7 @@ Rules:
 
 ---
 
-## 7. Indexing and embeddings
+## 7. Indexing
 
 Indexing contract:
 
@@ -378,7 +375,6 @@ write document
   -> persist document
   -> if skip_indexing delete chunks
   -> else chunk document
-  -> optionally embed chunks
   -> replace chunks if document content hash still matches
 ```
 
@@ -386,20 +382,12 @@ Rules:
 
 - chunking preserves current production word-overlap behavior;
 - chunk replacement is transactional per document;
-- stale index replacement is skipped if document content changed during embedding;
-- embedding provider failures during write-time indexing should not corrupt stored document content;
+- stale index replacement is skipped if document content changed during indexing;
+- an index refresh failure after persistence should not corrupt stored document content or fail the write;
 - production provider HTTP must go through `ironclaw_network`;
 - provider credentials must be resolved through secret leases, not direct env leakage, unless the provider contract explicitly marks local no-secret operation.
 
-Backfill contract:
-
-```text
-get_chunks_without_embeddings
-update_chunk_embedding
-backfill_embeddings(batch_size)
-```
-
-Backfill is required for V1 production parity but may be implemented after core write-time embedding.
+The native provider writes text-only chunks (`embedding` unset). No embedding provider port or backfill exists.
 
 ---
 
@@ -447,7 +435,7 @@ Rules:
 - events do not include raw document contents by default;
 - prompt context events do not include assembled prompts;
 - sanitizer rejection events include stable reason categories, not full sensitive content;
-- embedding/provider failures include sanitized provider/error kind.
+- provider failures include sanitized provider/error kind.
 
 ---
 
@@ -466,7 +454,7 @@ Delegated memory work must include relevant tests from this list:
 - `skip_versioning` suppresses version creation;
 - schema validation rejects before persistence;
 - stale index replacement is skipped on concurrent content changes;
-- full-text/vector/hybrid search ordering;
+- full-text search ordering;
 - provider HTTP path uses `ironclaw_network`;
 - prompt-injected file sanitizer rejection through the service caller;
 - PostgreSQL/libSQL parity for repository behavior.
