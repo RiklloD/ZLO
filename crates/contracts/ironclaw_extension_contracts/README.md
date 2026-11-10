@@ -37,8 +37,8 @@ charter table lives in [`AGENTS.md`](./AGENTS.md)). The load-bearing entries:
   no adapter half. `ChannelDelivery` also has one optional, typed
   direct-target provisioning operation; it is deliberately not target search.
   `ChannelAttachmentRef` is only package-internal parse→fetch state.
-- `tool_adapter` — `ToolAdapter` + `RestrictedEgress`; `egress` — channel
-  egress transport vocabulary (`ProtocolHttpEgress`, `OutboundDeliverySink`).
+- `tool_adapter` — `ToolAdapter` + `RestrictedEgress`; `egress` — declared
+  channel egress hosts, targets and credential handles.
 - `extension` — `Extension`, `ExtensionEntrypoint` and bindings; `runtime` —
   `ExtensionRuntime` + validated `ExtensionAssetPath` (resolution *under* a
   package root stays in the registry as

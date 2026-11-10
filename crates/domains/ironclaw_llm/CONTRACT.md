@@ -10,7 +10,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `config.rs` | LLM config types (`LlmConfig`, `RegistryProviderConfig`, `NearAiConfig`, `BedrockConfig`) |
 | `error.rs` | `LlmError` enum used by all providers |
 | `provider.rs` | `LlmProvider` trait, `ChatMessage`, `ToolCall`, `CompletionRequest`, `sanitize_tool_messages` |
-| `agent_message.rs` | Canonical parts-list message vocabulary (`AgentMessage`) with validity/pairing/bounds validation and total conversions to/from `ChatMessage` |
+| `agent_message.rs` | Canonical parts-list message vocabulary (`AgentMessage`) with validity/pairing/bounds validation |
 | `nearai_chat.rs` | NEAR AI Chat Completions provider (dual auth: session token or API key) |
 | `nearai_tool_message_flattening.rs` | NEAR AI compatibility rewrite for tool-call history |
 | `codex_auth.rs` | Reads Codex CLI `auth.json`, extracts tokens, refreshes ChatGPT OAuth access tokens |
@@ -34,20 +34,18 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `gemini_oauth.rs` | Gemini OAuth provider (Cloud OAuth credentials → `generativelanguage.googleapis.com`) |
 | `github_copilot.rs` | GitHub Copilot Chat provider (uses dedicated reqwest client, not `RigAdapter`) |
 | `github_copilot_auth.rs` | Copilot session-token exchange and refresh (`CopilotTokenManager`) |
-| `host.rs` | Host-side trait surface: `SessionDb`, `SessionSecrets`, `SessionRenewer`, `SessionKeyPersistor` (adapters are the composing binary's to supply; none does today — see "Host Trait Surface") |
 | `runtime.rs` | `SwappableLlmProvider` + `LlmReloadHandle` for hot-reloading the provider chain on settings change |
 | `provider_routing.rs` | `ProviderRouter`: sends a request whose model is `<provider_id>::<model>` to that configured provider (built by a `RoutedProviderSource`), everything else to the primary |
 | `registry.rs` | Provider registry (`ProviderDefinition`, `ProviderProtocol`); resolves backend strings to clients |
 | `resolution.rs` | Full `LlmConfig` resolution for composition roots that select from `providers.json` and need dedicated providers plus the shared provider chain |
-| `tool_args.rs` | Shared sub-step primitives for provider tool-call parsing: fail-loud and silent-fallback JSON arg parsing, ordered reasoning-field probe (Layer 2 of RC3/M9 framework) |
+| `tool_args.rs` | Shared sub-step primitives for provider tool-call parsing: fail-loud and silent-fallback JSON arg parsing (Layer 2 of RC3/M9 framework) |
 | `tool_schema.rs` | Tool schema normalization policies (`FlattenOnly` for NearAI, strict OpenAI for `RigAdapter` / Codex) |
 | `transcription/{mod,openai,chat_completions}.rs` | Audio transcription pipeline (Whisper / chat-completions back-ends) |
 | `speech/{mod,openai,elevenlabs}.rs` | Text-to-speech: the `SpeechSynthesisProvider` trait with OpenAI and ElevenLabs back-ends; nothing in the gateway wires it yet |
-| `image_models.rs` | Image-generation model metadata table |
 | `vision_models.rs` | Vision-capable model registry for attachment routing |
 | `reasoning_models.rs` | Reasoning-capable model registry (Codex, R1, o-series, etc.) used for thinking-mode dispatch |
 | `reasoning_effort.rs` | Which reasoning efforts each model takes (`efforts_for`, what the model picker offers) and how each rig-backed protocol spells a routed effort on the wire |
-| `models.rs` | Provider-neutral discovered-model capabilities plus the top-level model-name catalog and helpers |
+| `models.rs` | Provider-neutral discovered-model capability types (`DiscoveredModel`, `ModelModality`) |
 | `testing/` | `StubLlm`, `StubErrorKind`, `fault_injection` — gated behind the `test-support` cargo feature for downstream test harnesses |
 
 ## Sub-owner map
@@ -69,11 +67,11 @@ owner, and a deleted one fails until its entry goes.
 |---|---|---|---|
 | `core-contract` | The `LlmProvider` trait, the request/response vocabulary, the error taxonomy, the config types, shared HTTP hardening, and the factory that assembles everything | A vendor protocol, or reliability behavior | `lib.rs`, `provider.rs`, `agent_message.rs`, `error.rs`, `config.rs`, `url_check.rs` |
 | `providers` | One concrete `LlmProvider` per vendor and the protocol shims used by that vendor alone | Cross-provider normalization (that is `normalization`), or credential lifecycle (that is `auth-sessions`) | `nearai_chat.rs`, `rig_adapter.rs`, `gemini_oauth.rs`, `codex_chatgpt.rs`, `bedrock.rs`, `openai_codex_provider.rs`, `anthropic_oauth.rs`, `github_copilot.rs`, `github_copilot/tests.rs`, `nearai_tool_message_flattening.rs`, `responses_reasoning.rs`, `anthropic_thinking.rs` |
-| `auth-sessions` | Acquiring, persisting, refreshing and revoking provider credentials, plus the host seam that stores them | Request/response shaping | `auth.rs`, `session.rs`, `openai_codex_session.rs`, `chatgpt_plan.rs`, `github_copilot_auth.rs`, `codex_auth.rs`, `token_refreshing.rs`, `host.rs` |
+| `auth-sessions` | Acquiring, persisting, refreshing and revoking provider credentials | Request/response shaping | `auth.rs`, `session.rs`, `openai_codex_session.rs`, `chatgpt_plan.rs`, `github_copilot_auth.rs`, `codex_auth.rs`, `token_refreshing.rs` |
 | `registry` | The **provider** catalog: definitions, protocols, base-URL and api-key resolution | Model facts (that is `model-catalog`) | `registry.rs`, `resolution.rs`, `resolution/tests.rs` |
 | `decorators` | Anything that wraps `dyn LlmProvider` and is not credential work: retry, breaker, failover, cache, hot-reload, cost routing | Vendor protocol | `retry.rs`, `circuit_breaker.rs`, `failover.rs`, `response_cache.rs`, `runtime.rs`, `smart_routing.rs`, `provider_routing.rs` |
 | `normalization` | Cross-provider wire hygiene in all three directions: outbound tool schemas, inbound tool arguments, inbound content text | A fix that only one provider needs — that belongs beside it in `providers` | `tool_schema.rs`, `tool_schema/placeholder_stripping.rs`, `tool_args.rs`, `reasoning.rs` |
-| `model-catalog` | Facts about **models**: what an endpoint lists, and which models see images, generate images, or think natively | Provider identity or routing | `models.rs`, `reasoning_models.rs`, `reasoning_effort.rs`, `vision_models.rs`, `image_models.rs` |
+| `model-catalog` | Facts about **models**: what an endpoint lists, and which models see images or think natively | Provider identity or routing | `models.rs`, `reasoning_models.rs`, `reasoning_effort.rs`, `vision_models.rs` |
 | `recording` | Trace capture and replay, and binding recorded tool arguments to earlier results | Live provider behavior | `recording.rs`, `trace_binding.rs` |
 | `transcription` | Speech in and out: the `TranscriptionProvider` (speech-to-text) and `SpeechSynthesisProvider` (text-to-speech) traits and their implementations — **different traits** from `LlmProvider`, sharing only transports | Anything implementing `LlmProvider` | `transcription/mod.rs`, `transcription/chat_completions.rs`, `transcription/openai.rs`, `speech/mod.rs`, `speech/openai.rs`, `speech/elevenlabs.rs` |
 | `test-support` | Fixtures and fault injection, including the published `test-support` feature downstream harnesses consume | Production behavior | `testing/mod.rs`, `testing/fault_injection.rs`, `codex_test_helpers.rs`, `rig_adapter/tests/finish_reason_tests.rs`, `anthropic_oauth/tests.rs`, `anthropic_oauth/tests/prompt_cache_tests.rs` |
@@ -246,29 +244,9 @@ Key notes:
 To add a new provider:
 1. Create `crates/domains/ironclaw_llm/src/myprovider.rs` implementing `LlmProvider` <!-- check-guidance: path-ok --> (prescriptive: the file you are about to add, not one that exists)
 2. Add a `ProviderProtocol` variant in `registry.rs` (or wire a backend-string match in `lib.rs` for non-registry providers like `nearai`/`bedrock`/`openai_codex`)
-3. Wire into the factory dispatch in `lib.rs` (`create_registry_provider` for registry-backed protocols, top-level `create_llm_provider` for backend-string-keyed providers)
+3. Wire into the factory dispatch in `lib.rs` (`create_registry_provider_inner` for registry-backed protocols, top-level `create_llm_provider` for backend-string-keyed providers)
 4. Add env vars to `.env.example` and to whichever crate reads them (✎ the v1 `src/config/llm.rs` is gone — deleted with the monolith)
-5. If the provider needs persistent state (session tokens, refresh tokens, etc.), use the host traits in `host.rs` — never reach for `crate::db`, `crate::secrets`, or `crate::bootstrap`. The crate must stay independent of the binary; the binary supplies the adapter impls.
-
-## Host Trait Surface
-
-`host.rs` defines four traits that decouple `ironclaw_llm` from the binary:
-
-| Trait | Purpose | Binary adapter |
-|-------|---------|----------------|
-| `SessionDb` | JSON settings persistence | none today |
-| `SessionSecrets` | Encrypted secrets store | none today |
-| `SessionRenewer` | Interactive NEAR-AI re-auth flow | only `NoopSessionRenewer` (`src/host.rs`) |
-| `SessionKeyPersistor` | Runtime env overlay + `.env` upsert | only `NoopKeyPersistor` (`src/host.rs`) |
-
-The v1 adapter names this table used to cite (`DatabaseSessionDb`,
-`SecretsStoreSessionSecrets`, `BootstrapKeyPersistor`, ✎ `src/llm_host.rs`,
-✎ `src/setup/`) went with the monolith and resolve to nothing today — and no
-Reborn binary has supplied replacements yet. Re-derive the real implementor set
-with `rg -n "impl (SessionDb|SessionSecrets|SessionRenewer|SessionKeyPersistor) for" crates/`
-before assuming any of these ports is wired.
-
-`NoopSessionRenewer` and `NoopKeyPersistor` are provided for headless / hosted contexts (return errors / no-ops) and are the only implementations in the tree today. A binary that needs real behavior plugs concrete impls into `SessionManager` at startup; no Reborn binary currently does.
+5. If the provider needs persistent state (session tokens, refresh tokens, etc.), keep it behind the provider's own session type — never reach for `crate::db`, `crate::secrets`, or `crate::bootstrap`. The crate must stay independent of the binary.
 
 ## Response Cache
 

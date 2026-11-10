@@ -26,7 +26,6 @@ pub mod failover;
 pub(crate) mod gemini_oauth;
 mod github_copilot;
 pub(crate) mod github_copilot_auth;
-pub mod host;
 pub mod nearai_chat;
 pub mod openai_codex_provider;
 pub(crate) mod openai_codex_session;
@@ -36,7 +35,6 @@ mod reasoning;
 pub mod reasoning_effort;
 pub mod recording;
 pub mod registry;
-#[cfg(feature = "registry-provider-factory")]
 mod resolution;
 pub mod response_cache;
 mod responses_reasoning;
@@ -47,12 +45,9 @@ pub mod session;
 pub mod smart_routing;
 pub mod speech;
 mod token_refreshing;
-pub mod trace_binding;
-// arch-exempt: scaffolding, Phase A helpers awaiting first per-provider caller, plan #4522
-// Remove the allow once any production call site references these items.
-#[allow(dead_code)]
 pub(crate) mod tool_args;
 pub mod tool_schema;
+pub mod trace_binding;
 pub mod transcription;
 mod url_check;
 
@@ -62,7 +57,6 @@ pub mod testing;
 #[cfg(test)]
 mod codex_test_helpers;
 
-pub mod image_models;
 pub mod models;
 pub mod reasoning_models;
 pub mod vision_models;
@@ -76,11 +70,6 @@ pub use config::{
 pub use error::{LlmConfigError, LlmError, UNCONFIGURED_PROVIDER_ID};
 pub use failover::{CooldownConfig, FailoverProvider};
 pub(crate) use gemini_oauth::GeminiOauthProvider;
-pub use host::{
-    NoopKeyPersistor, NoopSessionRenewer, SessionDb, SessionKeyPersistor, SessionRenewer,
-    SessionSecrets, SharedSessionDb, SharedSessionKeyPersistor, SharedSessionRenewer,
-    SharedSessionSecrets,
-};
 pub use nearai_chat::{DEFAULT_MODEL, ModelInfo, NearAiChatProvider, default_models};
 pub use openai_codex_provider::OpenAiCodexProvider;
 pub use openai_codex_session::{DeviceCodeStart, OpenAiCodexSessionManager};
@@ -99,7 +88,6 @@ pub use reasoning::{
 };
 pub use recording::{MemorySnapshotEntry, RecordingLlm};
 pub use registry::{ProviderDefinition, ProviderProtocol, ProviderRegistry};
-#[cfg(feature = "registry-provider-factory")]
 pub use resolution::{
     NEARAI_CLOUD_DEFAULT_BASE_URL, NEARAI_PRIVATE_DEFAULT_BASE_URL, ProviderResolutionError,
     ProviderSelection, ResolvedDedicatedProviderConfig, ResolvedProviderConfig,
@@ -115,8 +103,6 @@ pub use session::{NearWalletSignedMessage, SessionConfig, SessionManager, create
 pub use smart_routing::{SmartRoutingConfig, SmartRoutingProvider, TaskComplexity};
 pub use token_refreshing::TokenRefreshingProvider;
 
-#[cfg(feature = "registry-provider-factory")]
-use std::path::Path;
 use std::sync::Arc;
 
 use rig::client::CompletionClient;
@@ -203,35 +189,6 @@ pub fn create_llm_provider_with_config(
         session,
         request_timeout_secs,
     )?))
-}
-
-/// Create a provider from a registry-resolved config.
-///
-/// Dispatches on `RegistryProviderConfig::protocol` to build the appropriate
-/// rig-core client. Exposed only for composition roots that already own
-/// provider resolution and intentionally opt into the registry factory API;
-/// normal callers should use `create_llm_provider` / `build_provider_chain`.
-#[cfg(feature = "registry-provider-factory")]
-pub fn create_registry_provider(
-    config: &RegistryProviderConfig,
-    request_timeout_secs: u64,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    create_registry_provider_inner(config, request_timeout_secs)
-}
-
-/// Resolve a registry-provider configuration from generic LLM environment.
-///
-/// This keeps provider/backend-specific environment conventions inside
-/// `ironclaw_llm` for composition roots that already bridge through
-/// [`create_registry_provider`]. Returns `Ok(None)` when no LLM environment
-/// selection is present.
-#[cfg(feature = "registry-provider-factory")]
-pub fn resolve_registry_provider_from_env(
-    user_providers_path: Option<&Path>,
-) -> Result<Option<RegistryProviderConfig>, LlmError> {
-    resolution::resolve_provider_config_from_env(user_providers_path)?
-        .map(resolution::build_registry_provider_config_from_resolved_provider)
-        .transpose()
 }
 
 fn create_registry_provider_inner(
@@ -961,7 +918,7 @@ pub fn create_cheap_llm_provider(
 /// Handles backend-specific provider construction:
 /// - `nearai` — clones NearAiConfig, swaps model, uses `create_llm_provider_with_config`
 /// - `bedrock` — returns error (smart routing not yet supported)
-/// - All others — clones `RegistryProviderConfig`, swaps model, uses `create_registry_provider`
+/// - All others — clones `RegistryProviderConfig`, swaps model, uses `create_registry_provider_inner`
 fn create_cheap_provider_for_backend(
     config: &LlmConfig,
     session: Arc<SessionManager>,
@@ -1010,6 +967,17 @@ fn create_cheap_provider_for_backend(
     Ok(Some(provider))
 }
 
+/// Raw primary + cheap providers as rebuilt from config.
+///
+/// Used by [`build_provider_chain`] (for startup wiring) and by
+/// [`LlmReloadHandle::reload`] (for hot-swap): the latter needs the
+/// *unwrapped* primary so it can feed it into the existing
+/// [`SwappableLlmProvider`] without stacking another wrapper.
+pub(crate) struct ProviderChainComponents {
+    pub primary: Arc<dyn LlmProvider>,
+    pub cheap: Option<Arc<dyn LlmProvider>>,
+}
+
 /// Build the full LLM provider chain with all configured wrappers.
 ///
 /// Applies decorators in this order:
@@ -1022,21 +990,6 @@ fn create_cheap_provider_for_backend(
 ///
 /// Also returns a separate cheap LLM provider for heartbeat/evaluation (not
 /// part of the chain — it's a standalone provider for explicitly cheap tasks).
-///
-/// This is the single source of truth for provider chain construction,
-/// called by both `main.rs` and `app.rs`.
-///
-/// Raw primary + cheap providers as rebuilt from config.
-///
-/// Used by [`build_provider_chain`] (for startup wiring) and by
-/// [`LlmReloadHandle::reload`] (for hot-swap): the latter needs the
-/// *unwrapped* primary so it can feed it into the existing
-/// [`SwappableLlmProvider`] without stacking another wrapper.
-pub(crate) struct ProviderChainComponents {
-    pub primary: Arc<dyn LlmProvider>,
-    pub cheap: Option<Arc<dyn LlmProvider>>,
-}
-
 pub(crate) async fn build_provider_chain_components(
     config: &LlmConfig,
     session: Arc<SessionManager>,
@@ -1255,8 +1208,7 @@ pub async fn build_static_provider_chain(
 /// in hot-swap capable [`SwappableLlmProvider`] handles. The returned
 /// [`LlmReloadHandle`] can rebuild the chain later from a fresh config.
 ///
-/// This is the single source of truth for provider chain construction,
-/// called by both `main.rs` and `app.rs`.
+/// This is the single source of truth for provider chain construction.
 #[allow(clippy::type_complexity)]
 pub async fn build_provider_chain(
     config: &LlmConfig,

@@ -32,7 +32,6 @@ pub trait AgentLoopPlanner: sealed::Sealed + Send + Sync {
 }
 
 /// Crate-private executor-facing strategy access.
-#[allow(dead_code)]
 pub(crate) trait AgentLoopPlannerInternal: AgentLoopPlanner {
     fn context(&self) -> &dyn ContextStrategy;
     fn capability(&self) -> &dyn CapabilityStrategy;
@@ -54,9 +53,6 @@ mod tests {
     use crate::family::LoopFamilyId;
 
     use super::*;
-
-    #[allow(dead_code)]
-    fn _check_object_safe(_: &dyn AgentLoopPlanner) {}
 
     fn assert_send_sync<T: Send + Sync>() {}
 

@@ -471,17 +471,16 @@ mod tests {
         MODEL_CREDENTIALS_UNAVAILABLE_CATEGORY, MODEL_CREDITS_EXHAUSTED_CATEGORY,
     };
     use ironclaw_loop_contracts::{
-        AgentLoopHostError, AgentLoopHostErrorKind, AppendCapabilityResultRef, BeginAssistantDraft,
-        CheckpointSchemaId, FinalizeAssistantMessage, LoadCheckpointPayloadRequest,
-        LoadedCheckpointPayload, LoopCancellationPort, LoopCancellationSignal, LoopCapabilityPort,
-        LoopCheckpointPort, LoopCheckpointRequest, LoopCheckpointStateRef, LoopCompactionError,
-        LoopCompactionOutcome, LoopCompactionPort, LoopCompactionRequest, LoopContextBundle,
-        LoopContextPort, LoopContextRequest, LoopDriverId, LoopInputAckToken, LoopInputBatch,
-        LoopInputCursor, LoopInputPort, LoopModelPort, LoopModelRequest, LoopModelResponse,
-        LoopProgressEvent, LoopProgressPort, LoopPromptBundle, LoopPromptBundleRequest,
-        LoopPromptPort, LoopRequest, LoopRequestBatch, LoopRunContext, LoopRunInfoPort,
-        LoopSafeSummary, LoopTranscriptPort, RedactedCheckpointPayload,
-        StageCheckpointPayloadRequest, UpdateAssistantDraft, VisibleCapabilityRequest,
+        AgentLoopHostError, AgentLoopHostErrorKind, AppendCapabilityResultRef, CheckpointSchemaId,
+        FinalizeAssistantMessage, LoadCheckpointPayloadRequest, LoadedCheckpointPayload,
+        LoopCancellationPort, LoopCancellationSignal, LoopCapabilityPort, LoopCheckpointPort,
+        LoopCheckpointRequest, LoopCheckpointStateRef, LoopCompactionError, LoopCompactionOutcome,
+        LoopCompactionPort, LoopCompactionRequest, LoopContextBundle, LoopContextPort,
+        LoopContextRequest, LoopDriverId, LoopInputAckToken, LoopInputBatch, LoopInputCursor,
+        LoopInputPort, LoopModelPort, LoopModelRequest, LoopModelResponse, LoopProgressEvent,
+        LoopProgressPort, LoopPromptBundle, LoopPromptBundleRequest, LoopPromptPort, LoopRequest,
+        LoopRequestBatch, LoopRunContext, LoopRunInfoPort, LoopSafeSummary, LoopTranscriptPort,
+        RedactedCheckpointPayload, StageCheckpointPayloadRequest, VisibleCapabilityRequest,
         VisibleCapabilitySurface,
     };
     use ironclaw_turns::{LoopMessageRef, TurnCheckpointId};
@@ -1383,20 +1382,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LoopTranscriptPort for ResumePayloadHost {
-        async fn begin_assistant_draft(
-            &self,
-            request: BeginAssistantDraft,
-        ) -> Result<LoopMessageRef, AgentLoopHostError> {
-            self.inner.begin_assistant_draft(request).await
-        }
-
-        async fn update_assistant_draft(
-            &self,
-            request: UpdateAssistantDraft,
-        ) -> Result<(), AgentLoopHostError> {
-            self.inner.update_assistant_draft(request).await
-        }
-
         async fn finalize_assistant_message(
             &self,
             request: FinalizeAssistantMessage,

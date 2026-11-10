@@ -61,7 +61,6 @@ pub(crate) trait RecoveryStrategy: Send + Sync {
 }
 
 /// Compile-time object-safety check.
-#[allow(dead_code)]
 fn _recovery_strategy_object_safe(_: &dyn RecoveryStrategy) {}
 
 /// Sanitized, strategy-visible error summary text.
@@ -458,32 +457,6 @@ impl RecoveryStrategy for DefaultRecoveryStrategy {
         // its failure kind and diagnostics — strictly inside the loop bound.
         7u32.saturating_add(self.max_attempts_per_class)
             .saturating_add(self.max_model_availability_attempts.saturating_mul(3))
-    }
-}
-
-fn retry_or_abort(
-    state: &LoopExecutionState,
-    attempt_class: RecoveryAttemptClass,
-    max_attempts_per_class: u32,
-    failure_kind: LoopFailureKind,
-    scope: RetryScope,
-    alteration: impl FnOnce(u32) -> Option<RetryAlteration>,
-) -> RecoveryOutcome {
-    let attempts = state.recovery_state.attempts_for(attempt_class);
-    let next = state
-        .recovery_state
-        .with_incremented_attempts_for(attempt_class);
-    if attempts >= max_attempts_per_class {
-        RecoveryOutcome::Abort {
-            recovery: next,
-            failure_kind,
-        }
-    } else {
-        RecoveryOutcome::Retry {
-            recovery: next,
-            scope,
-            alter: alteration(attempts),
-        }
     }
 }
 

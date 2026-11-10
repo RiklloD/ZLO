@@ -96,10 +96,6 @@ impl Default for TurnRunSchedulerConfig {
 }
 
 impl TurnRunSchedulerConfig {
-    pub fn max_concurrent_runs(&self) -> usize {
-        self.inner.max_concurrent_processes()
-    }
-
     pub fn poll_interval(&self) -> Duration {
         self.inner.poll_interval()
     }

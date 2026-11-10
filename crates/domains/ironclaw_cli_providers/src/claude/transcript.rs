@@ -1,37 +1,53 @@
 //! Thread history from the CLI's own session journal
 //! (`<config>/projects/<encoded cwd>/<session>.jsonl`).
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use ironclaw_orchestrator::runtime::{HistoryMessage, HistoryRole, RuntimeError};
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 pub(super) async fn read(path: &Path, limit: usize) -> Result<Vec<HistoryMessage>, RuntimeError> {
-    let raw = match tokio::fs::read_to_string(path).await {
-        Ok(raw) => raw,
+    let unavailable =
+        |e: std::io::Error| RuntimeError::Unavailable(format!("claude transcript: {}", e.kind()));
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
         // No turn has run yet.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            return Err(RuntimeError::Unavailable(format!(
-                "claude transcript: {}",
-                e.kind()
-            )));
-        }
+        Err(e) => return Err(unavailable(e)),
     };
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
     // A prompt's journal `uuid` is the run id the driver sent it with; the
-    // rows after it, up to the next prompt, belong to that run.
+    // rows after it, up to the next prompt, belong to that run. Every row is
+    // scanned so a row inside the window still names a prompt before it, but
+    // only the newest `limit` messages are kept.
     let mut run: Option<String> = None;
-    let mut out: Vec<HistoryMessage> = raw
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok()) // silent-ok: a torn last line of a live journal is skipped
-        .filter_map(|v| {
+    let mut out: VecDeque<HistoryMessage> = VecDeque::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .await
+            .map_err(unavailable)?
+            == 0
+        {
+            break;
+        }
+        // silent-ok: a torn last line of a live journal is skipped
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        let m = if let Some(mut m) = steer(&v) {
             // A steer sent mid-turn: the person's row, inside the run.
-            if let Some(mut m) = steer(&v) {
-                m.run_id = run.clone();
-                m.at = timestamp(&v);
-                return Some(m);
-            }
-            let mut m = message(&v)?;
+            m.run_id = run.clone();
+            m.at = timestamp(&v);
+            m
+        } else {
+            let Some(mut m) = message(&v) else {
+                continue;
+            };
             m.hidden = compact_scaffolding(&v, &m);
             m.at = timestamp(&v);
             // Hidden rows (a compaction's summary) stay in the current run.
@@ -39,11 +55,14 @@ pub(super) async fn read(path: &Path, limit: usize) -> Result<Vec<HistoryMessage
                 run = v["uuid"].as_str().map(str::to_string);
             }
             m.run_id = run.clone();
-            Some(m)
-        })
-        .collect();
-    let skip = out.len().saturating_sub(limit);
-    Ok(out.split_off(skip))
+            m
+        };
+        out.push_back(m);
+        if out.len() > limit {
+            out.pop_front();
+        }
+    }
+    Ok(out.into())
 }
 
 /// A user message the CLI took while a turn ran is journaled as a
@@ -231,6 +250,94 @@ mod tests {
             cwd(&path).await.as_deref(),
             Some(std::path::Path::new("/work/app"))
         );
+    }
+
+    #[tokio::test]
+    async fn a_limit_keeps_the_newest_rows_with_the_run_of_a_prompt_before_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let mut lines = vec![
+            r#"{"type":"user","uuid":"run-old","message":{"role":"user","content":"first"}}"#
+                .to_string(),
+        ];
+        for i in 0..500 {
+            lines.push(format!(
+                r#"{{"type":"assistant","uuid":"a{i}","message":{{"content":[{{"type":"text","text":"step {i}"}}]}}}}"#
+            ));
+            lines.push(r#"{"type":"queue-operation","operation":"enqueue"}"#.to_string());
+        }
+        lines.push(
+            r#"{"type":"user","uuid":"run-new","message":{"role":"user","content":"second"}}"#
+                .to_string(),
+        );
+        lines.push(r#"{"type":"system","subtype":"compact_boundary","uuid":"b"}"#.to_string());
+        lines.push(
+            r#"{"type":"user","uuid":"summary","isCompactSummary":true,"message":{"role":"user","content":"summary"}}"#
+                .to_string(),
+        );
+        lines.push(
+            r#"{"type":"attachment","uuid":"q","attachment":{"type":"queued_command","prompt":"steer"}}"#
+                .to_string(),
+        );
+        lines.push(
+            r#"{"type":"assistant","uuid":"z","message":{"content":[{"type":"text","text":"Done."}]}}"#
+                .to_string(),
+        );
+        // A live writer's torn last line.
+        lines.push(
+            r#"{"type":"assistant","uuid":"torn","message":{"content":[{"type":"te"#.to_string(),
+        );
+        tokio::fs::write(&path, lines.join("\n")).await.unwrap();
+
+        let all = read(&path, usize::MAX).await.unwrap();
+        assert_eq!(all.len(), 506);
+        assert_eq!(all[0].text, "first");
+
+        let tail = read(&path, 7).await.unwrap();
+        assert_eq!(tail, all[all.len() - 7..]);
+        let seen: Vec<_> = tail
+            .iter()
+            .map(|m| (m.text.as_str(), m.run_id.as_deref(), m.hidden))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("step 498", Some("run-old"), false),
+                ("step 499", Some("run-old"), false),
+                ("second", Some("run-new"), false),
+                ("Compacted", Some("run-new"), false),
+                ("summary", Some("run-new"), true),
+                ("steer", Some("run-new"), false),
+                ("Done.", Some("run-new"), false),
+            ]
+        );
+
+        // The window starts after every prompt: rows still name their run.
+        let last_two = read(&path, 2).await.unwrap();
+        assert!(
+            last_two
+                .iter()
+                .all(|m| m.run_id.as_deref() == Some("run-new"))
+        );
+        assert!(read(&path, 0).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_shrunken_journal_reads_as_what_is_there_now() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let prompt = r#"{"type":"user","uuid":"run-1","message":{"role":"user","content":"hi"}}"#;
+        let reply = r#"{"type":"assistant","uuid":"a","message":{"content":[{"type":"text","text":"Done."}]}}"#;
+        tokio::fs::write(&path, format!("{prompt}\n{reply}\n"))
+            .await
+            .unwrap();
+        assert_eq!(read(&path, 1).await.unwrap()[0].text, "Done.");
+        tokio::fs::write(&path, format!("{prompt}\n"))
+            .await
+            .unwrap();
+        let rows = read(&path, 1).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text, "hi");
     }
 
     #[tokio::test]

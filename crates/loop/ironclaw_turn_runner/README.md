@@ -64,8 +64,6 @@ before anything durable commits. It never decides durability itself.
   `tests/integration/subagent_await_edge.rs::runner_await_edge_is_a_projection_over_process_dependencies`.
 - No planner strategy slot is exposed through a public API; no neutral
   vocabulary is duplicated from `ironclaw_turns`/`ironclaw_loop_contracts`.
-- `production_readiness.rs` has no production caller — a reporting slice
-  awaiting a startup gate or deletion (CHECKLIST WS4/WS8); do not build on it.
 
 ## Tests
 

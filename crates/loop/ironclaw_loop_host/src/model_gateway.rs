@@ -1754,10 +1754,12 @@ where
                 None => None,
             };
             let mut recovery_tool_names = Vec::with_capacity(tool_definitions.len());
+            let mut advertised_tool_names = HashSet::with_capacity(tool_definitions.len());
             let mut llm_tool_definitions = tool_definitions
                 .into_iter()
                 .map(|definition| {
                     recovery_tool_names.push(definition.name.as_str().to_string());
+                    advertised_tool_names.insert(definition.name.clone());
                     provider_tool_definition_to_llm(definition)
                 })
                 .collect::<Vec<_>>();
@@ -1837,8 +1839,9 @@ where
                 recover_textual_tool_calls_from_tool_response(response, &recovery_tool_names)?;
             let host_response_started_at = live_latency_started_at();
             match tool_response_to_host(
-                response.clone(),
+                response,
                 Arc::clone(&capabilities),
+                &advertised_tool_names,
                 provider_turn_scope
                     .as_deref()
                     .unwrap_or("model_call=unknown"),
@@ -1855,7 +1858,11 @@ where
                     );
                     return Ok(response);
                 }
-                Err(error) if is_repairable_provider_tool_output_error(&error) => {
+                Err(ToolResponseRejection {
+                    error,
+                    response: Some(response),
+                }) if is_repairable_provider_tool_output_error(&error) => {
+                    let response = *response;
                     trace_model_latency_error(
                         "tool_response_to_host",
                         &replay_identity,
@@ -1921,6 +1928,7 @@ where
                     let result = tool_response_to_host(
                         response,
                         capabilities,
+                        &advertised_tool_names,
                         provider_turn_scope
                             .as_deref()
                             .unwrap_or("model_call=unknown"),
@@ -1934,17 +1942,17 @@ where
                             provider_turn_scope.as_deref(),
                             repair_host_started_at,
                         ),
-                        Err(error) => trace_model_latency_error(
+                        Err(rejection) => trace_model_latency_error(
                             "tool_response_to_host_repair",
                             &replay_identity,
                             provider_turn_scope.as_deref(),
                             repair_host_started_at,
-                            error,
+                            &rejection.error,
                         ),
                     }
-                    return result;
+                    return result.map_err(|rejection| rejection.error);
                 }
-                Err(error) => {
+                Err(ToolResponseRejection { error, .. }) => {
                     trace_model_latency_error(
                         "tool_response_to_host",
                         &replay_identity,
@@ -2107,9 +2115,28 @@ fn estimate_tool_schema_tokens(definitions: &[ProviderToolDefinition]) -> u32 {
     })
 }
 
+/// A provider response the host could not turn into a loop response.
+///
+/// `response` is the untouched provider response when the rejection happened
+/// while classifying its tool calls, so the caller can build a repair prompt
+/// from it.
+struct ToolResponseRejection {
+    error: HostManagedModelError,
+    response: Option<Box<ToolCompletionResponse>>,
+}
+
+impl From<HostManagedModelError> for ToolResponseRejection {
+    fn from(error: HostManagedModelError) -> Self {
+        Self {
+            error,
+            response: None,
+        }
+    }
+}
+
 #[tracing::instrument(
     level = "debug",
-    skip(response, capabilities, replay_identity),
+    skip(response, capabilities, advertised_tool_names, replay_identity),
     fields(
         provider_id = %replay_identity.provider_id,
         provider_model_id = %replay_identity.provider_model_id,
@@ -2119,9 +2146,10 @@ fn estimate_tool_schema_tokens(definitions: &[ProviderToolDefinition]) -> u32 {
 async fn tool_response_to_host(
     response: ToolCompletionResponse,
     capabilities: Arc<dyn ironclaw_loop_contracts::LoopCapabilityPort>,
+    advertised_tool_names: &HashSet<ProviderToolName>,
     provider_turn_scope: &str,
     replay_identity: &ProviderReplayIdentity,
-) -> Result<HostManagedModelResponse, HostManagedModelError> {
+) -> Result<HostManagedModelResponse, ToolResponseRejection> {
     if tracing::enabled!(tracing::Level::DEBUG) {
         let tool_call_name_sample = response
             .tool_calls
@@ -2143,34 +2171,39 @@ async fn tool_response_to_host(
             FinishReason::ToolUse | FinishReason::Stop
         )
     {
-        let advertised_tool_names = capabilities
-            .tool_definitions()
-            .map_err(map_capability_host_error)?
-            .into_iter()
-            .map(|definition| definition.name)
-            .collect::<HashSet<_>>();
+        let reject = |error, response: ToolCompletionResponse| ToolResponseRejection {
+            error,
+            response: Some(Box::new(response)),
+        };
         let mut candidates = Vec::with_capacity(response.tool_calls.len());
         let provider_turn_id = provider_turn_id(provider_turn_scope, &response.tool_calls);
-        let provider_calls = response
+        let provider_calls = match response
             .tool_calls
-            .into_iter()
+            .iter()
             .map(|tool_call| {
                 provider_tool_call_from_llm(
-                    tool_call,
+                    tool_call.clone(),
                     response.reasoning.clone(),
                     provider_turn_id.clone(),
                     replay_identity,
                 )
             })
-            .collect::<Result<Vec<_>, HostManagedModelError>>()?;
+            .collect::<Result<Vec<_>, HostManagedModelError>>()
+        {
+            Ok(provider_calls) => provider_calls,
+            Err(error) => return Err(reject(error, response)),
+        };
         if !provider_calls_are_advertised_or_resolvable(
-            &advertised_tool_names,
+            advertised_tool_names,
             capabilities.as_ref(),
             &provider_calls,
         ) {
-            return Err(HostManagedModelError::safe(
-                HostManagedModelErrorKind::InvalidOutput,
-                InvalidOutputReason::OutsideCapabilitySurface.safe_summary(),
+            return Err(reject(
+                HostManagedModelError::safe(
+                    HostManagedModelErrorKind::InvalidOutput,
+                    InvalidOutputReason::OutsideCapabilitySurface.safe_summary(),
+                ),
+                response,
             ));
         }
         for provider_call in &provider_calls {
@@ -2189,7 +2222,7 @@ async fn tool_response_to_host(
                     reason = error.safe_summary.as_str(),
                     "reborn model gateway rejected provider tool call during validation"
                 );
-                return Err(map_provider_tool_output_error(error));
+                return Err(reject(map_provider_tool_output_error(error), response));
             }
         }
         for provider_call in provider_calls {
@@ -2208,7 +2241,7 @@ async fn tool_response_to_host(
                         reason = error.safe_summary.as_str(),
                         "reborn model gateway rejected provider tool call during registration"
                     );
-                    return Err(map_provider_tool_output_error(error));
+                    return Err(reject(map_provider_tool_output_error(error), response));
                 }
             }
         }
@@ -2229,6 +2262,12 @@ async fn tool_response_to_host(
         }));
     }
 
+    assistant_reply_from_tool_response(response).map_err(ToolResponseRejection::from)
+}
+
+fn assistant_reply_from_tool_response(
+    response: ToolCompletionResponse,
+) -> Result<HostManagedModelResponse, HostManagedModelError> {
     match response.finish_reason {
         FinishReason::Stop => {
             let content = clean_response(&response.content.unwrap_or_default());

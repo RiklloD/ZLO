@@ -165,16 +165,6 @@ impl GovernorBackedAccountant {
         self
     }
 
-    /// Override the per-token cost charged when the cost table has no
-    /// entry for a model. Composition callers wiring a known-zero-cost
-    /// table (Ollama, free tier) explicitly set this to
-    /// `ModelCost::default()` or a `ZeroCostTable` instead of letting
-    /// the conservative GPT-4o-priced fallback fire.
-    pub fn with_default_cost(mut self, cost: ModelCost) -> Self {
-        self.default_cost = cost;
-        self
-    }
-
     /// Install a seeding policy. The first reservation against each
     /// distinct user / project account installs the configured limits
     /// when no limit was previously set.
@@ -191,13 +181,6 @@ impl GovernorBackedAccountant {
     /// higher limit, Cancel, or expiry) is the caller's responsibility.
     pub fn with_gate_store(mut self, store: Arc<dyn BudgetGateStorePort>) -> Self {
         self.gate_store = Some(store);
-        self
-    }
-
-    /// Override the default 24h gate-expiry window. Tests set a short
-    /// window to drive the F5 (expired) scenario.
-    pub fn with_gate_expiry(mut self, duration: chrono::Duration) -> Self {
-        self.gate_expires_after = duration;
         self
     }
 

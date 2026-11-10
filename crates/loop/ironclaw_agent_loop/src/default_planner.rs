@@ -19,7 +19,6 @@ use crate::strategies::{
 };
 
 /// The reference planner: a concrete, Builtin-only strategy composition.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct DefaultPlanner {
     id: LoopFamilyId,
@@ -36,7 +35,6 @@ pub(crate) struct DefaultPlanner {
     budget: Arc<dyn BudgetStrategy>,
 }
 
-#[allow(dead_code)]
 impl DefaultPlanner {
     /// Crate-private constructor for the all-default strategy composition.
     pub(crate) fn compose_default() -> Self {
@@ -80,21 +78,6 @@ impl DefaultPlanner {
         self
     }
 
-    pub(crate) fn with_context(mut self, strategy: Arc<dyn ContextStrategy>) -> Self {
-        self.context = strategy;
-        self
-    }
-
-    pub(crate) fn with_compaction(mut self, strategy: Arc<dyn CompactionStrategy>) -> Self {
-        self.compaction = strategy;
-        self
-    }
-
-    pub(crate) fn with_capability(mut self, strategy: Arc<dyn CapabilityStrategy>) -> Self {
-        self.capability = strategy;
-        self
-    }
-
     pub(crate) fn with_model(mut self, strategy: Arc<dyn ModelStrategy>) -> Self {
         self.model = strategy;
         self
@@ -120,11 +103,6 @@ impl DefaultPlanner {
 
     pub(crate) fn with_stop(mut self, strategy: Arc<dyn StopConditionStrategy>) -> Self {
         self.stop = strategy;
-        self
-    }
-
-    pub(crate) fn with_drain(mut self, strategy: Arc<dyn InputDrainStrategy>) -> Self {
-        self.drain = strategy;
         self
     }
 
@@ -221,6 +199,33 @@ impl Default for DefaultStrategySlots {
 }
 
 #[cfg(test)]
+mod test_seams {
+    use super::*;
+
+    impl DefaultPlanner {
+        pub(crate) fn with_context(mut self, strategy: Arc<dyn ContextStrategy>) -> Self {
+            self.context = strategy;
+            self
+        }
+
+        pub(crate) fn with_compaction(mut self, strategy: Arc<dyn CompactionStrategy>) -> Self {
+            self.compaction = strategy;
+            self
+        }
+
+        pub(crate) fn with_capability(mut self, strategy: Arc<dyn CapabilityStrategy>) -> Self {
+            self.capability = strategy;
+            self
+        }
+
+        pub(crate) fn with_drain(mut self, strategy: Arc<dyn InputDrainStrategy>) -> Self {
+            self.drain = strategy;
+            self
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use async_trait::async_trait;
     use ironclaw_host_api::ids::{TenantId, ThreadId};
@@ -247,9 +252,6 @@ mod tests {
 
     fn assert_send_sync<T: Send + Sync>() {}
     fn assert_clone<T: Clone>() {}
-
-    #[allow(dead_code)]
-    fn _check(_: &dyn AgentLoopPlanner) {}
 
     #[test]
     fn default_planner_is_send_sync_and_clone() {

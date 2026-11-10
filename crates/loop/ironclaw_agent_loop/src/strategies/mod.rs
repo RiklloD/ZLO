@@ -14,9 +14,6 @@
 //! state such as grant history, auth flow status, route health, or
 //! circuit-breaker counters.
 
-// Keep the unused lint local to these crate-private strategy contracts.
-#![allow(dead_code, unused_imports)]
-
 mod active_task_compaction;
 mod budget;
 mod capability;
@@ -33,14 +30,16 @@ mod stop;
 pub(crate) use active_task_compaction::ActiveTaskPreservingCompactionStrategy;
 pub(crate) use budget::{BudgetStrategy, DEFAULT_ITERATION_BACKSTOP, DefaultBudgetStrategy};
 pub(crate) use capability::{CapabilityFilter, CapabilityStrategy, DefaultCapabilityStrategy};
+#[cfg(test)]
+pub(crate) use compaction::DefaultCompactionStrategy;
 pub(crate) use compaction::{
     ByteCapStrategy, CompactionDecision, CompactionForceStrategy, CompactionStrategy,
-    DefaultCompactionStrategy,
 };
+#[cfg(test)]
+pub(crate) use context::ContextPlan;
 pub(crate) use context::{
-    ContextPlan, ContextStrategy, DefaultContextStrategy,
-    invalid_model_output_repair_control_message, model_error_observation_control_message,
-    terminal_warning_control_message,
+    ContextStrategy, DefaultContextStrategy, invalid_model_output_repair_control_message,
+    model_error_observation_control_message, terminal_warning_control_message,
 };
 pub(crate) use drain::{DefaultInputDrainStrategy, InputDrainStrategy};
 pub(crate) use gate::{
@@ -52,9 +51,9 @@ pub(crate) use model::{
 };
 pub(crate) use progress::RepeatedOutputProgressStrategy;
 pub(crate) use recovery::{
-    BackoffDelayMs, CapabilityErrorSummary, DefaultRecoveryStrategy, ModelErrorClass,
-    ModelErrorSummary, RecoveryOutcome, RecoveryStrategy, RetryAlteration, RetryScope,
-    SanitizedStrategySummary, capability_error_to_failure_kind, model_error_to_failure_kind,
+    CapabilityErrorSummary, DefaultRecoveryStrategy, ModelErrorClass, ModelErrorSummary,
+    RecoveryOutcome, RecoveryStrategy, RetryAlteration, RetryScope, SanitizedStrategySummary,
+    capability_error_to_failure_kind, model_error_to_failure_kind,
 };
 pub(crate) use reply_admission::{
     DefaultReplyAdmissionStrategy, ReplyAdmissionOutcome, ReplyAdmissionStrategy,
@@ -72,9 +71,9 @@ mod tests {
     use ironclaw_loop_contracts::{
         AgentLoopDriverDescriptor, CancellationPolicy, CapabilitySurfaceProfileId,
         CheckpointPolicy, CheckpointSchemaId, ConcurrencyClass, ContextProfileId, LoopDriverId,
-        LoopFailureKind, LoopRunContext, ModelProfileId, RedactedRunProfileProvenance,
-        ResolvedRunProfile, ResourceBudgetPolicy, ResourceBudgetTier, RunClassId,
-        RunProfileFingerprint, RuntimeProfileConstraints, SchedulingClass, SteeringPolicy,
+        LoopRunContext, ModelProfileId, RedactedRunProfileProvenance, ResolvedRunProfile,
+        ResourceBudgetPolicy, ResourceBudgetTier, RunClassId, RunProfileFingerprint,
+        RuntimeProfileConstraints, SchedulingClass, SteeringPolicy,
     };
 
     use super::*;

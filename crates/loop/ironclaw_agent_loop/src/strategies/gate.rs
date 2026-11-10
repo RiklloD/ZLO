@@ -25,7 +25,6 @@ pub(crate) trait GateHandlingStrategy: Send + Sync {
 }
 
 /// Compile-time object-safety check.
-#[allow(dead_code)]
 fn _gate_handling_strategy_object_safe(_: &dyn GateHandlingStrategy) {}
 
 /// Reference baseline `GateHandlingStrategy`: always `Block`.

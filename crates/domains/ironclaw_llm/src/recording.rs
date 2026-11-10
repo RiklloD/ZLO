@@ -999,25 +999,6 @@ impl RecordingLlm {
         Arc::clone(&self.http_interceptor) as Arc<dyn HttpInterceptor>
     }
 
-    /// Append memory-document snapshot entries.
-    ///
-    /// Caller (main crate) collects entries from whatever workspace
-    /// implementation it owns and hands materialised data here. Keeping the
-    /// workspace type out of `ironclaw_llm` avoids a heavy reverse dep.
-    pub async fn snapshot_memory(&self, entries: Vec<MemorySnapshotEntry>) {
-        if entries.is_empty() {
-            return;
-        }
-        let mut snapshot = self.memory_snapshot.lock().await;
-        let added = entries.len();
-        snapshot.extend(entries);
-        tracing::info!(
-            documents = snapshot.len(),
-            added = added,
-            "Captured memory snapshot for trace recording"
-        );
-    }
-
     /// Flush accumulated steps, memory snapshot, and HTTP exchanges to the output file.
     pub async fn flush(&self) -> Result<(), std::io::Error> {
         // Serialize publications so an older snapshot can never overwrite a

@@ -205,8 +205,7 @@ pub enum SetupHint {
         #[serde(default)]
         supports_profile: bool,
     },
-    /// OAuth device-code or PKCE flow handled by [`crate::auth::start_login`].
-    /// The wizard renders a `WizardAuthPrompt` and resumes after token return.
+    /// OAuth device-code or PKCE flow.
     OAuthDeviceCode {
         display_name: String,
         /// Identifier for [`crate::auth::AuthBackend`] in the auth service.
@@ -559,25 +558,6 @@ impl ProviderRegistry {
         }
         result
     }
-
-    /// Check whether a backend string is a known provider.
-    ///
-    /// Includes both OpenAI-shape registry providers and the dedicated
-    /// backends (NearAI, Bedrock, OpenAI Codex, Gemini OAuth) whose
-    /// protocol returns `has_dedicated_config() == true`.
-    pub fn is_known(&self, backend: &str) -> bool {
-        self.find(backend).is_some()
-    }
-
-    /// Get the model env var for a backend string.
-    ///
-    /// Returns the registry provider's `model_env`, or `"LLM_MODEL"` for
-    /// unknown backends (the generic openai-compatible fallback path).
-    pub fn model_env_var(&self, backend: &str) -> &str {
-        self.find(backend)
-            .map(|def| def.model_env.as_str())
-            .unwrap_or("LLM_MODEL")
-    }
 }
 
 fn user_providers_path() -> Option<std::path::PathBuf> {
@@ -791,44 +771,6 @@ mod tests {
         assert!(api_key.accepts_api_key());
         assert!(compatible.accepts_api_key());
         assert!(!session.accepts_api_key());
-    }
-
-    #[test]
-    fn test_model_env_var_nearai() {
-        let registry = ProviderRegistry::new(
-            serde_json::from_str(include_str!("../assets/providers.json")).unwrap(),
-        );
-        assert_eq!(registry.model_env_var("nearai"), "NEARAI_MODEL");
-        assert_eq!(registry.model_env_var("near_ai"), "NEARAI_MODEL");
-    }
-
-    #[test]
-    fn test_model_env_var_registry_provider() {
-        let registry = ProviderRegistry::new(
-            serde_json::from_str(include_str!("../assets/providers.json")).unwrap(),
-        );
-        assert_eq!(registry.model_env_var("groq"), "GROQ_MODEL");
-        assert_eq!(registry.model_env_var("tinfoil"), "TINFOIL_MODEL");
-        assert_eq!(registry.model_env_var("openai"), "OPENAI_MODEL");
-    }
-
-    #[test]
-    fn test_model_env_var_unknown_fallback() {
-        let registry = ProviderRegistry::new(
-            serde_json::from_str(include_str!("../assets/providers.json")).unwrap(),
-        );
-        assert_eq!(registry.model_env_var("nonexistent"), "LLM_MODEL");
-    }
-
-    #[test]
-    fn test_is_known() {
-        let registry = ProviderRegistry::new(
-            serde_json::from_str(include_str!("../assets/providers.json")).unwrap(),
-        );
-        assert!(registry.is_known("nearai"));
-        assert!(registry.is_known("openai"));
-        assert!(registry.is_known("groq"));
-        assert!(!registry.is_known("nonexistent"));
     }
 
     #[test]
@@ -1220,9 +1162,8 @@ mod tests {
 
     /// The dedicated-config backends (nearai/bedrock/codex/gemini_oauth)
     /// must be in the registry so:
-    ///   - `is_known()` returns true (no string-list duplication elsewhere),
     ///   - `find()` resolves their aliases,
-    ///   - `model_env_var()` returns the right env var,
+    ///   - their `model_env` names the right env var,
     ///   - their protocol's `has_dedicated_config()` returns true (so the
     ///     OpenAI-shape resolver skips them),
     ///   - they appear in `selectable()` with the `SetupHint` variant the
@@ -1263,9 +1204,8 @@ mod tests {
                 "file_based_credentials",
             ),
         ] {
-            assert!(registry.is_known(id), "{id} should be is_known");
             assert!(
-                registry.is_known(alias_to_check),
+                registry.find(alias_to_check).is_some(),
                 "alias '{alias_to_check}' should resolve to {id}",
             );
             let def = registry
@@ -1276,7 +1216,7 @@ mod tests {
                 def.protocol.has_dedicated_config(),
                 "{id} protocol must report has_dedicated_config()"
             );
-            assert_eq!(registry.model_env_var(id), model_env);
+            assert_eq!(def.model_env, model_env);
             let setup = def
                 .setup
                 .as_ref()

@@ -6,15 +6,12 @@ use tokio::sync::RwLock;
 
 // ─── Risk: hardcoded VS Code Copilot identity ───────────────────────────────
 //
-// The client ID and editor identity headers below are extracted from the
-// VS Code Copilot Chat extension.  This is the *only* publicly documented
-// way to access the Copilot completions API with a personal GitHub token.
+// The editor identity headers below are extracted from the VS Code Copilot
+// Chat extension.  This is the *only* publicly documented way to access the
+// Copilot completions API with a personal GitHub token.
 //
 // **Known risks:**
-//   • GitHub may rotate or revoke this client ID at any time, which would
-//     break authentication for all IronClaw users until the constant is
-//     updated and a new release is shipped.
-//   • Using another product's client ID may violate GitHub's Terms of
+//   • Using another product's identity may violate GitHub's Terms of
 //     Service.  Maintainers should seek explicit guidance from GitHub
 //     before shipping this to a wide audience.
 //   • The editor version strings (`vscode/1.99.3`, `copilot-chat/0.26.7`)
@@ -24,12 +21,6 @@ use tokio::sync::RwLock;
 // an OAuth app registration flow for third-party tools, migrate to it
 // immediately.
 // ─────────────────────────────────────────────────────────────────────────────
-pub(crate) const GITHUB_COPILOT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
-pub(crate) const GITHUB_COPILOT_SCOPE: &str = "read:user";
-pub(crate) const GITHUB_COPILOT_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
-pub(crate) const GITHUB_COPILOT_ACCESS_TOKEN_URL: &str =
-    "https://github.com/login/oauth/access_token";
-pub(crate) const GITHUB_COPILOT_MODELS_URL: &str = "https://api.githubcopilot.com/models";
 pub(crate) const GITHUB_COPILOT_TOKEN_URL: &str =
     "https://api.github.com/copilot_internal/v2/token";
 pub(crate) const GITHUB_COPILOT_USER_AGENT: &str = "GitHubCopilotChat/0.26.7";
@@ -40,42 +31,10 @@ pub(crate) const GITHUB_COPILOT_INTEGRATION_ID: &str = "vscode-chat";
 /// Buffer before token expiry to trigger a refresh (5 minutes).
 const TOKEN_REFRESH_BUFFER_SECS: u64 = 300;
 
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct DeviceCodeResponse {
-    pub(crate) device_code: String,
-    pub(crate) user_code: String,
-    pub(crate) verification_uri: String,
-    pub(crate) expires_in: u64,
-    #[serde(default = "default_poll_interval_secs")]
-    pub(crate) interval: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AccessTokenResponse {
-    access_token: Option<String>,
-    error: Option<String>,
-    error_description: Option<String>,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GithubCopilotAuthError {
-    #[error("failed to start device login: {0}")]
-    DeviceCodeRequest(String),
-    #[error("failed to poll device login: {0}")]
-    TokenPolling(String),
-    #[error("device login was denied")]
-    AccessDenied,
-    #[error("device login expired before authorization completed")]
-    Expired,
     #[error("github copilot token validation failed: {0}")]
     Validation(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DevicePollingStatus {
-    Pending,
-    SlowDown,
-    Authorized(String),
 }
 
 pub(crate) fn default_headers() -> Vec<(String, String)> {
@@ -97,242 +56,6 @@ pub(crate) fn default_headers() -> Vec<(String, String)> {
             GITHUB_COPILOT_INTEGRATION_ID.to_string(),
         ),
     ]
-}
-
-pub(crate) fn default_poll_interval_secs() -> u64 {
-    5
-}
-
-pub(crate) async fn request_device_code(
-    client: &reqwest::Client,
-) -> Result<DeviceCodeResponse, GithubCopilotAuthError> {
-    let response = client
-        .post(GITHUB_COPILOT_DEVICE_CODE_URL)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::USER_AGENT, GITHUB_COPILOT_USER_AGENT)
-        .form(&[
-            ("client_id", GITHUB_COPILOT_CLIENT_ID),
-            ("scope", GITHUB_COPILOT_SCOPE),
-        ])
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::warn!(
-                error = %e,
-                is_timeout = e.is_timeout(),
-                is_connect = e.is_connect(),
-                url = %GITHUB_COPILOT_DEVICE_CODE_URL,
-                "Copilot: device code request failed"
-            );
-            GithubCopilotAuthError::DeviceCodeRequest(format_reqwest_error(&e))
-        })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        tracing::warn!(
-            status = %status,
-            body = %truncate_for_error(&body),
-            "Copilot: device code endpoint returned error"
-        );
-        return Err(GithubCopilotAuthError::DeviceCodeRequest(format!(
-            "HTTP {status}: {}",
-            truncate_for_error(&body)
-        )));
-    }
-
-    let device = response
-        .json::<DeviceCodeResponse>()
-        .await
-        .map_err(|e| GithubCopilotAuthError::DeviceCodeRequest(e.to_string()))?;
-
-    Ok(device)
-}
-
-pub(crate) async fn poll_for_access_token(
-    client: &reqwest::Client,
-    device_code: &str,
-) -> Result<DevicePollingStatus, GithubCopilotAuthError> {
-    let response = client
-        .post(GITHUB_COPILOT_ACCESS_TOKEN_URL)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::USER_AGENT, GITHUB_COPILOT_USER_AGENT)
-        .form(&[
-            ("client_id", GITHUB_COPILOT_CLIENT_ID),
-            ("device_code", device_code),
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ])
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::warn!(
-                error = %e,
-                is_timeout = e.is_timeout(),
-                is_connect = e.is_connect(),
-                url = %GITHUB_COPILOT_ACCESS_TOKEN_URL,
-                "Copilot: poll request failed"
-            );
-            GithubCopilotAuthError::TokenPolling(format_reqwest_error(&e))
-        })?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        tracing::warn!(
-            status = %status,
-            body = %truncate_for_error(&body),
-            "Copilot: poll endpoint returned error"
-        );
-        return Err(GithubCopilotAuthError::TokenPolling(format!(
-            "HTTP {status}: {}",
-            truncate_for_error(&body)
-        )));
-    }
-
-    let body = response
-        .json::<AccessTokenResponse>()
-        .await
-        .map_err(|e| GithubCopilotAuthError::TokenPolling(e.to_string()))?;
-
-    if let Some(token) = body.access_token {
-        return Ok(DevicePollingStatus::Authorized(token));
-    }
-
-    match body.error.as_deref() {
-        Some("authorization_pending") | None => Ok(DevicePollingStatus::Pending),
-        Some("slow_down") => {
-            tracing::debug!("Copilot: GitHub requested slow_down, increasing poll interval");
-            Ok(DevicePollingStatus::SlowDown)
-        }
-        Some("access_denied") => {
-            tracing::warn!("Copilot: device login was denied by user");
-            Err(GithubCopilotAuthError::AccessDenied)
-        }
-        Some("expired_token") => {
-            tracing::warn!("Copilot: device code expired before authorization");
-            Err(GithubCopilotAuthError::Expired)
-        }
-        Some(other) => {
-            let desc = body
-                .error_description
-                .filter(|description| !description.is_empty())
-                .unwrap_or_else(|| other.to_string());
-            tracing::warn!(error = %other, description = %desc, "Copilot: unexpected poll error");
-            Err(GithubCopilotAuthError::TokenPolling(desc))
-        }
-    }
-}
-
-/// Maximum consecutive transient poll failures before giving up.
-const MAX_POLL_FAILURES: u32 = 5;
-
-pub(crate) async fn wait_for_device_login(
-    client: &reqwest::Client,
-    device: &DeviceCodeResponse,
-) -> Result<String, GithubCopilotAuthError> {
-    let expires_at = std::time::Instant::now()
-        .checked_add(Duration::from_secs(device.expires_in))
-        .ok_or(GithubCopilotAuthError::Expired)?;
-    let mut poll_interval = device.interval.max(1);
-    let mut consecutive_failures: u32 = 0;
-
-    loop {
-        if std::time::Instant::now() >= expires_at {
-            tracing::warn!("Copilot: device login expired");
-            return Err(GithubCopilotAuthError::Expired);
-        }
-
-        tokio::time::sleep(Duration::from_secs(poll_interval)).await;
-
-        match poll_for_access_token(client, &device.device_code).await {
-            Ok(DevicePollingStatus::Pending) => {
-                consecutive_failures = 0;
-            }
-            Ok(DevicePollingStatus::SlowDown) => {
-                consecutive_failures = 0;
-                poll_interval = poll_interval.saturating_add(5);
-            }
-            Ok(DevicePollingStatus::Authorized(token)) => {
-                return Ok(token);
-            }
-            // Definitive failures — propagate immediately
-            Err(GithubCopilotAuthError::AccessDenied) => {
-                return Err(GithubCopilotAuthError::AccessDenied);
-            }
-            Err(GithubCopilotAuthError::Expired) => {
-                return Err(GithubCopilotAuthError::Expired);
-            }
-            // Transient failures — retry with backoff
-            Err(e) => {
-                consecutive_failures += 1;
-                tracing::warn!(
-                    error = %e,
-                    attempt = consecutive_failures,
-                    max = MAX_POLL_FAILURES,
-                    "Copilot: transient poll failure, will retry"
-                );
-                if consecutive_failures >= MAX_POLL_FAILURES {
-                    tracing::error!(
-                        error = %e,
-                        "Copilot: too many consecutive poll failures, giving up"
-                    );
-                    return Err(e);
-                }
-                // Back off on transient errors
-                poll_interval = (poll_interval + 2).min(30);
-            }
-        }
-    }
-}
-
-/// Validate a GitHub OAuth token by performing the Copilot token exchange.
-///
-/// This exchanges the raw OAuth token for a Copilot session token (proving the
-/// token is valid and the user has Copilot access), then verifies the session
-/// token works against the models endpoint.
-pub(crate) async fn validate_token(
-    client: &reqwest::Client,
-    token: &str,
-) -> Result<(), GithubCopilotAuthError> {
-    // Step 1: Exchange the OAuth token for a Copilot session token.
-    // This validates both that the OAuth token is valid and that the user
-    // has an active Copilot subscription.
-    let session = exchange_copilot_token(client, token).await?;
-    // Step 2: Verify the session token works against the models endpoint.
-    let mut request = client
-        .get(GITHUB_COPILOT_MODELS_URL)
-        .bearer_auth(&session.token)
-        .timeout(Duration::from_secs(15));
-
-    for (key, value) in default_headers() {
-        request = request.header(&key, value);
-    }
-
-    let response = request.send().await.map_err(|e| {
-        tracing::warn!(
-            error = %e,
-            is_timeout = e.is_timeout(),
-            is_connect = e.is_connect(),
-            "Copilot: models endpoint request failed"
-        );
-        GithubCopilotAuthError::Validation(format_reqwest_error(&e))
-    })?;
-
-    if response.status().is_success() {
-        return Ok(());
-    }
-
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    tracing::warn!(
-        status = %status,
-        body = %truncate_for_error(&body),
-        "Copilot: models endpoint returned error during validation"
-    );
-    Err(GithubCopilotAuthError::Validation(format!(
-        "HTTP {status}: {}",
-        truncate_for_error(&body)
-    )))
 }
 
 /// Response from the Copilot token exchange endpoint.
@@ -579,84 +302,6 @@ pub(crate) mod tests {
     }
 
     // --- poll_for_access_token response parsing ---
-
-    fn parse_access_token_body(json: &str) -> AccessTokenResponse {
-        serde_json::from_str(json).expect("valid JSON")
-    }
-
-    #[test]
-    fn parse_authorization_pending_response() {
-        let body: AccessTokenResponse =
-            parse_access_token_body(r#"{"error": "authorization_pending"}"#);
-        assert!(body.access_token.is_none());
-        assert_eq!(body.error.as_deref(), Some("authorization_pending"));
-    }
-
-    #[test]
-    fn parse_slow_down_response() {
-        let body: AccessTokenResponse = parse_access_token_body(r#"{"error": "slow_down"}"#);
-        assert_eq!(body.error.as_deref(), Some("slow_down"));
-    }
-
-    #[test]
-    fn parse_access_denied_response() {
-        let body: AccessTokenResponse = parse_access_token_body(r#"{"error": "access_denied"}"#);
-        assert_eq!(body.error.as_deref(), Some("access_denied"));
-    }
-
-    #[test]
-    fn parse_expired_token_response() {
-        let body: AccessTokenResponse = parse_access_token_body(r#"{"error": "expired_token"}"#);
-        assert_eq!(body.error.as_deref(), Some("expired_token"));
-    }
-
-    #[test]
-    fn parse_successful_token_response() {
-        let body: AccessTokenResponse =
-            parse_access_token_body(r#"{"access_token": "ghu_abc123"}"#);
-        assert_eq!(body.access_token.as_deref(), Some("ghu_abc123"));
-        assert!(body.error.is_none());
-    }
-
-    #[test]
-    fn parse_error_with_description() {
-        let body: AccessTokenResponse = parse_access_token_body(
-            r#"{"error": "bad_verification_code", "error_description": "The code has expired"}"#,
-        );
-        assert_eq!(body.error.as_deref(), Some("bad_verification_code"));
-        assert_eq!(
-            body.error_description.as_deref(),
-            Some("The code has expired")
-        );
-    }
-
-    #[test]
-    fn parse_device_code_response_with_defaults() {
-        let json = r#"{
-            "device_code": "dc_123",
-            "user_code": "ABCD-1234",
-            "verification_uri": "https://github.com/login/device",
-            "expires_in": 900
-        }"#;
-        let resp: DeviceCodeResponse = serde_json::from_str(json).expect("valid JSON");
-        assert_eq!(resp.device_code, "dc_123");
-        assert_eq!(resp.user_code, "ABCD-1234");
-        assert_eq!(resp.interval, 5); // default_poll_interval_secs
-        assert_eq!(resp.expires_in, 900);
-    }
-
-    #[test]
-    fn parse_device_code_response_with_custom_interval() {
-        let json = r#"{
-            "device_code": "dc_456",
-            "user_code": "EFGH-5678",
-            "verification_uri": "https://github.com/login/device",
-            "expires_in": 600,
-            "interval": 10
-        }"#;
-        let resp: DeviceCodeResponse = serde_json::from_str(json).expect("valid JSON");
-        assert_eq!(resp.interval, 10);
-    }
 
     // --- CopilotTokenManager ---
 

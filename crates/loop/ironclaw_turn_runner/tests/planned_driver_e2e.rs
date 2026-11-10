@@ -13,7 +13,7 @@ use ironclaw_agent_loop::{
 };
 use ironclaw_loop_contracts::{
     AgentLoopDriver, AgentLoopDriverError, AgentLoopDriverResumeRequest, AgentLoopDriverRunRequest,
-    AgentLoopHostError, AgentLoopHostErrorKind, AppendCapabilityResultRef, BeginAssistantDraft,
+    AgentLoopHostError, AgentLoopHostErrorKind, AppendCapabilityResultRef,
     FinalizeAssistantMessage, LoadCheckpointPayloadRequest, LoadedCheckpointPayload,
     LoopCancelReasonKind, LoopCancellationPort, LoopCancellationSignal, LoopCancelledReasonKind,
     LoopCapabilityPort, LoopCheckpointPort, LoopCheckpointRequest, LoopCheckpointStateRef,
@@ -23,8 +23,7 @@ use ironclaw_loop_contracts::{
     LoopModelResponse, LoopProgressEvent, LoopProgressPort, LoopPromptBundle,
     LoopPromptBundleRequest, LoopPromptPort, LoopRequest, LoopRequestBatch, LoopRunContext,
     LoopRunInfoPort, LoopSafeSummary, LoopTranscriptPort, RunProfileResolver,
-    StageCheckpointPayloadRequest, UpdateAssistantDraft, VisibleCapabilityRequest,
-    VisibleCapabilitySurface,
+    StageCheckpointPayloadRequest, VisibleCapabilityRequest, VisibleCapabilitySurface,
 };
 use ironclaw_turn_runner::app_loop_family::build_loop_family_registry;
 use ironclaw_turn_runner::planned_driver::PlannedDriver;
@@ -489,20 +488,6 @@ impl LoopCapabilityPort for ForbiddenResumeHost {
 
 #[async_trait::async_trait]
 impl LoopTranscriptPort for ForbiddenResumeHost {
-    async fn begin_assistant_draft(
-        &self,
-        _request: BeginAssistantDraft,
-    ) -> Result<LoopMessageRef, AgentLoopHostError> {
-        Err(self.forbidden_call("begin_assistant_draft"))
-    }
-
-    async fn update_assistant_draft(
-        &self,
-        _request: UpdateAssistantDraft,
-    ) -> Result<(), AgentLoopHostError> {
-        Err(self.forbidden_call("update_assistant_draft"))
-    }
-
     async fn finalize_assistant_message(
         &self,
         _request: FinalizeAssistantMessage,

@@ -27,8 +27,6 @@ coverage-bearing scenarios.
   `reborn_qa_recorded_behavior`).
 - `qa_scenarios.rs` — QA scenario coverage ledger (sole consumer
   `reborn_qa_smoke_scenarios_e2e`).
-- `delivery.rs` — `RecordingOutboundDeliverySink` (channel-delivery QA +
-  outbound reply-target parity).
 - `network.rs` — `RecordingNetworkHttpTransport` (doc-grounding / web-fetch QA).
 
 ## Module paths

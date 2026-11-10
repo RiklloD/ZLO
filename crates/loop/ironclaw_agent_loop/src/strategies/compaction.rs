@@ -290,11 +290,6 @@ impl ByteCapStrategy {
             default_cap: Self::DEFAULT_FALLBACK_CAP_BYTES,
         }
     }
-
-    pub fn with_cap(mut self, capability_id: CapabilityId, cap_bytes: u64) -> Self {
-        self.caps.insert(capability_id, cap_bytes);
-        self
-    }
 }
 
 impl Default for ByteCapStrategy {
@@ -316,6 +311,18 @@ impl CompactionForceStrategy for ByteCapStrategy {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod test_seams {
+    use super::*;
+
+    impl ByteCapStrategy {
+        pub(crate) fn with_cap(mut self, capability_id: CapabilityId, cap_bytes: u64) -> Self {
+            self.caps.insert(capability_id, cap_bytes);
+            self
+        }
     }
 }
 

@@ -39,6 +39,7 @@
 //! ```
 
 use std::ops::Range;
+use std::sync::LazyLock;
 
 use aho_corasick::AhoCorasick;
 use regex::Regex;
@@ -113,6 +114,7 @@ impl LeakPreviewPolicy {
     }
 }
 
+#[derive(Clone)]
 struct RegisteredLeakPattern {
     pattern: LeakPattern,
     preview_policy: LeakPreviewPolicy,
@@ -180,6 +182,7 @@ impl LeakScanResult {
 }
 
 /// Detector for secret leaks in output data.
+#[derive(Clone)]
 pub struct LeakDetector {
     patterns: Vec<RegisteredLeakPattern>,
     /// For fast prefix matching of known patterns
@@ -189,8 +192,13 @@ pub struct LeakDetector {
 
 impl LeakDetector {
     /// Create a new detector with default patterns.
+    ///
+    /// The default pattern set is compiled once per process; each call hands
+    /// out a cheap copy that shares the compiled regexes and prefix matcher.
     pub fn new() -> Self {
-        Self::with_pattern_policies(default_patterns())
+        static DEFAULT: LazyLock<LeakDetector> =
+            LazyLock::new(|| LeakDetector::with_pattern_policies(default_patterns()));
+        DEFAULT.clone()
     }
 
     /// Create a detector with custom patterns using masked previews.
@@ -420,29 +428,6 @@ impl LeakDetector {
         }
 
         Ok(())
-    }
-
-    /// Add a custom pattern at runtime.
-    pub fn add_pattern(&mut self, pattern: LeakPattern) {
-        self.add_pattern_with_preview_policy(pattern, LeakPreviewPolicy::Masked);
-    }
-
-    /// Add a custom pattern with an explicit preview policy at runtime.
-    pub fn add_pattern_with_preview_policy(
-        &mut self,
-        pattern: LeakPattern,
-        preview_policy: LeakPreviewPolicy,
-    ) {
-        self.patterns.push(RegisteredLeakPattern {
-            pattern,
-            preview_policy,
-        });
-        // Note: prefix_matcher won't be updated; rebuild if needed
-    }
-
-    /// Get the number of patterns.
-    pub fn pattern_count(&self) -> usize {
-        self.patterns.len()
     }
 }
 
@@ -866,6 +851,39 @@ mod tests {
         LeakRedactionError, LeakScanResult, LeakSeverity, MAX_BARE_JWT_CANDIDATE_LEN,
     };
     use regex::Regex;
+
+    #[test]
+    fn default_detector_matches_a_freshly_compiled_pattern_set() {
+        let fresh = LeakDetector::with_pattern_policies(super::default_patterns());
+        let content = "key sk-proj-abc123def456ghi789jkl012mno345pqrT3BlbkFJtest123 and \
+                       ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx plus plain text";
+        for detector in [
+            LeakDetector::new(),
+            LeakDetector::new(),
+            LeakDetector::default(),
+        ] {
+            let expected = fresh.scan(content);
+            let actual = detector.scan(content);
+            assert!(!actual.is_clean());
+            assert_eq!(actual.should_block, expected.should_block);
+            assert_eq!(
+                actual
+                    .matches
+                    .iter()
+                    .map(|m| m.pattern_name.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+                    .matches
+                    .iter()
+                    .map(|m| m.pattern_name.as_str())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                detector.redact_all_secrets(content).0,
+                fresh.redact_all_secrets(content).0
+            );
+        }
+    }
 
     #[test]
     fn test_detect_openai_key() {

@@ -27,15 +27,14 @@ use ironclaw_host_api::{
 };
 use ironclaw_loop_host::{
     ACTIVE_TASK_COMPACTION_SYSTEM_PROMPT, AgentTurnRunCancellationFactory, CapabilityResolveError,
-    CapabilitySurfacePolicyFilter, CapabilitySurfaceProfileResolver, EmptyLoopCapabilityPort,
-    EmptyUserProfileSource, GuardedSystemInferencePort, HostIdentityContextSource, HostInputQueue,
-    HostManagedModelGateway, HostQueueLoopInputPort, HostSkillContextSource, HostUserProfileSource,
-    LoopAttachmentReadPort, LoopCapabilityInputResolver, LoopCapabilityPortFactory,
-    LoopToolImagePort, ModelGatewayBackedSystemInferencePort, RunCancellationFactory,
-    RunCancellationObservationKind, RunStateLoopCancellationPort, StructuredOutputLoopPromptPort,
-    SubagentLoopPromptPort, SubagentPromptComposer, ThreadBackedLoopContextPort,
-    ThreadBackedLoopTranscriptPort, ThreadContextWindowCache, active_task_compaction_prompt_id,
-    host_managed_loop_compaction_port_with_prompt_id,
+    CapabilitySurfacePolicyFilter, EmptyLoopCapabilityPort, EmptyUserProfileSource,
+    GuardedSystemInferencePort, HostIdentityContextSource, HostInputQueue, HostManagedModelGateway,
+    HostQueueLoopInputPort, HostSkillContextSource, HostUserProfileSource, LoopAttachmentReadPort,
+    LoopCapabilityInputResolver, LoopCapabilityPortFactory, LoopToolImagePort,
+    ModelGatewayBackedSystemInferencePort, RunCancellationFactory, RunStateLoopCancellationPort,
+    StructuredOutputLoopPromptPort, SubagentLoopPromptPort, SubagentPromptComposer,
+    ThreadBackedLoopContextPort, ThreadBackedLoopTranscriptPort, ThreadContextWindowCache,
+    active_task_compaction_prompt_id, host_managed_loop_compaction_port_with_prompt_id,
 };
 use ironclaw_outbound::ReplyAttachmentIntentPort;
 use ironclaw_threads::{SessionThreadService, ThreadScope};
@@ -120,7 +119,7 @@ fn trace_host_factory_latency_error<E: ?Sized>(
 }
 
 use ironclaw_loop_contracts::{
-    AgentLoopHostError, AgentLoopHostErrorKind, AppendCapabilityResultRef, BeginAssistantDraft,
+    AgentLoopHostError, AgentLoopHostErrorKind, AppendCapabilityResultRef,
     CommunicationContextProvider, EphemeralInstructionMaterializationStore,
     FinalizeAssistantMessage, HookMilestoneSink, InstructionBundleMaterializedMessage,
     InstructionMaterializationStore, InstructionSafetyContext, LoadCheckpointPayloadRequest,
@@ -135,8 +134,8 @@ use ironclaw_loop_contracts::{
     LoopRequestBatch, LoopRunContext, LoopRunInfoPort, LoopRuntimeContext, LoopTranscriptPort,
     MemoryPromptContextService, NoOpBudgetAccountant, NoOpPolicyGuard, ProviderToolCall,
     ProviderToolDefinition, RegisterProviderToolCallRequest, RunScopedHookMilestoneSink,
-    StageCheckpointPayloadRequest, SystemInferencePort, UpdateAssistantDraft,
-    VisibleCapabilityRequest, VisibleCapabilitySurface,
+    StageCheckpointPayloadRequest, SystemInferencePort, VisibleCapabilityRequest,
+    VisibleCapabilitySurface,
 };
 use ironclaw_turns::{
     AgentTurnRuntimePort, AgentTurnSpawnTreeRuntimePort, LoopCheckpointStore, RunProfileId,
@@ -148,28 +147,6 @@ use tokio::task::JoinHandle;
 
 struct ProfiledCapabilityHostRuntime {
     capability_factory: Arc<dyn LoopCapabilityPortFactory>,
-}
-
-struct SurfaceFilteringCapabilityPortFactory {
-    inner: Arc<dyn LoopCapabilityPortFactory>,
-    surface_resolver: Arc<dyn CapabilitySurfaceProfileResolver>,
-}
-
-#[async_trait]
-impl LoopCapabilityPortFactory for SurfaceFilteringCapabilityPortFactory {
-    async fn create_capability_port(
-        &self,
-        run_context: &LoopRunContext,
-    ) -> Result<Arc<dyn LoopCapabilityPort>, AgentLoopHostError> {
-        let policy = Arc::new(
-            self.surface_resolver
-                .resolve(run_context)
-                .await
-                .map_err(capability_resolve_error_to_agent_host_error)?,
-        );
-        let capabilities = self.inner.create_capability_port(run_context).await?;
-        Ok(apply_capability_surface_policy(capabilities, policy))
-    }
 }
 
 /// Provider resolver that consults the current visible-capability surface
@@ -1197,10 +1174,6 @@ where
         self
     }
 
-    pub fn cancellation_observation_kind(&self) -> RunCancellationObservationKind {
-        self.cancellation_factory.observation_kind()
-    }
-
     /// Per-run thread scope: the factory's installation scope
     /// (tenant/agent/project) with `owner_user_id` re-pointed at the
     /// run's authenticated actor. This is what makes the WebChat v2
@@ -1513,20 +1486,6 @@ where
         self
     }
 
-    pub fn with_profiled_capability_port_factory(
-        mut self,
-        capability_factory: Arc<dyn LoopCapabilityPortFactory>,
-        surface_resolver: Arc<dyn CapabilitySurfaceProfileResolver>,
-    ) -> Self {
-        self.profiled_capabilities = Some(ProfiledCapabilityHostRuntime {
-            capability_factory: Arc::new(SurfaceFilteringCapabilityPortFactory {
-                inner: capability_factory,
-                surface_resolver,
-            }),
-        });
-        self
-    }
-
     /// Install a runner-private factory that already resolves and applies the
     /// effective capability profile during port construction.
     pub(crate) fn with_resolved_profiled_capability_port_factory(
@@ -1573,25 +1532,6 @@ where
         request: RebornLoopDriverHostRequest,
     ) -> Result<RebornLoopDriverHost, RebornLoopDriverHostError> {
         self.build_text_only_host_with_capabilities(request, Arc::new(EmptyLoopCapabilityPort))
-            .await
-    }
-
-    /// Build a host from a capability port plus an already-resolved profile.
-    /// Production uses the runner-private profiled factory; this explicit form
-    /// remains useful to tests that act as their own construction boundary.
-    pub async fn build_text_only_host_with_profiled_capabilities(
-        &self,
-        request: RebornLoopDriverHostRequest,
-        capabilities: Arc<dyn LoopCapabilityPort>,
-        policy: Arc<CapabilitySurfacePolicy>,
-    ) -> Result<RebornLoopDriverHost, RebornLoopDriverHostError> {
-        validate_claimed_run_context(&request.claimed_run, &request.loop_run_context)?;
-        validate_thread_scope(
-            &self.effective_thread_scope(&request.loop_run_context),
-            &request.loop_run_context,
-        )?;
-        let capabilities = apply_capability_surface_policy(capabilities, policy);
-        self.build_text_only_host_with_capabilities(request, capabilities)
             .await
     }
 
@@ -2567,20 +2507,6 @@ impl LoopCapabilityPort for RebornLoopDriverHost {
 
 #[async_trait]
 impl LoopTranscriptPort for RebornLoopDriverHost {
-    async fn begin_assistant_draft(
-        &self,
-        request: BeginAssistantDraft,
-    ) -> Result<ironclaw_turns::LoopMessageRef, AgentLoopHostError> {
-        self.transcript.begin_assistant_draft(request).await
-    }
-
-    async fn update_assistant_draft(
-        &self,
-        request: UpdateAssistantDraft,
-    ) -> Result<(), AgentLoopHostError> {
-        self.transcript.update_assistant_draft(request).await
-    }
-
     async fn finalize_assistant_message(
         &self,
         request: FinalizeAssistantMessage,

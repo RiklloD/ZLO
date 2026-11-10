@@ -2,8 +2,7 @@
 //! (`ironclaw_composition::runtime::standalone::outbound_delivery`). Fixed
 //! in-memory inventory: succeeds for a known target, `NotFound` otherwise — one
 //! double drives both the happy path and the reject route without per-test
-//! config. Distinct from `delivery::RecordingOutboundDeliverySink` (the
-//! final-reply delivery sink; this is the delivery-*preference* service).
+//! config.
 
 #![allow(dead_code)]
 

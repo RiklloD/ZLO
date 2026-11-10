@@ -82,15 +82,7 @@ pub enum ProductSurfaceKind {
     SynchronousApi,
 }
 
-impl ProductSurfaceKind {
-    pub fn uses_push_delivery(self) -> bool {
-        matches!(self, Self::ExternalChannel)
-    }
-
-    pub fn supports_synchronous_response(self) -> bool {
-        matches!(self, Self::Web | Self::Cli | Self::SynchronousApi)
-    }
-}
+impl ProductSurfaceKind {}
 
 #[cfg(test)]
 mod tests {

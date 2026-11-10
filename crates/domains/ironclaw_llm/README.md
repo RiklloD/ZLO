@@ -21,8 +21,8 @@ isolated here so no non-LLM consumer inherits them.
 
 - `LlmProvider` — the contract (`complete`, `complete_with_tools`, streaming
   variants, model metadata/cost hooks); `LlmError` taxonomy.
-- Factory/assembly: `build_provider_chain`, `create_llm_provider`,
-  `create_registry_provider`; `ProviderRegistry` / `ProviderProtocol`;
+- Factory/assembly: `build_provider_chain`, `create_llm_provider`;
+  `ProviderRegistry` / `ProviderProtocol`;
   `SwappableLlmProvider` + `LlmReloadHandle`.
 - Decorators: `RetryProvider`, `CircuitBreakerProvider`, `FailoverProvider`,
   `CachedProvider`, `SmartRoutingProvider`, `TokenRefreshingProvider`.
@@ -30,7 +30,7 @@ isolated here so no non-LLM consumer inherits them.
   OAuth, GitHub Copilot, AWS Bedrock (`--features bedrock`), rig-core-backed
   OpenAI-compatible endpoints.
 - Recording: `RecordingLlm` (+ `trace_binding`); model catalogs
-  (`models`, `vision_models`, `reasoning_models`, `image_models`).
+  (`models`, `vision_models`, `reasoning_models`).
 - `test-support` feature: `testing::StubLlm`, fault injection,
   `provider_chain_over`.
 
@@ -68,7 +68,7 @@ cargo clippy -p ironclaw_llm --all-targets --all-features -- -D warnings
 
 - **The module spec is [`CONTRACT.md`](./CONTRACT.md)** (named in the root
   `AGENTS.md` Module Specs table): provider selection env vars, per-provider
-  gotchas, decorator chain order, host trait surface. This README only
+  gotchas, decorator chain order. This README only
   orients — the spec is canonical.
 - Orientation for agents: [`AGENTS.md`](./AGENTS.md) (pointer + reading aid).
 - Family boundary: [`../AGENTS.md`](../AGENTS.md); design record:

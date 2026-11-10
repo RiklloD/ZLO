@@ -306,12 +306,6 @@ impl LlmReloadHandle {
         self.primary.clone() as Arc<dyn LlmProvider>
     }
 
-    pub fn cheap_provider(&self) -> Option<Arc<dyn LlmProvider>> {
-        self.cheap
-            .as_ref()
-            .map(|provider| provider.clone() as Arc<dyn LlmProvider>)
-    }
-
     /// Rebuild the provider chain from `config` and atomically replace the
     /// inner providers of the primary (and cheap, if present) wrappers.
     ///

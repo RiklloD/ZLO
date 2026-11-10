@@ -84,10 +84,6 @@ impl From<DriverRegistryError> for DefaultPlannedDriverRegistrationError {
     }
 }
 
-pub fn planned_driver_default_id() -> Result<ironclaw_loop_contracts::LoopDriverId, String> {
-    ironclaw_loop_contracts::LoopDriverId::new(PLANNED_DRIVER_DEFAULT_ID)
-}
-
 pub fn planned_driver_checkpoint_schema_id() -> Result<CheckpointSchemaId, String> {
     CheckpointSchemaId::new(PLANNED_DRIVER_CHECKPOINT_SCHEMA_ID)
 }

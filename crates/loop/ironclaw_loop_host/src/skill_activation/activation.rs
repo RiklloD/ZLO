@@ -238,15 +238,6 @@ impl SkillActivationSelectorConfig {
         self
     }
 
-    /// Bind a skill-activation strategy (profile `skill.activation.v1`).
-    pub fn set_activation_strategy(
-        mut self,
-        activation_strategy: ironclaw_skills::activation_strategy::ActivationStrategy,
-    ) -> Self {
-        self.activation_strategy = activation_strategy;
-        self
-    }
-
     pub fn set_injection_mode(mut self, injection_mode: SkillInjectionMode) -> Self {
         self.injection_mode = injection_mode;
         self

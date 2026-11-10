@@ -162,9 +162,7 @@ fn supports_modern_features(model: &str) -> bool {
 
 /// Invalid stream error types mirroring the Gemini CLI.
 #[derive(Debug)]
-#[allow(dead_code)]
 enum InvalidStreamType {
-    NoFinishReason,
     NoResponseText,
     MalformedFunctionCall,
     UnexpectedToolCall,
@@ -173,68 +171,10 @@ enum InvalidStreamType {
 impl std::fmt::Display for InvalidStreamType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoFinishReason => write!(f, "NO_FINISH_REASON"),
             Self::NoResponseText => write!(f, "NO_RESPONSE_TEXT"),
             Self::MalformedFunctionCall => write!(f, "MALFORMED_FUNCTION_CALL"),
             Self::UnexpectedToolCall => write!(f, "UNEXPECTED_TOOL_CALL"),
         }
-    }
-}
-
-/// Credits tracking from Cloud Code API responses.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct GeminiCredits {
-    #[serde(rename = "creditType")]
-    pub(crate) credit_type: String,
-    #[serde(rename = "creditAmount")]
-    pub(crate) credit_amount: String,
-}
-
-/// What one Cloud Code SSE stream amounted to.
-struct CloudCodeSseAggregate {
-    /// The Gemini-shaped body to parse, or `None` when the stream carried
-    /// neither content nor a terminal finish reason.
-    response: Option<serde_json::Value>,
-    /// Per-response metadata collected in the same pass.
-    meta: GeminiResponseMeta,
-}
-
-/// Extended response metadata parsed from Gemini API responses.
-// Fields are unread now that the only consumer (`last_response_meta`) is
-// unused after `gemini_oauth` was made `pub(crate)`. Kept to preserve the
-// move's no-behavior-change guarantee; delete in a follow-up if no caller
-// emerges.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Default)]
-pub(crate) struct GeminiResponseMeta {
-    /// Model version actually used (from response).
-    pub(crate) model_version: Option<String>,
-    /// Prompt feedback including block reason if any.
-    pub(crate) prompt_feedback: Option<serde_json::Value>,
-    /// Grounding metadata (citations, chunks, supports).
-    pub(crate) grounding_metadata: Option<serde_json::Value>,
-    /// Citation metadata from model response.
-    pub(crate) citation_metadata: Option<serde_json::Value>,
-    /// Credits consumed by this request.
-    pub(crate) consumed_credits: Vec<GeminiCredits>,
-    /// Credits remaining after this request.
-    pub(crate) remaining_credits: Vec<GeminiCredits>,
-    /// Cached content token count.
-    pub(crate) cached_content_token_count: Option<u32>,
-    /// Total token count from usage metadata.
-    pub(crate) total_token_count: Option<u32>,
-}
-
-impl GeminiResponseMeta {
-    fn is_empty(&self) -> bool {
-        self.model_version.is_none()
-            && self.prompt_feedback.is_none()
-            && self.grounding_metadata.is_none()
-            && self.citation_metadata.is_none()
-            && self.consumed_credits.is_empty()
-            && self.remaining_credits.is_empty()
-            && self.cached_content_token_count.is_none()
-            && self.total_token_count.is_none()
     }
 }
 
@@ -932,7 +872,6 @@ pub(crate) struct GeminiOauthProvider {
     cred_manager: CredentialManager,
     http_client: Client,
     /// Latest response metadata (updated after each request).
-    last_response_meta: std::sync::Mutex<GeminiResponseMeta>,
     /// Captured thought signatures keyed by tool-call ID. Gemini 3.x models
     /// require these echoed back on `functionCall` parts when replaying history.
     /// Populated from responses, consumed when building the next request.
@@ -986,7 +925,6 @@ impl GeminiOauthProvider {
             config,
             cred_manager,
             http_client,
-            last_response_meta: std::sync::Mutex::new(GeminiResponseMeta::default()),
             thought_signatures: std::sync::Mutex::new(HashMap::new()),
         })
     }
@@ -1024,13 +962,7 @@ impl GeminiOauthProvider {
             })?;
         let body = String::from_utf8_lossy(&body_bytes);
         let parsed_body = if self.uses_cloud_code_api() {
-            let aggregate = Self::aggregate_cloud_code_sse(&body);
-            if !aggregate.meta.is_empty()
-                && let Ok(mut meta) = self.last_response_meta.lock()
-            {
-                *meta = aggregate.meta.clone();
-            }
-            aggregate.response.unwrap_or_else(|| serde_json::json!({}))
+            Self::aggregate_cloud_code_sse(&body).unwrap_or_else(|| serde_json::json!({}))
         } else {
             serde_json::from_slice(&body_bytes).unwrap_or_else(|_| serde_json::json!({}))
         };
@@ -1377,14 +1309,7 @@ impl GeminiOauthProvider {
 
             let mut success = false;
             if self.uses_cloud_code_api() {
-                let aggregate = Self::aggregate_cloud_code_sse(&body_str);
-                // silent-ok: caching `last_response_meta` is best-effort
-                // telemetry; a poisoned lock must not fail an otherwise-good
-                // response.
-                if let Ok(mut meta) = self.last_response_meta.lock() {
-                    *meta = aggregate.meta;
-                }
-                if let Some(response) = aggregate.response {
+                if let Some(response) = Self::aggregate_cloud_code_sse(&body_str) {
                     final_response = response;
                     success = true;
                 }
@@ -1757,12 +1682,12 @@ impl GeminiOauthProvider {
     ///
     /// Cloud Code answers a non-streaming request with an SSE stream of
     /// partial candidates; this collapses them into the single body
-    /// [`Self::from_gemini_response`] parses, plus the per-response metadata.
+    /// [`Self::from_gemini_response`] parses.
     ///
-    /// `response` is `None` only when the stream said nothing usable at all —
+    /// Returns `None` only when the stream said nothing usable at all —
     /// no content, no terminal finish reason, and no prompt-level block —
     /// which the caller reports as an invalid response.
-    fn aggregate_cloud_code_sse(body_str: &str) -> CloudCodeSseAggregate {
+    fn aggregate_cloud_code_sse(body_str: &str) -> Option<serde_json::Value> {
         let mut combined_text = String::new();
         // Only what a candidate actually reported. Defaulting to
         // "STOP" made a stream that never declared a finish reason
@@ -1772,15 +1697,7 @@ impl GeminiOauthProvider {
         let mut candidates_tokens: i64 = 0;
         let mut tool_calls_parts = Vec::<serde_json::Value>::new();
 
-        // Metadata (collected in the same pass)
-        let mut model_version: Option<String> = None;
         let mut prompt_feedback: Option<serde_json::Value> = None;
-        let mut grounding_metadata: Option<serde_json::Value> = None;
-        let mut citation_metadata: Option<serde_json::Value> = None;
-        let mut cached_content_token_count: Option<u32> = None;
-        let mut total_token_count: Option<u32> = None;
-        let mut consumed_credits: Vec<GeminiCredits> = Vec::new();
-        let mut remaining_credits: Vec<GeminiCredits> = Vec::new();
 
         for line in body_str.lines() {
             let Some(json_str) = line.strip_prefix("data:") else {
@@ -1791,22 +1708,6 @@ impl GeminiOauthProvider {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-
-            // Credits from Cloud Code wrapper (top-level, outside "response")
-            if let Some(cc) = chunk.get("consumedCredits").and_then(|c| c.as_array()) {
-                for c in cc {
-                    if let Ok(credit) = serde_json::from_value::<GeminiCredits>(c.clone()) {
-                        consumed_credits.push(credit);
-                    }
-                }
-            }
-            if let Some(rc) = chunk.get("remainingCredits").and_then(|c| c.as_array()) {
-                for c in rc {
-                    if let Ok(credit) = serde_json::from_value::<GeminiCredits>(c.clone()) {
-                        remaining_credits.push(credit);
-                    }
-                }
-            }
 
             let resp = match chunk.get("response") {
                 Some(r) => r,
@@ -1842,25 +1743,8 @@ impl GeminiOauthProvider {
                 if let Some(fr) = first.get("finishReason").and_then(|fr| fr.as_str()) {
                     finish_reason = Some(fr.to_string());
                 }
-                // Per-candidate metadata
-                if grounding_metadata.is_none()
-                    && let Some(gm) = first.get("groundingMetadata")
-                {
-                    grounding_metadata = Some(gm.clone());
-                }
-                if citation_metadata.is_none()
-                    && let Some(cm) = first.get("citationMetadata")
-                {
-                    citation_metadata = Some(cm.clone());
-                }
             }
 
-            // Response-level metadata
-            if model_version.is_none()
-                && let Some(mv) = resp.get("modelVersion").and_then(|v| v.as_str())
-            {
-                model_version = Some(mv.to_string());
-            }
             if prompt_feedback.is_none()
                 && let Some(pf) = resp.get("promptFeedback")
             {
@@ -1873,28 +1757,8 @@ impl GeminiOauthProvider {
                 if let Some(ct) = usage.get("candidatesTokenCount").and_then(|ct| ct.as_i64()) {
                     candidates_tokens = ct;
                 }
-                if let Some(ct) = usage
-                    .get("cachedContentTokenCount")
-                    .and_then(|t| t.as_u64())
-                {
-                    cached_content_token_count = Some(ct as u32);
-                }
-                if let Some(tt) = usage.get("totalTokenCount").and_then(|t| t.as_u64()) {
-                    total_token_count = Some(tt as u32);
-                }
             }
         }
-        let meta = GeminiResponseMeta {
-            model_version,
-            prompt_feedback: prompt_feedback.clone(),
-            grounding_metadata,
-            citation_metadata,
-            consumed_credits,
-            remaining_credits,
-            cached_content_token_count,
-            total_token_count,
-        };
-
         // Gemini blocks in two different places. `candidates[].finishReason`
         // means the *output* was cut off mid-generation; `promptFeedback.
         // blockReason` means the *input* was rejected before generation, and
@@ -1930,38 +1794,35 @@ impl GeminiOauthProvider {
             .and_then(map_provider_finish_token)
             .is_some_and(|reason| reason != FinishReason::Stop);
 
-        let response =
-            (has_content || terminal_failure || prompt_block_reason.is_some()).then(|| {
-                let mut response_parts = Vec::new();
-                if !combined_text.is_empty() {
-                    response_parts.push(serde_json::json!({"text": combined_text}));
-                }
-                response_parts.extend(tool_calls_parts);
+        (has_content || terminal_failure || prompt_block_reason.is_some()).then(|| {
+            let mut response_parts = Vec::new();
+            if !combined_text.is_empty() {
+                response_parts.push(serde_json::json!({"text": combined_text}));
+            }
+            response_parts.extend(tool_calls_parts);
 
-                let mut candidate = serde_json::json!({
-                    "content": { "parts": response_parts }
-                });
-                // Absent stays absent: `from_gemini_response` falls back to
-                // shape inference only when the provider said nothing. A
-                // candidate's own reason wins; a prompt-level block reason stands
-                // in only when no candidate reported one, and it speaks the same
-                // vocabulary (`SAFETY`, `BLOCKLIST`, `PROHIBITED_CONTENT`,
-                // `IMAGE_SAFETY`, `MODEL_ARMOR` → content filter; `OTHER` and
-                // `BLOCK_REASON_UNSPECIFIED` → unknown), so the shared table in
-                // `provider::map_provider_finish_token` classifies both.
-                if let Some(finish_reason) = finish_reason.or(prompt_block_reason) {
-                    candidate["finishReason"] = serde_json::Value::String(finish_reason);
-                }
-                serde_json::json!({
-                    "candidates": [candidate],
-                    "usageMetadata": {
-                        "promptTokenCount": prompt_tokens,
-                        "candidatesTokenCount": candidates_tokens
-                    }
-                })
+            let mut candidate = serde_json::json!({
+                "content": { "parts": response_parts }
             });
-
-        CloudCodeSseAggregate { response, meta }
+            // Absent stays absent: `from_gemini_response` falls back to
+            // shape inference only when the provider said nothing. A
+            // candidate's own reason wins; a prompt-level block reason stands
+            // in only when no candidate reported one, and it speaks the same
+            // vocabulary (`SAFETY`, `BLOCKLIST`, `PROHIBITED_CONTENT`,
+            // `IMAGE_SAFETY`, `MODEL_ARMOR` → content filter; `OTHER` and
+            // `BLOCK_REASON_UNSPECIFIED` → unknown), so the shared table in
+            // `provider::map_provider_finish_token` classifies both.
+            if let Some(finish_reason) = finish_reason.or(prompt_block_reason) {
+                candidate["finishReason"] = serde_json::Value::String(finish_reason);
+            }
+            serde_json::json!({
+                "candidates": [candidate],
+                "usageMetadata": {
+                    "promptTokenCount": prompt_tokens,
+                    "candidatesTokenCount": candidates_tokens
+                }
+            })
+        })
     }
 
     /// Parsed Gemini response: (completion, tool_calls, thought_signatures_by_call_id).
@@ -2120,14 +1981,6 @@ impl GeminiOauthProvider {
             finish_reason.and_then(map_provider_finish_token),
             !tool_calls.is_empty(),
         );
-
-        // Extract additional metadata from non-SSE (legacy) responses.
-        let _model_version = body
-            .get("modelVersion")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let _grounding_metadata = candidate.get("groundingMetadata").cloned();
-        let _citation_metadata = candidate.get("citationMetadata").cloned();
 
         Ok((
             CompletionResponse {
@@ -2321,62 +2174,6 @@ mod tests {
             error,
             LlmError::ContextLengthExceeded { used: 0, limit: 0 }
         ));
-    }
-
-    #[tokio::test]
-    async fn non_sse_error_does_not_erase_last_cloud_code_response_metadata() {
-        use tokio::io::AsyncWriteExt;
-        use tokio::net::TcpListener;
-
-        let provider = GeminiOauthProvider::new(GeminiOauthConfig {
-            model: "gemini-2.5-flash".to_string(),
-            credentials_path: PathBuf::from("unused-test-credentials.json"),
-        })
-        .expect("Gemini provider");
-        provider
-            .last_response_meta
-            .lock()
-            .expect("metadata lock")
-            .model_version = Some("gemini-2.5-flash-001".to_string());
-
-        let body = r#"{"error":{"message":"permission denied"}}"#;
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("loopback listener");
-        let url = format!(
-            "http://{}",
-            listener.local_addr().expect("loopback address")
-        );
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("accept request");
-            let response = format!(
-                "HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\n\
-                 content-length: {}\r\n\r\n{body}",
-                body.len()
-            );
-            socket
-                .write_all(response.as_bytes())
-                .await
-                .expect("write error response");
-        });
-
-        let response = reqwest::get(url).await.expect("loopback response");
-        let error = provider
-            .error_from_http_response(response)
-            .await
-            .expect("adapter reads error response");
-        server.await.expect("loopback server");
-
-        assert!(matches!(error, LlmError::AuthFailed { .. }));
-        assert_eq!(
-            provider
-                .last_response_meta
-                .lock()
-                .expect("metadata lock")
-                .model_version
-                .as_deref(),
-            Some("gemini-2.5-flash-001")
-        );
     }
 
     #[test]
@@ -2770,8 +2567,7 @@ mod tests {
     #[test]
     fn empty_blocked_sse_stream_reports_the_content_filter() {
         fn finish_reason_for(sse: &str) -> Option<FinishReason> {
-            let aggregate = GeminiOauthProvider::aggregate_cloud_code_sse(sse);
-            let body = aggregate.response?;
+            let body = GeminiOauthProvider::aggregate_cloud_code_sse(sse)?;
             let (resp, _calls, _sigs) = GeminiOauthProvider::from_gemini_response(body)
                 .expect("the aggregated body is a well-formed candidate");
             Some(resp.finish_reason)

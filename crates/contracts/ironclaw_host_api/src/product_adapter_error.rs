@@ -164,10 +164,6 @@ impl ProductAdapterError {
                 }
         )
     }
-
-    pub fn is_auth_failure(&self) -> bool {
-        matches!(self, ProductAdapterError::Authentication(_))
-    }
 }
 
 impl From<ProtocolHttpEgressError> for ProductAdapterError {

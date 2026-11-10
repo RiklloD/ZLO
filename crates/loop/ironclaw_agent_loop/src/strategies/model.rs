@@ -24,7 +24,6 @@ pub(crate) trait ModelStrategy: Send + Sync {
     }
 }
 
-#[allow(dead_code)]
 fn _assert_object_safe(_: &dyn ModelStrategy) {}
 
 /// Reference baseline `ModelStrategy`: track the executor-managed fallback
@@ -112,9 +111,6 @@ mod tests {
 
     use super::{DefaultModelStrategy, ModelPreference, ModelStrategy};
     use crate::state::LoopExecutionState;
-
-    #[allow(dead_code)]
-    fn _check(_: &dyn ModelStrategy) {}
 
     fn test_run_context() -> LoopRunContext {
         let scope = TurnScope::new(

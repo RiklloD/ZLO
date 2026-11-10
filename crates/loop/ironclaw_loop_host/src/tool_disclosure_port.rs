@@ -85,17 +85,6 @@ impl ToolDisclosureCapabilityDecorator {
         }
     }
 
-    /// Wrap one run's capability port with disclosure using the exact
-    /// policy already resolved by the runner-private profiled factory.
-    pub fn decorate_with_policy(
-        &self,
-        run_context: &LoopRunContext,
-        inner: Arc<dyn LoopCapabilityPort>,
-        policy: Arc<CapabilitySurfacePolicy>,
-    ) -> Arc<dyn LoopCapabilityPort> {
-        self.decorate_with_policy_and_pins(run_context, inner, policy, Vec::new())
-    }
-
     /// Wrap one run with profile-owned visibility pins. Pins use canonical
     /// capability ids and are only applied after the effective authorized
     /// definitions have been fitted, so they can never grant authority.
@@ -131,7 +120,7 @@ struct ToolDisclosureCapabilityPort {
     caps: DisclosureCaps,
     mode: crate::ToolDisclosureMode,
     /// #5712/#5659-w6: the caller's effective policy, resolved once in
-    /// `ToolDisclosureCapabilityDecorator::decorate_with_policy` — narrows disclosed
+    /// `ToolDisclosureCapabilityDecorator::decorate_with_policy_and_pins` — narrows disclosed
     /// tool_search/tool_describe metadata *and* the tool_search bridge's own
     /// advertised description (the always-on catalog index).
     policy: Arc<CapabilitySurfacePolicy>,
@@ -339,30 +328,35 @@ impl LoopCapabilityPort for ToolDisclosureCapabilityPort {
         let Some(state) = state.as_ref() else {
             return Ok(Vec::new());
         };
-        let (effective_catalog_count, effective_catalog_schema_tokens) =
-            state.catalog.effective_metrics(&self.policy);
-        // Live token savings = how much of the full (authorized) tool surface we
-        // avoided advertising this turn. Lets a benchmark/live run report the
-        // real reduction directly from one log line (the fixture benchmark can't,
-        // since its names are decoupled from the real core).
-        let reduction_pct = if effective_catalog_schema_tokens > 0 {
-            100.0
-                * (1.0
-                    - (f64::from(state.active.advertised_tokens)
-                        / f64::from(effective_catalog_schema_tokens)))
-        } else {
-            0.0
-        };
-        debug!(
+        if tracing::enabled!(
             target: "ironclaw::reborn::context_shadow",
-            effective_catalog_count,
-            effective_catalog_schema_tokens,
-            advertised_tool_count = state.active.definitions.len(),
-            advertised_tool_schema_tokens = state.active.advertised_tokens,
-            deferred = state.active.deferred,
-            reduction_pct,
-            "reborn live tool disclosure surface"
-        );
+            tracing::Level::DEBUG
+        ) {
+            let (effective_catalog_count, effective_catalog_schema_tokens) =
+                state.catalog.effective_metrics(&self.policy);
+            // Live token savings = how much of the full (authorized) tool surface we
+            // avoided advertising this turn. Lets a benchmark/live run report the
+            // real reduction directly from one log line (the fixture benchmark can't,
+            // since its names are decoupled from the real core).
+            let reduction_pct = if effective_catalog_schema_tokens > 0 {
+                100.0
+                    * (1.0
+                        - (f64::from(state.active.advertised_tokens)
+                            / f64::from(effective_catalog_schema_tokens)))
+            } else {
+                0.0
+            };
+            debug!(
+                target: "ironclaw::reborn::context_shadow",
+                effective_catalog_count,
+                effective_catalog_schema_tokens,
+                advertised_tool_count = state.active.definitions.len(),
+                advertised_tool_schema_tokens = state.active.advertised_tokens,
+                deferred = state.active.deferred,
+                reduction_pct,
+                "reborn live tool disclosure surface"
+            );
+        }
         Ok(state.active.definitions.clone())
     }
 

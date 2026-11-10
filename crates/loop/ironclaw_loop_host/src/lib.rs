@@ -193,8 +193,6 @@ pub use tool_disclosure_mode::{REBORN_TOOL_DISCLOSURE_ENV, ToolDisclosureMode};
 pub use tool_disclosure_port::ToolDisclosureCapabilityDecorator;
 pub use tool_mentions::TurnToolMentions;
 pub use user_profile_context::{EmptyUserProfileSource, HostUserProfileSource};
-pub const COMPACTION_SYSTEM_PROMPT: &str =
-    include_str!("../prompts/compaction_summarizer_fresh.md");
 pub const ACTIVE_TASK_COMPACTION_SYSTEM_PROMPT: &str = concat!(
     include_str!("../prompts/compaction_summarizer_fresh.md"),
     "\n\n",
@@ -212,7 +210,7 @@ use ironclaw_host_api::ids::{CapabilityId, RunId};
 use ironclaw_host_api::turn::TurnLeaseToken;
 use ironclaw_loop_contracts::{
     AgentLoopHostError, AgentLoopHostErrorKind, AgentLoopHostErrorReasonKind,
-    AppendCapabilityResultRef, AssistantReply, BeginAssistantDraft, CapabilityDeniedReasonKind,
+    AppendCapabilityResultRef, AssistantReply, CapabilityDeniedReasonKind,
     CapabilityResultIntrinsicOutcome, CapabilitySurfaceVersion, FinalizeAssistantMessage,
     InstructionMaterializationStore, LoopCapabilityPort, LoopContextBundle,
     LoopContextCompactionKind, LoopContextCompactionMetadata, LoopContextMessage, LoopContextPort,
@@ -222,21 +220,19 @@ use ironclaw_loop_contracts::{
     LoopPromptBundleAuthority, LoopRequest, LoopRequestBatch, LoopRunContext, LoopRunInfoPort,
     LoopSafeSummary, LoopTranscriptPort, MemoryPromptContextLoad, MemoryPromptContextService,
     ModelProfileId, ModelStreamChunk, ParentLoopOutput, PromptMode, SystemInferenceContextMessage,
-    SystemInferenceContextRole, UpdateAssistantDraft, VisibleCapabilityRequest,
-    VisibleCapabilitySurface, resolution, sanitize_model_visible_text,
-    sort_instruction_snippets_for_prompt,
+    SystemInferenceContextRole, VisibleCapabilityRequest, VisibleCapabilitySurface, resolution,
+    sanitize_model_visible_text, sort_instruction_snippets_for_prompt,
 };
 use ironclaw_outbound::{
     OutboundError, ReplyAttachmentHandle, ReplyAttachmentIntent, ReplyAttachmentIntentPort,
 };
 use ironclaw_threads::{
-    AppendAssistantDraftRequest, AppendFinalizedAssistantMessageRequest,
-    AppendToolResultReferenceRequest, AttachmentKind, AttachmentRef, ContextMessage,
-    FinalizedAssistantMessageByRunRequest, LoadContextMessagesRequest, LoadContextWindowRequest,
-    MessageContent, MessageKind, MessageStatus, ProviderToolCallReferenceEnvelope,
-    SessionThreadError, SessionThreadService, SummaryArtifact, ThreadHistoryRequest,
-    ThreadMessageId, ThreadMessageRecord, ThreadScope, ToolResultIntrinsicOutcome,
-    ToolResultReferenceEnvelope, ToolResultSafeSummary, UpdateAssistantDraftRequest,
+    AppendFinalizedAssistantMessageRequest, AppendToolResultReferenceRequest, AttachmentKind,
+    AttachmentRef, ContextMessage, FinalizedAssistantMessageByRunRequest,
+    LoadContextMessagesRequest, LoadContextWindowRequest, MessageContent, MessageKind,
+    MessageStatus, ProviderToolCallReferenceEnvelope, SessionThreadError, SessionThreadService,
+    SummaryArtifact, ThreadHistoryRequest, ThreadMessageId, ThreadMessageRecord, ThreadScope,
+    ToolResultIntrinsicOutcome, ToolResultReferenceEnvelope, ToolResultSafeSummary,
 };
 use ironclaw_turns::{
     AgentTurnSpawnTreeRuntimePort, LoopGateRef, LoopMessageRef, TurnId, TurnRunId, TurnRunRecord,
@@ -1082,45 +1078,6 @@ impl<S> LoopTranscriptPort for ThreadBackedLoopTranscriptPort<S>
 where
     S: SessionThreadService + ?Sized + Send + Sync,
 {
-    async fn begin_assistant_draft(
-        &self,
-        request: BeginAssistantDraft,
-    ) -> Result<LoopMessageRef, AgentLoopHostError> {
-        validate_thread_scope_for_run(&self.thread_scope, &self.run_context)?;
-        self.ensure_run_lease_is_current().await?;
-        let draft = self
-            .thread_service
-            .append_assistant_draft(AppendAssistantDraftRequest {
-                scope: self.thread_scope.clone(),
-                thread_id: self.run_context.thread_id.clone(),
-                turn_run_id: self.run_context.run_id.to_string(),
-                content: MessageContent::text(request.reply.content),
-            })
-            .await
-            .map_err(transcript_write_error)?;
-        message_ref(draft.message_id)
-    }
-
-    async fn update_assistant_draft(
-        &self,
-        request: UpdateAssistantDraft,
-    ) -> Result<(), AgentLoopHostError> {
-        validate_thread_scope_for_run(&self.thread_scope, &self.run_context)?;
-        self.ensure_run_lease_is_current().await?;
-        let message_id = message_id_from_ref(&request.message_ref)?;
-        self.load_current_run_message(message_id).await?;
-        self.thread_service
-            .update_assistant_draft(UpdateAssistantDraftRequest {
-                scope: self.thread_scope.clone(),
-                thread_id: self.run_context.thread_id.clone(),
-                message_id,
-                content: MessageContent::text(request.reply.content),
-            })
-            .await
-            .map_err(transcript_write_error)?;
-        Ok(())
-    }
-
     async fn finalize_assistant_message(
         &self,
         request: FinalizeAssistantMessage,
@@ -1320,33 +1277,6 @@ where
         }
         emitted_refs.insert(message_ref.as_str().to_string());
         Ok(())
-    }
-
-    async fn load_current_run_message(
-        &self,
-        message_id: ThreadMessageId,
-    ) -> Result<ThreadMessageRecord, AgentLoopHostError> {
-        let history = self
-            .thread_service
-            .list_thread_history(ThreadHistoryRequest {
-                scope: self.thread_scope.clone(),
-                thread_id: self.run_context.thread_id.clone(),
-            })
-            .await
-            .map_err(transcript_write_error)?;
-        let message = history
-            .messages
-            .into_iter()
-            .find(|message| message.message_id == message_id)
-            .ok_or_else(invalid_transcript_ref_error)?;
-        let expected_run_id = self.run_context.run_id.to_string();
-        if message.turn_run_id.as_deref() != Some(expected_run_id.as_str()) {
-            return Err(AgentLoopHostError::new(
-                AgentLoopHostErrorKind::InvalidInvocation,
-                "transcript message does not belong to this loop run",
-            ));
-        }
-        Ok(message)
     }
 
     async fn already_finalized_matching_reply_for_current_run(
@@ -2101,15 +2031,23 @@ where
         let mut messages_by_ref = context_messages_by_ref(context.messages);
         let mut missing_message_ids = Vec::new();
         let mut needs_summary_history_lookup = false;
+        let mut remaining_uses: HashMap<String, usize> = HashMap::new();
+        let mut materialized_by_ref = HashMap::new();
         for message in &requested_messages {
+            *remaining_uses
+                .entry(message.content_ref.as_str().to_string())
+                .or_default() += 1;
             if messages_by_ref.contains_key(message.content_ref.as_str()) {
                 continue;
             }
+            if materialized_by_ref.contains_key(message.content_ref.as_str()) {
+                continue;
+            }
             if let Some(materialization_store) = self.instruction_materialization_store.as_ref()
-                && materialization_store
+                && let Some(materialized) = materialization_store
                     .get_materialized_message(&self.run_context, &message.content_ref)?
-                    .is_some()
             {
+                materialized_by_ref.insert(message.content_ref.as_str().to_string(), materialized);
                 continue;
             }
             if identity_context::is_identity_model_message_ref(&message.content_ref) {
@@ -2160,6 +2098,12 @@ where
         let mut resolved = Vec::with_capacity(requested_messages.len());
         for message in requested_messages {
             let requested_role = HostManagedModelMessageRole::from_loop_role(&message.role)?;
+            let last_use = remaining_uses
+                .get_mut(message.content_ref.as_str())
+                .is_some_and(|uses| {
+                    *uses = uses.saturating_sub(1);
+                    *uses == 0
+                });
             // Priority 1: trusted identity files resolved by the configured host source.
             if identity_context::is_identity_model_message_ref(&message.content_ref) {
                 let Some(source) = self.identity_context_source.as_deref() else {
@@ -2195,10 +2139,20 @@ where
                 continue;
             }
 
-            if let Some(materialization_store) = self.instruction_materialization_store.as_ref()
-                && let Some(materialized) = materialization_store
-                    .get_materialized_message(&self.run_context, &message.content_ref)?
-            {
+            let materialized = if last_use {
+                materialized_by_ref.remove(message.content_ref.as_str())
+            } else {
+                materialized_by_ref
+                    .get(message.content_ref.as_str())
+                    .cloned()
+            };
+            let materialized = match (materialized, &self.instruction_materialization_store) {
+                (Some(materialized), _) => Some(materialized),
+                (None, Some(materialization_store)) => materialization_store
+                    .get_materialized_message(&self.run_context, &message.content_ref)?,
+                (None, None) => None,
+            };
+            if let Some(materialized) = materialized {
                 let materialized_role =
                     HostManagedModelMessageRole::from_loop_role(&materialized.role)?;
                 if requested_role != materialized_role {
@@ -2231,14 +2185,17 @@ where
             }
 
             // Priority 3: durable transcript messages (context window + history).
-            let context_message = messages_by_ref
-                .get(message.content_ref.as_str())
-                .ok_or_else(|| {
-                    AgentLoopHostError::new(
-                        AgentLoopHostErrorKind::InvalidInvocation,
-                        "model message reference is unavailable",
-                    )
-                })?;
+            let context_message = if last_use {
+                messages_by_ref.remove(message.content_ref.as_str())
+            } else {
+                messages_by_ref.get(message.content_ref.as_str()).cloned()
+            }
+            .ok_or_else(|| {
+                AgentLoopHostError::new(
+                    AgentLoopHostErrorKind::InvalidInvocation,
+                    "model message reference is unavailable",
+                )
+            })?;
             let durable_role = model_role_for_kind(context_message.kind);
             if requested_role != durable_role {
                 return Err(AgentLoopHostError::new(
@@ -2249,12 +2206,13 @@ where
             let image_parts = self
                 .read_image_parts(&context_message.image_attachments)
                 .await;
+            let tool_result_content = tool_result_content_for_context_message(&context_message)?;
             resolved.push(HostManagedModelMessage {
                 role: durable_role,
-                content: context_message.content.clone(),
+                content: context_message.content,
                 content_ref: message.content_ref,
-                tool_result_provider_call: context_message.tool_result_provider_call.clone(),
-                tool_result_content: tool_result_content_for_context_message(context_message)?,
+                tool_result_provider_call: context_message.tool_result_provider_call,
+                tool_result_content,
                 image_parts,
             });
         }

@@ -166,9 +166,7 @@ impl RebornIntegrationGroupBuilder {
     /// resolved policy between `ToolDisclosureCapabilityDecorator` and the
     /// capability-surface filter before `RebornLoopDriverHostFactory::create_host`
     /// in `crates/loop/ironclaw_turn_runner/src/loop_driver_host.rs` calls
-    /// `build_text_only_host_with_capabilities`. The explicit
-    /// `build_text_only_host_with_profiled_capabilities` form is for test
-    /// construction.
+    /// `build_text_only_host_with_capabilities`.
     pub fn with_narrowed_capability_surface_policy_for_bridged_test(
         self,
         ids: impl IntoIterator<Item = CapabilityId>,

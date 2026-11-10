@@ -35,7 +35,7 @@ pub(crate) trait StopConditionStrategy: Send + Sync {
     ) -> StopOutcome;
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn assert_stop_condition_strategy_object_safe(_: &dyn StopConditionStrategy) {}
 
 /// Loop-side projection of what just happened in the completed turn.
