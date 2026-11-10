@@ -47,7 +47,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `vision_models.rs` | Vision-capable model registry for attachment routing |
 | `reasoning_models.rs` | Reasoning-capable model registry (Codex, R1, o-series, etc.) used for thinking-mode dispatch |
 | `reasoning_effort.rs` | Which reasoning efforts each model takes (`efforts_for`, what the model picker offers) and how each rig-backed protocol spells a routed effort on the wire |
-| `models.rs` | Provider-neutral discovered-model capabilities plus the top-level model-name catalog and helpers |
+| `models.rs` | Provider-neutral discovered-model capability types (`DiscoveredModel`, `ModelModality`) |
 | `testing/` | `StubLlm`, `StubErrorKind`, `fault_injection` — gated behind the `test-support` cargo feature for downstream test harnesses |
 
 ## Sub-owner map
