@@ -130,20 +130,6 @@ impl TraceClientHost {
         Ok(envelope)
     }
 
-    pub async fn build_autonomous_envelope_from_messages(
-        &self,
-        request: TraceClientAutonomousCaptureRequest<'_>,
-    ) -> anyhow::Result<Option<TraceContributionEnvelope>> {
-        match self
-            .prepare_autonomous_envelope_from_messages(request)
-            .await?
-        {
-            TraceClientAutonomousCaptureOutcome::Submit(envelope) => Ok(Some(*envelope)),
-            TraceClientAutonomousCaptureOutcome::Skipped
-            | TraceClientAutonomousCaptureOutcome::Held { .. } => Ok(None),
-        }
-    }
-
     pub async fn prepare_autonomous_envelope_from_messages(
         &self,
         request: TraceClientAutonomousCaptureRequest<'_>,
@@ -248,50 +234,6 @@ impl TraceClientHost {
         trace::flush_trace_contribution_queue_worker_tick(scopes, limit_per_scope).await
     }
 
-    pub async fn sync_remote_records_for_scope(
-        &self,
-        scope: &TraceClientScope,
-    ) -> anyhow::Result<usize> {
-        trace::sync_remote_trace_submission_records_for_scope(Some(scope.as_str())).await
-    }
-
-    pub fn pending_credit_notice_outbox_items(
-        &self,
-        scope: &TraceClientScope,
-    ) -> anyhow::Result<Vec<trace::TraceCreditNoticeOutboxItem>> {
-        trace::pending_trace_credit_notice_outbox_items_for_scope(Some(scope.as_str()))
-    }
-
-    pub fn record_credit_notice_delivery_success(
-        &self,
-        scope: &TraceClientScope,
-        fingerprint: &str,
-        channel: &str,
-    ) -> anyhow::Result<()> {
-        trace::record_trace_credit_notice_delivery_success_for_scope(
-            Some(scope.as_str()),
-            fingerprint,
-            channel,
-        )
-        .map(|_| ())
-    }
-
-    pub fn record_credit_notice_delivery_failure(
-        &self,
-        scope: &TraceClientScope,
-        fingerprint: &str,
-        channel: &str,
-        error: &str,
-    ) -> anyhow::Result<()> {
-        trace::record_trace_credit_notice_delivery_failure_for_scope(
-            Some(scope.as_str()),
-            fingerprint,
-            channel,
-            error,
-        )
-        .map(|_| ())
-    }
-
     pub fn read_local_records_for_scope(
         &self,
         scope: &TraceClientScope,
@@ -301,17 +243,6 @@ impl TraceClientHost {
 
     pub fn read_local_records_for_default(&self) -> anyhow::Result<Vec<NodeTraceSubmissionRecord>> {
         trace::read_local_trace_records_for_scope(None)
-    }
-}
-
-pub fn trace_channel_from_host_channel(channel: &str) -> trace::TraceChannel {
-    match channel {
-        "gateway" | "web" => trace::TraceChannel::Web,
-        "cli" | "repl" | "tui" => trace::TraceChannel::Cli,
-        "routine" | "heartbeat" => trace::TraceChannel::Routine,
-        // Everything else is an extension-served channel; the concrete
-        // identity rides `channel_origin` as data.
-        _ => trace::TraceChannel::Extension,
     }
 }
 
@@ -516,8 +447,8 @@ mod tests {
         let scope = TraceClientScope::user("user-123");
         let messages = vec![msg("user", "hello"), msg("assistant", "hi")];
 
-        let envelope = TraceClientHost
-            .build_autonomous_envelope_from_messages(TraceClientAutonomousCaptureRequest {
+        let outcome = TraceClientHost
+            .prepare_autonomous_envelope_from_messages(TraceClientAutonomousCaptureRequest {
                 scope: scope.clone(),
                 channel: TraceChannel::Web,
                 messages: &messages,
@@ -526,8 +457,10 @@ mod tests {
                 outcome_override: None,
             })
             .await
-            .expect("capture succeeds")
-            .expect("eligible envelope");
+            .expect("capture succeeds");
+        let TraceClientAutonomousCaptureOutcome::Submit(envelope) = outcome else {
+            panic!("expected an eligible envelope");
+        };
 
         assert_eq!(
             envelope.contributor.pseudonymous_contributor_id.as_deref(),
@@ -548,8 +481,8 @@ mod tests {
         let policy = StandingTraceContributionPolicy::default();
         let messages = vec![msg("user", "hello"), msg("assistant", "hi")];
 
-        let envelope = TraceClientHost
-            .build_autonomous_envelope_from_messages(TraceClientAutonomousCaptureRequest {
+        let outcome = TraceClientHost
+            .prepare_autonomous_envelope_from_messages(TraceClientAutonomousCaptureRequest {
                 scope: TraceClientScope::user("user-123"),
                 channel: TraceChannel::Web,
                 messages: &messages,
@@ -560,7 +493,10 @@ mod tests {
             .await
             .expect("policy skip is not an error");
 
-        assert!(envelope.is_none());
+        assert!(matches!(
+            outcome,
+            TraceClientAutonomousCaptureOutcome::Skipped
+        ));
     }
 
     #[tokio::test]

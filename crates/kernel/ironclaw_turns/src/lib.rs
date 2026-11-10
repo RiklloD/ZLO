@@ -27,12 +27,7 @@ pub mod test_support;
 pub use activation_streak::{
     SYSTEM_WAKE_STREAK_CAP, SYSTEM_WAKE_WINDOW_OVERFETCH, system_wake_admitted,
 };
-pub use admission::{
-    AllowAllTurnAdmissionLimitProvider, StaticTurnAdmissionLimitProvider, TurnAdmissionAxisKind,
-    TurnAdmissionBucket, TurnAdmissionBucketKind, TurnAdmissionBucketScope,
-    TurnAdmissionCapacityDenial, TurnAdmissionClass, TurnAdmissionLimit,
-    TurnAdmissionLimitProvider, TurnAdmissionLimitUnavailable,
-};
+pub use admission::TurnAdmissionClass;
 pub use agent_turn_runtime::{
     AgentTurnRuntimePort, AgentTurnSpawnTreeRuntimePort, SpawnTreeReservation, TurnRunRecord,
     active_run_ref_state,

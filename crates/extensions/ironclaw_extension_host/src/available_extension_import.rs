@@ -140,7 +140,7 @@ where
             };
             assets.push(AvailableExtensionAsset {
                 path: relative.to_string(),
-                content: AvailableExtensionAssetContent::Bytes(bytes),
+                content: AvailableExtensionAssetContent::Bytes(bytes.into()),
             });
         }
     }
@@ -307,7 +307,6 @@ fn extension_package_from_files(
         channel_presentation: None,
         assets,
         onboarding_override: onboarding_from_auth_recipes(record.resolved()),
-        oauth_setup_override: None,
         search_aliases: Vec::new(),
     })
 }

@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use super::{
     AgentTurnRuntimePort, DefaultHostRuntime, DefaultTurnCoordinator, HostRuntimeServices,
-    ProcessBackendKind, ProductionComponentType, ProductionEventStoreWiringError,
-    ProductionImplementationReadiness, ProductionWiringComponent, ProductionWiringConfig,
-    ProductionWiringIssue, ProductionWiringIssueKind, ProductionWiringReport,
-    RebornEventStoreConfig, RebornProfile, ResourceGovernor, RootFilesystem, RuntimeKind,
-    component_name, local_only_runtime_policy_reason, production_wiring_report,
+    ProcessBackendKind, ProductionComponentType, ProductionImplementationReadiness,
+    ProductionWiringComponent, ProductionWiringConfig, ProductionWiringIssue,
+    ProductionWiringIssueKind, ProductionWiringReport, ResourceGovernor, RootFilesystem,
+    RuntimeKind, component_name, local_only_runtime_policy_reason, production_wiring_report,
     runtime_http_egress_is_configured,
 };
 
@@ -466,18 +465,5 @@ where
         } else {
             Err(ProductionWiringReport { issues })
         }
-    }
-
-    /// Builds and attaches the configured Reborn durable event/audit stores,
-    /// validates production wiring, and returns the host runtime service.
-    pub async fn host_runtime_for_production_with_event_store_config(
-        self,
-        event_store_config: RebornEventStoreConfig,
-        production_config: &ProductionWiringConfig,
-    ) -> Result<DefaultHostRuntime, ProductionEventStoreWiringError> {
-        let services = self
-            .with_reborn_event_store_config(RebornProfile::Production, event_store_config)
-            .await?;
-        Ok(services.host_runtime_for_production(production_config)?)
     }
 }

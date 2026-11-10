@@ -174,9 +174,8 @@ pub enum TrustProvenance {
 
 /// Maximum authority a downstream grant decision may issue.
 ///
-/// PR1b ships a simple shape: an allowed-effects whitelist and an optional
-/// resource ceiling. PR3 will compare proposed `CapabilityGrant`s against
-/// this ceiling. Trust class on its own grants nothing — the ceiling is
+/// An allowed-effects whitelist and an optional resource ceiling that
+/// proposed `CapabilityGrant`s are compared against. Trust class on its own grants nothing — the ceiling is
 /// purely a *cap*, not a permission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AuthorityCeiling {

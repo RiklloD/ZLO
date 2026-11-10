@@ -22,10 +22,6 @@ test-support = [
     "ironclaw_host_api/test-support",
     "ironclaw_processes/test-support",
 ]
-# Dormant marker for the two moved test modules that still require composition
-# runtime-substrate fixtures. Keep disabled until those tests are rewritten over
-# extension-host-local fakes.
-composition-substrate-tests = []
 
 [dependencies]
 async-trait = "0.1"

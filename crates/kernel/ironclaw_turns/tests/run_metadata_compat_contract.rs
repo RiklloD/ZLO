@@ -194,3 +194,26 @@ fn turn_run_profile_defaults_admission_class_when_absent() {
         "the absence default must stay interactive for old rows"
     );
 }
+
+#[test]
+fn admission_rejection_written_with_a_capacity_denial_still_reads() {
+    let rejection: ironclaw_turns::AdmissionRejection = serde_json::from_value(serde_json::json!({
+        "reason": "tenant_limit",
+        "retry_after_ms": 250,
+        "capacity_denial": {
+            "axis_kind": "tenant",
+            "bucket_kind": "total",
+            "admission_class": null,
+            "limit": 4,
+            "active_count": 4,
+            "retry_after_ms": 250
+        }
+    }))
+    .expect("rejections that carried the retired capacity_denial field must deserialize");
+
+    assert_eq!(
+        rejection.reason,
+        ironclaw_turns::AdmissionRejectionReason::TenantLimit
+    );
+    assert_eq!(rejection.retry_after_ms, Some(250));
+}

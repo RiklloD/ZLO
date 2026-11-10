@@ -1077,9 +1077,6 @@ fn profile_scope_and_path(
 }
 
 fn write_options(metadata_overlay: Option<&DocumentMetadata>) -> MemoryBackendWriteOptions {
-    // Service writes are direct backend callers: leave
-    // `prompt_safety_already_enforced` at its fail-closed default (false) so the
-    // backend runs prompt-write safety itself.
     MemoryBackendWriteOptions::with_metadata_overlay(metadata_overlay.cloned())
 }
 

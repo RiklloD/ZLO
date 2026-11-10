@@ -3,7 +3,6 @@
 
 use std::collections::BTreeSet;
 
-use chrono::Utc;
 use uuid::Uuid;
 
 use super::*;
@@ -143,94 +142,6 @@ pub fn retention_policy_for_allowed_use(allowed_use: TraceAllowedUse) -> TraceRe
             max_age_days: None,
             allows_derived_artifacts: false,
         },
-    }
-}
-
-pub fn retention_policy_for_trace(envelope: &TraceContributionEnvelope) -> TraceRetentionPolicy {
-    let mut policy = strongest_retention_policy_for_allowed_uses(&envelope.trace_card.allowed_uses);
-    if !envelope.consent.revocable {
-        policy.revocable = false;
-    }
-    policy
-}
-
-pub fn derived_artifact_invalidation_marker(
-    envelope: &TraceContributionEnvelope,
-    reason: impl Into<String>,
-) -> DerivedArtifactInvalidationMarker {
-    DerivedArtifactInvalidationMarker {
-        schema_version: "ironclaw.trace_derived_artifact_invalidation.v1".to_string(),
-        submission_id: envelope.submission_id,
-        trace_id: envelope.trace_id,
-        revocation_handle_hash: canonical_hash(&envelope.contributor.revocation_handle.to_string()),
-        redaction_hash: envelope.privacy.redaction_hash.clone(),
-        artifact_prefixes: derived_artifact_prefixes(envelope),
-        reason: reason.into(),
-        created_at: Utc::now(),
-    }
-}
-
-pub fn derived_artifact_prefixes(envelope: &TraceContributionEnvelope) -> Vec<String> {
-    let trace_id = envelope.trace_id;
-    let submission_id = envelope.submission_id;
-    vec![
-        format!("trace:{trace_id}"),
-        format!("submission:{submission_id}"),
-        format!("summary:{trace_id}"),
-        format!("embedding:{trace_id}"),
-        format!("benchmark:{trace_id}"),
-        format!("training_example:{trace_id}"),
-    ]
-}
-
-pub fn trace_dataset_eligibility(
-    envelope: &TraceContributionEnvelope,
-    requested_use: TraceAllowedUse,
-    revoked: bool,
-) -> TraceDatasetEligibility {
-    let retention_policy = retention_policy_for_allowed_use(requested_use);
-    let mut reasons = Vec::new();
-
-    if revoked {
-        reasons.push("submission has been revoked".to_string());
-    }
-    if !envelope.trace_card.allowed_uses.contains(&requested_use) {
-        reasons.push("requested use is outside consent scope".to_string());
-    }
-    if !envelope.consent.revocable && retention_policy.revocable {
-        reasons.push("trace consent is not revocable for a revocable dataset class".to_string());
-    }
-    match envelope.privacy.residual_pii_risk {
-        ResidualPiiRisk::Low => {}
-        ResidualPiiRisk::Medium => {
-            if matches!(
-                requested_use,
-                TraceAllowedUse::BenchmarkGeneration
-                    | TraceAllowedUse::RankingModelTraining
-                    | TraceAllowedUse::ModelTraining
-            ) {
-                reasons.push(
-                    "medium residual privacy risk is limited to debugging, evaluation, or aggregate analytics"
-                        .to_string(),
-                );
-            }
-        }
-        ResidualPiiRisk::High => {
-            reasons.push("high residual privacy risk is not dataset eligible".to_string());
-        }
-    }
-    // Keyed on the typed flag, never on warning prose (#7144). The
-    // `residual_pii_risk` fallback covers envelopes persisted before the flag
-    // existed, whose `quarantined` deserializes to its `false` default.
-    if envelope.privacy.quarantined || quarantines_trace(envelope.privacy.residual_pii_risk) {
-        reasons.push("trace is quarantined pending privacy review".to_string());
-    }
-
-    TraceDatasetEligibility {
-        eligible: reasons.is_empty(),
-        requested_use,
-        retention_policy,
-        reasons,
     }
 }
 

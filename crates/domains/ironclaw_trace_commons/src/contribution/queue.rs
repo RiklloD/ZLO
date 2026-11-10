@@ -847,21 +847,6 @@ pub fn mark_trace_credit_notice_due_for_scope(
     )
 }
 
-pub fn trace_credit_notice_due_for_scope(
-    scope: Option<&str>,
-) -> anyhow::Result<Option<CreditSummary>> {
-    let _guard = lock_trace_scope_for_mutation_blocking(scope);
-    let policy = read_trace_policy_for_scope(scope)?;
-    if !policy.enabled || policy.credit_notice_interval_hours == 0 {
-        return Ok(None);
-    }
-    trace_credit_notice_due_for_scope_at_unlocked(
-        scope,
-        policy.credit_notice_interval_hours,
-        Utc::now(),
-    )
-}
-
 pub fn acknowledge_trace_credit_notice_for_scope(
     scope: Option<&str>,
 ) -> anyhow::Result<Option<CreditSummary>> {
@@ -891,57 +876,6 @@ pub fn snooze_trace_credit_notice_for_scope(
         .checked_add_signed(duration)
         .ok_or_else(|| anyhow::anyhow!("trace credit notice snooze deadline is out of range"))?;
     snooze_trace_credit_notice_for_scope_until_at(scope, snoozed_until, now)
-}
-
-pub fn snooze_trace_credit_notice_for_scope_until(
-    scope: Option<&str>,
-    snoozed_until: DateTime<Utc>,
-) -> anyhow::Result<Option<CreditSummary>> {
-    snooze_trace_credit_notice_for_scope_until_at(scope, snoozed_until, Utc::now())
-}
-
-pub fn read_trace_credit_notice_outbox_for_scope(
-    scope: Option<&str>,
-) -> anyhow::Result<Vec<TraceCreditNoticeOutboxItem>> {
-    let _guard = lock_trace_scope_for_mutation_blocking(scope);
-    read_trace_credit_notice_outbox_for_scope_unlocked(scope)
-}
-
-pub fn pending_trace_credit_notice_outbox_items_for_scope(
-    scope: Option<&str>,
-) -> anyhow::Result<Vec<TraceCreditNoticeOutboxItem>> {
-    let _guard = lock_trace_scope_for_mutation_blocking(scope);
-    pending_trace_credit_notice_outbox_items_for_scope_at_unlocked(scope, Utc::now())
-}
-
-pub fn record_trace_credit_notice_delivery_success_for_scope(
-    scope: Option<&str>,
-    fingerprint: &str,
-    channel: &str,
-) -> anyhow::Result<Option<TraceCreditNoticeOutboxItem>> {
-    let _guard = lock_trace_scope_for_mutation_blocking(scope);
-    record_trace_credit_notice_delivery_success_for_scope_at_unlocked(
-        scope,
-        fingerprint,
-        channel,
-        Utc::now(),
-    )
-}
-
-pub fn record_trace_credit_notice_delivery_failure_for_scope(
-    scope: Option<&str>,
-    fingerprint: &str,
-    channel: &str,
-    error: &str,
-) -> anyhow::Result<Option<TraceCreditNoticeOutboxItem>> {
-    let _guard = lock_trace_scope_for_mutation_blocking(scope);
-    record_trace_credit_notice_delivery_failure_for_scope_at_unlocked(
-        scope,
-        fingerprint,
-        channel,
-        error,
-        Utc::now(),
-    )
 }
 
 pub(crate) fn snooze_trace_credit_notice_for_scope_until_at(
@@ -1218,4 +1152,28 @@ pub fn apply_credit_estimate_to_envelope(envelope: &mut TraceContributionEnvelop
     envelope.value.explanation = estimate.explanation;
     envelope.value_card.scorecard = estimate.scorecard;
     envelope.value_card.user_visible_explanation = envelope.value.explanation.clone();
+}
+
+#[cfg(test)]
+pub(crate) fn trace_credit_notice_due_for_scope(
+    scope: Option<&str>,
+) -> anyhow::Result<Option<CreditSummary>> {
+    let _guard = lock_trace_scope_for_mutation_blocking(scope);
+    let policy = read_trace_policy_for_scope(scope)?;
+    if !policy.enabled || policy.credit_notice_interval_hours == 0 {
+        return Ok(None);
+    }
+    trace_credit_notice_due_for_scope_at_unlocked(
+        scope,
+        policy.credit_notice_interval_hours,
+        Utc::now(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn read_trace_credit_notice_outbox_for_scope(
+    scope: Option<&str>,
+) -> anyhow::Result<Vec<TraceCreditNoticeOutboxItem>> {
+    let _guard = lock_trace_scope_for_mutation_blocking(scope);
+    read_trace_credit_notice_outbox_for_scope_unlocked(scope)
 }

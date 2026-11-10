@@ -143,8 +143,6 @@ matches, the policy falls through to a fail-closed default.
 |---|---|---|---|
 | `BundledRegistry` | `package_id` AND `source == Bundled` AND (`digest` if pinned) | `(effective_trust, allowed_effects, max_resource_ceiling)` provenance `Bundled` | `Ok(None)` — fall through |
 | `AdminConfig` | `package_id` AND **exact** `PackageSource` match (incl. `LocalManifest { path }` / `Registry { url }`) AND (`digest` if pinned) | provenance `AdminConfig` | `Ok(None)` |
-| `SignedRegistry` | (currently inert; see §10) | — | `Ok(None)` always in V1 |
-| `DevTrustOverride` | (currently inert; see §10) | — | `Ok(None)` always in V1 |
 
 Match-key rules:
 
@@ -206,9 +204,7 @@ Recommended chain order for production wiring:
 ```text
 [
     BundledRegistry,    // host-controlled, signed-bundle baseline
-    SignedRegistry,     // remote signature verification (when live)
     AdminConfig,        // operator overrides
-    DevTrustOverride,   // dev-only opt-in (when live)
 ]
 ```
 
@@ -226,8 +222,8 @@ EffectiveTrustClass::sandbox()
 shapes granted `UserTrusted` to unmatched `Bundled` / `Registry` /
 `Admin` origins, but that was fail-open in two specific ways:
 
-- `Registry { url }` is a remote source; `SignedRegistry` is currently
-  inert, so granting `UserTrusted` to an unverified remote package on
+- `Registry { url }` is a remote source and no source verifies remote
+  signatures, so granting `UserTrusted` to an unverified remote package on
   the basis of a self-declared `url` is the textbook fail-open shape.
 - `Bundled` reaching the default path means the package isn't in
   `BundledRegistry` — that's a host-config bug (catalog out of sync
@@ -291,7 +287,7 @@ policy.mutate_with(
 
 `mutate_with` is the **only public runtime-mutation path**. The
 per-source `upsert` / `remove` methods on `BundledRegistry` /
-`AdminConfig` / `SignedRegistry` are `pub(crate)` and reachable only
+`AdminConfig` are `pub(crate)` and reachable only
 through `SourceMutators` inside a `mutate_with` closure. The
 orchestration:
 
@@ -425,14 +421,10 @@ to keep already-shipped tools running until each is migrated.
 
 This slice intentionally keeps the substrate narrow:
 
-- `SignedRegistry` is structural only — `evaluate` always returns
-  `Ok(None)`. Real signature verification (binding `(signer,
-  package_id, digest)` so a verified signature on package X does not
-  vouch for an unrelated package Y) belongs to a follow-up.
-- `DevTrustOverride` is inert — `enabled_for_test` is compiled only for
-  this crate's `#[cfg(test)]` targets, so future dev-mode opt-in has a
-  stable seam without exposing a production feature. The inert contract is
-  pinned by test T17.
+- There is no remote-signature source and no development override
+  source. A signature source, if added, must bind `(signer, package_id,
+  digest)` so a verified signature on package X does not vouch for an
+  unrelated package Y.
 - `AdminEntry` fields are `pub` for ergonomics; the `for_*`
   constructors are conventions, not type-enforced. Tightening to
   fully-private fields + accessor methods is a follow-up.

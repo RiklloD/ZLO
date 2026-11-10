@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use ironclaw_auth::{CredentialAccountRecordSource, CredentialAccountService};
@@ -8,7 +9,7 @@ use ironclaw_host_runtime::{FirstPartyCapabilityRegistry, ProductAuthProviderRun
 #[derive(Debug, Clone)]
 pub struct FirstPartyPackageAsset {
     pub path: String,
-    pub bytes: Vec<u8>,
+    pub bytes: Cow<'static, [u8]>,
 }
 
 /// A package's user-facing onboarding copy, carried as plain data.
@@ -20,15 +21,6 @@ pub struct FirstPartyPackageOnboarding {
     pub credential_next_step: String,
 }
 
-/// A bespoke OAuth setup credential requirement replacing the manifest-derived
-/// one.
-#[derive(Debug, Clone)]
-pub struct FirstPartyPackageOAuthSetup {
-    pub requirement_name: String,
-    pub provider: String,
-    pub scopes: Vec<String>,
-}
-
 /// An opaque, data-only first-party package the binary hands the extension
 /// host. Concrete package identity lives only in the injecting binary.
 #[derive(Debug, Clone)]
@@ -38,7 +30,6 @@ pub struct FirstPartyPackageBundle {
     pub manifest_toml: String,
     pub assets: Vec<FirstPartyPackageAsset>,
     pub onboarding: Option<FirstPartyPackageOnboarding>,
-    pub oauth_setup: Option<FirstPartyPackageOAuthSetup>,
     pub trust_effects: Option<Vec<EffectKind>>,
     pub search_aliases: Vec<String>,
 }

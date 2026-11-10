@@ -17,9 +17,8 @@ pub mod wasm_sandbox_core;
 pub use config::{TOOL_WIT, WIT_TOOL_VERSION, WitToolRuntimeConfig};
 pub use error::{WasmError, WasmHostError};
 pub use host::{
-    DenyWasmHostHttp, DenyWasmHostSecrets, DenyWasmHostTools, DenyWasmHostWorkspace,
-    EmptyWasmRuntimeCredentials, RecordingWasmHostHttp, SystemWasmHostClock, WasmHostClock,
-    WasmHostHttp, WasmHostSecrets, WasmHostTools, WasmHostWorkspace, WasmHttpRequest,
+    DenyWasmHostHttp, DenyWasmHostSecrets, EmptyWasmRuntimeCredentials, RecordingWasmHostHttp,
+    SystemWasmHostClock, WasmHostClock, WasmHostHttp, WasmHostSecrets, WasmHttpRequest,
     WasmHttpResponse, WasmRuntimeCredentialProvider, WasmRuntimeCredentialRequest,
     WasmRuntimeHttpAdapter, WasmRuntimePolicyDiscarder, WasmStagedRuntimeCredential,
     WasmStagedRuntimeCredentialScope, WasmStagedRuntimeCredentials, WitToolHost,

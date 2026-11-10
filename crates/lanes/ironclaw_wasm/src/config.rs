@@ -22,7 +22,6 @@ pub const WIT_TOOL_VERSION: &str = "0.4.1";
 /// at the owner plus a public const is the same bytes with none of that.
 pub const TOOL_WIT: &str = include_str!("../wit/tool.wit");
 
-pub(crate) const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(500);
 pub(crate) const DEFAULT_HTTP_TIMEOUT_MS: u32 = 30_000;
 pub(crate) const MAX_LOGS_PER_EXECUTION: usize = 1_000;
 pub(crate) const MAX_LOG_MESSAGE_BYTES: usize = 4 * 1024;

@@ -5,9 +5,8 @@
 //! inject a deterministic clock via [`HostTrustPolicy::with_clock`]
 //! (defined in `crate::policy`) so `evaluated_at` is reproducible across
 //! runs.
-#![allow(dead_code)] // Scaffolding; some items kept for future use.
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use ironclaw_host_api::Timestamp;
 
 /// Time source consumed by `HostTrustPolicy`.
@@ -26,21 +25,20 @@ impl Clock for SystemClock {
 }
 
 /// Test fixture: a clock that returns a fixed timestamp on every call.
-/// Defined unconditionally because it is not a privilege-construction
-/// surface — fabricating a timestamp grants no authority. Useful in any
-/// context where deterministic evaluation is needed (audit golden files,
-/// replay harnesses, fuzzers).
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FixedClock {
-    pub instant: DateTime<Utc>,
+    pub instant: chrono::DateTime<Utc>,
 }
 
+#[cfg(test)]
 impl FixedClock {
-    pub(crate) fn new(instant: DateTime<Utc>) -> Self {
+    pub(crate) fn new(instant: chrono::DateTime<Utc>) -> Self {
         Self { instant }
     }
 }
 
+#[cfg(test)]
 impl Clock for FixedClock {
     fn now(&self) -> Timestamp {
         self.instant

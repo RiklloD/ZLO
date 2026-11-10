@@ -60,11 +60,6 @@ pub(crate) fn bundled_first_party_bundles() -> Vec<FirstPartyPackageBundle> {
                     setup_url: copy.setup_url,
                     credential_next_step: copy.credential_next_step,
                 }),
-                // #6442×#6520 reconciliation: the source `PackageBundle` no
-                // longer carries a bespoke `oauth_setup` override (#6520 folded
-                // first-party OAuth setup into the manifest credential
-                // requirements); the manifest-derived requirement is authoritative.
-                oauth_setup: None,
                 trust_effects: bundle.trust_effects,
                 search_aliases,
             }
@@ -81,10 +76,9 @@ pub(crate) fn bundled_first_party_bundles() -> Vec<FirstPartyPackageBundle> {
         manifest_toml: ironclaw_web_app_extension::MANIFEST.to_string(),
         assets: vec![FirstPartyPackageAsset {
             path: "manifest.toml".to_string(),
-            bytes: ironclaw_web_app_extension::MANIFEST.as_bytes().to_vec(),
+            bytes: ironclaw_web_app_extension::MANIFEST.as_bytes().into(),
         }],
         onboarding: None,
-        oauth_setup: None,
         trust_effects: None,
         search_aliases: Vec::new(),
     });

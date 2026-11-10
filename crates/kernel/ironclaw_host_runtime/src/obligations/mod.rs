@@ -170,18 +170,6 @@ impl BuiltinObligationServices {
         )
     }
 
-    pub fn process_obligation_lifecycle_store_dyn(
-        &self,
-        inner: Arc<dyn ProcessRuntimePort>,
-    ) -> ProcessObligationLifecycleStore {
-        ProcessObligationLifecycleStore::from_dyn(
-            inner,
-            self.network_policies.clone(),
-            self.secret_injections.clone(),
-            self.resource_governor.clone(),
-        )
-    }
-
     pub fn obligation_handler(&self) -> BuiltinObligationHandler {
         let handler = BuiltinObligationHandler::new()
             .with_audit_sink_dyn(self.audit_sink.clone())

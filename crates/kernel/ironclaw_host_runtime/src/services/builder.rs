@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use super::LibSqlRootFilesystem;
-use super::PostgresRootFilesystem;
 use super::{
     AgentTurnRuntimePort, ApprovalRequestStore, ApprovalRequestStorePort, AuditSink,
     CapabilityLeaseStorePort, CoalescingEventSink, DurableAuditLog, DurableAuditSink,
@@ -120,13 +119,6 @@ where
             post_edit_check,
             component_types,
         }
-    }
-
-    pub fn with_postgres_root_filesystem(
-        self,
-        filesystem: Arc<PostgresRootFilesystem>,
-    ) -> HostRuntimeServices<PostgresRootFilesystem, G> {
-        self.with_root_filesystem(filesystem)
     }
 
     pub fn with_libsql_root_filesystem(
@@ -433,21 +425,6 @@ where
         let audit_log: Arc<dyn DurableAuditLog> = audit_log;
         self.audit_sink = Some(Arc::new(DurableAuditSink::new(audit_log)));
         self
-    }
-
-    /// Attaches a pre-built Reborn durable event/audit store pair to the host
-    /// runtime graph. This is the production composition seam for store
-    /// selection: callers choose Postgres/libSQL/accepted-JSONL through
-    /// `ironclaw_event_store`, then this method adapts the durable logs
-    /// into the live sink traits consumed by runtime services.
-    pub fn with_reborn_event_stores(self, stores: RebornEventStores) -> Self {
-        self.with_reborn_event_stores_verified(stores, false, None)
-    }
-
-    /// Attaches pre-built Reborn durable event/audit stores after the caller
-    /// has already enforced production profile restrictions.
-    pub fn with_production_reborn_event_stores(self, stores: RebornEventStores) -> Self {
-        self.with_reborn_event_stores_verified(stores, true, None)
     }
 
     /// Production composition seam for sharing one runtime-event sink with

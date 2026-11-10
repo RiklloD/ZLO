@@ -1,15 +1,12 @@
 //! Layered policy sources.
 //!
 //! [`PolicySource`] is the extension point for host-controlled trust
-//! assignment. PR1b ships in-memory [`BundledRegistry`] and [`AdminConfig`]
-//! sources; [`SignedRegistry`] and [`DevTrustOverride`] are interface seams
-//! that real signature verification / dev-tool overrides will fill in
-//! later, but they expose enough shape that downstream wiring can target a
-//! stable surface today.
+//! assignment. The sources are the in-memory [`BundledRegistry`] and
+//! [`AdminConfig`].
 //!
 //! ## Mutation and invalidation
 //!
-//! `BundledRegistry`, `AdminConfig`, and `SignedRegistry` mutate in place
+//! `BundledRegistry` and `AdminConfig` mutate in place
 //! via `upsert` / `remove`. Per AC #6 of issue #3012, any mutation that
 //! lowers effective trust or shrinks the authority ceiling must publish a
 //! [`crate::TrustChange`] on an [`crate::InvalidationBus`] **before** any
@@ -27,11 +24,10 @@
 //! trust changed or the authority ceiling shrank — making AC #6 a
 //! compile-time guarantee rather than a doc-comment convention.
 //!
-//! Construction-time population (the `with_entries` / `with_signers`
+//! Construction-time population (the `with_entries`
 //! constructors below) remains `pub` because no policy state exists for an
 //! invalidation to be meaningful against — those constructors are for
 //! seeding the chain *before* it is wired up to a bus.
-#![allow(dead_code)] // Scaffolding; some items kept for future use.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -478,219 +474,6 @@ impl PolicySource for AdminConfig {
             allowed_effects: entry.allowed_effects.clone(),
             max_resource_ceiling: entry.max_resource_ceiling.clone(),
         }))
-    }
-}
-
-/// Verified-signer entry, keyed by signer identity (e.g., a public-key
-/// fingerprint or an SPKI hash). PR1b only declares the shape; real
-/// signature verification belongs to a follow-up.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SignerEntry {
-    /// Stable signer identifier. Compared against `PackageIdentity::signer`
-    /// when verification logic lands.
-    pub signer: String,
-    /// Optional human-readable label for audit/logging.
-    pub label: Option<String>,
-    /// Effective trust to grant matched packages. Privileged values should
-    /// be staged through crate-owned host-assignment constructors or future
-    /// host-controlled signing infrastructure.
-    pub effective_trust: EffectiveTrustClass,
-    pub allowed_effects: Vec<EffectKind>,
-    pub max_resource_ceiling: Option<ResourceCeiling>,
-}
-
-/// Signed-registry source — interface seam for future signature
-/// verification.
-///
-/// Today this is intentionally non-functional: even with `trusted_signers`
-/// populated, `evaluate` returns `Ok(None)` because no verification path
-/// exists yet. PR1b ships the data shape so callers can stage signers
-/// against a stable interface; a follow-up will fill in the actual
-/// signature check.
-///
-/// **Threat note for the future implementation.** The current `SignerEntry`
-/// shape keys an `effective_trust` ceiling on `signer` alone — i.e., a
-/// verified signature from signer X would, naively, vouch for *any*
-/// package signed by X with whatever ceiling the entry declares. A
-/// compromised signer key, or a signer that signs packages outside its
-/// intended scope, would then escalate every such package. When this
-/// source is wired up:
-///
-/// 1. The verification path must bind `(signer, package_id, digest)` —
-///    a verified signature is evidence about *that artifact*, not about
-///    the signer's general authority.
-/// 2. `effective_trust` should be capped by what the host policy decides
-///    is acceptable for the *package*, not what the entry asserts about
-///    the *signer*.
-/// 3. Reuse the `AdminEntry::for_*` constructor pattern: separate
-///    constructors per `PackageSource` so the call sites that elevate
-///    user-writable origins are greppable.
-pub(crate) struct SignedRegistry {
-    trusted_signers: RwLock<HashMap<String, SignerEntry>>,
-}
-
-impl SignedRegistry {
-    pub(crate) fn new() -> Self {
-        Self {
-            trusted_signers: RwLock::new(HashMap::new()),
-        }
-    }
-
-    pub(crate) fn with_signers<I: IntoIterator<Item = SignerEntry>>(signers: I) -> Self {
-        let map = signers
-            .into_iter()
-            .map(|entry| (entry.signer.clone(), entry))
-            .collect();
-        Self {
-            trusted_signers: RwLock::new(map),
-        }
-    }
-
-    /// Insert or replace a trusted-signer entry. `pub(crate)` — runtime
-    /// mutation must go through [`crate::HostTrustPolicy::mutate_with`].
-    pub(crate) fn upsert(&self, entry: SignerEntry) {
-        let mut entries = self
-            .trusted_signers
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        entries.insert(entry.signer.clone(), entry);
-    }
-
-    /// Return a trusted signer without mutating it.
-    pub(crate) fn get(&self, signer: &str) -> Option<SignerEntry> {
-        let entries = self
-            .trusted_signers
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        entries.get(signer).cloned()
-    }
-
-    /// Remove a trusted signer. `pub(crate)` — runtime mutation must go
-    /// through `mutate_with`.
-    pub(crate) fn remove(&self, signer: &str) -> Option<SignerEntry> {
-        let mut entries = self
-            .trusted_signers
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        entries.remove(signer)
-    }
-}
-
-impl Default for SignedRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PolicySource for SignedRegistry {
-    fn name(&self) -> &'static str {
-        "signed_registry"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn evaluate(&self, _input: &TrustPolicyInput) -> Result<Option<SourceMatch>, TrustError> {
-        // Verification path not yet implemented. Returning `Ok(None)` is the
-        // safe default — packages flow to the next source / default
-        // downgrade rather than being trusted on the basis of a self-
-        // declared `signer` field.
-        Ok(None)
-    }
-}
-
-/// Development trust override — interface seam for an opt-in,
-/// administratively-blessed dev mode that lets a developer mark specific
-/// packages as privileged for testing.
-///
-/// PR1b ships only the shape. The future implementation will require
-/// explicit configuration (e.g., a CLI flag or a config file outside any
-/// user-writable location) and audit logging on every match. Without that
-/// configuration the source is inert.
-pub(crate) struct DevTrustOverride {
-    /// Packages the operator has explicitly opted in for elevated trust in
-    /// development. Empty means the source has nothing to evaluate even
-    /// once the implementation lands.
-    overrides: RwLock<HashMap<PackageId, AdminEntry>>,
-    /// When `false`, even configured overrides are ignored. PR1b
-    /// initialises this to `false`; future config wiring must set it to
-    /// `true` only when the operator has explicitly opted in *and* an
-    /// auditor is recording the activation.
-    enabled: bool,
-}
-
-impl DevTrustOverride {
-    /// Construct an inert `DevTrustOverride`. PR1b has no production opt-in
-    /// path — the source is documented as future-compatible and never
-    /// matches.
-    pub(crate) fn inert() -> Self {
-        Self {
-            overrides: RwLock::new(HashMap::new()),
-            enabled: false,
-        }
-    }
-
-    /// True when the source has been opted in. Always `false` in PR1b
-    /// because no production opt-in path exists yet — the accessor is
-    /// here so tests can pin the inert contract and so future
-    /// implementations have a stable read surface.
-    pub(crate) fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Number of staged override entries.
-    pub(crate) fn override_count(&self) -> usize {
-        self.overrides
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
-    }
-
-    /// Test-only: construct a `DevTrustOverride` that has been "enabled"
-    /// and pre-staged with override entries.
-    ///
-    /// Even with this, [`PolicySource::evaluate`] returns `Ok(None)` —
-    /// PR1b's contract is that the source is inert until the future
-    /// dev-override implementation lands. The fixture exists so tests
-    /// can pin that inert contract: enabling + staging overrides must
-    /// not produce trust under any input. It is compiled only for this
-    /// crate's `#[cfg(test)]` targets and is not exposed by any Cargo
-    /// feature.
-    #[cfg(test)]
-    pub(crate) fn enabled_for_test(entries: Vec<(PackageId, AdminEntry)>) -> Self {
-        let map: HashMap<_, _> = entries.into_iter().collect();
-        Self {
-            overrides: RwLock::new(map),
-            enabled: true,
-        }
-    }
-}
-
-impl Default for DevTrustOverride {
-    fn default() -> Self {
-        Self::inert()
-    }
-}
-
-impl PolicySource for DevTrustOverride {
-    fn name(&self) -> &'static str {
-        "dev_trust_override"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn evaluate(&self, _input: &TrustPolicyInput) -> Result<Option<SourceMatch>, TrustError> {
-        // Reserved for future implementation. Even when `enabled` flips to
-        // true, the lookup against `overrides` is intentionally absent in
-        // PR1b — keeping the inert path explicit avoids accidentally
-        // wiring trust through a half-implemented mechanism.
-        if !self.enabled {
-            return Ok(None);
-        }
-        Ok(None)
     }
 }
 

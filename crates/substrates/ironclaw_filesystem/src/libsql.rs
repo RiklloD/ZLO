@@ -14,16 +14,17 @@ use ironclaw_libsql_runtime::{
 use crate::backend::{EventRecord, StorageTxn};
 use crate::db::{
     descendant_path_range, direct_children, directory_append_error, directory_write_error,
-    escape_like_literal, escape_like_with_trailing_wildcard, infrastructure_libsql_error,
-    is_not_found, libsql_db_error, not_found, page_offset_to_i64, record_version_from_i64,
-    record_version_to_i64, sql_index_name, system_time_from_unix_seconds, virtual_path_prefixes,
+    entry_from_parts, escape_like_literal, escape_like_with_trailing_wildcard,
+    infrastructure_libsql_error, is_not_found, libsql_db_error, not_found, page_offset_to_i64,
+    record_version_from_i64, record_version_to_i64, seq_no_from_i64, sql_index_name,
+    system_time_from_unix_seconds, virtual_path_prefixes,
 };
 use crate::vector::{cosine_similarity, decode_embedding_blob};
 use crate::{
-    AtomicSubtreeEntry, BackendCapabilities, Capability, CasExpectation, ContentType, DirEntry,
-    Entry, FileStat, FileType, FilesystemError, FilesystemOperation, Filter, IndexKey, IndexKind,
-    IndexName, IndexSpec, IndexValue, Page, RecordKind, RecordVersion, RootFilesystem, SeqNo,
-    TxnCapability, VersionedEntry, root::validate_atomic_subtree_entries,
+    AtomicSubtreeEntry, BackendCapabilities, Capability, CasExpectation, DirEntry, Entry, FileStat,
+    FileType, FilesystemError, FilesystemOperation, Filter, IndexKey, IndexKind, IndexName,
+    IndexSpec, IndexValue, Page, RecordVersion, RootFilesystem, SeqNo, TxnCapability,
+    VersionedEntry, root::validate_atomic_subtree_entries,
 };
 /// libSQL-backed [`RootFilesystem`] storing file contents by virtual path.
 #[derive(Debug)]
@@ -2642,24 +2643,15 @@ fn build_entry(
     kind_raw: Option<String>,
     indexed_raw: String,
 ) -> Result<Entry, FilesystemError> {
-    let content_type = ContentType::new(content_type_raw).map_err(FilesystemError::Contract)?;
-    let kind = kind_raw
-        .map(RecordKind::new)
-        .transpose()
-        .map_err(FilesystemError::Contract)?;
-    let indexed: BTreeMap<IndexKey, IndexValue> = if indexed_raw.is_empty() {
-        BTreeMap::new()
-    } else {
-        serde_json::from_str(&indexed_raw).map_err(|_| FilesystemError::DeserializeIndexed {
-            path: path.clone(),
-            operation: FilesystemOperation::ReadFile,
-        })?
-    };
-    Ok(Entry {
-        body,
-        content_type,
-        kind,
-        indexed,
+    entry_from_parts(body, content_type_raw, kind_raw, || {
+        if indexed_raw.is_empty() {
+            Ok(BTreeMap::new())
+        } else {
+            serde_json::from_str(&indexed_raw).map_err(|_| FilesystemError::DeserializeIndexed {
+                path: path.clone(),
+                operation: FilesystemOperation::ReadFile,
+            })
+        }
     })
 }
 async fn ensure_libsql_records_columns(conn: &libsql::Connection) -> Result<(), FilesystemError> {
@@ -2872,19 +2864,6 @@ async fn ensure_libsql_sequences_table(conn: &libsql::Connection) -> Result<(), 
         .await
         .map_err(|error| infrastructure_libsql_error(FilesystemOperation::ReserveSeq, error))?;
     Ok(())
-}
-fn seq_no_from_i64(
-    path: &VirtualPath,
-    raw: i64,
-    operation: FilesystemOperation,
-) -> Result<SeqNo, FilesystemError> {
-    u64::try_from(raw)
-        .map(SeqNo::from_backend)
-        .map_err(|_| FilesystemError::Backend {
-            path: path.clone(),
-            operation,
-            reason: format!("event seq {raw} is not representable"),
-        })
 }
 
 /// Translate a [`Filter`] tree into a libsql WHERE-clause fragment.

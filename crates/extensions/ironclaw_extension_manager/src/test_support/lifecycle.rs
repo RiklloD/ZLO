@@ -376,11 +376,10 @@ instructions = "Open the fixture app and scan the code."
         assets: vec![ironclaw_extension_host::AvailableExtensionAsset {
             path: "manifest.toml".to_string(),
             content: ironclaw_extension_host::AvailableExtensionAssetContent::Bytes(
-                manifest_toml.as_bytes().to_vec(),
+                manifest_toml.as_bytes().to_vec().into(),
             ),
         }],
         onboarding_override: None,
-        oauth_setup_override: None,
         search_aliases: Vec::new(),
     }
 }
@@ -999,11 +998,11 @@ fn register_bundled_first_party_handlers_for_lifecycle_tests(
 ) -> Result<(), ironclaw_host_api::error::HostApiError> {
     let handler = Arc::new(NoopFirstPartyHandler);
     registry.insert_handler(
-        CapabilityId::new(ironclaw_extension_support::FIRST_PARTY_WEB_SEARCH_CAPABILITY_ID)?,
+        CapabilityId::new(ironclaw_extension_support::WEB_SEARCH_CAPABILITY_ID)?,
         handler.clone(),
     );
     registry.insert_handler(
-        CapabilityId::new(ironclaw_extension_support::FIRST_PARTY_WEB_GET_CONTENT_CAPABILITY_ID)?,
+        CapabilityId::new(ironclaw_extension_support::WEB_GET_CONTENT_CAPABILITY_ID)?,
         handler.clone(),
     );
     for package in ironclaw_extension_support::gsuite_package_specs() {

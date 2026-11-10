@@ -92,11 +92,6 @@ impl<N, S> HostHttpEgressService<N, S> {
             && Arc::ptr_eq(&self.secret_injections, expected_secret_injections)
     }
 
-    pub fn with_body_store(mut self, store: Arc<dyn RuntimeHttpBodyStore>) -> Self {
-        self.body_store = store;
-        self
-    }
-
     pub(super) fn network_policy_for_request(
         &self,
         request: &mut RuntimeHttpEgressRequest,

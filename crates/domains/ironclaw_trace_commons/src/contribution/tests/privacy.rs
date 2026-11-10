@@ -327,27 +327,6 @@ async fn privacy_filter_sidecar_summary_is_integrated_without_raw_text() {
     );
 }
 #[tokio::test]
-async fn privacy_filter_canary_report_keeps_raw_canary_values_out() {
-    let report = run_privacy_filter_canary(&CanaryPrivacyFilterAdapter)
-        .await
-        .expect("canary should run");
-    let json = serde_json::to_string(&report).expect("report serializes");
-
-    assert!(report.healthy);
-    assert_eq!(
-        report
-            .summary
-            .as_ref()
-            .and_then(|summary| summary.by_label.get("secret")),
-        Some(&1)
-    );
-    for raw_value in synthetic_privacy_filter_canary_values() {
-        assert!(!json.contains(&raw_value));
-    }
-    assert!(json.contains("sha256:"));
-    assert!(!json.contains("tc_canary_secret_0123456789abcdef"));
-}
-#[tokio::test]
 async fn privacy_filter_sidecar_failure_falls_back_without_raw_error_text() {
     let trace = TraceFile {
         model_name: "test-model".to_string(),

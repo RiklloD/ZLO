@@ -79,12 +79,12 @@ async fn revoke_trace_submission_uses_refreshed_upload_claim() {
     let policy = StandingTraceContributionPolicy::default()
         .set_enabled(true)
         .set_ingestion_endpoint(endpoint.clone());
-    revoke_trace_submission_for_scope_with_credential_provider(
-        Some(&scope),
+    revoke_trace_submission_at_endpoint_with_credential_provider(
         submission_id,
-        Some(&endpoint),
+        &endpoint,
         &policy,
         &provider,
+        Some(&trace_contribution_dir_for_scope(Some(&scope))),
     )
     .await
     .expect("revoke retries with refreshed claim");
@@ -96,9 +96,6 @@ async fn revoke_trace_submission_uses_refreshed_upload_claim() {
             "Bearer fresh-upload-claim".to_string()
         ]
     );
-    let records = read_local_trace_records_for_scope(Some(&scope)).expect("records read");
-    assert_eq!(records[0].status, NodeTraceSubmissionStatus::Revoked);
-    assert!(records[0].revoked_at.is_some());
 
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
@@ -153,12 +150,12 @@ async fn revoke_trace_submission_classifies_http_rejection_through_call_site() {
         .set_ingestion_endpoint(endpoint.clone());
     let provider =
         RefreshingTestUploadCredentialProvider::new("stale-upload-claim", "fresh-upload-claim");
-    let error = revoke_trace_submission_for_scope_with_credential_provider(
-        Some(&scope),
+    let error = revoke_trace_submission_at_endpoint_with_credential_provider(
         submission_id,
-        Some(&endpoint),
+        &endpoint,
         &policy,
         &provider,
+        Some(&trace_contribution_dir_for_scope(Some(&scope))),
     )
     .await
     .expect_err("revoke HTTP rejection should surface to caller");

@@ -50,9 +50,6 @@ pub const TELEGRAM_WEBHOOK_URL_CONFIG: &str = "telegram_webhook_url";
 /// detected without vendor I/O; verifying that identity with a mediated
 /// `getMe` call is a separate follow-up, not inbound parsing work.
 pub const TELEGRAM_BOT_USERNAME_CONFIG: &str = "bot_username";
-/// Secret handle for the webhook shared secret (the same handle the
-/// manifest's `shared_secret_header` recipe verifies with).
-pub const TELEGRAM_WEBHOOK_SECRET_HANDLE: &str = "telegram_webhook_secret";
 /// Secret handle for the bot token the host injects on Bot API egress.
 pub const TELEGRAM_BOT_TOKEN_HANDLE: &str = "telegram_bot_token";
 

@@ -39,7 +39,6 @@ pub(crate) const ACCOUNT_TRACES_MAX_LIMIT: usize = 500;
 /// cannot buffer an unbounded body.
 pub(crate) const ACCOUNT_TRACES_MAX_RESPONSE_BYTES: usize = 256 * 1024;
 pub(crate) const TRACE_UPLOAD_CLAIM_REFRESH_SKEW_SECONDS: i64 = 60;
-pub(crate) const TRACE_CREDIT_NOTICE_OUTBOX_MAX_ATTEMPTS_STORED: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TraceContributionEnvelope {

@@ -187,8 +187,7 @@ pub use extension_credential_requirements::{
 };
 pub use first_party_package::{
     FirstPartyHandlerRegistrar, FirstPartyPackageAsset, FirstPartyPackageBundle,
-    FirstPartyPackageOAuthSetup, FirstPartyPackageOnboarding, FirstPartyRegistrarContext,
-    first_party_reserved_extension_ids,
+    FirstPartyPackageOnboarding, FirstPartyRegistrarContext, first_party_reserved_extension_ids,
 };
 pub use generic_host::{
     BootInstallationRecordsError, GenericExtensionHost, GenericExtensionHostParams,

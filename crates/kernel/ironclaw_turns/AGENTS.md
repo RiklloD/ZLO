@@ -18,7 +18,7 @@
 - Runner-facing claim and outcome projection types (`runner`); lifecycle
   mutation ports are owned by `ironclaw_processes`.
 - **Not** the turn vocabulary. `TurnId`/`TurnRunId`/`TurnRunnerId`/`RunProfileId`/`RunProfileVersion`/`IdempotencyKey`/`TurnLeaseToken`, the gate/message/result/binding refs, `TurnScope`/`TurnActor`, `TurnStatus`+`GateKind`+`BlockedReason`, `EventCursor`, and `RunOriginAdapter` are all owned by `ironclaw_host_api::turn`. This crate re-exports them from its prelude for its own consumers' convenience — adding a *new* turn type means adding it there, not here.
-- Admission control: limits, buckets, capacity denials, providers (`admission`).
+- The admission-class vocabulary, `TurnAdmissionClass` (`admission`).
 - **Not** the loop-tier contract. `AgentLoopDriver` + descriptors/run/resume requests, run-profile resolution/registry/resolver, prompt/context/model/capability profile ids, resource-budget tiers, scheduling/concurrency classes, redacted provenance, every `Loop*Port`, and the `LoopExit`/`LoopCompleted`/`LoopFailed`/`LoopBlocked`/`LoopCancelled` claim DTOs are owned by `ironclaw_loop_contracts` (WS1.2). This crate depends on it and never re-exports it.
 - Loop-exit **validation**: the evidence port, the applier, the validation policy, the mapping, and the violation taxonomy that turn a driver's claim into a durable transition (`loop_exit`). "A `LoopExit` is a claim, not truth" is enforced here.
 - Two resident host-port implementations (`host_managed_ports`): `HostManagedLoopModelPort` and `HostManagedLoopPromptPort`, awaiting the WS4 `loop_host` re-charter. Nothing new belongs there.

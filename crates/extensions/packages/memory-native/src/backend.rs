@@ -64,7 +64,6 @@ pub struct MemoryBackendCapabilities {
     pub metadata: bool,
     pub versioning: bool,
     /// Backend enforces prompt-write safety for protected write and append operations.
-    /// Filesystem adapters can defer duplicate policy checks to backends that advertise this.
     pub prompt_write_safety: bool,
     pub full_text_search: bool,
     pub vector_search: bool,
@@ -125,13 +124,6 @@ impl MemoryBackendCapabilities {
         self
     }
 }
-
-// `MemoryContext` moved to `ironclaw_memory`; re-exported so
-// `crate::backend::MemoryContext` and the backend code below keep resolving.
-// NOTE: the backend's "already enforced" signal (`prompt_safety_already_enforced`)
-// lives on the native-owned `MemoryBackendWriteOptions`, which only the filesystem
-// adapter sets before deferring backend re-enforcement. (The prompt-write
-// allowance carried on `MemoryContext` is a separate, pre-existing mechanism.)
 
 /// Pluggable memory backend contract.
 ///
@@ -532,25 +524,23 @@ where
         } else {
             None
         };
-        if !backend_options.prompt_safety_already_enforced {
-            enforce_prompt_write_safety(
-                self.prompt_safety_policy.as_ref(),
-                self.prompt_safety_event_sink.as_ref(),
-                &self.prompt_protected_path_registry,
-                PromptWriteSafetyCheck {
-                    scope: context.scope(),
-                    path,
-                    operation: PromptWriteOperation::Write,
-                    source: PromptWriteSource::MemoryBackend,
-                    content,
-                    previous_content_hash: previous_hash.as_deref(),
-                    allowance: context.prompt_write_safety_allowance(),
-                    audit_context: context.audit_context(),
-                    filesystem_operation: FilesystemOperation::WriteFile,
-                },
-            )
-            .await?;
-        }
+        enforce_prompt_write_safety(
+            self.prompt_safety_policy.as_ref(),
+            self.prompt_safety_event_sink.as_ref(),
+            &self.prompt_protected_path_registry,
+            PromptWriteSafetyCheck {
+                scope: context.scope(),
+                path,
+                operation: PromptWriteOperation::Write,
+                source: PromptWriteSource::MemoryBackend,
+                content,
+                previous_content_hash: previous_hash.as_deref(),
+                allowance: context.prompt_write_safety_allowance(),
+                audit_context: context.audit_context(),
+                filesystem_operation: FilesystemOperation::WriteFile,
+            },
+        )
+        .await?;
         let (metadata, metadata_to_persist) =
             resolve_write_metadata(self.repository.as_ref(), path, backend_options).await?;
         if let Some(schema) = &metadata.schema {
@@ -734,25 +724,23 @@ where
         } else {
             None
         };
-        if !backend_options.prompt_safety_already_enforced {
-            enforce_prompt_write_safety(
-                self.prompt_safety_policy.as_ref(),
-                self.prompt_safety_event_sink.as_ref(),
-                &self.prompt_protected_path_registry,
-                PromptWriteSafetyCheck {
-                    scope: context.scope(),
-                    path,
-                    operation: PromptWriteOperation::Append,
-                    source: PromptWriteSource::MemoryBackend,
-                    content,
-                    previous_content_hash: previous_hash.as_deref(),
-                    allowance: context.prompt_write_safety_allowance(),
-                    audit_context: context.audit_context(),
-                    filesystem_operation: FilesystemOperation::AppendFile,
-                },
-            )
-            .await?;
-        }
+        enforce_prompt_write_safety(
+            self.prompt_safety_policy.as_ref(),
+            self.prompt_safety_event_sink.as_ref(),
+            &self.prompt_protected_path_registry,
+            PromptWriteSafetyCheck {
+                scope: context.scope(),
+                path,
+                operation: PromptWriteOperation::Append,
+                source: PromptWriteSource::MemoryBackend,
+                content,
+                previous_content_hash: previous_hash.as_deref(),
+                allowance: context.prompt_write_safety_allowance(),
+                audit_context: context.audit_context(),
+                filesystem_operation: FilesystemOperation::AppendFile,
+            },
+        )
+        .await?;
         let (metadata, metadata_to_persist) =
             resolve_write_metadata(self.repository.as_ref(), path, backend_options).await?;
         if let Some(schema) = &metadata.schema {
@@ -833,25 +821,23 @@ where
             } else {
                 None
             };
-            if !backend_options.prompt_safety_already_enforced {
-                enforce_prompt_write_safety(
-                    self.prompt_safety_policy.as_ref(),
-                    self.prompt_safety_event_sink.as_ref(),
-                    &self.prompt_protected_path_registry,
-                    PromptWriteSafetyCheck {
-                        scope: context.scope(),
-                        path,
-                        operation: PromptWriteOperation::Append,
-                        source: PromptWriteSource::MemoryBackend,
-                        content,
-                        previous_content_hash: previous_hash.as_deref(),
-                        allowance: context.prompt_write_safety_allowance(),
-                        audit_context: context.audit_context(),
-                        filesystem_operation: FilesystemOperation::AppendFile,
-                    },
-                )
-                .await?;
-            }
+            enforce_prompt_write_safety(
+                self.prompt_safety_policy.as_ref(),
+                self.prompt_safety_event_sink.as_ref(),
+                &self.prompt_protected_path_registry,
+                PromptWriteSafetyCheck {
+                    scope: context.scope(),
+                    path,
+                    operation: PromptWriteOperation::Append,
+                    source: PromptWriteSource::MemoryBackend,
+                    content,
+                    previous_content_hash: previous_hash.as_deref(),
+                    allowance: context.prompt_write_safety_allowance(),
+                    audit_context: context.audit_context(),
+                    filesystem_operation: FilesystemOperation::AppendFile,
+                },
+            )
+            .await?;
             let (metadata, metadata_to_persist) =
                 resolve_write_metadata(self.repository.as_ref(), path, backend_options).await?;
             if let Some(schema) = &metadata.schema {
@@ -944,25 +930,23 @@ where
         } else {
             None
         };
-        if !backend_options.prompt_safety_already_enforced {
-            enforce_prompt_write_safety(
-                self.prompt_safety_policy.as_ref(),
-                self.prompt_safety_event_sink.as_ref(),
-                &self.prompt_protected_path_registry,
-                PromptWriteSafetyCheck {
-                    scope: context.scope(),
-                    path,
-                    operation: PromptWriteOperation::Write,
-                    source: PromptWriteSource::MemoryBackend,
-                    content,
-                    previous_content_hash: previous_hash.as_deref(),
-                    allowance: context.prompt_write_safety_allowance(),
-                    audit_context: context.audit_context(),
-                    filesystem_operation: FilesystemOperation::WriteFile,
-                },
-            )
-            .await?;
-        }
+        enforce_prompt_write_safety(
+            self.prompt_safety_policy.as_ref(),
+            self.prompt_safety_event_sink.as_ref(),
+            &self.prompt_protected_path_registry,
+            PromptWriteSafetyCheck {
+                scope: context.scope(),
+                path,
+                operation: PromptWriteOperation::Write,
+                source: PromptWriteSource::MemoryBackend,
+                content,
+                previous_content_hash: previous_hash.as_deref(),
+                allowance: context.prompt_write_safety_allowance(),
+                audit_context: context.audit_context(),
+                filesystem_operation: FilesystemOperation::WriteFile,
+            },
+        )
+        .await?;
         let (metadata, metadata_to_persist) =
             resolve_write_metadata(self.repository.as_ref(), path, backend_options).await?;
         if let Some(schema) = &metadata.schema {
@@ -1109,28 +1093,6 @@ where
 mod tests {
     use super::*;
     use crate::repo::InMemoryMemoryDocumentRepository;
-    use ironclaw_memory::PromptSafetyAllowanceId;
-
-    #[test]
-    fn default_backend_options_do_not_claim_prompt_safety_enforced() {
-        // Locks the native-owned safety marker's default (fail-closed) state.
-        // Any direct backend caller using `MemoryBackendWriteOptions::default()`
-        // must have the backend re-enforce prompt-write safety.
-        let options = MemoryBackendWriteOptions::default();
-        assert!(!options.prompt_safety_already_enforced);
-        // Setting an allowance on the agnostic context is independent of the
-        // native enforcement marker — the allowance never lives on the options
-        // struct and never flips the marker.
-        let ctx = MemoryContext::new(
-            MemoryDocumentScope::new("tenant", "alpha", Some("project")).unwrap(),
-        );
-        let _with_allowance = ctx
-            .with_prompt_write_safety_allowance(PromptSafetyAllowanceId::empty_prompt_file_clear());
-        assert!(
-            !MemoryBackendWriteOptions::default().prompt_safety_already_enforced,
-            "the allowance path must not flip the native enforcement marker"
-        );
-    }
 
     fn alpha_path() -> MemoryDocumentPath {
         MemoryDocumentPath::new("tenant", "alpha", Some("project"), "note.md").unwrap()

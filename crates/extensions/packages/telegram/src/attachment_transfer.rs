@@ -62,8 +62,6 @@ pub(crate) const TELEGRAM_MAX_TRANSFER_BYTES: u64 = 5 * 1024 * 1024;
 /// Multipart field overhead the manifest's request cap allows above the file.
 pub(crate) const TELEGRAM_MULTIPART_OVERHEAD_BYTES: u64 = 64 * 1024;
 
-/// The binding per-file bound: the channel's declared transfer limit and the
-/// host-wide attachment budget both apply, tightest wins.
 /// The declared bot-token handle. Constructed in one place: a `None` here
 /// would ship a request with an unsubstituted `{telegram_bot_token}`
 /// placeholder, so the failure mode is worth having a single site for.
@@ -71,6 +69,8 @@ fn bot_token_handle() -> Option<SecretHandle> {
     SecretHandle::new(TELEGRAM_BOT_TOKEN_HANDLE).ok()
 }
 
+/// The binding per-file bound: the channel's declared transfer limit and the
+/// host-wide attachment budget both apply, tightest wins.
 fn max_transfer_bytes() -> u64 {
     TELEGRAM_MAX_TRANSFER_BYTES.min(DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64)
 }

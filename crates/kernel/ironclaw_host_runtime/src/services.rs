@@ -29,7 +29,6 @@ use ironclaw_event_store::{
 use ironclaw_extension_contracts::runtime::ExtensionRuntime;
 use ironclaw_extension_registry::{ExtensionRegistry, SharedExtensionRegistry};
 use ironclaw_filesystem::LibSqlRootFilesystem;
-use ironclaw_filesystem::PostgresRootFilesystem;
 use ironclaw_filesystem::{DiskFilesystem, RootFilesystem, ScopedFilesystem};
 use ironclaw_host_api::{
     dispatch::{

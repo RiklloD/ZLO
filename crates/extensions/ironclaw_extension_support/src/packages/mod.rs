@@ -29,9 +29,7 @@ type PackageEntry = (&'static str, fn() -> PackageBundle);
 
 /// The single source of the bundled inventory: `(id, bundle builder)` per
 /// package module. [`bundled_packages`] runs the builders (materializing
-/// embeds); [`bundled_package_ids`] reads the ids without touching embeds. Both
-/// derive from this one list, so a package cannot appear in one view and not the
-/// other. Each `ID` const lives in its owning module beside `bundle()`.
+/// embeds). Each `ID` const lives in its owning module beside `bundle()`.
 const PACKAGES: &[PackageEntry] = &[
     (github::ID, github::bundle),
     (gmail::ID, gmail::bundle),
@@ -54,13 +52,12 @@ pub struct PackageAsset {
 }
 
 pub enum PackageAssetContent {
-    Bytes(Vec<u8>),
+    Bytes(Cow<'static, [u8]>),
 }
 
 /// A package's user-facing onboarding copy, carried as plain data (no host
 /// lifecycle types — this crate sits below `product_surface`). Composition
-/// maps this to its `LifecycleExtensionOnboarding` at summary time. The strings
-/// are the exact bespoke copy that used to live in composition's per-id `match`.
+/// maps this to its `LifecycleExtensionOnboarding` at summary time.
 pub struct PackageOnboarding {
     pub instructions: String,
     pub credential_instructions: Option<String>,
@@ -91,10 +88,10 @@ pub struct PackageBundle {
 }
 
 /// A byte-content asset addressed by `path`.
-pub(crate) fn bytes_asset(path: &str, bytes: &[u8]) -> PackageAsset {
+pub(crate) fn bytes_asset(path: &str, bytes: &'static [u8]) -> PackageAsset {
     PackageAsset {
         path: path.to_string(),
-        content: PackageAssetContent::Bytes(bytes.to_vec()),
+        content: PackageAssetContent::Bytes(Cow::Borrowed(bytes)),
     }
 }
 
@@ -104,12 +101,4 @@ pub(crate) fn bytes_asset(path: &str, bytes: &[u8]) -> PackageAsset {
 /// in [`struct@PACKAGES`].
 pub fn bundled_packages() -> Vec<PackageBundle> {
     PACKAGES.iter().map(|(_, build)| build()).collect()
-}
-
-/// The ids of every bundled package, cheap (no embed materialization). Host code
-/// that only needs to test membership — e.g. "is this a reserved host-bundled
-/// id a filesystem extension must not shadow" — uses this instead of building
-/// the full bundles.
-pub fn bundled_package_ids() -> Vec<&'static str> {
-    PACKAGES.iter().map(|(id, _)| *id).collect()
 }

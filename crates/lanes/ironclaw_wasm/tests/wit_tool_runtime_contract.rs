@@ -274,6 +274,125 @@ const FAILURE_TOOL_WAT: &str = r#"
 )
 "#;
 
+const DENIED_IMPORTS_TOOL_WAT: &str = r#"
+(module
+  (type (;0;) (func (param i32 i32 i32)))
+  (type (;1;) (func (result i64)))
+  (type (;2;) (func (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)))
+  (type (;3;) (func (param i32 i32 i32 i32 i32)))
+  (type (;4;) (func (param i32 i32) (result i32)))
+  (import "near:agent/host@0.4.1" "log" (func $log (type 0)))
+  (import "near:agent/host@0.4.1" "now-millis" (func $now (type 1)))
+  (import "near:agent/host@0.4.1" "workspace-read" (func $workspace_read (type 0)))
+  (import "near:agent/host@0.4.1" "http-request" (func $http_request (type 2)))
+  (import "near:agent/host@0.4.1" "tool-invoke" (func $tool_invoke (type 3)))
+  (import "near:agent/host@0.4.1" "secret-exists" (func $secret_exists (type 4)))
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 4096))
+  (data (i32.const 128) "notes.md")
+  (data (i32.const 160) "other")
+  (data (i32.const 224) "{}")
+  (data (i32.const 1024) "{\22type\22:\22object\22}")
+  (data (i32.const 2048) "fixture description")
+  (data (i32.const 3072) "workspace-none")
+  (data (i32.const 3104) "workspace-some")
+  (func $schema (result i32)
+    i32.const 16
+    i32.const 1024
+    i32.store
+    i32.const 20
+    i32.const 17
+    i32.store
+    i32.const 16)
+  (func $description (result i32)
+    i32.const 32
+    i32.const 2048
+    i32.store
+    i32.const 36
+    i32.const 19
+    i32.store
+    i32.const 32)
+  ;; Calls both imports and reports what the host answered as a
+  ;; `failure(guest-failure)` response (layout above FAILURE_TOOL_WAT):
+  ;;   kind    = operation-failed (6) when tool-invoke returned err, else 0
+  ;;   code    = "workspace-none" / "workspace-some"
+  ;;   message = the string tool-invoke returned
+  ;; `option<string>` lands at 512 and `result<string, string>` at 528, each
+  ;; as a discriminant byte followed by ptr at +4 and len at +8.
+  (func $execute (param i32 i32 i32 i32 i32) (result i32)
+    i32.const 128
+    i32.const 8
+    i32.const 512
+    call $workspace_read
+
+    i32.const 160
+    i32.const 5
+    i32.const 224
+    i32.const 2
+    i32.const 528
+    call $tool_invoke
+
+    i32.const 48
+    i32.const 1
+    i32.store
+    i32.const 52
+    i32.const 528
+    i32.load8_u
+    if (result i32)
+      i32.const 6
+    else
+      i32.const 0
+    end
+    i32.store
+    i32.const 56
+    i32.const 1
+    i32.store
+    i32.const 60
+    i32.const 512
+    i32.load8_u
+    if (result i32)
+      i32.const 3104
+    else
+      i32.const 3072
+    end
+    i32.store
+    i32.const 64
+    i32.const 14
+    i32.store
+    i32.const 68
+    i32.const 1
+    i32.store
+    i32.const 72
+    i32.const 532
+    i32.load
+    i32.store
+    i32.const 76
+    i32.const 536
+    i32.load
+    i32.store
+    i32.const 48)
+  (func $post (param i32))
+  (func $realloc (param $old i32) (param $old_align i32) (param $new_size i32) (param $new_align i32) (result i32)
+    (local $ret i32)
+    global.get $heap
+    local.set $ret
+    global.get $heap
+    local.get $new_size
+    i32.add
+    global.set $heap
+    local.get $ret)
+  (func $_initialize)
+  (export "near:agent/tool@0.4.1#execute" (func $execute))
+  (export "cabi_post_near:agent/tool@0.4.1#execute" (func $post))
+  (export "near:agent/tool@0.4.1#schema" (func $schema))
+  (export "cabi_post_near:agent/tool@0.4.1#schema" (func $post))
+  (export "near:agent/tool@0.4.1#description" (func $description))
+  (export "cabi_post_near:agent/tool@0.4.1#description" (func $post))
+  (export "cabi_realloc" (func $realloc))
+  (export "_initialize" (func $_initialize))
+)
+"#;
+
 fn tool_component(wat_src: &str) -> Vec<u8> {
     tool_component_with_wit(wat_src, ironclaw_wasm::TOOL_WIT)
 }
@@ -477,6 +596,51 @@ async fn cloned_runtime_executes_inside_spawn_blocking_concurrently() {
         let execution = handle.await.expect("blocking task must not panic").unwrap();
         assert_eq!(execution.outcome, WitToolOutcome::Success("1".to_string()));
     }
+}
+
+#[test]
+fn workspace_read_and_tool_invoke_imports_are_denied_to_the_guest() {
+    let runtime = WitToolRuntime::new(WitToolRuntimeConfig::for_testing()).unwrap();
+    let prepared = runtime
+        .prepare("denied-imports", &tool_component(DENIED_IMPORTS_TOOL_WAT))
+        .unwrap();
+
+    let executed = runtime
+        .execute(
+            &prepared,
+            WitToolHost::deny_all(),
+            WitToolRequest::new("{}"),
+        )
+        .unwrap();
+
+    assert_eq!(
+        executed.outcome,
+        WitToolOutcome::Failure(WitGuestFailure {
+            kind: WitErrorKind::OperationFailed,
+            code: Some("workspace-none".to_string()),
+            message: Some("WASM tool invocation is not configured".to_string()),
+        })
+    );
+}
+
+#[test]
+fn dropping_the_runtime_releases_its_engine_and_stops_the_epoch_ticker() {
+    let runtime = WitToolRuntime::new(WitToolRuntimeConfig::for_testing()).unwrap();
+    let engine = runtime.engine().weak();
+    drop(runtime);
+
+    let mut released = false;
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        if engine.upgrade().is_none() {
+            released = true;
+            break;
+        }
+    }
+    assert!(
+        released,
+        "the epoch ticker thread still holds the engine after the runtime was dropped"
+    );
 }
 
 #[test]

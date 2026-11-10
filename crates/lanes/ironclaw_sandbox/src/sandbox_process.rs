@@ -87,8 +87,6 @@ pub const USER_SANDBOX_PROXY_LABEL_USER: &str = "ironclaw.proxy.user";
 pub const USER_SANDBOX_NETWORK_LABEL_TENANT: &str = "ironclaw.network.tenant";
 /// Stable user label on managed-egress private networks.
 pub const USER_SANDBOX_NETWORK_LABEL_USER: &str = "ironclaw.network.user";
-/// Digest-pinned managed-egress proxy image used by sandbox profiles.
-pub const DEFAULT_SANDBOX_PROXY_IMAGE: &str = managed_egress::DEFAULT_PROXY_IMAGE;
 
 const DEFAULT_IMAGE: &str = "ironclaw-worker:latest";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(shell_limits::SHELL_TIMEOUT_DEFAULT_SECS);
@@ -169,10 +167,6 @@ impl RebornSandboxConfig {
         self
     }
 
-    pub fn with_default_timeout(mut self, timeout: Duration) -> Self {
-        self.default_timeout = timeout;
-        self
-    }
     pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
         self.idle_timeout = timeout;
         self
@@ -238,11 +232,6 @@ impl RebornSandboxConfig {
         self.mount_sources
             .add_local_source(virtual_root, host_root)?;
         Ok(self)
-    }
-
-    pub fn with_container_identity(mut self, identity: RebornSandboxContainerIdentity) -> Self {
-        self.container_identity = identity;
-        self
     }
 
     pub fn with_container_user(

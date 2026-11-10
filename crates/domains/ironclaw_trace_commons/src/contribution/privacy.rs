@@ -164,73 +164,6 @@ pub(crate) fn safe_privacy_filter_label(
     "unknown".to_string()
 }
 
-pub fn synthetic_privacy_filter_canary_text() -> String {
-    synthetic_privacy_filter_canary_values().join(" ")
-}
-
-pub fn synthetic_privacy_filter_canary_values() -> Vec<String> {
-    vec![
-        "trace-canary.person@example.invalid".to_string(),
-        "tc_canary_secret_0123456789abcdef".to_string(),
-        "/tmp/trace_canary_private/path.txt".to_string(), // safety: canary text intentionally includes a synthetic private path.
-    ]
-}
-
-pub async fn run_configured_privacy_filter_canary_from_env()
--> Result<Option<PrivacyFilterCanaryReport>, TraceContributionError> {
-    let Some(adapter) = privacy_filter_adapter_from_env() else {
-        return Ok(None);
-    };
-    run_privacy_filter_canary(adapter.as_ref()).await.map(Some)
-}
-
-pub async fn run_privacy_filter_canary(
-    adapter: &dyn PrivacyFilterAdapter,
-) -> Result<PrivacyFilterCanaryReport, TraceContributionError> {
-    let raw_values = synthetic_privacy_filter_canary_values();
-    let canary_text = raw_values.join(" ");
-    let canary_hash = canonical_hash(&canary_text);
-    let redaction = adapter.redact_text(&canary_text).await?;
-
-    let Some(redaction) = redaction else {
-        return Ok(PrivacyFilterCanaryReport {
-            canary_version: PRIVACY_FILTER_CANARY_VERSION.to_string(),
-            healthy: false,
-            canary_hash,
-            redacted_output_hash: None,
-            summary: None,
-            failures: vec!["privacy filter returned no redaction for synthetic canary".to_string()],
-        });
-    };
-
-    let mut failures = Vec::new();
-    let summary_json = serde_json::to_string(&redaction.summary).unwrap_or_default();
-    let report_json = serde_json::to_string(&redaction.report).unwrap_or_default();
-    for raw_value in &raw_values {
-        if redaction.redacted_text.contains(raw_value) {
-            failures.push(format!(
-                "privacy filter redacted_text retained canary value hash {}",
-                canonical_hash(raw_value)
-            ));
-        }
-        if summary_json.contains(raw_value) || report_json.contains(raw_value) {
-            failures.push(format!(
-                "privacy filter safe summary retained canary value hash {}",
-                canonical_hash(raw_value)
-            ));
-        }
-    }
-
-    Ok(PrivacyFilterCanaryReport {
-        canary_version: PRIVACY_FILTER_CANARY_VERSION.to_string(),
-        healthy: failures.is_empty(),
-        canary_hash,
-        redacted_output_hash: Some(canonical_hash(&redaction.redacted_text)),
-        summary: Some(redaction.summary),
-        failures,
-    })
-}
-
 pub(crate) fn merge_privacy_filter_summary(
     target: &mut Option<SafePrivacyFilterSummary>,
     next: &SafePrivacyFilterSummary,
@@ -919,94 +852,6 @@ impl DeterministicTraceRedactor {
     }
 }
 
-pub fn rescrub_trace_envelope(
-    envelope: &mut TraceContributionEnvelope,
-) -> Result<(), TraceContributionError> {
-    let redactor = DeterministicTraceRedactor::default();
-    rescrub_trace_envelope_with(&redactor, envelope)
-}
-
-pub fn rescrub_trace_envelope_with(
-    redactor: &DeterministicTraceRedactor,
-    envelope: &mut TraceContributionEnvelope,
-) -> Result<(), TraceContributionError> {
-    let mut report = RedactionReport::default();
-    let mut state = RedactionState::default();
-
-    for event in &mut envelope.events {
-        if let Some(content) = event.redacted_content.take() {
-            let (redacted, child_report) = redactor.redact_text_with_state(&content, &mut state);
-            report.merge(child_report);
-            event.redacted_content = Some(redacted);
-        }
-
-        if !event.structured_payload.is_null() {
-            let (redacted_payload, child_report) = redactor.redact_json_value(
-                event.tool_name.as_deref(),
-                &event.structured_payload,
-                &mut state,
-            );
-            report.merge(child_report);
-            event.structured_payload = redacted_payload;
-        }
-    }
-
-    if let Some(correction) = envelope.outcome.human_correction.take() {
-        let (redacted, child_report) = redactor.redact_text_with_state(&correction, &mut state);
-        report.merge(child_report);
-        envelope.outcome.human_correction = Some(redacted);
-    }
-
-    let blocked_secret_detected = report.blocked_secret_detected;
-    for (label, count) in report.counts {
-        *envelope.privacy.redaction_counts.entry(label).or_insert(0) += count;
-    }
-    for label in report.pii_labels_present {
-        if !envelope.privacy.pii_labels_present.contains(&label) {
-            envelope.privacy.pii_labels_present.push(label);
-        }
-    }
-
-    let server_pass_risk = residual_risk(
-        &envelope.consent,
-        &RedactionReport {
-            counts: BTreeMap::new(),
-            pii_labels_present: Vec::new(),
-            warnings: Vec::new(),
-            blocked_secret_detected,
-        },
-    );
-    envelope.privacy.residual_pii_risk =
-        max_residual_risk(envelope.privacy.residual_pii_risk, server_pass_risk);
-    if !envelope
-        .privacy
-        .redaction_pipeline_version
-        .contains(SERVER_RESCRUB_PIPELINE_SUFFIX)
-    {
-        envelope.privacy.redaction_pipeline_version.push('+');
-        envelope
-            .privacy
-            .redaction_pipeline_version
-            .push_str(SERVER_RESCRUB_PIPELINE_SUFFIX);
-    }
-    envelope.trace_card.redaction_pipeline_version =
-        envelope.privacy.redaction_pipeline_version.clone();
-    merge_privacy_warnings(
-        &mut envelope.privacy.warnings,
-        privacy_warnings(envelope.privacy.residual_pii_risk),
-    );
-    merge_privacy_warnings(
-        &mut envelope.privacy.warnings,
-        vec!["Server-side trace re-scrub was applied before corpus storage.".to_string()],
-    );
-    // `max_residual_risk` only ever raises the risk, so the quarantine flag
-    // follows it upward and is never cleared by a re-scrub.
-    envelope.privacy.quarantined |= quarantines_trace(envelope.privacy.residual_pii_risk);
-    envelope.privacy.redaction_hash =
-        redaction_hash(&envelope.events, &envelope.privacy.redaction_counts)?;
-    Ok(())
-}
-
 pub(crate) fn residual_risk(
     consent: &ConsentMetadata,
     report: &RedactionReport,
@@ -1020,23 +865,6 @@ pub(crate) fn residual_risk(
     }
 
     ResidualPiiRisk::Low
-}
-
-pub(crate) fn max_residual_risk(left: ResidualPiiRisk, right: ResidualPiiRisk) -> ResidualPiiRisk {
-    use ResidualPiiRisk::{High, Low, Medium};
-    match (left, right) {
-        (High, _) | (_, High) => High,
-        (Medium, _) | (_, Medium) => Medium,
-        (Low, Low) => Low,
-    }
-}
-
-pub(crate) fn merge_privacy_warnings(existing: &mut Vec<String>, new_warnings: Vec<String>) {
-    for warning in new_warnings {
-        if !existing.contains(&warning) {
-            existing.push(warning);
-        }
-    }
 }
 
 /// Whether `risk` means the trace must be held back from datasets pending

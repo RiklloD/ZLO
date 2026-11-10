@@ -2,9 +2,9 @@
 //!
 //! The event vocabulary (`MemorySignificantEvent`, its kinds/sources/status,
 //! `MemoryAuditContext`, `MemoryEventSinkError`, and the
-//! `MemorySignificantEventSink` trait) moved to `ironclaw_memory` and is
-//! re-exported below. The `pub(crate)` host-composed logging helper stays here
-//! because it depends on `tracing`.
+//! `MemorySignificantEventSink` trait) lives in `ironclaw_memory`. The
+//! `pub(crate)` host-composed logging helper is here because it depends on
+//! `tracing`.
 
 use ironclaw_memory::{MemorySignificantEvent, MemorySignificantEventSink};
 use std::sync::Arc;

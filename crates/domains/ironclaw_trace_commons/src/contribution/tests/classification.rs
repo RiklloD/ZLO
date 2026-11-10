@@ -1,7 +1,5 @@
 //! Canonical representations, dataset eligibility and hold classes, capture, and scoped on-disk layout.
 
-use std::path::PathBuf;
-
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -9,154 +7,6 @@ use crate::contribution::*;
 
 use super::support::*;
 
-#[tokio::test]
-async fn canonical_summary_uses_redacted_content_only() {
-    let options = RecordedTraceContributionOptions::default()
-        .set_include_message_text(true)
-        .set_include_tool_payloads(true);
-    let raw = RawTraceContribution::from_recorded_trace(&sample_trace(), options);
-    let envelope = DeterministicTraceRedactor::with_known_path_prefixes([PathBuf::from(
-        "/Users/alice/project",
-    )])
-    .redact_trace(raw)
-    .await
-    .expect("redaction should succeed");
-
-    let summary = canonical_summary_for_embedding(&envelope);
-    assert!(summary.contains("<PRIVATE_LOCAL_PATH_"));
-    assert!(!summary.contains("/Users/alice/project"));
-    assert!(!summary.contains("abcdefghijklmnopqrstuvwxyz"));
-}
-#[tokio::test]
-async fn canonical_representations_use_only_redacted_private_values() {
-    let mut raw = RawTraceContribution::from_recorded_trace(
-        &sample_trace(),
-        RecordedTraceContributionOptions::default()
-            .set_include_message_text(true)
-            .set_include_tool_payloads(true)
-            .set_consent_scopes(vec![ConsentScope::ModelTraining]),
-    );
-    raw.outcome = OutcomeMetadata::default()
-        .set_user_feedback(UserFeedback::Correction)
-        .set_task_success(TaskSuccess::Partial)
-        .set_failure_modes(vec![TraceFailureMode::UserIntentMisread])
-        .set_human_correction(
-            "Use alice@example.com and /Users/alice/project/fix.md as the correction",
-        );
-    let envelope = DeterministicTraceRedactor::with_known_path_prefixes([PathBuf::from(
-        "/Users/alice/project",
-    )])
-    .redact_trace(raw)
-    .await
-    .expect("redaction should succeed");
-
-    let representations = canonical_representations_for_embedding(&envelope);
-    let joined = representations
-        .iter()
-        .map(|representation| representation.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n---\n");
-
-    assert!(
-        representations
-            .iter()
-            .any(|representation| representation.kind == CanonicalRepresentationKind::WholeTrace)
-    );
-    assert!(
-        representations
-            .iter()
-            .any(|representation| representation.kind == CanonicalRepresentationKind::Turn)
-    );
-    assert!(
-        representations
-            .iter()
-            .any(|representation| representation.kind == CanonicalRepresentationKind::ToolSequence)
-    );
-    assert!(
-        representations
-            .iter()
-            .any(|representation| representation.kind == CanonicalRepresentationKind::ErrorOutcome)
-    );
-    assert!(
-        representations
-            .iter()
-            .any(|representation| representation.kind == CanonicalRepresentationKind::Correction)
-    );
-    assert!(joined.contains("<PRIVATE_EMAIL_"));
-    assert!(joined.contains("<PRIVATE_LOCAL_PATH_"));
-    assert!(!joined.contains("alice@example.com"));
-    assert!(!joined.contains("/Users/alice/project"));
-    assert!(!joined.contains("abcdefghijklmnopqrstuvwxyz"));
-    assert!(
-        representations
-            .iter()
-            .all(|representation| representation.canonical_hash.starts_with("sha256:"))
-    );
-    assert!(
-        representations
-            .iter()
-            .all(|representation| representation.vector_key.starts_with("trace:"))
-    );
-}
-#[tokio::test]
-async fn dataset_eligibility_gates_consent_revocation_and_privacy_risk() {
-    let raw = RawTraceContribution::from_recorded_trace(
-        &sample_trace(),
-        RecordedTraceContributionOptions::default()
-            .set_consent_scopes(vec![ConsentScope::ModelTraining]),
-    );
-    let mut envelope = DeterministicTraceRedactor::default()
-        .redact_trace(raw)
-        .await
-        .expect("redaction should succeed");
-
-    let eligible = trace_dataset_eligibility(&envelope, TraceAllowedUse::ModelTraining, false);
-    assert!(eligible.eligible);
-    assert_eq!(
-        eligible.retention_policy.class,
-        TraceRetentionClass::TrainingRevocable
-    );
-
-    let revoked = trace_dataset_eligibility(&envelope, TraceAllowedUse::ModelTraining, true);
-    assert!(!revoked.eligible);
-    assert!(
-        revoked
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("revoked"))
-    );
-
-    let outside_scope =
-        trace_dataset_eligibility(&envelope, TraceAllowedUse::BenchmarkGeneration, false);
-    assert!(!outside_scope.eligible);
-    assert!(
-        outside_scope
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("outside consent"))
-    );
-
-    envelope.privacy.residual_pii_risk = ResidualPiiRisk::Medium;
-    let medium_training =
-        trace_dataset_eligibility(&envelope, TraceAllowedUse::ModelTraining, false);
-    assert!(!medium_training.eligible);
-    assert!(
-        medium_training
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("medium residual privacy risk"))
-    );
-
-    envelope.privacy.residual_pii_risk = ResidualPiiRisk::High;
-    let high_eval = trace_dataset_eligibility(&envelope, TraceAllowedUse::Evaluation, false);
-    assert!(!high_eval.eligible);
-    assert!(
-        high_eval
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("high residual privacy risk"))
-    );
-}
 /// Durable identifiers must not be derived from `Debug` (#7144). Both of
 /// these cross a persistence boundary — `vector_key` addresses rows in a
 /// vector store, the credit fingerprint is written into `submissions.json`
@@ -237,10 +87,8 @@ fn durable_identifier_segments_are_frozen_against_variant_renames() {
     );
 }
 
-/// #7144: the trace card stamped `private_corpus_revocable` unconditionally
-/// while `retention_policy_for_trace` ranked `allowed_uses` — and they
-/// disagree for three of the five consent scopes. The card is what crosses
-/// the wire, so the wrong value was the one that shipped.
+/// The trace card's retention policy follows the consent scope. The card is
+/// what crosses the wire.
 #[tokio::test]
 async fn trace_card_retention_matches_the_ranked_derivation() {
     for (scope, expected) in [
@@ -263,11 +111,6 @@ async fn trace_card_retention_matches_the_ranked_derivation() {
         assert_eq!(
             envelope.trace_card.retention_policy, expected,
             "the card must carry the policy the allowed uses imply for {scope:?}"
-        );
-        assert_eq!(
-            envelope.trace_card.retention_policy,
-            retention_policy_for_trace(&envelope).name,
-            "the card and the ranked derivation must not disagree for {scope:?}"
         );
     }
 }
@@ -354,65 +197,6 @@ async fn novelty_score_is_clamped_at_both_ends() {
     );
 }
 
-/// #7144: dataset eligibility used to be decided by scanning `warnings` for
-/// the substring `"quarantined"`, whose sole producer is one English
-/// sentence in `privacy_warnings`. Rewording, translating or localising that
-/// sentence silently opened the gate — quietly, and in the permissive
-/// direction.
-///
-/// The sabotage the old gate could not survive is the first case here: the
-/// prose is replaced wholesale and the gate must still hold.
-#[tokio::test]
-async fn quarantine_gate_survives_rewording_the_operator_warning() {
-    let raw = RawTraceContribution::from_recorded_trace(
-        &sample_trace(),
-        RecordedTraceContributionOptions::default()
-            .set_consent_scopes(vec![ConsentScope::ModelTraining]),
-    );
-    let mut envelope = DeterministicTraceRedactor::default()
-        .redact_trace(raw)
-        .await
-        .expect("redaction should succeed");
-
-    // A high-risk trace carries the typed flag from the producer.
-    envelope.privacy.residual_pii_risk = ResidualPiiRisk::High;
-    envelope.privacy.quarantined = true;
-    envelope.privacy.warnings =
-        vec!["Sekretartige Inhalte gefunden; bitte zuruckhalten.".to_string()];
-    let localised = trace_dataset_eligibility(&envelope, TraceAllowedUse::ModelTraining, false);
-    assert!(!localised.eligible);
-    assert!(
-        localised
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("quarantined")),
-        "the gate must key on the typed flag, not the sentence: {:?}",
-        localised.reasons
-    );
-
-    // An envelope persisted before the flag existed deserializes it as
-    // `false`; the typed risk check is what has to close the gate there.
-    envelope.privacy.quarantined = false;
-    let legacy = trace_dataset_eligibility(&envelope, TraceAllowedUse::ModelTraining, false);
-    assert!(
-        !legacy.eligible,
-        "a pre-flag high-risk envelope must still be held: {:?}",
-        legacy.reasons
-    );
-
-    // And prose alone must not close it on a low-risk trace: the substring
-    // used to be sufficient, so an unrelated warning that happened to
-    // contain the word blocked an eligible trace.
-    envelope.privacy.residual_pii_risk = ResidualPiiRisk::Low;
-    envelope.privacy.warnings = vec!["Downstream job quarantined a sibling trace.".to_string()];
-    let prose_only = trace_dataset_eligibility(&envelope, TraceAllowedUse::ModelTraining, false);
-    assert!(
-        prose_only.eligible,
-        "warning prose must not decide eligibility either way: {:?}",
-        prose_only.reasons
-    );
-}
-
 /// The producer and the gate must agree, driven through `redact_trace`
 /// rather than by setting the field by hand: an envelope has to arrive from
 /// redaction already carrying the typed flag that matches its typed risk,
@@ -423,7 +207,7 @@ async fn redaction_flags_quarantine_on_the_envelope_it_produces() {
         &sample_trace(),
         RecordedTraceContributionOptions::default(),
     );
-    let mut envelope = DeterministicTraceRedactor::default()
+    let envelope = DeterministicTraceRedactor::default()
         .redact_trace(raw)
         .await
         .expect("redaction should succeed");
@@ -431,16 +215,6 @@ async fn redaction_flags_quarantine_on_the_envelope_it_produces() {
         envelope.privacy.quarantined,
         envelope.privacy.residual_pii_risk == ResidualPiiRisk::High,
         "the typed flag must track the typed risk the producer computed"
-    );
-
-    // A server-side re-scrub raises risk monotonically, so it must be able
-    // to raise the flag — and must never clear one already set.
-    envelope.privacy.residual_pii_risk = ResidualPiiRisk::High;
-    envelope.privacy.quarantined = false;
-    rescrub_trace_envelope(&mut envelope).expect("re-scrub should succeed");
-    assert!(
-        envelope.privacy.quarantined,
-        "a re-scrub that sees High risk must raise the quarantine flag"
     );
 }
 
@@ -572,28 +346,6 @@ async fn eligibility_hold_kind_separates_manual_review_from_policy_gate() {
             ..
         }
     ));
-}
-#[tokio::test]
-async fn derived_artifact_invalidation_marker_uses_hashes_not_raw_handles() {
-    let raw = RawTraceContribution::from_recorded_trace(
-        &sample_trace(),
-        RecordedTraceContributionOptions::default(),
-    );
-    let envelope = DeterministicTraceRedactor::default()
-        .redact_trace(raw)
-        .await
-        .expect("redaction should succeed");
-    let marker = derived_artifact_invalidation_marker(&envelope, "user revoked consent");
-    let json = serde_json::to_string(&marker).expect("marker serializes");
-
-    assert_eq!(marker.submission_id, envelope.submission_id);
-    assert!(marker.revocation_handle_hash.starts_with("sha256:"));
-    assert!(!json.contains(&envelope.contributor.revocation_handle.to_string()));
-    assert!(
-        marker
-            .artifact_prefixes
-            .contains(&format!("embedding:{}", envelope.trace_id))
-    );
 }
 #[test]
 fn capture_turns_reconstructs_tool_calls_from_conversation_messages() {

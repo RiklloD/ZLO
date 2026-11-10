@@ -21,10 +21,4 @@ impl Mem0Config {
     pub fn new() -> Self {
         Self { app_id: None }
     }
-
-    /// Set the mem0 `app_id` partition for this deployment.
-    pub fn with_app_id(mut self, app_id: impl Into<String>) -> Self {
-        self.app_id = Some(app_id.into());
-        self
-    }
 }

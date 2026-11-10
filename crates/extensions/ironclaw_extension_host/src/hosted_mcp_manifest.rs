@@ -423,7 +423,6 @@ pub(crate) fn available_package(
         channel_presentation: None,
         assets: Vec::new(),
         onboarding_override: None,
-        oauth_setup_override: None,
         search_aliases: Vec::new(),
     })
 }

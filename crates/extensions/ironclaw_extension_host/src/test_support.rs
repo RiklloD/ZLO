@@ -528,7 +528,6 @@ pub fn first_party_bundles_from_inventory() -> Vec<crate::FirstPartyPackageBundl
                     setup_url: copy.setup_url,
                     credential_next_step: copy.credential_next_step,
                 }),
-                oauth_setup: None,
                 trust_effects: bundle.trust_effects,
                 search_aliases,
             }

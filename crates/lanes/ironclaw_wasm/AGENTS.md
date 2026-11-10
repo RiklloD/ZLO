@@ -16,7 +16,7 @@ hand.
   - `wit/tool.wit` (`near:agent@0.4.1`) and `wit/channel.wit` (`near:agent@0.3.1`) are the *same* WIT package name at two versions, so the directory cannot be handed to bindgen as a directory — always name the single file.
   - `scripts/check-version-bumps.sh` keys the ABI version gate off these two exact paths, and `WIT_TOOL_VERSION` in `src/config.rs` must equal `wit/tool.wit`'s package version.
   - `near:agent@0.4.1` is the sole supported tool contract. Its `tool.wit` ABI uses a typed `wit-result`-shaped response (`WitToolOutcome::Success`/`Failure`) instead of the retired `invoke-json` blob ABI. Components targeting another WIT contract version fail closed during instantiation with an unsupported-contract error.
-- Provide thin host-import adapters for workspace, time, logging, secret-existence checks, tool invocation, and HTTP egress.
+- Provide thin host-import adapters for time, logging, secret-existence checks, and HTTP egress. The `workspace-read` and `tool-invoke` imports stay in the ABI and are always denied: no host adapter exists for them.
 - Provide the folded `wasm_sandbox_core` module for domain-free Wasmtime/WASI sandbox primitives shared by runtime crates.
 - Fail closed by default for host capabilities that are not explicitly wired by the Reborn composition root.
 

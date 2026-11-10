@@ -1,9 +1,5 @@
 //! Document chunking and content hashing.
 
-// Content hashing moved to `ironclaw_memory`; re-exported below so
-// existing `crate::chunking::content_sha256` / `ironclaw_memory::content_sha256`
-// paths keep resolving.
-
 /// Configuration for document chunking.
 ///
 /// Ported from the current workspace chunker so Reborn memory indexing preserves
@@ -26,16 +22,6 @@ impl Default for ChunkConfig {
 }
 
 impl ChunkConfig {
-    pub fn with_chunk_size(mut self, size: usize) -> Self {
-        self.chunk_size = size.max(1);
-        self
-    }
-
-    pub fn with_overlap(mut self, percent: f32) -> Self {
-        self.overlap_percent = percent.clamp(0.0, 0.5);
-        self
-    }
-
     fn effective_chunk_size(&self) -> usize {
         self.chunk_size.max(1)
     }

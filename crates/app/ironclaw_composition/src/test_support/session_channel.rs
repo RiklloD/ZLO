@@ -49,10 +49,9 @@ pub fn with_test_authenticated_session_channel(
         manifest_toml: TEST_SESSION_EXTENSION_MANIFEST.to_string(),
         assets: vec![ironclaw_extension_host::FirstPartyPackageAsset {
             path: "manifest.toml".to_string(),
-            bytes: TEST_SESSION_EXTENSION_MANIFEST.as_bytes().to_vec(),
+            bytes: TEST_SESSION_EXTENSION_MANIFEST.as_bytes().into(),
         }],
         onboarding: None,
-        oauth_setup: None,
         trust_effects: None,
         search_aliases: Vec::new(),
     });

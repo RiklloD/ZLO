@@ -1294,14 +1294,12 @@ pub struct ExtensionInstallationStore {
     root: VirtualPath,
     host_ports: HostPortCatalog,
     contracts: HostApiContractRegistry,
-    cas_retries: usize,
 }
 
 impl fmt::Debug for ExtensionInstallationStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExtensionInstallationStore")
             .field("root", &self.root)
-            .field("cas_retries", &self.cas_retries)
             .finish_non_exhaustive()
     }
 }
@@ -1329,7 +1327,6 @@ impl ExtensionInstallationStore {
             root,
             host_ports,
             contracts,
-            cas_retries: FILESYSTEM_CAS_RETRIES,
         };
         store.ensure_indexes().await?;
         store.migrate_legacy_manifest_rows().await?;
@@ -1343,11 +1340,6 @@ impl ExtensionInstallationStore {
 
     pub fn default_state_path() -> Result<VirtualPath, ExtensionInstallationError> {
         VirtualPath::new(DEFAULT_INSTALLATION_STATE_PATH).map_err(invalid_installation_error)
-    }
-
-    pub fn with_cas_retries(mut self, cas_retries: usize) -> Self {
-        self.cas_retries = cas_retries;
-        self
     }
 
     async fn ensure_indexes(&self) -> Result<(), ExtensionInstallationError> {
@@ -1429,7 +1421,7 @@ impl ExtensionInstallationStore {
         let rows = query_all(&self.filesystem, &self.manifests_root()?, &Filter::All).await?;
         for row in rows {
             let mut complete = false;
-            for _ in 0..=self.cas_retries {
+            for _ in 0..=FILESYSTEM_CAS_RETRIES {
                 let Some(current) = self
                     .filesystem
                     .get(&row.path)

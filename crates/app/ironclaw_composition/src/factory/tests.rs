@@ -658,23 +658,22 @@ output_schema_ref = "schemas/run.output.json"
         assets: vec![
             ironclaw_extension_host::FirstPartyPackageAsset {
                 path: "manifest.toml".to_string(),
-                bytes: manifest_asset,
+                bytes: manifest_asset.into(),
             },
             ironclaw_extension_host::FirstPartyPackageAsset {
                 path: "wasm/tool.wasm".to_string(),
-                bytes: b"\0asm\x0d\0\x01\0".to_vec(),
+                bytes: b"\0asm\x0d\0\x01\0".as_slice().into(),
             },
             ironclaw_extension_host::FirstPartyPackageAsset {
                 path: "schemas/run.input.json".to_string(),
-                bytes: b"{}".to_vec(),
+                bytes: b"{}".as_slice().into(),
             },
             ironclaw_extension_host::FirstPartyPackageAsset {
                 path: "schemas/run.output.json".to_string(),
-                bytes: b"{}".to_vec(),
+                bytes: b"{}".as_slice().into(),
             },
         ],
         onboarding: None,
-        oauth_setup: None,
         trust_effects: None,
         search_aliases: Vec::new(),
     }

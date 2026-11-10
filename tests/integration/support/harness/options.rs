@@ -364,10 +364,9 @@ impl HostRuntimeHarnessOptions {
                 manifest_toml: ironclaw_web_app_extension::MANIFEST.to_string(),
                 assets: vec![ironclaw_extension_host::FirstPartyPackageAsset {
                     path: "manifest.toml".to_string(),
-                    bytes: ironclaw_web_app_extension::MANIFEST.as_bytes().to_vec(),
+                    bytes: ironclaw_web_app_extension::MANIFEST.as_bytes().into(),
                 }],
                 onboarding: None,
-                oauth_setup: None,
                 trust_effects: None,
                 search_aliases: Vec::new(),
             });

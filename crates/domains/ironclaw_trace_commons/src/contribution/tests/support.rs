@@ -40,31 +40,6 @@ impl PrivacyFilterAdapter for FakePrivacyFilterAdapter {
         }))
     }
 }
-pub(super) struct CanaryPrivacyFilterAdapter;
-#[async_trait]
-impl PrivacyFilterAdapter for CanaryPrivacyFilterAdapter {
-    async fn redact_text(
-        &self,
-        text: &str,
-    ) -> Result<Option<SafePrivacyFilterRedaction>, TraceContributionError> {
-        let values = synthetic_privacy_filter_canary_values();
-        let mut redacted = text.to_string();
-        for (index, value) in values.iter().enumerate() {
-            redacted = redacted.replace(value, &format!("<CANARY_REDACTED_{}>", index + 1));
-        }
-        let output = serde_json::json!({
-            "schema_version": 1,
-            "text": text,
-            "redacted_text": redacted,
-            "detected_spans": [
-                {"label": "private_email", "text": values[0]},
-                {"label": "secret", "text": values[1]},
-                {"label": "local_path", "text": values[2]}
-            ]
-        });
-        safe_privacy_filter_redaction_from_output(&output).map(Some)
-    }
-}
 pub(super) struct FailingPrivacyFilterAdapter;
 #[async_trait]
 impl PrivacyFilterAdapter for FailingPrivacyFilterAdapter {

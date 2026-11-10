@@ -554,7 +554,7 @@ where
             .read_document_with_version(path, FilesystemOperation::WriteFile)
             .await?;
 
-        // PR #3679 review fix (finding #2): the document CAS write must
+        // The document CAS write must
         // happen BEFORE the version archive, not after. The previous
         // order archived the prior content first, then attempted the
         // CAS put — if a concurrent writer won the CAS race the loser
@@ -648,7 +648,7 @@ where
                 let should_version = options.metadata.skip_versioning != Some(true)
                     && previous_content != combined
                     && !previous_content.is_empty();
-                // PR #3679 review fix (finding #2): document CAS first,
+                // Document CAS first,
                 // version archive after success. See the matching comment
                 // in `write_document_with_options`.
                 let entry = Self::build_document_entry(path.scope(), combined.as_bytes());
@@ -1028,7 +1028,7 @@ where
             )
         })?;
 
-        // PR #3679 review fix (finding #4): declare the FTS / Vector
+        // Declare the FTS / Vector
         // indexes the query path requires. libSQL / Postgres backends
         // need the index registered before they translate `Filter::Fts`
         // / `Filter::VectorNearest` to a native query — without it they
@@ -1113,7 +1113,7 @@ where
         if content_bytes_sha256(&current_bytes) != expected_content_hash {
             return Ok(MemoryChunkReplaceOutcome::SkippedStaleContentHash);
         }
-        // PR #3679 review fix (finding #3): re-check the document hash
+        // Re-check the document hash
         // BEFORE the sweep, not after. The original ordering (sweep, then
         // re-check) would delete a winning reindexer's fresh chunks if
         // they landed between our initial read and the sweep — the
