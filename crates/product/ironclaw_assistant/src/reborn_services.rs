@@ -4501,39 +4501,19 @@ where
         }
         match query.view_id.as_str() {
             id if id == INSPECTOR_SNAPSHOT_VIEW.id => {
-                let request = serde_json::from_value(query.params).map_err(|_| {
-                    ProductSurfaceError::validation(
-                        "input",
-                        ProductSurfaceValidationCode::InvalidValue,
-                    )
-                })?;
+                let request = views::parse_view_params(query.params)?;
                 inspector::snapshot(self.diagnostic_store.as_ref(), caller, request)
             }
             id if id == INSPECTOR_PROMPT_VIEW.id => {
-                let request = serde_json::from_value(query.params).map_err(|_| {
-                    ProductSurfaceError::validation(
-                        "input",
-                        ProductSurfaceValidationCode::InvalidValue,
-                    )
-                })?;
+                let request = views::parse_view_params(query.params)?;
                 inspector::prompt(self.diagnostic_store.as_ref(), caller, request)
             }
             id if id == INSPECTOR_TOOL_VIEW.id => {
-                let request = serde_json::from_value(query.params).map_err(|_| {
-                    ProductSurfaceError::validation(
-                        "input",
-                        ProductSurfaceValidationCode::InvalidValue,
-                    )
-                })?;
+                let request = views::parse_view_params(query.params)?;
                 inspector::tool(self.diagnostic_store.as_ref(), caller, request)
             }
             id if id == INSPECTOR_UPDATES_VIEW.id => {
-                let request = serde_json::from_value(query.params).map_err(|_| {
-                    ProductSurfaceError::validation(
-                        "input",
-                        ProductSurfaceValidationCode::InvalidValue,
-                    )
-                })?;
+                let request = views::parse_view_params(query.params)?;
                 inspector::updates(
                     self.diagnostic_store.as_ref(),
                     caller,
@@ -4542,15 +4522,13 @@ where
                 )
             }
             id if id == LOGS_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self.build_logs_view(caller, request, query.cursor).await?;
                 let next_cursor = response.next_cursor.clone();
                 views::view_page_with_cursor(response, next_cursor)
             }
             id if id == OPERATOR_LOGS_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self
                     .build_operator_logs_view(caller, request, query.cursor)
                     .await?;
@@ -4577,13 +4555,7 @@ where
             }
             id if id == ironclaw_product_contracts::history::HISTORY_SEARCH_VIEW.id => {
                 let request: ironclaw_product_contracts::history::HistorySearchRequest =
-                    serde_json::from_value(query.params).map_err(|error| {
-                        tracing::debug!(%error, "history search request rejected");
-                        ProductSurfaceError::validation(
-                            "input",
-                            ProductSurfaceValidationCode::InvalidValue,
-                        )
-                    })?;
+                    views::parse_view_params(query.params)?;
                 let scope =
                     crate::history_search::caller_thread_scope(&caller).ok_or_else(|| {
                         ProductSurfaceError::from_status(
@@ -4604,20 +4576,14 @@ where
             }
             id if id == THREADS_VIEW.id => {
                 let mut request: ProductListThreadsRequest =
-                    serde_json::from_value(query.params)
-                        .map_err(ProductSurfaceError::internal_from)?;
+                    views::parse_view_params(query.params)?;
                 request.cursor = query.cursor.or(request.cursor);
                 let response = self.build_threads_view(caller, request).await?;
                 let next_cursor = response.next_cursor.clone();
                 views::view_page_with_cursor(response, next_cursor)
             }
             id if id == NOTIFICATIONS_VIEW.id => {
-                let request = serde_json::from_value(query.params).map_err(|_| {
-                    ProductSurfaceError::validation(
-                        "input",
-                        ProductSurfaceValidationCode::InvalidValue,
-                    )
-                })?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self
                     .build_notifications_view(caller, request, query.cursor)
                     .await?;
@@ -4625,8 +4591,7 @@ where
                 views::view_page_with_cursor(response, next_cursor)
             }
             id if id == AUTOMATIONS_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self.build_automations_view(caller, request).await?;
                 views::view_page(response)
             }
@@ -4641,12 +4606,7 @@ where
                 views::view_page(response)
             }
             id if id == NOTIFICATION_SETUP_STATUS_VIEW.id => {
-                let request = serde_json::from_value(query.params).map_err(|_| {
-                    ProductSurfaceError::validation(
-                        "input",
-                        ProductSurfaceValidationCode::InvalidValue,
-                    )
-                })?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self
                     .notification_setup_service
                     .status(caller, request)
@@ -4664,26 +4624,22 @@ where
                 views::view_page(response)
             }
             id if id == RUN_ARTIFACT_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let artifact = self.build_run_artifact(caller, request).await?;
                 views::view_page(artifact)
             }
             id if id == THREAD_ARTIFACT_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let artifact = self.build_thread_artifact(caller, request).await?;
                 views::view_page(artifact)
             }
             id if id == GLOBAL_AUTO_APPROVE_VIEW.id => {
-                let _: RebornGlobalAutoApproveRequest = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let _: RebornGlobalAutoApproveRequest = views::parse_view_params(query.params)?;
                 let enabled = self.global_auto_approve_enabled(caller).await?;
                 views::view_page(RebornGlobalAutoApproveResponse { enabled })
             }
             id if id == TIMELINE_VIEW.id => {
-                let mut request: RebornTimelineRequest = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let mut request: RebornTimelineRequest = views::parse_view_params(query.params)?;
                 request.cursor = query.cursor.or(request.cursor);
                 let response = self.get_timeline(caller, request).await?;
                 views::view_page(response)
@@ -4694,69 +4650,58 @@ where
                 views::view_page(response)
             }
             id if id == PROJECT_FS_LIST_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self.list_project_dir(caller, request).await?;
                 views::view_page(response)
             }
             id if id == PROJECT_FS_STAT_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self.stat_project_path(caller, request).await?;
                 views::view_page(response)
             }
             id if id == FS_MOUNTS_VIEW.id => {
-                let _: RebornFsMountsRequest = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let _: RebornFsMountsRequest = views::parse_view_params(query.params)?;
                 let response = self.list_fs_mounts(caller).await?;
                 views::view_page(response)
             }
             id if id == FS_LIST_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self.browse_fs_dir(caller, request).await?;
                 views::view_page(response)
             }
             id if id == FS_STAT_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self.stat_fs_path(caller, request).await?;
                 views::view_page(response)
             }
             id if id == PROJECTS_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self.list_projects(caller, request).await?;
                 views::view_page(response)
             }
             id if id == PROJECT_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self.get_project(caller, request).await?;
                 views::view_page(response)
             }
             id if id == PROJECT_MEMBERS_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let response = self.list_project_members(caller, request).await?;
                 views::view_page(response)
             }
             id if id == ADMIN_USERS_VIEW.id => {
-                let mut request: RebornAdminUserListQuery = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let mut request: RebornAdminUserListQuery = views::parse_view_params(query.params)?;
                 request.cursor = query.cursor.or(request.cursor);
                 let response = self.list_admin_users(caller, request).await?;
                 views::view_page(response)
             }
             id if id == ADMIN_USER_VIEW.id => {
-                let request: RebornAdminUserRequest = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request: RebornAdminUserRequest = views::parse_view_params(query.params)?;
                 let response = self.get_admin_user(caller, request.user_id).await?;
                 views::view_page(response)
             }
             id if id == ADMIN_USER_SECRETS_VIEW.id => {
-                let request: RebornAdminUserRequest = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request: RebornAdminUserRequest = views::parse_view_params(query.params)?;
                 let response = self
                     .list_admin_user_secrets(caller, request.user_id)
                     .await?;
@@ -4764,8 +4709,7 @@ where
             }
             id if id == ADMIN_THREAD_SCRAPE_THREADS_VIEW.id => {
                 let mut request: RebornAdminThreadScrapeListRequest =
-                    serde_json::from_value(query.params)
-                        .map_err(ProductSurfaceError::internal_from)?;
+                    views::parse_view_params(query.params)?;
                 request.cursor = query.cursor.or(request.cursor);
                 let response = self
                     .list_admin_thread_scrape_threads(caller, request)
@@ -4774,16 +4718,14 @@ where
                 views::view_page_with_cursor(response, next_cursor)
             }
             id if id == ADMIN_THREAD_SCRAPE_ARTIFACT_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let artifact = self
                     .build_admin_thread_scrape_artifact(caller, request)
                     .await?;
                 views::view_page(artifact)
             }
             id if id == ADMIN_THREAD_SCRAPE_RUN_ARTIFACT_VIEW.id => {
-                let request = serde_json::from_value(query.params)
-                    .map_err(ProductSurfaceError::internal_from)?;
+                let request = views::parse_view_params(query.params)?;
                 let artifact = self
                     .build_admin_thread_scrape_run_artifact(caller, request)
                     .await?;

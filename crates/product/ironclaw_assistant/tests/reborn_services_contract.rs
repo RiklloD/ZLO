@@ -3287,6 +3287,54 @@ fn sample_reborn_project_member(user_id: &str) -> RebornProjectMemberInfo {
 }
 
 #[tokio::test]
+async fn malformed_view_params_are_a_validation_error_not_a_server_fault() {
+    let thread_service = Arc::new(InMemorySessionThreadService::default());
+    let services = session_services(thread_service, Arc::new(FakeTurnCoordinator::default()));
+
+    for view_id in [
+        THREADS_VIEW.id,
+        AUTOMATIONS_VIEW.id,
+        TIMELINE_VIEW.id,
+        LOGS_VIEW.id,
+        PROJECT_FS_LIST_VIEW.id,
+        THREAD_ARTIFACT_VIEW.id,
+        NOTIFICATIONS_VIEW.id,
+        ironclaw_product_contracts::history::HISTORY_SEARCH_VIEW.id,
+    ] {
+        // A bare string is wrong for every view, and serde's message quotes it.
+        for params in [serde_json::json!("super-secret-token")] {
+            let error = services
+                .query(
+                    caller(),
+                    RebornViewQuery {
+                        view_id: view_id.to_string(),
+                        params,
+                        cursor: None,
+                    },
+                )
+                .await
+                .expect_err("malformed params are rejected");
+            assert_eq!(
+                error.kind,
+                ProductSurfaceErrorKind::Validation,
+                "{view_id}: {error:?}"
+            );
+            assert_eq!(error.status_code, 400, "{view_id}");
+            assert_eq!(error.field.as_deref(), Some("input"), "{view_id}");
+            assert_eq!(
+                error.validation_code,
+                Some(ProductSurfaceValidationCode::InvalidValue),
+                "{view_id}"
+            );
+            assert!(
+                !format!("{error:?}").contains("super-secret-token"),
+                "{view_id}: the rejection does not echo the payload"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn project_and_filesystem_reads_are_available_as_product_views() {
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     let project_service = Arc::new(RecordingProjectService::default());
