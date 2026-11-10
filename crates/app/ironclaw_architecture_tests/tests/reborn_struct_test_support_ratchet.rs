@@ -481,7 +481,7 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         // the factory; only integration harnesses that wire their own
         // run-delivery observer read it back. The field stays ungated
         // (shutdown uses it).
-        count: 44,
+        count: 43,
     },
     FrozenPathCount {
         category: "test-support",

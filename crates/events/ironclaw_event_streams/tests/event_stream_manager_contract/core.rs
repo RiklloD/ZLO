@@ -38,7 +38,6 @@ async fn subscription_without_cursor_uses_earliest_cursor_as_initial_rebase_base
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let mut subscription = manager
@@ -65,7 +64,6 @@ async fn live_fanout_delivers_shared_projection_update_payload() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::clone(&source),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
     let mut subscription = manager
         .subscribe(subscribe_request(scope.clone(), None))
@@ -138,7 +136,6 @@ async fn fetch_snapshot_uses_earliest_cursor_as_initial_rebase_baseline() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let response = manager
@@ -163,7 +160,6 @@ async fn fetch_snapshot_rejects_initial_rebase_cursor_scope_mismatch() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let error = manager
@@ -191,7 +187,6 @@ async fn fetch_snapshot_denied_before_projection_call() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let error = manager
@@ -214,7 +209,6 @@ async fn fetch_snapshot_rejects_actor_stream_user_mismatch_before_projection_cal
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let error = manager
@@ -236,7 +230,6 @@ async fn fetch_snapshot_rejects_unsupported_view_target_before_projection_call()
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let error = manager
@@ -267,7 +260,6 @@ async fn fetch_snapshot_rejects_projection_scope_mismatch() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let error = manager
@@ -287,7 +279,6 @@ async fn fetch_snapshot_rejects_projection_payload_thread_mismatch() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let error = manager
@@ -307,7 +298,6 @@ async fn fetch_snapshot_rejects_capability_activity_thread_mismatch() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let error = manager
@@ -327,7 +317,6 @@ async fn fetch_snapshot_rejects_redaction_failure() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(RejectSnapshotRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let error = manager
@@ -385,7 +374,6 @@ async fn fetch_snapshot_maps_projection_snapshot_errors() {
             Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
             Arc::new(InMemoryProjectionUpdateSource::new(8)),
             Arc::new(NoExposureProjectionRedactionValidator),
-            Arc::new(in_memory_backed_outbound_state_store()),
         );
 
         let actual = manager

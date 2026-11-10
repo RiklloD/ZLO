@@ -94,17 +94,6 @@ impl RebornProfile {
         )
     }
 
-    pub fn uses_standalone_local_runtime_volume(self) -> bool {
-        matches!(
-            self,
-            Self::Standalone
-                | Self::StandaloneUnrestricted
-                | Self::HostedSingleTenantVolume
-                | Self::HostedSingleTenantVolumeSandboxed
-                | Self::HostedSingleTenantVolumeSandboxedRailway
-        )
-    }
-
     pub fn local_runtime_storage_subdir(self) -> &'static str {
         match self {
             Self::HostedSingleTenant => "hosted-single-tenant",

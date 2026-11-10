@@ -11,6 +11,7 @@
 
 mod attachment_context;
 mod capability_display_preview;
+mod context_projection;
 mod contract;
 mod error;
 mod external_transcript;
@@ -49,17 +50,18 @@ pub use contract::{
     BoundedThreadMessagesRequest, ContextImageAttachment, ContextMessage, ContextMessages,
     ContextWindow, ContextWindowTruncation, CreateSummaryArtifactRequest,
     DeleteToolResultRecordRequest, EnsureThreadRequest, FinalizedAssistantMessageByRunRequest,
-    GOAL_STATEMENT_MAX_CHARS, GoalStatement, InboundMessageReplayMetadata,
-    LatestThreadMessageRequest, ListThreadsForScopeRequest, ListThreadsForScopeResponse,
-    LoadContextMessagesRequest, LoadContextWindowRequest, MessageContent, MessageKind,
-    MessageStatus, PublishStructuredFinalizationMessageRequest, PutToolResultRecordRequest,
-    ReadToolResultRecordRequest, RedactMessageRequest, ReplayAcceptedInboundMessageRequest,
-    SessionThreadRecord, SummaryArtifact, SummaryContextMode, SummaryKind,
-    SummaryModelContextPolicy, TOOL_RESULT_RECORD_READ_MAX_BYTES, ThreadGoal, ThreadHistory,
-    ThreadHistoryRequest, ThreadMessageRange, ThreadMessageRangeRequest, ThreadMessageRecord,
-    ThreadScope, ToolResultRecordChunk, ToolResultRecordRead, ToolResultRecordSelection,
-    UpdateAssistantDraftRequest, UpdateThreadGoalRequest, UpdateToolResultRecordRequest,
-    UpdateToolResultReferenceRequest, effective_tool_result_read_max_bytes,
+    FinalizedToolResultReferenceRequest, GOAL_STATEMENT_MAX_CHARS, GoalStatement,
+    InboundMessageReplayMetadata, LatestThreadMessageRequest, ListThreadsForScopeRequest,
+    ListThreadsForScopeResponse, LoadContextMessagesRequest, LoadContextWindowRequest,
+    MessageContent, MessageKind, MessageStatus, PublishStructuredFinalizationMessageRequest,
+    PutToolResultRecordRequest, ReadToolResultRecordRequest, RedactMessageRequest,
+    ReplayAcceptedInboundMessageRequest, SessionThreadRecord, SummaryArtifact, SummaryContextMode,
+    SummaryKind, SummaryModelContextPolicy, TOOL_RESULT_RECORD_READ_MAX_BYTES, ThreadGoal,
+    ThreadHistory, ThreadHistoryRequest, ThreadMessageRange, ThreadMessageRangeRequest,
+    ThreadMessageRecord, ThreadScope, ToolResultRecordChunk, ToolResultRecordRead,
+    ToolResultRecordSelection, UpdateAssistantDraftRequest, UpdateThreadGoalRequest,
+    UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
+    effective_tool_result_read_max_bytes,
 };
 pub use error::SessionThreadError;
 pub use external_transcript::{

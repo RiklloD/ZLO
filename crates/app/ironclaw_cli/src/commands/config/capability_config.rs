@@ -2,9 +2,8 @@
 //! validation, and remediation text for LLM/Google/Slack capability setup.
 //!
 //! [`super::set::ConfigSetCommand`] is the only consumer of the alias/shape
-//! machinery in this module. The Google remediation text itself has moved to
-//! `ironclaw_config::google_remediation_text` (this module just
-//! re-exports it as [`google_remediation_text`]) so
+//! machinery in this module. The Google remediation text lives in
+//! `ironclaw_config::google_remediation_text` so
 //! `ironclaw_composition::extension_host::gsuite`'s "not configured"
 //! tool-result error can share the exact same wording without depending on
 //! this crate — `ironclaw_cli` sits above `composition` in the
@@ -144,16 +143,6 @@ pub(super) fn validate_shape(key: &ConfigKey, value: &str) -> ShapeVerdict {
         }
         ConfigKey::LlmApiKey { .. } | ConfigKey::WebuiToken => ShapeVerdict::Ok,
     }
-}
-
-/// BYO (bring-your-own) console-steps remediation text for Google OAuth
-/// setup, printed by `config set` guidance. Delegates to
-/// `ironclaw_config::google_remediation_text` — the single shared
-/// source of this text — so this crate's re-export point stays a stable
-/// call site for `set.rs` even though the wording itself lives lower in the
-/// dependency graph. See the module doc for why the text moved.
-pub(super) fn google_remediation_text() -> String {
-    ironclaw_config::google_remediation_text()
 }
 
 #[cfg(test)]
@@ -344,7 +333,7 @@ mod tests {
 
     #[test]
     fn remediation_text_points_at_the_right_surfaces() {
-        let google = google_remediation_text();
+        let google = ironclaw_config::google_remediation_text();
         assert!(google.contains("console.cloud.google.com"));
         assert!(google.contains("config set google.client_id"));
         assert!(google.contains("config set google.client_secret"));

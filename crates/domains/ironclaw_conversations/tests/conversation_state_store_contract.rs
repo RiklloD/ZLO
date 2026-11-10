@@ -15,10 +15,11 @@ use chrono::{TimeZone, Utc};
 use ironclaw_conversations::{
     AcceptConversationMessageRequest, AcceptedConversationMessageLookup,
     AcceptedConversationMessageReplay, AdapterInstallationId, AdapterKind,
-    ConditionalUnpairOutcome, ConversationBindingService, ConversationMessageRecord,
-    ConversationRouteKind, ExpectedExternalActorOwner, ExternalEventId, InboundConversationService,
-    InboundMessageContentRef, InboundTurnError, MessageIdempotencyStatus,
-    RebornFilesystemConversationServices, ResetConversationRequest, ResolveConversationRequest,
+    ConditionalUnpairOutcome, ConversationActorPairingService, ConversationBindingService,
+    ConversationMessageRecord, ConversationRouteKind, ExpectedExternalActorOwner, ExternalEventId,
+    InboundConversationService, InboundMessageContentRef, InboundTurnError,
+    MessageIdempotencyStatus, RebornFilesystemConversationServices, ResetConversationRequest,
+    ResolveConversationRequest,
 };
 use ironclaw_extension_contracts::external::{
     ExternalActorBindingEpoch, ExternalActorRef, ExternalConversationRef,
@@ -355,10 +356,10 @@ async fn filesystem_conversation_services_persist_unpair_revocation_on_reopen() 
         .unwrap();
     services
         .unpair_external_actor(
-            &tenant_id("tenant-a"),
-            &telegram(),
-            &default_installation(),
-            &external_actor("telegram-user-1"),
+            tenant_id("tenant-a"),
+            telegram(),
+            default_installation(),
+            external_actor("telegram-user-1"),
         )
         .await
         .unwrap();

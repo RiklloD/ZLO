@@ -65,7 +65,6 @@ macro_rules! bounded_ref {
     };
 }
 
-bounded_ref!(ProjectionSubscriptionId, "projection_subscription_id");
 bounded_ref!(ProjectionUpdateRef, "projection_update_ref");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -189,7 +188,6 @@ mod tests {
 
     #[test]
     fn bounded_refs_reject_invalid_inputs() {
-        assert_invalid_inputs!(ProjectionSubscriptionId, "projection_subscription_id");
         assert_invalid_inputs!(ProjectionUpdateRef, "projection_update_ref");
     }
 }

@@ -495,7 +495,7 @@ pub(super) async fn build_backend_production(
     let outbound_stores = build_outbound_stores(Arc::clone(&stores.filesystem));
     let notification_inbox = build_notification_inbox(Arc::clone(&stores.filesystem));
     let outbound_delivery_targets =
-        Arc::new(crate::outbound::MutableOutboundDeliveryTargetRegistry::default());
+        Arc::new(ironclaw_outbound::MutableOutboundDeliveryTargetRegistry::default());
     // arch-exempt: large_file, channel assembly stays co-located pending factory decomposition, plan #7477
     // The session channel's `[channel.reply]` sink is product-tier, so only
     // composition can construct it. It lands in the named binding's ordinary

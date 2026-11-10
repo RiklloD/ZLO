@@ -71,8 +71,7 @@ pub use external_tools::{
     OpenAiCompatExternalToolSpec, OpenAiCompatExternalToolStore,
 };
 pub use handlers::{
-    chat_completions, models_list, responses_api_cancel, responses_api_create,
-    responses_api_retrieve, responses_v1_cancel, responses_v1_create, responses_v1_retrieve,
+    chat_completions, models_list, responses_cancel, responses_create, responses_retrieve,
 };
 pub use identity::{
     OPENAI_COMPAT_ACTOR_KIND, OPENAI_COMPAT_ADAPTER_ID, OPENAI_COMPAT_INSTALLATION_ID,

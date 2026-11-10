@@ -1,4 +1,3 @@
-use ironclaw_event_projections::{ProjectionCursor, ProjectionScope};
 use ironclaw_host_api::turn::{ReplyTargetBindingRef, TurnActor, TurnRunId, TurnScope};
 use ironclaw_host_api::{
     Timestamp,
@@ -7,7 +6,7 @@ use ironclaw_host_api::{
 use serde::{Deserialize, Serialize};
 
 use crate::delivery_resolution::{CommunicationDeliveryResolutionRequest, CommunicationModality};
-use crate::{OutboundDeliveryId, OutboundError, ProjectionSubscriptionId, ProjectionUpdateRef};
+use crate::{OutboundDeliveryId, OutboundError, ProjectionUpdateRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,51 +21,6 @@ pub enum OutboundPushKind {
     ModelDelivery,
 }
 
-#[allow(dead_code)] // retained for future debug/log surfaces — not yet wired
-impl OutboundPushKind {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::FinalReply => "final_reply",
-            Self::Progress => "progress",
-            Self::GateRequired => "gate_required",
-            Self::AuthPrompt => "auth_prompt",
-            Self::DeliveryStatus => "delivery_status",
-            Self::ModelDelivery => "model_delivery",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThreadNotificationTarget {
-    pub target: ReplyTargetBindingRef,
-    pub final_replies: bool,
-    pub progress: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThreadNotificationPolicy {
-    pub scope: TurnScope,
-    pub targets: Vec<ThreadNotificationTarget>,
-}
-
-impl ThreadNotificationPolicy {
-    pub fn default_for_scope(scope: TurnScope) -> Self {
-        Self {
-            scope,
-            targets: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OutboundPushTargetRequest {
-    pub scope: TurnScope,
-    pub turn_run_id: Option<TurnRunId>,
-    pub reply_target: ReplyTargetBindingRef,
-    pub kind: OutboundPushKind,
-    pub projection_ref: ProjectionUpdateRef,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutboundPushCandidate {
     pub tenant_id: TenantId,
@@ -78,95 +32,6 @@ pub struct OutboundPushCandidate {
     pub kind: OutboundPushKind,
     pub projection_ref: ProjectionUpdateRef,
     pub requires_reply_target_revalidation: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OutboundPushPlan {
-    pub candidates: Vec<OutboundPushCandidate>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThreadProjectionAccessRequest {
-    pub actor: TurnActor,
-    pub scope: ProjectionScope,
-    pub thread_id: ThreadId,
-}
-
-/// Untrusted access decision returned by a [`ThreadProjectionAccessPolicy`]
-/// implementation. Only the [`OutboundPolicyService`] mints the sealed
-/// [`ThreadProjectionAccessGrant`] from this claim after cross-checking the
-/// request, so policy implementors cannot forge a grant by constructing one
-/// directly.
-///
-/// [`ThreadProjectionAccessPolicy`]: crate::ThreadProjectionAccessPolicy
-/// [`OutboundPolicyService`]: crate::OutboundPolicyService
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThreadProjectionAccessClaim {
-    pub actor: TurnActor,
-    pub scope: ProjectionScope,
-    pub thread_id: ThreadId,
-}
-
-/// Trust-bearing record that the [`OutboundPolicyService`] has authorized a
-/// projection subscription for a specific actor/scope/thread triple. Sealed
-/// against external construction; obtain instances only by calling
-/// [`OutboundPolicyService::authorize_subscription`].
-///
-/// [`OutboundPolicyService`]: crate::OutboundPolicyService
-/// [`OutboundPolicyService::authorize_subscription`]: crate::OutboundPolicyService::authorize_subscription
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ThreadProjectionAccessGrant {
-    pub(crate) actor: TurnActor,
-    pub(crate) scope: ProjectionScope,
-    pub(crate) thread_id: ThreadId,
-}
-
-impl ThreadProjectionAccessGrant {
-    pub(crate) fn from_claim(claim: ThreadProjectionAccessClaim) -> Self {
-        Self {
-            actor: claim.actor,
-            scope: claim.scope,
-            thread_id: claim.thread_id,
-        }
-    }
-
-    pub fn actor(&self) -> &TurnActor {
-        &self.actor
-    }
-
-    pub fn scope(&self) -> &ProjectionScope {
-        &self.scope
-    }
-
-    pub fn thread_id(&self) -> &ThreadId {
-        &self.thread_id
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectionSubscriptionRequest {
-    pub subscription_id: ProjectionSubscriptionId,
-    pub actor: TurnActor,
-    pub scope: ProjectionScope,
-    pub thread_id: ThreadId,
-    pub after_cursor: Option<ProjectionCursor>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectionSubscriptionRecord {
-    pub subscription_id: ProjectionSubscriptionId,
-    pub actor: TurnActor,
-    pub scope: ProjectionScope,
-    pub thread_id: ThreadId,
-    pub cursor: Option<ProjectionCursor>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LoadSubscriptionCursorRequest {
-    pub subscription_id: ProjectionSubscriptionId,
-    pub actor: TurnActor,
-    pub scope: ProjectionScope,
-    pub thread_id: ThreadId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

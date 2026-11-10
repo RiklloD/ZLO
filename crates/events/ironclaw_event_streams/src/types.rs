@@ -4,12 +4,12 @@ use ironclaw_event_projections::{
     CapabilityActivityStatus, ProjectionCursor, ProjectionReplay, ProjectionScope,
     ProjectionSnapshot,
 };
-use ironclaw_host_api::turn::{ReplyTargetBindingRef, TurnActor, TurnRunId, TurnScope};
+use ironclaw_host_api::turn::{TurnActor, TurnRunId};
 use ironclaw_host_api::{
     ids::{CapabilityId, ExtensionId, InvocationId, MissionId, ProcessId, ThreadId},
     runtime::RuntimeKind,
 };
-use ironclaw_outbound::{OutboundPushKind, ProjectionUpdateRef};
+use ironclaw_outbound::ProjectionUpdateRef;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -67,19 +67,6 @@ impl SubscriberCapabilities {
         }
         Ok(self.buffer_capacity.max(MIN_SUBSCRIPTION_BUFFER))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PushCandidatesForUpdateRequest {
-    pub actor: TurnActor,
-    pub projection_scope: ProjectionScope,
-    pub view: ProjectionViewClass,
-    pub target: ProjectionTarget,
-    pub scope: TurnScope,
-    pub turn_run_id: Option<TurnRunId>,
-    pub reply_target: ReplyTargetBindingRef,
-    pub kind: OutboundPushKind,
-    pub projection_ref: ProjectionUpdateRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -33,7 +33,6 @@ use ironclaw_outbound::{
     OutboundError, OutboundPolicyService, PrepareCommunicationDeliveryRequest, ProjectionUpdateRef,
     ReplyTargetBindingClaim, ReplyTargetBindingValidator, ReplyTargetValidationRequest,
     RunNotificationContext, RunNotificationEventKind, RunNotificationOrigin, SourceRouteContext,
-    ThreadProjectionAccessClaim, ThreadProjectionAccessPolicy, ThreadProjectionAccessRequest,
 };
 use ironclaw_product_contracts::inbound::{
     ProductInboundAck, ProductInboundEnvelope, ProductInboundPayload, ProductRejection,
@@ -1325,12 +1324,8 @@ impl RunDeliveryObserver {
             external_conversation_ref: envelope.external_conversation_ref().clone(),
             external_actor_ref: Some(envelope.external_actor_ref().clone()),
         };
-        let projection_access_policy = AllowNoProjectionAccess;
-        let outbound_policy = OutboundPolicyService::new(
-            self.services.outbound_store.as_ref(),
-            &projection_access_policy,
-            &target_authority,
-        );
+        let outbound_policy =
+            OutboundPolicyService::new(self.services.outbound_store.as_ref(), &target_authority);
         // Key gate prompts by their gate ref: one run can park on several
         // gates in sequence, and each is its own durable delivery fact (a
         // repeat announcement of the SAME gate still dedupes to
@@ -1903,18 +1898,6 @@ impl crate::ProductOutboundTargetResolver for ObservedReplyTargetAuthority {
             external_conversation_ref: self.external_conversation_ref.clone(),
             external_actor_ref: self.external_actor_ref.clone(),
         })
-    }
-}
-
-pub(crate) struct AllowNoProjectionAccess;
-
-#[async_trait]
-impl ThreadProjectionAccessPolicy for AllowNoProjectionAccess {
-    async fn authorize_projection_access(
-        &self,
-        _request: ThreadProjectionAccessRequest,
-    ) -> Result<ThreadProjectionAccessClaim, OutboundError> {
-        Err(OutboundError::AccessDenied)
     }
 }
 

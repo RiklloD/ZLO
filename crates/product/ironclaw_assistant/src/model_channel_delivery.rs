@@ -38,8 +38,7 @@ use ironclaw_outbound::{
     OutboundDeliveryTargetScope, OutboundError, OutboundPolicyService, OutboundStateStorePort,
     PrepareCommunicationDeliveryRequest, ProjectionUpdateRef, ReplyTargetBindingClaim,
     ReplyTargetBindingValidator, ReplyTargetValidationRequest, RunNotificationContext,
-    RunNotificationEventKind, RunNotificationOrigin, ThreadProjectionAccessClaim,
-    ThreadProjectionAccessPolicy, ThreadProjectionAccessRequest, ValidatedReplyTargetBinding,
+    RunNotificationEventKind, RunNotificationOrigin, ValidatedReplyTargetBinding,
 };
 use ironclaw_threads::ThreadScope;
 
@@ -286,12 +285,8 @@ impl ModelChannelDelivery for CoordinatedModelChannelDelivery {
             actor: actor.clone(),
             expected_target: target_binding_ref.clone(),
         };
-        let projection_access = DenyProjectionAccess;
-        let outbound_policy = OutboundPolicyService::new(
-            self.deps.outbound_store.as_ref(),
-            &projection_access,
-            &authority,
-        );
+        let outbound_policy =
+            OutboundPolicyService::new(self.deps.outbound_store.as_ref(), &authority);
 
         let delivery = PrepareCommunicationDeliveryRequest {
             resolution_request: CommunicationDeliveryResolutionRequest {
@@ -523,20 +518,6 @@ impl ProductOutboundTargetResolver for CodecChannelTargetResolver {
                 target.target().as_str()
             ),
         })
-    }
-}
-
-/// This port never subscribes to projection replay; deny unconditionally,
-/// mirroring `AllowNoProjectionAccess` in `crate::run_delivery`.
-struct DenyProjectionAccess;
-
-#[async_trait]
-impl ThreadProjectionAccessPolicy for DenyProjectionAccess {
-    async fn authorize_projection_access(
-        &self,
-        _request: ThreadProjectionAccessRequest,
-    ) -> Result<ThreadProjectionAccessClaim, OutboundError> {
-        Err(OutboundError::AccessDenied)
     }
 }
 

@@ -34,7 +34,6 @@ use ironclaw_turns::{
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
-use super::observer::AllowNoProjectionAccess;
 use super::prompts;
 use super::{
     BlockedActionableMarker, DeliveredChannelMessage, RunDeliveryError, RunDeliveryServices,
@@ -1276,12 +1275,8 @@ async fn deliver_pre_submit_failure_to_target(
     context: &PreSubmitFailureDeliveryContext<'_>,
     target: &NotificationTarget,
 ) -> Result<(), TriggeredNotificationFailure> {
-    let projection_access_policy = AllowNoProjectionAccess;
-    let outbound_policy = OutboundPolicyService::new(
-        context.services.outbound_store.as_ref(),
-        &projection_access_policy,
-        context.authority,
-    );
+    let outbound_policy =
+        OutboundPolicyService::new(context.services.outbound_store.as_ref(), context.authority);
     let delivery = PrepareCommunicationDeliveryRequest {
         resolution_request: CommunicationDeliveryResolutionRequest {
             scope: context.scope.clone(),

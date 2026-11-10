@@ -42,5 +42,7 @@ ironclaw_triggers = { path = "../ironclaw_triggers", version = "0.1.0", features
 # classification — keep asserting on the exact value that reaches the
 # coordinator instead of a paraphrase of it.
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", version = "0.1.0" }
+# FaultInjecting: drive the durable store through real backend failures and count its reads.
+ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version = "0.1.0", features = ["test-support"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "sync"] }

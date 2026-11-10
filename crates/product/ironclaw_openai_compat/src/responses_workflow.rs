@@ -357,18 +357,6 @@ impl OpenAiResponsesWorkflow {
         Ok(wait_result.response)
     }
 
-    pub async fn stream_response(
-        &self,
-        caller: OpenAiCompatAuthenticatedCaller,
-        raw_body: &[u8],
-        idempotency_key: Option<OpenAiCompatIdempotencyKey>,
-        surface: OpenAiCompatRouteSurface,
-    ) -> Result<Response, OpenAiCompatHttpError> {
-        let request = parse_response_create_request(raw_body)?;
-        self.stream_response_request(caller, request, raw_body, idempotency_key, surface)
-            .await
-    }
-
     async fn stream_response_request(
         &self,
         caller: OpenAiCompatAuthenticatedCaller,

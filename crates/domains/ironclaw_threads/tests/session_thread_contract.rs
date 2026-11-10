@@ -9,7 +9,8 @@ use ironclaw_threads::{
     AppendToolResultReferenceRequest, AttachmentKind, AttachmentRef,
     CapabilityDisplayPreviewEnvelope, CapabilityDisplayPreviewEnvelopeInput,
     CapabilityDisplayPreviewStatus, CreateSummaryArtifactRequest, DeleteToolResultRecordRequest,
-    EnsureThreadRequest, FinalizedAssistantMessageByRunRequest, InMemorySessionThreadService,
+    EnsureThreadRequest, FinalizedAssistantMessageByRunRequest,
+    FinalizedToolResultReferenceRequest, InMemorySessionThreadService,
     InboundMessageReplayMetadata, ListThreadsForScopeRequest, LoadContextMessagesRequest,
     LoadContextWindowRequest, MessageContent, MessageKind, MessageStatus,
     ProviderToolCallReferenceEnvelope, PutToolResultRecordRequest, ReadToolResultRecordRequest,
@@ -143,6 +144,131 @@ async fn delete_thread_removes_owned_thread_and_hides_missing_or_wrong_scope() {
         .await
         .expect_err("missing delete should be non-enumerating");
     assert_unknown_thread(missing_error, &missing);
+}
+
+#[tokio::test]
+async fn finalized_tool_result_reference_lookup_is_scoped_and_hides_redacted_rows() {
+    let service = InMemorySessionThreadService::default();
+    let other_scope = scope("ref-lookup-other");
+    let scope = scope("ref-lookup");
+    let thread = service
+        .ensure_thread(EnsureThreadRequest {
+            scope: scope.clone(),
+            thread_id: Some(ThreadId::new("thread-ref-lookup").unwrap()),
+            created_by_actor_id: "actor-a".into(),
+            title: None,
+            metadata_json: None,
+        })
+        .await
+        .unwrap();
+    let sibling = service
+        .ensure_thread(EnsureThreadRequest {
+            scope: scope.clone(),
+            thread_id: Some(ThreadId::new("thread-ref-lookup-sibling").unwrap()),
+            created_by_actor_id: "actor-a".into(),
+            title: None,
+            metadata_json: None,
+        })
+        .await
+        .unwrap();
+    let append = |thread_id: ThreadId, run: String, result_ref: String| {
+        service.append_tool_result_reference(AppendToolResultReferenceRequest {
+            intrinsic_outcome: None,
+            scope: scope.clone(),
+            thread_id,
+            turn_run_id: run,
+            result_ref,
+            safe_summary: ToolResultSafeSummary::new("safe tool result").unwrap(),
+            provider_call: None,
+            model_observation: None,
+        })
+    };
+    // The oldest reference sits behind more rows than one lookup page holds.
+    let oldest = append(
+        thread.thread_id.clone(),
+        "run-old".into(),
+        "result:oldest".into(),
+    )
+    .await
+    .unwrap();
+    for index in 0..3 {
+        append(
+            thread.thread_id.clone(),
+            format!("run-{index}"),
+            format!("result:filler-{index}"),
+        )
+        .await
+        .unwrap();
+    }
+    append(
+        sibling.thread_id.clone(),
+        "run-sibling".into(),
+        "result:sibling-only".into(),
+    )
+    .await
+    .unwrap();
+    let lookup = |scope: ThreadScope, thread_id: ThreadId, result_ref: &str| {
+        service.has_finalized_tool_result_reference(FinalizedToolResultReferenceRequest {
+            scope,
+            thread_id,
+            result_ref: result_ref.to_string(),
+        })
+    };
+
+    assert!(
+        lookup(scope.clone(), thread.thread_id.clone(), "result:oldest")
+            .await
+            .unwrap(),
+        "a finalized reference from an earlier run is found"
+    );
+    assert!(
+        !lookup(
+            scope.clone(),
+            thread.thread_id.clone(),
+            "result:never-written"
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        !lookup(
+            scope.clone(),
+            thread.thread_id.clone(),
+            "result:sibling-only"
+        )
+        .await
+        .unwrap(),
+        "a reference in another thread of the same scope does not count"
+    );
+    assert!(matches!(
+        lookup(other_scope, thread.thread_id.clone(), "result:oldest").await,
+        Err(SessionThreadError::UnknownThread { .. })
+    ));
+    assert!(matches!(
+        lookup(
+            scope.clone(),
+            ThreadId::new("thread-ref-lookup-missing").unwrap(),
+            "result:oldest"
+        )
+        .await,
+        Err(SessionThreadError::UnknownThread { .. })
+    ));
+
+    service
+        .redact_message(RedactMessageRequest {
+            scope: scope.clone(),
+            thread_id: thread.thread_id.clone(),
+            message_id: oldest.message_id,
+            redaction_ref: "redaction/audit/ref-lookup".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        !lookup(scope, thread.thread_id, "result:oldest")
+            .await
+            .unwrap(),
+        "a redacted reference is no longer available"
+    );
 }
 
 #[tokio::test]

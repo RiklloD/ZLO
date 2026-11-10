@@ -3,26 +3,21 @@
 // arch-exempt: large_file, cross-instance claim regressions share the existing outbound persistence harness, plan #6175
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use async_trait::async_trait;
-use ironclaw_event_log::{EventCursor, EventStreamKey, ReadScope};
-use ironclaw_event_projections::{ProjectionCursor, ProjectionScope};
 use ironclaw_filesystem::{
     BackendCapabilities, CasExpectation, ContentType, DirEntry, Entry, FileStat, FilesystemError,
-    FilesystemOperation, Filter, InMemoryBackend, IndexKind, IndexName, IndexSpec,
-    LibSqlRootFilesystem, Page, RecordVersion, RootFilesystem, ScopedFilesystem, VersionedEntry,
+    FilesystemOperation, Filter, InMemoryBackend, IndexSpec, LibSqlRootFilesystem, Page,
+    RecordVersion, RootFilesystem, ScopedFilesystem, VersionedEntry,
 };
-use ironclaw_host_api::turn::{
-    ReplyTargetBindingRef, RunOriginAdapter, TurnActor, TurnRunId, TurnScope,
-};
+use ironclaw_host_api::turn::{ReplyTargetBindingRef, TurnActor, TurnRunId, TurnScope};
 use ironclaw_host_api::{
     ids::{AgentId, ProjectId, RunId, TenantId, ThreadId, UserId},
     mount::{MountGrant, MountPermissions, MountView},
     path::{MountAlias, ScopedPath, VirtualPath},
 };
 use ironclaw_outbound::*;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 
 const TEST_OUTBOUND_ROOT: &str = "/engine/tenants/test/users/test/outbound";
 
@@ -48,19 +43,6 @@ fn build_outbound_store_for_backend(
     backend: Arc<InMemoryBackend>,
 ) -> OutboundStateStore<InMemoryBackend> {
     OutboundStateStore::new(build_scoped_fs(backend, TEST_OUTBOUND_ROOT))
-}
-
-fn build_outbound_store_with_permissions<F: RootFilesystem>(
-    backend: Arc<F>,
-    permissions: MountPermissions,
-) -> OutboundStateStore<F> {
-    let mounts = MountView::new(vec![MountGrant::new(
-        MountAlias::new("/outbound").expect("alias"),
-        VirtualPath::new(TEST_OUTBOUND_ROOT).expect("target"),
-        permissions,
-    )])
-    .expect("mount view");
-    OutboundStateStore::new(Arc::new(ScopedFilesystem::with_fixed_view(backend, mounts)))
 }
 
 fn reply_attachment_scope() -> ironclaw_host_api::resource::ResourceScope {
@@ -384,14 +366,10 @@ async fn outbound_state_store_satisfies_outbound_contract_on_in_memory_backend()
     outbound_state_store_rejects_communication_preference_update_cas_conflict(&backend).await;
     outbound_state_store_rejects_mismatched_communication_preference_identity(&backend, &store)
         .await;
-    durable_policy_subscription_delivery_flow(&store).await;
-    subscription_cursor_rejects_mismatched_scope(&store).await;
-    subscription_ids_are_scoped_not_global(&store).await;
-    subscription_upsert_rejects_backward_cursor(&store).await;
+    durable_delivery_flow(&store).await;
     delivery_status_rejects_inconsistent_failure_kind(&store).await;
     coordinator_delivery_lifecycle_round_trips(&store).await;
     recovery_transition_never_clobbers_delivered(&store).await;
-    notification_policy_rejects_excessive_targets(&store).await;
 }
 
 async fn communication_preference_write_rejects_oversized_notification_set<S>(store: &S)
@@ -620,15 +598,6 @@ where
     };
     write_preference_record(store, updated.clone(), Some(inserted.version)).await;
     assert_eq!(load_preference_record(store, key).await, Some(updated));
-
-    let thread_policy = store
-        .load_thread_notification_policy(turn_scope())
-        .await
-        .unwrap();
-    assert!(
-        thread_policy.targets.is_empty(),
-        "user communication preferences must not mutate thread notification policy"
-    );
 }
 
 async fn communication_preferences_are_shared_agent_scoped<S>(store: &S)
@@ -1346,151 +1315,16 @@ async fn delivery_send_claim_fails_closed_on_unsupported_cas_mount() {
     assert_eq!(attempt[0].status, OutboundDeliveryStatus::Prepared);
 }
 
-async fn durable_policy_subscription_delivery_flow(store: &impl OutboundStateStorePort) {
+async fn durable_delivery_flow(store: &impl OutboundStateStorePort) {
     let scope = turn_scope();
-    let default_reply = reply_ref("reply-default");
-    let extra_final = reply_ref("reply-extra-final");
-    let progress_target = reply_ref("reply-progress");
-
-    let default_final = store
-        .plan_push_targets(OutboundPushTargetRequest {
-            scope: scope.clone(),
-            turn_run_id: Some(TurnRunId::new()),
-            reply_target: default_reply.clone(),
-            kind: OutboundPushKind::FinalReply,
-            projection_ref: ProjectionUpdateRef::new("projection:final-1").unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(targets(&default_final), vec![default_reply.clone()]);
-
-    let default_progress = store
-        .plan_push_targets(OutboundPushTargetRequest {
-            scope: scope.clone(),
-            turn_run_id: None,
-            reply_target: default_reply.clone(),
-            kind: OutboundPushKind::Progress,
-            projection_ref: ProjectionUpdateRef::new("projection:progress-1").unwrap(),
-        })
-        .await
-        .unwrap();
-    assert!(default_progress.candidates.is_empty());
-
-    // ModelDelivery behaves like FinalReply: it must reach the ordinary
-    // reply_target even with no thread notification policy configured yet
-    // (no opted-in extra targets to fall back on).
-    let default_model_delivery = store
-        .plan_push_targets(OutboundPushTargetRequest {
-            scope: scope.clone(),
-            turn_run_id: Some(TurnRunId::new()),
-            reply_target: default_reply.clone(),
-            kind: OutboundPushKind::ModelDelivery,
-            projection_ref: ProjectionUpdateRef::new("projection:model-delivery-1").unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        targets(&default_model_delivery),
-        vec![default_reply.clone()]
-    );
-
-    store
-        .put_thread_notification_policy(ThreadNotificationPolicy {
-            scope: scope.clone(),
-            targets: vec![
-                ThreadNotificationTarget {
-                    target: extra_final.clone(),
-                    final_replies: true,
-                    progress: false,
-                },
-                ThreadNotificationTarget {
-                    target: progress_target.clone(),
-                    final_replies: false,
-                    progress: true,
-                },
-                ThreadNotificationTarget {
-                    target: default_reply.clone(),
-                    final_replies: true,
-                    progress: true,
-                },
-            ],
-        })
-        .await
-        .unwrap();
-
-    let final_plan = store
-        .plan_push_targets(OutboundPushTargetRequest {
-            scope: scope.clone(),
-            turn_run_id: Some(TurnRunId::new()),
-            reply_target: default_reply.clone(),
-            kind: OutboundPushKind::FinalReply,
-            projection_ref: ProjectionUpdateRef::new("projection:final-2").unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        targets(&final_plan),
-        vec![default_reply.clone(), extra_final]
-    );
-    assert!(
-        final_plan
-            .candidates
-            .iter()
-            .all(|candidate| candidate.requires_reply_target_revalidation)
-    );
-
-    let progress_plan = store
-        .plan_push_targets(OutboundPushTargetRequest {
-            scope: scope.clone(),
-            turn_run_id: None,
-            reply_target: default_reply.clone(),
-            kind: OutboundPushKind::Progress,
-            projection_ref: ProjectionUpdateRef::new("projection:progress-2").unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        targets(&progress_plan),
-        vec![progress_target.clone(), default_reply.clone()]
-    );
-
-    let auth_prompt_plan = store
-        .plan_push_targets(OutboundPushTargetRequest {
-            scope: scope.clone(),
-            turn_run_id: None,
-            reply_target: default_reply.clone(),
-            kind: OutboundPushKind::AuthPrompt,
-            projection_ref: ProjectionUpdateRef::new("projection:auth-prompt-1").unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        targets(&auth_prompt_plan),
-        vec![progress_target, default_reply.clone()]
-    );
-
-    seed_subscription(store).await;
-    let initial_cursor = ProjectionCursor::origin_for_scope(projection_scope());
-    let loaded = store
-        .load_subscription_cursor(LoadSubscriptionCursorRequest {
-            subscription_id: subscription_id(),
-            actor: actor(),
-            scope: projection_scope(),
-            thread_id: thread_id(),
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        loaded, initial_cursor,
-        "subscription creation must retain the caller's initial after_cursor"
-    );
+    let final_candidate = push_candidate(&scope, "reply-default", OutboundPushKind::FinalReply);
+    let progress_candidate = push_candidate(&scope, "reply-progress", OutboundPushKind::Progress);
 
     let delivery_id = OutboundDeliveryId::new();
     let initial_attempt = OutboundDeliveryAttempt {
         delivery_id,
         scope: scope.clone(),
-        candidate: final_plan.candidates[0].clone(),
+        candidate: final_candidate,
         status: OutboundDeliveryStatus::Pending,
         attempted_at: now(),
         failure_kind: None,
@@ -1543,7 +1377,7 @@ async fn durable_policy_subscription_delivery_flow(store: &impl OutboundStateSto
         .record_delivery_attempt(OutboundDeliveryAttempt {
             delivery_id,
             scope: scope.clone(),
-            candidate: progress_plan.candidates[0].clone(),
+            candidate: progress_candidate,
             status: OutboundDeliveryStatus::Pending,
             attempted_at: now(),
             failure_kind: None,
@@ -1562,176 +1396,7 @@ async fn durable_policy_subscription_delivery_flow(store: &impl OutboundStateSto
         Some(DeliveryFailureKind::AuthorizationRevoked)
     );
 
-    let policy_after_failure = store
-        .load_thread_notification_policy(scope.clone())
-        .await
-        .unwrap();
-    assert_eq!(policy_after_failure.targets.len(), 3);
-
     full_turn_scope_isolation(store, scope).await;
-}
-
-async fn seed_subscription(store: &impl OutboundStateStorePort) {
-    store
-        .upsert_subscription(ProjectionSubscriptionRecord {
-            subscription_id: subscription_id(),
-            actor: actor(),
-            scope: projection_scope(),
-            thread_id: thread_id(),
-            cursor: Some(ProjectionCursor::origin_for_scope(projection_scope())),
-        })
-        .await
-        .unwrap();
-}
-
-async fn subscription_cursor_rejects_mismatched_scope(store: &impl OutboundStateStorePort) {
-    let wrong_actor = TurnActor::new(UserId::new("user-other").unwrap());
-    let result = store
-        .load_subscription_cursor(LoadSubscriptionCursorRequest {
-            subscription_id: subscription_id(),
-            actor: wrong_actor,
-            scope: projection_scope(),
-            thread_id: thread_id(),
-        })
-        .await;
-    // Anti-enumeration: wrong actor/scope reads look identical to missing
-    // subscription ids, so callers cannot distinguish an existing foreign row
-    // from absence.
-    assert!(matches!(result, Ok(None)));
-
-    let rebind = store
-        .upsert_subscription(ProjectionSubscriptionRecord {
-            subscription_id: subscription_id(),
-            actor: TurnActor::new(UserId::new("user-other").unwrap()),
-            scope: projection_scope(),
-            thread_id: thread_id(),
-            cursor: Some(ProjectionCursor::for_scope(
-                projection_scope(),
-                EventCursor::new(99),
-            )),
-        })
-        .await;
-    assert!(matches!(
-        rebind,
-        Err(OutboundError::SubscriptionScopeMismatch)
-    ));
-}
-
-async fn subscription_ids_are_scoped_not_global(store: &impl OutboundStateStorePort) {
-    let shared_subscription_id =
-        ProjectionSubscriptionId::new(format!("webui-scoped-subscription-{}", TurnRunId::new()))
-            .unwrap();
-    let base_cursor = ProjectionCursor::for_scope(projection_scope(), EventCursor::new(10));
-    store
-        .upsert_subscription(ProjectionSubscriptionRecord {
-            subscription_id: shared_subscription_id.clone(),
-            actor: actor(),
-            scope: projection_scope(),
-            thread_id: thread_id(),
-            cursor: Some(base_cursor.clone()),
-        })
-        .await
-        .unwrap();
-
-    let sibling_actor = TurnActor::new(UserId::new("user-outbound-sibling").unwrap());
-    let sibling_scope = projection_scope_for_user("user-outbound-sibling");
-    let sibling_cursor = ProjectionCursor::for_scope(sibling_scope.clone(), EventCursor::new(3));
-    store
-        .upsert_subscription(ProjectionSubscriptionRecord {
-            subscription_id: shared_subscription_id.clone(),
-            actor: sibling_actor.clone(),
-            scope: sibling_scope.clone(),
-            thread_id: thread_id(),
-            cursor: Some(sibling_cursor.clone()),
-        })
-        .await
-        .unwrap();
-
-    let base_loaded = store
-        .load_subscription_cursor(LoadSubscriptionCursorRequest {
-            subscription_id: shared_subscription_id.clone(),
-            actor: actor(),
-            scope: projection_scope(),
-            thread_id: thread_id(),
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(base_loaded, base_cursor);
-
-    let sibling_loaded = store
-        .load_subscription_cursor(LoadSubscriptionCursorRequest {
-            subscription_id: shared_subscription_id.clone(),
-            actor: sibling_actor.clone(),
-            scope: sibling_scope.clone(),
-            thread_id: thread_id(),
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(sibling_loaded, sibling_cursor);
-
-    let unrelated_actor = TurnActor::new(UserId::new("user-outbound-unrelated").unwrap());
-    let unrelated_scope = projection_scope_for_user("user-outbound-unrelated");
-    let unrelated_lookup = store
-        .load_subscription_cursor(LoadSubscriptionCursorRequest {
-            subscription_id: shared_subscription_id.clone(),
-            actor: unrelated_actor,
-            scope: unrelated_scope,
-            thread_id: thread_id(),
-        })
-        .await;
-    // Anti-enumeration: even when the id exists for sibling tuples, an
-    // unrelated tuple receives the same `None` result as a missing id.
-    assert!(matches!(unrelated_lookup, Ok(None)));
-}
-
-async fn subscription_upsert_rejects_backward_cursor(store: &impl OutboundStateStorePort) {
-    let subscription_id =
-        ProjectionSubscriptionId::new(format!("webui-subscription-backward-{}", TurnRunId::new()))
-            .unwrap();
-    store
-        .upsert_subscription(ProjectionSubscriptionRecord {
-            subscription_id: subscription_id.clone(),
-            actor: actor(),
-            scope: projection_scope(),
-            thread_id: thread_id(),
-            cursor: Some(ProjectionCursor::for_scope(
-                projection_scope(),
-                EventCursor::new(42),
-            )),
-        })
-        .await
-        .unwrap();
-
-    let stale_upsert = store
-        .upsert_subscription(ProjectionSubscriptionRecord {
-            subscription_id: subscription_id.clone(),
-            actor: actor(),
-            scope: projection_scope(),
-            thread_id: thread_id(),
-            cursor: Some(ProjectionCursor::for_scope(
-                projection_scope(),
-                EventCursor::new(6),
-            )),
-        })
-        .await;
-    assert!(matches!(
-        stale_upsert,
-        Err(OutboundError::InvalidRequest { .. })
-    ));
-
-    let loaded = store
-        .load_subscription_cursor(LoadSubscriptionCursorRequest {
-            subscription_id,
-            actor: actor(),
-            scope: projection_scope(),
-            thread_id: thread_id(),
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(loaded.runtime, EventCursor::new(42));
 }
 
 /// The coordinator's crash-visible lifecycle (`Prepared` → `Sending` →
@@ -2022,74 +1687,19 @@ async fn delivery_status_rejects_inconsistent_failure_kind(store: &impl Outbound
     assert_eq!(stored.failure_kind, None);
 }
 
-async fn notification_policy_rejects_excessive_targets(store: &impl OutboundStateStorePort) {
-    let targets = (0..33)
-        .map(|i| ThreadNotificationTarget {
-            target: reply_ref(&format!("reply-too-many-{i}")),
-            final_replies: true,
-            progress: false,
-        })
-        .collect();
-    let result = store
-        .put_thread_notification_policy(ThreadNotificationPolicy {
-            scope: turn_scope(),
-            targets,
-        })
-        .await;
-    assert!(matches!(result, Err(OutboundError::InvalidRequest { .. })));
-}
-
 async fn full_turn_scope_isolation(store: &impl OutboundStateStorePort, original_scope: TurnScope) {
     let sibling_scope = sibling_turn_scope();
-    let sibling_target = reply_ref("reply-sibling");
-    store
-        .put_thread_notification_policy(ThreadNotificationPolicy {
-            scope: sibling_scope.clone(),
-            targets: vec![ThreadNotificationTarget {
-                target: sibling_target.clone(),
-                final_replies: true,
-                progress: true,
-            }],
-        })
-        .await
-        .unwrap();
-
-    let original_plan = store
-        .plan_push_targets(OutboundPushTargetRequest {
-            scope: original_scope.clone(),
-            turn_run_id: Some(TurnRunId::new()),
-            reply_target: reply_ref("reply-default"),
-            kind: OutboundPushKind::FinalReply,
-            projection_ref: ProjectionUpdateRef::new("projection:isolated-original").unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        targets(&original_plan),
-        vec![reply_ref("reply-default"), reply_ref("reply-extra-final")]
-    );
-
-    let sibling_plan = store
-        .plan_push_targets(OutboundPushTargetRequest {
-            scope: sibling_scope.clone(),
-            turn_run_id: Some(TurnRunId::new()),
-            reply_target: reply_ref("reply-sibling-default"),
-            kind: OutboundPushKind::FinalReply,
-            projection_ref: ProjectionUpdateRef::new("projection:isolated-sibling").unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        targets(&sibling_plan),
-        vec![reply_ref("reply-sibling-default"), sibling_target]
-    );
 
     let sibling_delivery_id = OutboundDeliveryId::new();
     store
         .record_delivery_attempt(OutboundDeliveryAttempt {
             delivery_id: sibling_delivery_id,
             scope: sibling_scope.clone(),
-            candidate: sibling_plan.candidates[0].clone(),
+            candidate: push_candidate(
+                &sibling_scope,
+                "reply-sibling-default",
+                OutboundPushKind::FinalReply,
+            ),
             status: OutboundDeliveryStatus::Pending,
             attempted_at: now(),
             failure_kind: None,
@@ -2104,15 +1714,22 @@ async fn full_turn_scope_isolation(store: &impl OutboundStateStorePort, original
     assert_eq!(sibling_deliveries[0].delivery_id, sibling_delivery_id);
 }
 
-fn targets(plan: &OutboundPushPlan) -> Vec<ReplyTargetBindingRef> {
-    plan.candidates
-        .iter()
-        .map(|candidate| candidate.target.clone())
-        .collect()
-}
-
-fn subscription_id() -> ProjectionSubscriptionId {
-    ProjectionSubscriptionId::new("webui-subscription-1").unwrap()
+fn push_candidate(
+    scope: &TurnScope,
+    target: &str,
+    kind: OutboundPushKind,
+) -> OutboundPushCandidate {
+    OutboundPushCandidate {
+        tenant_id: scope.tenant_id.clone(),
+        agent_id: scope.agent_id.clone(),
+        project_id: scope.project_id.clone(),
+        thread_id: scope.thread_id.clone(),
+        turn_run_id: Some(TurnRunId::new()),
+        target: reply_ref(target),
+        kind,
+        projection_ref: ProjectionUpdateRef::new(format!("projection:{target}")).unwrap(),
+        requires_reply_target_revalidation: true,
+    }
 }
 
 fn turn_scope() -> TurnScope {
@@ -2131,26 +1748,6 @@ fn sibling_turn_scope() -> TurnScope {
         Some(ProjectId::new("project-outbound-other").unwrap()),
         thread_id(),
     )
-}
-
-fn projection_scope() -> ProjectionScope {
-    projection_scope_for_user("user-outbound")
-}
-
-fn projection_scope_for_user(user_id: &str) -> ProjectionScope {
-    ProjectionScope {
-        stream: EventStreamKey::new(
-            TenantId::new("tenant-outbound").unwrap(),
-            UserId::new(user_id).unwrap(),
-            Some(AgentId::new("agent-outbound").unwrap()),
-        ),
-        read_scope: ReadScope {
-            project_id: Some(ProjectId::new("project-outbound").unwrap()),
-            mission_id: None,
-            thread_id: Some(thread_id()),
-            process_id: None,
-        },
-    }
 }
 
 fn actor() -> TurnActor {
@@ -2319,138 +1916,6 @@ impl RootFilesystem for VersionRacingBackend {
     }
 }
 
-/// Synchronization decorator for deterministic two-store conditional-delete
-/// races. This is an interleaving barrier, not an I/O fault fake: every
-/// operation delegates to the real [`InMemoryBackend`].
-struct DeletePauseBackend {
-    inner: Arc<InMemoryBackend>,
-    pause_point: AtomicU8,
-    delete_entered: Notify,
-    release_delete: Notify,
-}
-
-impl DeletePauseBackend {
-    const NONE: u8 = 0;
-    const BEFORE_DELETE: u8 = 1;
-    const AFTER_DELETE: u8 = u8::MAX;
-
-    fn new(inner: Arc<InMemoryBackend>) -> Self {
-        Self {
-            inner,
-            pause_point: AtomicU8::new(Self::NONE),
-            delete_entered: Notify::new(),
-            release_delete: Notify::new(),
-        }
-    }
-
-    fn arm_before_delete(&self) {
-        self.pause_point
-            .store(Self::BEFORE_DELETE, Ordering::SeqCst);
-    }
-
-    fn arm_before_deletes(&self, count: u8) {
-        assert!(count < Self::AFTER_DELETE);
-        self.pause_point.store(count, Ordering::SeqCst);
-    }
-
-    fn arm_after_delete(&self) {
-        self.pause_point.store(Self::AFTER_DELETE, Ordering::SeqCst);
-    }
-
-    async fn wait_for_delete(&self) {
-        self.delete_entered.notified().await;
-    }
-
-    fn release_delete(&self) {
-        self.release_delete.notify_one();
-    }
-
-    async fn pause(&self) {
-        self.delete_entered.notify_one();
-        self.release_delete.notified().await;
-    }
-}
-
-#[async_trait]
-impl RootFilesystem for DeletePauseBackend {
-    fn capabilities(&self) -> BackendCapabilities {
-        self.inner.capabilities()
-    }
-
-    async fn put(
-        &self,
-        path: &VirtualPath,
-        entry: Entry,
-        cas: CasExpectation,
-    ) -> Result<RecordVersion, FilesystemError> {
-        self.inner.put(path, entry, cas).await
-    }
-
-    async fn get(&self, path: &VirtualPath) -> Result<Option<VersionedEntry>, FilesystemError> {
-        self.inner.get(path).await
-    }
-
-    async fn list_dir(&self, path: &VirtualPath) -> Result<Vec<DirEntry>, FilesystemError> {
-        self.inner.list_dir(path).await
-    }
-
-    async fn query(
-        &self,
-        path: &VirtualPath,
-        filter: &Filter,
-        page: Page,
-    ) -> Result<Vec<VersionedEntry>, FilesystemError> {
-        self.inner.query(path, filter, page).await
-    }
-
-    async fn ensure_index(
-        &self,
-        path: &VirtualPath,
-        spec: &IndexSpec,
-    ) -> Result<(), FilesystemError> {
-        self.inner.ensure_index(path, spec).await
-    }
-
-    async fn stat(&self, path: &VirtualPath) -> Result<FileStat, FilesystemError> {
-        self.inner.stat(path).await
-    }
-
-    async fn delete(&self, path: &VirtualPath) -> Result<(), FilesystemError> {
-        self.inner.delete(path).await
-    }
-
-    async fn delete_if_version(
-        &self,
-        path: &VirtualPath,
-        expected_version: RecordVersion,
-    ) -> Result<(), FilesystemError> {
-        let pause_point = self
-            .pause_point
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                if current == Self::AFTER_DELETE {
-                    Some(Self::NONE)
-                } else if current > Self::NONE {
-                    Some(current - 1)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(Self::NONE);
-        match pause_point {
-            Self::NONE => self.inner.delete_if_version(path, expected_version).await,
-            Self::AFTER_DELETE => {
-                let result = self.inner.delete_if_version(path, expected_version).await;
-                self.pause().await;
-                result
-            }
-            _ => {
-                self.pause().await;
-                self.inner.delete_if_version(path, expected_version).await
-            }
-        }
-    }
-}
-
 /// Test backend that mimics a mount that cannot honor CAS writes for critical
 /// preference updates or delivery ownership claims. An accidental byte
 /// fallback would retry as `CasExpectation::Any` and succeed through the inner
@@ -2615,8 +2080,7 @@ async fn filesystem_outbound_store_isolates_two_tenants_with_same_user_project_i
 
     // Identical `(agent_id, project_id, thread_id)` for both stores — the
     // only thing that should keep them apart is the mount-time tenant
-    // prefix. The TurnScope still carries each store's own tenant_id so
-    // policy/cursor lookups validate end-to-end.
+    // prefix. The TurnScope still carries each store's own tenant_id.
     let shared_agent = AgentId::new("agent-shared").unwrap();
     let shared_project = ProjectId::new("project-shared").unwrap();
     let shared_thread = ThreadId::new("thread-shared").unwrap();
@@ -2644,41 +2108,8 @@ async fn filesystem_outbound_store_isolates_two_tenants_with_same_user_project_i
     );
 
     let target = reply_ref("reply-tenant-isolation");
-    store_a
-        .put_thread_notification_policy(ThreadNotificationPolicy {
-            scope: scope_a.clone(),
-            targets: vec![ThreadNotificationTarget {
-                target: target.clone(),
-                final_replies: true,
-                progress: true,
-            }],
-        })
-        .await
-        .unwrap();
 
-    // Tenant A sees its own policy.
-    let policy_a = store_a
-        .load_thread_notification_policy(scope_a.clone())
-        .await
-        .unwrap();
-    assert_eq!(
-        policy_a.targets.len(),
-        1,
-        "tenant A must see the policy it just wrote",
-    );
-
-    // Tenant B does NOT see tenant A's policy and falls back to the
-    // default-for-scope, despite sharing (agent_id, project_id, thread_id).
-    let policy_b = store_b
-        .load_thread_notification_policy(scope_b.clone())
-        .await
-        .unwrap();
-    assert!(
-        policy_b.targets.is_empty(),
-        "tenant B must NOT see tenant A's policy (cross-tenant leak)",
-    );
-
-    // Delivery attempts also isolate by mount prefix: record an attempt on
+    // Delivery attempts isolate by mount prefix: record an attempt on
     // tenant A and verify tenant B's `list_delivery_attempts` for the
     // matching scope is empty even though the backend is shared.
     let delivery_id = OutboundDeliveryId::new();
@@ -2758,10 +2189,10 @@ async fn filesystem_outbound_store_isolates_two_tenants_with_same_user_project_i
 /// explicitly by tenant and a path-rewriting bug surfaces as a
 /// query-time mismatch.
 ///
-/// Records a delivery attempt and a run-delivery-cleanup snapshot under tenant
-/// A's scope, then issues raw `RootFilesystem::query` calls against both roots
-/// with `Filter::Eq { key: "tenant_id", value: <tenant-a> }`. Each record must
-/// be returned for tenant A and hidden from a different tenant.
+/// Records a delivery attempt under tenant A's scope, then issues raw
+/// `RootFilesystem::query` calls against the deliveries root with
+/// `Filter::Eq { key: "tenant_id", value: <tenant-a> }`. The record must be
+/// returned for tenant A and hidden from a different tenant.
 #[tokio::test]
 async fn filesystem_outbound_store_writes_tenant_id_indexed_projection() {
     let backend = Arc::new(InMemoryBackend::new());
@@ -2836,365 +2267,6 @@ async fn filesystem_outbound_store_writes_tenant_id_indexed_projection() {
         miss.is_empty(),
         "tenant_id projection must NOT surface tenant-outbound's delivery under tenant-b query; got {} rows",
         miss.len(),
-    );
-
-    let cleanup = cleanup_record(TurnRunId::new(), "tenant-index");
-    store
-        .put_run_delivery_cleanup(cleanup)
-        .await
-        .expect("persist cleanup snapshot");
-    let cleanup_prefix =
-        ironclaw_host_api::path::ScopedPath::new("/outbound/run-delivery-cleanup".to_string())
-            .unwrap();
-    let cleanup_virtual_prefix = scoped
-        .resolve(&scope.to_resource_scope(), &cleanup_prefix)
-        .unwrap();
-    let conflicting_cleanup_index = IndexSpec::new(
-        IndexName::new("outbound_by_tenant").unwrap(),
-        vec![ironclaw_filesystem::IndexKey::new("wrong_tenant_key").unwrap()],
-        IndexKind::Exact,
-    );
-    assert!(
-        matches!(
-            backend
-                .ensure_index(&cleanup_virtual_prefix, &conflicting_cleanup_index)
-                .await,
-            Err(FilesystemError::IndexConflict { .. })
-        ),
-        "cleanup mutation must declare the canonical tenant index before writing"
-    );
-    let cleanup_hit = backend
-        .query(
-            &cleanup_virtual_prefix,
-            &Filter::Eq {
-                key: tenant_key.clone(),
-                value: ironclaw_filesystem::IndexValue::Text(scope.tenant_id.as_str().to_string()),
-            },
-            Page::new(0, Page::MAX_LIMIT),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        cleanup_hit.len(),
-        1,
-        "tenant_id projection must surface the cleanup snapshot via Filter::Eq",
-    );
-
-    let cleanup_miss = backend
-        .query(
-            &cleanup_virtual_prefix,
-            &Filter::Eq {
-                key: tenant_key,
-                value: ironclaw_filesystem::IndexValue::Text("tenant-b".to_string()),
-            },
-            Page::new(0, Page::MAX_LIMIT),
-        )
-        .await
-        .unwrap();
-    assert!(
-        cleanup_miss.is_empty(),
-        "tenant_id projection must NOT surface tenant-outbound's cleanup snapshot under tenant-b query; got {} rows",
-        cleanup_miss.len(),
-    );
-}
-
-#[tokio::test]
-async fn completing_last_run_delivery_cleanup_record_deletes_snapshot() {
-    let backend = Arc::new(InMemoryBackend::new());
-    let store = build_outbound_store_for_backend(Arc::clone(&backend));
-    let record = RunDeliveryCleanupRecord::new(
-        turn_scope(),
-        TurnRunId::new(),
-        RunOriginAdapter::new("test-adapter").expect("adapter"),
-        reply_ref("reply-cleanup-compaction"),
-        "conversation-cleanup-compaction".to_string(),
-        "vendor-message-cleanup-compaction".to_string(),
-    )
-    .expect("cleanup record");
-    let cleanup_root = VirtualPath::new(format!("{TEST_OUTBOUND_ROOT}/run-delivery-cleanup"))
-        .expect("cleanup root");
-
-    store
-        .put_run_delivery_cleanup(record.clone())
-        .await
-        .expect("persist cleanup record");
-    assert_eq!(
-        backend
-            .query(&cleanup_root, &Filter::All, Page::default())
-            .await
-            .expect("query cleanup snapshots")
-            .len(),
-        1
-    );
-
-    store
-        .complete_run_delivery_cleanup(&record)
-        .await
-        .expect("complete cleanup record");
-    assert!(
-        backend
-            .query(&cleanup_root, &Filter::All, Page::default())
-            .await
-            .expect("query compacted cleanup snapshots")
-            .is_empty(),
-        "an empty cleanup snapshot must be removed instead of retained forever"
-    );
-}
-
-fn cleanup_record(run_id: TurnRunId, suffix: &str) -> RunDeliveryCleanupRecord {
-    RunDeliveryCleanupRecord::new(
-        turn_scope(),
-        run_id,
-        RunOriginAdapter::new("test-adapter").expect("adapter"),
-        reply_ref(&format!("reply-cleanup-{suffix}")),
-        format!("conversation-cleanup-{suffix}"),
-        format!("vendor-message-cleanup-{suffix}"),
-    )
-    .expect("cleanup record")
-}
-
-#[tokio::test]
-async fn cleanup_put_rejects_invalid_existing_snapshot_without_writing() {
-    for (case, mismatch_identity) in [("mismatched-identity", true), ("malformed-record", false)] {
-        let backend = Arc::new(InMemoryBackend::new());
-        let store = build_outbound_store_for_backend(Arc::clone(&backend));
-        let run_id = TurnRunId::new();
-        let existing = cleanup_record(run_id, &format!("{case}-existing"));
-        let incoming = cleanup_record(run_id, &format!("{case}-incoming"));
-        store
-            .put_run_delivery_cleanup(existing)
-            .await
-            .expect("seed cleanup snapshot");
-
-        let cleanup_root = VirtualPath::new(format!("{TEST_OUTBOUND_ROOT}/run-delivery-cleanup"))
-            .expect("cleanup root");
-        let mut rows = backend
-            .query(&cleanup_root, &Filter::All, Page::default())
-            .await
-            .expect("query seeded cleanup snapshot");
-        assert_eq!(rows.len(), 1, "{case}: exactly one snapshot must exist");
-        let stored = rows.remove(0);
-        let path = stored.path.clone();
-        let mut snapshot_json: serde_json::Value =
-            serde_json::from_slice(&stored.entry.body).expect("decode raw cleanup snapshot");
-        let record_json = snapshot_json
-            .get_mut("records")
-            .and_then(serde_json::Value::as_array_mut)
-            .and_then(|records| records.first_mut())
-            .expect("cleanup snapshot has one record");
-        if mismatch_identity {
-            record_json["run_id"] =
-                serde_json::to_value(TurnRunId::new()).expect("serialize mismatched run id");
-        } else {
-            record_json["vendor_message_ref"] = serde_json::Value::String(String::new());
-        }
-        let corrupted_body =
-            serde_json::to_vec(&snapshot_json).expect("encode corrupted cleanup snapshot");
-        let mut corrupted_entry = stored.entry;
-        corrupted_entry.body = corrupted_body.clone();
-        let corrupted_version = backend
-            .put(
-                &path,
-                corrupted_entry,
-                CasExpectation::Version(stored.version),
-            )
-            .await
-            .expect("write corrupted cleanup snapshot");
-
-        assert!(
-            matches!(
-                store.put_run_delivery_cleanup(incoming).await,
-                Err(OutboundError::Serialization)
-            ),
-            "{case}: put must reject invalid authoritative snapshot data"
-        );
-        let after = backend
-            .get(&path)
-            .await
-            .expect("read snapshot after rejected put")
-            .expect("corrupted snapshot remains");
-        assert_eq!(
-            after.version, corrupted_version,
-            "{case}: rejected put must not write"
-        );
-        assert_eq!(
-            after.entry.body, corrupted_body,
-            "{case}: rejected put must preserve authoritative bytes"
-        );
-    }
-}
-
-#[tokio::test]
-async fn cleanup_completion_retries_delete_when_second_store_adds_sibling_record() {
-    let inner = Arc::new(InMemoryBackend::new());
-    let backend = Arc::new(DeletePauseBackend::new(inner));
-    let first = Arc::new(OutboundStateStore::new(build_scoped_fs(
-        Arc::clone(&backend),
-        TEST_OUTBOUND_ROOT,
-    )));
-    let second = OutboundStateStore::new(build_scoped_fs(Arc::clone(&backend), TEST_OUTBOUND_ROOT));
-    let run_id = TurnRunId::new();
-    let completed = cleanup_record(run_id, "completed");
-    let sibling = cleanup_record(run_id, "sibling");
-
-    first
-        .put_run_delivery_cleanup(completed.clone())
-        .await
-        .expect("seed cleanup record");
-    backend.arm_before_delete();
-    let completed_for_task = completed.clone();
-    let completion = {
-        let first = Arc::clone(&first);
-        tokio::spawn(async move {
-            first
-                .complete_run_delivery_cleanup(&completed_for_task)
-                .await
-        })
-    };
-    backend.wait_for_delete().await;
-
-    second
-        .put_run_delivery_cleanup(sibling.clone())
-        .await
-        .expect("second store adds sibling during delete race");
-    backend.release_delete();
-    completion
-        .await
-        .expect("completion task joins")
-        .expect("completion retries version mismatch");
-
-    assert_eq!(
-        second
-            .load_run_delivery_cleanup(completed.request())
-            .await
-            .expect("load cleanup snapshot"),
-        vec![sibling],
-        "the second store's sibling record must survive delete-vs-write contention"
-    );
-}
-
-#[tokio::test]
-async fn cleanup_completion_uses_shared_retry_budget_under_two_store_contention() {
-    let inner = Arc::new(InMemoryBackend::new());
-    let backend = Arc::new(DeletePauseBackend::new(inner));
-    let first = Arc::new(OutboundStateStore::new(build_scoped_fs(
-        Arc::clone(&backend),
-        TEST_OUTBOUND_ROOT,
-    )));
-    let second = OutboundStateStore::new(build_scoped_fs(Arc::clone(&backend), TEST_OUTBOUND_ROOT));
-    let run_id = TurnRunId::new();
-    let completed = cleanup_record(run_id, "retry-budget-completed");
-    let racing = cleanup_record(run_id, "retry-budget-racing");
-
-    first
-        .put_run_delivery_cleanup(completed.clone())
-        .await
-        .expect("seed cleanup record");
-    backend.arm_before_deletes(5);
-    let completed_for_task = completed.clone();
-    let completion = {
-        let first = Arc::clone(&first);
-        tokio::spawn(async move {
-            first
-                .complete_run_delivery_cleanup(&completed_for_task)
-                .await
-        })
-    };
-
-    for _ in 0..5 {
-        backend.wait_for_delete().await;
-        second
-            .put_run_delivery_cleanup(racing.clone())
-            .await
-            .expect("racing store bumps the snapshot version");
-        second
-            .complete_run_delivery_cleanup(&racing)
-            .await
-            .expect("racing store restores the one-record snapshot");
-        backend.release_delete();
-    }
-
-    completion
-        .await
-        .expect("completion task joins")
-        .expect("shared retry budget exceeds the legacy fixed five attempts");
-    assert!(
-        second
-            .load_run_delivery_cleanup(completed.request())
-            .await
-            .expect("load cleanup snapshot")
-            .is_empty()
-    );
-}
-
-#[tokio::test]
-async fn cleanup_completion_rechecks_aba_recreation_by_second_store() {
-    let inner = Arc::new(InMemoryBackend::new());
-    let backend = Arc::new(DeletePauseBackend::new(inner));
-    let first = Arc::new(OutboundStateStore::new(build_scoped_fs(
-        Arc::clone(&backend),
-        TEST_OUTBOUND_ROOT,
-    )));
-    let second = OutboundStateStore::new(build_scoped_fs(Arc::clone(&backend), TEST_OUTBOUND_ROOT));
-    let record = cleanup_record(TurnRunId::new(), "aba");
-
-    first
-        .put_run_delivery_cleanup(record.clone())
-        .await
-        .expect("seed cleanup record");
-    backend.arm_after_delete();
-    let record_for_task = record.clone();
-    let completion = {
-        let first = Arc::clone(&first);
-        tokio::spawn(async move { first.complete_run_delivery_cleanup(&record_for_task).await })
-    };
-    backend.wait_for_delete().await;
-
-    second
-        .put_run_delivery_cleanup(record.clone())
-        .await
-        .expect("second store recreates same record after delete commits");
-    backend.release_delete();
-    completion
-        .await
-        .expect("completion task joins")
-        .expect("completion rechecks recreated path");
-
-    assert!(
-        second
-            .load_run_delivery_cleanup(record.request())
-            .await
-            .expect("load cleanup snapshot")
-            .is_empty(),
-        "completion must not return while an ABA recreation still contains the record"
-    );
-}
-
-#[tokio::test]
-async fn cleanup_completion_delete_permission_fault_preserves_snapshot() {
-    let backend = Arc::new(InMemoryBackend::new());
-    let writer = build_outbound_store_with_permissions(
-        Arc::clone(&backend),
-        MountPermissions::read_write_list_delete(),
-    );
-    let no_delete = build_outbound_store_with_permissions(backend, MountPermissions::read_write());
-    let record = cleanup_record(TurnRunId::new(), "permission-fault");
-
-    writer
-        .put_run_delivery_cleanup(record.clone())
-        .await
-        .expect("seed cleanup record");
-    assert!(matches!(
-        no_delete.complete_run_delivery_cleanup(&record).await,
-        Err(OutboundError::Backend)
-    ));
-    assert_eq!(
-        writer
-            .load_run_delivery_cleanup(record.request())
-            .await
-            .expect("load preserved cleanup snapshot"),
-        vec![record],
-        "a conditional-delete fault must not drop or rewrite the cleanup snapshot"
     );
 }
 

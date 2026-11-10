@@ -173,15 +173,6 @@ impl ProductInstallationScope {
         )
     }
 
-    pub fn with_preconfigured_actor_binding(
-        self,
-        external_actor_ref: ExternalActorRef,
-        user_id: UserId,
-        actor_pairings: Arc<dyn ironclaw_conversations::ConversationActorPairingService>,
-    ) -> Self {
-        self.with_preconfigured_actor_bindings([(external_actor_ref, user_id)], actor_pairings)
-    }
-
     pub fn with_actor_user_resolver(
         self,
         resolver: Arc<dyn ProductActorUserResolver>,

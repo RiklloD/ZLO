@@ -99,7 +99,6 @@ pub use signed_session_login::{
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::{
@@ -374,11 +373,6 @@ impl WebuiAuthenticator for EnvBearerAuthenticator {
         true
     }
 }
-
-/// Concrete type alias for the trait object the standalone CLI builds
-/// when constructing `WebuiServeConfig`. Exposed so binary code can
-/// avoid spelling out `Arc<dyn WebuiAuthenticator>` at every call site.
-pub type SharedWebuiAuthenticator = Arc<dyn WebuiAuthenticator>;
 
 #[cfg(test)]
 mod tests {

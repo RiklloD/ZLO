@@ -289,14 +289,6 @@ pub enum RebornProductCommandEffect {
     OpenThread { thread_id: String },
 }
 
-impl RebornProductCommandEffect {
-    pub fn open_thread_id(&self) -> Option<&str> {
-        match self {
-            Self::OpenThread { thread_id } => Some(thread_id.as_str()),
-        }
-    }
-}
-
 /// Response for `product.commands.execute`. Exactly one of `result` /
 /// `rejection` is present; `command` names the resolved command token when
 /// one could be extracted from `text` (empty when parsing failed before a

@@ -24,31 +24,11 @@ use ironclaw_outbound::{
     CommunicationPreferenceVersion, DeliveryDefaultScope, OutboundDeliveryAttempt, OutboundError,
     OutboundPolicyService, OutboundPushCandidate, OutboundStateStore, OutboundStateStorePort,
     ReplyTargetBindingClaim, ReplyTargetBindingValidator, RunNotificationContext,
-    RunNotificationEventKind, RunNotificationOrigin, ThreadProjectionAccessClaim,
-    ThreadProjectionAccessPolicy, ThreadProjectionAccessRequest,
-    VersionedCommunicationPreferenceRecord, WriteCommunicationPreferenceRequest,
+    RunNotificationEventKind, RunNotificationOrigin, VersionedCommunicationPreferenceRecord,
+    WriteCommunicationPreferenceRequest,
 };
 use ironclaw_threads::ThreadScope;
 use ironclaw_turns::{ReplyTargetBindingRef, TurnActor, TurnRunId, TurnScope};
-
-#[derive(Default)]
-struct AllowAllProjectionAccessPolicy;
-
-static ACCESS_POLICY: AllowAllProjectionAccessPolicy = AllowAllProjectionAccessPolicy;
-
-#[async_trait]
-impl ThreadProjectionAccessPolicy for AllowAllProjectionAccessPolicy {
-    async fn authorize_projection_access(
-        &self,
-        request: ThreadProjectionAccessRequest,
-    ) -> Result<ThreadProjectionAccessClaim, OutboundError> {
-        Ok(ThreadProjectionAccessClaim {
-            actor: request.actor,
-            scope: request.scope,
-            thread_id: request.thread_id,
-        })
-    }
-}
 
 #[derive(Default)]
 struct FakeReplyTargetBindingValidator {
@@ -217,7 +197,7 @@ fn configured_policy<'a>(
     store: &'a OutboundStateStore<InMemoryBackend>,
     validator: &'a FakeReplyTargetBindingValidator,
 ) -> OutboundPolicyService<'a> {
-    OutboundPolicyService::new(store, &ACCESS_POLICY, validator)
+    OutboundPolicyService::new(store, validator)
 }
 
 fn seed_preference(repo: &FakePreferenceRepository, scope: &TurnScope) {
@@ -2593,48 +2573,6 @@ struct TerminalDeliveredWriteFailingStore {
 
 #[async_trait]
 impl OutboundStateStorePort for TerminalDeliveredWriteFailingStore {
-    async fn put_run_delivery_cleanup(
-        &self,
-        record: ironclaw_outbound::RunDeliveryCleanupRecord,
-    ) -> Result<(), OutboundError> {
-        self.inner.put_run_delivery_cleanup(record).await
-    }
-    async fn load_run_delivery_cleanup(
-        &self,
-        request: ironclaw_outbound::RunDeliveryCleanupRequest,
-    ) -> Result<Vec<ironclaw_outbound::RunDeliveryCleanupRecord>, OutboundError> {
-        self.inner.load_run_delivery_cleanup(request).await
-    }
-    async fn complete_run_delivery_cleanup(
-        &self,
-        record: &ironclaw_outbound::RunDeliveryCleanupRecord,
-    ) -> Result<(), OutboundError> {
-        self.inner.complete_run_delivery_cleanup(record).await
-    }
-    async fn put_thread_notification_policy(
-        &self,
-        policy: ironclaw_outbound::ThreadNotificationPolicy,
-    ) -> Result<(), OutboundError> {
-        self.inner.put_thread_notification_policy(policy).await
-    }
-    async fn load_thread_notification_policy(
-        &self,
-        scope: ironclaw_turns::TurnScope,
-    ) -> Result<ironclaw_outbound::ThreadNotificationPolicy, OutboundError> {
-        self.inner.load_thread_notification_policy(scope).await
-    }
-    async fn upsert_subscription(
-        &self,
-        record: ironclaw_outbound::ProjectionSubscriptionRecord,
-    ) -> Result<(), OutboundError> {
-        self.inner.upsert_subscription(record).await
-    }
-    async fn load_subscription_cursor(
-        &self,
-        request: ironclaw_outbound::LoadSubscriptionCursorRequest,
-    ) -> Result<Option<ironclaw_event_projections::ProjectionCursor>, OutboundError> {
-        self.inner.load_subscription_cursor(request).await
-    }
     async fn record_delivery_attempt(
         &self,
         attempt: OutboundDeliveryAttempt,

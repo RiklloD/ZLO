@@ -1,16 +1,13 @@
 use clap::Subcommand;
 
-pub(crate) mod channels;
 pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod devices;
 pub(crate) mod doctor;
 pub(crate) mod export;
 pub(crate) mod extension;
-pub(crate) mod hooks;
 pub(crate) mod import;
 pub(crate) mod ironhub;
-pub(crate) mod logs;
 pub(crate) mod models;
 pub(crate) mod onboard;
 pub(crate) mod pair;
@@ -32,8 +29,6 @@ pub(crate) mod webui_auth;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    /// Inspect configured Reborn channels.
-    Channels(channels::ChannelsCommand),
     /// Generate shell completion scripts.
     Completion(completion::CompletionCommand),
     /// Inspect Reborn configuration paths without creating state.
@@ -46,15 +41,11 @@ pub(crate) enum Command {
     Export(export::ExportCommand),
     /// Manage local Reborn extension lifecycle.
     Extension(extension::ExtensionCommand),
-    /// Inspect configured Reborn hooks.
-    Hooks(hooks::HooksCommand),
     /// Restore a setup written by `zlo export` on this computer.
     Import(import::ImportCommand),
     /// Search and install signed registry packages from IronHub.
     #[command(name = "ironhub", visible_alias = "iron-hub", visible_alias = "hub")]
     IronHub(ironhub::IronHubCommand),
-    /// Inspect Reborn logs.
-    Logs(logs::LogsCommand),
     /// Inspect Reborn model slots and route status.
     Models(models::ModelsCommand),
     /// Initialize the standalone Reborn home and first-run setup marker.
@@ -90,7 +81,6 @@ pub(crate) enum Command {
 impl Command {
     pub(crate) fn execute(self) -> anyhow::Result<()> {
         match self {
-            Self::Channels(command) => command.execute(),
             Self::Completion(command) => command.execute(),
             Self::Config(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
@@ -107,14 +97,12 @@ impl Command {
             Self::Extension(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
-            Self::Hooks(command) => command.execute(),
             Self::Import(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::IronHub(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
-            Self::Logs(command) => command.execute(),
             Self::Models(command) => command.execute(),
             Self::Onboard(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
@@ -153,11 +141,4 @@ impl Command {
             }
         }
     }
-}
-
-/// Shared error for CLI surfaces that are intentionally kept visible in
-/// `--help`/shell completions but do not yet have a working implementation
-/// (`channels`, `hooks`, `logs`).
-pub(crate) fn not_yet_implemented(command: &str) -> anyhow::Error {
-    anyhow::anyhow!("`{command}` is not implemented yet")
 }

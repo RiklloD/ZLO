@@ -1109,14 +1109,11 @@ fn help_mentions_reborn_commands() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("ZLO agent runtime"), "stdout: {stdout}");
     assert!(stdout.contains("Usage: zlo"), "stdout: {stdout}");
-    assert!(stdout.contains("channels"), "stdout: {stdout}");
     assert!(stdout.contains("completion"), "stdout: {stdout}");
     assert!(stdout.contains("config"), "stdout: {stdout}");
     assert!(stdout.contains("doctor"), "stdout: {stdout}");
     assert!(stdout.contains("extension"), "stdout: {stdout}");
-    assert!(stdout.contains("hooks"), "stdout: {stdout}");
     assert!(stdout.contains("ironhub"), "stdout: {stdout}");
-    assert!(stdout.contains("logs"), "stdout: {stdout}");
     assert!(stdout.contains("models"), "stdout: {stdout}");
     assert!(stdout.contains("onboard"), "stdout: {stdout}");
     assert!(stdout.contains("profile"), "stdout: {stdout}");
@@ -1442,31 +1439,6 @@ fn profile_list_json_is_stable_and_does_not_resolve_reborn_home() {
 }
 
 #[test]
-fn channels_list_reports_not_implemented() {
-    assert_not_implemented(
-        &["channels", "list"],
-        "`channels list` is not implemented yet",
-    );
-    assert_not_implemented(
-        &["channels", "list", "--verbose"],
-        "`channels list` is not implemented yet",
-    );
-    assert_not_implemented(
-        &["channels", "list", "--json"],
-        "`channels list` is not implemented yet",
-    );
-}
-
-#[test]
-fn hooks_list_reports_not_implemented() {
-    assert_not_implemented(&["hooks", "list"], "`hooks list` is not implemented yet");
-    assert_not_implemented(
-        &["hooks", "list", "--verbose"],
-        "`hooks list` is not implemented yet",
-    );
-}
-
-#[test]
 fn skills_list_reports_reborn_skill_data() {
     let temp = tempfile::tempdir().expect("tempdir");
     let reborn_home = temp.path().join("reborn-home");
@@ -1643,12 +1615,6 @@ fn skills_list_accepts_sandbox_profiles() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-}
-
-#[test]
-fn logs_reports_not_implemented() {
-    assert_not_implemented(&["logs"], "`logs` is not implemented yet");
-    assert_not_implemented(&["logs", "--verbose"], "`logs` is not implemented yet");
 }
 
 #[test]
@@ -1846,22 +1812,6 @@ fn models_set_without_provider_fails_without_panicking() {
         stderr.contains("no default Reborn provider is configured"),
         "stderr: {stderr}"
     );
-    assert!(!stderr.contains("panicked"), "stderr: {stderr}");
-}
-
-fn assert_not_implemented(args: &[&str], expected_message: &str) {
-    let output = reborn_command()
-        .args(args)
-        .output()
-        .expect("ironclaw-reborn command should run");
-
-    assert!(
-        !output.status.success(),
-        "`{}` should fail while disabled",
-        args.join(" ")
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains(expected_message), "stderr: {stderr}");
     assert!(!stderr.contains("panicked"), "stderr: {stderr}");
 }
 

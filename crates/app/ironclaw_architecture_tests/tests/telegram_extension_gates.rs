@@ -135,13 +135,10 @@ fn absence_assertions_pass_when_the_parent_exists_and_the_file_does_not() {
 
 #[test]
 fn generic_channel_delivery_is_not_owned_by_composition() {
-    let outbound = crate_path(
-        &workspace_root(),
-        "crates/ironclaw_composition/src/outbound",
-    );
+    let source = crate_path(&workspace_root(), "crates/ironclaw_composition/src");
     assert_absent_within(
-        &outbound,
-        &outbound.join("channel_delivery.rs"),
+        &source,
+        &source.join("outbound/channel_delivery.rs"),
         "generic channel-delivery behavior must be owned by ironclaw_extension_host, not",
     );
 }

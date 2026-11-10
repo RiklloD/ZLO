@@ -398,13 +398,10 @@ Run status projections are projection-local read models. Model/reply milestone e
 - `AssistantReplyFinalized` marks the run `completed` for metadata-only loop model/reply runs until richer terminal turn-run events are available.
 - `LoopCompleted` and `LoopFailed` are trusted terminal loop milestones; they mark the run `completed` or `failed` with sanitized `error_kind` only.
 
-### Outbound egress and subscription state
+### Outbound egress state
 
 `ironclaw_outbound` owns the metadata-only state and policy seams needed around projection delivery:
 
-- per-thread notification policy for explicit external fanout and progress opt-in;
-- durable projection subscription cursor checkpoints scoped to actor, thread, and `ProjectionScope`;
-- a projection access-policy port that authorizes actor/thread visibility before subscription cursor state is created;
 - a reply-target validation port used before each external push candidate is turned into a delivery attempt;
 - outbound delivery attempt/status rows for support-visible retry/dead-letter workflows.
 

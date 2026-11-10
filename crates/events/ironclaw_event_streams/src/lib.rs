@@ -1,7 +1,7 @@
 //! Transport-neutral Reborn projection streams.
 //!
 //! This crate composes product-safe projection DTOs with access, admission,
-//! live-update, redaction, and outbound-candidate seams. It intentionally does
+//! live-update, and redaction seams. It intentionally does
 //! not render SSE/WebSocket/channel frames and does not read durable logs
 //! directly.
 
@@ -25,9 +25,8 @@ pub use types::{
     DebugProjectionPayload, DeliveryProjectionStatus, DeliveryStatusProjectionPayload, LagReason,
     ProductProjectionEnvelope, ProjectionFetchRequest, ProjectionFetchResponse,
     ProjectionStreamItem, ProjectionSubscribeRequest, ProjectionSubscription, ProjectionTarget,
-    ProjectionViewClass, PushCandidatesForUpdateRequest, SubscriberCapabilities,
-    ThreadLiveProjectionItem, ThreadLiveProjectionUpdate, ThreadLiveWorkSummaryPhase,
-    keep_alive_item,
+    ProjectionViewClass, SubscriberCapabilities, ThreadLiveProjectionItem,
+    ThreadLiveProjectionUpdate, ThreadLiveWorkSummaryPhase, keep_alive_item,
 };
 pub use update_source::{
     InMemoryProjectionUpdateSource, ProjectionLiveUpdateRequest, ProjectionUpdateSource,

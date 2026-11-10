@@ -29,6 +29,7 @@ use ironclaw_product_contracts::surface::{
     ProductSurfaceErrorKind,
 };
 
+use ironclaw_outbound::{OutboundDeliveryTargetProvider, OutboundDeliveryTargetRegistry};
 use ironclaw_triggers::TriggerRepository;
 
 use crate::model_gateway_assembly::RebornLlmReloadParts;
@@ -36,9 +37,7 @@ use crate::operator_tool_catalog::ActiveRegistryOperatorToolCatalog;
 use crate::product_capability::RuntimeProductCapabilityInvoker;
 use crate::{
     RebornBuildError, RebornReadiness, RebornReadinessDiagnostic, RebornReadinessDiagnosticStatus,
-    RebornRuntime,
-    outbound::{OutboundDeliveryTargetProvider, OutboundDeliveryTargetRegistry},
-    support::fs::MountScopedFilesystemReader,
+    RebornRuntime, support::fs::MountScopedFilesystemReader,
 };
 use ironclaw_assistant::{
     RebornOutboundPreferencesService, notification_channels_set_operator_tool_info,

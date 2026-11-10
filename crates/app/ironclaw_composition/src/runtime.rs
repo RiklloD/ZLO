@@ -136,12 +136,6 @@ use crate::model_gateway_assembly::wrap_swappable_gateway;
 use crate::model_gateway_assembly::{
     RebornLlmReloadParts, build_production_model_gateway, build_skill_learning_provider,
 };
-#[cfg(any(test, feature = "test-support"))]
-use crate::outbound::{
-    DeliveryTargetCapabilities, OutboundDeliveryTargetEntry, OutboundDeliveryTargetId,
-    OutboundDeliveryTargetOwner, OutboundDeliveryTargetScope, OutboundDeliveryTargetSummary,
-};
-use crate::outbound::{MutableOutboundDeliveryTargetRegistry, OutboundDeliveryTargetProvider};
 use crate::root::default_system_prompt::{
     DefaultSystemPromptIdentitySource, SystemPromptProtocols,
 };
@@ -161,6 +155,12 @@ use ironclaw_extension_host::extension_lifecycle::RebornLocalExtensionManagement
 use ironclaw_extension_manager::admin_configuration::{
     ComposedAdminConfigurationService, ComposedExtensionAdminConfigurationResolver,
 };
+#[cfg(any(test, feature = "test-support"))]
+use ironclaw_outbound::{
+    DeliveryTargetCapabilities, OutboundDeliveryTargetEntry, OutboundDeliveryTargetId,
+    OutboundDeliveryTargetOwner, OutboundDeliveryTargetScope, OutboundDeliveryTargetSummary,
+};
+use ironclaw_outbound::{MutableOutboundDeliveryTargetRegistry, OutboundDeliveryTargetProvider};
 use ironclaw_secrets::SecretStorePort;
 use ironclaw_skills::ScopedSkillManagementPort;
 
@@ -439,7 +439,6 @@ use ironclaw_operator::ResolvedRebornLlm;
 // dev-dependency features)" step in code_style.yml keeps that shape linted so
 // the class cannot come back invisibly.
 #[cfg(any(test, feature = "test-support"))]
-use ironclaw_product_contracts::account_setup::ChannelConnectionNoticePolicy;
 #[cfg(any(test, feature = "test-support"))]
 use ironclaw_product_contracts::admin_users::AdminUserService;
 #[cfg(any(test, feature = "test-support"))]
@@ -1396,18 +1395,6 @@ impl RebornRuntime {
             .await
             .ok()
             .map(|status| status.connected)
-    }
-
-    /// The manifest-composed connection-notice policy for one channel
-    /// extension — mirrors the notices the production run-delivery observer
-    /// reads. Tests only.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn pairing_connection_notices_for_test(
-        &self,
-        extension_id: &str,
-    ) -> Option<ChannelConnectionNoticePolicy> {
-        let service = self.channel_pairing.as_ref()?.get(extension_id)?;
-        Some(service.connection_notices().clone())
     }
 
     /// The composed pairing registry, for building the protected pairing

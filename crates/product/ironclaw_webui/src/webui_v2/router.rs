@@ -104,27 +104,20 @@ use crate::webui_v2::sse_capacity::SseCapacity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WebUiV2RouteOptions {
-    pub mount_llm_config_routes: bool,
+    /// Mounts the operator command plane and the LLM configuration routes,
+    /// which share one trusted-operator gate.
     pub mount_operator_routes: bool,
 }
 
 impl WebUiV2RouteOptions {
     pub const fn all() -> Self {
         Self {
-            mount_llm_config_routes: true,
             mount_operator_routes: true,
         }
     }
 
-    // Also suppresses `operator/*` routes because the legacy LLM config
-    // surface and the operator command plane share one trusted-operator gate.
-    pub const fn without_llm_config_routes() -> Self {
-        Self::without_operator_routes()
-    }
-
     pub const fn without_operator_routes() -> Self {
         Self {
-            mount_llm_config_routes: false,
             mount_operator_routes: false,
         }
     }
@@ -729,7 +722,7 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
                 get(handlers::admin_get_thread_scrape_run_artifact),
             );
     }
-    if options.mount_llm_config_routes {
+    if options.mount_operator_routes {
         router = router
             // `WEBUI_V2_PATTERN_GET_LLM_CONFIG == WEBUI_V2_PATTERN_UPSERT_LLM_PROVIDER`
             // (`/llm/providers`); mount GET + POST in one `.route()`.

@@ -1,6 +1,6 @@
 # `crates/events/` — evidence, derived views, transport streams: a one-way pipeline
 
-**Layer(s):** `substrates` (all 4 crates) · **Crates:** 4 · **May depend on:** `crates/contracts/` + the storage fabric (`ironclaw_filesystem`, store only) + one read-only `ironclaw_outbound` edge (streams only) · **Depended on by:** producers across kernel/loop/domains/product record through `ironclaw_event_log` (14 workspace crates name it — `grep -rl '^ironclaw_event_log = ' --include=Cargo.toml crates`); consumers read through `ironclaw_event_projections`; composition constructs via `ironclaw_event_store`; `ironclaw_assistant` subscribes via `ironclaw_event_streams`.
+**Layer(s):** `substrates` (all 4 crates) · **Crates:** 4 · **May depend on:** `crates/contracts/` + the storage fabric (`ironclaw_filesystem`, store only) + one `ironclaw_outbound` vocabulary edge (streams only) · **Depended on by:** producers across kernel/loop/domains/product record through `ironclaw_event_log` (14 workspace crates name it — `grep -rl '^ironclaw_event_log = ' --include=Cargo.toml crates`); consumers read through `ironclaw_event_projections`; composition constructs via `ironclaw_event_store`; `ironclaw_assistant` subscribes via `ironclaw_event_streams`.
 
 ## What this family is
 
@@ -88,8 +88,8 @@ All gates live in `crates/app/ironclaw_architecture_tests` (run:
   outbound}`. A new same-layer edge fails; so does a stale one.
 - **Watch vs push are two decisions.** `ironclaw_event_streams` authorizes a
   subscription independently of whether `ironclaw_outbound` has authorized a
-  push; its outbound dependency is a single read-only candidate lookup. A
-  write path into outbound from this family is always a defect.
+  push; its outbound dependency is one vocabulary type. A write path into
+  outbound from this family is always a defect.
 
 ## Crossing out of this family
 
@@ -98,8 +98,8 @@ All gates live in `crates/app/ironclaw_architecture_tests` (run:
   stages, turn refs).
 - **`crates/substrates/ironclaw_filesystem` (sideways, store only):** the
   storage fabric the durable adapters append through.
-- **`crates/domains/ironclaw_outbound` (sideways, streams only):** the one
-  read-only push-candidate lookup.
+- **`crates/domains/ironclaw_outbound` (sideways, streams only):** the
+  `ProjectionUpdateRef` type on the delivery-status payload.
 - **`crates/app/ironclaw_composition` (consumer):** the assembly root is the
   one place `ironclaw_event_store`'s backend-selection factory is called to
   construct the logs everyone else receives by injection.

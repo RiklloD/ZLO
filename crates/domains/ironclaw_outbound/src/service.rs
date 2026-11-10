@@ -6,23 +6,9 @@ use crate::{
     CommunicationDeliveryResolution, DeliveryFailureKind, OutboundDeliveryAttempt,
     OutboundDeliveryDecision, OutboundDeliveryId, OutboundDeliveryStatus, OutboundError,
     OutboundPushCandidate, OutboundStateStorePort, PrepareCommunicationDeliveryRequest,
-    PrepareOutboundDeliveryRequest, ProjectionSubscriptionRecord, ProjectionSubscriptionRequest,
-    ReplyTargetBindingClaim, ReplyTargetValidationRequest, ThreadProjectionAccessClaim,
-    ThreadProjectionAccessGrant, ThreadProjectionAccessRequest, ValidatedReplyTargetBinding,
+    PrepareOutboundDeliveryRequest, ReplyTargetBindingClaim, ReplyTargetValidationRequest,
+    ValidatedReplyTargetBinding,
 };
-
-#[async_trait]
-pub trait ThreadProjectionAccessPolicy: Send + Sync {
-    /// Decide whether the request actor may subscribe to projections for the
-    /// requested thread/scope. The returned [`ThreadProjectionAccessClaim`] is
-    /// **untrusted** — the [`OutboundPolicyService`] mints the sealed
-    /// [`ThreadProjectionAccessGrant`] only after verifying the claim's fields
-    /// match the original request.
-    async fn authorize_projection_access(
-        &self,
-        request: ThreadProjectionAccessRequest,
-    ) -> Result<ThreadProjectionAccessClaim, OutboundError>;
-}
 
 #[async_trait]
 pub trait ReplyTargetBindingValidator: Send + Sync {
@@ -39,47 +25,18 @@ pub trait ReplyTargetBindingValidator: Send + Sync {
 
 pub struct OutboundPolicyService<'a> {
     store: &'a dyn OutboundStateStorePort,
-    projection_access_policy: &'a dyn ThreadProjectionAccessPolicy,
     reply_target_validator: &'a dyn ReplyTargetBindingValidator,
 }
 
 impl<'a> OutboundPolicyService<'a> {
     pub fn new(
         store: &'a dyn OutboundStateStorePort,
-        projection_access_policy: &'a dyn ThreadProjectionAccessPolicy,
         reply_target_validator: &'a dyn ReplyTargetBindingValidator,
     ) -> Self {
         Self {
             store,
-            projection_access_policy,
             reply_target_validator,
         }
-    }
-
-    pub async fn authorize_subscription(
-        &self,
-        request: ProjectionSubscriptionRequest,
-    ) -> Result<ProjectionSubscriptionRecord, OutboundError> {
-        let claim = self
-            .projection_access_policy
-            .authorize_projection_access(ThreadProjectionAccessRequest {
-                actor: request.actor.clone(),
-                scope: request.scope.clone(),
-                thread_id: request.thread_id.clone(),
-            })
-            .await?;
-        validate_access_claim(&request, &claim)?;
-        let grant = ThreadProjectionAccessGrant::from_claim(claim);
-
-        let record = ProjectionSubscriptionRecord {
-            subscription_id: request.subscription_id,
-            actor: grant.actor,
-            scope: grant.scope,
-            thread_id: grant.thread_id,
-            cursor: request.after_cursor,
-        };
-        self.store.upsert_subscription(record.clone()).await?;
-        Ok(record)
     }
 
     pub async fn prepare_delivery_attempt(
@@ -265,21 +222,6 @@ fn lower_communication_delivery_resolution(
     })
 }
 
-fn validate_access_claim(
-    request: &ProjectionSubscriptionRequest,
-    claim: &ThreadProjectionAccessClaim,
-) -> Result<(), OutboundError> {
-    if request.actor != claim.actor
-        || request.scope != claim.scope
-        || request.thread_id != claim.thread_id
-    {
-        return Err(OutboundError::InvalidRequest {
-            reason: "projection access claim does not match subscription request",
-        });
-    }
-    Ok(())
-}
-
 /// Returns true when a non-`AccessDenied` validator error reflects a
 /// transient infrastructure failure rather than a caller bug. Caller-bug
 /// errors (e.g. `InvalidRequest`, `SubscriptionScopeMismatch`,
@@ -337,8 +279,7 @@ mod tests {
     async fn prepare_communication_delivery_attempt_returns_none_for_no_delivery() {
         let store = in_memory_backed_outbound_state_store();
         let validator = TestReplyTargetBindingValidator::default();
-        let access_policy = AllowAllProjectionAccessPolicy;
-        let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+        let service = OutboundPolicyService::new(&store, &validator);
         let scope = turn_scope("thread-no-delivery");
         let request = PrepareCommunicationDeliveryRequest {
             resolution_request: CommunicationDeliveryResolutionRequest {
@@ -377,8 +318,7 @@ mod tests {
     async fn prepare_communication_delivery_attempt_lowers_prompt_kinds_to_gate_required() {
         let store = in_memory_backed_outbound_state_store();
         let validator = TestReplyTargetBindingValidator::default();
-        let access_policy = AllowAllProjectionAccessPolicy;
-        let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+        let service = OutboundPolicyService::new(&store, &validator);
         let scope = turn_scope("thread-approval");
         let approval_target = reply_ref("reply:approval");
         validator.allow(approval_target.clone());
@@ -453,22 +393,6 @@ mod tests {
 
         fn calls(&self) -> usize {
             *self.calls.lock().expect("lock calls")
-        }
-    }
-
-    struct AllowAllProjectionAccessPolicy;
-
-    #[async_trait]
-    impl ThreadProjectionAccessPolicy for AllowAllProjectionAccessPolicy {
-        async fn authorize_projection_access(
-            &self,
-            request: ThreadProjectionAccessRequest,
-        ) -> Result<ThreadProjectionAccessClaim, OutboundError> {
-            Ok(ThreadProjectionAccessClaim {
-                actor: request.actor,
-                scope: request.scope,
-                thread_id: request.thread_id,
-            })
         }
     }
 

@@ -457,21 +457,9 @@ pub const WEBUI_V2_PATTERN_PROJECT_MEMBER_DETAIL: &str =
 /// against its own mount table, and refuses to bind any route whose policy
 /// the host cannot enforce. QA-only regression artifact exports are omitted
 /// unless composition explicitly opts in through
-/// [`webui_v2_routes_with_regression_artifact_export`].
+/// [`webui_v2_routes_with_artifact_flags`].
 pub fn webui_v2_routes() -> Vec<IngressRouteDescriptor> {
     webui_v2_routes_with_artifact_flags(false, false)
-}
-
-/// Return the canonical descriptor set for the selected artifact-export
-/// deployment policy.
-///
-/// The same captured deployment flag must feed this table and
-/// [`crate::webui_v2::WebUiV2State`] so host middleware never advertises a
-/// route the inner router does not mount.
-pub fn webui_v2_routes_with_regression_artifact_export(
-    regression_artifact_export_enabled: bool,
-) -> Vec<IngressRouteDescriptor> {
-    webui_v2_routes_with_artifact_flags(regression_artifact_export_enabled, false)
 }
 
 /// Combined artifact-surface policy: QA-only caller-owned exports plus the
@@ -522,42 +510,42 @@ pub fn webui_v2_routes_with_artifact_flags(
         orchestrator_thread_action_descriptor(),
         orchestrator_task_descriptor(),
         orchestrator_task_cancel_descriptor(),
-        schedule_route_descriptor(
+        profile_route_descriptor(
             WEBUI_V2_ROUTE_SCHEDULES_LIST,
             NetworkMethod::Get,
             WEBUI_V2_PATTERN_SCHEDULES,
         ),
-        schedule_route_descriptor(
+        profile_route_descriptor(
             WEBUI_V2_ROUTE_SCHEDULE_CREATE,
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_SCHEDULES,
         ),
-        schedule_route_descriptor(
+        profile_route_descriptor(
             WEBUI_V2_ROUTE_SCHEDULE_PREVIEW,
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_SCHEDULE_PREVIEW,
         ),
-        schedule_route_descriptor(
+        profile_route_descriptor(
             WEBUI_V2_ROUTE_SCHEDULE_UPDATE,
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_SCHEDULE,
         ),
-        schedule_route_descriptor(
+        profile_route_descriptor(
             WEBUI_V2_ROUTE_SCHEDULE_DELETE,
             NetworkMethod::Delete,
             WEBUI_V2_PATTERN_SCHEDULE,
         ),
-        schedule_route_descriptor(
+        profile_route_descriptor(
             WEBUI_V2_ROUTE_SCHEDULE_RUN,
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_SCHEDULE_RUN,
         ),
-        schedule_route_descriptor(
+        profile_route_descriptor(
             WEBUI_V2_ROUTE_SCHEDULE_ROTATE_SECRET,
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_SCHEDULE_ROTATE_SECRET,
         ),
-        schedule_route_descriptor(
+        profile_route_descriptor(
             WEBUI_V2_ROUTE_SCHEDULE_SECRET,
             NetworkMethod::Get,
             WEBUI_V2_PATTERN_SCHEDULE_SECRET,
@@ -877,30 +865,19 @@ pub fn is_webui_v2_operator_webui_config_route_id(route_id: &str) -> bool {
 }
 
 fn get_session_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_GET_SESSION,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_GET_SESSION,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn create_thread_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_CREATE_THREAD,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_CREATE_THREAD,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
@@ -923,156 +900,95 @@ fn session_channel_message_descriptor() -> IngressRouteDescriptor {
 }
 
 fn admin_list_users_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ADMIN_LIST_USERS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ADMIN_USERS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn admin_create_user_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ADMIN_CREATE_USER,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ADMIN_USERS,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn admin_get_user_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ADMIN_GET_USER,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ADMIN_USER,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn admin_update_user_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ADMIN_UPDATE_USER,
         NetworkMethod::Patch,
         WEBUI_V2_PATTERN_ADMIN_USER,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn admin_delete_user_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_ADMIN_DELETE_USER,
         NetworkMethod::Delete,
         WEBUI_V2_PATTERN_ADMIN_USER,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn admin_set_user_status_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ADMIN_SET_USER_STATUS,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ADMIN_USER_STATUS,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn admin_set_user_role_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ADMIN_SET_USER_ROLE,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ADMIN_USER_ROLE,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn admin_list_user_secrets_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ADMIN_LIST_USER_SECRETS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ADMIN_USER_SECRETS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn admin_put_user_secret_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ADMIN_PUT_USER_SECRET,
         NetworkMethod::Put,
         WEBUI_V2_PATTERN_ADMIN_USER_SECRET,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn admin_delete_user_secret_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_ADMIN_DELETE_USER_SECRET,
         NetworkMethod::Delete,
         WEBUI_V2_PATTERN_ADMIN_USER_SECRET,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn admin_list_thread_scrape_threads_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ADMIN_LIST_THREAD_SCRAPE_THREADS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_THREADS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -1091,44 +1007,26 @@ fn admin_get_thread_scrape_artifact_descriptor() -> IngressRouteDescriptor {
 }
 
 fn admin_get_thread_scrape_run_artifact_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ADMIN_GET_THREAD_SCRAPE_RUN_ARTIFACT,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ADMIN_THREAD_SCRAPE_RUN_ARTIFACT,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn delete_thread_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_DELETE_THREAD,
         NetworkMethod::Delete,
         WEBUI_V2_PATTERN_DELETE_THREAD,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn list_project_files_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_LIST_PROJECT_FILES,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_PROJECT_FILES,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -1149,240 +1047,142 @@ fn index_project_files_descriptor() -> IngressRouteDescriptor {
 }
 
 fn stat_project_file_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_STAT_PROJECT_FILE,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_STAT_PROJECT_FILE,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn read_project_file_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_READ_PROJECT_FILE,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_READ_PROJECT_FILE,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn list_fs_mounts_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_LIST_FS_MOUNTS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_FS_MOUNTS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn list_projects_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_LIST_PROJECTS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_PROJECTS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn browse_fs_dir_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_BROWSE_FS_DIR,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_BROWSE_FS_DIR,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn create_project_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_CREATE_PROJECT,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_CREATE_PROJECT,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn get_project_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_GET_PROJECT,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_PROJECT_DETAIL,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn stat_fs_path_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_STAT_FS_PATH,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_STAT_FS_PATH,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn update_project_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_UPDATE_PROJECT,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_PROJECT_DETAIL,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn delete_project_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_DELETE_PROJECT,
         NetworkMethod::Delete,
         WEBUI_V2_PATTERN_PROJECT_DETAIL,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn list_project_members_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_LIST_PROJECT_MEMBERS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_PROJECT_MEMBERS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn read_fs_file_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_READ_FS_FILE,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_READ_FS_FILE,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn add_project_member_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ADD_PROJECT_MEMBER,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_PROJECT_MEMBERS,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn update_project_member_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_UPDATE_PROJECT_MEMBER,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_PROJECT_MEMBER_DETAIL,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn remove_project_member_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_REMOVE_PROJECT_MEMBER,
         NetworkMethod::Delete,
         WEBUI_V2_PATTERN_PROJECT_MEMBER_DETAIL,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn get_timeline_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_GET_TIMELINE,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_GET_TIMELINE,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn get_run_artifact_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_GET_RUN_ARTIFACT,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_GET_RUN_ARTIFACT,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -1432,72 +1232,42 @@ fn stream_events_descriptor() -> IngressRouteDescriptor {
 }
 
 fn list_threads_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_LIST_THREADS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_THREADS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn list_notifications_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_LIST_NOTIFICATIONS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_NOTIFICATIONS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn mark_notification_read_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_MARK_NOTIFICATION_READ,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_MARK_NOTIFICATION_READ,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn mark_all_notifications_read_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_MARK_ALL_NOTIFICATIONS_READ,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_MARK_ALL_NOTIFICATIONS_READ,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn archive_notification_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_ARCHIVE_NOTIFICATION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ARCHIVE_NOTIFICATION,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
@@ -1515,44 +1285,27 @@ fn stream_events_ws_descriptor() -> IngressRouteDescriptor {
 }
 
 fn list_commands_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_LIST_COMMANDS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_COMMANDS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn execute_command_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_EXECUTE_COMMAND,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_EXECUTE_COMMAND,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn list_automations_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_LIST_AUTOMATIONS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_AUTOMATIONS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -1571,72 +1324,43 @@ fn run_automation_descriptor() -> IngressRouteDescriptor {
 }
 
 fn pause_automation_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_PAUSE_AUTOMATION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_PAUSE_AUTOMATION,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn resume_automation_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_RESUME_AUTOMATION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_RESUME_AUTOMATION,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn rename_automation_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_RENAME_AUTOMATION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_AUTOMATION_DETAIL,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn delete_automation_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_DELETE_AUTOMATION,
         NetworkMethod::Delete,
         WEBUI_V2_PATTERN_AUTOMATION_DETAIL,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn suggestions_list_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_SUGGESTIONS_LIST,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_SUGGESTIONS_LIST,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -1656,58 +1380,34 @@ fn suggestions_generate_descriptor() -> IngressRouteDescriptor {
 }
 
 fn suggestion_start_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_SUGGESTION_START,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_SUGGESTION_START,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn suggestion_dismiss_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    bodyless_mutation_route(
         WEBUI_V2_ROUTE_SUGGESTION_DISMISS,
         NetworkMethod::Delete,
         WEBUI_V2_PATTERN_SUGGESTION_DETAIL,
-        mutation_policy(
-            BodyLimitPolicy::NoBody,
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
     )
 }
 
 fn trace_credits_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_TRACE_CREDITS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_TRACE_CREDITS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn trace_account_traces_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_TRACE_ACCOUNT_TRACES,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_TRACE_ACCOUNT_TRACES,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -1744,226 +1444,136 @@ fn trace_account_login_link_descriptor() -> IngressRouteDescriptor {
 }
 
 fn list_outbound_delivery_targets_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_LIST_OUTBOUND_DELIVERY_TARGETS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_OUTBOUND_DELIVERY_TARGETS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn get_notification_channels_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_GET_NOTIFICATION_CHANNELS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_NOTIFICATION_CHANNELS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn set_notification_channels_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SET_NOTIFICATION_CHANNELS,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_NOTIFICATION_CHANNELS,
-        mutation_policy(
-            body_limit_kib(8),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        8,
     )
 }
 
 fn orchestrator_thread_tasks_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_TASKS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn orchestrator_thread_telemetry_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_TELEMETRY,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TELEMETRY,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn orchestrator_thread_context_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_CONTEXT,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_CONTEXT,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn orchestrator_thread_queue_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_QUEUE,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_QUEUE,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn orchestrator_queue_mutate_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_QUEUE_MUTATE,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ORCHESTRATOR_QUEUE_MUTATE,
-        mutation_policy(
-            body_limit_kib(64),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        64,
     )
 }
 
 fn orchestrator_thread_lineage_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_LINEAGE,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_LINEAGE,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn orchestrator_thread_runs_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_RUNS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_RUNS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn orchestrator_thread_route_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ROUTE,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ROUTE,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn orchestrator_providers_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn orchestrator_thread_route_set_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ROUTE_SET,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ROUTE_SET,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn orchestrator_thread_fork_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_FORK,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_FORK,
-        mutation_policy(
-            body_limit_kib(64),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        64,
     )
 }
 
 fn orchestrator_thread_merge_back_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_MERGE_BACK,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_MERGE_BACK,
-        mutation_policy(
-            body_limit_kib(64),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        64,
     )
 }
 
 fn orchestrator_thread_worktree_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_WORKTREE,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_WORKTREE,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
@@ -1982,16 +1592,11 @@ fn thread_git_descriptor() -> IngressRouteDescriptor {
 }
 
 fn thread_git_change_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_THREAD_GIT_CHANGE,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_THREAD_GIT,
-        mutation_policy(
-            body_limit_kib(256),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        256,
     )
 }
 
@@ -2011,73 +1616,43 @@ fn thread_console_descriptor() -> IngressRouteDescriptor {
 }
 
 fn thread_console_control_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_THREAD_CONSOLE_CONTROL,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_THREAD_CONSOLE,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn orchestrator_thread_action_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ACTION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ACTION,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn orchestrator_task_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_TASK,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_TASK,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn orchestrator_task_cancel_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_ORCHESTRATOR_TASK_CANCEL,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL,
-        mutation_policy(
-            body_limit_kib(64),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        64,
     )
 }
 
-/// Schedule routes: reads on the read policy; writes carry a prompt (at
-/// most 32 KiB, escaped as JSON), so 64 KiB bodies.
-fn schedule_route_descriptor(
-    route_id: &'static str,
-    method: NetworkMethod,
-    pattern: &'static str,
-) -> IngressRouteDescriptor {
-    profile_route_descriptor(route_id, method, pattern)
-}
-
-/// Profile routes: reads on the read policy; writes carry SOUL.md (at most
-/// 24 KiB, escaped as JSON), so 64 KiB bodies.
+/// Profile and schedule routes: reads on the read policy; writes carry
+/// SOUL.md (at most 24 KiB) or a schedule prompt (at most 32 KiB), escaped as
+/// JSON, so 64 KiB bodies.
 fn profile_route_descriptor(
     route_id: &'static str,
     method: NetworkMethod,
@@ -2131,16 +1706,10 @@ fn memory_route_descriptor(
 }
 
 fn notification_setup_status_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_NOTIFICATION_SETUP_STATUS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_NOTIFICATION_SETUP_STATUS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -2162,606 +1731,376 @@ fn notification_setup_enable_descriptor() -> IngressRouteDescriptor {
 }
 
 fn notification_setup_disable_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_NOTIFICATION_SETUP_DISABLE,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_NOTIFICATION_SETUP_DISABLE,
-        mutation_policy(
-            body_limit_kib(8),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        8,
     )
 }
 
 fn list_extensions_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_LIST_EXTENSIONS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_EXTENSIONS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn list_extension_registry_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_LIST_EXTENSION_REGISTRY,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_EXTENSION_REGISTRY,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn install_extension_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_INSTALL_EXTENSION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_INSTALL_EXTENSION,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn ironhub_deliver_install_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_IRONHUB_DELIVER_INSTALL,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_IRONHUB_DELIVER_INSTALL,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn register_hosted_mcp_extension_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_REGISTER_HOSTED_MCP_EXTENSION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_REGISTER_HOSTED_MCP_EXTENSION,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 /// `POST /api/webchat/v2/extensions/import` — admin uploads a standalone tool
 /// bundle (zip). 8 MiB cap covers a WASM module plus manifest/schemas/prompts.
 fn import_extension_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_IMPORT_EXTENSION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_IMPORT_EXTENSION,
-        mutation_policy(
-            body_limit_kib(8192),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        8192,
     )
 }
 
 fn remove_extension_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_REMOVE_EXTENSION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_REMOVE_EXTENSION,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn get_extension_setup_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_GET_EXTENSION_SETUP,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_SETUP_EXTENSION,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn setup_extension_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SETUP_EXTENSION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_SETUP_EXTENSION,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn list_skills_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_LIST_SKILLS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LIST_SKILLS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn search_skills_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SEARCH_SKILLS,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_SEARCH_SKILLS,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn install_skill_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_INSTALL_SKILL,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_INSTALL_SKILL,
-        mutation_policy(
-            body_limit_kib(128),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        128,
     )
 }
 
 fn get_skill_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_GET_SKILL,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_SKILL_DETAIL,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn update_skill_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_UPDATE_SKILL,
         NetworkMethod::Put,
         WEBUI_V2_PATTERN_SKILL_DETAIL,
-        mutation_policy(
-            body_limit_kib(128),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        128,
     )
 }
 
 fn remove_skill_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_REMOVE_SKILL,
         NetworkMethod::Delete,
         WEBUI_V2_PATTERN_SKILL_DETAIL,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn set_skill_auto_activate_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SET_SKILL_AUTO_ACTIVATE,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_SET_SKILL_AUTO_ACTIVATE,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn set_auto_activate_learned_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SET_AUTO_ACTIVATE_LEARNED,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_SET_AUTO_ACTIVATE_LEARNED,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn list_settings_tools_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_LIST_SETTINGS_TOOLS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_SETTINGS_TOOLS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn set_settings_tools_auto_approve_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SET_SETTINGS_TOOLS_AUTO_APPROVE,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_SETTINGS_TOOLS,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn set_settings_tool_permission_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SET_SETTINGS_TOOL_PERMISSION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_SETTINGS_TOOL_PERMISSION,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn get_llm_config_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_GET_LLM_CONFIG,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_GET_LLM_CONFIG,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn upsert_llm_provider_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_UPSERT_LLM_PROVIDER,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_UPSERT_LLM_PROVIDER,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn delete_llm_provider_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_DELETE_LLM_PROVIDER,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_DELETE_LLM_PROVIDER,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn set_active_llm_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SET_ACTIVE_LLM,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_SET_ACTIVE_LLM,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn get_user_model_catalog_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_GET_USER_MODEL_CATALOG,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_USER_MODEL_CATALOG,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn get_user_model_preference_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_GET_USER_MODEL_PREFERENCE,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_USER_MODEL_PREFERENCE,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn set_user_model_preference_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SET_USER_MODEL_PREFERENCE,
         NetworkMethod::Put,
         WEBUI_V2_PATTERN_USER_MODEL_PREFERENCE,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn set_user_model_policy_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_SET_USER_MODEL_POLICY,
         NetworkMethod::Put,
         WEBUI_V2_PATTERN_USER_MODEL_POLICY,
-        mutation_policy(
-            body_limit_kib(64),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        64,
     )
 }
 
 fn test_llm_connection_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_TEST_LLM_CONNECTION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_TEST_LLM_CONNECTION,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn list_llm_models_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_LIST_LLM_MODELS,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_LIST_LLM_MODELS,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn start_nearai_login_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_START_NEARAI_LOGIN,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_START_NEARAI_LOGIN,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn complete_nearai_wallet_login_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_COMPLETE_NEARAI_WALLET_LOGIN,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_COMPLETE_NEARAI_WALLET_LOGIN,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn start_codex_login_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_START_CODEX_LOGIN,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_START_CODEX_LOGIN,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn operator_get_setup_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_OPERATOR_GET_SETUP,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_OPERATOR_SETUP,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn operator_run_setup_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_OPERATOR_RUN_SETUP,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_OPERATOR_SETUP,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn operator_list_config_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_OPERATOR_LIST_CONFIG,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_OPERATOR_CONFIG,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn operator_get_config_key_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_OPERATOR_GET_CONFIG_KEY,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_OPERATOR_CONFIG_KEY,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn operator_set_config_key_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_OPERATOR_SET_CONFIG_KEY,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_OPERATOR_CONFIG_KEY,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn operator_validate_config_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_OPERATOR_VALIDATE_CONFIG,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_OPERATOR_CONFIG_VALIDATE,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
 fn operator_diagnostics_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_OPERATOR_DIAGNOSTICS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_OPERATOR_DIAGNOSTICS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn operator_status_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_OPERATOR_STATUS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_OPERATOR_STATUS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn operator_logs_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_OPERATOR_LOGS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_OPERATOR_LOGS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -2818,58 +2157,36 @@ fn inspector_updates_descriptor() -> IngressRouteDescriptor {
 }
 
 fn logs_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_LOGS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_LOGS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn operator_service_lifecycle_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_OPERATOR_SERVICE_LIFECYCLE,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_OPERATOR_SERVICE_LIFECYCLE,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn operator_list_extension_configuration_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    projection_read_route(
         WEBUI_V2_ROUTE_OPERATOR_LIST_EXTENSION_CONFIGURATION,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_OPERATOR_EXTENSION_CONFIGURATION,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProjectionOnly,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn operator_replace_extension_configuration_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_OPERATOR_REPLACE_EXTENSION_CONFIGURATION,
         NetworkMethod::Put,
         WEBUI_V2_PATTERN_OPERATOR_EXTENSION_CONFIGURATION_GROUP,
-        mutation_policy(
-            body_limit_kib(16),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        16,
     )
 }
 
@@ -2894,6 +2211,85 @@ fn ws_read_policy(
         effect_path,
     })
     .expect("webui v2 WS read policy must validate") // safety: combination LocalGateway + bearer + AuthenticatedCaller + WebSocket + SameOriginRequired is a permitted shape; other parts are crate-local constants
+}
+
+/// A read on the standard read budget that may reach the product surface.
+fn read_route(
+    route_id: &'static str,
+    method: NetworkMethod,
+    pattern: &'static str,
+) -> IngressRouteDescriptor {
+    descriptor(
+        route_id,
+        method,
+        pattern,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+            StreamingMode::None,
+        ),
+    )
+}
+
+/// A read on the standard read budget confined to projections.
+fn projection_read_route(
+    route_id: &'static str,
+    method: NetworkMethod,
+    pattern: &'static str,
+) -> IngressRouteDescriptor {
+    descriptor(
+        route_id,
+        method,
+        pattern,
+        read_policy(
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProjectionOnly,
+            StreamingMode::None,
+        ),
+    )
+}
+
+/// A product-surface mutation on the standard mutation budget with a body of
+/// at most `body_kib` KiB.
+fn mutation_route(
+    route_id: &'static str,
+    method: NetworkMethod,
+    pattern: &'static str,
+    body_kib: u64,
+) -> IngressRouteDescriptor {
+    descriptor(
+        route_id,
+        method,
+        pattern,
+        mutation_policy(
+            body_limit_kib(body_kib),
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
+/// A product-surface mutation on the standard mutation budget that accepts
+/// no request body.
+fn bodyless_mutation_route(
+    route_id: &'static str,
+    method: NetworkMethod,
+    pattern: &'static str,
+) -> IngressRouteDescriptor {
+    descriptor(
+        route_id,
+        method,
+        pattern,
+        mutation_policy(
+            BodyLimitPolicy::NoBody,
+            mutation_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
 }
 
 fn descriptor(
@@ -3003,16 +2399,10 @@ fn rate_limit_per_caller(max: u32, window_secs: u32) -> RateLimitPolicy {
 }
 
 fn computer_use_session_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_COMPUTER_USE_SESSION,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_COMPUTER_USE,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -3020,16 +2410,10 @@ fn computer_use_session_descriptor() -> IngressRouteDescriptor {
 /// second and one window's picture at up to 10 frames a second.
 /// Operator read of host facts; the product surface refuses other callers.
 fn computer_use_readiness_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_COMPUTER_USE_READINESS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_COMPUTER_USE_READINESS,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
@@ -3051,43 +2435,26 @@ fn computer_use_live_descriptor(
 }
 
 fn computer_use_control_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    mutation_route(
         WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_COMPUTER_USE,
-        mutation_policy(
-            body_limit_kib(4),
-            mutation_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-        ),
+        4,
     )
 }
 
 fn usage_history_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_USAGE_HISTORY,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_USAGE_HISTORY,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }
 
 fn usage_report_descriptor() -> IngressRouteDescriptor {
-    descriptor(
+    read_route(
         WEBUI_V2_ROUTE_USAGE_REPORT,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_USAGE_REPORT,
-        read_policy(
-            read_rate_limit(),
-            AuditTraceClass::UserAction,
-            AllowedEffectPath::ProductSurface,
-            StreamingMode::None,
-        ),
     )
 }

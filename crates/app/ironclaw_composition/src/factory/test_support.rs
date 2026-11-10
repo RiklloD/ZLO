@@ -78,7 +78,7 @@ impl RebornRuntimeStores {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn outbound_delivery_targets_for_test(
         &self,
-    ) -> &Arc<crate::outbound::MutableOutboundDeliveryTargetRegistry> {
+    ) -> &Arc<ironclaw_outbound::MutableOutboundDeliveryTargetRegistry> {
         &self.outbound_delivery_targets
     }
 

@@ -12,11 +12,28 @@ use ironclaw_product_contracts::views::{RebornViewDescriptor, RebornViewPage, Re
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::{ProductSurfaceCaller, ProductSurfaceError};
+use super::{ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceValidationCode};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EmptyViewParams {}
+
+/// Decodes a view's params. A malformed payload is the caller's mistake: it
+/// is rejected as a validation error on `input`, and only the error class and
+/// position are logged because the serde message can quote the payload.
+pub(super) fn parse_view_params<T: serde::de::DeserializeOwned>(
+    params: serde_json::Value,
+) -> Result<T, ProductSurfaceError> {
+    serde_json::from_value(params).map_err(|error| {
+        tracing::debug!(
+            category = ?error.classify(),
+            line = error.line(),
+            column = error.column(),
+            "view params rejected"
+        );
+        ProductSurfaceError::validation("input", ProductSurfaceValidationCode::InvalidValue)
+    })
+}
 
 pub(super) fn parse_empty_view_params(
     params: serde_json::Value,

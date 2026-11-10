@@ -6829,6 +6829,93 @@ async fn import_extension_is_stripped_alongside_operator_routes() {
     );
 }
 
+/// Route-table pin for the operator gate: every descriptor the operator
+/// predicate names is mounted on the default router and absent from a
+/// `without_operator_routes()` router (four orchestrator routes excepted, as
+/// listed), and every other default descriptor is mounted on both.
+#[tokio::test]
+async fn operator_gate_strips_exactly_the_operator_descriptors() {
+    // The predicate names these four, so their descriptors are withheld from
+    // a deployment without an operator surface, but the router options do
+    // not unmount them.
+    const ROUTER_KEEPS_DESPITE_PREDICATE: [&str; 4] = [
+        "webui.v2.orchestrator.thread_git",
+        "webui.v2.orchestrator.thread_git_change",
+        "webui.v2.orchestrator.thread_console",
+        "webui.v2.orchestrator.thread_console_control",
+    ];
+    async fn is_mounted(router: &Router, method: &str, pattern: &str) -> bool {
+        let path = pattern
+            .split('/')
+            .map(|segment| {
+                if segment.starts_with('{') {
+                    "x"
+                } else {
+                    segment
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        // TRACE is mounted nowhere, so no handler runs: a known path answers
+        // 405 and lists its mounted methods, an unknown path answers 404.
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("TRACE")
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        response.status() == StatusCode::METHOD_NOT_ALLOWED
+            && response
+                .headers()
+                .get(axum::http::header::ALLOW)
+                .and_then(|allow| allow.to_str().ok())
+                .is_some_and(|allow| {
+                    allow
+                        .split(',')
+                        .any(|allowed| allowed.trim().eq_ignore_ascii_case(method))
+                })
+    }
+    let build = |options: WebUiV2RouteOptions| {
+        webui_v2_router_with_options(
+            WebUiV2State::new(
+                Arc::new(StubServices::default()),
+                DEFAULT_SSE_MAX_CONCURRENT_PER_CALLER,
+            ),
+            options,
+        )
+        .layer(axum::Extension(caller()))
+        .layer(axum::Extension(WebUiV2Capabilities::default()))
+    };
+    let full = build(WebUiV2RouteOptions::all());
+    let reduced = build(WebUiV2RouteOptions::without_operator_routes());
+
+    let mut operator_routes = 0;
+    let mut mismatches = Vec::new();
+    for descriptor in ironclaw_webui::webui_v2::webui_v2_routes() {
+        let route_id = descriptor.route_id().as_str();
+        let method = descriptor.method().to_string();
+        let pattern = descriptor.route_pattern().as_str();
+        let operator =
+            ironclaw_webui::webui_v2::is_webui_v2_operator_webui_config_route_id(route_id);
+        operator_routes += usize::from(operator);
+        let on_full = is_mounted(&full, &method, pattern).await;
+        let on_reduced = is_mounted(&reduced, &method, pattern).await;
+        let stripped = operator && !ROUTER_KEEPS_DESPITE_PREDICATE.contains(&route_id);
+        if !on_full || on_reduced == stripped {
+            mismatches.push(format!(
+                "{route_id} full={on_full} reduced={on_reduced} operator={operator}"
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+    assert!(operator_routes > 0, "the predicate names operator routes");
+}
+
 #[tokio::test]
 async fn remove_extension_decodes_path_package_id_to_lifecycle_path() {
     let services = Arc::new(StubServices::default());

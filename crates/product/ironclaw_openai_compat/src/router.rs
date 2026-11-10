@@ -105,26 +105,26 @@ fn openai_compat_routes() -> Router<OpenAiCompatRouterState> {
         )
         .route(
             OPENAI_COMPAT_PATTERN_RESPONSES_API_CREATE,
-            post(handlers::responses_api_create),
+            post(handlers::responses_create),
         )
         .route(
             OPENAI_COMPAT_PATTERN_RESPONSES_V1_CREATE,
-            post(handlers::responses_v1_create),
+            post(handlers::responses_create),
         )
         .route(
             OPENAI_COMPAT_PATTERN_RESPONSES_API_ITEM,
-            get(handlers::responses_api_retrieve),
+            get(handlers::responses_retrieve),
         )
         .route(
             OPENAI_COMPAT_PATTERN_RESPONSES_V1_ITEM,
-            get(handlers::responses_v1_retrieve),
+            get(handlers::responses_retrieve),
         )
         .route(
             OPENAI_COMPAT_PATTERN_RESPONSES_API_ITEM_CANCEL,
-            post(handlers::responses_api_cancel),
+            post(handlers::responses_cancel),
         )
         .route(
             OPENAI_COMPAT_PATTERN_RESPONSES_V1_ITEM_CANCEL,
-            post(handlers::responses_v1_cancel),
+            post(handlers::responses_cancel),
         )
 }

@@ -26,7 +26,7 @@ use ironclaw_turns::TurnCoordinator;
 use crate::RebornBuildError;
 use crate::factory::RebornRuntimeStores;
 use crate::input::ChannelExtensionBinding;
-use crate::outbound::MutableOutboundDeliveryTargetRegistry;
+use ironclaw_outbound::MutableOutboundDeliveryTargetRegistry;
 use ironclaw_product_contracts::account_setup::AccountConnectionStatusSource;
 use ironclaw_product_contracts::admin_users::AdminUserService;
 use ironclaw_product_contracts::delivery::ChannelDeliveryResolver;

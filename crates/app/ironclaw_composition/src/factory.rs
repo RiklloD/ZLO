@@ -290,7 +290,7 @@ pub(crate) struct RebornRuntimeStores {
     /// Publishes each channel's non-secret client-bootstrap document.
     pub(crate) delivery_client_bootstrap: Arc<dyn ironclaw_assistant::DeliveryClientBootstrap>,
     pub(crate) outbound_delivery_targets:
-        Arc<crate::outbound::MutableOutboundDeliveryTargetRegistry>,
+        Arc<ironclaw_outbound::MutableOutboundDeliveryTargetRegistry>,
     pub(crate) skill_auto_activate_learned: Arc<AtomicBool>,
     pub(crate) outbound_state: Arc<dyn OutboundStateStorePort>,
     pub(crate) notification_inbox: ComposedNotificationInbox,

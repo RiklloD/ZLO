@@ -484,55 +484,6 @@ struct TerminalDeliveredWriteFailingStore {
 
 #[async_trait]
 impl OutboundStateStorePort for TerminalDeliveredWriteFailingStore {
-    async fn put_run_delivery_cleanup(
-        &self,
-        record: ironclaw_outbound::RunDeliveryCleanupRecord,
-    ) -> Result<(), OutboundError> {
-        self.inner.put_run_delivery_cleanup(record).await
-    }
-
-    async fn load_run_delivery_cleanup(
-        &self,
-        request: ironclaw_outbound::RunDeliveryCleanupRequest,
-    ) -> Result<Vec<ironclaw_outbound::RunDeliveryCleanupRecord>, OutboundError> {
-        self.inner.load_run_delivery_cleanup(request).await
-    }
-
-    async fn complete_run_delivery_cleanup(
-        &self,
-        record: &ironclaw_outbound::RunDeliveryCleanupRecord,
-    ) -> Result<(), OutboundError> {
-        self.inner.complete_run_delivery_cleanup(record).await
-    }
-
-    async fn put_thread_notification_policy(
-        &self,
-        policy: ironclaw_outbound::ThreadNotificationPolicy,
-    ) -> Result<(), OutboundError> {
-        self.inner.put_thread_notification_policy(policy).await
-    }
-
-    async fn load_thread_notification_policy(
-        &self,
-        scope: TurnScope,
-    ) -> Result<ironclaw_outbound::ThreadNotificationPolicy, OutboundError> {
-        self.inner.load_thread_notification_policy(scope).await
-    }
-
-    async fn upsert_subscription(
-        &self,
-        record: ironclaw_outbound::ProjectionSubscriptionRecord,
-    ) -> Result<(), OutboundError> {
-        self.inner.upsert_subscription(record).await
-    }
-
-    async fn load_subscription_cursor(
-        &self,
-        request: ironclaw_outbound::LoadSubscriptionCursorRequest,
-    ) -> Result<Option<ironclaw_event_projections::ProjectionCursor>, OutboundError> {
-        self.inner.load_subscription_cursor(request).await
-    }
-
     async fn record_delivery_attempt(
         &self,
         attempt: ironclaw_outbound::OutboundDeliveryAttempt,

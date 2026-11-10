@@ -130,12 +130,6 @@ pub use auth_interaction::{
     ListPendingAuthInteractionsResponse, PendingAuthInteractionView, ResolveAuthInteractionRequest,
     ResolveAuthInteractionResponse, is_auth_gate_ref,
 };
-// `AuthChallengeProvider`, `AuthChallengeView`, `BlockedAuthFlowCanceller`,
-// `PairingAuthChallengeView` and `auth_prompt_view_for_blocked_auth` moved to
-// `ironclaw_auth::product_prompt` (WS2.5): every type in their signatures is
-// auth's own vocabulary, and the extension host implements the challenge port.
-// No re-export here — consumers import from the owner
-// (`.claude/rules/type-placement.md`).
 pub use automation_product_service::RebornAutomationProductService;
 pub use automation_thread_metadata::{
     AUTOMATION_TRIGGER_THREAD_SOURCE_TAG, automation_trigger_thread_metadata_json,

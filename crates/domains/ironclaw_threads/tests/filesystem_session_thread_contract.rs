@@ -39,9 +39,9 @@ use ironclaw_threads::{
     CapabilityDisplayPreviewEnvelope, CapabilityDisplayPreviewEnvelopeInput,
     CapabilityDisplayPreviewStatus, CreateSummaryArtifactRequest, EnsureThreadRequest,
     FilesystemSessionThreadService, FinalizedAssistantMessageByRunRequest,
-    InboundMessageReplayMetadata, ListThreadsForScopeRequest, LoadContextMessagesRequest,
-    LoadContextWindowRequest, MessageContent, MessageKind, MessageStatus,
-    PREPARED_CONTEXT_METADATA_MARKER_KEY, ProviderToolCallReferenceEnvelope,
+    FinalizedToolResultReferenceRequest, InboundMessageReplayMetadata, ListThreadsForScopeRequest,
+    LoadContextMessagesRequest, LoadContextWindowRequest, MessageContent, MessageKind,
+    MessageStatus, PREPARED_CONTEXT_METADATA_MARKER_KEY, ProviderToolCallReferenceEnvelope,
     PutToolResultRecordRequest, ReadToolResultRecordRequest, RedactMessageRequest,
     ReplayAcceptedInboundMessageRequest, SessionThreadError, SessionThreadService,
     SummaryContextMode, SummaryKind, SummaryModelContextPolicy, ThreadHistoryRequest,
@@ -602,6 +602,133 @@ async fn filesystem_concurrent_duplicate_tool_result_writes_converge() {
 }
 
 #[tokio::test]
+async fn filesystem_finalized_tool_result_reference_lookup_is_scoped_and_hides_redacted_rows() {
+    let backend = Arc::new(InMemoryBackend::new());
+    let scoped = scoped_threads_fs_at(backend, "tenant-ref-lookup", "alice");
+    let service = FilesystemSessionThreadService::new(scoped);
+    let other_scope = scope("fs-ref-lookup-other");
+    let scope = scope("fs-ref-lookup");
+    let thread = service
+        .ensure_thread(EnsureThreadRequest {
+            scope: scope.clone(),
+            thread_id: Some(ThreadId::new("thread-fs-ref-lookup").unwrap()),
+            created_by_actor_id: "actor-a".into(),
+            title: None,
+            metadata_json: None,
+        })
+        .await
+        .unwrap();
+    let sibling = service
+        .ensure_thread(EnsureThreadRequest {
+            scope: scope.clone(),
+            thread_id: Some(ThreadId::new("thread-fs-ref-lookup-sibling").unwrap()),
+            created_by_actor_id: "actor-a".into(),
+            title: None,
+            metadata_json: None,
+        })
+        .await
+        .unwrap();
+    let append = |thread_id: ThreadId, run: String, result_ref: String| {
+        service.append_tool_result_reference(AppendToolResultReferenceRequest {
+            intrinsic_outcome: None,
+            scope: scope.clone(),
+            thread_id,
+            turn_run_id: run,
+            result_ref,
+            safe_summary: ToolResultSafeSummary::new("safe tool result").unwrap(),
+            provider_call: None,
+            model_observation: None,
+        })
+    };
+    // The oldest reference sits behind more rows than one lookup page holds.
+    let oldest = append(
+        thread.thread_id.clone(),
+        "run-old".into(),
+        "result:oldest".into(),
+    )
+    .await
+    .unwrap();
+    for index in 0..70 {
+        append(
+            thread.thread_id.clone(),
+            format!("run-{index}"),
+            format!("result:filler-{index}"),
+        )
+        .await
+        .unwrap();
+    }
+    append(
+        sibling.thread_id.clone(),
+        "run-sibling".into(),
+        "result:sibling-only".into(),
+    )
+    .await
+    .unwrap();
+    let lookup = |scope: ThreadScope, thread_id: ThreadId, result_ref: &str| {
+        service.has_finalized_tool_result_reference(FinalizedToolResultReferenceRequest {
+            scope,
+            thread_id,
+            result_ref: result_ref.to_string(),
+        })
+    };
+
+    assert!(
+        lookup(scope.clone(), thread.thread_id.clone(), "result:oldest")
+            .await
+            .unwrap(),
+        "a finalized reference from an earlier run is found"
+    );
+    assert!(
+        !lookup(
+            scope.clone(),
+            thread.thread_id.clone(),
+            "result:never-written"
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        !lookup(
+            scope.clone(),
+            thread.thread_id.clone(),
+            "result:sibling-only"
+        )
+        .await
+        .unwrap(),
+        "a reference in another thread of the same scope does not count"
+    );
+    assert!(matches!(
+        lookup(other_scope, thread.thread_id.clone(), "result:oldest").await,
+        Err(SessionThreadError::UnknownThread { .. })
+    ));
+    assert!(matches!(
+        lookup(
+            scope.clone(),
+            ThreadId::new("thread-fs-ref-lookup-missing").unwrap(),
+            "result:oldest"
+        )
+        .await,
+        Err(SessionThreadError::UnknownThread { .. })
+    ));
+
+    service
+        .redact_message(RedactMessageRequest {
+            scope: scope.clone(),
+            thread_id: thread.thread_id.clone(),
+            message_id: oldest.message_id,
+            redaction_ref: "redaction/audit/fs-ref-lookup".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        !lookup(scope, thread.thread_id, "result:oldest")
+            .await
+            .unwrap(),
+        "a redacted reference is no longer available"
+    );
+}
+
+#[tokio::test]
 async fn filesystem_redaction_retains_durable_tool_result_record() {
     let backend = Arc::new(InMemoryBackend::new());
     let scoped = scoped_threads_fs_at(backend, "tenant-tool-redaction", "alice");
@@ -857,7 +984,6 @@ async fn filesystem_delete_thread_retry_cleans_stale_thread_index_row() {
         )
         .await
         .expect("test setup removes source thread root but leaves derived index row");
-    service.clear_thread_index_cache_for_scope(&request_scope);
 
     let retry_error = service
         .delete_thread(&request_scope, &thread.thread_id)
@@ -916,7 +1042,6 @@ async fn filesystem_list_threads_skips_stale_thread_index_after_partial_delete()
         )
         .await
         .expect("test setup removes source thread root but leaves derived index row");
-    service.clear_thread_index_cache_for_scope(&request_scope);
     service
         .migrate_thread_index_for_scope(&request_scope)
         .await
@@ -3721,7 +3846,6 @@ async fn filesystem_explicit_migration_rebuilds_missing_thread_index_rows() {
             .await
             .expect("test setup removes derived index row");
     }
-    service.clear_thread_index_cache_for_scope(&scope);
     assert_eq!(
         service
             .migrate_thread_index_for_scope(&scope)
@@ -3745,7 +3869,6 @@ async fn filesystem_explicit_migration_rebuilds_missing_thread_index_rows() {
         .collect();
     assert_eq!(ids, ["legacy-002", "legacy-001"]);
 
-    service.clear_thread_index_cache_for_scope(&scope);
     let listed_again = service
         .list_threads_for_scope(ListThreadsForScopeRequest {
             scope,
@@ -3905,7 +4028,6 @@ async fn filesystem_list_threads_merges_partial_thread_index_with_source_rows() 
         )
         .await
         .expect("test setup removes one derived index row");
-    service.clear_thread_index_cache_for_scope(&scope);
     service
         .migrate_thread_index_for_scope(&scope)
         .await
@@ -4890,7 +5012,6 @@ async fn filesystem_explicit_migration_retries_after_source_read_error() {
             .nth(1)
             .backend("thread record reads disabled once by contract test"),
     );
-    service.clear_thread_index_cache_for_scope(&scope);
     assert!(
         service
             .migrate_thread_index_for_scope(&scope)
@@ -4898,7 +5019,6 @@ async fn filesystem_explicit_migration_retries_after_source_read_error() {
             .is_err()
     );
 
-    service.clear_thread_index_cache_for_scope(&scope);
     service
         .migrate_thread_index_for_scope(&scope)
         .await

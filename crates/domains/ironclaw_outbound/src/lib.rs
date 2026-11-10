@@ -1,8 +1,8 @@
-//! Outbound egress and projection subscription policy storage.
+//! Outbound egress policy and delivery-attempt storage.
 //!
-//! This crate stores metadata-only Reborn outbound state: per-thread
-//! notification policy, projection subscription cursors, and delivery attempt
-//! status. It never owns transport delivery, transcript content, projection
+//! This crate stores metadata-only Reborn outbound state: delivery attempts
+//! and their status, reply publications, communication preferences and
+//! delivered-gate routes. It never owns transport delivery, transcript content, projection
 //! payloads, prompts, tool I/O, secrets, host paths, or backend detail strings.
 
 mod communication_preferences;
@@ -16,7 +16,6 @@ mod outbound_state_store;
 mod reply_attachment_intents;
 mod reply_publication;
 mod resolution_engine;
-mod run_delivery_cleanup;
 mod service;
 mod store;
 mod triggered_run_delivery;
@@ -49,7 +48,7 @@ pub use delivery_targets::{
     OutboundDeliveryTargetRegistry, OutboundDeliveryTargetScope, OutboundDeliveryTargetSummary,
 };
 pub use error::OutboundError;
-pub use ids::{OutboundDeliveryId, ProjectionSubscriptionId, ProjectionUpdateRef};
+pub use ids::{OutboundDeliveryId, ProjectionUpdateRef};
 pub use model_channel_delivery::{
     MODEL_DELIVERY_MAX_CONTENT_BYTES, MODEL_DELIVERY_PER_RUN_CAP, ModelChannelDelivery,
     ModelChannelDeliveryError, ModelChannelDeliveryEvidence, ModelChannelDeliveryRequest,
@@ -66,24 +65,16 @@ pub use reply_publication::{
     ReplyPublicationState, ReplyPublicationStatus, ReplyPublicationTarget,
     ReplyPublicationTargetDescriptor, ReplyPublicationTargetKey, SettleReplyPublicationRequest,
 };
-pub use run_delivery_cleanup::{
-    MAX_RUN_DELIVERY_CLEANUP_RECORDS, RunDeliveryCleanupRecord, RunDeliveryCleanupRequest,
-};
-pub use service::{
-    OutboundPolicyService, ReplyTargetBindingValidator, ThreadProjectionAccessPolicy,
-};
+pub use service::{OutboundPolicyService, ReplyTargetBindingValidator};
 pub use store::OutboundStateStorePort;
 pub use triggered_run_delivery::{
     TriggeredFireFailureDeliveryRequest, TriggeredRunDelivery, TriggeredRunDeliveryOutcomeKind,
     TriggeredRunDeliveryRecord, TriggeredRunDeliveryRequest, TriggeredRunDeliveryStore,
 };
 pub use types::{
-    ClaimDeliveryAttemptForSendRequest, DeliveryFailureKind, LoadSubscriptionCursorRequest,
-    OutboundDeliveryAttempt, OutboundDeliveryDecision, OutboundDeliveryStatus,
-    OutboundPushCandidate, OutboundPushKind, OutboundPushPlan, OutboundPushTargetRequest,
+    ClaimDeliveryAttemptForSendRequest, DeliveryFailureKind, OutboundDeliveryAttempt,
+    OutboundDeliveryDecision, OutboundDeliveryStatus, OutboundPushCandidate, OutboundPushKind,
     PrepareCommunicationDeliveryRequest, PrepareOutboundDeliveryRequest,
-    ProjectionSubscriptionRecord, ProjectionSubscriptionRequest, RecoverInterruptedDeliveryRequest,
-    ReplyTargetBindingClaim, ReplyTargetValidationRequest, ThreadNotificationPolicy,
-    ThreadNotificationTarget, ThreadProjectionAccessClaim, ThreadProjectionAccessGrant,
-    ThreadProjectionAccessRequest, UpdateDeliveryStatusRequest, ValidatedReplyTargetBinding,
+    RecoverInterruptedDeliveryRequest, ReplyTargetBindingClaim, ReplyTargetValidationRequest,
+    UpdateDeliveryStatusRequest, ValidatedReplyTargetBinding,
 };

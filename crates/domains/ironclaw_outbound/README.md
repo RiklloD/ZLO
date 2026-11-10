@@ -1,34 +1,31 @@
 # ironclaw_outbound
 
-Metadata-only outbound policy and state: notification opt-in, sealed access
-grants, subscription cursors, delivery resolution, and at-most-once
+Metadata-only outbound policy and state: communication preferences, sealed
+reply-target bindings, delivery resolution, and at-most-once
 delivery-attempt reservation (compare-and-swap `Prepared → Sending`,
 crash-recoverable). Never a transport itself — this crate has no HTTP client
 and sends nothing. Alongside `ironclaw_triggers` it is one of the family's two
-trust-minting authorities: its sealed grant/binding types are constructible
+trust-minting authorities: its sealed binding type is constructible
 only through its own policy service.
 
 - **Family / layer:** `domains` / `substrates` · **Package:** `ironclaw_outbound` · **Manifest:** `crates/domains/ironclaw_outbound/Cargo.toml`
 - **Use this when:** deciding *whether and where* something may be pushed,
-  recording/reserving a delivery attempt, communication preferences, or
-  subscription cursor checkpoints.
+  recording/reserving a delivery attempt, or communication preferences.
 - **Don't use this when:** actually sending — product adapters consume
-  candidates and report status; mutating projections →
-  `ironclaw_event_projections` owns them (outbound only reads); binding reply
-  routes → `ironclaw_conversations`.
+  candidates and report status; projections → `ironclaw_event_projections`;
+  binding reply routes → `ironclaw_conversations`.
 
 ## Public surface
 
 - `OutboundPolicyService` (in `service`) — the only constructor of the sealed
-  trust types; `OutboundStateStore` / `OutboundStateStorePort`.
-- Sealed types + their untrusted counterparts:
-  `ThreadProjectionAccessGrant` ← `ThreadProjectionAccessClaim`,
+  trust type; `OutboundStateStore` / `OutboundStateStorePort`.
+- Sealed type + its untrusted counterpart:
   `ValidatedReplyTargetBinding` ← `ReplyTargetBindingClaim` (claim/seal split;
-  implementors return claims, never grants).
+  implementors return claims, never bindings).
 - `OutboundResolutionEngine` — the read-only candidate selector resolving
   typed delivery requests into `CommunicationDeliveryCandidate` / `NoDelivery`.
 - Communication preferences, delivery targets, reply-attachment intents,
-  run-final-reply handoff records, delivered gate routes, cleanup.
+  run-final-reply handoff records, delivered gate routes.
 - Progressive reply publication (`reply_publication`): the serde-defaulted
   `ReplyPublicationState` substate on the persisted attempt row plus the
   guarded `OutboundStateStorePort` operations `open_reply_publication` /
@@ -47,7 +44,7 @@ only through its own policy service.
 
 - **Normal deps (measured):** `ironclaw_attachments` (reuses
   `DEFAULT_ATTACHMENT_BUDGETS` for reply-attachment intents — the inventoried
-  same-layer edge), `ironclaw_event_projections`,
+  same-layer edge),
   `ironclaw_extension_contracts` (the bounded reply-sink vocabulary —
   `ReplySinkCheckpoint`, `ReplyProviderRefs`, `ReplyOutcomeReason` — carried
   by the publication substate), `ironclaw_filesystem`, `ironclaw_host_api`
@@ -61,7 +58,7 @@ only through its own policy service.
 - **No transport:** the `BoundaryRule { crate_name: "ironclaw_outbound" }` in
   `reborn_dependency_boundaries.rs` forbids network/runtime crates; there is
   no HTTP dependency to misuse.
-- **Sealed minting:** grants/bindings have `pub(crate)` constructors reachable
+- **Sealed minting:** bindings have `pub(crate)` constructors reachable
   only through `OutboundPolicyService`; trust-bearing types and the envelopes
   carrying them do not derive `Deserialize` (see [`AGENTS.md`](./AGENTS.md)).
 - **At-most-once:** delivery attempts reserve via CAS `Prepared → Sending`;
@@ -78,7 +75,7 @@ only through its own policy service.
 - Every push target is a candidate until `ReplyTargetBindingValidator`
   revalidates the route; revoked authorization records a sanitized failure and
   returns no sendable target.
-- Persists metadata/refs/cursors only — no prompts, bodies, tool payloads,
+- Persists metadata/refs only — no prompts, bodies, tool payloads,
   secrets, host paths, or backend error details.
 
 ## Tests

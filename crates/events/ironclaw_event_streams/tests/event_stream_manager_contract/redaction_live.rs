@@ -183,7 +183,6 @@ async fn redaction_gate_blocks_sentinel_payloads_at_stream_boundary() {
             Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
             Arc::clone(&source),
             Arc::new(RejectLiveUpdateRedactionValidator),
-            Arc::new(in_memory_backed_outbound_state_store()),
         ),
         update_source: Arc::clone(&source),
     };
@@ -221,7 +220,6 @@ async fn live_validation_source_failure_is_not_reported_as_redaction() {
             Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
             Arc::clone(&source),
             Arc::new(SourceFailingLiveUpdateValidator),
-            Arc::new(in_memory_backed_outbound_state_store()),
         ),
         update_source: Arc::clone(&source),
     };
@@ -259,7 +257,6 @@ async fn repeated_snapshot_subscriptions_reuse_redaction_validation_decision() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::clone(&validator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let mut first = manager
@@ -293,7 +290,6 @@ async fn validation_cache_revalidates_distinct_payloads_at_same_cursor() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(RejectTruncatedSnapshotValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let mut first = manager
@@ -673,7 +669,6 @@ async fn live_subscription_registered_before_snapshot_prevents_gap() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::clone(&source),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let mut subscription = manager
@@ -704,7 +699,6 @@ async fn truncated_snapshot_emits_terminal_lag_before_live_tail() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::clone(&source),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let mut subscription = manager
@@ -742,7 +736,6 @@ async fn truncated_resume_replay_emits_terminal_lag_before_live_tail() {
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let mut subscription = manager

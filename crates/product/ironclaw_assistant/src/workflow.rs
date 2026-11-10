@@ -31,10 +31,6 @@ use ironclaw_product_contracts::inbound::{
     ProductInboundEnvelope, ProductInboundPayload, ProductRejection, ProductRejectionKind,
     UserMessagePayload,
 };
-use ironclaw_product_contracts::projection::{
-    ProductProjectionReadInput, ProductProjectionSubject, ProductProjectionSubscribeInput,
-    ProjectionReadRequest, ProjectionSubscriptionRequest,
-};
 use ironclaw_product_contracts::surface::{
     ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode,
     ProductSurfaceInvokeRequest,
@@ -172,48 +168,6 @@ impl DefaultProductSurface {
         envelope: ProductInboundEnvelope,
     ) -> Result<ProductInboundAck, ProductAdapterError> {
         self.submit_inbound_inner(envelope, Vec::new()).await
-    }
-
-    pub async fn read_projection(
-        &self,
-        request: ProductProjectionReadInput,
-    ) -> Result<ProjectionReadRequest, ProductAdapterError> {
-        let ProductProjectionReadInput {
-            subject,
-            thread_id_hint,
-            after_cursor,
-            limit,
-        } = request;
-        let (actor, scope) =
-            resolve_projection_subject(&*self.binding_service, &subject, thread_id_hint.as_deref())
-                .await?;
-
-        Ok(ProjectionReadRequest {
-            actor,
-            scope,
-            after_cursor,
-            limit,
-        })
-    }
-
-    pub async fn subscribe_projection(
-        &self,
-        request: ProductProjectionSubscribeInput,
-    ) -> Result<ProjectionSubscriptionRequest, ProductAdapterError> {
-        let ProductProjectionSubscribeInput {
-            subject,
-            thread_id_hint,
-            after_cursor,
-        } = request;
-        let (actor, scope) =
-            resolve_projection_subject(&*self.binding_service, &subject, thread_id_hint.as_deref())
-                .await?;
-
-        Ok(ProjectionSubscriptionRequest {
-            actor,
-            scope,
-            after_cursor,
-        })
     }
 }
 
@@ -537,45 +491,6 @@ fn resolve_binding_request(
             reason: error.to_string(),
         }
     })
-}
-
-async fn resolve_projection_subject(
-    binding_service: &dyn ProductBindingResolver,
-    subject: &ProductProjectionSubject,
-    thread_id_hint: Option<&str>,
-) -> Result<(TurnActor, TurnScope), ProductAdapterError> {
-    match subject {
-        ProductProjectionSubject::AdapterExternalRefs {
-            adapter_id,
-            installation_id,
-            external_event_id,
-            external_actor_ref,
-            external_conversation_ref,
-            auth_claim,
-        } => {
-            let binding = binding_service
-                .lookup_binding(ResolveBindingRequest {
-                    adapter_id: adapter_id.clone(),
-                    installation_id: installation_id.clone(),
-                    external_actor_ref: external_actor_ref.clone(),
-                    external_conversation_ref: external_conversation_ref.clone(),
-                    external_event_id: external_event_id.clone(),
-                    route_kind: ProductConversationRouteKind::Direct,
-                    auth_claim: auth_claim.clone(),
-                })
-                .await
-                .map_err(|error| ProductAdapterError::from(ProductSurfaceFailure::from(error)))?;
-            let thread_id = projection_thread_id_from_binding(&binding, thread_id_hint)?;
-            Ok((
-                TurnActor::new(binding.actor_user_id.clone()),
-                turn_scope_for_thread(&binding, thread_id),
-            ))
-        }
-        ProductProjectionSubject::CanonicalProjection { actor, scope } => {
-            validate_projection_thread_hint(&scope.thread_id, thread_id_hint)?;
-            Ok((actor.clone(), scope.clone()))
-        }
-    }
 }
 
 async fn lookup_interaction_binding(
@@ -1116,38 +1031,6 @@ fn is_stale_auth_error(error: &ProductSurfaceFailure) -> bool {
                 | AuthInteractionRejectionKind::StaleAuth,
         }
     )
-}
-
-fn projection_thread_id_from_binding(
-    binding: &ResolvedBinding,
-    thread_id_hint: Option<&str>,
-) -> Result<ironclaw_host_api::ids::ThreadId, ProductAdapterError> {
-    validate_projection_thread_hint(&binding.thread_id, thread_id_hint)?;
-    Ok(binding.thread_id.clone())
-}
-
-fn validate_projection_thread_hint(
-    expected_thread_id: &ThreadId,
-    thread_id_hint: Option<&str>,
-) -> Result<(), ProductAdapterError> {
-    if let Some(thread_id_hint) = thread_id_hint {
-        let hinted = ThreadId::new(thread_id_hint).map_err(|_| {
-            ProductAdapterError::MalformedInboundPayload {
-                reason: RedactedString::new("invalid thread_id_hint"),
-            }
-        })?;
-        if &hinted != expected_thread_id {
-            return Err(ProductAdapterError::SurfaceRejected {
-                kind: ProductSurfaceRejectionKind::InvalidRequest,
-                status_code: 400,
-                retryable: false,
-                reason: RedactedString::new(
-                    "thread_id_hint does not match resolved projection thread",
-                ),
-            });
-        }
-    }
-    Ok(())
 }
 
 async fn dispatch_payload(

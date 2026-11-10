@@ -28,7 +28,6 @@ use ironclaw_trace_commons::contribution::{
 };
 
 mod contributor;
-mod shared;
 
 #[cfg(test)]
 #[path = "tests.rs"]

@@ -24,20 +24,12 @@ use ironclaw_event_streams::{
     SubscriberCapabilities, ThreadLiveProjectionUpdate,
 };
 use ironclaw_extension_contracts::external::{ExternalActorRef, ExternalConversationRef};
-use ironclaw_filesystem::{InMemoryBackend, RootFilesystem, ScopedFilesystem};
+use ironclaw_host_api::ids::UserId;
 use ironclaw_host_api::product_adapter::{
     AdapterInstallationId, ProductAdapterError, ProductAdapterId, ProductSurfaceRejectionKind,
     RedactedString,
 };
-use ironclaw_host_api::{
-    error::HostApiError,
-    ids::UserId,
-    mount::{MountGrant, MountPermissions, MountView},
-    path::{MountAlias, VirtualPath},
-    resource::ResourceScope,
-};
 use ironclaw_loop_host::SkillActivationObserver;
-use ironclaw_outbound::OutboundStateStore;
 use ironclaw_product_contracts::outbound::{
     CapabilityActivityStatusView, CapabilityActivityView, CapabilityActivityViewInput,
     ProductOutboundEnvelope, ProductOutboundPayload, ProductOutboundTarget, ProductProjectionItem,
@@ -248,18 +240,6 @@ pub fn build_reborn_projection_services(
         Arc::new(InMemoryProjectionStreamAdmissionPolicy::default()),
         live_updates.clone(),
         Arc::new(NoExposureProjectionRedactionValidator),
-        // §4.3: the standalone projection bundle's EventStreamManager keeps its
-        // own ephemeral, volatile outbound-delivery bookkeeping — the drop-in
-        // for the deleted throwaway `InMemoryOutboundStateStore::default()`.
-        // A tenant/user-scoped view over a fresh `InMemoryBackend` mounts
-        // `/outbound`; the durable outbound store is composed separately in the
-        // factory.
-        {
-            #[allow(clippy::disallowed_methods)]
-            Arc::new(OutboundStateStore::new(outbound_scoped(Arc::new(
-                InMemoryBackend::new(),
-            ))))
-        },
     ));
     RebornProjectionServices {
         event_stream_manager,
@@ -274,33 +254,6 @@ pub fn build_reborn_projection_services(
         auth_challenges: None,
         thread_service: None,
         external_calls: None,
-    }
-}
-
-fn outbound_scoped<F>(root: Arc<F>) -> Arc<ScopedFilesystem<F>>
-where
-    F: RootFilesystem,
-{
-    Arc::new(ScopedFilesystem::new(root, outbound_mount_view))
-}
-
-fn outbound_mount_view(scope: &ResourceScope) -> Result<MountView, HostApiError> {
-    let tenant_id = outbound_scope_path_segment(scope.tenant_id.as_str());
-    let user_id = outbound_scope_path_segment(scope.user_id.as_str());
-    MountView::new(vec![MountGrant::new(
-        MountAlias::new("/outbound")?,
-        VirtualPath::new(format!(
-            "/engine/tenants/{tenant_id}/users/{user_id}/outbound"
-        ))?,
-        MountPermissions::read_write_list_delete(),
-    )])
-}
-
-fn outbound_scope_path_segment(value: &str) -> &str {
-    if value == ironclaw_host_api::resource::SYSTEM_RESERVED_ID {
-        "__system__"
-    } else {
-        value
     }
 }
 
@@ -1841,11 +1794,9 @@ fn map_event_stream_error(error: EventProjectionStreamError) -> ProductAdapterEr
         EventProjectionStreamError::Source => ProductAdapterError::SurfaceTransient {
             reason: RedactedString::new("projection stream source failed"),
         },
-        EventProjectionStreamError::Redaction | EventProjectionStreamError::Outbound => {
-            ProductAdapterError::Internal {
-                detail: RedactedString::new("projection stream validation failed"),
-            }
-        }
+        EventProjectionStreamError::Redaction => ProductAdapterError::Internal {
+            detail: RedactedString::new("projection stream validation failed"),
+        },
     }
 }
 

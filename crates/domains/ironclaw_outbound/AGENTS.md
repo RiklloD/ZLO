@@ -6,17 +6,16 @@ Orientation (what this crate is, surface, deps, tests) lives in
 consolidated 2026-08-05 from the former `CLAUDE.md` guardrails (now a pointer)
 per `docs/internal/reborn/guidance-conventions.md` rule 1.
 `docs/internal/reborn/contracts/events-projections.md` is the source of truth for
-outbound egress/subscription policy.
+outbound egress policy.
 
 ## Rules
 
-- Own outbound egress policy, delivery-status metadata, and projection
-  subscription cursor checkpoints only.
+- Own outbound egress policy and delivery-status metadata only.
 - Do not send transport messages, validate concrete Slack/Telegram/Web
   payloads, or mutate canonical transcript/projection state. Delivery failure
   records are separate from canonical transcript/projection state and must
   not mark turns/runs failed.
-- Persist metadata/refs/cursors only: no raw prompts, message bodies, tool
+- Persist metadata/refs only: no raw prompts, message bodies, tool
   inputs/outputs, secrets, host paths, or backend error details (the store
   tests pin that backend error detail never leaks).
 - External push targets are candidates only; the outbound policy service must
@@ -30,12 +29,10 @@ outbound egress/subscription policy.
 - Authorization-revoked delivery attempts record sanitized failure status
   (`DeliveryFailureKind::AuthorizationRevoked`) and must not return a
   sendable target.
-- **Claim/seal split.** Trust-bearing types (`ThreadProjectionAccessGrant`,
-  `ValidatedReplyTargetBinding`) are sealed: only `OutboundPolicyService`
-  mints them via `pub(crate)` constructors. Policy and validator implementors
-  return the corresponding untrusted `Claim` types
-  (`ThreadProjectionAccessClaim`, `ReplyTargetBindingClaim`) and never
-  construct a grant/binding directly. New trust-bearing types follow the same
+- **Claim/seal split.** The trust-bearing `ValidatedReplyTargetBinding` is
+  sealed: only `OutboundPolicyService` mints it via a `pub(crate)`
+  constructor. Validator implementors return the untrusted
+  `ReplyTargetBindingClaim` and never construct a binding directly. New trust-bearing types follow the same
   split, keep fields non-public, and must not derive `Deserialize`; public
   envelope types that carry them (e.g. `OutboundDeliveryDecision`) also must
   not derive `Deserialize`.
@@ -54,7 +51,7 @@ outbound egress/subscription policy.
   caller/orchestrator boundary before invoking `OutboundPolicyService`; this
   crate must not add bypass paths or return sendable targets when upstream
   validation/rate-limit policy denies.
-- Prefer service-level tests when policy gates subscription, delivery,
+- Prefer service-level tests when policy gates delivery,
   persistence, or authorization side effects.
 - **Publication substate rides the attempt row.** Progressive reply
   publication state (`ReplyPublicationState`) is a serde-defaulted field of

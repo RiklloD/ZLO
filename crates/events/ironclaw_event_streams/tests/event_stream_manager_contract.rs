@@ -6,8 +6,8 @@ include!("event_stream_manager_contract/support/builders.rs");
 mod admission;
 #[path = "event_stream_manager_contract/core.rs"]
 mod core;
-#[path = "event_stream_manager_contract/outbound_misc.rs"]
-mod outbound_misc;
+#[path = "event_stream_manager_contract/misc.rs"]
+mod misc;
 #[path = "event_stream_manager_contract/redaction_live.rs"]
 mod redaction_live;
 #[path = "event_stream_manager_contract/subscription.rs"]
