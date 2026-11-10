@@ -10,19 +10,6 @@ use uuid::Uuid;
 
 use super::*;
 
-pub async fn submit_trace_envelope_to_endpoint(
-    envelope: &TraceContributionEnvelope,
-    endpoint: &str,
-    bearer_token_env: &str,
-) -> anyhow::Result<TraceSubmissionReceipt> {
-    let provider = StaticEnvTraceUploadCredentialProvider { bearer_token_env };
-    let policy = StandingTraceContributionPolicy::default().set_bearer_token_env(bearer_token_env);
-    submit_trace_envelope_to_endpoint_with_credential_provider(
-        envelope, endpoint, &policy, &provider, None, None,
-    )
-    .await
-}
-
 pub async fn submit_trace_envelope_to_endpoint_with_policy(
     envelope: &TraceContributionEnvelope,
     endpoint: &str,
@@ -124,16 +111,6 @@ pub(crate) async fn submit_trace_envelope_to_endpoint_with_token(
             "server returned success with a body that is not a submission receipt",
         )
     })
-}
-
-pub fn record_submitted_trace_envelope_for_scope(
-    scope: Option<&str>,
-    envelope: &TraceContributionEnvelope,
-    endpoint: &str,
-    receipt: TraceSubmissionReceipt,
-) -> anyhow::Result<()> {
-    let _guard = lock_trace_scope_for_mutation_blocking(scope);
-    record_submitted_trace_envelope_for_scope_unlocked(scope, envelope, endpoint, receipt)
 }
 
 pub(crate) fn record_submitted_trace_envelope_for_scope_unlocked(
@@ -407,63 +384,6 @@ where
     Ok(report)
 }
 
-pub async fn sync_remote_trace_submission_records_for_scope(
-    scope: Option<&str>,
-) -> anyhow::Result<usize> {
-    sync_remote_trace_submission_records_for_scope_with_credential_provider(
-        scope,
-        &DefaultTraceUploadCredentialProvider,
-    )
-    .await
-}
-
-pub(crate) async fn sync_remote_trace_submission_records_for_scope_with_credential_provider(
-    scope: Option<&str>,
-    provider: &dyn TraceUploadCredentialProvider,
-) -> anyhow::Result<usize> {
-    // Resolve the effective enrollment (personal-invite or instance) the same
-    // way the flush does, so instance-enrolled scopes sync with the instance
-    // policy + device key + per-user subject instead of a disabled per-scope
-    // policy read that would silently return Ok(0).
-    let Some(EffectiveFlushTarget {
-        policy,
-        device_key_dir,
-        subject,
-    }) = resolve_effective_flush_target(scope)?
-    else {
-        return Ok(0);
-    };
-    let Some(endpoint) = policy.ingestion_endpoint.as_deref() else {
-        return Ok(0);
-    };
-
-    let submission_ids = {
-        let _guard = lock_trace_scope_for_mutation(scope).await;
-        let records = read_local_trace_records_for_scope(scope)?;
-        records
-            .iter()
-            .filter(|record| record.status == NodeTraceSubmissionStatus::Submitted)
-            .map(|record| record.submission_id)
-            .collect::<Vec<_>>()
-    };
-    if submission_ids.is_empty() {
-        return Ok(0);
-    }
-
-    let status_endpoint = trace_submission_status_endpoint(endpoint)?;
-    let updates = fetch_trace_submission_statuses_with_credential_provider(
-        &status_endpoint,
-        &policy,
-        provider,
-        &submission_ids,
-        Some(&device_key_dir),
-        subject.as_deref(),
-    )
-    .await?;
-    let _guard = lock_trace_scope_for_mutation(scope).await;
-    apply_remote_trace_submission_statuses_for_scope_unlocked(scope, &updates)
-}
-
 /// Status-sync core used by the queue flush: syncs the local records of
 /// `scope` against the remote, authenticating with the caller-resolved
 /// effective flush target (`policy` + `device_key_dir` + `subject`) rather
@@ -541,24 +461,6 @@ pub fn trace_submission_status_endpoint(submission_endpoint: &str) -> anyhow::Re
     url.set_query(None);
     url.set_fragment(None);
     Ok(url.to_string())
-}
-
-pub async fn fetch_trace_submission_statuses(
-    status_endpoint: &str,
-    bearer_token_env: &str,
-    submission_ids: &[Uuid],
-) -> anyhow::Result<Vec<TraceSubmissionStatusUpdate>> {
-    let provider = StaticEnvTraceUploadCredentialProvider { bearer_token_env };
-    let policy = StandingTraceContributionPolicy::default().set_bearer_token_env(bearer_token_env);
-    fetch_trace_submission_statuses_with_credential_provider(
-        status_endpoint,
-        &policy,
-        &provider,
-        submission_ids,
-        None,
-        None,
-    )
-    .await
 }
 
 pub async fn fetch_trace_submission_statuses_with_policy(
@@ -649,14 +551,6 @@ pub(crate) async fn fetch_trace_submission_statuses_chunk_with_token(
         ));
     }
     Ok(body)
-}
-
-pub fn apply_remote_trace_submission_statuses_for_scope(
-    scope: Option<&str>,
-    updates: &[TraceSubmissionStatusUpdate],
-) -> anyhow::Result<usize> {
-    let _guard = lock_trace_scope_for_mutation_blocking(scope);
-    apply_remote_trace_submission_statuses_for_scope_unlocked(scope, updates)
 }
 
 pub(crate) fn apply_remote_trace_submission_statuses_for_scope_unlocked(
@@ -1112,65 +1006,6 @@ pub(crate) fn recent_trace_credit_explanations(
         .collect()
 }
 
-pub async fn revoke_trace_submission_for_scope(
-    scope: Option<&str>,
-    submission_id: Uuid,
-    endpoint: Option<&str>,
-    bearer_token_env: &str,
-) -> anyhow::Result<()> {
-    let provider = StaticEnvTraceUploadCredentialProvider { bearer_token_env };
-    let policy = StandingTraceContributionPolicy::default().set_bearer_token_env(bearer_token_env);
-    revoke_trace_submission_for_scope_with_credential_provider(
-        scope,
-        submission_id,
-        endpoint,
-        &policy,
-        &provider,
-    )
-    .await
-}
-
-pub async fn revoke_trace_submission_for_scope_with_policy(
-    scope: Option<&str>,
-    submission_id: Uuid,
-    endpoint: Option<&str>,
-    policy: &StandingTraceContributionPolicy,
-) -> anyhow::Result<()> {
-    revoke_trace_submission_for_scope_with_credential_provider(
-        scope,
-        submission_id,
-        endpoint,
-        policy,
-        &DefaultTraceUploadCredentialProvider,
-    )
-    .await
-}
-
-pub(crate) async fn revoke_trace_submission_for_scope_with_credential_provider(
-    scope: Option<&str>,
-    submission_id: Uuid,
-    endpoint: Option<&str>,
-    policy: &StandingTraceContributionPolicy,
-    provider: &dyn TraceUploadCredentialProvider,
-) -> anyhow::Result<()> {
-    if let Some(endpoint) = endpoint {
-        // Compute the scope's base directory so DeviceKey auth mode can locate
-        // the per-tenant keypair when self-signing the revoke request bearer.
-        let scope_dir = trace_contribution_dir_for_scope(scope);
-        revoke_trace_submission_at_endpoint_with_credential_provider(
-            submission_id,
-            endpoint,
-            policy,
-            provider,
-            Some(&scope_dir),
-        )
-        .await?;
-    }
-
-    let _guard = lock_trace_scope_for_mutation(scope).await;
-    mark_local_trace_revoked_for_scope_unlocked(scope, submission_id)
-}
-
 pub async fn revoke_trace_submission_at_endpoint_with_policy(
     submission_id: Uuid,
     endpoint: &str,
@@ -1310,4 +1145,13 @@ pub fn trace_autonomous_eligibility(
         kind: TraceQueueHoldKind::PolicyGate,
         reason: "policy does not allow this autonomous submission class".to_string(),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn apply_remote_trace_submission_statuses_for_scope(
+    scope: Option<&str>,
+    updates: &[TraceSubmissionStatusUpdate],
+) -> anyhow::Result<usize> {
+    let _guard = lock_trace_scope_for_mutation_blocking(scope);
+    apply_remote_trace_submission_statuses_for_scope_unlocked(scope, updates)
 }

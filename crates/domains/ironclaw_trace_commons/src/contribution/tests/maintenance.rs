@@ -1,7 +1,6 @@
 //! Queue compaction, quarantine, warning and telemetry accounting, and the worker tick.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -657,43 +656,4 @@ fn read_trace_queue_holds_for_scope_returns_sidecars_without_envelope_bodies() {
     assert!(!serialized.contains("raw envelope body should not be exposed"));
 
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
-}
-#[tokio::test]
-async fn server_rescrub_redacts_late_leaks_before_storage() {
-    let raw = RawTraceContribution::from_recorded_trace(
-        &sample_trace(),
-        RecordedTraceContributionOptions::default()
-            .set_include_message_text(true)
-            .set_include_tool_payloads(true),
-    );
-    let mut envelope = DeterministicTraceRedactor::with_known_path_prefixes([PathBuf::from(
-        "/Users/alice/project",
-    )])
-    .redact_trace(raw)
-    .await
-    .expect("redaction should succeed");
-
-    envelope.events[0].redacted_content =
-        Some("late leak at /tmp/ironclaw/private/token.txt".to_string());
-    envelope.events[1].structured_payload = serde_json::json!({
-        "Authorization": "Bearer abcdefghijklmnopqrstuvwxyz123456",
-        "path": "/tmp/ironclaw/private/token.txt"
-    });
-    rescrub_trace_envelope_with(&DeterministicTraceRedactor::new(Vec::new()), &mut envelope)
-        .expect("re-scrub should succeed");
-
-    let json = serde_json::to_string(&envelope).expect("envelope serializes");
-    assert!(json.contains("<PRIVATE_LOCAL_PATH_"));
-    assert!(json.contains(SERVER_RESCRUB_PIPELINE_SUFFIX));
-    assert!(!json.contains("/tmp/ironclaw/private/token.txt"));
-    assert!(!json.contains("abcdefghijklmnopqrstuvwxyz"));
-    assert!(
-        envelope
-            .privacy
-            .redaction_counts
-            .get("local_path")
-            .copied()
-            .unwrap_or_default()
-            >= 3
-    );
 }

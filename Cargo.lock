@@ -5463,7 +5463,6 @@ dependencies = [
  "ironclaw_llm",
  "ironclaw_safety",
  "jsonwebtoken",
- "rand 0.10.2",
  "rand_core 0.6.4",
  "regex",
  "reqwest 0.12.28",

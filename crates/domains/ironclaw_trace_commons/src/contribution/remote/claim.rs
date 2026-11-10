@@ -115,10 +115,6 @@ pub(crate) trait TraceUploadCredentialProvider: Send + Sync {
 
 pub(crate) struct DefaultTraceUploadCredentialProvider;
 
-pub(crate) struct StaticEnvTraceUploadCredentialProvider<'a> {
-    pub(crate) bearer_token_env: &'a str,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct CachedTraceUploadClaim {
     token: String,
@@ -370,18 +366,6 @@ pub(crate) fn error_chain_message(error: &(dyn Error + 'static)) -> String {
         source = error.source();
     }
     messages.join("\n")
-}
-
-#[async_trait]
-impl TraceUploadCredentialProvider for StaticEnvTraceUploadCredentialProvider<'_> {
-    async fn bearer_token(
-        &self,
-        _policy: &StandingTraceContributionPolicy,
-        _context: &TraceUploadClaimContext,
-        _force_refresh: bool,
-    ) -> anyhow::Result<String> {
-        trace_upload_static_env_bearer_token(self.bearer_token_env)
-    }
 }
 
 #[async_trait]

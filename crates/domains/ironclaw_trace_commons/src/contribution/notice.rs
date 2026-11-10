@@ -1,10 +1,7 @@
 //! The trace-credit notice state machine and its delivery outbox.
 
-use std::collections::BTreeMap;
-
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
 use super::*;
 
@@ -27,44 +24,6 @@ pub(crate) fn upsert_local_trace_record_for_scope(
         *existing = record;
     } else {
         records.push(record);
-    }
-    write_local_trace_records_for_scope(scope, &records)
-}
-
-pub(crate) fn mark_local_trace_revoked_for_scope_unlocked(
-    scope: Option<&str>,
-    submission_id: Uuid,
-) -> anyhow::Result<()> {
-    let mut records = read_local_trace_records_for_scope(scope)?;
-    let now = Utc::now();
-    let mut found = false;
-    for record in &mut records {
-        if record.submission_id == submission_id {
-            record.status = NodeTraceSubmissionStatus::Revoked;
-            record.revoked_at = Some(now);
-            record.credit_notice_state = TraceCreditNoticeState::default();
-            found = true;
-        }
-    }
-    if !found {
-        records.push(NodeTraceSubmissionRecord {
-            submission_id,
-            trace_id: Uuid::nil(),
-            endpoint: None,
-            status: NodeTraceSubmissionStatus::Revoked,
-            server_status: None,
-            submitted_at: None,
-            revoked_at: Some(now),
-            privacy_risk: "unknown".to_string(),
-            redaction_counts: BTreeMap::new(),
-            credit_points_pending: 0.0,
-            credit_points_final: None,
-            credit_explanation: Vec::new(),
-            credit_events: Vec::new(),
-            history: Vec::new(),
-            last_credit_notice_at: None,
-            credit_notice_state: TraceCreditNoticeState::default(),
-        });
     }
     write_local_trace_records_for_scope(scope, &records)
 }
@@ -96,22 +55,6 @@ pub(crate) fn trace_credit_notice_due_for_scope_at(
         return Ok(None);
     }
     trace_credit_notice_due_for_scope_at_unlocked(scope, policy.credit_notice_interval_hours, now)
-}
-
-pub(crate) fn trace_credit_notice_due_for_scope_at_unlocked(
-    scope: Option<&str>,
-    interval_hours: u32,
-    now: DateTime<Utc>,
-) -> anyhow::Result<Option<CreditSummary>> {
-    if interval_hours == 0 {
-        return Ok(None);
-    }
-
-    let records = read_local_trace_records_for_scope(scope)?;
-    Ok(
-        trace_credit_notice_due_for_records(&records, interval_hours, now)
-            .map(|(summary, _fingerprint)| summary),
-    )
 }
 
 pub(crate) fn mark_trace_credit_noticed_if_due_at_unlocked(
@@ -433,6 +376,48 @@ pub(crate) fn pending_trace_credit_notice_outbox_items_for_scope_at(
     pending_trace_credit_notice_outbox_items_for_scope_at_unlocked(scope, now)
 }
 
+pub(crate) fn update_trace_credit_notice_outbox_item_unlocked(
+    scope: Option<&str>,
+    fingerprint: &str,
+    mut update: impl FnMut(&mut TraceCreditNoticeOutboxItem),
+) -> anyhow::Result<Option<TraceCreditNoticeOutboxItem>> {
+    let mut outbox = read_trace_credit_notice_outbox_for_scope_unlocked(scope)?;
+    let mut updated = None;
+    if let Some(item) = outbox
+        .iter_mut()
+        .find(|item| item.fingerprint == fingerprint)
+    {
+        update(item);
+        updated = Some(item.clone());
+    }
+    if updated.is_some() {
+        write_trace_credit_notice_outbox_for_scope_unlocked(scope, &outbox)?;
+    }
+    Ok(updated)
+}
+
+pub(crate) fn trace_credit_notice_outbox_id(fingerprint: &str) -> String {
+    canonical_hash(&format!("trace_credit_notice:{fingerprint}"))
+}
+
+#[cfg(test)]
+pub(crate) fn trace_credit_notice_due_for_scope_at_unlocked(
+    scope: Option<&str>,
+    interval_hours: u32,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Option<CreditSummary>> {
+    if interval_hours == 0 {
+        return Ok(None);
+    }
+
+    let records = read_local_trace_records_for_scope(scope)?;
+    Ok(
+        trace_credit_notice_due_for_records(&records, interval_hours, now)
+            .map(|(summary, _fingerprint)| summary),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn pending_trace_credit_notice_outbox_items_for_scope_at_unlocked(
     scope: Option<&str>,
     now: DateTime<Utc>,
@@ -443,6 +428,7 @@ pub(crate) fn pending_trace_credit_notice_outbox_items_for_scope_at_unlocked(
         .collect())
 }
 
+#[cfg(test)]
 pub(crate) fn trace_credit_notice_outbox_item_due(
     item: &TraceCreditNoticeOutboxItem,
     now: DateTime<Utc>,
@@ -464,126 +450,4 @@ pub(crate) fn trace_credit_notice_outbox_item_due(
             false
         }
     }
-}
-
-pub(crate) fn record_trace_credit_notice_delivery_success_for_scope_at_unlocked(
-    scope: Option<&str>,
-    fingerprint: &str,
-    channel: &str,
-    now: DateTime<Utc>,
-) -> anyhow::Result<Option<TraceCreditNoticeOutboxItem>> {
-    update_trace_credit_notice_outbox_item_unlocked(scope, fingerprint, |item| {
-        push_trace_credit_notice_delivery_attempt(
-            item,
-            TraceCreditNoticeDeliveryAttempt {
-                channel: safe_trace_credit_notice_channel(channel),
-                attempted_at: now,
-                succeeded: true,
-                error_kind: None,
-                error_hash: None,
-            },
-        );
-        item.status = TraceCreditNoticeOutboxStatus::Delivered;
-        item.updated_at = now;
-        item.last_attempt_at = Some(now);
-        item.delivered_at = Some(now);
-        item.next_attempt_at = None;
-        item.snoozed_until = None;
-        item.attempt_count = item.attempt_count.saturating_add(1);
-    })
-}
-
-pub(crate) fn record_trace_credit_notice_delivery_failure_for_scope_at_unlocked(
-    scope: Option<&str>,
-    fingerprint: &str,
-    channel: &str,
-    error: &str,
-    now: DateTime<Utc>,
-) -> anyhow::Result<Option<TraceCreditNoticeOutboxItem>> {
-    let error_hash = trace_credit_notice_delivery_error_hash(error);
-    let error_kind = trace_credit_notice_delivery_error_kind(error);
-    update_trace_credit_notice_outbox_item_unlocked(scope, fingerprint, |item| {
-        let next_attempt_count = item.attempt_count.saturating_add(1);
-        push_trace_credit_notice_delivery_attempt(
-            item,
-            TraceCreditNoticeDeliveryAttempt {
-                channel: safe_trace_credit_notice_channel(channel),
-                attempted_at: now,
-                succeeded: false,
-                error_kind: Some(error_kind),
-                error_hash: Some(error_hash.clone()),
-            },
-        );
-        item.status = TraceCreditNoticeOutboxStatus::Pending;
-        item.updated_at = now;
-        item.last_attempt_at = Some(now);
-        item.delivered_at = None;
-        item.next_attempt_at = Some(trace_queue_next_retry_at(now, next_attempt_count));
-        item.snoozed_until = None;
-        item.attempt_count = next_attempt_count;
-    })
-}
-
-pub(crate) fn update_trace_credit_notice_outbox_item_unlocked(
-    scope: Option<&str>,
-    fingerprint: &str,
-    mut update: impl FnMut(&mut TraceCreditNoticeOutboxItem),
-) -> anyhow::Result<Option<TraceCreditNoticeOutboxItem>> {
-    let mut outbox = read_trace_credit_notice_outbox_for_scope_unlocked(scope)?;
-    let mut updated = None;
-    if let Some(item) = outbox
-        .iter_mut()
-        .find(|item| item.fingerprint == fingerprint)
-    {
-        update(item);
-        updated = Some(item.clone());
-    }
-    if updated.is_some() {
-        write_trace_credit_notice_outbox_for_scope_unlocked(scope, &outbox)?;
-    }
-    Ok(updated)
-}
-
-pub(crate) fn push_trace_credit_notice_delivery_attempt(
-    item: &mut TraceCreditNoticeOutboxItem,
-    attempt: TraceCreditNoticeDeliveryAttempt,
-) {
-    item.delivery_attempts.push(attempt);
-    let excess = item
-        .delivery_attempts
-        .len()
-        .saturating_sub(TRACE_CREDIT_NOTICE_OUTBOX_MAX_ATTEMPTS_STORED);
-    if excess > 0 {
-        item.delivery_attempts.drain(0..excess);
-    }
-}
-
-pub(crate) fn trace_credit_notice_outbox_id(fingerprint: &str) -> String {
-    canonical_hash(&format!("trace_credit_notice:{fingerprint}"))
-}
-
-pub(crate) fn safe_trace_credit_notice_channel(channel: &str) -> String {
-    let sanitized = channel
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(*ch, '-' | '_' | '.'))
-        .take(64)
-        .collect::<String>();
-    if sanitized.is_empty() {
-        "unknown".to_string()
-    } else {
-        sanitized
-    }
-}
-
-pub(crate) fn trace_credit_notice_delivery_error_hash(error: &str) -> String {
-    let digest = Sha256::digest(error.as_bytes());
-    format!("sha256:{}", hex::encode(&digest[..8])) // safety: slicing the fixed-size SHA-256 byte array.
-}
-
-pub(crate) fn trace_credit_notice_delivery_error_kind(
-    error: &str,
-) -> TraceQueueTelemetryFailureKind {
-    let error = anyhow::anyhow!(error.to_string());
-    trace_queue_telemetry_failure_kind(&error)
 }

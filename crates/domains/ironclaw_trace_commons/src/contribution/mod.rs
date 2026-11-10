@@ -26,7 +26,7 @@
 //! | `privacy` | The deterministic redactor, the external privacy-filter adapter and its canary, rescrub | Per-tool field rules (those are `tool_payloads`) |
 //! | `tool_payloads` | Per-tool sensitive-field redaction profiles, rule tables, and value sanitizers | Anything not keyed off a tool name |
 //! | `classification` | Trace cards, allowed uses, retention policy, dataset eligibility, side-effect labelling | Redaction |
-//! | `canonical` | Canonical text representations used for embedding and dedupe hashing | Anything that reads or writes the queue |
+//! | `canonical` | Content and redaction hashing | Anything that reads or writes the queue |
 //! | `queue` | The on-disk queue: record, hold, telemetry and diagnostics types, the per-scope directory layout, policy and credential resolution | Network calls |
 //! | `remote` | The pinned HTTP sink, upload-claim minting and its issuer SSRF guards, community-profile and account APIs | Queue state transitions |
 //! | `submission` | Orchestration: submit, flush, status sync, revoke, and scoped credit views | New transport or new schema |
@@ -57,7 +57,7 @@ mod remote;
 mod submission;
 mod tool_payloads;
 
-pub use canonical::*;
+pub(crate) use canonical::*;
 pub use capture::*;
 pub use classification::*;
 pub use credit::*;
