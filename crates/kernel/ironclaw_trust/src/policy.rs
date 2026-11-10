@@ -23,10 +23,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::decision::{AuthorityCeiling, EffectiveTrustClass, TrustDecision, TrustProvenance};
 use crate::error::TrustError;
 use crate::invalidation::{InvalidationBus, TrustChange};
-use crate::sources::{
-    AdminConfig, AdminEntry, BundledEntry, BundledRegistry, PolicySource, SignedRegistry,
-    SignerEntry,
-};
+use crate::sources::{AdminConfig, AdminEntry, BundledEntry, BundledRegistry, PolicySource};
 
 thread_local! {
     static PUBLISHING_POLICIES: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
@@ -311,8 +308,8 @@ impl HostTrustPolicy {
 /// Typed mutator handles handed to the [`HostTrustPolicy::mutate_with`]
 /// closure.
 ///
-/// The per-source `upsert` / `remove` methods on `BundledRegistry`,
-/// `AdminConfig`, and `SignedRegistry` are `pub(crate)`; the only public
+/// The per-source `upsert` / `remove` methods on `BundledRegistry` and
+/// `AdminConfig` are `pub(crate)`; the only public
 /// way to reach them at runtime is through this struct, which itself is
 /// only constructible inside `mutate_with`. That construction-by-position
 /// means runtime mutation cannot happen without the surrounding
@@ -331,8 +328,6 @@ enum SourceMutation {
         package_id: PackageId,
         source: ironclaw_host_api::trust::PackageSource,
     },
-    SignedUpsert(SignerEntry),
-    SignedRemove(String),
 }
 
 pub struct SourceMutators<'a> {
@@ -418,29 +413,6 @@ impl<'a> SourceMutators<'a> {
         Ok(previous)
     }
 
-    /// Insert or replace a [`SignerEntry`] in the chain's
-    /// `SignedRegistry`. Note: the source itself is currently inert —
-    /// this is the staging path future signature-verification work will
-    /// consume.
-    pub fn signed_upsert(&self, entry: SignerEntry) -> Result<(), TrustError> {
-        self.find::<SignedRegistry>()?;
-        self.staged
-            .borrow_mut()
-            .push(SourceMutation::SignedUpsert(entry));
-        Ok(())
-    }
-
-    /// Remove a trusted signer from the chain's `SignedRegistry`,
-    /// returning the currently committed entry if any.
-    pub fn signed_remove(&self, signer: &str) -> Result<Option<SignerEntry>, TrustError> {
-        let registry = self.find::<SignedRegistry>()?;
-        let previous = registry.get(signer);
-        self.staged
-            .borrow_mut()
-            .push(SourceMutation::SignedRemove(signer.to_string()));
-        Ok(previous)
-    }
-
     fn commit(&self) -> Result<(), TrustError> {
         for mutation in self.staged.borrow_mut().drain(..) {
             match mutation {
@@ -456,12 +428,6 @@ impl<'a> SourceMutators<'a> {
                 SourceMutation::AdminRemove { package_id, source } => {
                     self.find::<AdminConfig>()?.remove(&package_id, &source);
                 }
-                SourceMutation::SignedUpsert(entry) => {
-                    self.find::<SignedRegistry>()?.upsert(entry);
-                }
-                SourceMutation::SignedRemove(signer) => {
-                    self.find::<SignedRegistry>()?.remove(&signer);
-                }
             }
         }
         Ok(())
@@ -475,8 +441,8 @@ impl<'a> SourceMutators<'a> {
 /// `Admin` packages on the theory that those origins were "capable of
 /// being host-blessed" — but that's fail-open in two specific ways:
 ///
-/// - `Registry { url }` is a remote source. Until signature verification
-///   ships in [`crate::SignedRegistry`] (currently inert), nothing
+/// - `Registry { url }` is a remote source. No source verifies remote
+///   signatures, so nothing
 ///   authenticates the `url` value or the bytes it claims to identify.
 ///   Granting `UserTrusted` on the basis of an unverified self-declared
 ///   origin string is the textbook fail-open shape in a security-critical

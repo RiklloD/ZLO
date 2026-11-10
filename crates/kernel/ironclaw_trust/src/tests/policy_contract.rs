@@ -1,4 +1,4 @@
-//! PR1b acceptance-criteria contract tests.
+//! Acceptance-criteria contract tests.
 //!
 //! Each test maps to a row in the plan's coverage matrix:
 //!   - T1..T12: trust policy + invalidation contract
@@ -8,14 +8,13 @@
 //!   - T15: default_decision fail-closed across every PackageSource
 //!   - T16, T16b–c: TrustChange no-op / downgrade / upgrade / kind-change
 //!     semantics + InvalidationBus publish-time guard
-//!   - T17: DevTrustOverride inert-contract pinning (forward-compat seam)
 //!   - T18: EffectiveTrustClass audit wire-shape for all four variants
 //!
 //! Test fixtures live in `mod support` below: `FakeAuthorizer` (gates
 //! capability invocation on `EffectiveTrustClass::is_privileged()` AND an
 //! explicit grant set) and `FakeGrantStore` (records invalidation events on
 //! a shared `InvalidationBus`). These prove ordering and grant-denial
-//! behavior at the integration boundary that PR3 will eventually own.
+//! behavior at the integration boundary with the authorization layer.
 
 use ironclaw_host_api::trust::TrustPolicyInput;
 use std::collections::BTreeSet;
@@ -29,7 +28,7 @@ use crate::fixtures::{
 use crate::invalidation::{
     TrustChange, TrustChangeListener, authority_changed, grant_retention_eligible, identity_changed,
 };
-use crate::sources::{DevTrustOverride, PolicySource};
+use crate::sources::PolicySource;
 use crate::{
     AdminConfig, AdminEntry, BundledRegistry, EffectiveTrustClass, HostTrustAssignment,
     HostTrustPolicy, InvalidationBus, TrustDecision, TrustError, TrustPolicy, TrustProvenance,
@@ -1585,63 +1584,6 @@ fn t16c_invalidation_bus_publish_drops_no_op_struct_literal_in_release() {
     assert!(
         store.invalidations().is_empty(),
         "no-op TrustChange must not fan out to listeners in release builds"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// T17 — `DevTrustOverride` stays inert even when enabled and pre-staged.
-//
-// PR1b ships `DevTrustOverride` as a forward-compat seam: the type and
-// `PolicySource` impl exist, but the implementation is intentionally
-// non-functional until a future PR wires up explicit operator opt-in +
-// audit logging. The `enabled_for_test` fixture lets the test suite
-// exercise that contract — enabling the source and staging overrides
-// must NOT produce trust matches.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn t17_dev_trust_override_remains_inert_even_when_enabled_and_staged() {
-    let staged = DevTrustOverride::enabled_for_test(vec![(
-        pkg("dev_pkg"),
-        admin_entry_for_test(
-            pkg("dev_pkg"),
-            PackageSource::LocalManifest {
-                path: "/extensions/dev_pkg/manifest.toml".to_string(),
-            },
-            effective_first_party_for_test(),
-            vec![EffectKind::ReadFilesystem],
-        ),
-    )]);
-    assert!(
-        staged.is_enabled(),
-        "fixture must produce an enabled instance"
-    );
-    assert_eq!(
-        staged.override_count(),
-        1,
-        "fixture must surface the staged entry through override_count"
-    );
-
-    // Even though `staged` is enabled and has an override that *would*
-    // elevate `dev_pkg` to FirstParty if the seam were live, evaluate
-    // must return Ok(None). The dev-override implementation is not in
-    // PR1b — the inert contract pins that promise.
-    let probe = TrustPolicyInput {
-        identity: PackageIdentity::new(
-            pkg("dev_pkg"),
-            PackageSource::LocalManifest {
-                path: "/extensions/dev_pkg/manifest.toml".to_string(),
-            },
-            None,
-            None,
-        ),
-        requested_trust: RequestedTrustClass::FirstPartyRequested,
-        requested_authority: BTreeSet::new(),
-    };
-    assert!(
-        staged.evaluate(&probe).unwrap().is_none(),
-        "DevTrustOverride must remain inert until the dev-override \
-         implementation lands — a future PR is what flips this assertion"
     );
 }
 

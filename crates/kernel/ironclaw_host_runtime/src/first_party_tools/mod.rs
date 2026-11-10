@@ -537,42 +537,6 @@ pub fn register_reply_attachment_first_party_handler(
     reply_attachment::insert_handler(registry, intent_port)
 }
 
-pub fn builtin_first_party_handlers_with_trigger_create_hook_for_process_backend(
-    trigger_repository: Arc<dyn ironclaw_triggers::TriggerRepository>,
-    trigger_create_hook: Arc<dyn TriggerCreateHook>,
-    active_run_lookup: Arc<dyn ironclaw_triggers::TriggerActiveRunLookup>,
-    process_backend: ProcessBackendKind,
-) -> Result<FirstPartyCapabilityRegistry, HostApiError> {
-    let mut registry = builtin_first_party_handlers_with_trigger_create_hook(
-        trigger_repository,
-        trigger_create_hook,
-        active_run_lookup,
-    )?;
-    if !process_port_backed_builtins_enabled(process_backend) {
-        remove_process_port_backed_builtin_handlers(&mut registry)?;
-    }
-    Ok(registry)
-}
-
-pub fn builtin_first_party_handlers_with_trigger_services_for_process_backend(
-    trigger_repository: Arc<dyn ironclaw_triggers::TriggerRepository>,
-    trigger_create_hook: Arc<dyn TriggerCreateHook>,
-    active_run_lookup: Arc<dyn ironclaw_triggers::TriggerActiveRunLookup>,
-    manual_fire_runner: Arc<dyn ironclaw_triggers::TriggerManualFireRunner>,
-    process_backend: ProcessBackendKind,
-) -> Result<FirstPartyCapabilityRegistry, HostApiError> {
-    let mut registry = builtin_first_party_handlers_with_trigger_services(
-        trigger_repository,
-        trigger_create_hook,
-        active_run_lookup,
-        manual_fire_runner,
-    )?;
-    if !process_port_backed_builtins_enabled(process_backend) {
-        remove_process_port_backed_builtin_handlers(&mut registry)?;
-    }
-    Ok(registry)
-}
-
 pub fn builtin_first_party_handlers_with_trigger_services_and_facts_for_process_backend(
     trigger_repository: Arc<dyn ironclaw_triggers::TriggerRepository>,
     trigger_create_hook: Arc<dyn TriggerCreateHook>,

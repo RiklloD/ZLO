@@ -7,9 +7,9 @@ execution path). PROPOSAL §6.6.4.
 
 ## Why one crate
 
-The `bollard`/`rcgen`/`libc` cone lives here and **nowhere else in the
+The `bollard`/`rcgen` cone lives here and **nowhere else in the
 workspace** — keeping it out of the kernel is the point. `ironclaw_host_runtime`
-no longer declares any of the three.
+declares neither; it still declares `libc` for its own process handling.
 
 ## Wiring status — read before assuming this is dead code
 

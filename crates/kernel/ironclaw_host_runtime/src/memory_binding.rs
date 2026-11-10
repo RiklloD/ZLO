@@ -95,12 +95,6 @@ pub enum MemoryProviderBinding {
     ThirdParty { extension_id: ExtensionId },
 }
 
-impl MemoryProviderBinding {
-    pub fn is_native(&self) -> bool {
-        matches!(self, Self::Native)
-    }
-}
-
 /// One admin override authorizing an otherwise-rejected production binding,
 /// scoped to `(extension_id, deployment_profile)`.
 #[derive(Debug, Clone)]

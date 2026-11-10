@@ -3,16 +3,15 @@
 //! When the host policy revokes or downgrades a package's effective trust,
 //! or shrinks its authority ceiling, affected grants and leases must be
 //! invalidated *before* any subsequent dispatch can produce a side effect
-//! under the stale ceiling. PR3's
-//! authorization layer registers a [`TrustChangeListener`] on the
-//! [`InvalidationBus`] and revokes matching grants synchronously when
-//! [`InvalidationBus::publish`] runs.
+//! under the stale ceiling. A grant store registers a
+//! [`TrustChangeListener`] on the [`InvalidationBus`] and revokes matching
+//! grants synchronously when [`InvalidationBus::publish`] runs. No production
+//! listener is registered today.
 //!
 //! The bus is fail-closed by design: listeners are run synchronously on the
 //! publishing thread. If any listener panics, the panic propagates — the
 //! caller of `publish` must observe a failure rather than continue believing
 //! invalidation succeeded.
-#![allow(dead_code)] // Scaffolding; some items kept for future use.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
@@ -127,7 +126,7 @@ impl TrustChange {
 ///
 /// Listeners are run in registration order on the publishing thread. The
 /// bus does not buffer or deduplicate events — semantics are intentionally
-/// simple so PR3's grant store can rely on strict happens-before ordering.
+/// simple so a grant store can rely on strict happens-before ordering.
 pub struct InvalidationBus {
     listeners: RwLock<Vec<Arc<dyn TrustChangeListener>>>,
 }
@@ -195,8 +194,9 @@ impl Default for InvalidationBus {
 }
 
 /// Returns true when two package identities differ in any field that should
-/// invalidate retained grants. Used by PR3's grant store to decide whether
-/// an existing grant survives a re-evaluation.
+/// invalidate retained grants: the rule a grant store applies to decide
+/// whether an existing grant survives a re-evaluation.
+#[allow(dead_code)] // no production caller: nothing subscribes to the bus or retains grants across re-evaluation
 pub(crate) fn identity_changed(prev: &PackageIdentity, curr: &PackageIdentity) -> bool {
     prev.package_id != curr.package_id
         || prev.source != curr.source
@@ -222,6 +222,7 @@ pub(crate) fn identity_changed(prev: &PackageIdentity, curr: &PackageIdentity) -
 /// authority* but different list-canonicalization fired this check
 /// unnecessarily. Set typing closes that gap at the type level — the
 /// duplicates literally cannot exist.
+#[allow(dead_code)] // no production caller: nothing subscribes to the bus or retains grants across re-evaluation
 pub(crate) fn authority_changed(
     prev: &BTreeSet<CapabilityId>,
     curr: &BTreeSet<CapabilityId>,
@@ -232,6 +233,7 @@ pub(crate) fn authority_changed(
 /// Returns true when an existing grant may be retained across a
 /// re-evaluation: identity stable, effective trust unchanged, and requested
 /// authority unchanged. Any drift forces grant reissue per AC #7.
+#[allow(dead_code)] // no production caller: nothing subscribes to the bus or retains grants across re-evaluation
 pub(crate) fn grant_retention_eligible(
     prev_identity: &PackageIdentity,
     curr_identity: &PackageIdentity,

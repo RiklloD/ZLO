@@ -25,7 +25,6 @@ use std::time::Duration;
 pub(crate) const SHELL_TIMEOUT_DEFAULT_SECS: u64 = 120;
 /// Operator ceiling for `timeout`. Requests above this are clamped down,
 /// never rejected.
-#[allow(dead_code)] // consumer: process_port / execute_in_container / first_party_tools::shell — see module doc
 pub(crate) const SHELL_TIMEOUT_MAX_SECS: u64 = 600;
 /// Floor for `timeout`; zero-second timeouts are rejected upstream by
 /// `shell_core::parse_timeout`, but the clamp still enforces the floor for

@@ -325,10 +325,6 @@ impl TurnError {
         Self::CapacityExceeded { resource, cap }
     }
 
-    pub fn is_expected_admission_outcome(&self) -> bool {
-        matches!(self, Self::ThreadBusy(_) | Self::AdmissionRejected(_))
-    }
-
     pub fn adapter_status_code(&self) -> u16 {
         match self.category() {
             TurnErrorCategory::ThreadBusy | TurnErrorCategory::Conflict => 409,

@@ -77,10 +77,7 @@ fn configure_component_engine(config: &mut Config) {
 /// `Engine` clone for the lifetime of the process — a real problem for tests
 /// and for long-running hosts that rebuild runtimes (config reloads,
 /// per-installation runtimes, etc.).
-fn spawn_epoch_ticker(
-    engine: &Engine,
-    thread_name: impl Into<String>,
-) -> Result<(), SandboxError> {
+fn spawn_epoch_ticker(engine: &Engine, thread_name: impl Into<String>) -> Result<(), SandboxError> {
     let weak = engine.weak();
     std::thread::Builder::new()
         .name(thread_name.into())

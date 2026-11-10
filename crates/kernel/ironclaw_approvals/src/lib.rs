@@ -68,7 +68,6 @@ pub use profile_gate_policy::{
 pub type ToolPermissionOverride = CapabilityPermissionOverride;
 pub type ToolPermissionOverrideInput = CapabilityPermissionOverrideInput;
 pub type ToolPermissionOverrideKey = CapabilityPermissionOverrideKey;
-pub type ToolPermissionOverrideRecord = CapabilityPermissionOverrideRecord;
 pub type ToolPermissionState = CapabilityPermissionState;
 pub type ToolPermissionStoreError = CapabilityPermissionStoreError;
 pub type ToolPermissionOverrideStore<F> = CapabilityPermissionOverrideStore<F>;
