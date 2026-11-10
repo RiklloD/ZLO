@@ -26,7 +26,6 @@ pub mod failover;
 pub(crate) mod gemini_oauth;
 mod github_copilot;
 pub(crate) mod github_copilot_auth;
-pub mod host;
 pub mod nearai_chat;
 pub mod openai_codex_provider;
 pub(crate) mod openai_codex_session;
@@ -73,11 +72,6 @@ pub use config::{
 pub use error::{LlmConfigError, LlmError, UNCONFIGURED_PROVIDER_ID};
 pub use failover::{CooldownConfig, FailoverProvider};
 pub(crate) use gemini_oauth::GeminiOauthProvider;
-pub use host::{
-    NoopKeyPersistor, NoopSessionRenewer, SessionDb, SessionKeyPersistor, SessionRenewer,
-    SessionSecrets, SharedSessionDb, SharedSessionKeyPersistor, SharedSessionRenewer,
-    SharedSessionSecrets,
-};
 pub use nearai_chat::{DEFAULT_MODEL, ModelInfo, NearAiChatProvider, default_models};
 pub use openai_codex_provider::OpenAiCodexProvider;
 pub use openai_codex_session::{DeviceCodeStart, OpenAiCodexSessionManager};

@@ -14,10 +14,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::error::LlmError;
-use crate::host::{
-    NoopKeyPersistor, NoopSessionRenewer, SharedSessionDb, SharedSessionKeyPersistor,
-    SharedSessionRenewer, SharedSessionSecrets,
-};
 
 /// Session data persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,11 +85,6 @@ impl Default for SessionConfig {
 }
 
 /// Manages NEAR AI session tokens with persistence and automatic renewal.
-///
-/// The DB / encrypted-secrets / interactive-renewal / env-persist hooks are
-/// abstracted behind traits in [`crate::host`] so this crate doesn't need to
-/// depend on the embedding application. Headless deployments can leave them
-/// unset; the CLI build wires in real impls.
 pub struct SessionManager {
     config: SessionConfig,
     client: Client,
@@ -101,16 +92,6 @@ pub struct SessionManager {
     token: RwLock<Option<SecretString>>,
     /// Prevents thundering herd during concurrent 401s.
     renewal_lock: Mutex<()>,
-    /// Optional database store for persisting session to the settings table.
-    store: RwLock<Option<SharedSessionDb>>,
-    /// User ID for DB settings (default: "default").
-    user_id: RwLock<String>,
-    /// Optional encrypted secrets store — preferred over plaintext settings when present.
-    secrets: RwLock<Option<SharedSessionSecrets>>,
-    /// Interactive renewal hook. Defaults to a no-op that returns `SessionRenewalFailed`.
-    renewer: RwLock<SharedSessionRenewer>,
-    /// Persistor for one-shot API key entry (runtime env + .env file). Defaults to no-op.
-    key_persistor: RwLock<SharedSessionKeyPersistor>,
 }
 
 impl SessionManager {
@@ -133,12 +114,6 @@ impl SessionManager {
             },
             token: RwLock::new(None),
             renewal_lock: Mutex::new(()),
-            store: RwLock::new(None),
-            // Placeholder; overwritten by attach_store() with the real owner_id at startup.
-            user_id: RwLock::new("<unset>".to_string()),
-            secrets: RwLock::new(None),
-            renewer: RwLock::new(Arc::new(NoopSessionRenewer) as SharedSessionRenewer),
-            key_persistor: RwLock::new(Arc::new(NoopKeyPersistor) as SharedSessionKeyPersistor),
         }
     }
 
@@ -172,50 +147,7 @@ impl SessionManager {
         manager
     }
 
-    /// Attach a database store for persisting session tokens.
-    ///
-    /// When a store is attached, session tokens are saved to the `settings`
-    /// table (key: `nearai.session_token`) in addition to the disk file.
-    /// On load, DB is preferred over disk.
-    pub async fn attach_store(&self, store: SharedSessionDb, user_id: &str) {
-        *self.store.write().await = Some(store);
-        *self.user_id.write().await = user_id.to_string();
-
-        // Try to load from DB (may have been saved by a previous run)
-        if let Err(e) = self.load_session_from_db().await {
-            tracing::debug!("No session in DB: {}", e);
-        }
-    }
-
-    /// Attach an encrypted secrets store for secure session token persistence.
-    ///
-    /// When attached, `save_session` writes to the secrets store in addition
-    /// to the disk file, and `load_session_from_db` prefers the secrets store
-    /// over the plaintext settings table.
-    pub async fn attach_secrets(&self, secrets: SharedSessionSecrets) {
-        *self.secrets.write().await = Some(secrets);
-
-        // Try to load from encrypted secrets (preferred over settings table)
-        if let Err(e) = self.load_session_from_secrets().await {
-            tracing::debug!("No session in secrets store: {}", e);
-        }
-    }
-
-    /// Attach an interactive renewer used when a session expires.
-    ///
-    /// Headless deployments can skip this; the default `NoopSessionRenewer`
-    /// returns `SessionRenewalFailed` and the caller is expected to set
-    /// `NEARAI_SESSION_TOKEN` or `NEARAI_API_KEY` ahead of time.
-    pub async fn attach_renewer(&self, renewer: SharedSessionRenewer) {
-        *self.renewer.write().await = renewer;
-    }
-
-    /// Attach a persistor used by the API-key entry path inside a renewer.
-    pub async fn attach_key_persistor(&self, persistor: SharedSessionKeyPersistor) {
-        *self.key_persistor.write().await = persistor;
-    }
-
-    /// Read-only access to the configured auth base URL (used by renewer impls).
+    /// Read-only access to the configured auth base URL.
     pub fn auth_base_url(&self) -> &str {
         &self.config.auth_base_url
     }
@@ -226,7 +158,7 @@ impl SessionManager {
     /// `access_token` on success. NEAR AI rejects requests without a
     /// `User-Agent`, so one is always sent. This does NOT persist the token —
     /// the caller applies it (e.g. via [`Self::save_session_for_renewer`]) so it
-    /// flows through the same disk/DB/secrets pipeline as the OAuth login.
+    /// is written to the session file like the OAuth login.
     pub async fn near_wallet_login(
         &self,
         signed: &NearWalletSignedMessage,
@@ -269,14 +201,8 @@ impl SessionManager {
         Ok(parsed.access_token)
     }
 
-    /// Returns the persistor most recently set via `attach_key_persistor`.
-    pub async fn key_persistor(&self) -> SharedSessionKeyPersistor {
-        Arc::clone(&*self.key_persistor.read().await)
-    }
-
-    /// Public hook used by `SessionRenewer` impls to write a freshly received
-    /// session token back through the same disk + DB + secrets pipeline as
-    /// the internal flow.
+    /// Persist a freshly received session token to the session file and make
+    /// it the current in-memory token.
     pub async fn save_session_for_renewer(
         &self,
         token: &str,
@@ -301,11 +227,11 @@ impl SessionManager {
         self.token.read().await.is_some()
     }
 
-    /// Ensure we have a valid session, triggering the renewer if needed.
+    /// Ensure we have a valid session.
     ///
-    /// If no token exists, asks the registered `SessionRenewer` for one. If a
-    /// token exists, validates it by hitting `/v1/users/me`. If validation
-    /// fails, asks the renewer for a fresh token.
+    /// A token that exists is validated by hitting `/v1/users/me`. A missing
+    /// or invalid token fails with `SessionRenewalFailed`: this build has no
+    /// interactive renewal.
     pub async fn ensure_authenticated(&self) -> Result<(), LlmError> {
         if !self.has_token().await {
             return self.run_renewer().await;
@@ -325,8 +251,12 @@ impl SessionManager {
     }
 
     async fn run_renewer(&self) -> Result<(), LlmError> {
-        let renewer = Arc::clone(&*self.renewer.read().await);
-        renewer.renew(self).await
+        Err(LlmError::SessionRenewalFailed {
+            provider: "nearai".to_string(),
+            reason: "interactive session renewal is unavailable in this build; \
+                 set NEARAI_SESSION_TOKEN or NEARAI_API_KEY env var instead"
+                .to_string(),
+        })
     }
 
     /// Validate the current token by calling the /v1/users/me endpoint.
@@ -368,8 +298,8 @@ impl SessionManager {
 
     /// Handle an authentication failure (401 response).
     ///
-    /// Acquires the renewal lock to prevent a thundering herd, then asks the
-    /// registered `SessionRenewer` for a fresh token.
+    /// Fails with `SessionRenewalFailed`: this build has no interactive
+    /// renewal, so the token must be supplied by env var or a new login.
     pub async fn handle_auth_failure(&self) -> Result<(), LlmError> {
         let _guard = self.renewal_lock.lock().await;
 
@@ -377,7 +307,7 @@ impl SessionManager {
         self.run_renewer().await
     }
 
-    /// Save session data to disk and (if available) to the database.
+    /// Save session data to disk.
     async fn save_session(&self, token: &str, auth_provider: Option<&str>) -> Result<(), LlmError> {
         let session = SessionData {
             session_token: token.to_string(),
@@ -385,7 +315,6 @@ impl SessionManager {
             auth_provider: auth_provider.map(String::from),
         };
 
-        // Save to disk (always, as bootstrap fallback)
         if let Some(parent) = self.config.session_path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
                 LlmError::Io(std::io::Error::new(
@@ -434,137 +363,6 @@ impl SessionManager {
         }
 
         tracing::debug!("Session saved to {}", self.config.session_path.display());
-
-        // Persist to encrypted secrets store (preferred) if attached
-        if let Some(ref secrets) = *self.secrets.read().await {
-            let user_id = self.user_id.read().await.clone();
-            let session_json_str =
-                serde_json::to_string(&session).unwrap_or_else(|_| token.to_string());
-            if let Err(e) = secrets
-                .create(
-                    &user_id,
-                    "nearai_session_token",
-                    session_json_str,
-                    Some("nearai"),
-                )
-                .await
-            {
-                tracing::warn!("Failed to save session to encrypted secrets: {}", e);
-            } else {
-                tracing::debug!("Session saved to encrypted secrets store");
-            }
-        // Save to DB settings table only as fallback when no secrets store is attached
-        } else if let Some(ref store) = *self.store.read().await {
-            let user_id = self.user_id.read().await.clone();
-            let session_json = serde_json::to_value(&session)
-                .unwrap_or(serde_json::Value::String(token.to_string()));
-            if let Err(e) = store
-                .set_setting(&user_id, "nearai.session_token", &session_json)
-                .await
-            {
-                tracing::warn!("Failed to save session to DB: {}", e);
-            } else {
-                tracing::debug!("Session also saved to DB settings");
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Try to load session from the database.
-    async fn load_session_from_db(&self) -> Result<(), LlmError> {
-        let store_guard = self.store.read().await;
-        let store = store_guard
-            .as_ref()
-            .ok_or_else(|| LlmError::SessionRenewalFailed {
-                provider: "nearai".to_string(),
-                reason: "No DB store attached".to_string(),
-            })?;
-
-        let user_id = self.user_id.read().await.clone();
-        let value = if let Some(value) = store
-            .get_setting(&user_id, "nearai.session_token")
-            .await
-            .map_err(|e| LlmError::SessionRenewalFailed {
-            provider: "nearai".to_string(),
-            reason: format!("DB query failed: {}", e),
-        })? {
-            value
-        } else {
-            // Try the legacy key. Only warn if it actually exists (real
-            // backwards-compat migration). When neither key is present
-            // (fresh install), just return the "No session in DB" error.
-            let legacy = store
-                .get_setting(&user_id, "nearai.session")
-                .await
-                .map_err(|e| LlmError::SessionRenewalFailed {
-                    provider: "nearai".to_string(),
-                    reason: format!("DB query failed: {}", e),
-                })?;
-            match legacy {
-                Some(value) => {
-                    tracing::warn!(
-                        "nearai.session_token missing; falling back to legacy nearai.session for backwards compatibility"
-                    );
-                    value
-                }
-                None => {
-                    return Err(LlmError::SessionRenewalFailed {
-                        provider: "nearai".to_string(),
-                        reason: "No session in DB".to_string(),
-                    });
-                }
-            }
-        };
-
-        let session: SessionData =
-            serde_json::from_value(value).map_err(|e| LlmError::SessionRenewalFailed {
-                provider: "nearai".to_string(),
-                reason: format!("Failed to parse DB session: {}", e),
-            })?;
-
-        let mut guard = self.token.write().await;
-        *guard = Some(SecretString::from(session.session_token));
-        tracing::info!("Loaded session from DB settings");
-
-        Ok(())
-    }
-
-    /// Try to load session from the encrypted secrets store.
-    ///
-    /// The session is stored as a JSON-serialized `SessionData` string under
-    /// the secret name `nearai_session_token`. This is preferred over the
-    /// plaintext settings table when a secrets store is available.
-    async fn load_session_from_secrets(&self) -> Result<(), LlmError> {
-        let secrets_guard = self.secrets.read().await;
-        let secrets = secrets_guard
-            .as_ref()
-            .ok_or_else(|| LlmError::SessionRenewalFailed {
-                provider: "nearai".to_string(),
-                reason: "No secrets store attached".to_string(),
-            })?;
-
-        let user_id = self.user_id.read().await.clone();
-        let decrypted = secrets
-            .get_decrypted(&user_id, "nearai_session_token")
-            .await
-            .map_err(|e| LlmError::SessionRenewalFailed {
-                provider: "nearai".to_string(),
-                reason: format!("Secrets lookup failed: {}", e),
-            })?;
-
-        use secrecy::ExposeSecret as _;
-        let session: SessionData =
-            serde_json::from_str(decrypted.expose_secret()).map_err(|e| {
-                LlmError::SessionRenewalFailed {
-                    provider: "nearai".to_string(),
-                    reason: format!("Failed to parse session from secrets: {}", e),
-                }
-            })?;
-
-        let mut guard = self.token.write().await;
-        *guard = Some(SecretString::from(session.session_token));
-        tracing::info!("Loaded session from encrypted secrets store");
 
         Ok(())
     }

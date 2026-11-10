@@ -68,7 +68,7 @@ cargo clippy -p ironclaw_llm --all-targets --all-features -- -D warnings
 
 - **The module spec is [`CONTRACT.md`](./CONTRACT.md)** (named in the root
   `AGENTS.md` Module Specs table): provider selection env vars, per-provider
-  gotchas, decorator chain order, host trait surface. This README only
+  gotchas, decorator chain order. This README only
   orients — the spec is canonical.
 - Orientation for agents: [`AGENTS.md`](./AGENTS.md) (pointer + reading aid).
 - Family boundary: [`../AGENTS.md`](../AGENTS.md); design record:
