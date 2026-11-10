@@ -18,12 +18,12 @@ use ironclaw_auth::{
 };
 use ironclaw_extension_host::{FirstPartyHandlerRegistrar, FirstPartyRegistrarContext};
 use ironclaw_extension_support::{
-    FIRST_PARTY_WEB_GET_CONTENT_CAPABILITY_ID, FIRST_PARTY_WEB_SEARCH_CAPABILITY_ID,
-    FirstPartyWebDispatchError, FirstPartyWebDispatchRequest, FirstPartyWebExecutor,
     GOOGLE_PROVIDER_ID, GsuiteCapabilitySpec, GsuiteCredentialDispatchReason,
     GsuiteCredentialStageError, GsuiteCredentialStageRequest, GsuiteCredentialStager,
     GsuiteDispatchError, GsuiteDispatchRequest, GsuiteExecutor, GsuitePackageSpec,
-    find_gsuite_capability, gsuite_google_account_visible_to_requester, gsuite_package_specs,
+    WEB_GET_CONTENT_CAPABILITY_ID, WEB_SEARCH_CAPABILITY_ID, WebAccessDispatchError,
+    WebAccessDispatchRequest, WebAccessExecutor, find_gsuite_capability,
+    gsuite_google_account_visible_to_requester, gsuite_package_specs,
 };
 use ironclaw_host_api::{
     action::{NetworkScheme, NetworkTargetPattern},
@@ -268,14 +268,14 @@ impl FirstPartyHandlerRegistrar for WebToolFirstPartyRegistrar {
         _context: &FirstPartyRegistrarContext,
     ) -> Result<(), HostApiError> {
         let handler = Arc::new(WebToolFirstPartyHandler {
-            executor: FirstPartyWebExecutor::default(),
+            executor: WebAccessExecutor::default(),
         });
         registry.insert_handler(
-            CapabilityId::new(FIRST_PARTY_WEB_SEARCH_CAPABILITY_ID)?,
+            CapabilityId::new(WEB_SEARCH_CAPABILITY_ID)?,
             Arc::clone(&handler),
         );
         registry.insert_handler(
-            CapabilityId::new(FIRST_PARTY_WEB_GET_CONTENT_CAPABILITY_ID)?,
+            CapabilityId::new(WEB_GET_CONTENT_CAPABILITY_ID)?,
             Arc::clone(&handler),
         );
         Ok(())
@@ -283,7 +283,7 @@ impl FirstPartyHandlerRegistrar for WebToolFirstPartyRegistrar {
 }
 
 struct WebToolFirstPartyHandler {
-    executor: FirstPartyWebExecutor,
+    executor: WebAccessExecutor,
 }
 
 #[async_trait]
@@ -294,7 +294,7 @@ impl FirstPartyCapabilityHandler for WebToolFirstPartyHandler {
     ) -> Result<FirstPartyCapabilityResult, FirstPartyCapabilityError> {
         let result = self
             .executor
-            .dispatch(FirstPartyWebDispatchRequest {
+            .dispatch(WebAccessDispatchRequest {
                 capability_id: &request.capability_id,
                 scope: &request.scope,
                 input: &request.input,
@@ -306,7 +306,7 @@ impl FirstPartyCapabilityHandler for WebToolFirstPartyHandler {
     }
 }
 
-fn web_tool_error(error: FirstPartyWebDispatchError) -> FirstPartyCapabilityError {
+fn web_tool_error(error: WebAccessDispatchError) -> FirstPartyCapabilityError {
     let mapped = FirstPartyCapabilityError::new(error.kind());
     if let Some(usage) = error.usage().cloned() {
         mapped.with_usage(usage)

@@ -88,10 +88,6 @@ impl OutboundDeliveryTargetProvider for WebAppOutboundTargetProvider {
     }
 }
 
-/// Registry key composition registers the provider under — the extension id,
-/// so the provider key and the manifest identity cannot drift.
-pub const WEB_APP_TARGET_PROVIDER_KEY: &str = ironclaw_web_app::WEB_APP_EXTENSION_ID;
-
 #[cfg(test)]
 mod tests {
     use super::*;

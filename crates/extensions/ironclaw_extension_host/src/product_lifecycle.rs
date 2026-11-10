@@ -159,7 +159,7 @@ pub struct ExtensionLifecycleManager {
     /// may expand up to [`crate::MAX_EXTENSION_BUNDLE_UNCOMPRESSED_BYTES`] into
     /// memory, so without a bound N concurrent operator uploads turn the
     /// per-request cap into N x 64 MiB of pressure before any lifecycle lock
-    /// applies (#5499 review finding #3).
+    /// applies.
     import_decode_semaphore: Arc<Semaphore>,
     /// Tracks registry package publications currently in flight. The map lock
     /// protects only this in-memory coordination state; waiters never retain a

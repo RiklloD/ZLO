@@ -26,11 +26,8 @@ pub use handlers::{
 /// directly (extension-runtime DEL-7).
 pub use ironclaw_auth::GOOGLE_PROVIDER_ID;
 pub use manifest::{
-    CALENDAR_EXTENSION_ID, GMAIL_EXTENSION_ID, GOOGLE_DOCS_EXTENSION_ID, GOOGLE_DRIVE_EXTENSION_ID,
-    GOOGLE_SHEETS_EXTENSION_ID, GOOGLE_SLIDES_EXTENSION_ID, GSUITE_EXTENSION_IDS,
     GSUITE_OUTPUT_BYTES_LIMIT, GSUITE_PROVIDER_SCOPES, GSUITE_REQUEST_BODY_LIMIT,
-    GSUITE_RESPONSE_BODY_LIMIT, GSUITE_TIMEOUT_MS, GsuiteCapabilityOperation, GsuiteCapabilitySpec,
-    GsuitePackageSpec, calendar_package_spec, find_gsuite_capability, gmail_package_spec,
-    gsuite_package_specs, gsuite_resource_profile, is_gsuite_extension_id,
+    GSUITE_RESPONSE_BODY_LIMIT, GsuiteCapabilityOperation, GsuiteCapabilitySpec, GsuitePackageSpec,
+    find_gsuite_capability, gsuite_package_specs, gsuite_resource_profile, is_gsuite_extension_id,
 };
 pub use network::{google_api_network_policy, gsuite_network_policy_for};

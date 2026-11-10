@@ -1,8 +1,8 @@
 //! Prompt-write safety enforcement for the memory crate.
 //!
 //! The prompt-write-safety *vocabulary* (operation, source, severity, reason
-//! codes, event payload/sink, policy trait, protected-path registry) moved to
-//! `ironclaw_memory` and is re-exported below. The *enforcement engine*
+//! codes, event payload/sink, policy trait, protected-path registry) lives in
+//! `ironclaw_memory`. The *enforcement engine*
 //! — the default policy (which depends on `ironclaw_safety`'s sanitizer), the
 //! protected-path classification, and the `enforce_prompt_write_safety` helper
 //! the memory backend and filesystem adapters call — stays here.

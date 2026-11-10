@@ -19,4 +19,4 @@ pub const MANIFEST: &str = include_str!("../manifest.toml");
 
 pub use channel::WebAppChannelAdapter;
 pub use preference_targets::WebAppPreferenceTargetCodec;
-pub use targets::{WEB_APP_TARGET_PROVIDER_KEY, WebAppOutboundTargetProvider};
+pub use targets::WebAppOutboundTargetProvider;

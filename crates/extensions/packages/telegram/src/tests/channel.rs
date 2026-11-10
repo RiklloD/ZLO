@@ -137,6 +137,10 @@ async fn ambient_group_chatter_and_non_message_updates_are_ignored() {
             inbound(br#"{"update_id": 44, "edited_message": {"message_id": 9, "date": 1, "chat": {"id": 1, "type": "private"}}}"#).await,
             Ok(InboundOutcome::Ignore)
         ));
+    assert!(matches!(
+            inbound(br#"{"update_id": 45, "channel_post": {"message_id": 10, "date": 1, "chat": {"id": -100300, "type": "channel"}}}"#).await,
+            Ok(InboundOutcome::Ignore)
+        ));
 }
 
 #[tokio::test]

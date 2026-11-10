@@ -191,7 +191,7 @@ pub(crate) fn valid_memory_path() -> VirtualPath {
 mod path_validation_tests {
     use super::validated_memory_relative_path;
 
-    /// PR #3679 review fix (finding #5): legal user document paths must
+    /// Legal user document paths must
     /// not collide with the repository's sidecar suffix namespace.
     #[test]
     fn rejects_path_segments_ending_in_reserved_sidecar_suffixes() {

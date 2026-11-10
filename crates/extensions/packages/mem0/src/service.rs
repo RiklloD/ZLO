@@ -1128,7 +1128,9 @@ mod tests {
         let transport = Arc::new(transport);
         let service = Mem0MemoryService::new(
             Arc::clone(&transport) as Arc<dyn Mem0Transport>,
-            Mem0Config::new().with_app_id(app_id),
+            Mem0Config {
+                app_id: Some(app_id.to_string()),
+            },
         );
         (service, transport)
     }

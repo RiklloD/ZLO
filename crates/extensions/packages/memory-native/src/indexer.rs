@@ -83,11 +83,6 @@ where
         }
     }
 
-    pub fn with_chunk_config(mut self, chunk_config: ChunkConfig) -> Self {
-        self.chunk_config = chunk_config;
-        self
-    }
-
     pub fn with_memory_event_sink<S>(mut self, event_sink: Arc<S>) -> Self
     where
         S: MemorySignificantEventSink + 'static,

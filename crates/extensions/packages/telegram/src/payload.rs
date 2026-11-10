@@ -19,7 +19,6 @@ use thiserror::Error;
 use crate::attachment_transfer::{ParsedTelegramBatchFragment, ParsedTelegramInboundMessage};
 
 pub const TELEGRAM_API_HOST: &str = "api.telegram.org";
-pub const TELEGRAM_FILE_API_HOST: &str = "api.telegram.org";
 pub const TELEGRAM_USER_ACTOR_KIND: &str = "telegram_user";
 const TELEGRAM_MEDIA_GROUP_SETTLE_MILLIS: u64 = 1_000;
 
@@ -665,10 +664,6 @@ struct TelegramUpdate {
     update_id: i64,
     #[serde(default)]
     message: Option<TelegramMessage>,
-    #[serde(default)]
-    edited_message: Option<TelegramMessage>,
-    #[serde(default)]
-    channel_post: Option<TelegramMessage>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -796,12 +791,6 @@ struct TelegramSticker {
     is_animated: bool,
     #[serde(default)]
     is_video: bool,
-}
-
-// keep clippy happy about read-only fields on edited_message / channel_post.
-#[allow(dead_code)]
-fn _suppress_unused_field_warnings(update: &TelegramUpdate) {
-    let _ = (&update.edited_message, &update.channel_post);
 }
 
 #[cfg(test)]

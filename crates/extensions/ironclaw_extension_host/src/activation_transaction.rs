@@ -34,21 +34,6 @@ pub enum ExtensionActivationMode {
     },
 }
 
-impl ExtensionActivationMode {
-    pub fn from_dispatch_context(
-        scope: ResourceScope,
-        runtime_http_egress: Option<Arc<dyn RuntimeHttpEgress>>,
-    ) -> Self {
-        match runtime_http_egress {
-            Some(runtime_http_egress) => Self::HostedMcpDiscovery {
-                scope,
-                runtime_http_egress,
-            },
-            None => Self::Static,
-        }
-    }
-}
-
 /// Credential authority observed at one activation checkpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionActivationCredentialReadiness {

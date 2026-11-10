@@ -123,11 +123,9 @@ pub struct AvailableExtensionPackage {
     /// construction like `channel_directions` and fed into prompt construction.
     pub channel_presentation: Option<ironclaw_extension_contracts::channel::ChannelPresentation>,
     pub assets: Vec<AvailableExtensionAsset>,
-    /// Bespoke onboarding copy carried down from a migrated inventory bundle
-    /// (`ironclaw_extension_support::packages`). `None` for packages whose
-    /// onboarding copy still lives in composition's per-id `onboarding()` match;
-    /// as each package migrates, its copy moves here and its match arm is
-    /// deleted. See overview §3 (package self-containment).
+    /// Bespoke onboarding copy carried down from the package's inventory bundle
+    /// (`ironclaw_extension_support::packages`). `None` for packages that ship
+    /// no setup guidance.
     pub onboarding_override: Option<LifecycleExtensionOnboarding>,
     /// Extra catalog search aliases carried down from an injected first-party
     /// bundle (e.g. the GSuite family's "google"/"workspace" terms). Empty for
