@@ -1,8 +1,8 @@
 use ironclaw_host_api::turn::LoopGateRef;
 use ironclaw_loop_contracts::{
-    AgentLoopHostError, AgentLoopHostErrorKind, CheckpointSchemaId, LoopCheckpointRequest,
-    LoopProgressEvent, LoopRecoveryClass, LoopRecoveryDisposition, LoopRecoveryStage,
-    LoopSafeSummary, StageCheckpointPayloadRequest, sanitize_model_visible_text,
+    AgentLoopHostError, AgentLoopHostErrorKind, CheckpointSchemaId, LoopCancellationSignal,
+    LoopCheckpointRequest, LoopExit, LoopProgressEvent, LoopRecoveryClass, LoopRecoveryDisposition,
+    LoopRecoveryStage, LoopSafeSummary, StageCheckpointPayloadRequest, sanitize_model_visible_text,
 };
 
 use crate::state::{CheckpointKind, LoopExecutionState};
@@ -215,15 +215,26 @@ impl CheckpointStage {
         let Some(signal) = ctx.host.observe_cancellation() else {
             return Ok(CancelCheck::Continue(Box::new(state)));
         };
+        self.cancel_on_signal(ctx, state, signal)
+            .await
+            .map(CancelCheck::Exit)
+    }
 
+    /// Exit for a cancellation `signal` the caller has already observed.
+    pub(super) async fn cancel_on_signal(
+        &self,
+        ctx: StageContext<'_>,
+        state: LoopExecutionState,
+        signal: LoopCancellationSignal,
+    ) -> Result<LoopExit, AgentLoopExecutorError> {
         let fallback_state = state.clone();
         match self.write(ctx, state, CheckpointKind::Final).await {
-            Ok(checked) => Ok(CancelCheck::Exit(cancelled_exit_with_reason(
+            Ok(checked) => cancelled_exit_with_reason(
                 ctx.host,
                 checked.state,
                 cancelled_reason_from_signal(&signal),
                 Some(checked.checkpoint_id),
-            )?)),
+            ),
             // Permissive profile: only checkpoint-write failures are absorbed
             // into a checkpoint-free `Cancelled` exit. Other variants (e.g.
             // `HostUnavailable`) must propagate so the runner can apply its
@@ -238,12 +249,12 @@ impl CheckpointStage {
                 .checkpoint_policy
                 .require_final_checkpoint =>
             {
-                Ok(CancelCheck::Exit(cancelled_exit_with_reason(
+                cancelled_exit_with_reason(
                     ctx.host,
                     fallback_state,
                     cancelled_reason_from_signal(&signal),
                     None,
-                )?))
+                )
             }
             Err(error) => Err(error),
         }

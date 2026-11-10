@@ -370,17 +370,13 @@ impl<'a> PromptPlanningPipeline<'a> {
     }
 
     async fn cancel_boundary(&mut self) -> Result<Option<LoopExit>, AgentLoopExecutorError> {
-        let cancel_check = CheckpointStage
-            .cancel_if_requested(self.ctx, self.state.clone())
-            .await;
-        match cancel_check {
-            Ok(CancelCheck::Continue(state)) => {
-                self.state = *state;
-                Ok(None)
-            }
-            Ok(CancelCheck::Exit(exit)) => Ok(Some(exit)),
-            Err(error) => Err(error),
-        }
+        let Some(signal) = self.ctx.host.observe_cancellation() else {
+            return Ok(None);
+        };
+        CheckpointStage
+            .cancel_on_signal(self.ctx, self.state.clone(), signal)
+            .await
+            .map(Some)
     }
 
     async fn visible_surface(
