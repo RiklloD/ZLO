@@ -1,12 +1,15 @@
 //! Global "auto-approve eligible tools" setting for the Reborn settings surface
 //! (#4776 / #4959).
 //!
-//! This is a per-(tenant, user) boolean toggle. When enabled, the dispatch
-//! approval gate auto-approves a tool whose effective permission is the
-//! default/seeded ask behaviour — while the hard floor (never-auto-approve
-//! effects), explicit per-tool overrides, missing-grant denials, and trust
-//! ceilings are all still enforced above it (see the authorizer in
-//! `ironclaw_composition`).
+//! This is a per-(tenant, user) boolean toggle. On its own it auto-approves a
+//! tool whose effective permission is the default/seeded ask behaviour, with
+//! the hard floor (never-auto-approve effects) and explicit per-tool overrides
+//! enforced above it. In the shipped composition it is also the "Full access"
+//! switch for a thread whose profile sets no approval mode
+//! (`ironclaw_composition`'s `profile_approval_mode`): Full access skips the
+//! hard floor and `ask_each_time` overrides too, leaving only a per-tool
+//! `disabled` to deny. Missing-grant denials and trust ceilings hold either
+//! way.
 //!
 //! Scope is deliberately `(tenant, user)` only — agent/project/thread are
 //! dropped — so a single user-level toggle applies across every agent and

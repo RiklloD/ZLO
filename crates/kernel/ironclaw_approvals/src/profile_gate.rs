@@ -45,7 +45,8 @@ pub enum OriginGateRequirement {
     /// stored auto-approve/always-allow grant can bypass it — only a genuine
     /// one-shot approval lease satisfies it. Mirrors `effects_force_approval`:
     /// composed at the hard-floor step and NOT suppressed by the Minimal (yolo)
-    /// bypass.
+    /// bypass. A "Full access" thread never reaches this step (see
+    /// [`ApprovalSettingsProvider::full_access`]).
     GateHardFloor,
     /// Soft gate (`GatedUnlessGranted`, §5.2.7): contributes an intrinsic
     /// approval gate whose "unless granted" is satisfied by the same class-B
@@ -71,12 +72,13 @@ pub trait ProfileApprovalGatePolicy: Send + Sync {
         effects: &[EffectKind],
     ) -> bool;
 
-    /// Hard floor (#4776/#4959): effects that ALWAYS require an explicit
-    /// approval gate and can never be auto-approved or satisfied by a stored
-    /// always-allow grant, regardless of `ApprovalPolicy` or the global
-    /// auto-approve setting. The reborn equivalent of v1's
-    /// `ApprovalRequirement::Always`, expressed per-call over the invocation's
-    /// effects. Defaults to "no floor".
+    /// Hard floor (#4776/#4959): effects that require an explicit approval
+    /// gate and can never be auto-approved or satisfied by a stored
+    /// always-allow grant, regardless of `ApprovalPolicy`. The reborn
+    /// equivalent of v1's `ApprovalRequirement::Always`, expressed per-call
+    /// over the invocation's effects. Defaults to "no floor". The one thing
+    /// above it is "Full access" ([`ApprovalSettingsProvider::full_access`]),
+    /// which the gate checks first and which skips the floor.
     fn effects_force_approval(&self, _effects: &[EffectKind]) -> bool {
         false
     }
@@ -137,8 +139,9 @@ pub trait ApprovalSettingsProvider: Send + Sync {
 
     /// Whether the dispatching thread runs on "Full access": every tool call
     /// runs without asking, hard floors and `ask_each_time` included; only an
-    /// explicit per-tool `disabled` still denies. Off unless an implementation
-    /// knows the thread's profile chose it.
+    /// explicit per-tool `disabled` still denies. Off by default; composition's
+    /// profile-aware provider answers it from the thread's profile mode, or the
+    /// global auto-approve switch for a thread whose profile sets none.
     async fn full_access(&self, _scope: &ResourceScope) -> bool {
         false
     }
@@ -382,7 +385,8 @@ async fn require_approval_for_profile_policy(
     if settings.full_access(&context.resource_scope).await {
         return decision;
     }
-    // 3. Hard floor: never auto-approve / never satisfiable by a stored grant.
+    // 3. Hard floor: never auto-approve / never satisfiable by a stored grant
+    //    (a Full access thread already returned at 2b).
     //    The matrix's `AskAlways` hard-floor gate composes here (§5.2.7): it
     //    beats class-B auto-approve/always-allow (steps 6/7/8 below) and is
     //    satisfied only by the one-shot approval lease checked in step 2 — the

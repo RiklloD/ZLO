@@ -4,9 +4,15 @@
 //! global auto-approve question from the dispatching thread's profile when
 //! that profile sets an `approval_mode`; a profile without one, a thread the
 //! orchestrator does not know, and a deployment without an orchestrator all
-//! fall through to the global setting. Per-tool overrides, always-allow
-//! policies and the hard floors the gate checks before step 6 are untouched,
-//! so "Full access" never bypasses an action the policy always gates.
+//! fall through to the global setting.
+//!
+//! "Full access" is therefore the thread profile's `approval_mode`, or, for a
+//! thread whose profile sets none, the global auto-approve switch. Under Full
+//! access the gate asks for nothing: hard floors, the origin matrix's
+//! `AskAlways` gate and per-tool `ask_each_time` overrides are all skipped,
+//! and only a per-tool `disabled` still denies (step 2b of the gate in
+//! `ironclaw_approvals::profile_gate`). "Ask first" — the profile's mode, or
+//! the global switch off for a profile that sets none — keeps every gate.
 //!
 //! The orchestrator engine is built after the host-runtime authorizer, so it
 //! arrives through a [`ProfileApprovalEngineSlot`] filled once at assembly.
