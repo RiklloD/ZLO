@@ -3,7 +3,6 @@ import { registerPack } from "../lib/i18n";
 registerPack("en", {
   // Language metadata
   "language.name": "English",
-  "language.switch": "Language changed",
 
   // Common
   "common.unknown": "Unknown",
@@ -17,22 +16,18 @@ registerPack("en", {
   "common.done": "Done",
   "common.back": "Back",
   "common.continue": "Continue",
-  "common.send": "Send",
 
   // Navigation
   "nav.chat": "Chat",
   "nav.close": "Close",
   "nav.workspace": "Workspace",
   "nav.projects": "Projects",
-  "nav.jobs": "Jobs",
   "nav.automations": "Automations",
   "nav.extensions": "Extensions",
   "nav.settings": "Settings",
   "nav.admin": "Admin",
   "nav.logs": "Logs",
   "nav.docs": "Documentation",
-  "nav.sectionWork": "Work",
-  "nav.sectionSystem": "System",
 
   // Theme
   "theme.switchToLight": "Switch to light theme",
@@ -83,18 +78,7 @@ registerPack("en", {
   "notifications.generic.body": "There is an update that may need your attention.",
   "notifications.generic.detail": "Open for details",
 
-  // Status
-  "status.online": "online",
-  "status.offline": "offline",
-  "status.checking": "checking",
-
   // Login page
-  "login.hero": "Local agent control without losing the operator trail.",
-  "login.heroSub":
-    "Token access keeps the browser console tied to the same gateway runtime, approvals, tools, and thread state.",
-  "login.bearerAuth": "Bearer auth",
-  "login.bearerDesc":
-    "Paste the local gateway token to open the operator surface.",
   "login.console": "IronClaw console",
   "login.secureSub": "Secure access to the local agent gateway.",
   "login.tokenLabel": "Gateway token",
@@ -110,9 +94,6 @@ registerPack("en", {
   "chat.heroTitle": "How can I help you today?",
   "chat.heroDesc":
     "Start with a goal, a repo question, a review request, or work you want inspected.",
-  "chat.emptyTitle": "Start with a concrete operator task.",
-  "chat.emptyDesc":
-    "Send a message or ask for a gateway check. The workspace keeps approvals and runtime activity visible as the turn progresses.",
 
   // Chat — OOBE suggestion cards (feature-gated first-run surface)
   "chat.oobe.heading": "Suggested for you",
@@ -132,7 +113,6 @@ registerPack("en", {
   "chat.oobe.status.generateFailed": "Couldn\u2019t generate suggestions",
 
   // Chat — input
-  "chat.placeholder": "Message IronClaw...",
   "chat.heroPlaceholder": "Ask IronClaw anything.",
   "chat.followUpPlaceholder": "Ask for follow-up changes",
   "chat.send": "Send message",
@@ -151,16 +131,11 @@ registerPack("en", {
   "chat.attachmentReadFailed": "Could not read {name}.",
   "chat.attachmentStagingFailed": "Could not attach the selected files.",
   "chat.fileDownloadFailed": "Couldn't download that file.",
-  "chat.modeAutoReview": "Auto-review",
-  "chat.runtimeLocal": "Work locally",
-  "chat.statusWorking": "Working",
   "chat.processWorking": "Working…",
   "chat.workedFor": "Worked for {duration}",
   "chat.reloadHistory": "Reload history",
   "chat.busyRejectedResend":
     "This message wasn't sent because IronClaw was busy. Resend it to try again.",
-  "chat.identityUser": "You",
-  "chat.identityAssistant": "IronClaw",
   "chat.jumpToLatest": "Jump to latest",
   "chat.queued": "Queued",
   "shortcuts.title": "Keyboard shortcuts",
@@ -171,13 +146,11 @@ registerPack("en", {
 
   // Chat — thread sidebar
   "chat.conversations": "Conversations",
-  "chat.threads": "{count} threads",
   "chat.newThread": "New",
   "chat.creating": "Creating",
   "chat.selectConversation": "Select conversation",
   "chat.noConversations":
     "No conversations yet. Start a thread from the composer suggestions.",
-  "chat.turns": "{count} turns",
 
   // Chat — connection
   "connection.connected": "Connected",
@@ -190,7 +163,6 @@ registerPack("en", {
   "approval.title": "Approval required",
   "approval.approve": "Approve",
   "approval.deny": "Deny",
-  "approval.always": "Always",
   "approval.approveAndAlways": "Approve & always allow",
   "approval.alwaysAllowToolLabel": "Always allow {tool} without asking",
   "approval.globalAutoApproveLink": "Automatically approve and execute all actions",
@@ -243,10 +215,8 @@ registerPack("en", {
   "authGate.submitting": "Checking...",
   "authGate.cancel": "Cancel",
   "authGate.oauthTitle": "Authorization required",
-  "authGate.oauthAccountLabel": "Account:",
   "authGate.openAuthorization": "Open {provider} authorization",
   "authGate.reopenAuthorization": "Re-open {provider} authorization",
-  "authGate.oauthWaiting": "Waiting for authorization to complete\u2026 You can close the popup tab once you\u2019ve approved access.",
   "authGate.authorizing": "Waiting for {provider}\u2026",
   "authGate.expiresAt": "Expires",
   "authGate.oauthProviderFallback": "the provider",
@@ -256,7 +226,6 @@ registerPack("en", {
     "The {provider} authorization window closed before you finished connecting. Re-open it above to try again.",
   "authGate.pillAuthorize": "Authorize",
   "authGate.pillEnterToken": "Enter token",
-  "authGate.unsupportedChallenge": "Open settings to complete this authentication step.",
   "authGate.unsupportedChallengeNeutral":
     "This authentication method is not available in this view. Cancel this step and retry from the place that requested it.",
   "authGate.submitFailed": "Could not save the token.",
@@ -264,7 +233,6 @@ registerPack("en", {
     "Token saved. Could not resume the blocked run; retry to resume it.",
 
   // Error
-  "error.gatewayConnection": "Unable to connect to the gateway",
   "error.saveFailed": "Save failed: {message}",
   "error.loadFailed": "Failed to load {what}: {message}",
 
@@ -277,16 +245,10 @@ registerPack("en", {
   // Settings tabs
   "settings.inference": "Inference",
   "settings.appearance": "Appearance",
-  "settings.agent": "Agent",
-  "settings.channels": "Channels",
-  "settings.networking": "Networking",
   "settings.tools": "Tools",
   "settings.skills": "Skills",
   "settings.traceCommons": "Trace Commons",
-  "settings.users": "Users",
   "settings.language": "Language",
-
-  // Settings — usage tab
 
   // Settings — Trace Commons credits (read-only)
   "traceCommons.title": "Trace Commons credits",
@@ -347,20 +309,10 @@ registerPack("en", {
 
   // Settings — restart banner
   "settings.restartRequired": "Some changes require a restart to take effect.",
-  "settings.restartNow": "Restart now",
-  "settings.restartStarting": "Restarting...",
   "settings.restartUnavailable": "Restart from the web UI isn't available yet. Restart the gateway process manually to apply pending changes.",
   "settings.field.showChatTerminalShortcut": "Show chat terminal shortcut",
   "settings.field.showChatTerminalShortcutDesc":
     "Displays the floating terminal/logs icon inside chat threads.",
-
-  // Restart dialog
-  "restart.title": "Restart IronClaw",
-  "restart.description": "Restart the gateway process to apply pending changes.",
-  "restart.warning": "Running tasks may be interrupted while the gateway restarts.",
-  "restart.cancel": "Cancel",
-  "restart.confirm": "Confirm restart",
-  "restart.progressTitle": "Restarting IronClaw",
 
   // TEE attestation
   "tee.title": "TEE Attestation",
@@ -477,124 +429,13 @@ registerPack("en", {
   "llm.addApiKey": "Add API key",
 
   // Settings — agent groups
-  "settings.group.core": "Core",
-  "settings.group.heartbeat": "Heartbeat",
-  "settings.group.sandbox": "Sandbox",
-  "settings.group.routines": "Routines",
-  "settings.group.safety": "Safety",
-  "settings.group.skills": "Skills",
-  "settings.group.search": "Search",
-  "settings.field.agentName": "Agent name",
-  "settings.field.agentNameDesc": "Display name for the assistant",
-  "settings.field.maxParallelJobs": "Max parallel jobs",
-  "settings.field.maxParallelJobsDesc": "Concurrent background job limit",
-  "settings.field.jobTimeout": "Job timeout",
-  "settings.field.jobTimeoutDesc": "Seconds before a job is marked stuck",
-  "settings.field.maxToolIterations": "Max tool iterations",
-  "settings.field.maxToolIterationsDesc": "Tool call limit per turn",
-  "settings.field.planning": "Planning",
-  "settings.field.planningDesc": "Enable multi-step planning before execution",
   "settings.field.autoApproveEligibleTools": "Always allow eligible tools",
   "settings.field.autoApproveEligibleToolsDesc":
     "Applies to tools set to “Follow global”. Per-tool settings override this; hard-floor approval gates still ask.",
-  "settings.field.timezone": "Timezone",
-  "settings.field.timezoneDesc": "IANA timezone for scheduled work",
-  "settings.field.sessionIdleTimeout": "Session idle timeout",
-  "settings.field.sessionIdleTimeoutDesc":
-    "Seconds of inactivity before session ends",
-  "settings.field.stuckThreshold": "Stuck threshold",
-  "settings.field.stuckThresholdDesc":
-    "Seconds before a job is considered stuck",
-  "settings.field.maxRepairAttempts": "Max repair attempts",
-  "settings.field.maxRepairAttemptsDesc": "Retry limit for stuck job recovery",
-  "settings.field.dailyCostLimit": "Daily cost limit (cents)",
-  "settings.field.dailyCostLimitDesc": "Maximum spend per day in cents",
-  "settings.field.actionsPerHour": "Actions per hour limit",
-  "settings.field.actionsPerHourDesc": "Hourly action rate cap",
-  "settings.field.allowLocalTools": "Allow local tools",
-  "settings.field.allowLocalToolsDesc": "Enable filesystem and shell access",
-  "settings.field.heartbeatEnabled": "Enable heartbeat",
-  "settings.field.heartbeatEnabledDesc": "Periodic proactive execution",
-  "settings.field.heartbeatInterval": "Interval",
-  "settings.field.heartbeatIntervalDesc": "Seconds between heartbeat runs",
-  "settings.field.heartbeatNotifyChannel": "Notify channel",
-  "settings.field.heartbeatNotifyChannelDesc":
-    "Channel to send heartbeat notifications",
-  "settings.field.heartbeatNotifyUser": "Notify user",
-  "settings.field.heartbeatNotifyUserDesc": "User ID to notify on findings",
-  "settings.field.quietHoursStart": "Quiet hours start",
-  "settings.field.quietHoursStartDesc": "Hour (0–23) to begin suppression",
-  "settings.field.quietHoursEnd": "Quiet hours end",
-  "settings.field.quietHoursEndDesc": "Hour (0–23) to end suppression",
-  "settings.field.heartbeatTimezone": "Timezone",
-  "settings.field.heartbeatTimezoneDesc": "IANA timezone for quiet hours",
-  "settings.field.sandboxEnabled": "Enable sandbox",
-  "settings.field.sandboxEnabledDesc": "Docker-based tool execution",
-  "settings.field.sandboxPolicy": "Policy",
-  "settings.field.sandboxPolicyDesc": "Container filesystem access level",
-  "settings.field.sandboxTimeout": "Timeout",
-  "settings.field.sandboxTimeoutDesc": "Container execution time limit",
-  "settings.field.sandboxMemoryLimit": "Memory limit (MB)",
-  "settings.field.sandboxMemoryLimitDesc": "Container memory ceiling",
-  "settings.field.sandboxImage": "Docker image",
-  "settings.field.sandboxImageDesc": "Container image for sandbox runs",
-  "settings.field.routinesMaxConcurrent": "Max concurrent",
-  "settings.field.routinesMaxConcurrentDesc":
-    "Parallel routine execution limit",
-  "settings.field.routinesDefaultCooldown": "Default cooldown",
-  "settings.field.routinesDefaultCooldownDesc": "Seconds between routine runs",
-  "settings.field.safetyMaxOutput": "Max output length",
-  "settings.field.safetyMaxOutputDesc": "Character limit on tool output",
-  "settings.field.safetyInjectionCheck": "Injection detection",
-  "settings.field.safetyInjectionCheckDesc":
-    "Scan tool outputs for prompt injection",
-  "settings.field.skillsMaxActive": "Max active skills",
-  "settings.field.skillsMaxActiveDesc": "Concurrent skill attachment limit",
-  "settings.field.skillsMaxContextTokens": "Max context tokens",
-  "settings.field.skillsMaxContextTokensDesc":
-    "Token budget for injected skill prompts",
-  "settings.field.fusionStrategy": "Fusion strategy",
-  "settings.field.fusionStrategyDesc":
-    "Result merging method for hybrid search",
-
-  // Settings — networking
-  "settings.group.gateway": "Gateway",
-  "settings.group.tunnel": "Tunnel",
-  "settings.field.gatewayHost": "Host",
-  "settings.field.gatewayHostDesc": "Gateway bind address",
-  "settings.field.gatewayPort": "Port",
-  "settings.field.gatewayPortDesc": "Gateway listen port",
-  "settings.field.tunnelProvider": "Provider",
-  "settings.field.tunnelProviderDesc": "Public tunnel service",
-  "settings.field.tunnelPublicUrl": "Public URL",
-  "settings.field.tunnelPublicUrlDesc": "Static tunnel endpoint",
 
   // Settings — channels tab
-  "channels.builtIn": "Built-in channels",
   "channels.messaging": "Messaging channels",
   "channels.availableChannels": "Available channels",
-  "channels.mcpServers": "MCP servers",
-  "channels.webGateway": "Web Gateway",
-  "channels.webGatewayDesc": "Browser-based chat with SSE streaming",
-  "channels.httpWebhook": "HTTP Webhook",
-  "channels.httpWebhookDesc":
-    "Inbound webhook endpoint for external integrations",
-  "channels.cli": "CLI",
-  "channels.cliDesc": "Terminal interface with TUI or simple REPL",
-  "channels.repl": "REPL",
-  "channels.replDesc": "Minimal read-eval-print loop for testing",
-  "channels.telegram": "Telegram",
-  "channels.telegramDesc": "Tenant bot channel for paired direct messages",
-  "channels.telegramDetail": "BotFather bot token",
-  "channels.statusOn": "on",
-  "channels.statusOff": "off",
-  "channels.ready": "ready",
-  "channels.authNeeded": "auth needed",
-  "channels.pairing": "pairing",
-  "channels.setup": "setup",
-  "channels.active": "active",
-  "channels.inactive": "inactive",
-  "channels.available": "available",
 
   // Settings — tools tab
   "tools.permissions": "Tool permissions",
@@ -608,7 +449,6 @@ registerPack("en", {
   "tools.sourceOverride": "per-tool override",
   "tools.saved": "saved",
   "tools.permissionFor": "Permission for {name}",
-  "tools.filterPlaceholder": "Filter tools…",
   "tools.noMatch": "No tools match the filter.",
   "tools.failedLoad": "Failed to load tools: {message}",
   "tools.description.builtin.echo": "Echo a message",
@@ -652,7 +492,6 @@ registerPack("en", {
   "tools.description.nearai.web_search": "Search through the NEAR AI MCP server",
 
   // Settings — skills tab
-  "skills.installed": "Installed skills",
   "skills.group.user": "Your skills",
   "skills.group.system": "System skills",
   "skills.group.workspace": "Workspace skills",
@@ -668,11 +507,6 @@ registerPack("en", {
   "skills.importDesc": "Paste SKILL.md content to add a user-mounted skill.",
   "skills.name": "Skill name",
   "skills.namePlaceholder": "skill-name",
-  "skills.url": "HTTPS URL",
-  "skills.urlHint": "Use a direct HTTPS link to a SKILL.md or supported skill bundle.",
-  "skills.urlPlaceholder": "https://example.com/SKILL.md",
-  "skills.httpsRequired": "URL must use HTTPS.",
-  "skills.importSourceRequired": "Provide an HTTPS URL or SKILL.md content.",
   "skills.content": "SKILL.md content",
   "skills.contentHint": "Use the full SKILL.md frontmatter and prompt content.",
   "skills.contentPlaceholder": "---\\nname: example\\ndescription: ...\\n---\\n",
@@ -682,14 +516,12 @@ registerPack("en", {
   "skills.installedSuccess": "Added skill \"{name}\"",
   "skills.nameRequired": "Skill name is required.",
   "skills.contentRequired": "SKILL.md content is required.",
-  "skills.remove": "Remove",
   "skills.delete": "Delete",
   "skills.edit": "Edit",
   "skills.loading": "Loading...",
   "skills.save": "Save",
   "skills.saving": "Saving...",
   "skills.cancel": "Cancel",
-  "skills.confirmRemove": "Remove skill \"{name}\"?",
   "skills.confirmDelete": "Delete skill \"{name}\"?",
   "skills.removeFailed": "Remove failed.",
   "skills.removed": "Removed skill \"{name}\"",
@@ -714,22 +546,9 @@ registerPack("en", {
   "skills.autoActivateOffLabel": "Auto-activate: Off",
 
   // Settings — users tab
-  "users.title": "Users ({count})",
-  "users.addUser": "Add user",
-  "users.newUser": "New user",
-  "users.displayName": "Display name",
-  "users.email": "Email",
-  "users.role": "Role",
-  "users.member": "Member",
-  "users.admin": "Admin",
-  "users.createUser": "Create user",
-  "users.creating": "Creating…",
-  "users.cancel": "Cancel",
   "users.adminRequired": "Admin access required",
   "users.adminRequiredDesc":
     "User management is only available to accounts with admin privileges.",
-  "users.failedLoad": "Failed to load users: {message}",
-  "users.noUsers": "No users registered.",
 
   // Workspace page
   "workspace.title": "Workspace",
@@ -754,49 +573,6 @@ registerPack("en", {
     "No inline preview for this file type. Download it to view the contents.",
   "workspace.fileMeta": "{mime} · {size}",
   "workspace.unableOpenDirectory": "Unable to open directory",
-
-  // Jobs page
-  "jobs.allJobs": "All jobs",
-  "jobs.refresh": "Refresh",
-  "jobs.refreshing": "Refreshing",
-  "jobs.unavailable": "Job unavailable",
-  "jobs.unavailableDesc":
-    "This job no longer exists or is outside your access scope.",
-  "jobs.returnToJobs": "Return to jobs",
-  "jobs.dismiss": "Dismiss",
-
-  // Jobs — list
-  "jobs.list.explorer": "Explorer",
-  "jobs.list.queueTitle": "Job queue",
-  "jobs.list.queueDesc":
-    "Search by title or ID, jump into a run, and stop active work without leaving the page.",
-  "jobs.list.visible": "{count} visible",
-  "jobs.list.state.live": "live",
-  "jobs.list.state.refreshing": "refreshing",
-  "jobs.list.searchPlaceholder": "Search job title or UUID",
-  "jobs.list.empty.noMatchTitle": "No jobs match the current filters",
-  "jobs.list.empty.noMatchDesc":
-    "Try a broader search term or reset the state filter to see the rest of the queue.",
-  "jobs.list.empty.noJobsTitle": "No jobs yet",
-  "jobs.list.empty.noJobsDesc":
-    "Background work, sandbox runs, and operator interventions will appear here once the gateway starts creating jobs.",
-  "jobs.list.filter.all": "All states",
-  "jobs.list.filter.pending": "Pending",
-  "jobs.list.filter.inProgress": "In progress",
-  "jobs.list.filter.completed": "Completed",
-  "jobs.list.filter.failed": "Failed",
-  "jobs.list.filter.stuck": "Stuck",
-  "jobs.list.untitled": "Untitled job",
-  "jobs.list.created": "created {value}",
-  "jobs.list.started": "started {value}",
-  "jobs.action.cancel": "Cancel",
-  "jobs.action.open": "Open",
-
-  // Jobs — detail
-  "jobs.detail.backToAll": "Back to all jobs",
-  "jobs.detail.tabs.overview": "Overview",
-  "jobs.detail.tabs.activity": "Activity",
-  "jobs.detail.tabs.files": "Files",
 
   // Automations page
   "automations.action.pause": "Pause",
@@ -894,8 +670,6 @@ registerPack("en", {
   "automations.summary.active": "Active",
   "automations.summary.activeDetail":
     "Enabled schedules waiting for their next run.",
-  "automations.summary.paused": "Paused",
-  "automations.summary.pausedDetail": "Schedules not currently expected to run.",
   "automations.summary.running": "Running now",
   "automations.summary.runningDetail": "Automations with a run in progress.",
   "automations.summary.failures": "Failures",
@@ -907,8 +681,6 @@ registerPack("en", {
   "automations.summary.nextRunDetail": "Soonest scheduled run in this list.",
   "automations.empty.matchingTitle": "No matching automations",
   "automations.empty.matchingDescription": "Try a different status filter.",
-  "automations.empty.noneTitle": "No scheduled automations yet.",
-  "automations.empty.noneDescription": "This agent has no scheduled work to show.",
   "automations.empty.onboardingTitle": "No automations yet",
   "automations.empty.onboardingDescription":
     "Automations are created by chatting with your agent — there's no form to fill out. Ask it to do something on a schedule and it will set up a recurring automation for you.",
@@ -926,7 +698,6 @@ registerPack("en", {
   "automations.table.name": "Name",
   "automations.table.schedule": "Schedule",
   "automations.table.nextRun": "Next run",
-  "automations.table.lastRun": "Last run",
   "automations.table.recentRuns": "Recent runs",
   "automations.table.noRuns": "No runs",
   "automations.table.status": "Status",
@@ -966,9 +737,6 @@ registerPack("en", {
   "automations.detail.noThread": "No thread attached",
 
   // Extensions page
-  "ext.installed": "Installed",
-  "ext.channels": "Channels",
-  "ext.mcp": "MCP",
   "ext.registry": "Registry",
 
   // Extensions — registry
@@ -1001,8 +769,6 @@ registerPack("en", {
   "projects.unavailable": "Project unavailable",
   "projects.unavailableDesc":
     "This project no longer exists or is outside your access scope.",
-  "projects.refresh": "Refresh",
-  "projects.refreshing": "Refreshing",
   "projects.newProject": "New project",
   "projects.preparingChat": "Preparing chat...",
   "projects.createFromChat": "Create from chat",
@@ -1032,22 +798,9 @@ registerPack("en", {
   "projects.empty.noneTitle": "No projects yet",
   "projects.empty.noneDesc":
     "Projects appear once the assistant creates durable workspaces. You can start from chat and ask IronClaw to spin up a scoped project for ongoing work.",
-  "projects.card.runtime": "Runtime",
-  "projects.card.risk": "Risk",
-  "projects.card.threadsToday": "Threads today: {count}",
-  "projects.card.pendingGates": "Pending gates: {count}",
-  "projects.card.failures24h": "Failures in 24h: {count}",
-  "projects.card.spendToday": "{value} spend today",
   "projects.explorer": "Explorer",
   "projects.summary.projects": "Projects",
   "projects.summary.projectsBadge": "Projects",
-  "projects.general.threadsToday": "Threads today: {count}",
-  "projects.health.green": "Healthy",
-  "projects.health.yellow": "Needs review",
-  "projects.health.red": "At risk",
-  "projects.health.muted": "Archived",
-  "projects.health.steady": "Steady",
-  "projects.health.unknown": "Unknown",
   "projects.status.active": "Active",
   "projects.status.archived": "Archived",
   "projects.status.paused": "Paused",
@@ -1059,10 +812,6 @@ registerPack("en", {
   "projects.threadState.completed": "Completed",
   "projects.threadState.failed": "Failed",
   "projects.threadState.unknown": "Unknown",
-  "projects.role.system": "System",
-  "projects.role.user": "User",
-  "projects.role.assistant": "Assistant",
-  "projects.role.tool": "Tool",
   "projects.projectRole.owner": "Owner",
   "projects.projectRole.editor": "Editor",
   "projects.projectRole.viewer": "Viewer",
@@ -1081,50 +830,21 @@ registerPack("en", {
   "projects.thread.generic": "Thread",
   "projects.thread.generatedTitle": "Thread {id}",
   "projects.thread.type.missionRun": "Mission run",
-  "projects.thread.brief": "Mission brief",
   "projects.thread.type": "Thread type",
-  "projects.thread.steps": "Steps",
-  "projects.thread.tokens": "Tokens",
-  "projects.thread.spend": "Spend",
-  "projects.thread.notMeasured": "Not measured",
-  "projects.thread.created": "Created",
-  "projects.thread.completed": "Completed",
-  "projects.thread.stillRunning": "Still running",
-  "projects.thread.timeline": "Timeline",
-  "projects.thread.noMessages": "No messages were captured for this thread.",
-  "projects.metric.notSet": "Not set",
   "projects.count.steps": "{count} steps",
   "projects.count.tokens": "{count} tokens",
-  "projects.attention.title": "Needs attention",
-  "projects.attention.desc": "Operator-visible gates and recent failures across your project workspace.",
-  "projects.attention.failure": "Failure",
-  "projects.attention.gate": "Gate",
-  "projects.attention.threadLabel": "Thread {id}",
-  "projects.attention.projectLabel": "Project",
-  "projects.attention.openProject": "Open project",
   "projects.activity.label": "Conversations",
   "projects.activity.title": "Project conversations",
   "projects.activity.starting": "Starting...",
   "projects.activity.newConversation": "New conversation",
   "projects.activity.empty":
     "No project threads yet. When an automation runs or scoped chat work happens inside this project, activity will appear here.",
-  "projects.inspector.label": "Inspector",
-  "projects.inspector.clearFocus": "Clear focus",
-  "projects.snapshot.label": "Project snapshot",
-  "projects.snapshot.noDescription": "No project description yet.",
-  "projects.snapshot.threadsGates": "{threads} threads / {gates} gates",
-  "projects.snapshot.goals": "Goals",
-  "projects.snapshot.metrics": "Metrics",
   "projects.snapshot.updated": "Updated {date}",
   "projects.files.label": "Files",
   "projects.files.downloadError": "Unable to download file",
   "projects.files.noFilesYet": "No files yet - they appear once a thread has run in this project.",
   "projects.files.root": "workspace",
   "projects.files.folderEmpty": "This folder is empty.",
-  "projects.widgets.fallbackSlot": "Project widget",
-  "projects.widgets.mountFailed": "Unable to mount {name}.",
-  "projects.widgets.title": "Widgets",
-  "projects.widgets.instrumentation": "Project instrumentation",
   "projects.feedback.dismiss": "Dismiss",
 
   // Language settings
@@ -1163,8 +883,6 @@ registerPack("en", {
     "Configuration changed elsewhere. Review the refreshed values and save again.",
   "admin.configuration.saveFailed": "Unable to save configuration.",
 
-  // Admin — dashboard
-
   // Admin — relative time
   "admin.relative.never": "Never",
   "admin.relative.justNow": "Just now",
@@ -1174,7 +892,6 @@ registerPack("en", {
 
   // Admin — users list
   "admin.users.user": "user",
-  "admin.users.userFallback": "user",
   "admin.users.title": "Users ({count} / {total})",
   "admin.users.searchPlaceholder": "Search…",
   "admin.users.noMatch": "No users match the current filters.",
@@ -1204,18 +921,15 @@ registerPack("en", {
   "admin.users.activate": "Activate",
   "admin.users.promote": "Promote",
   "admin.users.demote": "Demote",
-  "admin.users.token": "Token",
   "admin.users.jobsCount": "{count} jobs",
   "admin.users.suspendTitle": "Suspend user",
   "admin.users.suspendDesc":
     "This will prevent \"{name}\" from authenticating. Continue?",
-  "admin.users.tokenNamePrompt": "Token name for {name}:",
   "admin.users.tokenCreated": "Token created",
   "admin.users.tokenCreatedDesc": "Copy this now — it will not be shown again.",
   "admin.users.copy": "Copy",
   "admin.users.copied": "Copied",
   "admin.users.backToUsers": "Back to users",
-  "admin.users.createToken": "Create token",
   "admin.users.delete": "Delete",
   "admin.users.deleteUserTitle": "Delete user",
   "admin.users.deleteUserDesc":
@@ -1264,8 +978,6 @@ registerPack("en", {
   "admin.user.secrets.deleteDesc": "Delete “{handle}”? This cannot be undone.",
   "admin.user.secrets.deleting": "Deleting…",
 
-  // Admin — usage tab
-
   // Logs page
   "logs.levelAll": "All levels",
   "logs.level.trace": "TRACE",
@@ -1304,17 +1016,6 @@ registerPack("en", {
   "chat.cancelFailed": "Couldn't stop this run. It may still be running. Try again.",
   "chat.runStopped": "Stopped",
   "command.placeholder": "Type a command or search...",
-  "routine.searchPlaceholder": "Search routine name, trigger, or action",
-  "routine.unavailable": "Routine unavailable",
-  "routine.unavailableDesc": "This routine no longer exists or is outside your access scope.",
-  "routine.triggerPayload": "Trigger payload",
-  "routine.actionPayload": "Action payload",
-  "job.noWorkspace": "No project workspace",
-  "job.noFile": "No file selected",
-  "job.noActivityTitle": "No activity captured yet",
-  "job.noActivityDesc": "This job has not written any persisted events for the selected filter.",
-  "job.noStateTitle": "No state history yet",
-  "job.followupPlaceholder": "Send a follow-up prompt to the running job",
   "common.noChatsMatch": "No chats match \"{query}\"",
   "chat.moreConversationsAvailable": "More conversations are available. Load older conversations to continue searching.",
   "chat.loadMoreFailed": "Couldn't load older conversations. Try again.",
@@ -1322,17 +1023,14 @@ registerPack("en", {
   "extensions.reconfigure": "Reconfigure",
   "extensions.connect": "Connect",
   "extensions.configureName": "Configure {name}",
-  "extensions.allInstalled": "All installed extensions",
   "tools.installed": "Installed tools",
   "extensions.scope.shared": "shared",
   "extensions.scope.private": "mine",
-  "mcp.installed": "Installed MCP servers",
   "extensions.oneCapability": "1 capability",
   "extensions.pluralCapabilities": "{count} capabilities",
   "extensions.oneKeyword": "1 keyword",
   "extensions.pluralKeywords": "{count} keywords",
   "extensions.moreActions": "More actions",
-  "extensions.setup": "Setup",
   "extensions.install": "Install",
   "extensions.noCapabilities": "No capabilities",
   "extensions.defaultName": "Extension",
@@ -1341,11 +1039,9 @@ registerPack("en", {
   "extensions.installFailed": "Install failed",
   "extensions.addCustomMcp": "Add MCP server",
   "extensions.customMcpPhase.connection": "Step 1 of 3",
-  "extensions.customMcpPhase.authentication": "Step 2 of 3",
   "extensions.customMcpPhase.review": "Step 2 of 3",
   "extensions.customMcpPhase.result": "Step 3 of 3",
   "extensions.customMcpPhase.connectionLabel": "Connection",
-  "extensions.customMcpPhase.authenticationLabel": "Review",
   "extensions.customMcpPhase.reviewLabel": "Review",
   "extensions.customMcpPhase.resultLabel": "Result",
   "extensions.customMcpProgress": "Add an MCP server in three steps",
@@ -1355,10 +1051,7 @@ registerPack("en", {
   "extensions.customMcpIdGenerated": "ID: {id}",
   "extensions.customMcpIdHint": "A unique ID: lowercase letters, numbers, underscores, hyphens, or dots, starting with a letter or number (128 chars max).",
   "extensions.customMcpAdvanced": "Advanced options",
-  "extensions.customMcpRecommended": "Recommended",
   "extensions.customMcpEndpoint": "Server address",
-  "extensions.customMcpRequired": "Name, ID, and endpoint are required.",
-  "extensions.customMcpHttpsOnly": "The endpoint must use HTTPS.",
   "extensions.customMcpNameRequired": "Enter a server name.",
   "extensions.customMcpNameTooLong": "Server name must be 256 characters or fewer.",
   "extensions.customMcpNameControls": "Server name cannot contain control characters.",
@@ -1375,15 +1068,9 @@ registerPack("en", {
   "extensions.customMcpRegister": "Add server",
   "extensions.customMcpRegistered": "{name} added",
   "extensions.customMcpRegisterFailed": "Could not add this server. Try again.",
-  "extensions.customMcpSetupRequired": "Server added — finish setup",
-  "extensions.customMcpSetupRequiredHint": "Find it in Extensions, then connect an account or add a token if needed.",
   "extensions.customMcpReady": "Server added",
   "extensions.customMcpReadyHint": "Find it in Extensions, install it, then connect an account or add a token if needed.",
-  "extensions.customMcpFinishLater": "Finish later",
-  "extensions.customMcpContinueSetup": "Continue setup",
-  "extensions.customMcpProjectionMissing": "The server was added but isn't showing in Extensions yet. Try again.",
   "extensions.removeFailed": "Remove failed",
-  "extensions.openingAuth": "Opening authentication...",
   "extensions.configurationRequired": "Configuration required",
   "extensions.setupFailed": "Setup failed",
   "extensions.oauthSetupFailed": "OAuth setup failed",
@@ -1431,7 +1118,6 @@ registerPack("en", {
   "extensions.authPopup": "Authorize this provider in a browser popup.",
   "extensions.opening": "Opening...",
   "extensions.authorize": "Authorize",
-  "extensions.reauthorize": "Reauthorize",
   "extensions.updateAccess": "Update access",
   "extensions.updateAccessHint": "New permissions are available for this connection. Re-approve access to enable the latest capabilities.",
   "extensions.reconnect": "Reconnect",
@@ -1443,8 +1129,6 @@ registerPack("en", {
   "extensions.accountVendorDenied": "Authorization was declined — reconnect to try again.",
   "extensions.accountExchangeFailed": "Authorization couldn't be completed — reconnect to try again.",
   "extensions.accountValidationFailed": "The saved key was rejected — reconnect to update it.",
-  "extensions.emptyInstalledTitle": "No extensions installed",
-  "extensions.emptyInstalledDesc": "Browse the Registry tab to discover and install WASM tools, channels, and MCP servers.",
   "extensions.emptyToolsTitle": "No tool extensions yet",
   "extensions.emptyToolsDesc": "Install an extension with tool capabilities from the registry to see it here.",
   "common.dismiss": "Dismiss",
@@ -1530,27 +1214,9 @@ registerPack("en", {
   "pairing.connectFromExtensions": "Connect {name} from the Extensions page to continue.",
   "pairing.connectFailedRetry": "Connection failed. Try again.",
   "pairing.continueConnect": "Continue to connect {name}",
-  "extensions.authUrlHttpsRequired": "Authentication URL must use HTTPS.",
   "tools.available": "Available tools",
-  "slackSetup.placeholder.keepSecret": "Configured; leave blank to keep",
 
   // Telegram setup + pairing
-  "telegramSetup.title": "Telegram setup",
-  "telegramSetup.instructions": "Create a bot with @BotFather and paste its token. IronClaw registers the webhook for you.",
-  "telegramSetup.save": "Save setup",
-  "telegramSetup.saved": "Telegram setup saved.",
-  "telegramSetup.saveFailed": "Telegram setup update failed.",
-  "telegramSetup.field.botToken": "Bot token",
-  "telegramSetup.field.webhookUrl": "Public webhook URL override",
-  "telegramSetup.help.botToken": "Token from @BotFather (/newbot or /token).",
-  "telegramSetup.help.webhookUrl": "Optional. Public HTTPS URL Telegram calls with updates; blank uses the detected public URL.",
-  "telegramSetup.example.botToken": "Example: 123456789:AA...",
-  "telegramSetup.example.webhookUrl": "Example: https://assistant.example.com",
-  "telegramSetup.placeholder.keepSecret": "••• saved — leave blank to keep",
-  "telegramSetup.connectedAs": "Connected bot:",
-  "telegramSetup.remove": "Remove bot",
-  "telegramSetup.removeConfirm": "Remove the Telegram bot? The channel stops until a new token is saved.",
-  "telegramSetup.removeFailed": "Removing the Telegram bot failed.",
   "pairing.web.title": "Connect {name}",
   "pairing.web.instructions": "Scan the QR code or open the link, then send the code to the {name} bot to pair this account.",
   "pairing.web.instructionsNoLink": "Send the code below to the {name} bot to pair this account.",
@@ -1564,17 +1230,4 @@ registerPack("en", {
   "pairing.web.disconnect": "Disconnect",
   "pairing.web.disconnectFailed": "Disconnecting {name} failed.",
   "pairing.web.loadFailed": "Could not get a {name} pairing code.",
-  "telegramPairing.title": "Connect Telegram",
-  "telegramPairing.instructions": "Scan the QR code or open the link, then press Start in Telegram to pair this account.",
-  "telegramPairing.copyCode": "Copy code",
-  "telegramPairing.copyUsername": "Copy bot username",
-  "telegramPairing.openInTelegram": "Open in Telegram",
-  "telegramPairing.qrAlt": "Telegram pairing QR",
-  "telegramPairing.expiresIn": "Expires in {time}",
-  "telegramPairing.expired": "This pairing code expired.",
-  "telegramPairing.getNewCode": "Get a new code",
-  "telegramPairing.paired": "Telegram paired",
-  "telegramPairing.disconnect": "Disconnect",
-  "telegramPairing.disconnectFailed": "Disconnecting Telegram failed.",
-  "telegramPairing.loadFailed": "Could not get a Telegram pairing code.",
 });
