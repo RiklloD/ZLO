@@ -201,9 +201,6 @@ fn notification_channel_not_found() -> ProductSurfaceError {
 }
 
 /// `target_ids` (after dedup) exceeds `NOTIFICATION_TARGETS_CAP` (spec §7).
-/// Distinct from the pre-existing, UNRELATED `MAX_NOTIFICATION_TARGETS = 32`
-/// in `ironclaw_outbound::validation` (which guards `ThreadNotificationPolicy`,
-/// not this record) — do not conflate the two ceilings or their errors.
 fn too_many_notification_targets() -> ProductSurfaceError {
     ProductSurfaceError {
         code: ProductSurfaceErrorCode::InvalidRequest,

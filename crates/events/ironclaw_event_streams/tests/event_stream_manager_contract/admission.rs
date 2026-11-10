@@ -17,7 +17,6 @@ async fn stream_admission_denial_is_structured_and_product_safe() {
         )),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let _first = manager
@@ -121,7 +120,6 @@ async fn per_actor_admission_is_scoped_by_tenant() {
         Arc::clone(&admission),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
     let manager_b = EventStreamManager::new(
         Arc::new(FakeProjectionService::new(scope_b.clone())),
@@ -129,7 +127,6 @@ async fn per_actor_admission_is_scoped_by_tenant() {
         Arc::clone(&admission),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let _tenant_a = manager_a
@@ -159,7 +156,6 @@ async fn subscribe_error_after_admission_releases_permit() {
         Arc::clone(&admission),
         Arc::new(FailingUpdateSource),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let error = failing_manager
@@ -174,7 +170,6 @@ async fn subscribe_error_after_admission_releases_permit() {
         Arc::clone(&admission),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
     let _subscription = healthy_manager
         .subscribe(subscribe_request(scope, None))
@@ -218,7 +213,6 @@ async fn subscribe_without_cursor_maps_projection_snapshot_errors_and_releases_a
             Arc::clone(&admission),
             Arc::new(InMemoryProjectionUpdateSource::new(8)),
             Arc::new(NoExposureProjectionRedactionValidator),
-            Arc::new(in_memory_backed_outbound_state_store()),
         );
 
         let actual = failing_manager
@@ -233,7 +227,6 @@ async fn subscribe_without_cursor_maps_projection_snapshot_errors_and_releases_a
             Arc::clone(&admission),
             Arc::new(InMemoryProjectionUpdateSource::new(8)),
             Arc::new(NoExposureProjectionRedactionValidator),
-            Arc::new(in_memory_backed_outbound_state_store()),
         );
         let _subscription = healthy_manager
             .subscribe(subscribe_request(scope.clone(), None))
@@ -258,7 +251,6 @@ async fn dropping_subscription_releases_admission_permit() {
         )),
         Arc::new(InMemoryProjectionUpdateSource::new(8)),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let first = manager
@@ -297,7 +289,6 @@ async fn terminal_lag_releases_admission_permit_before_subscription_drop() {
         )),
         Arc::clone(&source),
         Arc::new(NoExposureProjectionRedactionValidator),
-        Arc::new(in_memory_backed_outbound_state_store()),
     );
 
     let mut first = manager

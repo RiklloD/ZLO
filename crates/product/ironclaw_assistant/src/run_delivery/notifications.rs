@@ -31,7 +31,6 @@ use ironclaw_outbound::{
 };
 use ironclaw_threads::ThreadScope;
 
-use super::observer::AllowNoProjectionAccess;
 use super::prompts;
 use super::{DeliveredChannelMessage, RunDeliveryServices, delivered_messages_from_outcome};
 use crate::delivery_coordinator::{
@@ -140,10 +139,8 @@ pub(super) async fn notify_with_outcome(
     notification: &ChannelNotification,
     target: &NotificationChannelTarget,
 ) -> Result<NotificationDeliveryOutcome, NotificationDeliveryFailure> {
-    let projection_access_policy = AllowNoProjectionAccess;
     let outbound_policy = OutboundPolicyService::new(
         services.outbound_store.as_ref(),
-        &projection_access_policy,
         context.reply_target_authority,
     );
     let projection_id = prompts::run_notification_projection_id(

@@ -20,7 +20,6 @@ use ironclaw_host_api::{
         AgentId, ApprovalRequestId, CapabilityId, CorrelationId, ExtensionId, InvocationId,
         ProcessId, TenantId, ThreadId, UserId,
     },
-    path::ScopedPath,
     resource::{ResourceEstimate, ResourceScope},
     runtime::RuntimeKind,
     scope::Principal,
@@ -207,68 +206,6 @@ fn resource_scope(
         thread_id: Some(thread_id.clone()),
         invocation_id,
     }
-}
-
-#[tokio::test]
-async fn projection_outbound_store_mount_is_tenant_user_scoped() {
-    let scoped = outbound_scoped(Arc::new(InMemoryBackend::new()));
-    let agent_id = AgentId::new("projection-outbound-agent").unwrap();
-    let thread_id = ThreadId::new("projection-outbound-thread").unwrap();
-    let scope_a = resource_scope(
-        &TenantId::new("projection-outbound-tenant-a").unwrap(),
-        &UserId::new("projection-outbound-user-a").unwrap(),
-        &agent_id,
-        &thread_id,
-        InvocationId::new(),
-    );
-    let scope_b = resource_scope(
-        &TenantId::new("projection-outbound-tenant-b").unwrap(),
-        &UserId::new("projection-outbound-user-b").unwrap(),
-        &agent_id,
-        &thread_id,
-        InvocationId::new(),
-    );
-    let same_tenant_other_user = resource_scope(
-        &scope_a.tenant_id,
-        &UserId::new("projection-outbound-user-c").unwrap(),
-        &agent_id,
-        &thread_id,
-        InvocationId::new(),
-    );
-    let other_tenant_same_user = resource_scope(
-        &TenantId::new("projection-outbound-tenant-c").unwrap(),
-        &scope_a.user_id,
-        &agent_id,
-        &thread_id,
-        InvocationId::new(),
-    );
-    let path = ScopedPath::new("/outbound/subscriptions/shared-key.json").unwrap();
-
-    scoped
-        .write_bytes(&scope_a, &path, br#"{"owner":"a"}"#.to_vec())
-        .await
-        .unwrap();
-
-    let owner_a = scoped.read_bytes(&scope_a, &path).await.unwrap();
-    assert_eq!(owner_a, br#"{"owner":"a"}"#);
-    assert!(
-        scoped.read_bytes(&scope_b, &path).await.is_err(),
-        "same outbound alias path must not cross tenant/user mount roots"
-    );
-    assert!(
-        scoped
-            .read_bytes(&same_tenant_other_user, &path)
-            .await
-            .is_err(),
-        "same outbound alias path must not cross user mount roots"
-    );
-    assert!(
-        scoped
-            .read_bytes(&other_tenant_same_user, &path)
-            .await
-            .is_err(),
-        "same outbound alias path must not cross tenant mount roots"
-    );
 }
 
 fn contains_run_status(

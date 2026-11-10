@@ -18,7 +18,7 @@ and the one-way pipeline rule: [`../AGENTS.md`](../AGENTS.md).
 Keep this crate:
 
 - **above `ironclaw_event_projections` and `ironclaw_outbound`** — it consumes
-  projection DTOs and reads outbound push candidates; it implements neither;
+  projection DTOs and one outbound vocabulary type; it implements neither;
 - **transport-neutral:** no Axum, WebSocket, SSE, Telegram, Slack,
   OpenAI/Responses, or channel framing — concrete transports adapt stream
   items elsewhere (`ironclaw_assistant` and the product tier);
@@ -36,8 +36,7 @@ Keep this crate:
   (`ProjectionRedactionValidator`);
 - **egress-separated:** external push candidates are selected through outbound
   policy and are **not** implied by projection subscription access — watch and
-  push are two independent decisions, and the outbound dependency stays
-  read-only.
+  push are two independent decisions, and this crate plans no pushes.
 
 Never move in here: durable event-store adapters or direct event-row reads;
 product workflow turn submission, conversation binding, runtime dispatch, or
@@ -46,8 +45,8 @@ host execution.
 ## Dependency boundary
 
 Internal deps (normal): `ironclaw_event_projections`, `ironclaw_host_api`
-(including turn vocabulary), `ironclaw_outbound` (one read-only
-push-candidate lookup). The `ironclaw_event_streams` `BoundaryRule` in
+(including turn vocabulary), `ironclaw_outbound` (the `ProjectionUpdateRef`
+type only). The `ironclaw_event_streams` `BoundaryRule` in
 `crates/app/ironclaw_architecture_tests/tests/reborn_dependency_boundaries.rs`
 forbids `ironclaw_event_log`, `ironclaw_event_store`, `ironclaw_filesystem`,
 and every transport/product/kernel crate — evidence is reachable only through
@@ -62,5 +61,5 @@ only).
 - Run `cargo clippy -p ironclaw_event_streams --all-targets -- -D warnings`
   before requesting review.
 - **Test through `EventStreamManager`** when a helper gates access, admission,
-  redaction, source subscription, or outbound lookup — not the helper alone
+  redaction, or source subscription — not the helper alone
   (`.claude/rules/testing.md`).

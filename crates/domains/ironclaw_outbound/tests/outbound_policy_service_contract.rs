@@ -3,8 +3,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use ironclaw_event_log::{EventCursor, EventStreamKey, ReadScope};
-use ironclaw_event_projections::{ProjectionCursor, ProjectionScope};
 use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
 use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, ThreadId, UserId};
 use ironclaw_host_api::turn::{ReplyTargetBindingRef, TurnActor, TurnRunId, TurnScope};
@@ -33,80 +31,10 @@ fn in_memory_outbound_store() -> OutboundStateStore<InMemoryBackend> {
 }
 
 #[tokio::test]
-async fn subscription_access_policy_gates_cursor_checkpoint_creation() {
-    let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
-    let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
-
-    let alice = actor("alice");
-    let alice_scope = projection_scope_for_user("alice", "thread-1");
-    access_policy.allow(alice.clone(), thread_id("thread-1"));
-
-    let record = service
-        .authorize_subscription(ProjectionSubscriptionRequest {
-            subscription_id: subscription_id("sub-alice"),
-            actor: alice.clone(),
-            scope: alice_scope.clone(),
-            thread_id: thread_id("thread-1"),
-            after_cursor: Some(ProjectionCursor::for_scope(
-                alice_scope.clone(),
-                EventCursor::new(7),
-            )),
-        })
-        .await
-        .expect("authorized participant can subscribe");
-    assert_eq!(record.actor, alice.clone());
-
-    let loaded = store
-        .load_subscription_cursor(LoadSubscriptionCursorRequest {
-            subscription_id: subscription_id("sub-alice"),
-            actor: alice,
-            scope: alice_scope.clone(),
-            thread_id: thread_id("thread-1"),
-        })
-        .await
-        .expect("load cursor");
-    assert_eq!(
-        loaded,
-        Some(ProjectionCursor::for_scope(
-            alice_scope,
-            EventCursor::new(7)
-        ))
-    );
-
-    let bob = actor("bob");
-    let bob_scope = projection_scope_for_user("bob", "thread-1");
-    let denied = service
-        .authorize_subscription(ProjectionSubscriptionRequest {
-            subscription_id: subscription_id("sub-bob"),
-            actor: bob.clone(),
-            scope: bob_scope.clone(),
-            thread_id: thread_id("thread-1"),
-            after_cursor: None,
-        })
-        .await
-        .expect_err("non-participant must not subscribe");
-    assert!(matches!(denied, OutboundError::AccessDenied));
-
-    let missing = store
-        .load_subscription_cursor(LoadSubscriptionCursorRequest {
-            subscription_id: subscription_id("sub-bob"),
-            actor: bob,
-            scope: bob_scope,
-            thread_id: thread_id("thread-1"),
-        })
-        .await
-        .expect("denied subscription was not inserted");
-    assert_eq!(missing, None);
-}
-
-#[tokio::test]
 async fn settled_delivery_replay_uses_the_authoritative_row_without_revalidation() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let candidate = candidate(&scope, "reply-default", OutboundPushKind::FinalReply);
 
@@ -162,9 +90,8 @@ async fn prepared_delivery_replay_revalidates_and_reauthorizes() {
     // coordinator mapped them to `AlreadyInFlight` forever — the stable
     // delivery identity was permanently wedged by a crash.
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let candidate = candidate(&scope, "reply-default", OutboundPushKind::FinalReply);
 
@@ -214,9 +141,8 @@ async fn prepared_delivery_replay_after_revocation_fails_closed() {
     // without mutating the stable Prepared row, which a concurrent claimer
     // could be racing for (only the claim CAS may transition it).
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let candidate = candidate(&scope, "reply-default", OutboundPushKind::FinalReply);
 
@@ -264,9 +190,8 @@ async fn prepared_delivery_replay_after_revocation_fails_closed() {
 #[tokio::test]
 async fn delivery_preparation_rejects_validator_target_substitution() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let candidate = candidate(&scope, "reply-default", OutboundPushKind::FinalReply);
     validator.redirect(candidate.target.clone(), reply_ref("reply-other"));
@@ -288,9 +213,8 @@ async fn delivery_preparation_rejects_validator_target_substitution() {
 #[tokio::test]
 async fn delivery_preparation_rejects_scope_candidate_mismatch_before_validator_io() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let other_scope = TurnScope::new(
         TenantId::new("tenant-b").expect("valid tenant"),
@@ -319,9 +243,8 @@ async fn delivery_preparation_rejects_scope_candidate_mismatch_before_validator_
 #[tokio::test]
 async fn delivery_preparation_fails_closed_when_candidate_skips_revalidation() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let mut candidate = candidate(&scope, "reply-default", OutboundPushKind::FinalReply);
     candidate.requires_reply_target_revalidation = false;
@@ -343,9 +266,8 @@ async fn delivery_preparation_fails_closed_when_candidate_skips_revalidation() {
 #[tokio::test]
 async fn delivery_preparation_records_transient_validator_error_separately_from_revocation() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let candidate = candidate(&scope, "reply-default", OutboundPushKind::FinalReply);
     validator.fail_transient(candidate.target.clone());
@@ -378,9 +300,8 @@ async fn delivery_preparation_records_transient_validator_error_separately_from_
 #[tokio::test]
 async fn delivery_preparation_propagates_validator_caller_bug_errors() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = InvalidRequestValidator;
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let candidate = candidate(&scope, "reply-default", OutboundPushKind::FinalReply);
 
@@ -402,9 +323,8 @@ async fn delivery_preparation_propagates_validator_caller_bug_errors() {
 #[tokio::test]
 async fn communication_delivery_requested_outbound_validates_requested_target() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let request =
         requested_outbound_request("reply:requested", RequestedOutboundKind::ProductMessage);
     validator.allow(reply_ref("reply:requested"));
@@ -433,9 +353,8 @@ async fn communication_delivery_requested_outbound_validates_requested_target() 
 #[tokio::test]
 async fn communication_delivery_live_source_route_final_reply_validates_source_target() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let request = run_notification_request(
         RunNotificationEventKind::FinalReplyReady,
         RunNotificationOrigin::LiveSourceRoute {
@@ -469,9 +388,8 @@ async fn communication_delivery_live_source_route_final_reply_validates_source_t
 #[tokio::test]
 async fn communication_delivery_run_scoped_target_is_validated_before_delivery() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let request = run_notification_request(
         RunNotificationEventKind::FinalReplyReady,
         RunNotificationOrigin::RunScopedTarget {
@@ -497,9 +415,8 @@ async fn communication_delivery_run_scoped_target_is_validated_before_delivery()
 #[tokio::test]
 async fn communication_delivery_lowers_progress_update_to_progress_push_kind() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let request = run_notification_request(
         RunNotificationEventKind::ProgressUpdate,
         RunNotificationOrigin::RunScopedTarget {
@@ -525,9 +442,8 @@ async fn communication_delivery_lowers_progress_update_to_progress_push_kind() {
 #[tokio::test]
 async fn communication_delivery_lowers_delivery_status_to_delivery_status_push_kind() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let request = requested_outbound_request("reply:status", RequestedOutboundKind::DeliveryStatus);
     validator.allow(reply_ref("reply:status"));
 
@@ -548,9 +464,8 @@ async fn communication_delivery_lowers_delivery_status_to_delivery_status_push_k
 #[tokio::test]
 async fn communication_delivery_auth_prompt_lowers_to_distinct_push_kind() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let request = run_notification_request_with_scope(
         scope.clone(),
@@ -586,9 +501,8 @@ async fn communication_delivery_auth_prompt_lowers_to_distinct_push_kind() {
 #[tokio::test]
 async fn communication_delivery_system_event_returns_no_delivery_without_records() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let request = run_notification_request_with_scope(
         scope.clone(),
@@ -617,9 +531,8 @@ async fn communication_delivery_system_event_returns_no_delivery_without_records
 #[tokio::test]
 async fn communication_delivery_revoked_target_records_sanitized_failure_without_target() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let request =
         requested_outbound_request("reply:revoked", RequestedOutboundKind::ProductMessage);
     let scope = request.scope.clone();
@@ -653,9 +566,8 @@ async fn communication_delivery_revoked_target_records_sanitized_failure_without
 #[tokio::test]
 async fn communication_delivery_exact_owner_validation_rejects_target_substitution() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let request = run_notification_request(
         RunNotificationEventKind::ApprovalNeeded,
         RunNotificationOrigin::RunScopedTarget {
@@ -683,9 +595,8 @@ async fn communication_delivery_exact_owner_validation_rejects_target_substituti
 #[tokio::test]
 async fn communication_delivery_validator_can_enforce_prompt_actor_context() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let request = run_notification_request_with_scope(
         scope.clone(),
@@ -728,9 +639,8 @@ async fn communication_delivery_validator_can_enforce_prompt_actor_context() {
 #[tokio::test]
 async fn communication_delivery_actor_and_modality_forwarded_through_lowering() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let expected_actor = actor("exact-owner");
     let expected_modality = CommunicationModality::Voice;
@@ -770,9 +680,8 @@ async fn communication_delivery_actor_and_modality_forwarded_through_lowering() 
 #[tokio::test]
 async fn communication_delivery_validator_can_enforce_requested_modality() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let mut request = requested_outbound_request_with_scope(
         scope.clone(),
@@ -811,9 +720,8 @@ async fn communication_delivery_validator_can_enforce_requested_modality() {
 #[tokio::test]
 async fn communication_delivery_scope_candidate_mismatch_rejects_before_validator_io() {
     let store = in_memory_outbound_store();
-    let access_policy = FakeThreadProjectionAccessPolicy::default();
     let validator = FakeReplyTargetBindingValidator::default();
-    let service = OutboundPolicyService::new(&store, &access_policy, &validator);
+    let service = OutboundPolicyService::new(&store, &validator);
     let scope = turn_scope("thread-1");
     let other_scope = TurnScope::new(
         TenantId::new("tenant-b").expect("valid tenant"),
@@ -853,43 +761,6 @@ impl ReplyTargetBindingValidator for InvalidRequestValidator {
         Err(OutboundError::InvalidRequest {
             reason: "validator received bad input",
         })
-    }
-}
-
-#[derive(Default)]
-struct FakeThreadProjectionAccessPolicy {
-    allowed: Mutex<HashSet<(TurnActor, ThreadId)>>,
-}
-
-impl FakeThreadProjectionAccessPolicy {
-    fn allow(&self, actor: TurnActor, thread_id: ThreadId) {
-        self.allowed
-            .lock()
-            .expect("fake access policy lock poisoned")
-            .insert((actor, thread_id));
-    }
-}
-
-#[async_trait]
-impl ThreadProjectionAccessPolicy for FakeThreadProjectionAccessPolicy {
-    async fn authorize_projection_access(
-        &self,
-        request: ThreadProjectionAccessRequest,
-    ) -> Result<ThreadProjectionAccessClaim, OutboundError> {
-        if self
-            .allowed
-            .lock()
-            .expect("fake access policy lock poisoned")
-            .contains(&(request.actor.clone(), request.thread_id.clone()))
-        {
-            Ok(ThreadProjectionAccessClaim {
-                actor: request.actor,
-                scope: request.scope,
-                thread_id: request.thread_id,
-            })
-        } else {
-            Err(OutboundError::AccessDenied)
-        }
     }
 }
 
@@ -1118,10 +989,6 @@ fn preference_record(legacy_notification_target: Option<&str>) -> CommunicationP
     }
 }
 
-fn subscription_id(value: &str) -> ProjectionSubscriptionId {
-    ProjectionSubscriptionId::new(value).expect("valid subscription id")
-}
-
 fn turn_scope(thread: &str) -> TurnScope {
     TurnScope::new_with_owner(
         TenantId::new("tenant-a").expect("valid tenant"),
@@ -1130,22 +997,6 @@ fn turn_scope(thread: &str) -> TurnScope {
         thread_id(thread),
         Some(UserId::new("user-a").expect("valid user")),
     )
-}
-
-fn projection_scope_for_user(user: &str, thread: &str) -> ProjectionScope {
-    ProjectionScope {
-        stream: EventStreamKey::new(
-            TenantId::new("tenant-a").expect("valid tenant"),
-            UserId::new(user).expect("valid user"),
-            Some(AgentId::new("agent-a").expect("valid agent")),
-        ),
-        read_scope: ReadScope {
-            project_id: Some(ProjectId::new("project-a").expect("valid project")),
-            mission_id: None,
-            thread_id: Some(thread_id(thread)),
-            process_id: None,
-        },
-    }
 }
 
 fn actor(user: &str) -> TurnActor {

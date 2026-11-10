@@ -6,9 +6,6 @@ use ironclaw_event_projections::{
 };
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_host_api::turn::TurnActor;
-use ironclaw_outbound::{
-    OutboundError, OutboundPushCandidate, OutboundPushTargetRequest, OutboundStateStorePort,
-};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
@@ -21,8 +18,7 @@ use crate::{
     types::{
         LagReason, ProductProjectionEnvelope, ProjectionFetchRequest, ProjectionFetchResponse,
         ProjectionStreamItem, ProjectionSubscribeRequest, ProjectionSubscription, ProjectionTarget,
-        ProjectionViewClass, PushCandidatesForUpdateRequest, ThreadLiveProjectionItem,
-        ThreadLiveProjectionUpdate,
+        ProjectionViewClass, ThreadLiveProjectionItem, ThreadLiveProjectionUpdate,
     },
     update_source::{ProjectionLiveUpdateRequest, ProjectionUpdateSource},
 };
@@ -33,18 +29,16 @@ pub struct EventStreamManager {
     admission_policy: Arc<dyn ProjectionStreamAdmissionPolicy>,
     update_source: Arc<dyn ProjectionUpdateSource>,
     redaction_validator: Arc<dyn ProjectionRedactionValidator>,
-    outbound_store: Arc<dyn OutboundStateStorePort>,
     validation_cache: ProjectionValidationCache,
 }
 
 impl EventStreamManager {
-    pub fn new<P, A, M, U, R, O>(
+    pub fn new<P, A, M, U, R>(
         projection: Arc<P>,
         access_policy: Arc<A>,
         admission_policy: Arc<M>,
         update_source: Arc<U>,
         redaction_validator: Arc<R>,
-        outbound_store: Arc<O>,
     ) -> Self
     where
         P: EventProjectionService + 'static,
@@ -52,7 +46,6 @@ impl EventStreamManager {
         M: ProjectionStreamAdmissionPolicy + 'static,
         U: ProjectionUpdateSource + 'static,
         R: ProjectionRedactionValidator + 'static,
-        O: OutboundStateStorePort + 'static,
     {
         Self {
             projection,
@@ -60,7 +53,6 @@ impl EventStreamManager {
             admission_policy,
             update_source,
             redaction_validator,
-            outbound_store,
             validation_cache: ProjectionValidationCache::default(),
         }
     }
@@ -71,7 +63,6 @@ impl EventStreamManager {
         admission_policy: Arc<dyn ProjectionStreamAdmissionPolicy>,
         update_source: Arc<dyn ProjectionUpdateSource>,
         redaction_validator: Arc<dyn ProjectionRedactionValidator>,
-        outbound_store: Arc<dyn OutboundStateStorePort>,
     ) -> Self {
         Self {
             projection,
@@ -79,7 +70,6 @@ impl EventStreamManager {
             admission_policy,
             update_source,
             redaction_validator,
-            outbound_store,
             validation_cache: ProjectionValidationCache::default(),
         }
     }
@@ -277,33 +267,6 @@ impl EventStreamManager {
         ))
     }
 
-    pub async fn push_candidates_for_update(
-        &self,
-        request: PushCandidatesForUpdateRequest,
-    ) -> Result<Vec<OutboundPushCandidate>, ProjectionStreamError> {
-        self.authorize(
-            &request.actor,
-            &request.projection_scope,
-            request.view,
-            &request.target,
-        )
-        .await?;
-        validate_actor_stream_user(&request.actor, request.view, &request.projection_scope)?;
-        validate_product_thread_view(request.view, &request.target, &request.projection_scope)?;
-        validate_push_scope_matches_projection(&request)?;
-        self.outbound_store
-            .plan_push_targets(OutboundPushTargetRequest {
-                scope: request.scope,
-                turn_run_id: request.turn_run_id,
-                reply_target: request.reply_target,
-                kind: request.kind,
-                projection_ref: request.projection_ref,
-            })
-            .await
-            .map(|plan| plan.candidates)
-            .map_err(map_outbound_error)
-    }
-
     async fn authorize(
         &self,
         actor: &TurnActor,
@@ -477,7 +440,6 @@ impl std::fmt::Debug for EventStreamManager {
             .field("admission_policy", &"<projection_stream_admission_policy>")
             .field("update_source", &"<projection_update_source>")
             .field("redaction_validator", &"<projection_redaction_validator>")
-            .field("outbound_store", &"<outbound_state_store>")
             .field("validation_cache", &"<projection_validation_cache>")
             .finish()
     }
@@ -734,26 +696,6 @@ fn validate_actor_stream_user(
     }
 }
 
-fn validate_push_scope_matches_projection(
-    request: &PushCandidatesForUpdateRequest,
-) -> Result<(), ProjectionStreamError> {
-    match &request.target {
-        ProjectionTarget::Thread { thread_id }
-            if request.scope.tenant_id == request.projection_scope.stream.tenant_id
-                && request.scope.agent_id == request.projection_scope.stream.agent_id
-                && request.scope.project_id == request.projection_scope.read_scope.project_id
-                && Some(&request.scope.thread_id)
-                    == request.projection_scope.read_scope.thread_id.as_ref()
-                && request.projection_scope.read_scope.mission_id.is_none()
-                && request.projection_scope.read_scope.process_id.is_none()
-                && thread_id == &request.scope.thread_id =>
-        {
-            Ok(())
-        }
-        _ => Err(ProjectionStreamError::AccessDenied),
-    }
-}
-
 fn map_projection_error(error: ProjectionError) -> ProjectionStreamError {
     match error {
         ProjectionError::InvalidRequest { reason } => {
@@ -768,36 +710,5 @@ fn map_projection_error(error: ProjectionError) -> ProjectionStreamError {
             reason: "projection rebase required outside subscribe flow",
         },
         ProjectionError::Source { .. } => ProjectionStreamError::Source,
-    }
-}
-
-fn map_outbound_error(error: OutboundError) -> ProjectionStreamError {
-    match error {
-        OutboundError::AccessDenied => ProjectionStreamError::AccessDenied,
-        OutboundError::InvalidRequest { reason } => {
-            ProjectionStreamError::InvalidRequest { reason }
-        }
-        // A missing preference target is a resolution-stage configuration
-        // miss, not a transport failure — classify it with InvalidRequest so
-        // callers do not retry it as if outbound infrastructure had failed
-        // (matches the product-workflow status-update mapping).
-        OutboundError::PreferenceTargetMissing { kind } => {
-            ProjectionStreamError::InvalidRequest { reason: kind }
-        }
-        OutboundError::Backend
-        | OutboundError::CasConflict
-        | OutboundError::Serialization
-        | OutboundError::SubscriptionScopeMismatch
-        | OutboundError::DeliveryNotFound
-        | OutboundError::ReplyAttachmentIntentsSealed
-        | OutboundError::ReplyAttachmentIntentConflict
-        | OutboundError::ReplyAttachmentIntentLimitExceeded
-        | OutboundError::StaleReplyPublisher { .. }
-        | OutboundError::ReplyPublicationSettled
-        | OutboundError::ReplyPublicationRevisionRegressed { .. }
-        | OutboundError::ReplyPublicationNotFound
-        | OutboundError::ReplyPublicationTargetMismatch
-        | OutboundError::ReplyPublicationNotTerminal
-        | OutboundError::ReplyPublicationLeaseRequired => ProjectionStreamError::Outbound,
     }
 }

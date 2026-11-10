@@ -116,7 +116,7 @@ operators, import/export, diagnostics, or AI-readable inspection:
 ```text
 /reborn/threads/{thread}/messages/{message}.json
 /reborn/turns/{turn}/runs/{run}.json
-/reborn/outbound/subscriptions/{subscription}.json
+/reborn/outbound/deliveries/{delivery}.json
 /reborn/events/{stream}/{cursor}.json
 /secrets/... redacted metadata projection only
 ```
@@ -143,7 +143,7 @@ not bypass domain invariants by mutating primitive storage rows directly.
 | `/engine/openai_compat/refs` | `ironclaw_openai_compat::refs_storage` implementing `OpenAiCompatRefStore` over `RootFilesystem` behind the `storage` feature | OpenAI-compatible ref/idempotency API only | no | Source of truth for opaque `chatcmpl-*` / `resp_*` public refs, actor-scoped idempotency, and internal ProductSurface/projection refs. The adapter stores per-public-id mapping records plus actor-scoped idempotency index records; PostgreSQL/libSQL parity comes from the selected `RootFilesystem` backend. |
 | `/processes` | typed process-lifecycle repository routed through `ironclaw_filesystem` (immutable cursor-keyed journal rows plus queryable process/input/dependency/checkpoint rows and capability process results/outputs) | process APIs | no | Consumer mount alias for `ironclaw_processes`; alias-relative under the per-invocation `MountView`. Rows under `/processes/materialized` are committed atomically; keyed projections serve reads without replaying journal history. |
 | `/authorization` | typed capability-lease repository routed through `ironclaw_filesystem` | lease APIs | no | Consumer mount alias for `ironclaw_authorization`; alias-relative under the per-invocation `MountView`. |
-| `/outbound` | typed outbound-delivery repository routed through `ironclaw_filesystem` (policies, subscriptions, attempts) | outbound APIs | indexed scope projection | Consumer mount alias for `ironclaw_outbound`; alias-relative under the per-invocation `MountView`. |
+| `/outbound` | typed outbound-delivery repository routed through `ironclaw_filesystem` (delivery attempts, preferences, gate routes) | outbound APIs | indexed scope projection | Consumer mount alias for `ironclaw_outbound`; alias-relative under the per-invocation `MountView`. |
 | `/run-state` | compatibility input only; invocation lifecycle now projects from `/processes` | migration reader only | no | Records written by the retired `ironclaw_run_state` crate are imported idempotently before row-native process authority is initialized. New writes are forbidden. |
 | `/approvals` | typed approval-request repository owned by `ironclaw_approvals` and routed through `ironclaw_filesystem` | approval APIs | no | Approval request and gate records remain separate from process lifecycle while blocked/resumable invocation state projects through `/processes`. |
 | `/threads` | typed session-thread and transcript repository routed through `ironclaw_filesystem` (thread records, message records, summary artifacts, inbound idempotency, thread-list projection rows) | thread/transcript APIs | indexed scope/activity/thread-id projection | Consumer mount alias for `ironclaw_threads`; alias-relative under the per-invocation `MountView`. Before indexed reads are exposed, a restartable per-scope migration backfills existing rows and durably records completion. |

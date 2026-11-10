@@ -12,6 +12,4 @@ pub enum ProjectionStreamError {
     Source,
     #[error("projection stream payload failed redaction validation")]
     Redaction,
-    #[error("projection stream outbound policy failed")]
-    Outbound,
 }

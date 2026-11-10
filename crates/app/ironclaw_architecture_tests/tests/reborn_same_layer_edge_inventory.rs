@@ -582,13 +582,6 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
     },
     SameLayerEdge {
         crate_name: "ironclaw_outbound",
-        dependency_name: "ironclaw_event_projections",
-        layer: "substrates",
-        owner: "domains/",
-        decided_in: "WS6",
-    },
-    SameLayerEdge {
-        crate_name: "ironclaw_outbound",
         dependency_name: "ironclaw_filesystem",
         layer: "substrates",
         owner: "domains/",
@@ -818,7 +811,7 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
 // filesystem substrate rather than coupling notification state to outbound.
 // 80 -> 81: CLI drivers redact approval-card text through `ironclaw_safety`
 // instead of a second copy of the display sanitizer.
-const SAME_LAYER_EDGE_BASELINE: usize = 81;
+const SAME_LAYER_EDGE_BASELINE: usize = 80;
 
 /// Sanity floors for the metadata walk. A gate that scans nothing must never
 /// read as success; these are deliberately far below the live values (✎ **65**

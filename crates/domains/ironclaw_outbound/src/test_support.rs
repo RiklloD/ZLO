@@ -7,13 +7,13 @@
 //! "in-memory" stops being a store and becomes a filesystem backend
 //! (`InMemoryBackend`). This helper wires that seam for the outbound-state store
 //! — a `ScopedFilesystem<InMemoryBackend>` mounting `/outbound` (the alias the
-//! store persists all four role subtrees under: `policies/`, `subscriptions/`,
-//! `deliveries/`, `communication-preferences/`, `delivered-gate-routes/`) — so
+//! store persists its role subtrees under: `deliveries/`,
+//! `communication-preferences/`, `delivered-gate-routes/`) — so
 //! tests instantiate the same store a deployment runs.
 //!
 //! Note on isolation: [`OutboundStateStore`] encodes the record scope
-//! (thread-scope key, hashed communication-preference key, subscription/delivery
-//! key) in the path, and tenant/user isolation lives in the `MountView`. The
+//! (thread-scope key, hashed communication-preference key, delivery key) in the
+//! path, and tenant/user isolation lives in the `MountView`. The
 //! single fixed mount below therefore isolates by those in-path scope keys but
 //! not by tenant/user — which matches the single-tenant test doubles the deleted
 //! `InMemoryOutboundStateStore` served. Cross-tenant isolation is exercised by

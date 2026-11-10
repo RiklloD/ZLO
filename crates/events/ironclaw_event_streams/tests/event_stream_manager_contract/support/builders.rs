@@ -3,8 +3,7 @@ fn assert_same_error_kind(actual: ProjectionStreamError, expected: ProjectionStr
         (ProjectionStreamError::AccessDenied, ProjectionStreamError::AccessDenied)
         | (ProjectionStreamError::AdmissionDenied, ProjectionStreamError::AdmissionDenied)
         | (ProjectionStreamError::Source, ProjectionStreamError::Source)
-        | (ProjectionStreamError::Redaction, ProjectionStreamError::Redaction)
-        | (ProjectionStreamError::Outbound, ProjectionStreamError::Outbound) => {}
+        | (ProjectionStreamError::Redaction, ProjectionStreamError::Redaction) => {}
         (
             ProjectionStreamError::InvalidRequest { reason: actual },
             ProjectionStreamError::InvalidRequest { reason: expected },
@@ -66,35 +65,6 @@ fn fetch_request(scope: ProjectionScope) -> ProjectionFetchRequest {
         scope,
         view: ProjectionViewClass::ProductThread,
         limit: 16,
-    }
-}
-
-fn push_request(scope: &TurnScope, kind: OutboundPushKind) -> PushCandidatesForUpdateRequest {
-    let projection_scope = ProjectionScope {
-        stream: EventStreamKey::new(
-            scope.tenant_id.clone(),
-            UserId::new("user-a").unwrap(),
-            scope.agent_id.clone(),
-        ),
-        read_scope: ReadScope {
-            project_id: scope.project_id.clone(),
-            mission_id: None,
-            thread_id: Some(scope.thread_id.clone()),
-            process_id: None,
-        },
-    };
-    PushCandidatesForUpdateRequest {
-        actor: actor("user-a"),
-        target: ProjectionTarget::Thread {
-            thread_id: scope.thread_id.clone(),
-        },
-        projection_scope,
-        view: ProjectionViewClass::ProductThread,
-        scope: scope.clone(),
-        turn_run_id: None,
-        reply_target: reply_target("reply-default"),
-        kind,
-        projection_ref: ProjectionUpdateRef::new("projection:update:1").unwrap(),
     }
 }
 
@@ -305,19 +275,6 @@ fn projection_scope_for(tenant: &str, user: &str, thread: &str) -> ProjectionSco
     }
 }
 
-fn turn_scope(thread: &str) -> TurnScope {
-    TurnScope::new(
-        TenantId::new("tenant-a").unwrap(),
-        None,
-        Some(ProjectId::new("project-a").unwrap()),
-        ThreadId::new(thread).unwrap(),
-    )
-}
-
 fn actor(user: &str) -> TurnActor {
     TurnActor::new(UserId::new(user).unwrap())
-}
-
-fn reply_target(value: &str) -> ReplyTargetBindingRef {
-    ReplyTargetBindingRef::new(value).unwrap()
 }

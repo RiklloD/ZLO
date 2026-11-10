@@ -17,12 +17,6 @@
 //! per-crate driver.
 //!
 //! Per-record paths (alias-relative under `/outbound`):
-//! - `/outbound/policies/<thread-scope-key>.json` — thread notification
-//!   policy keyed by `(tenant, agent?, project?, thread)`.
-//! - `/outbound/subscriptions/<subscription-key>.json` — projection
-//!   subscription cursor keyed by `(subscription_id, actor, scope, thread)`.
-//!   The key is a deterministic hash so the path doesn't leak the actor on
-//!   list operations.
 //! - `/outbound/deliveries/<delivery_id>.json` — delivery attempt keyed by
 //!   `delivery_id`. An indexed `scope` projection allows
 //!   `list_delivery_attempts(scope)` to filter within the tenant-scoped
@@ -54,15 +48,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use ironclaw_event_projections::{ProjectionCursor, ProjectionScope};
 use ironclaw_filesystem::{
     CasApply, CasExpectation, CasUpdateError, ContentType, Entry, FileType, FilesystemError,
     Filter, IndexKey, IndexKind, IndexName, IndexSpec, IndexValue, Page, RootFilesystem,
     ScopedFilesystem, VersionedEntry, cas_update,
 };
-use ironclaw_host_api::turn::{TurnActor, TurnRunId, TurnScope};
+use ironclaw_host_api::turn::{TurnRunId, TurnScope};
 use ironclaw_host_api::{
-    ids::{RunId, TenantId, ThreadId, UserId},
+    ids::{RunId, TenantId, UserId},
     path::ScopedPath,
     resource::ResourceScope,
 };
@@ -73,22 +66,19 @@ use crate::reply_attachment_intents::validate_reply_attachment_intents;
 use crate::reply_publication::lease_expires_at;
 use crate::validation::{
     validate_communication_preference, validate_delivery_attempt, validate_delivery_identity,
-    validate_delivery_status_request, validate_policy, validate_subscription_identity,
-    validate_subscription_record, validate_subscription_request,
+    validate_delivery_status_request,
 };
 use crate::{
     AdvanceReplyPublicationRequest, ClaimReplyPublicationLeaseRequest, CommunicationPreferenceKey,
     CommunicationPreferenceRecord, CommunicationPreferenceRepository,
     CommunicationPreferenceVersion, DeliveredGateRouteRecord, DeliveredGateRouteStore,
-    DeliveryDefaultScope, LoadSubscriptionCursorRequest, MAX_RUN_DELIVERY_CLEANUP_RECORDS,
-    OpenReplyPublicationRequest, OutboundDeliveryAttempt, OutboundDeliveryId,
-    OutboundDeliveryStatus, OutboundError, OutboundStateStorePort, ProjectionSubscriptionId,
-    ProjectionSubscriptionRecord, ReleaseReplyPublicationLeaseRequest, ReplyAttachmentIntent,
-    ReplyAttachmentIntentPort, ReplyPublicationClaim, ReplyPublicationLease,
-    ReplyPublicationRecord, ReplyPublicationSettlement, ReplyPublicationState,
-    ReplyPublicationStatus, RunDeliveryCleanupRecord, RunDeliveryCleanupRequest,
-    SettleReplyPublicationRequest, ThreadNotificationPolicy, TriggeredRunDeliveryRecord,
-    TriggeredRunDeliveryStore, UpdateDeliveryStatusRequest, VersionedCommunicationPreferenceRecord,
+    DeliveryDefaultScope, OpenReplyPublicationRequest, OutboundDeliveryAttempt, OutboundDeliveryId,
+    OutboundDeliveryStatus, OutboundError, OutboundStateStorePort,
+    ReleaseReplyPublicationLeaseRequest, ReplyAttachmentIntent, ReplyAttachmentIntentPort,
+    ReplyPublicationClaim, ReplyPublicationLease, ReplyPublicationRecord,
+    ReplyPublicationSettlement, ReplyPublicationState, ReplyPublicationStatus,
+    SettleReplyPublicationRequest, TriggeredRunDeliveryRecord, TriggeredRunDeliveryStore,
+    UpdateDeliveryStatusRequest, VersionedCommunicationPreferenceRecord,
     WriteCommunicationPreferenceRequest,
 };
 
@@ -108,8 +98,8 @@ const MAX_CAS_RETRIES: usize = 5;
 const MAX_CONV_IDX_CAS_RETRIES: usize = 3;
 
 /// Indexed projection key for the scope of a delivery attempt. The value is a
-/// hash of `(tenant, agent?, project?, thread)` — the same key
-/// [`thread_scope_key`] computes for policy paths — so backends without
+/// hash of `(tenant, agent?, project?, thread)` — the key
+/// [`thread_scope_key`] computes — so backends without
 /// composite-index support can serve `list_delivery_attempts(scope)` with a
 /// single equality lookup (audit finding F2). The `tenant_id` itself moves
 /// into the path prefix via the [`ScopedFilesystem`] mount, so this index is
@@ -127,19 +117,10 @@ const COMMUNICATION_PREFERENCES_ROOT: &str = "/outbound/communication-preference
 /// turns a path-rewriting bug into a query-time mismatch.
 const TENANT_ID_INDEX_KEY: &str = "tenant_id";
 const TENANT_ID_INDEX_NAME: &str = "outbound_by_tenant";
-const POLICIES_ROOT: &str = "/outbound/policies";
-const SUBSCRIPTIONS_ROOT: &str = "/outbound/subscriptions";
 const TRIGGERED_RUN_DELIVERY_ROOT: &str = "/outbound/triggered-run-delivery";
 const DELIVERED_GATE_ROUTES_ROOT: &str = "/outbound/delivered-gate-routes";
 const DELIVERED_GATE_ROUTES_CONV_IDX_ROOT: &str = "/outbound/delivered-gate-routes/conv-idx";
-const RUN_DELIVERY_CLEANUP_ROOT: &str = "/outbound/run-delivery-cleanup";
 const REPLY_ATTACHMENT_INTENTS_ROOT: &str = "/outbound/reply-attachment-intents";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct RunDeliveryCleanupSnapshot {
-    request: RunDeliveryCleanupRequest,
-    records: Vec<RunDeliveryCleanupRecord>,
-}
 
 const REPLY_ATTACHMENT_INTENT_SCHEMA_VERSION: u8 = 1;
 
@@ -235,22 +216,7 @@ where
         Self { filesystem }
     }
 
-    async fn put_json<T: Serialize>(
-        &self,
-        scope: &ResourceScope,
-        path: &ScopedPath,
-        value: &T,
-        tenant: &TenantId,
-        cas: CasExpectation,
-    ) -> Result<(), OutboundError> {
-        let body = serde_json::to_vec(value).map_err(|_| OutboundError::Serialization)?;
-        let entry = Entry::bytes(body)
-            .with_content_type(ContentType::json())
-            .with_indexed(tenant_id_index_key(), tenant_id_index_value(tenant));
-        self.put_with_byte_fallback(scope, path, entry, cas).await
-    }
-
-    /// Like [`put_json`] but additionally projects an indexed scope value so
+    /// Writes the delivery row with an indexed scope value so
     /// backends with index support can answer `query(Filter::Eq { scope })`
     /// without materializing every delivery row (audit finding F2). The
     /// `tenant_id` lives in the [`ScopedFilesystem`] mount prefix, not in
@@ -841,221 +807,6 @@ impl<F> OutboundStateStorePort for OutboundStateStore<F>
 where
     F: RootFilesystem,
 {
-    async fn put_run_delivery_cleanup(
-        &self,
-        record: RunDeliveryCleanupRecord,
-    ) -> Result<(), OutboundError> {
-        record
-            .validate()
-            .map_err(|reason| OutboundError::InvalidRequest { reason })?;
-        let request = record.request();
-        let path = run_delivery_cleanup_path(&request)?;
-        let resource_scope = request.scope.to_resource_scope();
-        self.ensure_tenant_id_index(&resource_scope, &run_delivery_cleanup_root()?)
-            .await?;
-        cas_update(
-            self.filesystem.as_ref(),
-            &resource_scope,
-            &path,
-            decode_run_delivery_cleanup_snapshot,
-            encode_run_delivery_cleanup_snapshot,
-            move |current: Option<RunDeliveryCleanupSnapshot>| {
-                let request = request.clone();
-                let record = record.clone();
-                async move {
-                    let mut snapshot = current.unwrap_or_else(|| RunDeliveryCleanupSnapshot {
-                        request: request.clone(),
-                        records: Vec::new(),
-                    });
-                    validate_run_delivery_cleanup_snapshot(&snapshot, &request)?;
-                    if snapshot.records.contains(&record) {
-                        return Ok(CasApply::new(snapshot, ()));
-                    }
-                    if snapshot.records.len() >= MAX_RUN_DELIVERY_CLEANUP_RECORDS {
-                        return Err(OutboundError::InvalidRequest {
-                            reason: "run delivery cleanup record limit exceeded",
-                        });
-                    }
-                    snapshot.records.push(record);
-                    Ok(CasApply::new(snapshot, ()))
-                }
-            },
-        )
-        .await
-        .map_err(map_cas_error)
-    }
-
-    async fn load_run_delivery_cleanup(
-        &self,
-        request: RunDeliveryCleanupRequest,
-    ) -> Result<Vec<RunDeliveryCleanupRecord>, OutboundError> {
-        let path = run_delivery_cleanup_path(&request)?;
-        let resource_scope = request.scope.to_resource_scope();
-        let Some(snapshot) = self
-            .get_json::<RunDeliveryCleanupSnapshot>(&resource_scope, &path)
-            .await?
-        else {
-            return Ok(Vec::new());
-        };
-        if snapshot.request != request {
-            return Err(OutboundError::AccessDenied);
-        }
-        validate_run_delivery_cleanup_snapshot(&snapshot, &request)?;
-        Ok(snapshot.records)
-    }
-
-    async fn complete_run_delivery_cleanup(
-        &self,
-        record: &RunDeliveryCleanupRecord,
-    ) -> Result<(), OutboundError> {
-        record
-            .validate()
-            .map_err(|reason| OutboundError::InvalidRequest { reason })?;
-        let request = record.request();
-        let path = run_delivery_cleanup_path(&request)?;
-        let resource_scope = request.scope.to_resource_scope();
-        self.ensure_tenant_id_index(&resource_scope, &run_delivery_cleanup_root()?)
-            .await?;
-        let record = record.clone();
-        cas_update(
-            self.filesystem.as_ref(),
-            &resource_scope,
-            &path,
-            decode_run_delivery_cleanup_snapshot,
-            encode_run_delivery_cleanup_snapshot,
-            move |current: Option<RunDeliveryCleanupSnapshot>| {
-                let request = request.clone();
-                let record = record.clone();
-                async move {
-                    let Some(mut snapshot) = current else {
-                        return Ok(CasApply::no_op(
-                            RunDeliveryCleanupSnapshot {
-                                request,
-                                records: Vec::new(),
-                            },
-                            (),
-                        ));
-                    };
-                    validate_run_delivery_cleanup_snapshot(&snapshot, &request)?;
-                    if !snapshot.records.contains(&record) {
-                        return Ok(CasApply::no_op(snapshot, ()));
-                    }
-                    snapshot.records.retain(|existing| existing != &record);
-                    if snapshot.records.is_empty() {
-                        return Ok(CasApply::delete(snapshot, ()));
-                    }
-                    Ok(CasApply::new(snapshot, ()))
-                }
-            },
-        )
-        .await
-        .map_err(map_cas_error)
-    }
-
-    async fn put_thread_notification_policy(
-        &self,
-        policy: ThreadNotificationPolicy,
-    ) -> Result<(), OutboundError> {
-        validate_policy(&policy)?;
-        let path = policy_path(&policy.scope)?;
-        let resource_scope = policy.scope.to_resource_scope();
-        self.ensure_tenant_id_index(&resource_scope, &policies_root()?)
-            .await?;
-        self.put_json(
-            &resource_scope,
-            &path,
-            &policy,
-            &policy.scope.tenant_id,
-            CasExpectation::Any,
-        )
-        .await
-    }
-
-    async fn load_thread_notification_policy(
-        &self,
-        scope: TurnScope,
-    ) -> Result<ThreadNotificationPolicy, OutboundError> {
-        let path = policy_path(&scope)?;
-        let resource_scope = scope.to_resource_scope();
-        match self
-            .get_json::<ThreadNotificationPolicy>(&resource_scope, &path)
-            .await?
-        {
-            Some(policy) => Ok(policy),
-            None => Ok(ThreadNotificationPolicy::default_for_scope(scope)),
-        }
-    }
-
-    async fn upsert_subscription(
-        &self,
-        record: ProjectionSubscriptionRecord,
-    ) -> Result<(), OutboundError> {
-        validate_subscription_record(&record)?;
-        let path = subscription_path(
-            &record.subscription_id,
-            &record.actor,
-            &record.scope,
-            &record.thread_id,
-        )?;
-        // Outbound subscription records carry their full identity in the
-        // record body (subscription_id, actor, scope hash); the path is
-        // already a tenant-aware sha256 so the per-tenant FS rewrite isn't
-        // needed. Route through the system scope.
-        let resource_scope = ResourceScope::system();
-        self.ensure_tenant_id_index(&resource_scope, &subscriptions_root()?)
-            .await?;
-        for _ in 0..MAX_CAS_RETRIES {
-            let (cas, existing) = match self
-                .get_versioned_json::<ProjectionSubscriptionRecord>(&resource_scope, &path)
-                .await?
-            {
-                Some((existing, versioned)) => {
-                    (CasExpectation::Version(versioned.version), Some(existing))
-                }
-                None => (CasExpectation::Absent, None),
-            };
-            if let Some(existing) = existing.as_ref() {
-                validate_subscription_identity(existing, &record)?;
-            }
-            match self
-                .put_json(
-                    &resource_scope,
-                    &path,
-                    &record,
-                    &record.scope.stream.tenant_id,
-                    cas,
-                )
-                .await
-            {
-                Ok(()) => return Ok(()),
-                Err(OutboundError::CasConflict) => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        Err(OutboundError::Backend)
-    }
-
-    async fn load_subscription_cursor(
-        &self,
-        request: LoadSubscriptionCursorRequest,
-    ) -> Result<Option<ProjectionCursor>, OutboundError> {
-        let path = subscription_path(
-            &request.subscription_id,
-            &request.actor,
-            &request.scope,
-            &request.thread_id,
-        )?;
-        let resource_scope = ResourceScope::system();
-        let Some(record) = self
-            .get_json::<ProjectionSubscriptionRecord>(&resource_scope, &path)
-            .await?
-        else {
-            return Ok(None);
-        };
-        validate_subscription_request(&record, &request)?;
-        Ok(record.cursor)
-    }
-
     async fn record_delivery_attempt(
         &self,
         attempt: OutboundDeliveryAttempt,
@@ -1573,11 +1324,6 @@ where
     }
 }
 
-fn policy_path(scope: &TurnScope) -> Result<ScopedPath, OutboundError> {
-    let key = thread_scope_key(scope);
-    ScopedPath::new(format!("/outbound/policies/{key}.json")).map_err(|_| OutboundError::Backend)
-}
-
 fn reply_attachment_intent_path(
     scope: &ReplyAttachmentIntentScope,
     run_id: &RunId,
@@ -1648,82 +1394,6 @@ fn map_cas_error(error: CasUpdateError<OutboundError>) -> OutboundError {
             OutboundError::Backend
         }
     }
-}
-
-fn run_delivery_cleanup_path(
-    request: &RunDeliveryCleanupRequest,
-) -> Result<ScopedPath, OutboundError> {
-    let serialized = serde_json::to_vec(request).map_err(|_| OutboundError::Serialization)?;
-    let digest = hex::encode(Sha256::digest(serialized));
-    ScopedPath::new(format!("{RUN_DELIVERY_CLEANUP_ROOT}/{digest}.json"))
-        .map_err(|_| OutboundError::Backend)
-}
-
-fn run_delivery_cleanup_root() -> Result<ScopedPath, OutboundError> {
-    ScopedPath::new(RUN_DELIVERY_CLEANUP_ROOT).map_err(|_| OutboundError::Backend)
-}
-
-fn decode_run_delivery_cleanup_snapshot(
-    bytes: &[u8],
-) -> Result<RunDeliveryCleanupSnapshot, OutboundError> {
-    serde_json::from_slice(bytes).map_err(|_| OutboundError::Serialization)
-}
-
-fn validate_run_delivery_cleanup_snapshot(
-    snapshot: &RunDeliveryCleanupSnapshot,
-    request: &RunDeliveryCleanupRequest,
-) -> Result<(), OutboundError> {
-    if &snapshot.request != request {
-        return Err(OutboundError::AccessDenied);
-    }
-    if snapshot.records.len() > MAX_RUN_DELIVERY_CLEANUP_RECORDS
-        || snapshot
-            .records
-            .iter()
-            .any(|record| record.request() != snapshot.request || record.validate().is_err())
-    {
-        return Err(OutboundError::Serialization);
-    }
-    Ok(())
-}
-
-fn encode_run_delivery_cleanup_snapshot(
-    snapshot: &RunDeliveryCleanupSnapshot,
-) -> Result<Entry, OutboundError> {
-    let body = serde_json::to_vec(snapshot).map_err(|_| OutboundError::Serialization)?;
-    Ok(Entry::bytes(body)
-        .with_content_type(ContentType::json())
-        .with_indexed(
-            tenant_id_index_key(),
-            tenant_id_index_value(&snapshot.request.scope.tenant_id),
-        ))
-}
-
-fn subscription_path(
-    subscription_id: &ProjectionSubscriptionId,
-    actor: &TurnActor,
-    scope: &ProjectionScope,
-    thread_id: &ThreadId,
-) -> Result<ScopedPath, OutboundError> {
-    #[derive(Serialize)]
-    struct SubscriptionIdentity<'a> {
-        subscription_id: &'a ProjectionSubscriptionId,
-        actor: &'a TurnActor,
-        scope: &'a ProjectionScope,
-        thread_id: &'a ThreadId,
-    }
-    let identity = SubscriptionIdentity {
-        subscription_id,
-        actor,
-        scope,
-        thread_id,
-    };
-    let serialized = serde_json::to_string(&identity).map_err(|_| OutboundError::Serialization)?;
-    let mut hasher = Sha256::new();
-    hasher.update(serialized.as_bytes());
-    let digest = hex::encode(hasher.finalize());
-    ScopedPath::new(format!("/outbound/subscriptions/{digest}.json"))
-        .map_err(|_| OutboundError::Backend)
 }
 
 fn delivery_path(delivery_id: &OutboundDeliveryId) -> Result<ScopedPath, OutboundError> {
@@ -1932,14 +1602,6 @@ fn deliveries_root() -> Result<ScopedPath, OutboundError> {
 
 fn communication_preferences_root() -> Result<ScopedPath, OutboundError> {
     ScopedPath::new(COMMUNICATION_PREFERENCES_ROOT).map_err(|_| OutboundError::Backend)
-}
-
-fn policies_root() -> Result<ScopedPath, OutboundError> {
-    ScopedPath::new(POLICIES_ROOT).map_err(|_| OutboundError::Backend)
-}
-
-fn subscriptions_root() -> Result<ScopedPath, OutboundError> {
-    ScopedPath::new(SUBSCRIPTIONS_ROOT).map_err(|_| OutboundError::Backend)
 }
 
 fn tenant_id_index_key() -> IndexKey {
@@ -2324,10 +1986,8 @@ fn delivered_gate_route_resource_scope(tenant_id: &TenantId, user_id: &UserId) -
 }
 
 fn delivery_scope_index_value(scope: &TurnScope) -> IndexValue {
-    // Reuse `thread_scope_key`'s hash so the same scope hashes consistently
-    // across the policy path and the delivery scope index. The hash is
-    // collision-resistant against the legal-id grammar, and the F6 sentinel
-    // fix guarantees `None` agent/project no longer collide with literal ids.
+    // The hash is collision-resistant against the legal-id grammar, and the
+    // sentinel keeps a `None` agent/project from colliding with a literal id.
     IndexValue::Text(thread_scope_key(scope))
 }
 
