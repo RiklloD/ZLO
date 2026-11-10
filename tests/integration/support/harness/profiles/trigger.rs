@@ -42,8 +42,10 @@ pub(crate) async fn trigger_management_tools() -> HarnessResult<HostRuntimeCapab
 }
 
 /// Trigger verbs PLUS `builtin.write_file` on ONE runtime (#5886 hold
-/// visibility): auto-approve stays ON so the verbs dispatch gate-free, and a
-/// scenario installs an `AskEachTime` override to gate only the write.
+/// visibility). The scenario puts the user on "Ask first" with the verbs
+/// always allowed (`RebornIntegrationGroup::set_ask_first_for_test`), so only
+/// the write gates; with auto-approve on the thread would be "Full access"
+/// and never park.
 pub(crate) fn trigger_management_with_gated_write_profile() -> HarnessResult<ToolsProfile> {
     let mut profile = trigger_management_tools_profile()?;
     profile

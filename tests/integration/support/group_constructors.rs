@@ -141,8 +141,9 @@ impl RebornIntegrationGroup {
 
     /// [`Self::extension_delivery`] plus `builtin.write_file`, so a background
     /// run can park on a REAL approval gate while its notification channels
-    /// stay deliverable. Auto-approve is ON; gate the write per-scenario with
-    /// `set_ask_each_time_override_for_test`.
+    /// stay deliverable. Built with auto-approve ON, which makes every thread
+    /// "Full access"; a scenario that needs the gate puts the user on "Ask
+    /// first" with [`Self::set_ask_first_for_test`] before its first dispatch.
     pub async fn extension_delivery_with_gated_write() -> HarnessResult<Self> {
         Self::builder().extension_delivery_with_gated_write().await
     }
@@ -240,9 +241,10 @@ impl RebornIntegrationGroup {
     }
 
     /// Trigger verbs plus `builtin.write_file` on one runtime (#5886
-    /// blocked-trigger visibility). Auto-approve is ON so the verbs dispatch
-    /// gate-free; a scenario gates the write via
-    /// `set_ask_each_time_override_for_test`.
+    /// blocked-trigger visibility). Built with auto-approve ON, which makes
+    /// every thread "Full access"; a scenario that needs the write to gate
+    /// first puts the user on "Ask first" with
+    /// [`Self::set_ask_first_for_test`] (verbs always allowed).
     pub async fn triggers_with_gated_write() -> HarnessResult<Self> {
         Self::builder().triggers_with_gated_write().await
     }

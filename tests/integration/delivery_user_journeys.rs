@@ -1648,9 +1648,21 @@ async fn register_notification_channels(
         .expect("seed the creator's notification channels");
 }
 
-/// Gate `builtin.write_file` for this run owner only. `AskEachTime` beats
-/// global auto-approve (#4776 precedence), so the delivery/lifecycle verbs
-/// keep dispatching gate-free while the scripted write raises a REAL gate.
+/// A blocked fire needs a real approval gate, and a "Full access" thread
+/// never parks, so these journeys run the user on "Ask first" (global
+/// auto-approve off). The Slack install the fixtures drive is set to "always
+/// allow", as a user would from the Tools page. Call it before the first
+/// dispatch: the authorizer caches the switch for a short TTL.
+async fn ask_first(group: &RebornIntegrationGroup) {
+    group
+        .set_ask_first_for_test(&["builtin.extension_install"])
+        .await
+        .expect("put the user on Ask first");
+}
+
+/// Set `builtin.write_file` to "ask each time" for this run owner, the
+/// per-tool setting under which the scripted write raises a REAL gate on an
+/// Ask first thread (see [`ask_first`]).
 async fn gate_the_write(group: &RebornIntegrationGroup, harness: &RebornIntegrationHarness) {
     group
         .capability_harness()
@@ -1717,6 +1729,7 @@ async fn blocked_fire_fans_out_and_first_approve_wins() {
     let group = RebornIntegrationGroup::extension_delivery_with_gated_write()
         .await
         .expect("delivery-with-gated-write group builds");
+    ask_first(&group).await;
     activate_slack(&group).await;
     let services = reborn_services(&group);
     assert!(
@@ -1846,6 +1859,7 @@ async fn empty_notification_set_keeps_blocked_fire_in_app_only() {
     let group = RebornIntegrationGroup::extension_delivery_with_gated_write()
         .await
         .expect("delivery-with-gated-write group builds");
+    ask_first(&group).await;
     activate_slack(&group).await;
     let services = reborn_services(&group);
 
@@ -2108,6 +2122,7 @@ async fn blocked_fire_pushes_web_app_notice_to_enrolled_browser() {
     let group = RebornIntegrationGroup::extension_delivery_with_web_app()
         .await
         .expect("delivery-with-web-app group builds");
+    ask_first(&group).await;
     let services = reborn_services(&group);
     let harness = group
         .thread("conv-web-app-notice")
@@ -2255,6 +2270,7 @@ async fn gone_push_subscription_is_pruned_after_notice_attempt() {
     let group = RebornIntegrationGroup::extension_delivery_with_web_app()
         .await
         .expect("delivery-with-web-app group builds");
+    ask_first(&group).await;
     let services = reborn_services(&group);
     let harness = group
         .thread("conv-web-app-prune")

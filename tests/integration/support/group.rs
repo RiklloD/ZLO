@@ -67,7 +67,9 @@ use ironclaw_extension_contracts::channel_adapter::ProductTriggerReason;
 use ironclaw_extension_registry::ExtensionInstallationStorePort;
 use ironclaw_filesystem::CompositeRootFilesystem;
 use ironclaw_host_api::{
-    capability_surface::CapabilitySurfacePolicy, ids::UserId, resource::ResourceScope,
+    capability_surface::CapabilitySurfacePolicy,
+    ids::{CapabilityId, UserId},
+    resource::ResourceScope,
 };
 use ironclaw_llm::testing::{provider_chain_over, provider_chain_over_with_fallback};
 use ironclaw_llm::{LlmProvider, SessionConfig, create_session_manager};
@@ -613,6 +615,28 @@ impl RebornIntegrationGroup {
     /// the caller identity extension-removal channel cleanup disconnects.
     pub fn canonical_actor_user(&self) -> UserId {
         self.shared.canonical_binding.actor_user_id.clone()
+    }
+
+    /// Put this group's user on "Ask first" before any thread dispatches:
+    /// global auto-approve OFF for the run tenant under both the canonical
+    /// actor and the capability user (so "Full access" is off on every run),
+    /// with `always_allow` set to "always allow" the way the Tools page does.
+    /// See [`HostRuntimeCapabilityHarness::set_ask_first_for_test`].
+    pub async fn set_ask_first_for_test(&self, always_allow: &[&str]) -> HarnessResult<()> {
+        let GroupCapability::HostRuntime(harness) = &self.shared.capability else {
+            return Err("Ask first requires a host-runtime capability backend".into());
+        };
+        let always_allow = always_allow
+            .iter()
+            .map(|id| CapabilityId::new(*id))
+            .collect::<Result<Vec<_>, _>>()?;
+        harness
+            .set_ask_first_for_test(
+                self.shared.canonical_binding.tenant_id.clone(),
+                std::slice::from_ref(&self.shared.canonical_binding.actor_user_id),
+                &always_allow,
+            )
+            .await
     }
 
     /// Register a hermetic external delivery target on the exact local
