@@ -392,7 +392,7 @@ ObjectStoreBackend
 RemoteFilesystemBackend
 ```
 
-Memory-specific backend adapters are owned outside this crate. The first Reborn memory seams are `ironclaw_memory::MemoryDocumentFilesystem` for the built-in repository path and `ironclaw_memory::MemoryBackendFilesystemAdapter` for plugin backends that declare file-document capability. PostgreSQL/libSQL adapters port/adapt the current workspace table family (`memory_documents`, `memory_chunks`, libSQL `memory_chunks_fts`, and `memory_document_versions`); metadata inheritance, skip flags, schema validation, embedding-provider integration, embedded chunk writes, FTS search, and rank-fused hybrid search are memory service/indexer responsibilities already represented in `ironclaw_memory`, not in the generic filesystem crate.
+Memory-specific backends are owned outside this crate. The bundled memory provider (`ironclaw_memory_native`) reaches storage through `NativeMemoryService::from_filesystem`, which layers `RepositoryMemoryBackend` over `FilesystemMemoryDocumentRepository`; it does not expose memory documents as a `RootFilesystem` of its own. PostgreSQL/libSQL adapters port/adapt the current workspace table family (`memory_documents`, `memory_chunks`, libSQL `memory_chunks_fts`, and `memory_document_versions`); metadata inheritance, skip flags, schema validation, embedding-provider integration, embedded chunk writes, FTS search, and rank-fused hybrid search are memory service/indexer responsibilities already represented in `ironclaw_memory`, not in the generic filesystem crate.
 
 ---
 

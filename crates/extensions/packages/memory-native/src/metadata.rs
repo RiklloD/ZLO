@@ -26,33 +26,12 @@ impl MemoryWriteOptions {
 #[derive(Debug, Clone, Default)]
 pub struct MemoryBackendWriteOptions {
     pub metadata_overlay: Option<DocumentMetadata>,
-    /// Native-owned coordination flag, `pub(crate)` so it can be set **only**
-    /// by this crate's filesystem adapter after it has already run prompt-write
-    /// safety. A foreign crate can construct `MemoryBackendWriteOptions` only via
-    /// `Default` (this field is not nameable outside the crate), so the bypass
-    /// cannot be forged. The backend skips its own `enforce_prompt_write_safety`
-    /// pass when this is true; it defaults to `false`, so any direct backend
-    /// caller fails closed and the backend re-enforces (zmanian #3180 HIGH
-    /// protected prompt files such as `SOUL.md` / `BOOTSTRAP.md`).
-    pub(crate) prompt_safety_already_enforced: bool,
 }
 
 impl MemoryBackendWriteOptions {
-    /// Backend write options carrying a metadata overlay. Prompt-safety
-    /// enforcement is left at the fail-closed default — only this crate's
-    /// filesystem adapter can set `prompt_safety_already_enforced`, so foreign
-    /// callers construct options through this (or `Default`) and cannot forge
-    /// the bypass.
+    /// Backend write options carrying a metadata overlay.
     pub fn with_metadata_overlay(metadata_overlay: Option<DocumentMetadata>) -> Self {
-        Self {
-            metadata_overlay,
-            prompt_safety_already_enforced: false,
-        }
-    }
-
-    pub(crate) fn with_prompt_safety_already_enforced(mut self) -> Self {
-        self.prompt_safety_already_enforced = true;
-        self
+        Self { metadata_overlay }
     }
 }
 

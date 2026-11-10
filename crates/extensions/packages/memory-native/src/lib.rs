@@ -1,4 +1,4 @@
-//! Memory document filesystem adapters for IronClaw Reborn.
+//! The bundled memory provider for IronClaw Reborn.
 //!
 //! This crate owns memory-specific path grammar and repository seams. The
 //! generic filesystem crate owns only virtual path authority, scoped mounts,
@@ -9,7 +9,6 @@ mod chunking;
 #[cfg(any(test, feature = "test-support"))]
 pub mod contract_tests;
 mod events;
-mod filesystem;
 mod indexer;
 mod metadata;
 mod path;
@@ -22,7 +21,6 @@ mod write_metadata;
 
 pub use backend::{MemoryBackend, MemoryBackendCapabilities, RepositoryMemoryBackend};
 pub use chunking::{ChunkConfig, MemoryChunkWrite, chunk_document};
-pub use filesystem::{MemoryBackendFilesystemAdapter, MemoryDocumentFilesystem};
 pub use indexer::{
     ChunkingMemoryDocumentIndexer, MemoryChunkReplaceOutcome, MemoryDocumentIndexRepository,
     MemoryDocumentIndexer,

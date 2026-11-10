@@ -36,8 +36,7 @@ rule 1).
     pre-supplied embeddings (see `backend.rs`'s fail-closed messages).
   - Hybrid search (FTS + vector via RRF fusion): `MemorySearchRequest`,
     `MemorySearchResult`, `FusionStrategy` (`search`).
-  - The memory-document filesystem adapter (`filesystem`), the
-    significant-event sink (`events`), and the prompt-write safety engine
+  - The significant-event sink (`events`), and the prompt-write safety engine
     (`PromptWriteSafetyPolicy` + protected-path/decision/event types, `safety`)
     that implements the vocabulary the neutral contract defines.
 - The model-facing memory **guidance** this provider ships
@@ -98,7 +97,7 @@ rule 1).
 ## Validation
 
 - Fast local check: `cargo test -p ironclaw_memory_native` (contract suites in
-  `tests/`: memory_service / memory_backend / memory_filesystem / repo_*).
+  `tests/`: memory_service / memory_backend / memory_page_archive / repo_*).
 - Boundary check after dependency/API changes: `cargo test -p ironclaw_architecture_tests`.
 - The shared `MemoryService` conformance suite also runs against the mem0
   package — keep both providers passing it when the contract shifts.

@@ -5,9 +5,9 @@
 //! `ironclaw_memory`. The *enforcement engine*
 //! — the default policy (which depends on `ironclaw_safety`'s sanitizer), the
 //! protected-path classification, and the `enforce_prompt_write_safety` helper
-//! the memory backend and filesystem adapters call — stays here.
+//! the memory backend calls — stays here.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironclaw_filesystem::{FilesystemError, FilesystemOperation};
@@ -174,21 +174,16 @@ pub(crate) struct PromptWriteSafetyCheck<'a> {
     pub filesystem_operation: FilesystemOperation,
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PromptWriteSafetyEnforcement {
-    pub allowance: Option<PromptSafetyAllowanceId>,
-}
-
 pub(crate) async fn enforce_prompt_write_safety(
     policy: Option<&Arc<dyn PromptWriteSafetyPolicy>>,
     event_sink: Option<&Arc<dyn PromptWriteSafetyEventSink>>,
     registry: &PromptProtectedPathRegistry,
     check: PromptWriteSafetyCheck<'_>,
-) -> Result<PromptWriteSafetyEnforcement, FilesystemError> {
+) -> Result<(), FilesystemError> {
     let Some((protected_path_class, policy_version)) =
         prompt_write_protected_classification(policy, registry, check.path)
     else {
-        return Ok(PromptWriteSafetyEnforcement::default());
+        return Ok(());
     };
     let virtual_path = check
         .path
@@ -246,7 +241,7 @@ pub(crate) async fn enforce_prompt_write_safety(
                 },
             )
             .await?;
-            Ok(PromptWriteSafetyEnforcement::default())
+            Ok(())
         }
         Ok(PromptWriteSafetyDecision::BypassAllowed { allowance }) => {
             emit_prompt_write_safety_event(
@@ -272,9 +267,7 @@ pub(crate) async fn enforce_prompt_write_safety(
                 allowance = %allowance,
                 "protected prompt write bypass allowed"
             );
-            Ok(PromptWriteSafetyEnforcement {
-                allowance: Some(allowance),
-            })
+            Ok(())
         }
         Ok(PromptWriteSafetyDecision::Warn { findings }) => {
             emit_prompt_write_safety_event(
@@ -301,7 +294,7 @@ pub(crate) async fn enforce_prompt_write_safety(
                 finding_count = findings.finding_count,
                 "protected prompt write allowed with sanitized safety warning"
             );
-            Ok(PromptWriteSafetyEnforcement::default())
+            Ok(())
         }
         Ok(PromptWriteSafetyDecision::Reject { reason }) => {
             emit_prompt_write_safety_event(
@@ -430,21 +423,6 @@ fn prompt_write_safety_error(
     reason: PromptSafetyReason,
 ) -> FilesystemError {
     memory_error(path, operation, reason.code.as_str())
-}
-
-pub(crate) fn take_prompt_safety_allowance(
-    allowance: &Mutex<Option<PromptSafetyAllowanceId>>,
-    path: &VirtualPath,
-    operation: FilesystemOperation,
-) -> Result<Option<PromptSafetyAllowanceId>, FilesystemError> {
-    let mut allowance = allowance.lock().map_err(|_| {
-        memory_error(
-            path.clone(),
-            operation,
-            "prompt write safety allowance lock poisoned",
-        )
-    })?;
-    Ok(allowance.take())
 }
 
 #[cfg(test)]

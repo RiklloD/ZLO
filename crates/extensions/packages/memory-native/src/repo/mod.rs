@@ -1,13 +1,10 @@
 //! Memory document repository trait and shared repo helpers.
 
-use std::collections::BTreeMap;
-
 use async_trait::async_trait;
-use ironclaw_filesystem::{DirEntry, FileType, FilesystemError, FilesystemOperation};
-use ironclaw_host_api::path::VirtualPath;
+use ironclaw_filesystem::{FilesystemError, FilesystemOperation};
 
 use crate::metadata::MemoryWriteOptions;
-use crate::path::{memory_backend_unsupported, memory_error, memory_not_found, valid_memory_path};
+use crate::path::{memory_backend_unsupported, memory_error, valid_memory_path};
 use crate::search::{MemorySearchRequest, MemorySearchResult};
 use ironclaw_memory::{MemoryDocumentPath, MemoryDocumentScope};
 
@@ -234,62 +231,4 @@ pub(crate) fn ensure_document_path_does_not_conflict(
     }
 
     Ok(())
-}
-
-pub(crate) fn memory_direct_children(
-    parent: &VirtualPath,
-    prefix: Option<&str>,
-    documents: Vec<MemoryDocumentPath>,
-) -> Result<Vec<DirEntry>, FilesystemError> {
-    let mut entries = BTreeMap::<String, FileType>::new();
-    let directory_prefix = prefix.map(|prefix| format!("{}/", prefix.trim_end_matches('/')));
-    for document in documents {
-        let tail = match directory_prefix.as_deref() {
-            Some(prefix) => {
-                let Some(tail) = document.relative_path().strip_prefix(prefix) else {
-                    continue;
-                };
-                tail
-            }
-            None => document.relative_path(),
-        };
-        if tail.is_empty() {
-            continue;
-        }
-        let (name, file_type) = if let Some((directory, _rest)) = tail.split_once('/') {
-            (directory.to_string(), FileType::Directory)
-        } else {
-            (tail.to_string(), FileType::File)
-        };
-        entries
-            .entry(name)
-            .and_modify(|existing| {
-                if file_type == FileType::Directory {
-                    *existing = FileType::Directory;
-                }
-            })
-            .or_insert(file_type);
-    }
-
-    if entries.is_empty() {
-        return Err(memory_not_found(
-            parent.clone(),
-            FilesystemOperation::ListDir,
-        ));
-    }
-
-    entries
-        .into_iter()
-        .map(|(name, file_type)| {
-            Ok(DirEntry {
-                path: VirtualPath::new(format!(
-                    "{}/{}",
-                    parent.as_str().trim_end_matches('/'),
-                    name
-                ))?,
-                name,
-                file_type,
-            })
-        })
-        .collect()
 }

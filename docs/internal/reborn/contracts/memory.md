@@ -115,14 +115,12 @@ MemoryBackendCapabilities
 MemoryContext
 MemorySearchRequest
 MemorySearchResult
-MemoryBackendFilesystemAdapter
 RepositoryMemoryBackend
 MemoryDocumentScope
 MemoryDocumentPath
 MemoryDocumentRepository
 MemoryDocumentIndexRepository
 MemoryDocumentIndexer
-EmbeddingProvider
 ```
 
 `MemoryBackendCapabilities` are backend support declarations, not extension capability declarations and not authority grants.
