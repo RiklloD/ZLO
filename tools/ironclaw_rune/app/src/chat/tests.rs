@@ -205,6 +205,33 @@ fn the_working_clock_rebuilds_the_view_once_a_second_not_every_frame() {
     assert!(poll(&mut rt), "a new second, a new view");
 }
 
+/// The seconds of a run nobody is looking at need no wake of their own;
+/// back in front, the clock picks up again.
+#[test]
+fn the_working_clock_asks_for_no_wake_while_the_window_is_in_the_background() {
+    let (mut rt, id) = live_runtime();
+    rt.poll = Some(|s, _, tx| super::poll(s, tx));
+    rt.update(move |s, _| {
+        let c = super::chat_for(s, &id).expect("chat");
+        c.pacing = false;
+        c.copied = None;
+    });
+    rt.frame(0.);
+    rt.frame(1. / 60.);
+    assert!(rt.wake_deadline().is_some(), "in front: the next second");
+
+    rt.update(|s, tx| crate::window_focus(s, false, tx));
+    // Past the wake asked for while it was in front.
+    rt.frame(1.5);
+    rt.frame(1. / 60.);
+    assert_eq!(rt.wake_deadline(), None, "in the background: no wake");
+
+    rt.update(|s, tx| crate::window_focus(s, true, tx));
+    rt.frame(1. / 60.);
+    rt.frame(1. / 60.);
+    assert!(rt.wake_deadline().is_some(), "in front again: it counts on");
+}
+
 #[test]
 fn stream_rows_wait_for_the_pacers_next_step() {
     use std::cell::Cell;

@@ -15,7 +15,8 @@ use crate::design;
 use crate::jobs;
 use crate::state::{Conn, Page, State};
 
-/// After connecting: the first refresh and the poll timer.
+/// After connecting, and when the battery saver lets go: a refresh now and
+/// the poll timer.
 pub(super) fn start(s: &mut State) {
     refresh_status(s);
     s.workspace.timers.status = Some(Instant::now() + STATUS_POLL);

@@ -641,11 +641,15 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
         s.workspace.timers.unread = Some(now + UNREAD_POLL);
         refresh_unread(s);
     }
-    if due(s.workspace.timers.status) {
-        // The refresh is skipped while the battery saver holds, and focus
-        // refreshes at once, so a saving window checks back rarely.
-        let saving = crate::design::look::saving(s);
-        s.workspace.timers.status = Some(now + if saving { STATUS_POLL * 6 } else { STATUS_POLL });
+    // The status refresh is skipped while the battery saver holds, so its
+    // timer is off meanwhile. When the saver lets go (focus, or input after
+    // an idle spell) the bar refreshes at once and the timer runs again.
+    if crate::design::look::saving(s) {
+        s.workspace.timers.status = None;
+    } else if s.workspace.timers.status.is_none() {
+        status::start(s);
+    } else if due(s.workspace.timers.status) {
+        s.workspace.timers.status = Some(now + STATUS_POLL);
         status::refresh_status(s);
     }
     if due(s.workspace.timers.updates) {
@@ -757,13 +761,17 @@ pub fn alert_clicked(s: &mut State, tag: &str) {
 }
 
 /// `App::on_focus`: the window became key or lost it.
-pub fn window_focus(s: &mut State, focused: bool, _tx: &mut Tx) {
+pub fn window_focus(s: &mut State, focused: bool, tx: &mut Tx) {
     s.workspace.window_active = focused;
+    // Timers that rest while the window is in the back (the status bar's,
+    // a live chat's seconds) start again from the poll: ask for one now.
+    if focused {
+        tx.wake_after(Duration::ZERO);
+    }
     if !matches!(s.conn, Conn::Ready) {
         return;
     }
     crate::onboarding::window_focus(s, focused);
-    status::refresh_status(s);
     // Back in front: catch up on whatever finished meanwhile.
     if focused {
         inbox::refresh(s);
@@ -828,5 +836,30 @@ mod tests {
     fn an_unreachable_mac_says_what_to_do() {
         assert!(friendly_unreachable("down", true).contains("zlo service install"));
         assert!(friendly_unreachable("down", false).contains("Run IronClaw on this Mac"));
+    }
+
+    /// While the battery saver holds, a status refresh is skipped: the
+    /// timer must not keep waking the app only to skip it.
+    #[test]
+    fn the_status_timer_is_off_while_the_battery_saver_holds() {
+        let mut s = crate::chat::fixtures::test_state();
+        s.fixture = false;
+        s.conn = Conn::Ready;
+        status::start(&mut s);
+        let mut tx = Tx::default();
+        poll(&mut s, &mut tx);
+        assert!(s.workspace.timers.status.is_some(), "in use: it polls");
+
+        s.look.battery.set_active(false);
+        poll(&mut s, &mut tx);
+        assert!(s.workspace.timers.status.is_none(), "saving: no timer");
+
+        // The saver lets go (the window is back in front, or input ended
+        // an idle spell): the bar refreshes and the timer runs again.
+        s.look.battery.set_active(true);
+        let before = Instant::now();
+        poll(&mut s, &mut tx);
+        let next = s.workspace.timers.status.expect("the timer runs again");
+        assert!(next >= before + STATUS_POLL);
     }
 }

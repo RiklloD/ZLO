@@ -755,6 +755,7 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
 }
 
 fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
+    let front = crate::workspace::window_active(s);
     let Some(c) = chat_for(s, id) else {
         return false;
     };
@@ -789,7 +790,7 @@ fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     // The working line counts seconds while a run is live: a new view only
     // when the shown second turns (the poll also runs on every frame of any
     // animation, which must not rebuild the view each time), and one wake
-    // at the next turn.
+    // at the next turn while the window is in front.
     match c.run_started {
         Some(at) => {
             let elapsed = at.elapsed();
@@ -797,7 +798,11 @@ fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
             if c.clock_secs.replace(secs) != Some(secs) {
                 changed = crate::energy::polled(crate::energy::C::PollChatClock, true);
             }
-            tx.wake_after(Duration::from_secs(secs + 1).saturating_sub(elapsed));
+            // Nobody watches the seconds of a window in the back; focus
+            // asks for a poll (`workspace::window_focus`), which resumes.
+            if front {
+                tx.wake_after(Duration::from_secs(secs + 1).saturating_sub(elapsed));
+            }
         }
         None => c.clock_secs = None,
     }
