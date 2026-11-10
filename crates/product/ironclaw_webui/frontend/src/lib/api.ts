@@ -890,25 +890,6 @@ export function eventStreamRequest({
   };
 }
 
-// --- Streaming (WebSocket) ---
-
-// Same-origin enforcement happens at the composition layer. The
-// browser sends Origin automatically; the bearer travels via the
-// `?token=` URL parameter (the WS handshake API in browsers has no
-// way to set a custom request header).
-export function openEventSocket({ threadId }: ThreadOptions = {}) {
-  const encodedThreadId = requiredPath(threadId);
-  const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const url = new URL(
-    `${V2_BASE}/threads/${encodedThreadId}/ws`,
-    window.location.origin,
-  );
-  url.protocol = scheme;
-  const token = readStoredToken();
-  if (token) url.searchParams.set("token", token);
-  return new WebSocket(url.toString());
-}
-
 // --- Run cancellation ---
 
 export async function cancelRun({

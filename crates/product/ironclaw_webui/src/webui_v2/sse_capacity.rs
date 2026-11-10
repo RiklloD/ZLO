@@ -116,16 +116,8 @@ impl SseCapacity {
     /// [`REJECTION_REFUND_LIMIT`]) if the caller is at or above
     /// [`Self::max_per_caller`]. Drop the returned guard to release the
     /// slot.
-    pub(crate) fn try_acquire(
-        self: &Arc<Self>,
-        tenant_id: &TenantId,
-        user_id: &UserId,
-        connection_id: Option<&str>,
-    ) -> SseAcquireResult {
-        self.try_acquire_ordered(tenant_id, user_id, connection_id, None)
-    }
-
-    /// Reserve a slot using the browser tab's monotonically increasing stream
+    ///
+    /// `client_generation` is the browser tab's monotonically increasing stream
     /// generation. A delayed request from an older route must not cancel the
     /// newer route merely because it reached the server later.
     pub(crate) fn try_acquire_ordered(
@@ -366,15 +358,15 @@ mod tests {
         let cap = Arc::new(SseCapacity::new(2));
         let alice = user("alice");
         let s1 = cap
-            .try_acquire(&tenant(), &alice, None)
+            .try_acquire_ordered(&tenant(), &alice, None, None)
             .acquired()
             .expect("first slot");
         let s2 = cap
-            .try_acquire(&tenant(), &alice, None)
+            .try_acquire_ordered(&tenant(), &alice, None, None)
             .acquired()
             .expect("second slot");
         assert!(
-            cap.try_acquire(&tenant(), &alice, None)
+            cap.try_acquire_ordered(&tenant(), &alice, None, None)
                 .acquired()
                 .is_none(),
             "third slot must be refused"
@@ -383,7 +375,7 @@ mod tests {
         drop(s1);
         // After release, a new slot is available again.
         let s3 = cap
-            .try_acquire(&tenant(), &alice, None)
+            .try_acquire_ordered(&tenant(), &alice, None, None)
             .acquired()
             .expect("slot after release");
         drop(s2);
@@ -402,7 +394,7 @@ mod tests {
         let cap = Arc::new(SseCapacity::new(0));
         let alice = user("alice");
         for attempt in 1..=REJECTION_REFUND_LIMIT {
-            let outcome = cap.try_acquire(&tenant(), &alice, None);
+            let outcome = cap.try_acquire_ordered(&tenant(), &alice, None, None);
             assert!(
                 matches!(outcome, SseAcquireResult::AtCapacity { .. }),
                 "cap 0 never acquires"
@@ -414,7 +406,7 @@ mod tests {
             );
         }
         assert_eq!(
-            cap.try_acquire(&tenant(), &alice, None)
+            cap.try_acquire_ordered(&tenant(), &alice, None, None)
                 .rejected_refundable(),
             Some(false),
             "past the streak limit, rejections drain the request-volume budget"
@@ -435,19 +427,19 @@ mod tests {
         let cap = Arc::new(SseCapacity::new(1));
         let alice = user("alice");
         let _held = cap
-            .try_acquire(&tenant(), &alice, None)
+            .try_acquire_ordered(&tenant(), &alice, None, None)
             .acquired()
             .expect("first slot");
         for attempt in 1..=REJECTION_REFUND_LIMIT {
             assert_eq!(
-                cap.try_acquire(&tenant(), &alice, None)
+                cap.try_acquire_ordered(&tenant(), &alice, None, None)
                     .rejected_refundable(),
                 Some(true),
                 "attempt {attempt} is within the refundable streak"
             );
         }
         assert_eq!(
-            cap.try_acquire(&tenant(), &alice, None)
+            cap.try_acquire_ordered(&tenant(), &alice, None, None)
                 .rejected_refundable(),
             Some(false),
             "past the streak limit the rejection is charged like any request"
@@ -459,11 +451,11 @@ mod tests {
         let cap = Arc::new(SseCapacity::new(1));
         let alice = user("alice");
         let held = cap
-            .try_acquire(&tenant(), &alice, None)
+            .try_acquire_ordered(&tenant(), &alice, None, None)
             .acquired()
             .expect("first slot");
         for _ in 0..=REJECTION_REFUND_LIMIT {
-            let _ = cap.try_acquire(&tenant(), &alice, None);
+            let _ = cap.try_acquire_ordered(&tenant(), &alice, None, None);
         }
         drop(held);
 
@@ -471,11 +463,11 @@ mod tests {
         // acquire starts from a clean streak and the burst budget is whole
         // again — a caller that recovers is not punished for the episode.
         let _reacquired = cap
-            .try_acquire(&tenant(), &alice, None)
+            .try_acquire_ordered(&tenant(), &alice, None, None)
             .acquired()
             .expect("slot after release");
         assert_eq!(
-            cap.try_acquire(&tenant(), &alice, None)
+            cap.try_acquire_ordered(&tenant(), &alice, None, None)
                 .rejected_refundable(),
             Some(true),
             "the first rejection after a successful acquire is refundable again"
@@ -487,14 +479,14 @@ mod tests {
     // ever `expect`-ed on a poisoned mutex, a panic-while-unwinding
     // would double-panic and abort the process. Poison the mutex
     // deliberately via a panicking thread, then exercise both `release`
-    // (via `SseSlot::drop`) and `try_acquire` to make sure neither
+    // (via `SseSlot::drop`) and `try_acquire_ordered` to make sure neither
     // re-panics.
     #[test]
     fn poisoned_lock_does_not_double_panic_on_release_or_acquire() {
         let cap = Arc::new(SseCapacity::new(2));
         let alice = user("alice");
         let slot = cap
-            .try_acquire(&tenant(), &alice, None)
+            .try_acquire_ordered(&tenant(), &alice, None, None)
             .acquired()
             .expect("first slot");
 
@@ -527,9 +519,9 @@ mod tests {
         // rather than panic; this is the call-site that runs on every
         // new SSE open.
         let recovered = cap
-            .try_acquire(&tenant(), &alice, None)
+            .try_acquire_ordered(&tenant(), &alice, None, None)
             .acquired()
-            .expect("try_acquire must recover from a poisoned lock");
+            .expect("try_acquire_ordered must recover from a poisoned lock");
         drop(recovered);
     }
 
@@ -539,19 +531,23 @@ mod tests {
         let alice = user("alice");
         let bob = user("bob");
         let _alice_slot = cap
-            .try_acquire(&tenant(), &alice, None)
+            .try_acquire_ordered(&tenant(), &alice, None, None)
             .acquired()
             .expect("alice");
         let _bob_slot = cap
-            .try_acquire(&tenant(), &bob, None)
+            .try_acquire_ordered(&tenant(), &bob, None, None)
             .acquired()
             .expect("bob");
         assert!(
-            cap.try_acquire(&tenant(), &alice, None)
+            cap.try_acquire_ordered(&tenant(), &alice, None, None)
                 .acquired()
                 .is_none()
         );
-        assert!(cap.try_acquire(&tenant(), &bob, None).acquired().is_none());
+        assert!(
+            cap.try_acquire_ordered(&tenant(), &bob, None, None)
+                .acquired()
+                .is_none()
+        );
     }
 
     #[test]
@@ -559,11 +555,11 @@ mod tests {
         let cap = Arc::new(SseCapacity::new(1));
         let alice = user("alice");
         let first = cap
-            .try_acquire(&tenant(), &alice, Some("browser-tab"))
+            .try_acquire_ordered(&tenant(), &alice, Some("browser-tab"), None)
             .acquired()
             .expect("first named slot");
         let replacement = cap
-            .try_acquire(&tenant(), &alice, Some("browser-tab"))
+            .try_acquire_ordered(&tenant(), &alice, Some("browser-tab"), None)
             .acquired()
             .expect("same browser tab replaces its stale stream");
 
@@ -571,7 +567,7 @@ mod tests {
         assert!(!replacement.is_cancelled());
         assert_eq!(cap.open_count(&tenant(), &alice), 1);
         assert!(
-            cap.try_acquire(&tenant(), &alice, Some("different-tab"))
+            cap.try_acquire_ordered(&tenant(), &alice, Some("different-tab"), None)
                 .acquired()
                 .is_none(),
             "a different browser tab still respects the per-caller cap"

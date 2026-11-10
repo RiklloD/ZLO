@@ -27,7 +27,7 @@ alone constructs authenticated-caller evidence.
   `serve_bound_webui_v2(bound, router, shutdown)` so a host can bind — and
   announce the bound address — before its router exists.
 - `webui_v2_app(product_surface, config)` — the composed `axum::Router` with
-  the fixed middleware order: ws-origin → body limit → bearer/session/OIDC
+  the fixed middleware order: body limit → bearer/session/OIDC
   auth → rate limit → handler.
 - `webui_v2_router(state)` / `webui_v2_routes()` — the route builder and the
   frozen descriptor table (125 routes, contract-locked; re-derive:

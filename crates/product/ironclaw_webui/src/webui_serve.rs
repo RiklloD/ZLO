@@ -57,7 +57,6 @@ use crate::webui_operator_auth::{
     OperatorWebuiConfigRouteState, build_operator_webui_config_route_state,
 };
 use crate::webui_rate_limit::{build_rate_limit_state, enforce_rate_limit};
-use crate::webui_ws_origin::{build_websocket_origin_state, enforce_websocket_origin};
 use ironclaw_host_api::product_adapter::auth::{
     HostProtocolAuthenticator, mark_bearer_token_verified_for_tenant,
 };
@@ -237,15 +236,6 @@ pub struct WebuiServeConfig {
     /// from the deployment channel registry; the frontend never carries a
     /// channel name of its own.
     pub(crate) session_channel_extension_id: Option<String>,
-    /// Canonical host the WebChat v2 listener is reachable on (e.g.
-    /// `"app.example.com"` or `"127.0.0.1:3000"`). When set, the
-    /// WebSocket same-origin middleware compares the request's
-    /// `Origin` header against this value instead of trusting the
-    /// client-supplied `Host` header. A misconfigured reverse proxy
-    /// that forwards an attacker-controlled Host would otherwise let
-    /// the same-origin check pass for a forged Origin. Defaults to
-    /// `None` (fall back to Host-header comparison + allowlist).
-    pub(crate) canonical_host: Option<String>,
     /// Whether `/fs/*` workspace list/stat/read handlers must confine reads to
     /// the caller's own subtree (`tenants/{tenant}/users/{user}`) instead of
     /// the shared `/projects/workspace` root, and the `/session` feature flag
@@ -317,7 +307,6 @@ impl WebuiServeConfig {
             // authenticated-session channel. No implicit product identity is
             // invented when the deployment declares none or several.
             session_channel_extension_id: None,
-            canonical_host: None,
             workspace_requires_scoped_projection: false,
             default_agent_id: None,
             default_project_id: None,
@@ -373,14 +362,6 @@ impl WebuiServeConfig {
     /// descriptors feed the same gateway policy derivation as every other mount.
     pub fn with_split_route_mount(mut self, mount: SplitRouteMount) -> Self {
         self.split_mounts.push(mount);
-        self
-    }
-
-    /// Set the canonical host for WebSocket same-origin checks. See
-    /// [`Self::canonical_host`] for why this is more robust than
-    /// trusting the request's `Host` header.
-    pub fn with_canonical_host(mut self, host: impl Into<String>) -> Self {
-        self.canonical_host = Some(host.into());
         self
     }
 
@@ -632,11 +613,6 @@ pub fn webui_v2_app_with_lifecycle(
     let static_router_config = static_router_config_from_descriptors(&descriptors)?;
     let rate_limit_state = build_rate_limit_state(&descriptors)?;
     let body_limit_state = build_body_limit_state(&descriptors);
-    let ws_origin_state = build_websocket_origin_state(
-        &descriptors,
-        &config.allowed_origins,
-        config.canonical_host.clone(),
-    );
     let operator_routes = build_operator_webui_config_route_state(&operator_descriptors);
     let auth_state = AuthLayerState {
         tenant_id: config.tenant_id.clone(),
@@ -684,12 +660,10 @@ pub fn webui_v2_app_with_lifecycle(
     // Layer order matters. `route_layer` stacks inside-out from the
     // bottom of the chain up — the LAST `.route_layer(...)` call is
     // the outermost layer and runs FIRST on inbound. That gives:
-    //   ws-origin → per-route body limit → auth → rate-limit → handler
+    //   per-route body limit → auth → rate-limit → handler
     //
-    // WS-origin runs first so a forged-Origin WebSocket upgrade dies
-    // before the gateway spends an auth check on it. Body limit comes
-    // next so an oversized payload also short-circuits before bearer
-    // validation. Auth runs before rate-limit so the limiter has a
+    // Body limit runs first so an oversized payload short-circuits
+    // before bearer validation. Auth runs before rate-limit so the limiter has a
     // real caller key and an unauthenticated request never burns a
     // rate-limit slot.
     let protected = protected_inner
@@ -704,15 +678,6 @@ pub fn webui_v2_app_with_lifecycle(
         .route_layer(middleware::from_fn_with_state(
             body_limit_state.clone(),
             enforce_body_limit,
-        ))
-        // WS upgrades skip CORS pre-flight, so origin enforcement runs
-        // inline for descriptors declaring a non-NotApplicable
-        // WebSocketOriginPolicy. Runs near the outside of the
-        // route_layer stack so origin rejection short-circuits before
-        // anything more expensive.
-        .route_layer(middleware::from_fn_with_state(
-            ws_origin_state,
-            enforce_websocket_origin,
         ));
 
     let mut app = Router::new().merge(protected);

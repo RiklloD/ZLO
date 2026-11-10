@@ -412,15 +412,10 @@ pub struct WebuiSection {
     /// Default `14 * 1024 * 1024` (14 MiB). `0` is rejected.
     pub max_body_bytes_fallback: Option<u64>,
     /// Canonical host this listener is reachable on (e.g.
-    /// `"app.example.com"` or `"127.0.0.1:3000"`). When set, the WS
-    /// same-origin middleware compares the request `Origin` against
-    /// this operator-trusted value instead of trusting the
-    /// client-supplied `Host` header. Critical when running behind a
-    /// reverse proxy that may forward an attacker-controlled Host —
-    /// without `canonical_host`, a forged Host + matching Origin
-    /// would pass `SameOriginRequired`. Format: `host` or
-    /// `host:port`; composition does not parse further. Default
-    /// `None` (fall back to Host-header compare + allowlist).
+    /// `"app.example.com"` or `"127.0.0.1:3000"`). When set, the
+    /// product-auth OAuth callback origin is derived from this
+    /// operator-trusted value instead of the listen address. Format:
+    /// `host` or `host:port`. Default `None`.
     pub canonical_host: Option<String>,
 }
 

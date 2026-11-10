@@ -744,7 +744,7 @@ async fn logout_revokes_the_minted_session() {
     assert_eq!(logout.status(), StatusCode::NO_CONTENT);
 
     // After logout the bearer must no longer resolve to a session —
-    // subsequent API / SSE / WebSocket access is denied.
+    // subsequent API / SSE access is denied.
     assert!(
         store.lookup(&bearer).await.expect("lookup").is_none(),
         "session must be revoked after logout",

@@ -48,7 +48,6 @@ mod webui_operator_auth;
 mod webui_rate_limit;
 mod webui_route_match;
 mod webui_serve;
-mod webui_ws_origin;
 
 // WebChat v2 gateway assembly + the host-auth vocabulary it carries.
 // Route-mount carriers live in `ironclaw_host_ingress`: composition can build

@@ -8,7 +8,7 @@ subsystems that used to live apart (see `README.md` for the fold-in map):
 1. **WebChat v2 route surface + SPA** (`src/webui_v2/`, from the former
    `ironclaw_webui_v2` crate) — the axum handlers over `ProductSurface`, the
    `webui_v2_routes()` descriptor table, the `WebUiV2HttpError` redacted wire
-   shape, SSE/WebSocket streaming, and the Vite SPA bundle.
+   shape, SSE streaming, and the Vite SPA bundle.
 2. **Gateway assembly + middleware** (`src/webui_serve.rs`, `src/webui_*.rs`,
    from `ironclaw_composition::webui`) — `webui_v2_app(bundle, config)`
    composes the full `Router` and layers the fixed middleware stack; owns the
@@ -83,7 +83,7 @@ transcript access. Both gates are off by default and feed the session
 `features.*` fields so the browser never advertises an unmounted route.
 
 Middleware modules (`src/webui_*.rs`) layer in a fixed order —
-**ws-origin → per-route body limit → bearer auth → rate limit → handler** —
+**per-route body limit → bearer auth → rate limit → handler** —
 turning the `webui_v2_routes()` descriptors into tower layers.
 
 ### Serve loop + host authentication
@@ -206,7 +206,7 @@ candidate module.
 | `workspace-fs` | Project-file and mount-catalog reads, and the workspace path-scoping rules that keep a served path inside its projection | Attachment download (that is `attachments`) | `PROJECT_FS_ROOT`, `ProjectFsQuery`, `list_project_files`, `stat_project_file`, `read_project_file`, `project_fs_download_response`, `FsBrowseQuery`, `list_fs_mounts`, `browse_fs_dir`, `stat_fs_path`, `read_fs_file`, `require_fs_browse_path`, `workspace_scoped_projection_required`, `workspace_projection_for`, `workspace_served_path`, `strip_workspace_prefix`, `project_fs_list_path`, `require_project_fs_path`, `index_project_files` |
 | `projects` | Project CRUD and project membership | Project *files* — those are `workspace-fs` | `ListProjectsQuery`, `list_projects`, `create_project`, `get_project`, `update_project`, `delete_project`, `list_project_members`, `add_project_member`, `update_project_member`, `remove_project_member`, `read_project_member` |
 | `attachments` | Attachment download and the filename sanitizing that download depends on | A filesystem path rule — that is `workspace-fs` | `MAX_DOWNLOAD_FILENAME_BYTES`, `sanitized_download_filename`, `get_attachment` |
-| `streaming` | Both live transports and everything that shapes a frame: SSE poll/keepalive tuning, capacity and concurrency rejection, cursor tokens, the envelope→event mapping, and the WebSocket drain loop | A product decision — a stream carries what the surface already produced | `SSE_POLL_INTERVAL`, `SSE_IDLE_POLL_MAX_INTERVAL`, `SSE_KEEPALIVE_INTERVAL`, `LAST_EVENT_ID_HEADER`, `sse_poll_interval_for_idle_polls`, `stream_events`, `sse_capacity_rejected`, `sse_concurrency_exhausted`, `StreamEventsQuery`, `stream_connection_id`, `SseErrorPayload`, `webchat_sse_event_from_envelope`, `sse_error_event`, `sse_keep_alive_event`, `build_sse_stream`, `parse_cursor_token`, `cursor_token`, `stream_events_ws`, `ws_drain_loop`, `ws_send_with_timeout` |
+| `streaming` | The live transport and everything that shapes a frame: SSE poll/keepalive tuning, capacity and concurrency rejection, cursor tokens, and the envelope→event mapping | A product decision — a stream carries what the surface already produced | `SSE_POLL_INTERVAL`, `SSE_IDLE_POLL_MAX_INTERVAL`, `SSE_KEEPALIVE_INTERVAL`, `LAST_EVENT_ID_HEADER`, `sse_poll_interval_for_idle_polls`, `stream_events`, `sse_capacity_rejected`, `sse_concurrency_exhausted`, `StreamEventsQuery`, `stream_connection_id`, `SseErrorPayload`, `webchat_sse_event_from_envelope`, `sse_error_event`, `sse_keep_alive_event`, `build_sse_stream`, `parse_cursor_token`, `cursor_token` |
 | `runs` | Run control: cancel, retry, and gate resolution | Anything that reads a run — that is `threads` or `streaming` | `cancel_run`, `CancelRunPath`, `resolve_gate`, `ResolveGatePath`, `retry_run`, `RetryRunPath` |
 | `commands` | The product command surface: listing and executing | A command *constant* — those are `ironclaw_assistant`'s frozen inventory | `list_commands`, `ExecuteCommandBody`, `execute_command` |
 | `automations` | Automation listing and lifecycle (run/pause/resume/rename/delete) | Trigger evaluation — that is the triggers domain | `list_automations`, `run_automation`, `pause_automation`, `resume_automation`, `rename_automation`, `delete_automation`, `ListAutomationsQuery` |
@@ -275,7 +275,6 @@ closed (`500`) if that layer is missing (locked by
 | `webui.v2.get_thread_artifact` | GET | `/api/webchat/v2/threads/{thread_id}/artifact` | — | `ProjectionOnly` |
 | `webui.v2.logs` | GET | `/api/webchat/v2/logs` | — | `ProjectionOnly` |
 | `webui.v2.stream_events` | GET | `/api/webchat/v2/threads/{thread_id}/events` | **SSE** | `ProjectionOnly` |
-| `webui.v2.stream_events_ws` | GET | `/api/webchat/v2/threads/{thread_id}/ws` | **WebSocket** | `ProjectionOnly` |
 | `webui.v2.cancel_run` / `retry_run` / `resolve_gate` | POST | `…/runs/{run_id}/…` | — | `TurnCoordinator` |
 | `webui.v2.list/run/pause/resume/rename/delete_automation` | GET/POST/DELETE | `/api/webchat/v2/automations…` | — | `ProductSurface` |
 | `webui.v2.suggestions.list/generate/start/dismiss` | GET/POST/DELETE | `/api/webchat/v2/suggestions…` | — | `ProductSurface` |
@@ -432,17 +431,16 @@ last-admin protection); `create_user` returns the one-time API bearer exactly
 once in `api_token`. `webui.v2.settings.tools` is a normal authenticated-caller
 route (tenant/user-scoped tool-approval settings), not an operator route.
 
-### Streaming model (SSE + WebSocket)
+### Streaming model (SSE)
 
-- `stream_events` (SSE) and `stream_events_ws` (WebSocket) render each
+- `stream_events` (SSE) renders each
   `ProductOutboundEnvelope` into the redacted `WebChatV2EventFrame` schema
   (never raw adapter routing/delivery metadata) with the projection cursor as
   the SSE `id`; the browser resumes via `Last-Event-ID` (preferred over
   `?after_cursor=`).
-- Both transports share **one** `SseCapacity` budget keyed by `(tenant, user)`
-  (default 3 concurrent; override via `WebUiV2State::with_sse_concurrency_limit`)
-  — a caller cannot bypass the cap by mixing SSE and WS. Exhaustion returns
-  `429` with `retryable: true`.
+- Streams draw from **one** `SseCapacity` budget keyed by `(tenant, user)`
+  (default 3 concurrent; override via `WebUiV2State::with_sse_concurrency_limit`).
+  Exhaustion returns `429` with `retryable: true`.
 - The SPA consumes SSE through `event-source-plus`, which owns event framing,
   `Last-Event-ID`, fetch, and cancellation over `fetch`/`ReadableStream`.
   IronClaw owns one reconnect coordinator across transport failures, stream
@@ -507,11 +505,10 @@ route (tenant/user-scoped tool-approval settings), not an operator route.
   starts at the projection origin so the server returns durable state plus the
   compacted current live state; it does not persist process-local live cursors
   across SPA navigation.
-- Every stream is closed after a max lifetime (5 min) and every `socket.send` /
+- Every stream is closed after a max lifetime (5 min) and every
   subscription/drain await is `timeout`-bounded, so a back-pressuring client or
   a stalled facade cannot pin a slot past the budget. Slots are RAII
-  (`SseSlot`), released on disconnect / expiry / error. Regressions locked by
-  `stream_events_ws_shares_capacity_with_sse_streams` and
+  (`SseSlot`), released on disconnect / expiry / error. Regression locked by
   `stream_events_releases_slot_when_facade_drain_stalls_past_max_lifetime`.
 - `capability_activity` / `capability_display_preview` frames carry only
   bounded, secret-redacted input/output *summaries* (host paths rejected, URLs

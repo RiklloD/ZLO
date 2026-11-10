@@ -116,12 +116,7 @@ limits live in `descriptors.rs`, `webui_body_limit.rs`, and
    bearer-validation step). `BodyLimitPolicy` is an exhaustive `match`, so
    a new variant added upstream fails the build rather than silently
    disabling enforcement.
-6. **WS same-origin enforcement** (`webui_ws_origin::enforce_websocket_origin`)
-   — runs only on descriptors that declare a non-`NotApplicable`
-   `WebSocketOriginPolicy`. The browser does not pre-flight WebSocket
-   upgrades, so origin enforcement happens inline; absence or mismatch
-   yields a `403` before the v2 handler executes the WS upgrade.
-7. **Bearer auth + `?token=` shim** (`webui_serve::authenticate_request`)
+6. **Bearer auth + `?token=` shim** (`webui_serve::authenticate_request`)
    — `Authorization: Bearer <token>` for every route; `?token=` is
    honored ONLY on `GET /api/webchat/v2/threads/{id}/events` because
    the browser's `EventSource` cannot set headers. Mutations and
@@ -134,7 +129,7 @@ limits live in `descriptors.rs`, `webui_body_limit.rs`, and
    inserts an `OpenAiCompatAuthenticatedCaller` extension with tenant-scoped
    verified auth evidence for protected OpenAI-compatible route mounts; route
    crates must not mint this evidence.
-8. **Descriptor-driven per-route rate limit**
+7. **Descriptor-driven per-route rate limit**
    (`webui_rate_limit::enforce_rate_limit`) — reads
    `ironclaw_webui::webui_v2_routes()` plus mounted product-auth
    descriptors at composition time and enforces the declared
@@ -144,7 +139,7 @@ limits live in `descriptors.rs`, `webui_body_limit.rs`, and
    `ConnectInfo<SocketAddr>`, never `X-Forwarded-For` / `X-Real-IP`.
    Composition fails closed if a future descriptor declares an unsupported
    scope.
-9. `webui_v2_router(WebUiV2State::new(bundle.product_surface))` — the v2
+8. `webui_v2_router(WebUiV2State::new(bundle.product_surface))` — the v2
    handler set from `ironclaw_webui`; see that crate's router source for the
    current route list.
 
@@ -270,7 +265,7 @@ Rationale:
 - **Matches the existing v2 SPA auth model.**
   `crates/product/ironclaw_webui/frontend/src/app/auth.ts`
   already stores the bearer in `sessionStorage` and sends it as
-  `Authorization: Bearer` on every API call; SSE / WS use the
+  `Authorization: Bearer` on every API call; SSE uses the
   `?token=` query-string shim that the composition layer's bearer
   middleware accepts only on `GET /api/webchat/v2/threads/{id}/events`.
   Cookies would require a new auth path through the same middleware.
@@ -340,12 +335,9 @@ and the auth/product-auth mounts below), not in this prose.
   outer `SetResponseHeaderLayer`s; default CSP is
   `default-src 'self'; object-src 'none'; frame-ancestors 'none';
   base-uri 'self'`.
-- **Connection limit (SSE + WS)** — bounded by `ironclaw_webui`'s own
+- **Connection limit (SSE)** — bounded by `ironclaw_webui`'s own
   `SseCapacity` (3 streams per `(tenant, user)`, 5-minute max stream
-  lifetime). The WebSocket stream (`stream_events_ws`) draws from the same
-  shared `SseCapacity` pool as SSE (pinned by
-  `stream_events_ws_shares_capacity_with_sse_streams` in
-  `ironclaw_webui`'s `webui_v2_handlers_contract.rs`).
+  lifetime).
 - **Caller construction** — `ProductSurfaceCaller` is built from
   `config.tenant_id` (trusted host installation) plus the
   authenticator's verified `UserId`. The browser body cannot influence
@@ -369,7 +361,7 @@ The `serve` subcommand builds a full standalone `RebornRuntime`, asks
 the resulting router to the host-owned `ironclaw_webui`
 listener lifecycle. The default projection stream is backed by
 the runtime-owned durable event log plus `EventStreamManager`, so
-`/events` and `/ws` no longer advertise routes that only return
+`/events` no longer advertises a route that only returns
 `Unavailable`. In standalone builds with `libsql` enabled, the log and
 runtime state stores sit behind the composed standalone root filesystem
 (`reborn-local-dev.db` for durable records, `/projects` for workspace
