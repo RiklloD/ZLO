@@ -9,7 +9,6 @@ import {
   fetchSession,
   fetchTimeline,
   getSessionChannelExtensionId,
-  openEventSocket,
   resolveGate,
   setSessionChannelExtensionId,
 } from "./api";
@@ -62,7 +61,6 @@ test("thread and run routes reject missing path identifiers before URL construct
   };
 
   assert.throws(() => eventStreamRequest(), /threadId is required/);
-  assert.throws(() => openEventSocket(), /threadId is required/);
   await assert.rejects(fetchTimeline(), /threadId is required/);
   await assert.rejects(
     executeChatCommand({ text: "/help" }),
