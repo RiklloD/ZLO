@@ -78,24 +78,6 @@ impl DefaultPlanner {
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_context(mut self, strategy: Arc<dyn ContextStrategy>) -> Self {
-        self.context = strategy;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_compaction(mut self, strategy: Arc<dyn CompactionStrategy>) -> Self {
-        self.compaction = strategy;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_capability(mut self, strategy: Arc<dyn CapabilityStrategy>) -> Self {
-        self.capability = strategy;
-        self
-    }
-
     pub(crate) fn with_model(mut self, strategy: Arc<dyn ModelStrategy>) -> Self {
         self.model = strategy;
         self
@@ -121,12 +103,6 @@ impl DefaultPlanner {
 
     pub(crate) fn with_stop(mut self, strategy: Arc<dyn StopConditionStrategy>) -> Self {
         self.stop = strategy;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_drain(mut self, strategy: Arc<dyn InputDrainStrategy>) -> Self {
-        self.drain = strategy;
         self
     }
 
@@ -218,6 +194,33 @@ impl Default for DefaultStrategySlots {
             stop: Arc::new(DefaultStopConditionStrategy::default()),
             drain: Arc::new(DefaultInputDrainStrategy),
             budget: Arc::new(DefaultBudgetStrategy::default()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_seams {
+    use super::*;
+
+    impl DefaultPlanner {
+        pub(crate) fn with_context(mut self, strategy: Arc<dyn ContextStrategy>) -> Self {
+            self.context = strategy;
+            self
+        }
+
+        pub(crate) fn with_compaction(mut self, strategy: Arc<dyn CompactionStrategy>) -> Self {
+            self.compaction = strategy;
+            self
+        }
+
+        pub(crate) fn with_capability(mut self, strategy: Arc<dyn CapabilityStrategy>) -> Self {
+            self.capability = strategy;
+            self
+        }
+
+        pub(crate) fn with_drain(mut self, strategy: Arc<dyn InputDrainStrategy>) -> Self {
+            self.drain = strategy;
+            self
         }
     }
 }

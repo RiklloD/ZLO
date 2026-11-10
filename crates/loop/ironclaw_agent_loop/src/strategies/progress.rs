@@ -33,13 +33,6 @@ impl Default for RepeatedOutputProgressStrategy {
 }
 
 impl RepeatedOutputProgressStrategy {
-    /// Threshold accessor for callers that must avoid duplicating the
-    /// literal (e.g. executor tests asserting recovery-warning counts).
-    #[cfg(test)]
-    pub(crate) fn threshold(&self) -> usize {
-        self.threshold
-    }
-
     /// Count of the most common (signature, output_digest) pair within the
     /// trailing `window` of completed capability-call outputs.
     pub(crate) fn dominant_repeated_output_count<const N: usize>(
@@ -55,6 +48,19 @@ impl RepeatedOutputProgressStrategy {
         ring: &BoundedRing<CapabilityOutputObservation, N>,
     ) -> bool {
         self.dominant_repeated_output_count(ring) >= self.threshold
+    }
+}
+
+#[cfg(test)]
+mod test_seams {
+    use super::*;
+
+    impl RepeatedOutputProgressStrategy {
+        /// Threshold accessor for callers that must avoid duplicating the
+        /// literal (e.g. executor tests asserting recovery-warning counts).
+        pub(crate) fn threshold(&self) -> usize {
+            self.threshold
+        }
     }
 }
 
