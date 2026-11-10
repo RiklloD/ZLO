@@ -1,8 +1,12 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ironclaw_host_api::{error::HostApiError, path::VirtualPath};
 
-use crate::{DirEntry, FileType, FilesystemError, FilesystemOperation};
+use crate::{
+    ContentType, DirEntry, Entry, FileType, FilesystemError, FilesystemOperation, IndexKey,
+    IndexValue, RecordKind, SeqNo,
+};
 pub(crate) fn directory_write_error(path: VirtualPath) -> FilesystemError {
     FilesystemError::Backend {
         path,
@@ -282,6 +286,43 @@ pub(crate) fn page_offset_to_i64(path: &VirtualPath, offset: u64) -> Result<i64,
         path: path.clone(),
         operation: FilesystemOperation::Query,
         reason: format!("page offset {offset} exceeds backend i64 range"),
+    })
+}
+
+pub(crate) fn seq_no_from_i64(
+    path: &VirtualPath,
+    raw: i64,
+    operation: FilesystemOperation,
+) -> Result<SeqNo, FilesystemError> {
+    u64::try_from(raw)
+        .map(SeqNo::from_backend)
+        .map_err(|_| FilesystemError::Backend {
+            path: path.clone(),
+            operation,
+            reason: format!("event seq {raw} is not representable"),
+        })
+}
+
+/// Build an [`Entry`] from a stored row. `decode_indexed` is the backend's
+/// own decoding of its indexed-projection column; it runs after the content
+/// type and kind have been validated.
+pub(crate) fn entry_from_parts(
+    body: Vec<u8>,
+    content_type_raw: String,
+    kind_raw: Option<String>,
+    decode_indexed: impl FnOnce() -> Result<BTreeMap<IndexKey, IndexValue>, FilesystemError>,
+) -> Result<Entry, FilesystemError> {
+    let content_type = ContentType::new(content_type_raw).map_err(FilesystemError::Contract)?;
+    let kind = kind_raw
+        .map(RecordKind::new)
+        .transpose()
+        .map_err(FilesystemError::Contract)?;
+    let indexed = decode_indexed()?;
+    Ok(Entry {
+        body,
+        content_type,
+        kind,
+        indexed,
     })
 }
 
