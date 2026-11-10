@@ -107,19 +107,6 @@ impl SourceSelfUpdate {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_spawner(
-        reborn_home: &Path,
-        settings: Option<SourceUpdateSettings>,
-        build: BuildInfo,
-        spawner: Arc<dyn JobSpawner>,
-    ) -> Self {
-        Self {
-            spawner: Some(spawner),
-            ..Self::new(reborn_home, settings, build, Scope::App)
-        }
-    }
-
     /// `[update]` as it is now. An unreadable `config.toml` reads as "not
     /// set up" (and is logged): nothing updates from a file that does not
     /// parse.
@@ -412,6 +399,20 @@ mod tests {
 
     use super::super::git::tests::{commit, push_upstream, repos, sh};
     use super::*;
+
+    impl SourceSelfUpdate {
+        fn with_spawner(
+            reborn_home: &Path,
+            settings: Option<SourceUpdateSettings>,
+            build: BuildInfo,
+            spawner: Arc<dyn JobSpawner>,
+        ) -> Self {
+            Self {
+                spawner: Some(spawner),
+                ..Self::new(reborn_home, settings, build, Scope::App)
+            }
+        }
+    }
 
     #[derive(Default)]
     struct RecordingSpawner {

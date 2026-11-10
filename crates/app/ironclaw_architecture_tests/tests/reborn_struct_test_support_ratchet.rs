@@ -76,12 +76,12 @@ struct FrozenPathCount {
 // and setter) and its test budget override (`set_limits`). They prove an
 // interrupted import retries instead of being skipped or duplicated, which
 // needs a seam between each filesystem write and the store commit.
-const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 81;
+const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 80;
 // 269 -> 268 (2026-08-31/09-01): the delivery-coordinator handle on
 // `RebornRuntime` became an ungated production field (shutdown reads it);
 // its accessor stays test-support (integration harnesses wiring their own
 // run-delivery observer are its only callers).
-const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 271;
+const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 270;
 
 const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
     FrozenPathCount {
@@ -559,12 +559,6 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         category: "test-support",
         item_kind: "method",
         path: "crates/ironclaw_triggers/src/worker/ports.rs",
-        count: 1,
-    },
-    FrozenPathCount {
-        category: "test-support",
-        item_kind: "method",
-        path: "crates/ironclaw_trust/src/sources.rs",
         count: 1,
     },
     FrozenPathCount {

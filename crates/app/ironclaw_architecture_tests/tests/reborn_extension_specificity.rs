@@ -1522,30 +1522,19 @@ const ALLOWLIST: &[(&str, &str)] = &[
     // localized pairing copy). Consumed by the generic descriptor-driven
     // pairing seam (extension-runtime P2), which moves product copy and
     // routing onto manifest-declared account-setup descriptors.
-    ("crates/ironclaw_webui/frontend/src/i18n/ar.ts", "slack"),
     ("crates/ironclaw_webui/frontend/src/i18n/ar.ts", "telegram"),
-    ("crates/ironclaw_webui/frontend/src/i18n/de.ts", "slack"),
     ("crates/ironclaw_webui/frontend/src/i18n/de.ts", "telegram"),
-    ("crates/ironclaw_webui/frontend/src/i18n/en.ts", "slack"),
     ("crates/ironclaw_webui/frontend/src/i18n/en.ts", "telegram"),
-    ("crates/ironclaw_webui/frontend/src/i18n/es.ts", "slack"),
     ("crates/ironclaw_webui/frontend/src/i18n/es.ts", "telegram"),
-    ("crates/ironclaw_webui/frontend/src/i18n/fr.ts", "slack"),
     ("crates/ironclaw_webui/frontend/src/i18n/fr.ts", "telegram"),
-    ("crates/ironclaw_webui/frontend/src/i18n/hi.ts", "slack"),
     ("crates/ironclaw_webui/frontend/src/i18n/hi.ts", "telegram"),
-    ("crates/ironclaw_webui/frontend/src/i18n/ja.ts", "slack"),
     ("crates/ironclaw_webui/frontend/src/i18n/ja.ts", "telegram"),
-    ("crates/ironclaw_webui/frontend/src/i18n/ko.ts", "slack"),
     ("crates/ironclaw_webui/frontend/src/i18n/ko.ts", "telegram"),
-    ("crates/ironclaw_webui/frontend/src/i18n/pt-BR.ts", "slack"),
     (
         "crates/ironclaw_webui/frontend/src/i18n/pt-BR.ts",
         "telegram",
     ),
-    ("crates/ironclaw_webui/frontend/src/i18n/uk.ts", "slack"),
     ("crates/ironclaw_webui/frontend/src/i18n/uk.ts", "telegram"),
-    ("crates/ironclaw_webui/frontend/src/i18n/zh-CN.ts", "slack"),
     (
         "crates/ironclaw_webui/frontend/src/i18n/zh-CN.ts",
         "telegram",
@@ -1712,7 +1701,7 @@ const ALLOWLIST: &[(&str, &str)] = &[
 // 110 -> 111 (2026-10-24, desktop Usage page): Antigravity's plan quota is
 // read from Google's API hosts in `ironclaw_usage/src/antigravity.rs`; Google
 // is the plan vendor there, not the google extensions vendor.
-const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 111;
+const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 100;
 
 /// §11.2.8 vendor-scope shrink, armed at the WS0 baseline.
 ///

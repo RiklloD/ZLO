@@ -283,8 +283,8 @@ fn origin_url(config: &str) -> Option<String> {
     first
 }
 
-/// `https://user@github.com/o/r.git`, `git@github.com:o/r.git` and
-/// `ssh://git@github.com/o/r` all become `github.com/o/r`.
+/// `https://user@example.com/o/r.git`, `git@example.com:o/r.git` and
+/// `ssh://git@example.com/o/r` all become `example.com/o/r`.
 fn remote_key(url: &str) -> Option<String> {
     let url = url.trim();
     let rest = match url.split_once("://") {
@@ -321,19 +321,19 @@ mod tests {
     #[test]
     fn remotes_of_one_repository_share_a_key() {
         for url in [
-            "https://github.com/acme/app.git",
-            "https://user:pw@GitHub.com/acme/app",
-            "git@github.com:acme/app.git",
-            "ssh://git@github.com:22/acme/app/",
+            "https://example.com/acme/app.git",
+            "https://user:pw@Example.com/acme/app",
+            "git@example.com:acme/app.git",
+            "ssh://git@example.com:22/acme/app/",
         ] {
             assert_eq!(
                 remote_key(url).as_deref(),
-                Some("github.com/acme/app"),
+                Some("example.com/acme/app"),
                 "{url}"
             );
         }
         assert_eq!(
-            repository_of("github.com/acme/app").as_deref(),
+            repository_of("example.com/acme/app").as_deref(),
             Some("acme/app")
         );
         assert_eq!(
@@ -345,13 +345,13 @@ mod tests {
 
     #[test]
     fn origin_wins_over_other_remotes() {
-        let config = "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = git@github.com:up/app.git\n[remote \"origin\"]\n\turl = https://github.com/me/app.git\n";
+        let config = "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = git@example.com:up/app.git\n[remote \"origin\"]\n\turl = https://example.com/me/app.git\n";
         assert_eq!(
             origin_url(config).as_deref(),
-            Some("https://github.com/me/app.git")
+            Some("https://example.com/me/app.git")
         );
-        let only = "[remote \"fork\"]\n\turl = git@github.com:me/x.git\n";
-        assert_eq!(origin_url(only).as_deref(), Some("git@github.com:me/x.git"));
+        let only = "[remote \"fork\"]\n\turl = git@example.com:me/x.git\n";
+        assert_eq!(origin_url(only).as_deref(), Some("git@example.com:me/x.git"));
         assert_eq!(origin_url("[core]\n"), None);
     }
 
