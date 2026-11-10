@@ -118,7 +118,7 @@ So a two-turn thread where both turns raise and resolve a gate needs 4 entries
   (`HarnessCapabilityRecorder`, `RecordedCapabilityResult`), and
   `harness/profiles/<domain>.rs` — one file per capability domain (`attachment`,
   `coding_read`, `core_builtin`, `device_link`, `extension`, `file`, `github`,
-  `mock_mcp`, `outbound`, `process`, `profile`, `project`, `qa_smoke`,
+  `mock_mcp`, `outbound`, `plan`, `process`, `profile`, `project`, `qa_smoke`,
   `sandbox_shell`, `skill`, `trace_commons`, `trigger`, `web_access` — re-derive
   with `ls tests/integration/support/harness/profiles/`) — each returning a
   `ToolsProfile` via a constructor like `profiles::file::file_tools_requiring_approval()` or

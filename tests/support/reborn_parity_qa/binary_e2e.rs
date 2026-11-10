@@ -395,6 +395,21 @@ impl RebornBinaryE2EHarness {
         .await
     }
 
+    pub async fn with_host_runtime_plan_capabilities(
+        conversation_id: &str,
+        model_gateway: RebornTraceReplayModelGateway,
+    ) -> HarnessResult<Self> {
+        let host_runtime =
+            Arc::new(crate::reborn_support::harness::profiles::plan::plan_tools().await?);
+        Self::with_model_gateway_capability_mode(
+            conversation_id,
+            model_gateway,
+            HarnessCapabilityMode::HostRuntime(host_runtime),
+            false,
+        )
+        .await
+    }
+
     pub async fn with_host_runtime_process_capabilities(
         conversation_id: &str,
         model_gateway: RebornTraceReplayModelGateway,
