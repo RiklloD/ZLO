@@ -1127,6 +1127,13 @@ async fn gateway_with_tool_surface_calls_complete_with_tools_and_returns_capabil
     );
     assert_eq!(tool_requests[0].tools[0].name, "demo__echo");
     drop(tool_requests);
+    assert_eq!(
+        capabilities
+            .tool_definition_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "one model call resolves the tool surface once"
+    );
 
     let ParentLoopOutput::CapabilityCalls(calls) = response.output else {
         panic!("expected capability calls");
@@ -1697,6 +1704,13 @@ async fn gateway_repairs_unknown_provider_tool_call_before_registration() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].capability_id.as_str(), "demo.echo");
     assert_eq!(capabilities.registered.lock().unwrap().len(), 1);
+    assert_eq!(
+        capabilities
+            .tool_definition_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the repair retry reuses the call's tool-surface snapshot"
+    );
     let requests = provider.tool_requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[1].messages.iter().any(|message| {
@@ -5607,6 +5621,7 @@ struct GatewayCapabilityPort {
     definitions: Vec<ProviderToolDefinition>,
     resolvable_definitions: Vec<ProviderToolDefinition>,
     registered: Mutex<Vec<ProviderToolCall>>,
+    tool_definition_reads: std::sync::atomic::AtomicUsize,
     validation_error: Option<AgentLoopHostErrorKind>,
     /// Rejection injected at the *registration* stage only, so the gateway's
     /// second provider-tool loop is genuinely reached (setting
@@ -5632,6 +5647,7 @@ impl GatewayCapabilityPort {
             resolvable_definitions: definitions.clone(),
             definitions,
             registered: Mutex::new(Vec::new()),
+            tool_definition_reads: std::sync::atomic::AtomicUsize::new(0),
             validation_error: None,
             registration_error: None,
         }
@@ -5658,6 +5674,7 @@ impl GatewayCapabilityPort {
             resolvable_definitions: definitions.clone(),
             definitions,
             registered: Mutex::new(Vec::new()),
+            tool_definition_reads: std::sync::atomic::AtomicUsize::new(0),
             validation_error: None,
             registration_error: None,
         }
@@ -5717,6 +5734,7 @@ impl GatewayCapabilityPort {
             resolvable_definitions: definitions.clone(),
             definitions,
             registered: Mutex::new(Vec::new()),
+            tool_definition_reads: std::sync::atomic::AtomicUsize::new(0),
             validation_error: None,
             registration_error: None,
         }
@@ -5749,6 +5767,7 @@ impl GatewayCapabilityPort {
             resolvable_definitions: definitions.clone(),
             definitions,
             registered: Mutex::new(Vec::new()),
+            tool_definition_reads: std::sync::atomic::AtomicUsize::new(0),
             validation_error: None,
             registration_error: None,
         }
@@ -5783,6 +5802,8 @@ impl LoopCapabilityPort for GatewayCapabilityPort {
     fn tool_definitions(
         &self,
     ) -> Result<Vec<ProviderToolDefinition>, ironclaw_loop_contracts::AgentLoopHostError> {
+        self.tool_definition_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.definitions.clone())
     }
 

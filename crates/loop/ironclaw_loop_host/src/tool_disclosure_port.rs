@@ -328,30 +328,35 @@ impl LoopCapabilityPort for ToolDisclosureCapabilityPort {
         let Some(state) = state.as_ref() else {
             return Ok(Vec::new());
         };
-        let (effective_catalog_count, effective_catalog_schema_tokens) =
-            state.catalog.effective_metrics(&self.policy);
-        // Live token savings = how much of the full (authorized) tool surface we
-        // avoided advertising this turn. Lets a benchmark/live run report the
-        // real reduction directly from one log line (the fixture benchmark can't,
-        // since its names are decoupled from the real core).
-        let reduction_pct = if effective_catalog_schema_tokens > 0 {
-            100.0
-                * (1.0
-                    - (f64::from(state.active.advertised_tokens)
-                        / f64::from(effective_catalog_schema_tokens)))
-        } else {
-            0.0
-        };
-        debug!(
+        if tracing::enabled!(
             target: "ironclaw::reborn::context_shadow",
-            effective_catalog_count,
-            effective_catalog_schema_tokens,
-            advertised_tool_count = state.active.definitions.len(),
-            advertised_tool_schema_tokens = state.active.advertised_tokens,
-            deferred = state.active.deferred,
-            reduction_pct,
-            "reborn live tool disclosure surface"
-        );
+            tracing::Level::DEBUG
+        ) {
+            let (effective_catalog_count, effective_catalog_schema_tokens) =
+                state.catalog.effective_metrics(&self.policy);
+            // Live token savings = how much of the full (authorized) tool surface we
+            // avoided advertising this turn. Lets a benchmark/live run report the
+            // real reduction directly from one log line (the fixture benchmark can't,
+            // since its names are decoupled from the real core).
+            let reduction_pct = if effective_catalog_schema_tokens > 0 {
+                100.0
+                    * (1.0
+                        - (f64::from(state.active.advertised_tokens)
+                            / f64::from(effective_catalog_schema_tokens)))
+            } else {
+                0.0
+            };
+            debug!(
+                target: "ironclaw::reborn::context_shadow",
+                effective_catalog_count,
+                effective_catalog_schema_tokens,
+                advertised_tool_count = state.active.definitions.len(),
+                advertised_tool_schema_tokens = state.active.advertised_tokens,
+                deferred = state.active.deferred,
+                reduction_pct,
+                "reborn live tool disclosure surface"
+            );
+        }
         Ok(state.active.definitions.clone())
     }
 
