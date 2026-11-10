@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use ironclaw_config::{RebornBootConfig, RebornHome, RebornProfile};
-use ironclaw_operator::{RebornProviderAdmin, RebornProviderAdminError, RebornV1State};
+use ironclaw_operator::{RebornProviderAdmin, RebornProviderAdminError};
+use ironclaw_product_contracts::operator_llm::RebornV1State;
 
 struct RuntimeEnvMaskGuard {
     snapshots: Vec<ironclaw_common::env_helpers::RuntimeEnvSnapshot>,

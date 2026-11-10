@@ -3296,6 +3296,41 @@ fn automation_resource_descriptor_pattern_is_dual_method_only() {
     );
 }
 
+/// Every field of every descriptor — method, pattern, auth, scope source,
+/// body limit, rate limit, CORS, streaming, audit class and effect path — in
+/// table order, for the default table and the table with both artifact flags
+/// on. Regenerate with `UPDATE_ROUTE_POLICY_SNAPSHOT=1` only for an intended
+/// policy change.
+#[test]
+fn route_policy_matrix_matches_the_committed_snapshot() {
+    let mut actual = String::new();
+    for (table, routes) in [
+        ("default", ironclaw_webui::webui_v2::webui_v2_routes()),
+        (
+            "with_artifact_flags",
+            ironclaw_webui::webui_v2::webui_v2_routes_with_artifact_flags(true, true),
+        ),
+    ] {
+        for descriptor in routes {
+            actual.push_str(table);
+            actual.push(' ');
+            actual.push_str(&serde_json::to_string(&descriptor).expect("descriptor serializes"));
+            actual.push('\n');
+        }
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/snapshots/webui_v2_route_policy_matrix.jsonl");
+    if std::env::var_os("UPDATE_ROUTE_POLICY_SNAPSHOT").is_some() {
+        std::fs::write(&path, &actual).expect("write snapshot");
+    }
+    let expected = std::fs::read_to_string(&path).expect("committed route-policy snapshot");
+    assert!(
+        actual == expected,
+        "route-policy matrix drifted from {}; diff the file after regenerating",
+        path.display()
+    );
+}
+
 #[test]
 fn route_table_has_exactly_the_expected_routes() {
     let routes = ironclaw_webui::webui_v2::webui_v2_routes_with_artifact_flags(true, true);

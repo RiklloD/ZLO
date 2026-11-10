@@ -357,17 +357,6 @@ impl OpenAiChatCompletionsWorkflow {
         })
     }
 
-    pub async fn stream_chat(
-        &self,
-        caller: OpenAiCompatAuthenticatedCaller,
-        raw_body: &[u8],
-        idempotency_key: Option<OpenAiCompatIdempotencyKey>,
-    ) -> Result<Response, OpenAiCompatHttpError> {
-        let request = parse_chat_request(raw_body)?;
-        self.stream_chat_request(caller, request, raw_body, idempotency_key)
-            .await
-    }
-
     async fn stream_chat_request(
         &self,
         caller: OpenAiCompatAuthenticatedCaller,

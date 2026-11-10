@@ -127,7 +127,7 @@ pub use descriptors::{
     WEBUI_V2_ROUTE_UPDATE_PROJECT, WEBUI_V2_ROUTE_UPDATE_PROJECT_MEMBER,
     WEBUI_V2_ROUTE_UPDATE_SKILL, WEBUI_V2_ROUTE_UPSERT_LLM_PROVIDER, WEBUI_V2_ROUTE_USAGE_HISTORY,
     WEBUI_V2_ROUTE_USAGE_REPORT, is_webui_v2_operator_webui_config_route_id, webui_v2_routes,
-    webui_v2_routes_with_artifact_flags, webui_v2_routes_with_regression_artifact_export,
+    webui_v2_routes_with_artifact_flags,
 };
 pub use descriptors::{
     WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL, WEBUI_V2_ROUTE_COMPUTER_USE_FRAME,
@@ -150,32 +150,6 @@ pub use descriptors::{
     WEBUI_V2_ROUTE_SESSION_IMPORT_STATUS,
 };
 pub use error::{WebUiV2HttpError, WebUiV2HttpErrorBody};
-pub use handlers::{
-    admin_get_thread_scrape_artifact, admin_get_thread_scrape_run_artifact,
-    admin_list_thread_scrape_threads, archive_notification, browse_fs_dir, cancel_run,
-    complete_nearai_wallet_login, create_thread, delete_automation, delete_llm_provider,
-    delete_thread, dismiss_suggestion, execute_command, generate_suggestions, get_attachment,
-    get_extension_setup, get_llm_config, get_notification_channels, get_operator_config_key,
-    get_operator_diagnostics, get_operator_setup, get_operator_status, get_run_artifact,
-    get_session, get_skill_content, get_timeline, get_user_model_catalog,
-    get_user_model_preference, install_extension, install_skill, ironhub_deliver_install,
-    list_automations, list_commands, list_extension_admin_configuration, list_extension_registry,
-    list_extensions, list_fs_mounts, list_llm_models, list_notifications, list_operator_config,
-    list_outbound_delivery_targets, list_settings_tools, list_skills, list_suggestions,
-    list_threads, mark_all_notifications_read, mark_notification_read, pause_automation,
-    query_logs, query_operator_logs, read_fs_file, register_hosted_mcp_extension, remove_extension,
-    remove_skill, rename_automation, replace_extension_admin_configuration, resolve_gate,
-    resume_automation, retry_run, run_automation, run_operator_service_lifecycle,
-    run_operator_setup, search_skills, session_channel_message, set_active_llm,
-    set_auto_activate_learned, set_notification_channels, set_operator_config_key,
-    set_settings_tool_permission, set_settings_tools_auto_approve, set_skill_auto_activate,
-    set_user_model_policy, set_user_model_preference, setup_extension, start_codex_login,
-    start_nearai_login, start_suggestion, stat_fs_path, stream_events, stream_events_ws,
-    test_llm_connection, trace_account_traces, trace_credits, update_skill, upsert_llm_provider,
-};
-pub use inspector::{
-    get_inspector_prompt, get_inspector_snapshot, get_inspector_tool, stream_inspector_updates,
-};
 pub use router::{
     WebUiV2Capabilities, WebUiV2RouteOptions, WebUiV2State, webui_v2_router,
     webui_v2_router_with_options,
@@ -187,18 +161,5 @@ pub use schema::{WebChatV2Event, WebChatV2EventFrame};
 // re-exports are always available.
 pub use sse_capacity::DEFAULT_SSE_MAX_CONCURRENT_PER_CALLER;
 pub use static_assets::{
-    StaticRouterConfig, StaticRouterConfigError, serve_root, serve_wildcard, static_router,
-    static_router_with_config,
+    StaticRouterConfig, StaticRouterConfigError, static_router, static_router_with_config,
 };
-
-#[cfg(test)]
-mod ironhub_public_surface_tests {
-    #[test]
-    fn deliver_install_route_is_exported_from_webui_v2() {
-        assert_eq!(
-            super::WEBUI_V2_ROUTE_IRONHUB_DELIVER_INSTALL,
-            "webui.v2.ironhub_deliver_install"
-        );
-        let _ = super::ironhub_deliver_install;
-    }
-}

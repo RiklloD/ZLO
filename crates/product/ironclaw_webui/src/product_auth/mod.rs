@@ -774,6 +774,9 @@ pub(crate) fn product_auth_route_descriptors() -> Vec<IngressRouteDescriptor> {
         // shared 20/min mutation budget would throttle into a stalled link, so
         // it carries the poll-cadence policy below.
     ];
+    const MUTATION_BODY: BodyLimitPolicy = BodyLimitPolicy::Limited {
+        max_bytes: PRODUCT_AUTH_MUTATION_BODY_LIMIT_BYTES,
+    };
     let mut descriptors: Vec<IngressRouteDescriptor> = PROTECTED_MUTATIONS
         .iter()
         .map(|(route_id, path)| {
@@ -781,7 +784,7 @@ pub(crate) fn product_auth_route_descriptors() -> Vec<IngressRouteDescriptor> {
                 route_id,
                 NetworkMethod::Post,
                 path,
-                protected_mutation_policy(),
+                bearer_policy(MUTATION_BODY, PRODUCT_AUTH_MUTATION_MAX_REQUESTS),
             )
         })
         .collect();
@@ -791,25 +794,32 @@ pub(crate) fn product_auth_route_descriptors() -> Vec<IngressRouteDescriptor> {
         ACCOUNTS_REFRESH_ROUTE_ID,
         NetworkMethod::Post,
         ACCOUNTS_REFRESH_PATH,
-        accounts_refresh_policy(),
+        bearer_policy(MUTATION_BODY, ACCOUNTS_REFRESH_MAX_REQUESTS),
     ));
+    // Read-only status probe: no request body is read, so reject any.
     descriptors.push(descriptor(
         OAUTH_FLOW_STATUS_ROUTE_ID,
         NetworkMethod::Get,
         OAUTH_FLOW_STATUS_PATH,
-        flow_status_policy(),
+        bearer_policy(BodyLimitPolicy::NoBody, OAUTH_FLOW_STATUS_MAX_REQUESTS),
     ));
+    // The command carries no browser-selected lifecycle inputs. Its only
+    // authority is the caller-scoped durable flow id plus invocation id.
     descriptors.push(descriptor(
         OAUTH_FLOW_RECONCILE_ROUTE_ID,
         NetworkMethod::Post,
         OAUTH_FLOW_RECONCILE_PATH,
-        flow_reconcile_policy(),
+        bearer_policy(BodyLimitPolicy::NoBody, OAUTH_FLOW_STATUS_MAX_REQUESTS),
     ));
+    // A bounded-body mutation like every other device-link operation (it
+    // makes a vendor call), but on the poll cadence a card actually uses. The
+    // host's own poll floor is what keeps a hot-looping card from turning
+    // into vendor traffic, so this cap is the outer bound, not the real one.
     descriptors.push(descriptor(
         DEVICE_LINK_POLL_ROUTE_ID,
         NetworkMethod::Post,
         DEVICE_LINK_POLL_PATH,
-        device_link_poll_policy(),
+        bearer_policy(MUTATION_BODY, OAUTH_FLOW_STATUS_MAX_REQUESTS),
     ));
     descriptors.push(descriptor(
         OAUTH_CALLBACK_ROUTE_ID,
@@ -836,19 +846,20 @@ pub(super) fn descriptor(
         .expect("product-auth route descriptor must validate at startup") // safety: ids/patterns are crate-local literals, and policies are constructed by sibling helpers that validate their parts.
 }
 
-pub(super) fn protected_mutation_policy() -> IngressPolicy {
+/// The authenticated product-auth shape: LocalGateway, bearer, caller-scoped,
+/// per-caller rate limit. Each route states its own body limit and request
+/// budget.
+fn bearer_policy(body_limit: BodyLimitPolicy, max_requests: NonZeroU32) -> IngressPolicy {
     IngressPolicy::new(IngressPolicyParts {
         listener_class: ListenerClass::LocalGateway,
         auth: IngressAuthPolicy::Required {
             schemes: vec![IngressAuthScheme::BearerToken],
         },
         scope_source: ironclaw_host_api::ingress::IngressScopeSource::AuthenticatedCaller,
-        body_limit: BodyLimitPolicy::Limited {
-            max_bytes: PRODUCT_AUTH_MUTATION_BODY_LIMIT_BYTES,
-        },
+        body_limit,
         rate_limit: RateLimitPolicy::Limited {
             scope: RateLimitScope::PerCaller,
-            max_requests: PRODUCT_AUTH_MUTATION_MAX_REQUESTS,
+            max_requests,
             window_seconds: OAUTH_RATE_WINDOW_SECONDS,
         },
         cors: CorsPolicy::SameOriginOnly,
@@ -857,108 +868,7 @@ pub(super) fn protected_mutation_policy() -> IngressPolicy {
         audit: AuditTraceClass::UserAction,
         effect_path: AllowedEffectPath::ProductSurface,
     })
-    .expect("product-auth OAuth start policy must validate") // safety: LocalGateway + bearer + AuthenticatedCaller is the same authenticated local product workflow shape used by WebUI mutations.
-}
-
-/// The device-link poll route's policy: an authenticated bounded-body
-/// mutation like every other device-link operation (it makes a vendor call),
-/// but on the poll cadence a card actually uses. The 20/min mutation budget
-/// would throttle a ~3s poll into a stalled link; the host's own poll floor is
-/// what keeps a hot-looping card from turning into vendor traffic, so this cap
-/// is the outer bound, not the real one.
-pub(super) fn device_link_poll_policy() -> IngressPolicy {
-    IngressPolicy::new(IngressPolicyParts {
-        listener_class: ListenerClass::LocalGateway,
-        auth: IngressAuthPolicy::Required {
-            schemes: vec![IngressAuthScheme::BearerToken],
-        },
-        scope_source: ironclaw_host_api::ingress::IngressScopeSource::AuthenticatedCaller,
-        body_limit: BodyLimitPolicy::Limited {
-            max_bytes: PRODUCT_AUTH_MUTATION_BODY_LIMIT_BYTES,
-        },
-        rate_limit: RateLimitPolicy::Limited {
-            scope: RateLimitScope::PerCaller,
-            max_requests: OAUTH_FLOW_STATUS_MAX_REQUESTS,
-            window_seconds: OAUTH_RATE_WINDOW_SECONDS,
-        },
-        cors: CorsPolicy::SameOriginOnly,
-        websocket_origin: WebSocketOriginPolicy::NotApplicable,
-        streaming: StreamingMode::None,
-        audit: AuditTraceClass::UserAction,
-        effect_path: AllowedEffectPath::ProductSurface,
-    })
-    .expect("product-auth device-link poll policy must validate") // safety: the protected-mutation shape with the read-cadence rate cap.
-}
-
-pub(super) fn flow_status_policy() -> IngressPolicy {
-    IngressPolicy::new(IngressPolicyParts {
-        listener_class: ListenerClass::LocalGateway,
-        auth: IngressAuthPolicy::Required {
-            schemes: vec![IngressAuthScheme::BearerToken],
-        },
-        scope_source: ironclaw_host_api::ingress::IngressScopeSource::AuthenticatedCaller,
-        // Read-only status probe: no request body is read, so reject any.
-        body_limit: BodyLimitPolicy::NoBody,
-        rate_limit: RateLimitPolicy::Limited {
-            scope: RateLimitScope::PerCaller,
-            max_requests: OAUTH_FLOW_STATUS_MAX_REQUESTS,
-            window_seconds: OAUTH_RATE_WINDOW_SECONDS,
-        },
-        cors: CorsPolicy::SameOriginOnly,
-        websocket_origin: WebSocketOriginPolicy::NotApplicable,
-        streaming: StreamingMode::None,
-        audit: AuditTraceClass::UserAction,
-        effect_path: AllowedEffectPath::ProductSurface,
-    })
-    .expect("product-auth OAuth flow-status policy must validate") // safety: same authenticated LocalGateway shape as the OAuth start mutation, but NoBody + read-only per-caller poll cadence.
-}
-
-pub(super) fn flow_reconcile_policy() -> IngressPolicy {
-    IngressPolicy::new(IngressPolicyParts {
-        listener_class: ListenerClass::LocalGateway,
-        auth: IngressAuthPolicy::Required {
-            schemes: vec![IngressAuthScheme::BearerToken],
-        },
-        scope_source: ironclaw_host_api::ingress::IngressScopeSource::AuthenticatedCaller,
-        // The command carries no browser-selected lifecycle inputs. Its only
-        // authority is the caller-scoped durable flow id plus invocation id.
-        body_limit: BodyLimitPolicy::NoBody,
-        rate_limit: RateLimitPolicy::Limited {
-            scope: RateLimitScope::PerCaller,
-            max_requests: OAUTH_FLOW_STATUS_MAX_REQUESTS,
-            window_seconds: OAUTH_RATE_WINDOW_SECONDS,
-        },
-        cors: CorsPolicy::SameOriginOnly,
-        websocket_origin: WebSocketOriginPolicy::NotApplicable,
-        streaming: StreamingMode::None,
-        audit: AuditTraceClass::UserAction,
-        effect_path: AllowedEffectPath::ProductSurface,
-    })
-    .expect("product-auth OAuth flow-reconcile policy must validate") // safety: authenticated LocalGateway command with no body and a bounded per-caller poll cadence.
-}
-
-pub(super) fn accounts_refresh_policy() -> IngressPolicy {
-    IngressPolicy::new(IngressPolicyParts {
-        listener_class: ListenerClass::LocalGateway,
-        auth: IngressAuthPolicy::Required {
-            schemes: vec![IngressAuthScheme::BearerToken],
-        },
-        scope_source: ironclaw_host_api::ingress::IngressScopeSource::AuthenticatedCaller,
-        body_limit: BodyLimitPolicy::Limited {
-            max_bytes: PRODUCT_AUTH_MUTATION_BODY_LIMIT_BYTES,
-        },
-        rate_limit: RateLimitPolicy::Limited {
-            scope: RateLimitScope::PerCaller,
-            max_requests: ACCOUNTS_REFRESH_MAX_REQUESTS,
-            window_seconds: OAUTH_RATE_WINDOW_SECONDS,
-        },
-        cors: CorsPolicy::SameOriginOnly,
-        websocket_origin: WebSocketOriginPolicy::NotApplicable,
-        streaming: StreamingMode::None,
-        audit: AuditTraceClass::UserAction,
-        effect_path: AllowedEffectPath::ProductSurface,
-    })
-    .expect("product-auth accounts refresh policy must validate") // safety: same shape as protected_mutation_policy but with tighter rate cap to guard against fan-out to provider refresh calls.
+    .expect("product-auth bearer policy must validate") // safety: LocalGateway + bearer + AuthenticatedCaller is the same authenticated local product workflow shape used by WebUI mutations.
 }
 
 pub(super) fn callback_policy() -> IngressPolicy {
@@ -1983,6 +1893,29 @@ mod tests {
     // read-only, authenticated, per-caller poll. Locking its policy here stops
     // a future edit from silently loosening it (e.g. dropping bearer auth,
     // accepting a body, or widening the rate-limit scope to per-IP/public).
+    /// Every field of every product-auth descriptor, in table order.
+    /// Regenerate with `UPDATE_ROUTE_POLICY_SNAPSHOT=1` only for an intended
+    /// policy change.
+    #[test]
+    fn product_auth_route_policy_matrix_matches_the_committed_snapshot() {
+        let mut actual = String::new();
+        for descriptor in product_auth_route_descriptors() {
+            actual.push_str(&serde_json::to_string(&descriptor).expect("descriptor serializes"));
+            actual.push('\n');
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/snapshots/product_auth_route_policy_matrix.jsonl");
+        if std::env::var_os("UPDATE_ROUTE_POLICY_SNAPSHOT").is_some() {
+            std::fs::write(&path, &actual).expect("write snapshot");
+        }
+        let expected = std::fs::read_to_string(&path).expect("committed route-policy snapshot");
+        assert!(
+            actual == expected,
+            "product-auth route policy drifted from {}",
+            path.display()
+        );
+    }
+
     #[test]
     fn flow_status_route_descriptor_locks_read_only_bearer_policy() {
         let descriptors = product_auth_route_descriptors();

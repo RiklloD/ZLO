@@ -631,7 +631,10 @@ impl RebornLlmConfigService {
 
     async fn admin_list_async(
         &self,
-    ) -> Result<crate::RebornProviderList, crate::RebornProviderAdminError> {
+    ) -> Result<
+        ironclaw_product_contracts::operator_llm::RebornProviderList,
+        crate::RebornProviderAdminError,
+    > {
         let admin = self.admin();
         tokio::task::spawn_blocking(move || admin.list(None, true))
             .await
@@ -1395,7 +1398,9 @@ fn parse_adapter(adapter: &str) -> Option<ProviderProtocol> {
     serde_json::from_value(serde_json::Value::String(adapter.to_string())).ok()
 }
 
-fn metadata_env_key_set(metadata: &crate::RebornProviderMetadata) -> bool {
+fn metadata_env_key_set(
+    metadata: &ironclaw_product_contracts::operator_llm::RebornProviderMetadata,
+) -> bool {
     metadata.api_key_env.as_deref().is_some_and(env_var_present)
 }
 
@@ -1412,7 +1417,7 @@ fn env_var_present(name: &str) -> bool {
 
 fn provider_snapshot_base_url(
     provider_id: &str,
-    metadata: Option<&crate::RebornProviderMetadata>,
+    metadata: Option<&ironclaw_product_contracts::operator_llm::RebornProviderMetadata>,
 ) -> Option<String> {
     if let Some(base_url) = metadata
         .and_then(|meta| meta.base_url.as_deref())
@@ -1453,10 +1458,10 @@ fn normalized_endpoint(value: Option<&str>) -> Option<String> {
 ///   channel.
 pub(crate) async fn probe_candidate_provider(
     request: &LlmProbeRequest,
-) -> crate::ProviderProbeOutcome {
+) -> ironclaw_product_contracts::operator_llm::ProviderProbeOutcome {
     let endpoint = probe_endpoint_label(request);
     let Some(protocol) = parse_adapter(&request.adapter) else {
-        return crate::ProviderProbeOutcome {
+        return ironclaw_product_contracts::operator_llm::ProviderProbeOutcome {
             ok: false,
             models: Vec::new(),
             message: format!("unknown adapter `{}`", request.adapter),
@@ -1485,7 +1490,7 @@ pub(crate) async fn probe_candidate_provider(
     let mut config = match resolve_against_registry(&selection, &registry) {
         Ok(config) => config,
         Err(error) => {
-            return crate::ProviderProbeOutcome {
+            return ironclaw_product_contracts::operator_llm::ProviderProbeOutcome {
                 ok: false,
                 models: Vec::new(),
                 message: error.to_string(),
@@ -1506,7 +1511,7 @@ pub(crate) async fn probe_candidate_provider(
                 %error,
                 "onboard candidate probe: provider build failed"
             );
-            return crate::ProviderProbeOutcome {
+            return ironclaw_product_contracts::operator_llm::ProviderProbeOutcome {
                 ok: false,
                 models: Vec::new(),
                 message: format!("could not reach {endpoint} with these settings"),
@@ -1514,7 +1519,7 @@ pub(crate) async fn probe_candidate_provider(
         }
     };
     match provider.list_models().await {
-        Ok(models) => crate::ProviderProbeOutcome {
+        Ok(models) => ironclaw_product_contracts::operator_llm::ProviderProbeOutcome {
             ok: true,
             models,
             message: String::new(),
@@ -1526,7 +1531,7 @@ pub(crate) async fn probe_candidate_provider(
                 %error,
                 "onboard candidate probe: list_models failed"
             );
-            crate::ProviderProbeOutcome {
+            ironclaw_product_contracts::operator_llm::ProviderProbeOutcome {
                 ok: false,
                 models: Vec::new(),
                 message: format!("could not reach {endpoint} with these settings"),

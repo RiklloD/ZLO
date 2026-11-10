@@ -51,7 +51,8 @@ pub async fn models_list(
     Ok(Json(crate::models_catalog::model_list_response(entries)))
 }
 
-pub async fn responses_api_create(
+/// Mounted on both the `/api/v1` and `/v1` responses paths.
+pub async fn responses_create(
     State(state): State<OpenAiCompatRouterState>,
     caller: Option<Extension<OpenAiCompatAuthenticatedCaller>>,
     headers: HeaderMap,
@@ -67,23 +68,8 @@ pub async fn responses_api_create(
     .await
 }
 
-pub async fn responses_v1_create(
-    State(state): State<OpenAiCompatRouterState>,
-    caller: Option<Extension<OpenAiCompatAuthenticatedCaller>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response, OpenAiCompatHttpError> {
-    create_response(
-        state,
-        caller,
-        headers,
-        body,
-        OpenAiCompatRouteSurface::ResponsesApi,
-    )
-    .await
-}
-
-pub async fn responses_api_retrieve(
+/// Mounted on both the `/api/v1` and `/v1` responses paths.
+pub async fn responses_retrieve(
     State(state): State<OpenAiCompatRouterState>,
     caller: Option<Extension<OpenAiCompatAuthenticatedCaller>>,
     Path(response_id): Path<String>,
@@ -91,23 +77,8 @@ pub async fn responses_api_retrieve(
     retrieve_response(state, caller, response_id).await
 }
 
-pub async fn responses_v1_retrieve(
-    State(state): State<OpenAiCompatRouterState>,
-    caller: Option<Extension<OpenAiCompatAuthenticatedCaller>>,
-    Path(response_id): Path<String>,
-) -> Result<Json<OpenAiResponseObject>, OpenAiCompatHttpError> {
-    retrieve_response(state, caller, response_id).await
-}
-
-pub async fn responses_api_cancel(
-    State(state): State<OpenAiCompatRouterState>,
-    caller: Option<Extension<OpenAiCompatAuthenticatedCaller>>,
-    Path(response_id): Path<String>,
-) -> Result<Json<OpenAiResponseObject>, OpenAiCompatHttpError> {
-    cancel_response(state, caller, response_id).await
-}
-
-pub async fn responses_v1_cancel(
+/// Mounted on both the `/api/v1` and `/v1` responses paths.
+pub async fn responses_cancel(
     State(state): State<OpenAiCompatRouterState>,
     caller: Option<Extension<OpenAiCompatAuthenticatedCaller>>,
     Path(response_id): Path<String>,

@@ -120,7 +120,7 @@ pub(crate) trait LlmProbe {
         provider_id: &str,
         api_key: Option<&str>,
         model: Option<&str>,
-    ) -> anyhow::Result<ironclaw_operator::ProviderProbeOutcome>;
+    ) -> anyhow::Result<ironclaw_product_contracts::operator_llm::ProviderProbeOutcome>;
 }
 
 /// Production [`LlmProbe`]: calls `RebornProviderAdmin::probe_candidate`,
@@ -136,7 +136,7 @@ impl LlmProbe for LiveLlmProbe {
         provider_id: &str,
         api_key: Option<&str>,
         model: Option<&str>,
-    ) -> anyhow::Result<ironclaw_operator::ProviderProbeOutcome> {
+    ) -> anyhow::Result<ironclaw_product_contracts::operator_llm::ProviderProbeOutcome> {
         let admin = admin.clone();
         let provider_id = provider_id.to_string();
         let api_key = api_key.map(|key| secrecy::SecretString::from(key.to_string()));
@@ -598,7 +598,7 @@ mod tests {
 
         fn provider_menu(
             &mut self,
-            entries: &[ironclaw_operator::ProviderMenuEntry],
+            entries: &[ironclaw_product_contracts::operator_llm::ProviderMenuEntry],
         ) -> Result<String, LlmCredentialPromptError> {
             entries
                 .iter()
@@ -642,7 +642,7 @@ mod tests {
 
         fn provider_menu(
             &mut self,
-            _entries: &[ironclaw_operator::ProviderMenuEntry],
+            _entries: &[ironclaw_product_contracts::operator_llm::ProviderMenuEntry],
         ) -> Result<String, LlmCredentialPromptError> {
             unreachable!("provider_menu() must not be called once is_interactive() is false")
         }
@@ -679,7 +679,7 @@ mod tests {
 
         fn provider_menu(
             &mut self,
-            _entries: &[ironclaw_operator::ProviderMenuEntry],
+            _entries: &[ironclaw_product_contracts::operator_llm::ProviderMenuEntry],
         ) -> Result<String, LlmCredentialPromptError> {
             panic!("provider_menu() must not be called on an idempotent, already-configured rerun")
         }
@@ -714,12 +714,15 @@ mod tests {
             _provider_id: &str,
             _api_key: Option<&str>,
             _model: Option<&str>,
-        ) -> anyhow::Result<ironclaw_operator::ProviderProbeOutcome> {
-            Ok(ironclaw_operator::ProviderProbeOutcome {
-                ok: true,
-                models: Vec::new(),
-                message: String::new(),
-            })
+        ) -> anyhow::Result<ironclaw_product_contracts::operator_llm::ProviderProbeOutcome>
+        {
+            Ok(
+                ironclaw_product_contracts::operator_llm::ProviderProbeOutcome {
+                    ok: true,
+                    models: Vec::new(),
+                    message: String::new(),
+                },
+            )
         }
     }
 
@@ -737,7 +740,8 @@ mod tests {
             _provider_id: &str,
             _api_key: Option<&str>,
             _model: Option<&str>,
-        ) -> anyhow::Result<ironclaw_operator::ProviderProbeOutcome> {
+        ) -> anyhow::Result<ironclaw_product_contracts::operator_llm::ProviderProbeOutcome>
+        {
             panic!(
                 "probe() must not be called: idempotent reruns, headless runs, env-seeded \
                  selections, and a rejected blank key must never reach the live key/model \
@@ -762,13 +766,18 @@ mod tests {
     }
 
     struct ScriptedProbe {
-        outcomes:
-            std::cell::RefCell<std::collections::VecDeque<ironclaw_operator::ProviderProbeOutcome>>,
+        outcomes: std::cell::RefCell<
+            std::collections::VecDeque<
+                ironclaw_product_contracts::operator_llm::ProviderProbeOutcome,
+            >,
+        >,
         calls: std::cell::RefCell<Vec<RecordedProbeCall>>,
     }
 
     impl ScriptedProbe {
-        fn new(outcomes: Vec<ironclaw_operator::ProviderProbeOutcome>) -> Self {
+        fn new(
+            outcomes: Vec<ironclaw_product_contracts::operator_llm::ProviderProbeOutcome>,
+        ) -> Self {
             Self {
                 outcomes: std::cell::RefCell::new(outcomes.into()),
                 calls: std::cell::RefCell::new(Vec::new()),
@@ -787,7 +796,8 @@ mod tests {
             provider_id: &str,
             api_key: Option<&str>,
             model: Option<&str>,
-        ) -> anyhow::Result<ironclaw_operator::ProviderProbeOutcome> {
+        ) -> anyhow::Result<ironclaw_product_contracts::operator_llm::ProviderProbeOutcome>
+        {
             self.calls.borrow_mut().push(RecordedProbeCall {
                 provider_id: provider_id.to_string(),
                 api_key: api_key.map(str::to_string),
@@ -818,7 +828,7 @@ mod tests {
 
         fn provider_menu(
             &mut self,
-            entries: &[ironclaw_operator::ProviderMenuEntry],
+            entries: &[ironclaw_product_contracts::operator_llm::ProviderMenuEntry],
         ) -> Result<String, LlmCredentialPromptError> {
             entries
                 .iter()
@@ -1446,7 +1456,7 @@ mod tests {
 
         fn provider_menu(
             &mut self,
-            entries: &[ironclaw_operator::ProviderMenuEntry],
+            entries: &[ironclaw_product_contracts::operator_llm::ProviderMenuEntry],
         ) -> Result<String, LlmCredentialPromptError> {
             entries
                 .iter()
@@ -1492,7 +1502,7 @@ mod tests {
 
         fn provider_menu(
             &mut self,
-            _entries: &[ironclaw_operator::ProviderMenuEntry],
+            _entries: &[ironclaw_product_contracts::operator_llm::ProviderMenuEntry],
         ) -> Result<String, LlmCredentialPromptError> {
             unreachable!("provider_menu() must not be called once is_interactive() is false")
         }
@@ -1788,8 +1798,8 @@ mod tests {
         ok: bool,
         models: Vec<&str>,
         message: &str,
-    ) -> ironclaw_operator::ProviderProbeOutcome {
-        ironclaw_operator::ProviderProbeOutcome {
+    ) -> ironclaw_product_contracts::operator_llm::ProviderProbeOutcome {
+        ironclaw_product_contracts::operator_llm::ProviderProbeOutcome {
             ok,
             models: models.into_iter().map(str::to_string).collect(),
             message: message.to_string(),

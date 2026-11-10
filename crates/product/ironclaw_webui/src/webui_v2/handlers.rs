@@ -372,13 +372,7 @@ pub async fn delete_thread(
         },
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "thread delete",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "thread delete")?;
     let thread_id = parse_thread_id_for_response("thread_id", thread_id)?;
     let response = RebornDeleteThreadResponse {
         thread_id,
@@ -497,13 +491,7 @@ pub async fn admin_update_user(
         },
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "admin user update",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "admin user update")?;
     let surface = state.bind_services(caller);
     let response = ADMIN_USER_VIEW
         .query_on(&surface, RebornAdminUserRequest { user_id }, None)
@@ -527,13 +515,7 @@ pub async fn admin_delete_user(
         },
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "admin user delete",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "admin user delete")?;
     Ok(Json(RebornAdminUserDeletedResponse {
         user_id,
         deleted: true,
@@ -558,13 +540,7 @@ pub async fn admin_set_user_status(
         },
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "admin user status",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "admin user status")?;
     let surface = state.bind_services(caller);
     let response = ADMIN_USER_VIEW
         .query_on(&surface, RebornAdminUserRequest { user_id }, None)
@@ -590,13 +566,7 @@ pub async fn admin_set_user_role(
         },
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "admin user role",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "admin user role")?;
     let surface = state.bind_services(caller);
     let response = ADMIN_USER_VIEW
         .query_on(&surface, RebornAdminUserRequest { user_id }, None)
@@ -639,13 +609,7 @@ pub async fn admin_put_user_secret(
         },
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "admin user secret put",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "admin user secret put")?;
     let secret = read_admin_user_secret(state.services(), caller, user_id, handle_name).await?;
     Ok(Json(RebornAdminSecretResponse { secret }))
 }
@@ -1168,13 +1132,7 @@ pub async fn update_project(
         body.clone(),
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "project",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "project")?;
     let surface = state.bind_services(caller);
     let response = PROJECT_VIEW
         .query_on(
@@ -1201,13 +1159,7 @@ pub async fn delete_project(
         RebornDeleteProjectRequest { project_id },
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "project",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "project")?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1240,13 +1192,7 @@ pub async fn add_project_member(
         body.clone(),
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "project",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "project")?;
     let response =
         read_project_member(state.services(), caller, body.project_id, body.user_id).await?;
     Ok(Json(response))
@@ -1269,13 +1215,7 @@ pub async fn update_project_member(
         body.clone(),
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "project",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "project")?;
     let response =
         read_project_member(state.services(), caller, body.project_id, body.user_id).await?;
     Ok(Json(response))
@@ -1297,13 +1237,7 @@ pub async fn remove_project_member(
         },
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "project",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "project")?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2423,46 +2357,7 @@ fn capability_failure_bad_request() -> ProductSurfaceError {
     }
 }
 
-fn capability_resolution_succeeded(
-    resolution: Resolution,
-    label: &'static str,
-    operation_failed_is_invalid_request: bool,
-    forbidden: fn() -> ProductSurfaceError,
-    unavailable: fn(bool) -> ProductSurfaceError,
-) -> Result<(), ProductSurfaceError> {
-    match resolution {
-        Resolution::Done(outcome) if outcome.verdict.is_success() => Ok(()),
-        Resolution::Done(outcome) => match outcome.verdict.error_kind() {
-            Some(FailureKind::OperationFailed) if operation_failed_is_invalid_request => {
-                Err(capability_failure_bad_request())
-            }
-            Some(kind) => match capability_failure_http_class(*kind) {
-                CapabilityFailureHttpClass::BadRequest => Err(capability_failure_bad_request()),
-                CapabilityFailureHttpClass::Forbidden => Err(forbidden()),
-                CapabilityFailureHttpClass::Unavailable => Err(unavailable(true)),
-                CapabilityFailureHttpClass::Internal => Err(ProductSurfaceError::internal_from(
-                    format!("{label} capability did not complete successfully"),
-                )),
-            },
-            None => Err(ProductSurfaceError::internal_from(format!(
-                "{label} capability did not complete successfully"
-            ))),
-        },
-        Resolution::Denied(_) => Err(forbidden()),
-        Resolution::Blocked(_) | Resolution::Suspended(_) => Err(unavailable(true)),
-    }
-}
-
-fn parse_thread_id_for_response(
-    field: &'static str,
-    value: String,
-) -> Result<ThreadId, WebUiV2HttpError> {
-    ThreadId::new(value).map_err(|_| {
-        ProductSurfaceError::validation(field, ProductSurfaceValidationCode::InvalidId).into()
-    })
-}
-
-fn outbound_preferences_forbidden() -> ProductSurfaceError {
+fn capability_forbidden() -> ProductSurfaceError {
     ProductSurfaceError {
         code: ProductSurfaceErrorCode::Forbidden,
         kind: ProductSurfaceErrorKind::ParticipantDenied,
@@ -2473,15 +2368,51 @@ fn outbound_preferences_forbidden() -> ProductSurfaceError {
     }
 }
 
-fn outbound_preferences_unavailable(retryable: bool) -> ProductSurfaceError {
+fn capability_unavailable() -> ProductSurfaceError {
     ProductSurfaceError {
         code: ProductSurfaceErrorCode::Unavailable,
         kind: ProductSurfaceErrorKind::ServiceUnavailable,
         status_code: 503,
-        retryable,
+        retryable: true,
         field: None,
         validation_code: None,
     }
+}
+
+/// A domain operation failure is an invalid request here, alongside
+/// input-encode failures.
+fn capability_resolution_succeeded(
+    resolution: Resolution,
+    label: &'static str,
+) -> Result<(), ProductSurfaceError> {
+    match resolution {
+        Resolution::Done(outcome) if outcome.verdict.is_success() => Ok(()),
+        Resolution::Done(outcome) => match outcome.verdict.error_kind() {
+            Some(FailureKind::OperationFailed) => Err(capability_failure_bad_request()),
+            Some(kind) => match capability_failure_http_class(*kind) {
+                CapabilityFailureHttpClass::BadRequest => Err(capability_failure_bad_request()),
+                CapabilityFailureHttpClass::Forbidden => Err(capability_forbidden()),
+                CapabilityFailureHttpClass::Unavailable => Err(capability_unavailable()),
+                CapabilityFailureHttpClass::Internal => Err(ProductSurfaceError::internal_from(
+                    format!("{label} capability did not complete successfully"),
+                )),
+            },
+            None => Err(ProductSurfaceError::internal_from(format!(
+                "{label} capability did not complete successfully"
+            ))),
+        },
+        Resolution::Denied(_) => Err(capability_forbidden()),
+        Resolution::Blocked(_) | Resolution::Suspended(_) => Err(capability_unavailable()),
+    }
+}
+
+fn parse_thread_id_for_response(
+    field: &'static str,
+    value: String,
+) -> Result<ThreadId, WebUiV2HttpError> {
+    ThreadId::new(value).map_err(|_| {
+        ProductSurfaceError::validation(field, ProductSurfaceValidationCode::InvalidId).into()
+    })
 }
 
 /// `GET /api/webchat/v2/outbound/targets`
@@ -2798,49 +2729,7 @@ pub async fn set_auto_activate_learned(
 }
 
 fn skill_mutation_succeeded(resolution: Resolution) -> Result<(), ProductSurfaceError> {
-    match resolution {
-        Resolution::Done(outcome) if outcome.verdict.is_success() => Ok(()),
-        Resolution::Done(outcome) => match outcome.verdict.error_kind() {
-            // Skill mutations treat a domain operation failure as an invalid
-            // request, alongside input-encode failures.
-            Some(FailureKind::OperationFailed) => Err(capability_failure_bad_request()),
-            Some(kind) => match capability_failure_http_class(*kind) {
-                CapabilityFailureHttpClass::BadRequest => Err(capability_failure_bad_request()),
-                CapabilityFailureHttpClass::Forbidden => Err(skill_mutation_forbidden()),
-                CapabilityFailureHttpClass::Unavailable => Err(skill_mutation_unavailable(true)),
-                CapabilityFailureHttpClass::Internal => Err(ProductSurfaceError::internal_from(
-                    "skill capability did not complete successfully",
-                )),
-            },
-            None => Err(ProductSurfaceError::internal_from(
-                "skill capability did not complete successfully",
-            )),
-        },
-        Resolution::Denied(_) => Err(skill_mutation_forbidden()),
-        Resolution::Blocked(_) | Resolution::Suspended(_) => Err(skill_mutation_unavailable(true)),
-    }
-}
-
-fn skill_mutation_forbidden() -> ProductSurfaceError {
-    ProductSurfaceError {
-        code: ProductSurfaceErrorCode::Forbidden,
-        kind: ProductSurfaceErrorKind::ParticipantDenied,
-        status_code: 403,
-        retryable: false,
-        field: None,
-        validation_code: None,
-    }
-}
-
-fn skill_mutation_unavailable(retryable: bool) -> ProductSurfaceError {
-    ProductSurfaceError {
-        code: ProductSurfaceErrorCode::Unavailable,
-        kind: ProductSurfaceErrorKind::ServiceUnavailable,
-        status_code: 503,
-        retryable,
-        field: None,
-        validation_code: None,
-    }
+    capability_resolution_succeeded(resolution, "skill")
 }
 
 /// `GET /api/webchat/v2/extensions/registry`
@@ -3003,38 +2892,26 @@ pub async fn remove_extension(
 fn extension_lifecycle_mutation_succeeded(
     resolution: Resolution,
 ) -> Result<(), ProductSurfaceError> {
-    match resolution {
-        Resolution::Done(outcome) if outcome.verdict.is_success() => Ok(()),
-        Resolution::Done(outcome) => match outcome.verdict.error_kind() {
-            // Lifecycle mutations report a domain operation failure as an
-            // invalid request, without a per-field validation code.
-            Some(FailureKind::OperationFailed) => Err(ProductSurfaceError {
-                code: ProductSurfaceErrorCode::InvalidRequest,
-                kind: ProductSurfaceErrorKind::Validation,
-                status_code: 400,
-                retryable: false,
-                field: None,
-                validation_code: None,
-            }),
-            Some(kind) => match capability_failure_http_class(*kind) {
-                CapabilityFailureHttpClass::BadRequest => Err(capability_failure_bad_request()),
-                CapabilityFailureHttpClass::Forbidden => Err(extension_lifecycle_forbidden()),
-                CapabilityFailureHttpClass::Unavailable => {
-                    Err(extension_lifecycle_unavailable(true))
-                }
-                CapabilityFailureHttpClass::Internal => Err(ProductSurfaceError::internal_from(
-                    "extension lifecycle capability did not complete successfully",
-                )),
-            },
-            None => Err(ProductSurfaceError::internal_from(
-                "extension lifecycle capability did not complete successfully",
-            )),
-        },
-        Resolution::Denied(_) => Err(extension_lifecycle_forbidden()),
-        Resolution::Blocked(_) | Resolution::Suspended(_) => {
-            Err(extension_lifecycle_unavailable(true))
-        }
+    // Lifecycle mutations report a domain operation failure as an invalid
+    // request without a per-field validation code; everything else follows
+    // the shared mapping.
+    if let Resolution::Done(outcome) = &resolution
+        && !outcome.verdict.is_success()
+        && matches!(
+            outcome.verdict.error_kind(),
+            Some(FailureKind::OperationFailed)
+        )
+    {
+        return Err(ProductSurfaceError {
+            code: ProductSurfaceErrorCode::InvalidRequest,
+            kind: ProductSurfaceErrorKind::Validation,
+            status_code: 400,
+            retryable: false,
+            field: None,
+            validation_code: None,
+        });
     }
+    capability_resolution_succeeded(resolution, "extension lifecycle")
 }
 
 async fn extension_install_succeeded(
@@ -3128,29 +3005,7 @@ async fn ensure_extension_inventory_readback(
     }) {
         return Ok(());
     }
-    Err(extension_lifecycle_unavailable(true))
-}
-
-fn extension_lifecycle_forbidden() -> ProductSurfaceError {
-    ProductSurfaceError {
-        code: ProductSurfaceErrorCode::Forbidden,
-        kind: ProductSurfaceErrorKind::ParticipantDenied,
-        status_code: 403,
-        retryable: false,
-        field: None,
-        validation_code: None,
-    }
-}
-
-fn extension_lifecycle_unavailable(retryable: bool) -> ProductSurfaceError {
-    ProductSurfaceError {
-        code: ProductSurfaceErrorCode::Unavailable,
-        kind: ProductSurfaceErrorKind::ServiceUnavailable,
-        status_code: 503,
-        retryable,
-        field: None,
-        validation_code: None,
-    }
+    Err(capability_unavailable())
 }
 
 fn extension_action_completed(message: impl Into<String>) -> RebornExtensionActionResponse {
@@ -3367,7 +3222,7 @@ pub async fn replace_extension_admin_configuration(
         }
         .into()),
         Resolution::Blocked(blocked) => Err(admin_configuration_blocked(blocked).into()),
-        Resolution::Suspended(_) => Err(admin_configuration_unavailable(true).into()),
+        Resolution::Suspended(_) => Err(capability_unavailable().into()),
     }
 }
 
@@ -3733,38 +3588,16 @@ fn admin_configuration_conflict() -> ProductSurfaceError {
     }
 }
 
-fn admin_configuration_unavailable(retryable: bool) -> ProductSurfaceError {
-    ProductSurfaceError {
-        code: ProductSurfaceErrorCode::Unavailable,
-        kind: ProductSurfaceErrorKind::ServiceUnavailable,
-        status_code: 503,
-        retryable,
-        field: None,
-        validation_code: None,
-    }
-}
-
-fn admin_configuration_forbidden() -> ProductSurfaceError {
-    ProductSurfaceError {
-        code: ProductSurfaceErrorCode::Forbidden,
-        kind: ProductSurfaceErrorKind::ParticipantDenied,
-        status_code: 403,
-        retryable: false,
-        field: None,
-        validation_code: None,
-    }
-}
-
 fn admin_configuration_done_failure(error_kind: Option<&FailureKind>) -> ProductSurfaceError {
     match error_kind {
         // Admin configuration treats a user-declined gate as forbidden, unlike
         // the generic mutation helpers where a declined gate is an internal
         // wiring fault — preserve that special case ahead of the classifier.
-        Some(FailureKind::GateDeclined) => admin_configuration_forbidden(),
+        Some(FailureKind::GateDeclined) => capability_forbidden(),
         Some(kind) => match capability_failure_http_class(*kind) {
             CapabilityFailureHttpClass::BadRequest => capability_failure_bad_request(),
-            CapabilityFailureHttpClass::Forbidden => admin_configuration_forbidden(),
-            CapabilityFailureHttpClass::Unavailable => admin_configuration_unavailable(true),
+            CapabilityFailureHttpClass::Forbidden => capability_forbidden(),
+            CapabilityFailureHttpClass::Unavailable => capability_unavailable(),
             CapabilityFailureHttpClass::Internal => ProductSurfaceError::internal(),
         },
         None => ProductSurfaceError::internal(),
@@ -3830,13 +3663,7 @@ pub async fn run_operator_setup(
         body,
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "llm config",
-        true,
-        extension_lifecycle_forbidden,
-        extension_lifecycle_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "llm config")?;
     let response = query_operator_setup_response(state.services(), caller).await?;
     Ok(Json(response))
 }
@@ -3885,13 +3712,7 @@ pub async fn set_settings_tools_auto_approve(
         serde_json::json!({ "enabled": body.enabled }),
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "settings tools auto approve",
-        true,
-        outbound_preferences_forbidden,
-        outbound_preferences_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "settings tools auto approve")?;
     let response = query_operator_config_key_response(
         state.services(),
         caller,
@@ -4314,13 +4135,7 @@ pub async fn set_user_model_preference(
         body,
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "user model preference",
-        true,
-        extension_lifecycle_forbidden,
-        extension_lifecycle_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "user model preference")?;
     Ok(Json(
         query_user_model_preference(state.services(), caller).await?,
     ))
@@ -4341,13 +4156,7 @@ pub async fn set_user_model_policy(
         body,
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "user model policy",
-        true,
-        extension_lifecycle_forbidden,
-        extension_lifecycle_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "user model policy")?;
     Ok(Json(
         query_user_model_catalog(state.services(), caller).await?,
     ))
@@ -4395,13 +4204,7 @@ pub async fn upsert_llm_provider(
     let resolution = LLM_PROVIDER_UPSERT_CAPABILITY
         .invoke_on(&surface, body, activity_id)
         .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "llm config",
-        true,
-        extension_lifecycle_forbidden,
-        extension_lifecycle_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "llm config")?;
     let response = query_llm_config_snapshot(state.services(), caller).await?;
     Ok(Json(response))
 }
@@ -4421,13 +4224,7 @@ pub async fn delete_llm_provider(
         serde_json::json!({ "provider_id": provider_id }),
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "llm config",
-        true,
-        extension_lifecycle_forbidden,
-        extension_lifecycle_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "llm config")?;
     let response = query_llm_config_snapshot(state.services(), caller).await?;
     Ok(Json(response))
 }
@@ -4447,13 +4244,7 @@ pub async fn set_active_llm(
         body,
     )
     .await?;
-    capability_resolution_succeeded(
-        resolution,
-        "llm config",
-        true,
-        extension_lifecycle_forbidden,
-        extension_lifecycle_unavailable,
-    )?;
+    capability_resolution_succeeded(resolution, "llm config")?;
     let response = query_llm_config_snapshot(state.services(), caller).await?;
     Ok(Json(response))
 }
