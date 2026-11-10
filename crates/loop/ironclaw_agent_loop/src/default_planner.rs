@@ -19,7 +19,6 @@ use crate::strategies::{
 };
 
 /// The reference planner: a concrete, Builtin-only strategy composition.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct DefaultPlanner {
     id: LoopFamilyId,
@@ -36,7 +35,6 @@ pub(crate) struct DefaultPlanner {
     budget: Arc<dyn BudgetStrategy>,
 }
 
-#[allow(dead_code)]
 impl DefaultPlanner {
     /// Crate-private constructor for the all-default strategy composition.
     pub(crate) fn compose_default() -> Self {
@@ -80,16 +78,19 @@ impl DefaultPlanner {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_context(mut self, strategy: Arc<dyn ContextStrategy>) -> Self {
         self.context = strategy;
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_compaction(mut self, strategy: Arc<dyn CompactionStrategy>) -> Self {
         self.compaction = strategy;
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_capability(mut self, strategy: Arc<dyn CapabilityStrategy>) -> Self {
         self.capability = strategy;
         self
@@ -123,6 +124,7 @@ impl DefaultPlanner {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_drain(mut self, strategy: Arc<dyn InputDrainStrategy>) -> Self {
         self.drain = strategy;
         self
@@ -247,9 +249,6 @@ mod tests {
 
     fn assert_send_sync<T: Send + Sync>() {}
     fn assert_clone<T: Clone>() {}
-
-    #[allow(dead_code)]
-    fn _check(_: &dyn AgentLoopPlanner) {}
 
     #[test]
     fn default_planner_is_send_sync_and_clone() {

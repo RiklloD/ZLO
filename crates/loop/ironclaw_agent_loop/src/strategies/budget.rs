@@ -19,7 +19,7 @@ pub(crate) trait BudgetStrategy: Send + Sync {
     fn wall_clock_limit(&self, state: &LoopExecutionState) -> Option<Duration>;
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn assert_budget_strategy_object_safe(_: &dyn BudgetStrategy) {}
 
 /// Default iteration ceiling: a runaway backstop, not an operational budget.

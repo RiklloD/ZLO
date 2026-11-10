@@ -39,7 +39,6 @@ pub(crate) trait CapabilityStrategy: Send + Sync {
     async fn filter(&self, state: &LoopExecutionState) -> CapabilityFilter;
 }
 
-#[allow(dead_code)]
 fn _assert_object_safe(_: &dyn CapabilityStrategy) {}
 
 /// Reference baseline `CapabilityStrategy`: never narrow the host surface.
@@ -71,9 +70,6 @@ mod tests {
 
     use super::{CapabilityFilter, CapabilityStrategy, DefaultCapabilityStrategy};
     use crate::state::LoopExecutionState;
-
-    #[allow(dead_code)]
-    fn _check(_: &dyn CapabilityStrategy) {}
 
     fn test_run_context() -> LoopRunContext {
         let scope = TurnScope::new(

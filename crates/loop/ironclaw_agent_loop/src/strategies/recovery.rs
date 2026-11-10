@@ -61,7 +61,6 @@ pub(crate) trait RecoveryStrategy: Send + Sync {
 }
 
 /// Compile-time object-safety check.
-#[allow(dead_code)]
 fn _recovery_strategy_object_safe(_: &dyn RecoveryStrategy) {}
 
 /// Sanitized, strategy-visible error summary text.

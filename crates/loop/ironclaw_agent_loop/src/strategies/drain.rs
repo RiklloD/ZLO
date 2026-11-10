@@ -17,7 +17,7 @@ pub(crate) trait InputDrainStrategy: Send + Sync {
     async fn drain_followup(&self, state: &LoopExecutionState) -> bool;
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn assert_input_drain_strategy_object_safe(_: &dyn InputDrainStrategy) {}
 
 /// Reference baseline `InputDrainStrategy`: drain both queues every time the

@@ -24,7 +24,6 @@ pub(crate) trait ContextStrategy: Send + Sync {
     async fn plan_context_request(&self, state: &LoopExecutionState) -> ContextPlan;
 }
 
-#[allow(dead_code)]
 fn _assert_object_safe(_: &dyn ContextStrategy) {}
 
 pub(crate) struct ContextPlan {
@@ -172,9 +171,6 @@ mod tests {
         CapabilityCallSignature, LoopExecutionState, RepeatedCallWarningState,
         ReplyAdmissionRejection,
     };
-
-    #[allow(dead_code)]
-    fn _check(_: &dyn ContextStrategy) {}
 
     fn test_run_context() -> LoopRunContext {
         let scope = TurnScope::new(

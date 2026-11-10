@@ -35,6 +35,7 @@ impl Default for RepeatedOutputProgressStrategy {
 impl RepeatedOutputProgressStrategy {
     /// Threshold accessor for callers that must avoid duplicating the
     /// literal (e.g. executor tests asserting recovery-warning counts).
+    #[cfg(test)]
     pub(crate) fn threshold(&self) -> usize {
         self.threshold
     }

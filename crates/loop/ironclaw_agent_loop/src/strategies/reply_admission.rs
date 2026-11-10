@@ -27,7 +27,6 @@ pub(crate) trait ReplyAdmissionStrategy: Send + Sync {
     ) -> ReplyAdmissionOutcome;
 }
 
-#[allow(dead_code)]
 fn _assert_object_safe(_: &dyn ReplyAdmissionStrategy) {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]

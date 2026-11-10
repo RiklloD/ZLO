@@ -291,6 +291,7 @@ impl ByteCapStrategy {
         }
     }
 
+    #[cfg(test)]
     pub fn with_cap(mut self, capability_id: CapabilityId, cap_bytes: u64) -> Self {
         self.caps.insert(capability_id, cap_bytes);
         self
