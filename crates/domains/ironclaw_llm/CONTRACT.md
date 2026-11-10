@@ -10,7 +10,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `config.rs` | LLM config types (`LlmConfig`, `RegistryProviderConfig`, `NearAiConfig`, `BedrockConfig`) |
 | `error.rs` | `LlmError` enum used by all providers |
 | `provider.rs` | `LlmProvider` trait, `ChatMessage`, `ToolCall`, `CompletionRequest`, `sanitize_tool_messages` |
-| `agent_message.rs` | Canonical parts-list message vocabulary (`AgentMessage`) with validity/pairing/bounds validation and total conversions to/from `ChatMessage` |
+| `agent_message.rs` | Canonical parts-list message vocabulary (`AgentMessage`) with validity/pairing/bounds validation |
 | `nearai_chat.rs` | NEAR AI Chat Completions provider (dual auth: session token or API key) |
 | `nearai_tool_message_flattening.rs` | NEAR AI compatibility rewrite for tool-call history |
 | `codex_auth.rs` | Reads Codex CLI `auth.json`, extracts tokens, refreshes ChatGPT OAuth access tokens |

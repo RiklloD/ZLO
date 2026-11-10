@@ -6,9 +6,9 @@
 //! plus a `content_parts` overlay, flat tool-call/result side fields, and
 //! `reasoning`/`reasoning_details` side fields. It is used in exactly two
 //! places — the prepared-context accept door (`ironclaw_threads`) and the
-//! terminal assistant output of an unbound run — and converts totally to and from the
-//! provider-facing shapes at the message-list level (pairing rules make the
-//! list, not the single message, the validated unit).
+//! terminal assistant output of an unbound run — and is validated at the
+//! message-list level (pairing rules make the list, not the single message,
+//! the validated unit).
 //!
 //! Deliberate deviations from the design sketch, resolved during
 //! implementation (each mirrors a repo hard rule):
@@ -19,17 +19,16 @@
 //!   `ReasoningContent` type — the round-trip guarantees (signature-only
 //!   blocks survive; providers 400 when prior reasoning is dropped) already
 //!   live on that type.
-//! - Inline provider image URLs (`ChatMessage` `content_parts`) are rejected
-//!   by the `ChatMessage → AgentMessage` conversion instead of being smuggled
-//!   through: the vocabulary bans inline bytes and provider URLs — callers
-//!   land bytes in the artifact store first and pass refs.
+//! - Inline provider image URLs (`ChatMessage` `content_parts`) have no
+//!   representation: the vocabulary bans inline bytes and provider URLs —
+//!   callers land bytes in the artifact store first and pass refs.
 
 use serde::{Deserialize, Serialize};
 
 use ironclaw_common::AttachmentRef;
 use ironclaw_host_api::ids::CapabilityId;
 
-use crate::provider::{ChatMessage, ReasoningDetails, Role, ToolCall};
+use crate::provider::ReasoningDetails;
 
 /// Byte budget for one `Text` part. Mirrors the transcript snippet ceiling
 /// (`LOOP_CONTEXT_SNIPPET_MODEL_CONTENT_MAX_BYTES` in `ironclaw_loop_contracts`,
@@ -190,20 +189,6 @@ pub enum AgentMessageError {
     TooManyMessages { found: usize, max: usize },
     #[error("attachment reference is invalid (message {index}): {reason}")]
     InvalidAttachment { index: usize, reason: String },
-    #[error(
-        "inline provider image content is not representable as an AgentMessage; \
-         land the bytes in the artifact store and pass a reference"
-    )]
-    InlineImageUnsupported { index: usize },
-    #[error(
-        "system-role chat messages cannot enter the message list; \
-             system content is the separate system_prompt field"
-    )]
-    SystemRoleUnsupported { index: usize },
-    #[error("tool-result chat message {index} is missing its tool_call_id")]
-    MissingToolCallId { index: usize },
-    #[error("provider tool name {name:?} is not a normalized capability id: {reason}")]
-    InvalidCapability { name: String, reason: String },
 }
 
 impl AgentMessageRole {
@@ -431,233 +416,9 @@ fn validate_attachment(index: usize, attachment: &AttachmentRef) -> Result<(), A
     Ok(())
 }
 
-fn attachment_pointer_line(attachment: &AttachmentRef) -> String {
-    match &attachment.filename {
-        Some(filename) => format!(
-            "[attachment {filename} ({mime}) id={id}]",
-            mime = attachment.mime_type,
-            id = attachment.id
-        ),
-        None => format!(
-            "[attachment id={id} ({mime})]",
-            mime = attachment.mime_type,
-            id = attachment.id
-        ),
-    }
-}
-
-/// Total conversion into the provider-facing `ChatMessage` list. The input is
-/// validated first, so pairing lookups cannot fail midway. Attachment parts
-/// are rendered as textual pointers (the same posture the transcript's
-/// text-only fallback uses); provider adapters attach real bytes only through
-/// the host materialization path.
-pub fn chat_messages_from_agent_messages(
-    messages: &[AgentMessage],
-) -> Result<Vec<ChatMessage>, AgentMessageError> {
-    validate_agent_messages(messages)?;
-
-    // capability name per call id, resolved once for tool-result rendering.
-    let mut capability_by_call: Vec<(String, String)> = Vec::new();
-    for message in messages {
-        for part in &message.content {
-            if let ContentPart::ToolCall(call) = part {
-                capability_by_call
-                    .push((call.call_id.clone(), call.capability.as_str().to_string()));
-            }
-        }
-    }
-
-    let mut converted = Vec::with_capacity(messages.len());
-    for (index, message) in messages.iter().enumerate() {
-        match message.role {
-            AgentMessageRole::User => {
-                converted.push(ChatMessage::user(render_text_and_attachments(
-                    &message.content,
-                )));
-            }
-            AgentMessageRole::Assistant => {
-                let text = render_text_and_attachments(&message.content);
-                let tool_calls: Vec<ToolCall> = message
-                    .content
-                    .iter()
-                    .filter_map(|part| match part {
-                        ContentPart::ToolCall(call) => Some(ToolCall {
-                            id: call.call_id.clone(),
-                            name: call.capability.as_str().to_string(),
-                            arguments: call.arguments.clone(),
-                            reasoning: None,
-                            signature: None,
-                            arguments_parse_error: None,
-                        }),
-                        _ => None,
-                    })
-                    .collect();
-                let reasoning_details = message.content.iter().find_map(|part| match part {
-                    ContentPart::Reasoning { reasoning } => Some(reasoning.clone()),
-                    _ => None,
-                });
-                let chat = if tool_calls.is_empty() {
-                    ChatMessage::assistant(text)
-                } else {
-                    ChatMessage::assistant_with_tool_calls(
-                        (!text.is_empty()).then_some(text),
-                        tool_calls,
-                    )
-                };
-                // Details-first so typed details win; the legacy `reasoning`
-                // string is re-derived from them (see model_gateway ordering).
-                converted.push(chat.with_reasoning_details(reasoning_details));
-            }
-            AgentMessageRole::Tool => {
-                // Validation above guarantees both lookups; re-raising the
-                // typed errors keeps this total without a panic path.
-                let result = message
-                    .content
-                    .iter()
-                    .find_map(|part| match part {
-                        ContentPart::ToolResult(result) => Some(result),
-                        _ => None,
-                    })
-                    .ok_or(AgentMessageError::ToolMessageResultCount { index, found: 0 })?;
-                let name = capability_by_call
-                    .iter()
-                    .find(|(call_id, _)| call_id == &result.call_id)
-                    .map(|(_, capability)| capability.clone())
-                    .ok_or_else(|| AgentMessageError::UnpairedToolResult {
-                        call_id: result.call_id.clone(),
-                    })?;
-                let mut body = match &result.outcome {
-                    ToolResultOutcome::Text { text } => text.clone(),
-                    ToolResultOutcome::Json { value } => value.to_string(),
-                    ToolResultOutcome::Artifacts { attachments } => attachments
-                        .iter()
-                        .map(attachment_pointer_line)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                };
-                if result.is_error {
-                    body = format!("[tool error] {body}");
-                }
-                let extra_text = message
-                    .content
-                    .iter()
-                    .filter_map(|part| match part {
-                        ContentPart::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                if !extra_text.is_empty() {
-                    body = format!("{body}\n\n{extra_text}");
-                }
-                converted.push(ChatMessage::tool_result(result.call_id.clone(), name, body));
-            }
-        }
-    }
-    Ok(converted)
-}
-
-fn render_text_and_attachments(parts: &[ContentPart]) -> String {
-    let mut sections: Vec<String> = Vec::new();
-    for part in parts {
-        match part {
-            ContentPart::Text { text } => sections.push(text.clone()),
-            ContentPart::Image { attachment } | ContentPart::File { attachment } => {
-                sections.push(attachment_pointer_line(attachment));
-            }
-            _ => {}
-        }
-    }
-    sections.join("\n\n")
-}
-
-/// Total conversion from provider-facing `ChatMessage`s, with two fail-closed
-/// exceptions that are the vocabulary's own rules rather than conversion
-/// gaps: system-role messages are rejected (system content is the separate
-/// `system_prompt` field) and inline provider image parts are rejected (bytes
-/// belong in the artifact store).
-pub fn agent_messages_from_chat_messages(
-    messages: &[ChatMessage],
-) -> Result<Vec<AgentMessage>, AgentMessageError> {
-    let mut converted = Vec::with_capacity(messages.len());
-    for (index, message) in messages.iter().enumerate() {
-        if !message.content_parts.is_empty() {
-            return Err(AgentMessageError::InlineImageUnsupported { index });
-        }
-        match message.role {
-            Role::System => {
-                return Err(AgentMessageError::SystemRoleUnsupported { index });
-            }
-            Role::User | Role::HostReminder => {
-                converted.push(AgentMessage {
-                    role: AgentMessageRole::User,
-                    content: vec![ContentPart::text(message.content.clone())],
-                });
-            }
-            Role::Assistant => {
-                let mut content = Vec::new();
-                if !message.content.is_empty() {
-                    content.push(ContentPart::text(message.content.clone()));
-                }
-                if let Some(reasoning) = reasoning_details_for(message) {
-                    content.push(ContentPart::Reasoning { reasoning });
-                }
-                for call in message.tool_calls.iter().flatten() {
-                    let capability = CapabilityId::new(call.name.clone()).map_err(|error| {
-                        AgentMessageError::InvalidCapability {
-                            name: call.name.clone(),
-                            reason: error.to_string(),
-                        }
-                    })?;
-                    content.push(ContentPart::ToolCall(ToolCallContent {
-                        call_id: call.id.clone(),
-                        capability,
-                        arguments: call.arguments.clone(),
-                    }));
-                }
-                if content.is_empty() {
-                    content.push(ContentPart::text(String::new()));
-                }
-                converted.push(AgentMessage {
-                    role: AgentMessageRole::Assistant,
-                    content,
-                });
-            }
-            Role::Tool => {
-                let call_id = message
-                    .tool_call_id
-                    .clone()
-                    .ok_or(AgentMessageError::MissingToolCallId { index })?;
-                converted.push(AgentMessage {
-                    role: AgentMessageRole::Tool,
-                    content: vec![ContentPart::ToolResult(ToolResultContent {
-                        call_id,
-                        outcome: ToolResultOutcome::Text {
-                            text: message.content.clone(),
-                        },
-                        is_error: false,
-                    })],
-                });
-            }
-        }
-    }
-    Ok(converted)
-}
-
-fn reasoning_details_for(message: &ChatMessage) -> Option<ReasoningDetails> {
-    if let Some(details) = &message.reasoning_details {
-        return Some(details.clone());
-    }
-    message
-        .reasoning
-        .as_ref()
-        .and_then(|text| ReasoningDetails::from_text(text.clone()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::ReasoningDetail;
     use ironclaw_common::AttachmentKind;
 
     fn capability(name: &str) -> CapabilityId {
@@ -830,124 +591,6 @@ mod tests {
             validate_agent_messages(std::slice::from_ref(&message)),
             Err(AgentMessageError::TextPartTooLarge { .. })
         ));
-    }
-
-    #[test]
-    fn conversion_to_chat_messages_preserves_structure() {
-        let chat = chat_messages_from_agent_messages(&paired_tool_history())
-            .expect("valid history converts");
-        assert_eq!(chat.len(), 4);
-        assert_eq!(chat[0].role, Role::User);
-        assert_eq!(chat[0].content, "look this up");
-        assert_eq!(chat[1].role, Role::Assistant);
-        let calls = chat[1].tool_calls.as_ref().expect("tool calls present");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "call-1");
-        assert_eq!(calls[0].name, "web.search");
-        assert_eq!(chat[2].role, Role::Tool);
-        assert_eq!(chat[2].tool_call_id.as_deref(), Some("call-1"));
-        assert_eq!(chat[2].name.as_deref(), Some("web.search"));
-        assert_eq!(chat[2].content, "200 OK");
-        assert_eq!(chat[3].role, Role::Assistant);
-        assert_eq!(chat[3].content, "done");
-    }
-
-    #[test]
-    fn reasoning_details_round_trip_through_both_conversions() {
-        // Signature-only text blocks are the shape Gemini 2.5+ emits; dropping
-        // them causes a provider 400 on the next request (#3201/#3225). The
-        // canonical vocabulary must round-trip them byte-for-byte.
-        let details = ReasoningDetails {
-            id: Some("resp-1".to_string()),
-            content: vec![ReasoningDetail::Text {
-                text: String::new(),
-                signature: Some("sig-abc".to_string()),
-            }],
-        };
-        let original = vec![
-            user_text("question"),
-            AgentMessage {
-                role: AgentMessageRole::Assistant,
-                content: vec![
-                    ContentPart::text("answer"),
-                    ContentPart::Reasoning {
-                        reasoning: details.clone(),
-                    },
-                ],
-            },
-        ];
-
-        let chat = chat_messages_from_agent_messages(&original).expect("converts");
-        assert_eq!(
-            chat[1].reasoning_details.as_ref(),
-            Some(&details),
-            "typed reasoning details must survive into the provider shape"
-        );
-
-        let back = agent_messages_from_chat_messages(&chat).expect("converts back");
-        let reasoning_part = back[1]
-            .content
-            .iter()
-            .find_map(|part| match part {
-                ContentPart::Reasoning { reasoning } => Some(reasoning),
-                _ => None,
-            })
-            .expect("reasoning part survives the round trip");
-        assert_eq!(reasoning_part, &details);
-    }
-
-    #[test]
-    fn chat_history_with_tool_flow_round_trips() {
-        let chat = chat_messages_from_agent_messages(&paired_tool_history()).expect("converts");
-        let back = agent_messages_from_chat_messages(&chat).expect("converts back");
-        validate_agent_messages(&back).expect("round-tripped history still validates");
-        assert_eq!(back.len(), 4);
-        assert_eq!(back[1].role, AgentMessageRole::Assistant);
-        assert!(
-            back[1].content.iter().any(
-                |part| matches!(part, ContentPart::ToolCall(call) if call.call_id == "call-1")
-            )
-        );
-        assert_eq!(back[2].role, AgentMessageRole::Tool);
-    }
-
-    #[test]
-    fn system_and_inline_image_chat_messages_are_rejected() {
-        assert!(matches!(
-            agent_messages_from_chat_messages(&[ChatMessage::system("be helpful")]),
-            Err(AgentMessageError::SystemRoleUnsupported { .. })
-        ));
-
-        let with_image = ChatMessage::user_with_parts(
-            "look",
-            vec![crate::provider::ContentPart::ImageUrl {
-                image_url: crate::provider::ImageUrl {
-                    url: "data:image/png;base64,AAA".to_string(),
-                    detail: None,
-                },
-            }],
-        );
-        assert!(matches!(
-            agent_messages_from_chat_messages(&[with_image]),
-            Err(AgentMessageError::InlineImageUnsupported { .. })
-        ));
-    }
-
-    #[test]
-    fn attachments_render_as_pointer_text_in_provider_shape() {
-        let messages = vec![AgentMessage {
-            role: AgentMessageRole::User,
-            content: vec![
-                ContentPart::text("see attached"),
-                ContentPart::File {
-                    attachment: attachment("att-9"),
-                },
-            ],
-        }];
-        let chat = chat_messages_from_agent_messages(&messages).expect("converts");
-        assert!(chat[0].content.contains("see attached"));
-        assert!(chat[0].content.contains("report.pdf"));
-        assert!(chat[0].content.contains("att-9"));
     }
 
     #[test]
