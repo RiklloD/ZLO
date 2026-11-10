@@ -50,7 +50,6 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         .w_full()
         .h_full()
         .fill(p.surface.alpha(st.shell_alpha))
-        .on_pointer_move(|s: &mut State, _| crate::design::look::input(s))
         .child(el().w_full().grow(1.0).min_h(0.0).child(body));
     if !s.prefs.status_bar_hidden {
         root = root.child(status::bar(s, &k, &mut layer));

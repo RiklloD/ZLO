@@ -112,7 +112,6 @@ fn new_side_chat(s: &mut State) {
 }
 
 pub(super) fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
-    crate::design::look::input(s);
     // ⌘ alone held: the cards show their ⌘N badges.
     let held = ev.mods.cmd && !(ev.mods.ctrl || ev.mods.alt || ev.mods.shift);
     let modifier_only = matches!(ev.key, Key::Modifier { .. });
