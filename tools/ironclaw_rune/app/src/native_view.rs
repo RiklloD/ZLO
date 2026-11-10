@@ -22,17 +22,22 @@
 //!   its siblings, ordered above it, as in the GPUI app.
 //! - [`surface`] is the element a tab puts where the view goes: an empty box
 //!   whose drawn rect (`El::on_drawn_layout`) places the view.
-//! - [`poll`] (called from the app's `poll`) reconciles what the pane wants
-//!   with what is on screen, before each frame and every 100 ms while a
-//!   native view exists (Rune polls before handlers run, so a tab switch
-//!   lands on the next poll at the latest).
+//! - What the pane wants is reconciled with what is on screen whenever it
+//!   can have changed, and never on a standing timer:
+//!   - every view run ([`cover`], from the window's root view): Rune polls
+//!     before handlers run, so the view run that follows a handler is what
+//!     lands a tab switch, a closed page or an overlay in the same frame;
+//!   - every drawn-rect change of a [`surface`] (resize, a dragged dock);
+//!   - every [`poll`] (before each frame, also while the window is hidden);
+//!   - one wake at the next moment time alone changes the answer: a dock's
+//!     slide has settled, or a hidden view's idle time is up
+//!     ([`next_change`]).
 //!
 //! The native view sits above Rune's own view, so Rune popovers can't draw
-//! over it. The window's root view calls [`cover`] on every run with
-//! whether its overlay layer holds anything (the ⌘K menu, a menu or
-//! popover, a dialog), and the views hide meanwhile (GPUI
-//! `frame_begin(window, command.is_some())`). Rune keeps keyboard focus
-//! except while the page is clicked.
+//! over it. The window's root view passes [`cover`] whether its overlay
+//! layer holds anything (the ⌘K menu, a menu or popover, a dialog), and the
+//! views hide meanwhile. Rune keeps keyboard focus except while the page is
+//! clicked.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
@@ -48,8 +53,9 @@ use rune::{El, Tx, el};
 
 use crate::state::State;
 
-/// How often the reconcile runs while a native view exists.
-const TICK: Duration = Duration::from_millis(100);
+/// Added to a timed wake so it lands after its deadline, never a hair
+/// before (the poll it runs would find nothing due and ask for no other).
+const WAKE_PAD: Duration = Duration::from_millis(20);
 
 /// Which of the two native views an element shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -119,12 +125,17 @@ impl NativeViews {
     }
 }
 
-/// Mark the window covered by an overlay or not. The root view
-/// (`workspace::shell::view`) calls it on every run with whether its overlay
-/// layer holds anything; a change hides or shows the views at once.
+/// Every view run: mark the window covered by an overlay or not, and
+/// reconcile. The root view (`workspace::shell::view`) calls it with whether
+/// its overlay layer holds anything. Whatever a handler changed in this
+/// frame (the tab, the page, an overlay) shows or hides the views here, at
+/// once.
 pub fn cover(s: &State, covered: bool) {
-    if s.native.covered.replace(covered) != covered {
-        reconcile(s);
+    s.native.covered.set(covered);
+    reconcile(s);
+    // A view run has no `Tx` to set a timed wake with: the poll does.
+    if unasked_wake(s).is_some() {
+        s.rt.handle.wake();
     }
 }
 
@@ -205,29 +216,76 @@ pub fn on_window(window: &rune::WindowHandle) {
     }
 }
 
-/// Show, place and hide the native views as the side pane wants them; call
-/// before every frame from the app's `poll`.
+/// Show, place and hide the native views as the side pane wants them, and
+/// ask for the one wake time alone calls for; call before every frame from
+/// the app's `poll`.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     reconcile(s);
-    if alive() {
-        tx.wake_after(TICK);
+    if let Some(at) = unasked_wake(s) {
+        tx.wake_after(at.saturating_duration_since(Instant::now()) + WAKE_PAD);
+        WAKE.with(|w| w.set(Some(at)));
     }
     false
 }
 
-fn reconcile(s: &State) {
+/// Each slot's source and place, or `None` to hide it.
+fn plan(s: &State) -> [Option<(Source, [f32; 4])>; 2] {
     let wanted = if s.native.covered() || s.fixture {
         [None, None]
     } else {
         crate::chat::side::native_wanted(s)
     };
-    for slot in Slot::ALL {
-        let ix = slot as usize;
-        match (&wanted[ix], s.native.rects[ix]) {
-            (Some(source), Some(rect)) if rect[2] > 1. && rect[3] > 1. => show(slot, source, rect),
-            _ => hide(slot),
+    let mut ix = 0;
+    wanted.map(|source| {
+        let rect = s.native.rects[ix];
+        ix += 1;
+        source
+            .zip(rect)
+            .filter(|(_, rect)| rect[2] > 1. && rect[3] > 1.)
+    })
+}
+
+fn reconcile(s: &State) {
+    let plan = plan(s);
+    #[cfg(test)]
+    PLANNED.with(|p| *p.borrow_mut() = plan.clone().map(|slot| slot.map(|(_, rect)| rect)));
+    for (slot, planned) in Slot::ALL.into_iter().zip(plan) {
+        match planned {
+            Some((source, rect)) => show(slot, &source, rect),
+            None => hide(slot),
         }
     }
+}
+
+/// The next moment the plan changes with no state change behind it, so no
+/// view run or handler to reconcile on: a dock's slide has settled (its
+/// native view may show), or a hidden view has been idle long enough to end.
+fn next_change(s: &State) -> Option<Instant> {
+    if s.fixture {
+        return None;
+    }
+    let hidden = SURFACES.with(|cell| {
+        let all = cell.borrow();
+        Slot::ALL.map(|slot| all[slot as usize].as_ref().and_then(|s| s.hidden))
+    });
+    [idle_end(hidden), crate::chat::side::native_settles_at(s)]
+        .into_iter()
+        .flatten()
+        .min()
+}
+
+/// When the first of the hidden views (hidden since `hidden`, by slot) ends.
+fn idle_end(hidden: [Option<Instant>; 2]) -> Option<Instant> {
+    Slot::ALL
+        .into_iter()
+        .zip(hidden)
+        .filter_map(|(slot, since)| Some(since? + slot.idle()))
+        .min()
+}
+
+/// [`next_change`], unless a wake for that moment is already asked for.
+fn unasked_wake(s: &State) -> Option<Instant> {
+    next_change(s).filter(|at| WAKE.with(Cell::get) != Some(*at))
 }
 
 /// Load `source` into `slot` now, even if it is the address already asked
@@ -448,6 +506,33 @@ thread_local! {
     /// The Browser's asked-for address and the page it had reached when its
     /// view was destroyed; a new view for the same address opens that page.
     static RESUME: RefCell<Option<(Source, String)>> = const { RefCell::new(None) };
+    /// The moment the last timed wake was asked for ([`poll`]).
+    static WAKE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What the last reconcile planned: each slot's rect, `None` hidden.
+    /// A test run has no window, so no native view to look at.
+    static PLANNED: RefCell<[Option<[f32; 4]>; 2]> = const { RefCell::new([None, None]) };
+}
+
+/// What a test can see of this module: the last plan (each slot's rect, or
+/// `None` hidden), the next timed change and the wake asked for.
+#[cfg(test)]
+pub(crate) struct Probe {
+    pub planned: [Option<[f32; 4]>; 2],
+    pub next_change: Option<Instant>,
+    pub wake_asked: Option<Instant>,
+}
+
+#[cfg(test)]
+pub(crate) fn probe(s: &State) -> Probe {
+    Probe {
+        planned: PLANNED.with(|p| *p.borrow()),
+        next_change: next_change(s),
+        wake_asked: WAKE.with(Cell::get),
+    }
 }
 
 struct Surface {
@@ -786,5 +871,26 @@ mod tests {
         assert!(Source::Url("http://localhost:3000".into()).engine() == Engine::Web);
         assert!(shows_natively(Path::new("memo.docx")));
         assert!(!shows_natively(Path::new("main.rs")));
+    }
+
+    #[test]
+    fn the_idle_wake_is_for_the_first_hidden_view_to_end() {
+        let now = Instant::now();
+        assert_eq!(idle_end([None, None]), None, "nothing hidden: no wake");
+        assert_eq!(
+            idle_end([Some(now), None]),
+            Some(now + Slot::Browser.idle())
+        );
+        // Hidden together, the file preview ends first.
+        assert_eq!(
+            idle_end([Some(now), Some(now)]),
+            Some(now + Slot::Preview.idle())
+        );
+        // A page hidden long ago ends before a preview hidden just now.
+        let long_ago = now - Duration::from_secs(100);
+        assert_eq!(
+            idle_end([Some(long_ago), Some(now)]),
+            Some(long_ago + Slot::Browser.idle())
+        );
     }
 }

@@ -39,7 +39,8 @@
 //!   the preference, as the GPUI workspace did.
 //! - `side::dock_widths(s, viewport)` for the wallpaper's conversation area.
 //! - `main.rs`: `native_view::poll` in `poll`, `native_view::on_window` on
-//!   the `App` (see `native_view.rs`).
+//!   the `App`; the root view calls `native_view::cover` on every run (see
+//!   `native_view.rs` for when the previews are reconciled).
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -647,8 +648,23 @@ pub fn open_link(s: &mut State, href: &str, external: bool, tx: &mut Tx) {
     }
 }
 
+/// When a dock that opened a moment ago has finished sliding, the next
+/// time [`native_wanted`] can change with no state change behind it.
+/// `None` once every dock has settled.
+pub fn native_settles_at(s: &State) -> Option<Instant> {
+    let now = Instant::now();
+    side(s)?
+        .opened_at
+        .iter()
+        .flatten()
+        .map(|opened| *opened + NATIVE_SETTLE)
+        .filter(|at| *at > now)
+        .min()
+}
+
 /// The native views the side pane wants on screen now, by
-/// `native_view::Slot` (browser, preview). `native_view::poll` reads it.
+/// `native_view::Slot` (browser, preview). `native_view` reconciles the
+/// screen with it.
 pub fn native_wanted(s: &State) -> [Option<crate::native_view::Source>; 2] {
     use crate::native_view::Source;
     let mut out = [None, None];
@@ -788,6 +804,9 @@ pub(crate) fn short_path(path: &Path) -> String {
     }
     path.display().to_string()
 }
+
+#[cfg(test)]
+mod native_tests;
 
 #[cfg(test)]
 mod tests {
