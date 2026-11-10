@@ -19,7 +19,6 @@ layer = "substrates"
 dist = false
 
 [dependencies]
-fs4 = "1.1"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 thiserror = "2"
