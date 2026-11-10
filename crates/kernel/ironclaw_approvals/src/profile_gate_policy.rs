@@ -62,9 +62,11 @@ impl ProfileApprovalGatePolicy for RuntimeProfileApprovalGatePolicy {
     }
 
     fn effects_force_approval(&self, effects: &[EffectKind]) -> bool {
-        // Hard floor (#4776): the highest-risk effects always require an
-        // explicit approval gate and can never be auto-approved or satisfied by
-        // a stored always-allow grant — independent of profile or policy. Kept
+        // Hard floor (#4776): the highest-risk effects require an explicit
+        // approval gate and can never be auto-approved or satisfied by a
+        // stored always-allow grant — independent of runtime profile or
+        // policy. Only a "Full access" thread skips it (the gate's step 2b,
+        // ahead of this floor). Kept
         // deliberately narrow so the yolo/Minimal-bypass behaviour for ordinary
         // write/spawn effects is unchanged.
         effects.iter().any(|effect| {
@@ -194,8 +196,8 @@ mod tests {
     #[test]
     fn hard_floor_forces_approval_for_high_risk_effects_on_real_policy() {
         // The production gate policy must hard-floor these even under the most
-        // permissive profile (yolo), so global auto-approve / always-allow can
-        // never bypass them.
+        // permissive runtime profile (yolo), so auto-approve / always-allow
+        // can never satisfy them; only a "Full access" thread skips the floor.
         let p = policy(RuntimeProfile::LocalYolo);
         for effect in [
             EffectKind::Financial,

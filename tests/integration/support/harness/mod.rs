@@ -1639,6 +1639,64 @@ impl HostRuntimeCapabilityHarness {
         Ok(())
     }
 
+    /// Put `users` (under `tenant_id`) on "Ask first" the way production gets
+    /// there for a thread whose profile sets no approval mode: the global
+    /// auto-approve switch OFF, which is also what keeps "Full access" off.
+    /// Each capability in `always_allow` gets the same settings-scope
+    /// always-allow policy the Tools page writes (`apply_tool_permission_state`
+    /// → `PersistentApprovalPolicyStorePort::allow`), so it keeps dispatching
+    /// without a prompt while everything else asks. Call it before the first
+    /// dispatch: the authorizer caches the switch for a short TTL.
+    pub(crate) async fn set_ask_first_for_test(
+        &self,
+        tenant_id: TenantId,
+        users: &[UserId],
+        always_allow: &[CapabilityId],
+    ) -> HarnessResult<()> {
+        let policies = self
+            .persistent_approval_policies
+            .as_ref()
+            .ok_or("harness has no local-dev persistent approval-policy store")?;
+        let mut users = users.to_vec();
+        users.push(self.user_id.clone());
+        users.sort();
+        users.dedup();
+        for user_id in users {
+            let scope = ResourceScope {
+                tenant_id: tenant_id.clone(),
+                user_id: user_id.clone(),
+                agent_id: None,
+                project_id: None,
+                mission_id: None,
+                thread_id: None,
+                invocation_id: InvocationId::new(),
+            };
+            self.disable_global_auto_approve(scope.clone()).await?;
+            for capability_id in always_allow {
+                policies
+                    .allow(ironclaw_approvals::PersistentApprovalPolicyInput {
+                        scope: scope.clone(),
+                        action: ironclaw_approvals::PersistentApprovalAction::Dispatch,
+                        capability_id: capability_id.clone(),
+                        grantee: Principal::Extension(self.provider_id.clone()),
+                        approved_by: Principal::User(user_id.clone()),
+                        constraints: GrantConstraints {
+                            allowed_effects: self.effect_kinds.clone(),
+                            mounts: MountView::default(),
+                            network: NetworkPolicy::default(),
+                            secrets: Vec::new(),
+                            resource_ceiling: None,
+                            expires_at: None,
+                            max_invocations: None,
+                        },
+                        source_approval_request_id: None,
+                    })
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// W4-ASK-EACH-ONCE: install a `ToolPermissionOverride::AskEachTime`
     /// override for `capability_id` under `(tenant_id, user_id)` via the real
     /// local-dev per-tool permission override store — generalizes
@@ -1650,6 +1708,25 @@ impl HostRuntimeCapabilityHarness {
         capability_id: &CapabilityId,
         tenant_id: TenantId,
         user_id: UserId,
+    ) -> HarnessResult<()> {
+        self.set_tool_permission_override_for_test(
+            capability_id,
+            tenant_id,
+            user_id,
+            ironclaw_approvals::CapabilityPermissionOverride::AskEachTime,
+        )
+        .await
+    }
+
+    /// Any per-tool override (`ask_each_time`, `disabled`, ...) for
+    /// `capability_id` under `(tenant_id, user_id)`, through the same real
+    /// store as [`Self::set_ask_each_time_override_for_test`].
+    pub(crate) async fn set_tool_permission_override_for_test(
+        &self,
+        capability_id: &CapabilityId,
+        tenant_id: TenantId,
+        user_id: UserId,
+        state: ironclaw_approvals::CapabilityPermissionOverride,
     ) -> HarnessResult<()> {
         let store = self
             .tool_permission_overrides
@@ -1668,7 +1745,7 @@ impl HostRuntimeCapabilityHarness {
             .set(ironclaw_approvals::CapabilityPermissionOverrideInput {
                 scope,
                 capability_id: capability_id.clone(),
-                state: ironclaw_approvals::CapabilityPermissionOverride::AskEachTime,
+                state,
                 updated_by: Principal::User(user_id),
             })
             .await?;

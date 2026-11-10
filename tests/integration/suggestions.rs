@@ -1614,15 +1614,28 @@ async fn excluded_capability_call_is_refused_not_dispatched() -> HarnessResult<(
 /// The per-tool half: one capability set to "ask each time" must leave the
 /// surface while its siblings stay. This is the setting a user changes from
 /// Settings -> Tools, and it must reach an autonomous run.
+///
+/// Pinned on "Ask first", where per-tool settings decide: the user has
+/// `shell`, `write_file` and `http` on "always allow", then flips `shell` to
+/// ask-each-time. ("Full access" asks for nothing, so there ask-each-time
+/// has no effect; `group_approvals/scenario_full_access_never_asks.rs` pins
+/// that side.)
 #[tokio::test(flavor = "multi_thread")]
 async fn per_tool_ask_each_time_override_removes_only_that_tool() -> HarnessResult<()> {
-    let baseline = autonomous_surface_under(|_runtime, _scope| async { Ok(()) }).await?;
+    const ALWAYS_ALLOWED: &[&str] = &["builtin.shell", "builtin.write_file", "builtin.http"];
+    let baseline = autonomous_surface_under(|runtime, scope| async move {
+        ask_first_with_builtin_always_allow(runtime.as_ref(), scope, ALWAYS_ALLOWED).await
+    })
+    .await?;
     assert!(
         baseline.contains("builtin__shell"),
-        "baseline surface should contain builtin__shell under default settings; got {baseline:?}"
+        "baseline surface should contain builtin__shell on Ask first with shell \
+         always allowed; got {baseline:?}"
     );
 
     let with_override = autonomous_surface_under(|runtime, scope| async move {
+        ask_first_with_builtin_always_allow(runtime.as_ref(), Clone::clone(&scope), ALWAYS_ALLOWED)
+            .await?;
         let store = runtime
             .standalone_tool_permission_overrides_for_test()
             .ok_or("runtime exposes no tool-permission override store")?;
@@ -1767,6 +1780,21 @@ async fn disable_global_auto_approve(
     Ok(())
 }
 
+/// "Ask first" (global auto-approve off, which also keeps "Full access" off)
+/// with each listed builtin capability on "always allow", as the Tools page
+/// writes them.
+async fn ask_first_with_builtin_always_allow(
+    runtime: &RebornRuntime,
+    scope: ironclaw_host_api::resource::ResourceScope,
+    capability_ids: &[&str],
+) -> HarnessResult<()> {
+    disable_global_auto_approve(runtime, Clone::clone(&scope)).await?;
+    for capability_id in capability_ids {
+        grant_always_allow(runtime, Clone::clone(&scope), "builtin", capability_id).await?;
+    }
+    Ok(())
+}
+
 /// The grantee must be the capability's PROVIDER, not the user: that is what
 /// `require_approval_for_profile_policy` matches a stored grant against.
 async fn grant_always_allow(
@@ -1862,10 +1890,31 @@ async fn connected_extensions_are_reachable_under_the_system_default() -> Harnes
         "a second connected extension must also be reachable; got {surface:?}"
     );
 
-    // And the user can still take any single one of them away.
+    // And the user can still take any single one of them away. The default
+    // is "Full access", which asks for nothing, so per-tool settings only
+    // decide on "Ask first": the user switches to it with every connected
+    // tool above on "always allow", then sets one Gmail tool to ask-each-time.
+    let connected: Vec<(String, String)> = surface
+        .iter()
+        .filter_map(|name| {
+            let (provider, operation) = name.split_once("__")?;
+            matches!(provider, "gmail" | "github")
+                .then(|| (provider.to_string(), format!("{provider}.{operation}")))
+        })
+        .collect();
     let with_send_gated = permitted_surface_under(|runtime, scope| async move {
         connect_extension(runtime.as_ref(), "gmail").await?;
         connect_extension(runtime.as_ref(), "github").await?;
+        disable_global_auto_approve(runtime.as_ref(), Clone::clone(&scope)).await?;
+        for (provider, capability_id) in &connected {
+            grant_always_allow(
+                runtime.as_ref(),
+                Clone::clone(&scope),
+                provider,
+                capability_id,
+            )
+            .await?;
+        }
         let store = runtime
             .standalone_tool_permission_overrides_for_test()
             .ok_or("runtime exposes no tool-permission override store")?;

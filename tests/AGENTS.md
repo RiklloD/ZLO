@@ -84,7 +84,7 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 
 | Area | Group | Flat int | Binary/QA | Python E2E |
 |---|---|---|---|---|
-| Approvals & permission gates | 11 | ✓ | ✓ | ✓ |
+| Approvals & permission gates | 12 | ✓ | ✓ | ✓ |
 | Auth / credentials / OAuth | 7 | 7 | ✓ | ✓ (heaviest) |
 | Extension lifecycle | 14 | 6 | ✓ | ✓ |
 | Channels (Slack/Telegram/webhook) | 5 | 3 | ✓ | ✓ |
@@ -100,7 +100,7 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **63** group scenarios · **64** flat integration bins (57 in
+Totals: **64** group scenarios · **64** flat integration bins (57 in
 `tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
@@ -108,12 +108,12 @@ Python scenarios, so its exhaustive totals are intentionally broader.
 
 ---
 
-## 3. Group scenarios — `tests/integration/group_*/` (63)
+## 3. Group scenarios — `tests/integration/group_*/` (64)
 
 Multi-thread journeys over ONE shared runtime and ONE shared set of stores. These are
 the canonical "a user does X in one conversation and sees the effect in another" tests.
 
-### 3.1 Approvals — `group_approvals/` (11)
+### 3.1 Approvals — `group_approvals/` (12)
 
 | The user can… | Evidence |
 |---|---|
@@ -122,6 +122,7 @@ the canonical "a user does X in one conversation and sees the effect in another"
 | Reject that prompt with "no, do X instead" and have the assistant read their words as the call's result and carry on, without the rejected write ever running — including through the real product request (ingress validation and redaction → interaction service → durable denial → resume), where ordinary words like "password" survive into the stored transcript and a pasted credential value never does (a separate scenario because `gate_then_deny` pins the plain denial's wording and the feedback must reach the model's next request, which it does not assert) | `scenario_gate_then_reject_with_feedback.rs` (`run`; `via_product_request` in the real-gate-dispatch group) |
 | Say "always allow" once and never be asked again — including in a *different* conversation | `scenario_approve_always_persists_cross_thread.rs` |
 | Have a tool marked "ask each time" prompt once per use and resume in one round trip (not re-prompt itself into a loop) | `scenario_ask_each_time_resumes_once.rs` |
+| On "Full access" (the default: global auto-approve on, no profile mode), have an "ask each time" tool run without being asked while a "disabled" tool is still refused before it runs — the other side of every Ask-first gate in this group, in its own group because it turns auto-approve on | `scenario_full_access_never_asks.rs` |
 | Approve/deny by replying in the channel ("approve"/"deny") rather than clicking a button | `scenario_submit_inbound_approval_resolution.rs` |
 | Have two conversations waiting on approval at once, resolve them oppositely, and neither disturbs the other | `scenario_concurrent_dual_gate_resume.rs`, `scenario_concurrent_dual_gate_resume_parallel.rs` (also runs on libSQL) |
 | Close the app with a prompt pending and still find it pending after reopen | `scenario_approval_request_persists_after_reopen.rs` |
@@ -260,9 +261,9 @@ One thread, whole real turn. Grouped by what the user experiences.
 | Keep suggestion cards and their start/dismiss actions isolated to the authenticated tenant and user scope | `suggestions.rs::suggestions_are_isolated_by_authenticated_scope` |
 | Dismiss a started suggestion across restart without deleting its thread or timeline | `suggestions.rs::dismissing_a_started_suggestion_persists_across_restart` |
 | Settle failed or contract-invalid suggestion generation as failed with no visible cards | `suggestions.rs::failed_suggestion_run_settles_failed_and_retryable_via_list_view`, `suggestions.rs::semantically_invalid_completed_suggestion_output_settles_failed`, `suggestions.rs::unknown_field_in_completed_suggestion_output_settles_failed` |
-| Reach the user's connected extension tools in an autonomous run under the system default, and lose exactly one of them to a per-tool override — the only row of these six needing disclosure forced off, since two connected extensions' full authorized set would otherwise defer behind `tool_search` | `suggestions.rs::connected_extensions_are_reachable_under_the_system_default` |
+| Reach the user's connected extension tools in an autonomous run under the system default ("Full access"), and, after switching to "Ask first" with those tools always allowed, lose exactly one of them to a per-tool ask-each-time override — the only row of these six needing disclosure forced off, since two connected extensions' full authorized set would otherwise defer behind `tool_search` | `suggestions.rs::connected_extensions_are_reachable_under_the_system_default` |
 | Shrink the autonomous surface when the user turns the global auto-approve toggle off, leaving only the synthetic capabilities that bypass surface policy — a distinct settings-store write from the per-tool override rows below, and the baseline the excluded-call refusal row reuses | `suggestions.rs::disabling_global_auto_approve_shrinks_the_autonomous_surface` |
-| Remove exactly one capability from an autonomous run when the user sets it to ask-each-time — a per-tool override rather than the global toggle above, and a different override value than the disabled row below | `suggestions.rs::per_tool_ask_each_time_override_removes_only_that_tool` |
+| On "Ask first" with a few tools always allowed, remove exactly one capability from an autonomous run when the user sets it to ask-each-time — a per-tool override rather than the global toggle above, and a different override value than the disabled row below ("Full access" ignores ask-each-time; see `scenario_full_access_never_asks.rs`) | `suggestions.rs::per_tool_ask_each_time_override_removes_only_that_tool` |
 | Keep a disabled capability out of an autonomous run even while global auto-approve is on — `Disabled` outranks the default-on toggle, a precedence ask-each-time doesn't claim | `suggestions.rs::per_tool_disabled_override_removes_the_tool_even_with_auto_approve_on` |
 | Reach a connected extension's capability in an autonomous run only through the user's own always-allow grant when auto-approve is off — combines a connected extension, the global toggle, and an explicit persistent grant, a fixture no single row above exercises | `suggestions.rs::connected_gmail_tool_is_reachable_only_via_the_users_own_grant` |
 | Refuse rather than dispatch a capability the autonomous surface excluded, when the model calls it anyway — proves the model-gateway dispatch seam, not just the advertised tool list the rows above check | `suggestions.rs::excluded_capability_call_is_refused_not_dispatched` |

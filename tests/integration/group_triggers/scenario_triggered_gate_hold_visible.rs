@@ -20,6 +20,12 @@ use serde_json::{Value, json};
 const TRIGGER_NAME: &str = "c-triggered-gate-hold-visible";
 
 pub async fn run(g: &RebornIntegrationGroup) -> HarnessResult<()> {
+    // The hold is a real approval gate, so the user is on "Ask first": a
+    // "Full access" thread never parks. The trigger verbs are set to
+    // "always allow" so only the write asks. Set before the first dispatch.
+    g.set_ask_first_for_test(&["builtin.trigger_create", "builtin.trigger_list"])
+        .await?;
+
     // Every-minute cron (not Once) so elapsed-occurrence counting is
     // meaningful for the hold projection (#5886).
     let creator = g
@@ -48,8 +54,8 @@ pub async fn run(g: &RebornIntegrationGroup) -> HarnessResult<()> {
         .capability_harness()
         .ok_or("triggers_with_gated_write always uses HostRuntime")?;
 
-    // AskEachTime beats global auto-approve (#4776 precedence), so only the
-    // write gates while the trigger verbs stay auto-approved.
+    // The user also set the write to "ask each time"; under Ask first it
+    // gates, while the always-allowed trigger verbs do not.
     capability_harness
         .set_ask_each_time_override_for_test(
             &CapabilityId::new("builtin.write_file")?,

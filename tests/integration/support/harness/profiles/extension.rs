@@ -2151,11 +2151,12 @@ pub(crate) fn extension_delivery_tools_profile() -> HarnessResult<ToolsProfile> 
 /// but nothing gateable, and `live_approvals`/`triggers_with_gated_write` have
 /// gates but no delivery coordinator.
 ///
-/// Auto-approve stays ON (as everywhere in the delivery chain) so extension
-/// lifecycle and delivery verbs dispatch gate-free; the scenario gates ONLY
-/// the write with `set_ask_each_time_override_for_test`, which beats global
-/// auto-approve (#4776 precedence) — the same mechanism
-/// `trigger_management_with_gated_write_profile` uses.
+/// Built with auto-approve ON (as everywhere in the delivery chain), which
+/// makes every thread "Full access" and never parks. A scenario that needs
+/// the gate puts the user on "Ask first" first
+/// (`RebornIntegrationGroup::set_ask_first_for_test`, the lifecycle verbs
+/// always allowed) and sets the write to ask-each-time — the same setup
+/// `trigger_management_with_gated_write_profile`'s scenario uses.
 ///
 /// `options` is MUTATED, never rebuilt: rebuilding it would drop the channel
 /// extension bindings, native factories, and recording vendor egress the

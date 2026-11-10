@@ -54,6 +54,7 @@ mod scenario_ask_each_time_resumes_once;
 mod scenario_concurrent_dual_gate_resume;
 mod scenario_concurrent_dual_gate_resume_parallel;
 mod scenario_failure_category_demasked;
+mod scenario_full_access_never_asks;
 mod scenario_gate_ref_edge_cases;
 mod scenario_gate_then_approve;
 mod scenario_gate_then_deny;
@@ -129,6 +130,22 @@ async fn approvals_group_e2e() {
 /// over the group's own shared turn-state store, so
 /// `submit_approval_resolution` reaches the literal `submit_inbound` dispatch
 /// arm a real adapter's "approve"/"deny" reply hits.
+/// "Full access" (auto-approve on) is the other side of every gate above:
+/// `ask_each_time` runs without parking, `disabled` still refuses. Own group,
+/// because it turns auto-approve on.
+#[tokio::test]
+async fn approvals_group_full_access_e2e() {
+    let g = RebornIntegrationGroup::live_approvals()
+        .await
+        .expect("group builds");
+    let mut report = ScenarioReport::new();
+    report.record(
+        "full_access_never_asks",
+        scenario_full_access_never_asks::run(&g).await,
+    );
+    report.assert_all_passed();
+}
+
 #[tokio::test]
 async fn approvals_group_real_gate_dispatch_e2e() {
     let g = RebornIntegrationGroup::builder()
