@@ -4427,6 +4427,46 @@ async fn model_port_resolves_thread_message_refs_and_delegates_to_gateway() {
 }
 
 #[tokio::test]
+async fn model_port_resolves_a_transcript_ref_requested_more_than_once() {
+    let fixture = ThreadFixture::new().await;
+    let gateway = Arc::new(RecordingGateway::reply("model says hi"));
+    let port = ThreadBackedLoopModelPort::new(
+        Arc::clone(&fixture.thread_service),
+        fixture.thread_scope.clone(),
+        fixture.run_context.clone(),
+        gateway.clone(),
+        16,
+    );
+    let mut messages = user_model_messages(&fixture);
+    let repeated = messages[0].clone();
+    messages.push(repeated.clone());
+    messages.push(repeated);
+    issue_prompt_grant(&fixture.run_context, &messages);
+
+    port.stream_model(LoopModelRequest {
+        inline_messages: Vec::new(),
+        messages,
+        surface_version: None,
+        model_preference: None,
+        fallback_index: 0,
+        iteration: 0,
+        capability_view: None,
+        tool_choice: None,
+    })
+    .await
+    .unwrap();
+
+    let calls = gateway.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].messages.len(), 1);
+    assert_eq!(calls[0].messages[0].role, HostManagedModelMessageRole::User);
+    assert_eq!(
+        calls[0].messages[0].content,
+        "hello reborn\nhello reborn\nhello reborn"
+    );
+}
+
+#[tokio::test]
 async fn model_port_rejects_mismatched_fallback_route_evidence() {
     let fixture = ThreadFixture::new().await;
     let milestone_sink = Arc::new(InMemoryLoopHostMilestoneSink::default());

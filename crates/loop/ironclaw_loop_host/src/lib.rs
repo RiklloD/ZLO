@@ -2031,15 +2031,23 @@ where
         let mut messages_by_ref = context_messages_by_ref(context.messages);
         let mut missing_message_ids = Vec::new();
         let mut needs_summary_history_lookup = false;
+        let mut remaining_uses: HashMap<String, usize> = HashMap::new();
+        let mut materialized_by_ref = HashMap::new();
         for message in &requested_messages {
+            *remaining_uses
+                .entry(message.content_ref.as_str().to_string())
+                .or_default() += 1;
             if messages_by_ref.contains_key(message.content_ref.as_str()) {
                 continue;
             }
+            if materialized_by_ref.contains_key(message.content_ref.as_str()) {
+                continue;
+            }
             if let Some(materialization_store) = self.instruction_materialization_store.as_ref()
-                && materialization_store
+                && let Some(materialized) = materialization_store
                     .get_materialized_message(&self.run_context, &message.content_ref)?
-                    .is_some()
             {
+                materialized_by_ref.insert(message.content_ref.as_str().to_string(), materialized);
                 continue;
             }
             if identity_context::is_identity_model_message_ref(&message.content_ref) {
@@ -2090,6 +2098,12 @@ where
         let mut resolved = Vec::with_capacity(requested_messages.len());
         for message in requested_messages {
             let requested_role = HostManagedModelMessageRole::from_loop_role(&message.role)?;
+            let last_use = remaining_uses
+                .get_mut(message.content_ref.as_str())
+                .is_some_and(|uses| {
+                    *uses = uses.saturating_sub(1);
+                    *uses == 0
+                });
             // Priority 1: trusted identity files resolved by the configured host source.
             if identity_context::is_identity_model_message_ref(&message.content_ref) {
                 let Some(source) = self.identity_context_source.as_deref() else {
@@ -2125,10 +2139,20 @@ where
                 continue;
             }
 
-            if let Some(materialization_store) = self.instruction_materialization_store.as_ref()
-                && let Some(materialized) = materialization_store
-                    .get_materialized_message(&self.run_context, &message.content_ref)?
-            {
+            let materialized = if last_use {
+                materialized_by_ref.remove(message.content_ref.as_str())
+            } else {
+                materialized_by_ref
+                    .get(message.content_ref.as_str())
+                    .cloned()
+            };
+            let materialized = match (materialized, &self.instruction_materialization_store) {
+                (Some(materialized), _) => Some(materialized),
+                (None, Some(materialization_store)) => materialization_store
+                    .get_materialized_message(&self.run_context, &message.content_ref)?,
+                (None, None) => None,
+            };
+            if let Some(materialized) = materialized {
                 let materialized_role =
                     HostManagedModelMessageRole::from_loop_role(&materialized.role)?;
                 if requested_role != materialized_role {
@@ -2161,14 +2185,17 @@ where
             }
 
             // Priority 3: durable transcript messages (context window + history).
-            let context_message = messages_by_ref
-                .get(message.content_ref.as_str())
-                .ok_or_else(|| {
-                    AgentLoopHostError::new(
-                        AgentLoopHostErrorKind::InvalidInvocation,
-                        "model message reference is unavailable",
-                    )
-                })?;
+            let context_message = if last_use {
+                messages_by_ref.remove(message.content_ref.as_str())
+            } else {
+                messages_by_ref.get(message.content_ref.as_str()).cloned()
+            }
+            .ok_or_else(|| {
+                AgentLoopHostError::new(
+                    AgentLoopHostErrorKind::InvalidInvocation,
+                    "model message reference is unavailable",
+                )
+            })?;
             let durable_role = model_role_for_kind(context_message.kind);
             if requested_role != durable_role {
                 return Err(AgentLoopHostError::new(
@@ -2179,12 +2206,13 @@ where
             let image_parts = self
                 .read_image_parts(&context_message.image_attachments)
                 .await;
+            let tool_result_content = tool_result_content_for_context_message(&context_message)?;
             resolved.push(HostManagedModelMessage {
                 role: durable_role,
-                content: context_message.content.clone(),
+                content: context_message.content,
                 content_ref: message.content_ref,
-                tool_result_provider_call: context_message.tool_result_provider_call.clone(),
-                tool_result_content: tool_result_content_for_context_message(context_message)?,
+                tool_result_provider_call: context_message.tool_result_provider_call,
+                tool_result_content,
                 image_parts,
             });
         }
