@@ -42,7 +42,6 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `tool_schema.rs` | Tool schema normalization policies (`FlattenOnly` for NearAI, strict OpenAI for `RigAdapter` / Codex) |
 | `transcription/{mod,openai,chat_completions}.rs` | Audio transcription pipeline (Whisper / chat-completions back-ends) |
 | `speech/{mod,openai,elevenlabs}.rs` | Text-to-speech: the `SpeechSynthesisProvider` trait with OpenAI and ElevenLabs back-ends; nothing in the gateway wires it yet |
-| `image_models.rs` | Image-generation model metadata table |
 | `vision_models.rs` | Vision-capable model registry for attachment routing |
 | `reasoning_models.rs` | Reasoning-capable model registry (Codex, R1, o-series, etc.) used for thinking-mode dispatch |
 | `reasoning_effort.rs` | Which reasoning efforts each model takes (`efforts_for`, what the model picker offers) and how each rig-backed protocol spells a routed effort on the wire |
@@ -72,7 +71,7 @@ owner, and a deleted one fails until its entry goes.
 | `registry` | The **provider** catalog: definitions, protocols, base-URL and api-key resolution | Model facts (that is `model-catalog`) | `registry.rs`, `resolution.rs`, `resolution/tests.rs` |
 | `decorators` | Anything that wraps `dyn LlmProvider` and is not credential work: retry, breaker, failover, cache, hot-reload, cost routing | Vendor protocol | `retry.rs`, `circuit_breaker.rs`, `failover.rs`, `response_cache.rs`, `runtime.rs`, `smart_routing.rs`, `provider_routing.rs` |
 | `normalization` | Cross-provider wire hygiene in all three directions: outbound tool schemas, inbound tool arguments, inbound content text | A fix that only one provider needs — that belongs beside it in `providers` | `tool_schema.rs`, `tool_schema/placeholder_stripping.rs`, `tool_args.rs`, `reasoning.rs` |
-| `model-catalog` | Facts about **models**: what an endpoint lists, and which models see images, generate images, or think natively | Provider identity or routing | `models.rs`, `reasoning_models.rs`, `reasoning_effort.rs`, `vision_models.rs`, `image_models.rs` |
+| `model-catalog` | Facts about **models**: what an endpoint lists, and which models see images or think natively | Provider identity or routing | `models.rs`, `reasoning_models.rs`, `reasoning_effort.rs`, `vision_models.rs` |
 | `recording` | Trace capture and replay, and binding recorded tool arguments to earlier results | Live provider behavior | `recording.rs`, `trace_binding.rs` |
 | `transcription` | Speech in and out: the `TranscriptionProvider` (speech-to-text) and `SpeechSynthesisProvider` (text-to-speech) traits and their implementations — **different traits** from `LlmProvider`, sharing only transports | Anything implementing `LlmProvider` | `transcription/mod.rs`, `transcription/chat_completions.rs`, `transcription/openai.rs`, `speech/mod.rs`, `speech/openai.rs`, `speech/elevenlabs.rs` |
 | `test-support` | Fixtures and fault injection, including the published `test-support` feature downstream harnesses consume | Production behavior | `testing/mod.rs`, `testing/fault_injection.rs`, `codex_test_helpers.rs`, `rig_adapter/tests/finish_reason_tests.rs`, `anthropic_oauth/tests.rs`, `anthropic_oauth/tests/prompt_cache_tests.rs` |
@@ -245,7 +244,7 @@ Key notes:
 To add a new provider:
 1. Create `crates/domains/ironclaw_llm/src/myprovider.rs` implementing `LlmProvider` <!-- check-guidance: path-ok --> (prescriptive: the file you are about to add, not one that exists)
 2. Add a `ProviderProtocol` variant in `registry.rs` (or wire a backend-string match in `lib.rs` for non-registry providers like `nearai`/`bedrock`/`openai_codex`)
-3. Wire into the factory dispatch in `lib.rs` (`create_registry_provider` for registry-backed protocols, top-level `create_llm_provider` for backend-string-keyed providers)
+3. Wire into the factory dispatch in `lib.rs` (`create_registry_provider_inner` for registry-backed protocols, top-level `create_llm_provider` for backend-string-keyed providers)
 4. Add env vars to `.env.example` and to whichever crate reads them (✎ the v1 `src/config/llm.rs` is gone — deleted with the monolith)
 5. If the provider needs persistent state (session tokens, refresh tokens, etc.), keep it behind the provider's own session type — never reach for `crate::db`, `crate::secrets`, or `crate::bootstrap`. The crate must stay independent of the binary.
 

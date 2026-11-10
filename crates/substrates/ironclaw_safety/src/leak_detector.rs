@@ -421,29 +421,6 @@ impl LeakDetector {
 
         Ok(())
     }
-
-    /// Add a custom pattern at runtime.
-    pub fn add_pattern(&mut self, pattern: LeakPattern) {
-        self.add_pattern_with_preview_policy(pattern, LeakPreviewPolicy::Masked);
-    }
-
-    /// Add a custom pattern with an explicit preview policy at runtime.
-    pub fn add_pattern_with_preview_policy(
-        &mut self,
-        pattern: LeakPattern,
-        preview_policy: LeakPreviewPolicy,
-    ) {
-        self.patterns.push(RegisteredLeakPattern {
-            pattern,
-            preview_policy,
-        });
-        // Note: prefix_matcher won't be updated; rebuild if needed
-    }
-
-    /// Get the number of patterns.
-    pub fn pattern_count(&self) -> usize {
-        self.patterns.len()
-    }
 }
 
 impl Default for LeakDetector {

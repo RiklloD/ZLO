@@ -9,7 +9,6 @@
 //! - Keyword substring match: 5 points (capped at 30 total)
 //! - Tag match: 3 points (capped at 15 total)
 //! - Regex pattern match: 20 points (capped at 40 total)
-#![allow(dead_code)] // Scaffolding; some items kept for future use.
 
 use crate::activation_strategy::{ActivationStrategy, fallback_score};
 use crate::types::LoadedSkill;
@@ -470,20 +469,6 @@ pub fn extract_skill_mentions<'a>(
 
 fn is_skill_mention_boundary(previous: char) -> bool {
     matches!(previous, ' ' | '\n' | '\t' | '"' | '(' | '[') || !previous.is_ascii()
-}
-
-/// Apply confidence factor to a base score.
-///
-/// Authored skills always get factor 1.0 (no adjustment).
-/// Extracted skills get `0.5 + 0.5 * confidence`, so a skill with 0% confidence
-/// gets its score halved (not zeroed — it can still be selected when strongly
-/// keyword-matched).
-pub fn apply_confidence_factor(base_score: u32, confidence: f64, is_authored: bool) -> u32 {
-    if is_authored {
-        return base_score;
-    }
-    let factor = 0.5 + 0.5 * confidence.clamp(0.0, 1.0);
-    (base_score as f64 * factor) as u32
 }
 
 #[cfg(test)]
@@ -1026,31 +1011,6 @@ mod tests {
             result.is_empty(),
             "exclude_keyword veto should be case-insensitive"
         );
-    }
-
-    #[test]
-    fn test_apply_confidence_factor_authored() {
-        assert_eq!(apply_confidence_factor(100, 0.0, true), 100);
-        assert_eq!(apply_confidence_factor(100, 0.5, true), 100);
-        assert_eq!(apply_confidence_factor(100, 1.0, true), 100);
-    }
-
-    #[test]
-    fn test_apply_confidence_factor_extracted() {
-        // 0% confidence → factor 0.5 → score halved
-        assert_eq!(apply_confidence_factor(100, 0.0, false), 50);
-        // 50% confidence → factor 0.75 → score * 0.75
-        assert_eq!(apply_confidence_factor(100, 0.5, false), 75);
-        // 100% confidence → factor 1.0 → unchanged
-        assert_eq!(apply_confidence_factor(100, 1.0, false), 100);
-    }
-
-    #[test]
-    fn test_apply_confidence_factor_clamps() {
-        // Negative confidence clamped to 0
-        assert_eq!(apply_confidence_factor(100, -0.5, false), 50);
-        // Over 1.0 clamped to 1.0
-        assert_eq!(apply_confidence_factor(100, 1.5, false), 100);
     }
 
     // ── extract_skill_mentions tests ──────────────────────────

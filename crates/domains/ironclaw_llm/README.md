@@ -21,8 +21,8 @@ isolated here so no non-LLM consumer inherits them.
 
 - `LlmProvider` — the contract (`complete`, `complete_with_tools`, streaming
   variants, model metadata/cost hooks); `LlmError` taxonomy.
-- Factory/assembly: `build_provider_chain`, `create_llm_provider`,
-  `create_registry_provider`; `ProviderRegistry` / `ProviderProtocol`;
+- Factory/assembly: `build_provider_chain`, `create_llm_provider`;
+  `ProviderRegistry` / `ProviderProtocol`;
   `SwappableLlmProvider` + `LlmReloadHandle`.
 - Decorators: `RetryProvider`, `CircuitBreakerProvider`, `FailoverProvider`,
   `CachedProvider`, `SmartRoutingProvider`, `TokenRefreshingProvider`.
@@ -30,7 +30,7 @@ isolated here so no non-LLM consumer inherits them.
   OAuth, GitHub Copilot, AWS Bedrock (`--features bedrock`), rig-core-backed
   OpenAI-compatible endpoints.
 - Recording: `RecordingLlm` (+ `trace_binding`); model catalogs
-  (`models`, `vision_models`, `reasoning_models`, `image_models`).
+  (`models`, `vision_models`, `reasoning_models`).
 - `test-support` feature: `testing::StubLlm`, fault injection,
   `provider_chain_over`.
 

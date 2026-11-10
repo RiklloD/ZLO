@@ -26,7 +26,7 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # descriptors to whoever mounts it (PROPOSAL §6.9.2).
 ironclaw_host_ingress = { path = "../ironclaw_host_ingress" }
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts", version = "0.1.0" }
-ironclaw_llm = { path = "../../domains/ironclaw_llm", default-features = false, features = ["registry-provider-factory"] }
+ironclaw_llm = { path = "../../domains/ironclaw_llm", default-features = false }
 ironclaw_config = { path = "../../app/ironclaw_config" }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 nix = { version = "0.31", default-features = false, features = ["process"] }

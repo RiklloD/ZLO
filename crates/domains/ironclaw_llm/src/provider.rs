@@ -861,12 +861,6 @@ impl ToolCompletionRequest {
         self
     }
 
-    /// Set stop sequences.
-    pub fn with_stop_sequences(mut self, stop_sequences: Vec<String>) -> Self {
-        self.stop_sequences = Some(stop_sequences);
-        self
-    }
-
     /// Set tool choice mode.
     pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
         self.tool_choice = Some(choice.into());

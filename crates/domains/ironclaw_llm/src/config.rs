@@ -1,9 +1,7 @@
 //! LLM configuration types.
 //!
-//! These types define the configuration for LLM providers. They are defined
-//! here (in the `llm` module) so that the module is self-contained and can be
-//! extracted into a standalone crate. Resolution logic (reading env vars,
-//! settings) lives in `crate::config::llm`.
+//! These types define the configuration for LLM providers. Resolution logic
+//! (reading env vars, settings) lives in `crate::resolution`.
 
 use std::path::PathBuf;
 
