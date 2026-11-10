@@ -81,7 +81,7 @@ const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 80;
 // `RebornRuntime` became an ungated production field (shutdown reads it);
 // its accessor stays test-support (integration harnesses wiring their own
 // run-delivery observer are its only callers).
-const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 270;
+const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 269;
 
 const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
     FrozenPathCount {
