@@ -3840,9 +3840,9 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     // Hook framework activation (#3934 + third-party projection), gated behind
     // the typed `HooksActivationConfig` carried in `RebornRuntimeInput` (master
     // flag default OFF; third-party sub-flag also default OFF). The env vars
-    // (`HOOKS_ENABLED`, `HOOKS_THIRD_PARTY_ENABLED`) are resolved ONCE at the
-    // edge that builds the input (the CLI / ingress adapter); this composition
-    // root consumes the typed config and never reads the environment itself.
+    // (`HOOKS_ENABLED`, `HOOKS_THIRD_PARTY_ENABLED`) are resolved ONCE by the
+    // CLI where it builds the runtime input; this composition root consumes
+    // the typed config and never reads the environment itself.
     //
     // Hook-only projection containment: third-party `[[hooks]]` are discovered
     // and projected into a `HookProjectionRegistry` that carries ONLY hook

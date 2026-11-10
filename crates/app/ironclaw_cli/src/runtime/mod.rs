@@ -9,9 +9,10 @@ use ironclaw_composition::TriggerFireAccessPolicy;
 use ironclaw_composition::host_api::{AgentId, TenantId, UserId};
 use ironclaw_composition::hosted_single_tenant_runtime_policy;
 use ironclaw_composition::{
-    KeepaliveSweepSettings, OAuthClientConfig, PollSettings, RebornCompositionProfile,
-    RebornHostBindings, RebornRuntimeIdentity, RebornRuntimeInput, RebornRuntimeProfileOptions,
-    TurnRunnerSettings, build_reborn_runtime, local_runtime_build_input_with_options,
+    HooksActivationConfig, KeepaliveSweepSettings, OAuthClientConfig, PollSettings,
+    RebornCompositionProfile, RebornHostBindings, RebornRuntimeIdentity, RebornRuntimeInput,
+    RebornRuntimeProfileOptions, TurnRunnerSettings, build_reborn_runtime,
+    local_runtime_build_input_with_options,
 };
 use ironclaw_config::{RebornBootConfig, RebornProfile, seed_default_config_file_if_missing};
 use ironclaw_extension_host::FirstPartyPackageBundle;
@@ -586,7 +587,8 @@ pub(crate) fn build_runtime_input_with_options(
         .with_identity(runtime_identity(runtime_services.config_file.as_ref()))
         .with_regex_skill_activation_enabled(regex_skill_activation_enabled(
             runtime_services.config_file.as_ref(),
-        ));
+        ))
+        .with_hooks_config(HooksActivationConfig::from_env());
 
     {
         // The composition runtime cold-boots with a placeholder gateway and
@@ -4756,5 +4758,67 @@ poll_interval_secs = 15
             !reborn_home.exists(),
             "a read-only diagnostic must not create the reborn home directory"
         );
+    }
+
+    /// `HOOKS_ENABLED` / `HOOKS_THIRD_PARTY_ENABLED` are read where the shipped
+    /// binary builds its runtime input, and the flags reach the composed
+    /// runtime (read back through the hooks view the Settings page serves).
+    /// Unset, the runtime keeps the default-off framework.
+    #[allow(clippy::await_holding_lock, reason = "serializes env guards")]
+    #[tokio::test]
+    async fn hooks_env_reaches_the_composed_runtime_only_when_set() {
+        use ironclaw_product_contracts::hooks_catalog::{HOOK_CATALOG_VIEW, HookCatalogRequest};
+        use ironclaw_product_contracts::surface::{BoundProductSurface, ProductSurfaceCaller};
+
+        let _lock = lock_runtime_env();
+        let (_enabled, _interval) = clear_trigger_poller_env();
+        let _credential_refresh = clear_credential_refresh_env();
+        for flag in [None, Some("1")] {
+            let _hooks = match flag {
+                Some(value) => [
+                    EnvGuard::set("HOOKS_ENABLED", value),
+                    EnvGuard::set("HOOKS_THIRD_PARTY_ENABLED", value),
+                ],
+                None => [
+                    EnvGuard::clear("HOOKS_ENABLED"),
+                    EnvGuard::clear("HOOKS_THIRD_PARTY_ENABLED"),
+                ],
+            };
+            let expected = flag.is_some();
+            let (_temp, config) = boot_config_with_config_toml("local-dev", "");
+            let storage_root = local_runtime_storage_root(&config, config.profile());
+            std::fs::create_dir_all(&storage_root).expect("create profile storage root");
+            std::fs::write(
+                storage_root.join(ironclaw_composition::STANDALONE_SECRETS_MASTER_KEY_PATH),
+                "00112233445566778899aabbccddeeff".repeat(2),
+            )
+            .expect("seed cached master key");
+
+            let runtime_input =
+                build_runtime_input(&config, RuntimeInputCaller::Run).expect("runtime input");
+            assert_eq!(runtime_input.hooks.is_enabled(), expected);
+            assert_eq!(runtime_input.hooks.is_third_party_enabled(), expected);
+
+            let runtime = ironclaw_composition::build_reborn_runtime(runtime_input)
+                .await
+                .expect("runtime builds");
+            let surface = BoundProductSurface::new(
+                runtime.product_surface(None).expect("product surface"),
+                ProductSurfaceCaller::new(
+                    ironclaw_composition::host_api::TenantId::new("hooks-env-tenant")
+                        .expect("tenant"),
+                    ironclaw_composition::host_api::UserId::new("hooks-env-user").expect("user"),
+                    None,
+                    None,
+                ),
+            );
+            let catalog = HOOK_CATALOG_VIEW
+                .query_on(&surface, HookCatalogRequest {}, None)
+                .await
+                .expect("hook catalog");
+            assert_eq!(catalog.framework_enabled, expected, "flag {flag:?}");
+            assert_eq!(catalog.third_party_enabled, expected, "flag {flag:?}");
+            runtime.shutdown().await.expect("runtime shutdown");
+        }
     }
 }
