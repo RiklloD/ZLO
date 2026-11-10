@@ -204,7 +204,7 @@ pub fn static_router_with_config(config: StaticRouterConfig) -> Router {
         )
         .with_state(state)
         // This layer is deliberately scoped to the static router. API routes,
-        // especially SSE and WebSocket transports, never pass through it.
+        // especially the SSE transport, never pass through it.
         .layer(CompressionLayer::new().br(true).gzip(true))
 }
 

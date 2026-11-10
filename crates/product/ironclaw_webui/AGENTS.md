@@ -25,13 +25,13 @@ one `products`-layer crate above `ironclaw_composition`. Driven by the
    `ironclaw_webui_v2` crate): axum handlers dispatching to
    `ironclaw_product_contracts::surface::ProductSurface`, the `webui_v2_router` builder,
    the `webui_v2_routes()` descriptor table, the `WebUiV2HttpError` redacted wire
-   shape, SSE + WebSocket streaming with a shared `SseCapacity` budget, and the
+   shape, SSE streaming under the `SseCapacity` budget, and the
    Vite SPA under `frontend/` (built by `build.rs`, served from
    `src/webui_v2/static_assets/`).
 2. **Gateway assembly + middleware** (`src/webui_serve.rs`, `src/webui_*.rs`,
    folded from `ironclaw_composition::webui`): `webui_v2_app(bundle,
    config)` composes the full `axum::Router` and layers the fixed middleware
-   stack — ws-origin → body limit → bearer auth → rate limit → handler — plus the
+   stack — body limit → bearer auth → rate limit → handler — plus the
    `WebuiAuthenticator` / `WebuiAuthentication` host-auth vocabulary and the
    OpenAI-compat mounts (unconditional — this crate's only feature is `test-support`).
 3. **Serve loop + host authentication** (`src/lib.rs`, `src/auth/`,

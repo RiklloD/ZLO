@@ -42,7 +42,6 @@ pub const WEBUI_V2_ROUTE_GET_RUN_ARTIFACT: &str = "webui.v2.get_run_artifact";
 pub const WEBUI_V2_ROUTE_GET_THREAD_ARTIFACT: &str = "webui.v2.get_thread_artifact";
 pub const WEBUI_V2_ROUTE_GET_ATTACHMENT: &str = "webui.v2.get_attachment";
 pub const WEBUI_V2_ROUTE_STREAM_EVENTS: &str = "webui.v2.stream_events";
-pub const WEBUI_V2_ROUTE_STREAM_EVENTS_WS: &str = "webui.v2.stream_events_ws";
 pub const WEBUI_V2_ROUTE_LIST_COMMANDS: &str = "webui.v2.list_commands";
 pub const WEBUI_V2_ROUTE_EXECUTE_COMMAND: &str = "webui.v2.execute_command";
 pub const WEBUI_V2_ROUTE_LIST_AUTOMATIONS: &str = "webui.v2.list_automations";
@@ -332,7 +331,6 @@ pub const WEBUI_V2_PATTERN_LOGS: &str = "/api/webchat/v2/logs";
 pub const WEBUI_V2_PATTERN_GET_ATTACHMENT: &str =
     "/api/webchat/v2/threads/{thread_id}/messages/{message_id}/attachments/{attachment_id}";
 pub const WEBUI_V2_PATTERN_STREAM_EVENTS: &str = "/api/webchat/v2/threads/{thread_id}/events";
-pub const WEBUI_V2_PATTERN_STREAM_EVENTS_WS: &str = "/api/webchat/v2/threads/{thread_id}/ws";
 pub const WEBUI_V2_PATTERN_LIST_COMMANDS: &str = "/api/webchat/v2/commands";
 pub const WEBUI_V2_PATTERN_EXECUTE_COMMAND: &str = "/api/webchat/v2/threads/{thread_id}/commands";
 pub const WEBUI_V2_PATTERN_LIST_AUTOMATIONS: &str = "/api/webchat/v2/automations";
@@ -488,7 +486,6 @@ pub fn webui_v2_routes_with_artifact_flags(
         logs_descriptor(),
         get_attachment_descriptor(),
         stream_events_descriptor(),
-        stream_events_ws_descriptor(),
         cancel_run_descriptor(),
         orchestrator_thread_tasks_descriptor(),
         orchestrator_thread_queue_descriptor(),
@@ -1268,19 +1265,6 @@ fn archive_notification_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_ARCHIVE_NOTIFICATION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_ARCHIVE_NOTIFICATION,
-    )
-}
-
-fn stream_events_ws_descriptor() -> IngressRouteDescriptor {
-    descriptor(
-        WEBUI_V2_ROUTE_STREAM_EVENTS_WS,
-        NetworkMethod::Get,
-        WEBUI_V2_PATTERN_STREAM_EVENTS_WS,
-        ws_read_policy(
-            stream_rate_limit(),
-            AuditTraceClass::StreamingSubscription,
-            AllowedEffectPath::ProjectionOnly,
-        ),
     )
 }
 
@@ -2190,29 +2174,6 @@ fn operator_replace_extension_configuration_descriptor() -> IngressRouteDescript
     )
 }
 
-fn ws_read_policy(
-    rate_limit: RateLimitPolicy,
-    audit: AuditTraceClass,
-    effect_path: AllowedEffectPath,
-) -> IngressPolicy {
-    IngressPolicy::new(IngressPolicyParts {
-        listener_class: ListenerClass::LocalGateway,
-        auth: bearer_required(),
-        scope_source: IngressScopeSource::AuthenticatedCaller,
-        body_limit: BodyLimitPolicy::NoBody,
-        rate_limit,
-        cors: CorsPolicy::SameOriginOnly,
-        // WS upgrade is gated by host composition's same-origin
-        // check; declared here so the descriptor is the contract a
-        // future allowlist-based deployment overrides.
-        websocket_origin: WebSocketOriginPolicy::SameOriginRequired,
-        streaming: StreamingMode::WebSocket,
-        audit,
-        effect_path,
-    })
-    .expect("webui v2 WS read policy must validate") // safety: combination LocalGateway + bearer + AuthenticatedCaller + WebSocket + SameOriginRequired is a permitted shape; other parts are crate-local constants
-}
-
 /// A read on the standard read budget that may reach the product surface.
 fn read_route(
     route_id: &'static str,
@@ -2371,8 +2332,7 @@ fn thread_artifact_rate_limit() -> RateLimitPolicy {
 }
 
 fn stream_rate_limit() -> RateLimitPolicy {
-    // Shared budget for the SSE (`stream_events`) and WebSocket
-    // (`stream_events_ws`) routes. SSE sessions are long-lived; the
+    // Budget for the SSE (`stream_events`) route. SSE sessions are long-lived; the
     // per-tenant/user concurrency cap (3 streams, enforced in
     // `WebUiV2State::SseCapacity`) does the real bounding. The
     // request-rate window here is just for burst protection against

@@ -18,10 +18,7 @@
 //!    authenticating, isolated from the OAuth round-trip.
 //! 5. An expired session is rejected at the route layer (the
 //!    `session.rs` unit test only covers `authenticate()` in isolation).
-//! 6. `?token=` is rejected on the WebSocket upgrade route — the
-//!    WS-specific half of the v1 query-token narrowing, locked directly
-//!    rather than inferred from the POST-mutation rejection.
-//! 7. An `ironclaw_session` cookie carrying a valid bearer does not
+//! 6. An `ironclaw_session` cookie carrying a valid bearer does not
 //!    authenticate — the v2 cookie-transport beta-break (#4116).
 //!
 //! Supports the authentication slice of the #3615 WebUI security parity
@@ -616,62 +613,6 @@ async fn query_token_rejected_on_mutation_route() {
         "`?token=` must not authenticate a mutation route",
     );
     assert_eq!(callers_len(&services), 0, "service must not be reached");
-}
-
-/// `GET /api/webchat/v2/threads/{id}/ws` (the WebSocket upgrade route)
-/// with an optional `?token=` and no `Authorization` header. A matching
-/// `Origin` is supplied so the same-origin middleware (which runs before
-/// auth) passes and the verdict isolates to the auth layer. `t1` matches
-/// the SSE helper's thread id.
-fn ws_events_request(token: Option<&str>) -> Request<Body> {
-    let uri = match token {
-        Some(token) => format!("/api/webchat/v2/threads/t1/ws?token={token}"),
-        None => "/api/webchat/v2/threads/t1/ws".to_string(),
-    };
-    with_peer(
-        Request::builder()
-            .method(Method::GET)
-            .uri(uri)
-            // Origin matches Host so the WS same-origin middleware (which
-            // runs before auth, and requires a Host/canonical_host to
-            // compare against) passes — isolating the verdict to auth.
-            .header(header::HOST, "localhost:1234")
-            .header(header::ORIGIN, "http://localhost:1234")
-            .body(Body::empty())
-            .expect("request"),
-    )
-}
-
-#[tokio::test]
-async fn query_token_rejected_on_websocket_route() {
-    // v1 allowed `?token=` on three GET routes including the WS stream
-    // (`/api/chat/ws`); v2 drops it everywhere except the SSE event
-    // stream. This is a WS-specific beta-break, so lock it directly
-    // rather than inferring it from the POST-mutation rejection: a VALID
-    // session token on the query string of the WS upgrade, with no
-    // `Authorization` header, must NOT authenticate.
-    let (app, _services, store) = session_app();
-    let bearer = store
-        .create_session(
-            TenantId::new(TENANT).expect("tenant"),
-            UserId::new("session-user").expect("user"),
-            ChronoDuration::hours(1),
-            false,
-        )
-        .await
-        .expect("create_session")
-        .expose_secret()
-        .to_string();
-
-    let response = app
-        .oneshot(ws_events_request(Some(&bearer)))
-        .await
-        .expect("oneshot");
-    assert_eq!(
-        response.status(),
-        StatusCode::UNAUTHORIZED,
-        "`?token=` must not authenticate the WebSocket route (v1 WS query-token exception dropped)",
-    );
 }
 
 // ─── cookie session is not a v2 credential ────────────────────────────

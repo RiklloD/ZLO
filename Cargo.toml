@@ -99,7 +99,7 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 secrecy = { version = "0.10", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-axum = { version = "0.8", features = ["ws"] }
+axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-native-roots", "stream"] }
 base64 = "0.22"

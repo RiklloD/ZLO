@@ -285,10 +285,9 @@ impl ServeCommand {
         } else {
             DEFAULT_SERVE_PORT
         };
-        // Canonical host for WS same-origin check (defense against
-        // reverse-proxy passthrough-Host attacks). Validate as
-        // `host` or `host:port` — refuse multi-segment paths or
-        // scheme prefixes which would silently never match Origin.
+        // Canonical host the product-auth callback origin is derived
+        // from. Validate as `host` or `host:port` — refuse multi-segment
+        // paths or scheme prefixes, which would build a malformed origin.
         let canonical_host = webui_section
             .and_then(|section| section.canonical_host.as_deref())
             .map(|raw| -> anyhow::Result<String> {
@@ -643,9 +642,6 @@ impl ServeCommand {
             }
             if let Some(value) = max_body_bytes_fallback {
                 serve_config = serve_config.with_max_body_bytes(value);
-            }
-            if let Some(host) = canonical_host {
-                serve_config = serve_config.with_canonical_host(host);
             }
             {
                 let mut state = ProductAuthRouteState::new(

@@ -71,7 +71,6 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use futures::SinkExt;
 use futures::stream::Stream;
 use ironclaw_assistant::{
     ADMIN_CONFIGURATION_REPLACE_CAPABILITY, ADMIN_CONFIGURATION_VIEW, ADMIN_USER_CREATE_COMMAND,
@@ -218,7 +217,7 @@ use crate::webui_rate_limit::mark_rate_limit_refundable;
 use crate::webui_v2::error::WebUiV2HttpError;
 use crate::webui_v2::router::{WebUiV2Capabilities, WebUiV2State};
 use crate::webui_v2::schema::{WebChatV2Event, WebChatV2EventFrame};
-use crate::webui_v2::sse_capacity::{SSE_MAX_LIFETIME, SseAcquireResult, SseSlot};
+use crate::webui_v2::sse_capacity::{SSE_MAX_LIFETIME, SseSlot};
 use ironclaw_product_contracts::admin_users::AdminUserSecretMeta;
 
 // Session bootstrap must stay cheap and non-blocking: this flag only tunes
@@ -1438,8 +1437,8 @@ pub async fn stream_events(
     Ok(response)
 }
 
-/// Build the 429 response for SSE openings (both [`stream_events`] and
-/// [`stream_events_ws`]) that exceed the per-caller concurrency cap.
+/// Build the 429 response for SSE openings ([`stream_events`]) that exceed
+/// the per-caller concurrency cap.
 ///
 /// `refundable` — decided by `SseCapacity::try_acquire_ordered`'s per-caller
 /// rejection streak — marks the response so it doesn't also drain
@@ -4439,278 +4438,6 @@ fn extension_package_ref_for_request(
         .map_err(|_| {
             ProductSurfaceError::validation(field, ProductSurfaceValidationCode::InvalidId)
         })
-}
-
-/// `GET /api/webchat/v2/threads/{thread_id}/ws`
-///
-/// WebSocket transport variant of [`stream_events`]. The handler
-/// accepts the WS upgrade, drains the same `ProductSurface::
-/// stream_events` service as the SSE handler, and writes each event as
-/// a JSON text frame. Same lifetime + per-caller concurrency caps as
-/// SSE.
-///
-/// Same-origin enforcement is the responsibility of host composition's
-/// origin-check middleware — the descriptor declares
-/// `WebSocketOriginPolicy::SameOriginRequired` so a future override
-/// to a host-allowlist is one descriptor change away. This handler
-/// trusts the composition layer to have already rejected
-/// disallowed-origin upgrades.
-pub async fn stream_events_ws(
-    State(state): State<WebUiV2State>,
-    Extension(caller): Extension<ProductSurfaceCaller>,
-    Path(thread_id): Path<String>,
-    headers: HeaderMap,
-    Query(query): Query<StreamEventsQuery>,
-    upgrade: axum::extract::ws::WebSocketUpgrade,
-) -> Result<axum::response::Response, WebUiV2HttpError> {
-    let slot = match state.sse_capacity().try_acquire(
-        &caller.tenant_id,
-        &caller.user_id,
-        stream_connection_id(query.connection_id.as_deref()),
-    ) {
-        SseAcquireResult::Acquired(slot) => slot,
-        SseAcquireResult::AtCapacity { refundable } => {
-            return Ok(sse_capacity_rejected(refundable));
-        }
-        // A stale generation on the upgrade path means a newer stream for
-        // the same connection id already holds the slot. Treat it as the
-        // ordinary capacity rejection this handler has always returned, but
-        // never refund it: it is not the saturation signal the refund
-        // budget exists to absorb.
-        SseAcquireResult::StaleGeneration => {
-            return Ok(sse_capacity_rejected(false));
-        }
-    };
-    let services = state.services().clone();
-    let initial_cursor = headers
-        .get(LAST_EVENT_ID_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-        .or(query.after_cursor);
-    Ok(upgrade.on_upgrade(move |socket| {
-        ws_drain_loop(services, caller, thread_id, initial_cursor, slot, socket)
-    }))
-}
-
-async fn ws_drain_loop(
-    services: std::sync::Arc<dyn ProductSurface>,
-    caller: ProductSurfaceCaller,
-    thread_id: String,
-    initial_cursor: Option<String>,
-    slot: SseSlot,
-    mut socket: axum::extract::ws::WebSocket,
-) {
-    // Mirror the SSE generator: own the slot guard, bound stream
-    // lifetime, drain stream_events with the same idle cadence, emit
-    // each envelope as a JSON text frame.
-    //
-    // Two failure modes the loop must observe:
-    //
-    // 1. **Peer close / socket error.** The browser may close an
-    //    idle tab without trading a close frame; the OS surfaces
-    //    that as either a `Close` message or a socket-error on the
-    //    next read. The loop watches `socket.recv()` on every
-    //    `.await` so a dropped tab exits immediately instead of
-    //    pinning the per-caller `SseSlot` for up to `SSE_MAX_LIFETIME`.
-    // 2. **TCP backpressure on send.** A slow / hostile reader can
-    //    leave bytes queued indefinitely. Each `socket.send().await`
-    //    runs under `ws_send_with_timeout` so the per-caller slot
-    //    is released within the lifetime budget regardless.
-    let mut slot_guard = slot;
-    let started_at = tokio::time::Instant::now();
-    let mut after_cursor = initial_cursor.and_then(parse_cursor_token);
-    let surface = ironclaw_product_contracts::surface::BoundProductSurface::new(services, caller);
-
-    let mut idle_polls = 0_u32;
-    loop {
-        let remaining = SSE_MAX_LIFETIME.saturating_sub(started_at.elapsed());
-        if remaining.is_zero() {
-            let _ =
-                ws_send_with_timeout(&mut socket, None, std::time::Duration::from_millis(0)).await;
-            return;
-        }
-        let service_call = surface.stream_events(
-            ironclaw_product_contracts::surface::ProductSurfaceStreamRequest {
-                stream_id: Some(thread_id.clone()),
-                after_cursor: after_cursor
-                    .as_ref()
-                    .map(|cursor| cursor.as_str().to_string()),
-            },
-        );
-        let outcome = tokio::select! {
-            biased;
-            _ = slot_guard.cancelled() => {
-                let _ = socket.close().await;
-                return;
-            }
-            // Peer close / socket error wins over the service poll —
-            // if the browser already dropped the connection we want
-            // to free the slot immediately, not wait for stream_events
-            // to return.
-            incoming = socket.recv() => {
-                match incoming {
-                    None | Some(Err(_)) => return,
-                    Some(Ok(axum::extract::ws::Message::Close(_))) => return,
-                    // Ignore other inbound frames (Ping/Pong are
-                    // handled internally by axum; Text/Binary from
-                    // the browser are not part of this contract).
-                    Some(Ok(_)) => continue,
-                }
-            }
-            service = tokio::time::timeout(remaining, service_call) => service,
-        };
-        match outcome {
-            Err(_elapsed) => {
-                let _ = socket.close().await;
-                return;
-            }
-            Ok(Ok(response)) => {
-                let events = match decode_product_outbound_events(response.events) {
-                    Ok(events) => events,
-                    Err(error) => {
-                        let payload = SseErrorPayload {
-                            error: error.code,
-                            kind: error.kind,
-                            retryable: error.retryable,
-                        };
-                        if let Ok(text) = serde_json::to_string(&payload) {
-                            let send_budget = SSE_MAX_LIFETIME.saturating_sub(started_at.elapsed());
-                            let _ = ws_send_with_timeout(
-                                &mut socket,
-                                Some(axum::extract::ws::Message::Text(text.into())),
-                                send_budget,
-                            )
-                            .await;
-                        }
-                        let _ = socket.close().await;
-                        return;
-                    }
-                };
-                let had_events = !events.is_empty();
-                if let Some(latest) = events.last() {
-                    after_cursor = Some(latest.projection_cursor.clone());
-                }
-                for envelope in events {
-                    match serde_json::to_string(&envelope) {
-                        Ok(text) => {
-                            let send_budget = SSE_MAX_LIFETIME.saturating_sub(started_at.elapsed());
-                            if send_budget.is_zero() {
-                                let _ = socket.close().await;
-                                return;
-                            }
-                            if ws_send_with_timeout(
-                                &mut socket,
-                                Some(axum::extract::ws::Message::Text(text.into())),
-                                send_budget,
-                            )
-                            .await
-                            .is_err()
-                            {
-                                // Peer hung up, TCP backpressure
-                                // exceeded budget, or socket otherwise
-                                // unwritable. Drop the task and
-                                // release the slot.
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            tracing::debug!(
-                                target: "ironclaw_webui_v2::ws",
-                                error = %error,
-                                "failed to serialize ProductOutboundEnvelope for WS",
-                            );
-                        }
-                    }
-                }
-                if had_events {
-                    // Match SSE semantics: do not sleep after a delivered
-                    // batch, because the production service waits on the live
-                    // projection subscription for the next item.
-                    idle_polls = 0;
-                    continue;
-                }
-                idle_polls = idle_polls.saturating_add(1);
-                let sleep_for = sse_poll_interval_for_idle_polls(idle_polls)
-                    .min(SSE_MAX_LIFETIME.saturating_sub(started_at.elapsed()));
-                if sleep_for.is_zero() {
-                    let _ = socket.close().await;
-                    return;
-                }
-                // Race the poll-interval sleep against socket close
-                // for the same reason as the service call above: if
-                // the peer drops during the idle window, free the
-                // slot immediately.
-                tokio::select! {
-                    biased;
-                    _ = slot_guard.cancelled() => {
-                        let _ = socket.close().await;
-                        return;
-                    }
-                    incoming = socket.recv() => match incoming {
-                        None | Some(Err(_)) => return,
-                        Some(Ok(axum::extract::ws::Message::Close(_))) => return,
-                        Some(Ok(_)) => {}
-                    },
-                    _ = tokio::time::sleep(sleep_for) => {}
-                }
-            }
-            Ok(Err(error)) => {
-                tracing::debug!(
-                    target: "ironclaw_webui_v2::ws",
-                    error = ?error,
-                    "service rejected WS drain; closing stream",
-                );
-                let payload = SseErrorPayload {
-                    error: error.code,
-                    kind: error.kind,
-                    retryable: error.retryable,
-                };
-                if let Ok(text) = serde_json::to_string(&payload) {
-                    let send_budget = SSE_MAX_LIFETIME.saturating_sub(started_at.elapsed());
-                    let _ = ws_send_with_timeout(
-                        &mut socket,
-                        Some(axum::extract::ws::Message::Text(text.into())),
-                        send_budget,
-                    )
-                    .await;
-                }
-                let _ = socket.close().await;
-                return;
-            }
-        }
-    }
-}
-
-/// Send a WS frame (or close, when `frame` is `None`) bounded by
-/// `budget`. Returns `Err(())` on timeout, peer hangup, or close
-/// error so callers can release the per-caller `SseSlot` instead of
-/// hanging indefinitely on a stalled socket.
-async fn ws_send_with_timeout(
-    socket: &mut axum::extract::ws::WebSocket,
-    frame: Option<axum::extract::ws::Message>,
-    budget: std::time::Duration,
-) -> Result<(), ()> {
-    if budget.is_zero() {
-        let _ = socket.close().await;
-        return Err(());
-    }
-    let send_future = async {
-        match frame {
-            Some(message) => socket.send(message).await.map_err(|_| ()),
-            None => socket.close().await.map_err(|_| ()),
-        }
-    };
-    match tokio::time::timeout(budget, send_future).await {
-        Ok(result) => result,
-        Err(_elapsed) => {
-            tracing::debug!(
-                target: "ironclaw_webui_v2::ws",
-                budget_ms = budget.as_millis() as u64,
-                "WS send exceeded lifetime budget; releasing slot",
-            );
-            Err(())
-        }
-    }
 }
 
 #[cfg(test)]
