@@ -30,37 +30,6 @@ use crate::error::ClientError;
 /// Inspector contract types the app renders directly.
 pub use ironclaw_product_contracts::inspector;
 
-/// Fields for `POST /operator/setup`. The contract's `RebornOperatorSetupRequest`
-/// is deserialize-only (it carries secrets), so the body is built as JSON.
-/// Empty fields are left out; the gateway rejects combinations it cannot use.
-#[derive(Debug, Clone, Default)]
-pub struct SetupInput {
-    pub provider_id: String,
-    pub adapter: String,
-    pub base_url: String,
-    pub model: String,
-    pub api_key: String,
-}
-
-impl SetupInput {
-    fn body(&self) -> serde_json::Value {
-        let mut body = serde_json::Map::new();
-        for (key, value) in [
-            ("provider_id", &self.provider_id),
-            ("adapter", &self.adapter),
-            ("base_url", &self.base_url),
-            ("model", &self.model),
-            ("api_key", &self.api_key),
-        ] {
-            let value = value.trim();
-            if !value.is_empty() {
-                body.insert(key.to_string(), value.into());
-            }
-        }
-        serde_json::Value::Object(body)
-    }
-}
-
 // --- inspector decoding ---
 
 /// What the inspector shows for one run.
@@ -206,14 +175,6 @@ impl Client {
         self.get(&format!("{V2}/operator/setup")).await
     }
 
-    pub async fn run_operator_setup(
-        &self,
-        input: &SetupInput,
-    ) -> Result<RebornOperatorSetupResponse, ClientError> {
-        self.post(&format!("{V2}/operator/setup"), &input.body())
-            .await
-    }
-
     // --- config keys ---
 
     pub async fn operator_config(&self) -> Result<RebornOperatorConfigListResponse, ClientError> {
@@ -321,20 +282,6 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn setup_body_keeps_only_filled_fields() {
-        let input = SetupInput {
-            provider_id: " glm ".into(),
-            model: "glm-5.3".into(),
-            api_key: "  ".into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            input.body(),
-            serde_json::json!({ "provider_id": "glm", "model": "glm-5.3" })
-        );
-    }
 
     #[test]
     fn snapshot_decodes_from_gateway_shape() {

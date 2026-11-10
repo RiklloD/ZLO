@@ -758,12 +758,6 @@ impl Transcript {
                 .is_some_and(|s| s.status == "cancel_requested")
     }
 
-    /// The streamed output tail of the tool row keyed `row_key`
-    /// (`tool:{invocation}`), when its agent reports one (Codex).
-    pub fn tool_output(&self, row_key: &str) -> Option<&CliBody> {
-        self.cli.outputs.get(row_key)
-    }
-
     /// The retained output tails, by tool row key (`tool:{invocation}`):
     /// a shared handle, not a copy.
     pub fn tool_outputs(&self) -> std::sync::Arc<HashMap<String, CliBody>> {
@@ -1765,25 +1759,20 @@ mod tests {
         }
         let first = t.tool_outputs();
         assert_eq!(first.len(), CLI_OUTPUTS_MAX);
-        assert!(
-            t.tool_output("tool:6f1c1c0e-0000-4000-8000-000000000000")
-                .is_none()
-        );
-        assert!(
-            t.tool_output(&format!(
-                "tool:6f1c1c0e-0000-4000-8000-{:012}",
-                CLI_OUTPUTS_MAX + 5
-            ))
-            .is_some()
-        );
+        assert!(!first.contains_key("tool:6f1c1c0e-0000-4000-8000-000000000000"));
+        assert!(first.contains_key(&format!(
+            "tool:6f1c1c0e-0000-4000-8000-{:012}",
+            CLI_OUTPUTS_MAX + 5
+        )));
         assert!(std::sync::Arc::ptr_eq(&first, &t.tool_outputs()));
         // One oversized tail keeps its newest bytes.
         t.apply(&output(
             1000,
             format!("{}tail-end", "x".repeat(3 * CLI_OUTPUT_MAX_BYTES)),
         ));
-        let big = t
-            .tool_output("tool:6f1c1c0e-0000-4000-8000-000000001000")
+        let outputs = t.tool_outputs();
+        let big = outputs
+            .get("tool:6f1c1c0e-0000-4000-8000-000000001000")
             .unwrap();
         assert!(big.body.len() <= CLI_OUTPUT_MAX_BYTES && big.truncated);
         assert!(big.body.ends_with("tail-end"));
@@ -1815,7 +1804,7 @@ mod tests {
             .find(|r| matches!(r, Row::Tool { .. }))
             .expect("tool row");
         assert_eq!(
-            t.tool_output(row.key()).map(|o| o.body.as_str()),
+            t.tool_outputs().get(row.key()).map(|o| o.body.as_str()),
             Some("running 3 tests\n")
         );
         let diff = t.cli_turn_diff().unwrap();

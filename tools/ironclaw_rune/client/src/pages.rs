@@ -17,8 +17,8 @@ use ironclaw_product_contracts::product_wire::{
 use ironclaw_product_contracts::workspace_views::{
     FsMount, RebornCreateProjectRequest, RebornFsListResponse, RebornFsMountsResponse,
     RebornFsStatResponse, RebornListProjectsResponse, RebornProjectFsIndexResponse,
-    RebornProjectFsListResponse, RebornProjectFsStatResponse, RebornProjectResponse,
-    RebornProjectState, RebornUpdateProjectRequest,
+    RebornProjectFsListResponse, RebornProjectResponse, RebornProjectState,
+    RebornUpdateProjectRequest,
 };
 use reqwest::Method;
 
@@ -213,19 +213,6 @@ impl Client {
     ) -> Result<RebornProjectFsIndexResponse, ClientError> {
         self.get(&format!("{V2}/threads/{}/files/index", seg(thread_id)))
             .await
-    }
-
-    pub async fn thread_file_stat(
-        &self,
-        thread_id: &str,
-        path: &str,
-    ) -> Result<RebornProjectFsStatResponse, ClientError> {
-        self.get(&format!(
-            "{V2}/threads/{}/files/stat?path={}",
-            seg(thread_id),
-            seg(path)
-        ))
-        .await
     }
 
     pub async fn thread_file_bytes(
