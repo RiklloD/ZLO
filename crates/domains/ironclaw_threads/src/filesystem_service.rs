@@ -298,10 +298,9 @@ where
         thread_id: &ThreadId,
         message: &ThreadMessageRecord,
     ) {
-        let messages = vec![message.clone()];
         let context = ContextWindow {
             thread_id: thread_id.clone(),
-            messages: context_messages_with_summary_replacements(messages.iter(), &[]),
+            messages: context_messages_with_summary_replacements(std::iter::once(message), &[]),
             recent_window_truncation: None,
         };
         if let Ok(mut cache) = self.one_shot_context_windows.lock() {
