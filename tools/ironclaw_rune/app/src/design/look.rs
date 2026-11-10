@@ -1,11 +1,8 @@
-//! The app's look beyond colour (area G): the wallpaper, the battery saver,
+//! The app's look beyond colour: the wallpaper, the battery saver,
 //! motion preferences and the provider logo cache, in one slot,
 //! `State::look`. Widgets live in `design::kit`, geometry and materials in
 //! `design::styles`, timings in `design::motion`, panel chrome in
 //! `design::panels`, logos in `design::brands`.
-//!
-//! GPUI origins: `design/{wallpaper,battery,panels,paint,dock,flip,pulse,
-//! motion,smooth_scroll,styles,brands,kit}.rs`, `assets.rs`, `ui.rs`.
 //!
 //! # Public API
 //!
@@ -18,17 +15,17 @@
 //!   `Cx::reduced_motion` from `prefs.reduce_motion`, the OS setting and the
 //!   battery saver.
 //!
-//! For the workspace shell (area B):
+//! For the workspace shell:
 //! - `wallpaper_layer(s, area) -> Option<El>` and
 //!   `wallpaper_layer_rounded(s, area, radius) -> Option<El>`: call it for each
 //!   of `"window"`, `"conversation"`, `"sidebar"`, `"pane"` and add the result
 //!   as the LAST child of that area's container (it is pinned to the
 //!   container's edges, inert, and lies over the content at the chosen
-//!   opacity, as in GPUI). Only the area `prefs.wallpaper_area` names gets one.
+//!   opacity). Only the area `prefs.wallpaper_area` names gets one.
 //! - `reshuffle(s)` when a new chat opens (a wallpaper folder moves on).
 //! - `saving(s) -> bool`: pollers skip their tick while the saver is engaged.
 //!
-//! For the Appearance page (area D):
+//! For the Appearance page:
 //! - `reload(s)` after any wallpaper/theme preference change.
 //! - `wallpaper::{AREAS, enabled}`, `paint::{SCENES, EFFECTS}` for the pickers.
 //!
@@ -108,8 +105,3 @@ pub fn wallpaper_layer(s: &State, area: &str) -> Option<El> {
 pub fn fixture_wallpaper(s: &mut State, size: (u32, u32)) {
     wallpaper::paint_blocking(s, size);
 }
-
-/// Any input reached the window. The battery saver reads Rune's own input
-/// clock (`rune::last_input`), so there is nothing to record; kept so the
-/// workspace's input hooks have one place to report to.
-pub fn input(_s: &mut State) {}

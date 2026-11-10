@@ -1,4 +1,4 @@
-//! Inspector rendering (GPUI `InspectorPanel`'s `render_*` methods).
+//! Inspector rendering.
 
 use crate::pages::common::controls::{
     Look, Size, button_sized, muted, outlined_tag, rule, spinner,
@@ -236,7 +236,7 @@ fn render_run(s: &State, k: &Kit, panel: &InspectorPanel, run: &InspectorRun) ->
             head = head.child(muted(p, format!("{ms} ms")));
         }
         if let Some(b) = t.output_bytes {
-            head = head.child(muted(p, jobs::size(b)));
+            head = head.child(muted(p, zlo_client::attachments::format_bytes(b)));
         }
         let mut c = col().w_full().child(rule(p)).child(head.child(status));
         if let Some(detail) = open {

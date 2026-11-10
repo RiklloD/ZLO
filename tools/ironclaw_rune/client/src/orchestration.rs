@@ -268,25 +268,6 @@ pub struct Lineage {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunSummary {
-    pub ordinal: u32,
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub user: Option<String>,
-    #[serde(default)]
-    pub run_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadRuns {
-    #[serde(default)]
-    pub runs: Vec<RunSummary>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Forked {
     pub fork_thread_id: String,
     #[serde(default)]
@@ -410,11 +391,6 @@ impl Client {
             action.body(),
         )
         .await
-    }
-
-    pub async fn thread_runs(&self, thread_id: &str) -> Result<ThreadRuns, ClientError> {
-        self.orch_get(format!("{V2}/threads/{}/runs", seg(thread_id)))
-            .await
     }
 
     pub async fn thread_lineage(&self, thread_id: &str) -> Result<Lineage, ClientError> {

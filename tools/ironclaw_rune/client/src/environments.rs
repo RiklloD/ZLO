@@ -169,14 +169,6 @@ impl Registry {
             .find(|e| e.environment_id == environment_id)
     }
 
-    /// The active computer's entry; `None` for this Mac.
-    pub fn active_environment(&self) -> Option<&SavedEnvironment> {
-        match &self.active {
-            Active::ThisMac => None,
-            Active::Environment(id) => self.get(id),
-        }
-    }
-
     /// Add or replace by id (a re-pair refreshes label and routes).
     pub fn upsert(&mut self, env: SavedEnvironment) {
         match self

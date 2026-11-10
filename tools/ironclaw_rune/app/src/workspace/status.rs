@@ -1,7 +1,5 @@
 //! The bottom status bar: connection on the left; context, speed, cache and
-//! the busiest usage window on the right (GPUI `render_status_bar`,
-//! `render_metrics`, `start_status`, `refresh_status` and
-//! `refresh_telemetry` of `workspace.rs`). Polls every `STATUS_POLL` while
+//! the busiest usage window on the right. Polls every `STATUS_POLL` while
 //! the bar shows (or Usage is open) and the battery saver allows.
 
 use std::time::Instant;
@@ -15,7 +13,8 @@ use crate::design;
 use crate::jobs;
 use crate::state::{Conn, Page, State};
 
-/// After connecting: the first refresh and the poll timer.
+/// After connecting, and when the battery saver lets go: a refresh now and
+/// the poll timer.
 pub(super) fn start(s: &mut State) {
     refresh_status(s);
     s.workspace.timers.status = Some(Instant::now() + STATUS_POLL);

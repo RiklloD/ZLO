@@ -1,4 +1,4 @@
-//! Headless fixture scenes for the chat (PLAN.md rule 6): `chat`,
+//! Headless fixture scenes for the chat: `chat`,
 //! `chat-running`, `chat-gate`, `chat-question`, `chat-menu`,
 //! `chat-long-draft`, `chat-context-banner`. Each fills the
 //! open chat with rows the way a timeline load would, without a gateway.

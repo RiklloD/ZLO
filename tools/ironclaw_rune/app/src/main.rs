@@ -1,8 +1,8 @@
 //! ZLO: a native Rune window onto the local IronClaw gateway.
 //!
-//! A from-scratch port of the earlier GPUI app, now archived on the
-//! `archive/gpui` branch (tag `gpui-final`). Same preferences file, same
-//! behaviour; see `../../PLAN.md` for the port plan and conventions.
+//! How the app is put together, its rules and the checks that need a real
+//! window are in `../../README.md`. (The GPUI app this replaced is archived
+//! on the `archive/gpui` branch, tag `gpui-final`.)
 //!
 //! Opening the app starts this Mac's gateway and quitting (⌘Q) stops it
 //! (`service.rs`), unless another computer is in use or "Run IronClaw on
@@ -55,7 +55,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     use energy::{C, polled};
     energy::hit(C::PollCall);
-    let mut changed = polled(C::PollWorkspace, workspace::poll(s, tx));
+    // The battery saver first: the pollers below read it, and resume in
+    // this same poll when it lets go.
+    let mut changed = polled(C::PollLook, design::look::poll(s, tx));
+    changed |= polled(C::PollWorkspace, workspace::poll(s, tx));
     // The quick composer's voice controls live in its own window.
     changed |= polled(C::PollQuick, workspace::quick::poll(s));
     // The chat counts its own sources (pacer, clock, copy check, computer).
@@ -64,7 +67,6 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= polled(C::PollSide, chat::side::poll(s, clock, tx));
     changed |= polled(C::PollVoice, voice::poll(s, tx));
     changed |= polled(C::PollSnapshot, snapshot::poll(s, tx));
-    changed |= polled(C::PollLook, design::look::poll(s, tx));
     // Show, place and hide the native previews (QuickLook, WebKit).
     changed |= polled(C::PollNativeView, native_view::poll(s, tx));
     changed

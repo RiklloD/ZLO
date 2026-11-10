@@ -99,10 +99,6 @@ impl Client {
         .await
     }
 
-    pub async fn model_preference(&self) -> Result<UserModelPreference, ClientError> {
-        self.get(&format!("{V2}/llm/model-preference")).await
-    }
-
     /// `None` goes back to the workspace default.
     pub async fn set_model_preference(
         &self,

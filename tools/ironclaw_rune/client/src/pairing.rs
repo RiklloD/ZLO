@@ -249,11 +249,6 @@ pub async fn migrate(legacy: &LegacyGateway) -> Result<Paired, PairError> {
     })
 }
 
-/// Whether a route is the tailnet one (for the row's caption).
-pub fn is_tailnet(route: &Route) -> bool {
-    route.kind == RouteKind::Tailnet
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

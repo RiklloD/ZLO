@@ -1,7 +1,6 @@
 //! Settings and management pages, one module per page, each with a slot in
-//! [`PagesState`]. Owners: PLAN.md areas C, D, E (and F for the voice page).
-//! Shared page helpers (headers, sections, rows) go in `pages/common.rs`,
-//! owned by area D.
+//! [`PagesState`].
+//! Shared page helpers (headers, sections, rows) go in `pages/common.rs`.
 
 pub mod automations;
 pub mod common;

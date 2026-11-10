@@ -9,7 +9,6 @@
 //! machine, protocol, token, unreadable registry) wait for the person.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use zlo_client::environment_access::EnvironmentDescriptor;
 use zlo_client::environment_calls::fetch_descriptor;
@@ -27,8 +26,6 @@ use super::{ConnTag, Switching, active_key};
 use crate::jobs::Generation;
 use crate::onboarding::gateway::Computer;
 use crate::state::{Conn, State};
-
-const DESCRIPTOR_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Why a connect did not get through.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -250,7 +247,7 @@ async fn this_mac(override_url: bool) -> Result<Resolved, Problem> {
     }
     // This Mac's backend may predate the descriptor (it is whatever is
     // installed): a 404 is no reason to stop. A wrong protocol is.
-    let descriptor = match fetch_descriptor(&conn.base_url, DESCRIPTOR_TIMEOUT).await {
+    let descriptor = match fetch_descriptor(&conn.base_url, super::DESCRIPTOR_TIMEOUT).await {
         Ok(d) => {
             check_descriptor(&d, None).map_err(|e| Problem::Blocked(e.to_string()))?;
             Some(d)
@@ -350,7 +347,7 @@ async fn environment(
                 }
             }
         };
-        match fetch_descriptor(&origin, DESCRIPTOR_TIMEOUT).await {
+        match fetch_descriptor(&origin, super::DESCRIPTOR_TIMEOUT).await {
             Ok(d) => {
                 check_descriptor(&d, Some((&id, &label)))
                     .map_err(|e| Problem::Blocked(e.to_string()))?;

@@ -618,7 +618,7 @@ fn refresh_descriptor(s: &mut State, after_secs: u64) {
         let handle = s.rt.handle.clone();
         net.spawn(async move {
             let result =
-                zlo_client::environment_calls::fetch_descriptor(&origin, Duration::from_secs(8))
+                zlo_client::environment_calls::fetch_descriptor(&origin, super::DESCRIPTOR_TIMEOUT)
                     .await;
             handle.update(move |s, _| {
                 if !super::lands(s, &tag) {

@@ -2,8 +2,8 @@
 //! providers on the left, search, then models grouped by provider. Any
 //! provider the gateway's catalog lists can be picked, mid-thread too: the
 //! backend switches in place, moves an unused thread, or continues in a fork
-//! carrying the context (`POST /threads/{id}/route`). Port of GPUI
-//! `chat/model_picker.rs`; the view is in `model_picker/view.rs`.
+//! carrying the context (`POST /threads/{id}/route`). The view is in
+//! `model_picker/view.rs`.
 //!
 //! Without a thread (the new-thread screen) the pick is kept locally and the
 //! catalog is read through any existing thread; the catalog is per user, so
@@ -25,20 +25,20 @@
 //!
 //! # Entry points
 //!
-//! Every chat has its own picker, the open one and each side chat (GPUI:
-//! each `ChatView` owned a `ModelPicker`): [`Slot::Chat`] finds it by thread
+//! Every chat has its own picker, the open one and each side chat:
+//! [`Slot::Chat`] finds it by thread
 //! id through `chat::chat_for`, so a reply for a closed chat is dropped.
 //!
 //! - `start(s, id)`: after a chat starts, binds its picker to its thread and
-//!   loads the route (area A calls it).
+//!   loads the route.
 //! - `pills(s, id, cx, k, layer) -> El`: the model and thinking pills for
 //!   `id`'s composer, popovers pushed into `layer`.
-//! - `open(s)`: ⇧⌘M (area B, `workspace::on_key`) toggles the focused chat's
+//! - `open(s)`: ⇧⌘M (`workspace::on_key`) toggles the focused chat's
 //!   picker (`focused_slot`: the side chat's while its composer has focus
 //!   or its picker is open); `close_open(s)` is Esc.
 //! - `model_label(&ModelPickerState) -> String`, `pretty_model(id)`,
 //!   `provider_mark(..)` for other views.
-//! - The draft screen (area B) keeps its own `ModelPickerState::new(None,
+//! - The draft screen keeps its own `ModelPickerState::new(None,
 //!   catalog_thread)` and renders it with `view::pills_for(s, Slot { .. }, ..)`;
 //!   `pending()`, `pending_effort()`, `set_profile(..)` read and steer it.
 
@@ -51,8 +51,7 @@ use zlo_client::orchestration::{PickerPrefs, RouteChange, RouteProvider, ThreadR
 use crate::jobs::{self, Generation};
 use crate::state::State;
 
-// `pills_for` and `provider_mark` are for the draft screen (area B) and other views.
-#[allow(unused_imports)]
+// `pills_for` and `provider_mark` are for the draft screen and other views.
 pub use slot::{DRAFT, FixedSlot, Slot, close_open, focused_slot};
 pub use view::{pills, pills_for, provider_mark};
 
@@ -61,7 +60,7 @@ pub(crate) const NATIVE: &str = "ironclaw";
 /// Recent picks shown first in "All", after MonoCode's `pickers.rs`.
 const RECENTS: usize = 6;
 
-/// What the picker tells its owner (GPUI `PickerEvent`).
+/// What the picker tells its owner.
 pub enum PickerEvent {
     /// The backend applied a pick. `fork_thread_id` set: open that thread.
     Changed(RouteChange),
@@ -758,7 +757,7 @@ pub fn scene(s: &mut State, effort: bool) {
     }
 }
 
-// The new-thread screen's picker (area B's `workspace/draft.rs`).
+// The new-thread screen's picker (`workspace/draft.rs`).
 
 /// The draft screen picked a profile: show that profile's default and read
 /// the catalog if it is not in yet.
@@ -772,7 +771,7 @@ pub fn draft_set_profile(s: &mut State, profile: String, catalog_thread: Option<
         d.picker.catalog_thread = catalog_thread;
     }
     // The catalog is what the pill lists: without it the pill stays hidden
-    // and a new thread cannot pick its model (GPUI loads it on construction).
+    // and a new thread cannot pick its model.
     let unloaded = d.picker.route.is_none();
     set_profile(s, DRAFT, profile);
     if unloaded {

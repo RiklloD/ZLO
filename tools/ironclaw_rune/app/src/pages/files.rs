@@ -1,5 +1,4 @@
 //! Read-only browser over the gateway's mounts (memory, workspace, skills).
-//! Port of GPUI `pages/files.rs`.
 
 use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};
 use rune_kit::{Kit, Markdown, Spinner};
@@ -27,7 +26,7 @@ pub struct FilesState {
     pub preview: Option<Result<FilePreview, String>>,
     pub error: Option<String>,
     pub loaded: bool,
-    /// The mounts were asked for (GPUI did this once, in `new`).
+    /// The mounts were asked for (once).
     started: bool,
 }
 
@@ -269,7 +268,10 @@ fn render_preview(s: &State, k: &Kit) -> El {
         Some(Err(e)) => error_line(p, e),
         Some(Ok(FilePreview::TooLarge { size_bytes })) => empty_state(
             p,
-            format!("{} is too large to preview here.", jobs::size(*size_bytes)),
+            format!(
+                "{} is too large to preview here.",
+                zlo_client::attachments::format_bytes(*size_bytes)
+            ),
         ),
         Some(Ok(FilePreview::Binary {
             mime_type,
@@ -278,7 +280,7 @@ fn render_preview(s: &State, k: &Kit) -> El {
             p,
             format!(
                 "Binary file ({mime_type}, {}). No preview.",
-                jobs::size(*size_bytes)
+                zlo_client::attachments::format_bytes(*size_bytes)
             ),
         ),
         Some(Ok(FilePreview::Text {

@@ -31,7 +31,6 @@ use zlo_client::{Client, Connection, Token};
 
 use crate::state::State;
 
-const DESCRIPTOR_TIMEOUT: Duration = Duration::from_secs(8);
 const POLL_EVERY: Duration = Duration::from_secs(3);
 /// A release build of IronClaw (or ZLO's bundle) can take a while.
 const GIVE_UP_AFTER: Duration = Duration::from_secs(45 * 60);
@@ -362,7 +361,7 @@ async fn resolve_saved(
         let Ok(origin) = check_transport(&route.url) else {
             continue;
         };
-        match fetch_descriptor(&origin, DESCRIPTOR_TIMEOUT).await {
+        match fetch_descriptor(&origin, super::DESCRIPTOR_TIMEOUT).await {
             Ok(d) => {
                 check_descriptor(&d, Some((&id, &label)))
                     .map_err(|e| UpdateCallError::Other(e.to_string()))?;
