@@ -1,30 +1,5 @@
-//! Shared primitives for parsing provider tool-call responses.
-//!
-//! Each provider file (Layer 1) owns its wire-dialect mapping. This module
-//! provides shared sub-step primitives every provider can call:
-//! argument-JSON parsing with explicit error policy, and ordered
-//! reasoning-field probe.
-//!
-//! Design influenced by shared JSON-repair utilities and ordered
-//! reasoning-field probe patterns common in OpenAI-compatible provider
-//! implementations.
-//!
-//! Layer 3 (NormalizingProvider) handles shape invariants that operate on
-//! the decoded ToolCompletionResponse. This module handles sub-steps that
-//! need raw wire bytes (provider-internal).
-//!
-//! ## Migration recipe (per follow-up plan, one provider per PR)
-//!
-//! 1. Replace `unwrap_or(Value::Object(default))` with
-//!    `parse_tool_call_args_lossy(raw)`. Populates
-//!    `ToolCall.arguments_parse_error`.
-//! 2. If the provider extracts reasoning from a JSON wire body, switch to
-//!    `probe_reasoning_field(json, &CANDIDATE_FIELDS)` with the provider's
-//!    candidate list as a const slice (pattern parallels
-//!    `reasoning_models.rs`'s flat-slice convention).
-//! 3. Add provider-specific `_finish_reason_*` tests if the provider
-//!    decodes finish_reason from a string (Class B coverage). Class A
-//!    shape invariants are owned by `NormalizingProvider`.
+//! Shared tool-call argument JSON parsing with an explicit error policy,
+//! for provider files that decode raw wire bytes.
 
 use serde_json::Value;
 
@@ -98,23 +73,6 @@ pub(crate) fn parse_tool_call_args_allow_trailing_lossy(raw: &str) -> (Value, Op
         Some(Ok(value)) => (value, None),
         _ => lossy,
     }
-}
-
-/// Ordered probe over candidate reasoning-field names.
-///
-/// Iterates `fields` in order; returns a borrowed reference to the first value
-/// that is a non-empty string. Skips missing keys, non-string values, and empty
-/// strings. Returns `None` for non-object inputs or when no candidate matches.
-pub(crate) fn probe_reasoning_field<'a>(json: &'a Value, fields: &[&str]) -> Option<&'a str> {
-    let obj = json.as_object()?;
-    for &field in fields {
-        if let Some(Value::String(s)) = obj.get(field)
-            && !s.trim().is_empty()
-        {
-            return Some(s);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -193,35 +151,6 @@ mod tests {
     }
 
     #[test]
-    fn probe_reasoning_field_first_present_wins() {
-        let json = json!({"reasoning": "first", "reasoning_content": "second"});
-
-        let result = probe_reasoning_field(&json, &["reasoning", "reasoning_content"]);
-        assert_eq!(result, Some("first"));
-
-        let result = probe_reasoning_field(&json, &["reasoning_content", "reasoning"]);
-        assert_eq!(result, Some("second"));
-    }
-
-    #[test]
-    fn probe_reasoning_field_skips_empty_strings_and_misses() {
-        // Empty string is skipped; falls through to next candidate.
-        let json = json!({"reasoning": "", "reasoning_content": "x"});
-        let result = probe_reasoning_field(&json, &["reasoning", "reasoning_content"]);
-        assert_eq!(result, Some("x"));
-
-        // Empty object → no candidates match → None.
-        let empty_json = json!({});
-        let result = probe_reasoning_field(&empty_json, &["reasoning", "reasoning_content"]);
-        assert!(result.is_none());
-
-        // Non-object input → None.
-        let null_json = json!(null);
-        let result = probe_reasoning_field(&null_json, &["reasoning"]);
-        assert!(result.is_none());
-    }
-
-    #[test]
     fn parse_args_empty_string_returns_err() {
         let err = parse_tool_call_args("").expect_err("empty string is not valid JSON");
         assert!(
@@ -240,37 +169,6 @@ mod tests {
 
         let result = parse_tool_call_args(r#""hello""#).expect("string is valid JSON");
         assert_eq!(result, "hello");
-    }
-
-    #[test]
-    fn probe_reasoning_field_skips_non_string_values() {
-        // Number at first candidate → skip, fall through.
-        let json = json!({"reasoning": 42, "reasoning_content": "actual"});
-        let result = probe_reasoning_field(&json, &["reasoning", "reasoning_content"]);
-        assert_eq!(result, Some("actual"));
-
-        // Object / bool / array at first candidate also skipped.
-        let json = json!({"reasoning": {"x": 1}, "reasoning_content": "actual"});
-        let result = probe_reasoning_field(&json, &["reasoning", "reasoning_content"]);
-        assert_eq!(result, Some("actual"));
-    }
-
-    #[test]
-    fn probe_reasoning_field_empty_fields_returns_none() {
-        let json = json!({"reasoning": "x"});
-        let result = probe_reasoning_field(&json, &[]);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn probe_reasoning_field_skips_whitespace_only_values() {
-        let json = json!({"reasoning": "   \n\t", "reasoning_content": "actual"});
-        let result = probe_reasoning_field(&json, &["reasoning", "reasoning_content"]);
-        assert_eq!(result, Some("actual"));
-
-        let json = json!({"reasoning": "   "});
-        let result = probe_reasoning_field(&json, &["reasoning"]);
-        assert_eq!(result, None);
     }
 
     #[test]

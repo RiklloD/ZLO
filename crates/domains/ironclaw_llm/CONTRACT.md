@@ -39,7 +39,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `provider_routing.rs` | `ProviderRouter`: sends a request whose model is `<provider_id>::<model>` to that configured provider (built by a `RoutedProviderSource`), everything else to the primary |
 | `registry.rs` | Provider registry (`ProviderDefinition`, `ProviderProtocol`); resolves backend strings to clients |
 | `resolution.rs` | Full `LlmConfig` resolution for composition roots that select from `providers.json` and need dedicated providers plus the shared provider chain |
-| `tool_args.rs` | Shared sub-step primitives for provider tool-call parsing: fail-loud and silent-fallback JSON arg parsing, ordered reasoning-field probe (Layer 2 of RC3/M9 framework) |
+| `tool_args.rs` | Shared sub-step primitives for provider tool-call parsing: fail-loud and silent-fallback JSON arg parsing (Layer 2 of RC3/M9 framework) |
 | `tool_schema.rs` | Tool schema normalization policies (`FlattenOnly` for NearAI, strict OpenAI for `RigAdapter` / Codex) |
 | `transcription/{mod,openai,chat_completions}.rs` | Audio transcription pipeline (Whisper / chat-completions back-ends) |
 | `speech/{mod,openai,elevenlabs}.rs` | Text-to-speech: the `SpeechSynthesisProvider` trait with OpenAI and ElevenLabs back-ends; nothing in the gateway wires it yet |
