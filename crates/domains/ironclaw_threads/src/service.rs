@@ -9,16 +9,17 @@ use crate::{
     AppendCapabilityDisplayPreviewRequest, AppendFinalizedAssistantMessageRequest,
     AppendToolResultReferenceRequest, BoundedThreadMessages, BoundedThreadMessagesRequest,
     ContextMessages, ContextWindow, CreateSummaryArtifactRequest, DeleteToolResultRecordRequest,
-    EnsureThreadRequest, FinalizedAssistantMessageByRunRequest, InboundMessageReplayMetadata,
-    LatestThreadMessageRequest, ListThreadsForScopeRequest, ListThreadsForScopeResponse,
-    LoadContextMessagesRequest, LoadContextWindowRequest, MessageContent,
-    PublishStructuredFinalizationMessageRequest, PutStructuredFinalizationRequest,
-    PutToolResultRecordRequest, ReadStructuredFinalizationRequest, ReadToolResultRecordRequest,
-    RedactMessageRequest, ReplayAcceptedInboundMessageRequest, SessionThreadError,
-    SessionThreadRecord, StructuredFinalizationRecord, SummaryArtifact, ThreadGoal, ThreadHistory,
-    ThreadHistoryRequest, ThreadMessageId, ThreadMessageRange, ThreadMessageRangeRequest,
-    ThreadMessageRecord, ThreadScope, ToolResultRecordRead, UpdateAssistantDraftRequest,
-    UpdateThreadGoalRequest, UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
+    EnsureThreadRequest, FinalizedAssistantMessageByRunRequest,
+    FinalizedToolResultReferenceRequest, InboundMessageReplayMetadata, LatestThreadMessageRequest,
+    ListThreadsForScopeRequest, ListThreadsForScopeResponse, LoadContextMessagesRequest,
+    LoadContextWindowRequest, MessageContent, PublishStructuredFinalizationMessageRequest,
+    PutStructuredFinalizationRequest, PutToolResultRecordRequest,
+    ReadStructuredFinalizationRequest, ReadToolResultRecordRequest, RedactMessageRequest,
+    ReplayAcceptedInboundMessageRequest, SessionThreadError, SessionThreadRecord,
+    StructuredFinalizationRecord, SummaryArtifact, ThreadGoal, ThreadHistory, ThreadHistoryRequest,
+    ThreadMessageId, ThreadMessageRange, ThreadMessageRangeRequest, ThreadMessageRecord,
+    ThreadScope, ToolResultRecordRead, UpdateAssistantDraftRequest, UpdateThreadGoalRequest,
+    UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
 };
 use crate::{
     ExternalThreadSummary, ExternalTranscriptCursor, ExternalTranscriptCursorRequest,
@@ -393,6 +394,28 @@ pub trait SessionThreadService: Send + Sync {
             message.kind == crate::MessageKind::Assistant
                 && message.status == crate::MessageStatus::Finalized
                 && message.turn_run_id.as_deref() == Some(request.turn_run_id.as_str())
+        }))
+    }
+
+    /// Whether the thread holds a finalized tool-result reference for
+    /// `result_ref`. Carries the visibility rules of `list_thread_history`:
+    /// `UnknownThread` for a missing or cross-scope thread, and a reference
+    /// whose message is not `Finalized` (draft, redacted, deleted) does not
+    /// count. Production backends answer without loading the transcript.
+    async fn has_finalized_tool_result_reference(
+        &self,
+        request: FinalizedToolResultReferenceRequest,
+    ) -> Result<bool, SessionThreadError> {
+        let history = self
+            .list_thread_history(ThreadHistoryRequest {
+                scope: request.scope,
+                thread_id: request.thread_id,
+            })
+            .await?;
+        Ok(history.messages.iter().any(|message| {
+            message.kind == crate::MessageKind::ToolResultReference
+                && message.status == crate::MessageStatus::Finalized
+                && message.tool_result_ref.as_deref() == Some(request.result_ref.as_str())
         }))
     }
 
@@ -844,6 +867,15 @@ where
     ) -> Result<Option<ThreadMessageRecord>, SessionThreadError> {
         self.as_ref()
             .finalized_assistant_message_by_run(request)
+            .await
+    }
+
+    async fn has_finalized_tool_result_reference(
+        &self,
+        request: FinalizedToolResultReferenceRequest,
+    ) -> Result<bool, SessionThreadError> {
+        self.as_ref()
+            .has_finalized_tool_result_reference(request)
             .await
     }
 

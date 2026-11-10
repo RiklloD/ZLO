@@ -741,6 +741,15 @@ pub struct FinalizedAssistantMessageByRunRequest {
     pub turn_run_id: String,
 }
 
+/// Asks whether `thread_id` holds a finalized tool-result reference message
+/// for `result_ref`, in any run of that thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalizedToolResultReferenceRequest {
+    pub scope: ThreadScope,
+    pub thread_id: ThreadId,
+    pub result_ref: String,
+}
+
 /// Browser-driven list-threads query scoped to a single caller.
 ///
 /// Pagination is opaque: `cursor` is whatever value the backend

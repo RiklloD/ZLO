@@ -1543,6 +1543,19 @@ impl SessionThreadService for InMemorySessionThreadService {
             .map(history_message))
     }
 
+    async fn has_finalized_tool_result_reference(
+        &self,
+        request: crate::FinalizedToolResultReferenceRequest,
+    ) -> Result<bool, SessionThreadError> {
+        let state = self.state.lock().await;
+        let thread = get_thread(&state, &request.scope, &request.thread_id)?;
+        Ok(thread.messages.iter().any(|message| {
+            message.kind == MessageKind::ToolResultReference
+                && message.status == MessageStatus::Finalized
+                && message.tool_result_ref.as_deref() == Some(request.result_ref.as_str())
+        }))
+    }
+
     async fn read_thread(
         &self,
         request: ThreadHistoryRequest,

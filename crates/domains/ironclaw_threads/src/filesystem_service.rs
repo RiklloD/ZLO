@@ -1189,6 +1189,68 @@ where
             .transpose()
     }
 
+    /// Walks only the thread's finalized tool-result reference rows, newest
+    /// first, through the kind/status projection.
+    async fn finalized_tool_result_reference_exists(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+        result_ref: &str,
+    ) -> Result<bool, SessionThreadError> {
+        self.ensure_transcript_indexes_migrated(scope).await?;
+        let root = messages_root(scope, thread_id)?;
+        let index = message_kind_status_index_spec()?;
+        let sequence_key = fs_index_key("sequence")?;
+        let message_id_key = fs_index_key("message_id")?;
+        let filter = Filter::And(vec![
+            thread_partition_filter(thread_id)?,
+            Filter::Eq {
+                key: fs_index_key("message_kind")?,
+                value: IndexValue::Text(serde_enum_index_value(&MessageKind::ToolResultReference)?),
+            },
+            Filter::Eq {
+                key: fs_index_key("message_status")?,
+                value: IndexValue::Text(serde_enum_index_value(&MessageStatus::Finalized)?),
+            },
+        ]);
+        let mut cursor = None;
+        loop {
+            let mut page = OrderedPage::new(
+                index.name.clone(),
+                sequence_key.clone(),
+                message_id_key.clone(),
+                SortDirection::Descending,
+                TOOL_RESULT_REFERENCE_LOOKUP_PAGE,
+            );
+            if let Some(after) = cursor.take() {
+                page = page.after(after);
+            }
+            let entries = self
+                .filesystem
+                .query_ordered(&scope.to_resource_scope(), &root, &filter, &page)
+                .await?;
+            let entry_count = entries.len();
+            for entry in &entries {
+                let message = deserialize::<ThreadMessageRecord>(&entry.entry.body)?;
+                if message.kind == MessageKind::ToolResultReference
+                    && message.status == MessageStatus::Finalized
+                    && message.tool_result_ref.as_deref() == Some(result_ref)
+                {
+                    return Ok(true);
+                }
+            }
+            cursor = entries.last().and_then(|entry| {
+                Some(OrderedQueryCursor {
+                    value: entry.entry.indexed.get(&sequence_key)?.clone(),
+                    tie_breaker: entry.entry.indexed.get(&message_id_key)?.clone(),
+                })
+            });
+            if entry_count < TOOL_RESULT_REFERENCE_LOOKUP_PAGE as usize || cursor.is_none() {
+                return Ok(false);
+            }
+        }
+    }
+
     /// Caller must have run `ensure_transcript_indexes_migrated` for the
     /// scope; hoisted out so a list page pays the marker check once, not once
     /// per untitled thread.
@@ -3784,6 +3846,23 @@ where
         Ok(Some(history_message(&message)))
     }
 
+    async fn has_finalized_tool_result_reference(
+        &self,
+        request: crate::FinalizedToolResultReferenceRequest,
+    ) -> Result<bool, SessionThreadError> {
+        self.read_thread_versioned(&request.scope, &request.thread_id)
+            .await?
+            .ok_or_else(|| SessionThreadError::UnknownThread {
+                thread_id: request.thread_id.clone(),
+            })?;
+        self.finalized_tool_result_reference_exists(
+            &request.scope,
+            &request.thread_id,
+            &request.result_ref,
+        )
+        .await
+    }
+
     async fn read_thread(
         &self,
         request: ThreadHistoryRequest,
@@ -4066,6 +4145,9 @@ where
         })
     }
 }
+
+/// Rows per page when scanning a thread's finalized tool-result references.
+const TOOL_RESULT_REFERENCE_LOOKUP_PAGE: u32 = 64;
 
 const LIST_THREADS_DEFAULT_PAGE_SIZE: usize = 50;
 const LIST_THREADS_MAX_PAGE_SIZE: usize = 200;

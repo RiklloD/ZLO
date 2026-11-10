@@ -22,8 +22,8 @@ use ironclaw_loop_contracts::{
     resolution, sanitize_model_visible_text,
 };
 use ironclaw_threads::{
-    MessageKind, MessageStatus, ReadToolResultRecordRequest, SessionThreadError,
-    SessionThreadService, TOOL_RESULT_JSON_MAX_LIMIT, ThreadHistoryRequest, ThreadScope,
+    FinalizedToolResultReferenceRequest, ReadToolResultRecordRequest, SessionThreadError,
+    SessionThreadService, TOOL_RESULT_JSON_MAX_LIMIT, ThreadScope,
     ToolResultRecordRead, ToolResultRecordReadError, ToolResultRecordSelection,
     ToolResultReferenceEnvelope, effective_tool_result_read_max_bytes,
 };
@@ -188,18 +188,12 @@ impl SyntheticCapabilityHandler for ResultReadHandler {
             })?;
         let reference_is_available = self
             .thread_service
-            .list_thread_history(ThreadHistoryRequest {
+            .has_finalized_tool_result_reference(FinalizedToolResultReferenceRequest {
                 scope: scope.clone(),
                 thread_id: invocation.run_context.thread_id.clone(),
+                result_ref: input.result_ref.clone(),
             })
-            .await
-            .map(|history| {
-                history.messages.iter().any(|message| {
-                    message.kind == MessageKind::ToolResultReference
-                        && message.status == MessageStatus::Finalized
-                        && message.tool_result_ref.as_deref() == Some(input.result_ref.as_str())
-                })
-            });
+            .await;
         let reference_is_available = match reference_is_available {
             Ok(available) => available,
             Err(SessionThreadError::UnknownThread { .. }) => false,
