@@ -543,7 +543,7 @@ pub fn register_history_bridge_tool(
     engine: &Arc<Engine>,
     threads: Arc<dyn SessionThreadService>,
 ) {
-    bridge.set_tool_provider(Arc::new(HistoryBridgeTool {
+    bridge.add_tool_provider(Arc::new(HistoryBridgeTool {
         engine: Arc::downgrade(engine),
         threads,
     }));

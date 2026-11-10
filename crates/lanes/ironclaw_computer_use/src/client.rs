@@ -12,7 +12,7 @@ use ironclaw_host_api::resource::ResourceScope;
 use ironclaw_mcp::{McpClient, McpClientError, McpClientOutput, McpClientRequest};
 use ironclaw_product_contracts::computer_use::{
     COMPUTER_USE_CAPABILITY_PREFIX, ComputerUseControlAction, ComputerUseFrameRequest,
-    ComputerUseSession, ComputerUseSessions, ComputerUseToolSpec,
+    ComputerUseImage, ComputerUseSession, ComputerUseSessions, ComputerUseToolSpec,
 };
 use serde_json::{Value, json};
 
@@ -87,6 +87,18 @@ impl ComputerUseSessions for ComputerUse {
 
     fn bind_result_frame(&self, session: &ComputerUseSession, seq: u64, result_ref: &str) {
         ComputerUse::bind_result_frame(self, session, seq, result_ref);
+    }
+
+    fn result_image(
+        &self,
+        session: &ComputerUseSession,
+        result_ref: &str,
+    ) -> Option<ComputerUseImage> {
+        let frame = self.result_frame(session, result_ref)?;
+        Some(ComputerUseImage {
+            mime_type: frame.mime_type.clone(),
+            data: frame.data.clone(),
+        })
     }
 
     fn session_view(&self, session: &ComputerUseSession, after_frame: Option<u64>) -> Value {

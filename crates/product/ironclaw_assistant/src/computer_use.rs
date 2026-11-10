@@ -899,5 +899,7 @@ impl ProductSurface for ComputerUseProductSurface {
     }
 }
 
+pub mod cli_bridge;
+
 #[cfg(test)]
 mod tests;

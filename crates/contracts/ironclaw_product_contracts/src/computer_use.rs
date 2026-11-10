@@ -52,6 +52,13 @@ pub struct ComputerUseToolSpec {
     pub input_schema: Value,
 }
 
+/// A screenshot as the engine sent it: base64 bytes and their media type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComputerUseImage {
+    pub mime_type: String,
+    pub data: String,
+}
+
 /// Implemented by `ironclaw_computer_use::ComputerUse`. Every method answers
 /// with a document instead of failing: a refused or failed action is
 /// model-visible, never a host error.
@@ -84,6 +91,15 @@ pub trait ComputerUseSessions: Send + Sync {
     /// Tie screenshot `seq` of `session` to the tool result that reported it,
     /// so the model sees that picture with that result.
     fn bind_result_frame(&self, _session: &ComputerUseSession, _seq: u64, _result_ref: &str) {}
+    /// The screenshot bound to `result_ref`, while the session still keeps
+    /// it. For callers that hand the picture on themselves (the CLI bridge).
+    fn result_image(
+        &self,
+        _session: &ComputerUseSession,
+        _result_ref: &str,
+    ) -> Option<ComputerUseImage> {
+        None
+    }
     /// The thread's Stop fired: end its sessions and kill their processes.
     async fn thread_stopped(&self, tenant_id: &TenantId, thread_id: &ThreadId);
     /// A turn on the thread ended normally.

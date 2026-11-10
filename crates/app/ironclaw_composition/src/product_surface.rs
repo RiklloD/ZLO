@@ -349,6 +349,16 @@ pub(crate) fn build_product_surface_with_channel_connection(
             runtime.product_thread_service(),
         );
     }
+    // ... and this host's computer use, so a CLI thread drives the same
+    // engine and session as the API-model agent.
+    if let (Some(bridge), Some(computer_use)) =
+        (runtime.cli_bridge.as_ref(), runtime.computer_use.as_ref())
+    {
+        ironclaw_assistant::computer_use::cli_bridge::register_computer_use_bridge_tools(
+            bridge,
+            Arc::clone(computer_use),
+        );
+    }
     // This host's computer-use readiness (engine, macOS permissions of this
     // process), probed whether or not computer use is on.
     let readiness = Arc::new(ironclaw_computer_use::HostComputerUseReadiness::from_env(

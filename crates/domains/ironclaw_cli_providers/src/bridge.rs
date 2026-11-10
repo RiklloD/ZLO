@@ -444,7 +444,7 @@ pub struct CliBridge {
     /// turn so a stream that opens later still shows it.
     plans: Mutex<HashMap<ThreadId, (u64, String, AgentPlan)>>,
     /// Host tools beside the orchestrator's on the MCP route.
-    pub(crate) tool_provider: OnceLock<Arc<dyn crate::bridge_tools::BridgeToolProvider>>,
+    pub(crate) tool_providers: Mutex<Vec<Arc<dyn crate::bridge_tools::BridgeToolProvider>>>,
 }
 
 impl std::fmt::Debug for CliBridge {
@@ -463,7 +463,7 @@ impl CliBridge {
             mcp_url: OnceLock::new(),
             ledger: OnceLock::new(),
             plans: Mutex::new(HashMap::new()),
-            tool_provider: OnceLock::new(),
+            tool_providers: Mutex::new(Vec::new()),
         })
     }
 

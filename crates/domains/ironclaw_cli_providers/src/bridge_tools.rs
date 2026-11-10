@@ -1,8 +1,8 @@
 //! Host tools beside the orchestrator's on the loopback MCP route.
 //!
 //! The route lists and calls `ironclaw_orchestrator::tools::TOOLS`; a host
-//! can add more (history search) through one [`BridgeToolProvider`], set
-//! once. Calls run as the session's thread, exactly like the orchestrator
+//! can add more (history search, computer use) through
+//! [`BridgeToolProvider`]s, each added once at startup. Calls run as the session's thread, exactly like the orchestrator
 //! tools: the provider receives the thread record and answers an MCP tool
 //! result. Additive: without a provider the route is unchanged.
 
@@ -31,12 +31,16 @@ pub(crate) async fn handle_with_tools(
     grant: &SessionGrant,
     message: &Value,
 ) -> Option<Value> {
-    let Some(provider) = bridge.tool_provider() else {
+    let providers = bridge.tool_providers();
+    if providers.is_empty() {
         return handle_mcp(engine, grant, message).await;
-    };
+    }
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     let name = message["params"]["name"].as_str().unwrap_or("");
-    if method == "tools/call" && provider.handles(name) {
+    let handler = (method == "tools/call")
+        .then(|| providers.iter().find(|provider| provider.handles(name)))
+        .flatten();
+    if let Some(provider) = handler {
         let id = message.get("id").cloned()?;
         let result = match engine.store().thread(&grant.thread_id).await {
             Ok(Some(thread)) => {
@@ -60,19 +64,28 @@ pub(crate) async fn handle_with_tools(
     if method == "tools/list"
         && let Some(tools) = answer["result"]["tools"].as_array_mut()
     {
-        tools.extend(provider.tools());
+        for provider in &providers {
+            tools.extend(provider.tools());
+        }
     }
     Some(answer)
 }
 
 impl CliBridge {
-    /// Add host tools to the MCP route (first call wins).
-    pub fn set_tool_provider(&self, provider: Arc<dyn BridgeToolProvider>) {
-        let _ = self.tool_provider.set(provider); // silent-ok: wired once per process
+    /// Add host tools to the MCP route. A call goes to the first provider
+    /// that handles its name.
+    pub fn add_tool_provider(&self, provider: Arc<dyn BridgeToolProvider>) {
+        self.tool_providers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(provider);
     }
 
-    pub(crate) fn tool_provider(&self) -> Option<&Arc<dyn BridgeToolProvider>> {
-        self.tool_provider.get()
+    pub(crate) fn tool_providers(&self) -> Vec<Arc<dyn BridgeToolProvider>> {
+        self.tool_providers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -170,7 +183,7 @@ mod tests {
         assert!(!names(&before).contains(&"history_search".to_string()));
 
         let recorder = Arc::new(Recorder::default());
-        bridge.set_tool_provider(recorder.clone());
+        bridge.add_tool_provider(recorder.clone());
         let after = call(list).await;
         assert!(names(&after).contains(&"history_search".to_string()));
         assert_eq!(names(&after).len(), names(&before).len() + 1);
