@@ -20,7 +20,9 @@
 # The backend is built from this repo (cargo build --release -p ironclaw
 # --bin zlo: the package keeps its IronClaw name, the binary is `zlo`)
 # unless ZLO_BACKEND=/path/to/zlo names a binary to copy (for example
-# ~/Applications/ZLO.app/Contents/MacOS/zlo-backend). The engine is the pinned
+# ~/Applications/ZLO.app/Contents/MacOS/zlo-backend). It is built without the
+# web SPA (SKIP_FRONTEND_BUILD=1): the window is the Rune app, and skipping
+# the SPA keeps Node and pnpm out of the build. The engine is the pinned
 # release, cached in ~/Library/Caches/ZLO and checksum verified, unless
 # ZLO_ENGINE_APP=/path/to/Some.app names a local build.
 #
@@ -68,7 +70,7 @@ engine_name="ZLO Computer Use.app"
 if [ -z "$light" ]; then
   backend="${ZLO_BACKEND:-}"
   if [ -z "$backend" ]; then
-    (cd "$repo" && SKIP_FRONTEND_BUILD= cargo build --release -p ironclaw --bin zlo)
+    (cd "$repo" && SKIP_FRONTEND_BUILD=1 cargo build --release -p ironclaw --bin zlo)
     backend="$repo/target/release/zlo"
   fi
   [ -f "$backend" ] || { echo "no backend binary at $backend" >&2; exit 1; }
