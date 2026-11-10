@@ -8,7 +8,6 @@ import { storybookTest } from "@storybook/addon-vitest/vitest-plugin";
 import { playwright } from "@vitest/browser-playwright";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const rustStaticDir = resolve(here, "..", "static");
 
 export default defineConfig({
   base: "/",
@@ -24,7 +23,7 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     fs: {
-      allow: [here, rustStaticDir],
+      allow: [here],
     },
     proxy: {
       "/api/webchat/v2": "http://127.0.0.1:3000",
