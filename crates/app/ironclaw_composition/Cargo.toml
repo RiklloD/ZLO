@@ -105,7 +105,7 @@ ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", ve
 ironclaw_turns = { path = "../../kernel/ironclaw_turns" }
 # WebUI v2 route surface + static SPA bundle merged up into
 # `ironclaw_webui`; no longer a composition dependency.
-libsql = { version = "0.9", default-features = false, features = ["core", "replication", "remote", "tls"] }
+libsql = { version = "0.10", default-features = false, features = ["core", "replication", "remote", "tls"] }
 axum = { version = "0.8" }
 tower = { version = "0.5" }
 rand = "0.10"
