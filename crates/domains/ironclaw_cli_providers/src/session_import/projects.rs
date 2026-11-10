@@ -351,7 +351,10 @@ mod tests {
             Some("https://example.com/me/app.git")
         );
         let only = "[remote \"fork\"]\n\turl = git@example.com:me/x.git\n";
-        assert_eq!(origin_url(only).as_deref(), Some("git@example.com:me/x.git"));
+        assert_eq!(
+            origin_url(only).as_deref(),
+            Some("git@example.com:me/x.git")
+        );
         assert_eq!(origin_url("[core]\n"), None);
     }
 
