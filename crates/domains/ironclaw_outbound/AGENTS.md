@@ -61,8 +61,9 @@ outbound egress policy.
   an attempt-only rewrite cannot drop the substate; guarded mutations check
   status → fence → lease in that order; settlement is one-way; crash recovery
   never marks a publication row `Unknown`. `list_open_reply_publications`
-  is the tenant-wide boot-recovery read; `/outbound` is a per-user mount,
-  so it sees one owner's subtree per call and the caller passes the owner
+  and `list_interrupted_delivery_attempts` (one-shot rows still `Sending`)
+  are the tenant-wide boot-recovery reads; `/outbound` is a per-user mount,
+  so each sees one owner's subtree per call and the caller passes the owner
   scope. Re-verify with
   `rg -n "DeliveryAttemptRow|fn update_reply_publication" crates/domains/ironclaw_outbound/src/outbound_state_store.rs`.
 

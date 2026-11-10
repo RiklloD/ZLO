@@ -4669,6 +4669,24 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
             recovery_thread_id,
             thread_scope.owner_user_id.clone(),
         );
+        // One-shot attempts a crash left `Sending` become `Unknown` (never
+        // resent). That needs sole ownership of the outbound store, which only
+        // a deployment on its own local storage root has; shared stores leave
+        // them `Sending`.
+        if deployment.uses_local_filesystem_storage() {
+            match coordinator
+                .recover_interrupted_deliveries(recovery_scope.clone())
+                .await
+            {
+                Ok(recovered) if recovered > 0 => {
+                    tracing::debug!(recovered, "marked interrupted deliveries unknown at boot")
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::debug!(%error, "interrupted delivery recovery failed at boot; attempts stay sending")
+                }
+            }
+        }
         reply_publication_recovery = Some(tokio::spawn(async move {
             match coordinator.resume_reply_publications(&recovery_scope).await {
                 Ok(resumed) if resumed > 0 => {

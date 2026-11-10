@@ -69,6 +69,16 @@ pub trait OutboundStateStorePort: Send + Sync {
         scope: TurnScope,
     ) -> Result<Vec<OutboundDeliveryAttempt>, OutboundError>;
 
+    /// Every one-shot attempt still `Sending` anywhere in the caller's
+    /// tenant, oldest first: the boot-time crash-recovery read, served from
+    /// the same tenant index as [`Self::list_open_reply_publications`] and
+    /// with the same per-user mount reach. Attempts carrying a reply
+    /// publication substate are excluded; their lease owns recovery.
+    async fn list_interrupted_delivery_attempts(
+        &self,
+        scope: TurnScope,
+    ) -> Result<Vec<OutboundDeliveryAttempt>, OutboundError>;
+
     // ── Progressive reply publication (design 2026-08-31 §5) ────────────────
     //
     // Every operation below is one compare-and-swap on the attempt row. The
