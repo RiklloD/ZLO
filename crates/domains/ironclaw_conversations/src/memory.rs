@@ -55,6 +55,7 @@ impl InMemoryConversationServices {
         let persisted = state_repository.load_state().await?;
         let mut state = persisted.state;
         state.persistence_revision = persisted.revision;
+        state.persistence_version = persisted.version;
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
             state_repository: Some(state_repository),
@@ -69,34 +70,29 @@ impl InMemoryConversationServices {
         let persisted = state_repository.load_state().await?;
         let mut state = persisted.state;
         state.persistence_revision = persisted.revision;
+        state.persistence_version = persisted.version;
         *self.lock_state()? = state;
         Ok(())
     }
 
-    async fn persist_state(
-        &self,
-        old_state: InMemoryState,
-        new_state: InMemoryState,
-    ) -> Result<(), InboundTurnError> {
-        let mut new_state = new_state;
-        let Some(state_repository) = &self.state_repository else {
-            return Ok(());
-        };
-        match state_repository
-            .save_state(new_state.persistence_revision, &new_state)
-            .await
-        {
-            Ok(revision) => {
-                new_state.persistence_revision = revision;
-                *self.lock_state()? = new_state;
-                Ok(())
-            }
-            Err(error) => {
-                *self.lock_state()? = old_state;
-                Err(error)
-            }
+    /// Persists a mutated copy of the state and only then makes it the live
+    /// state, so a failed write leaves the live state as it was.
+    async fn persist_state(&self, mut new_state: InMemoryState) -> Result<(), InboundTurnError> {
+        if let Some(state_repository) = &self.state_repository {
+            let (revision, version) = state_repository
+                .save_state(
+                    new_state.persistence_revision,
+                    new_state.persistence_version,
+                    &new_state,
+                )
+                .await?;
+            new_state.persistence_revision = revision;
+            new_state.persistence_version = Some(version);
         }
+        *self.lock_state()? = new_state;
+        Ok(())
     }
+
     pub async fn pair_external_actor(
         &self,
         tenant_id: TenantId,
@@ -166,9 +162,8 @@ impl InMemoryConversationServices {
     ) -> Result<(), InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
         let snapshot = {
-            let mut state = self.lock_state()?;
+            let mut state = self.lock_state()?.clone();
             let actor_key = ActorKey::new(
                 &tenant_id,
                 &adapter_kind,
@@ -204,9 +199,9 @@ impl InMemoryConversationServices {
                     state.pairing_epochs.remove(&actor_key);
                 }
             }
-            state.clone()
+            state
         };
-        self.persist_state(old_state, snapshot).await
+        self.persist_state(snapshot).await
     }
 
     pub async fn accepted_messages(&self) -> Vec<ConversationMessageRecord> {
@@ -242,9 +237,8 @@ impl InMemoryConversationServices {
     ) -> Result<(), InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
         let snapshot = {
-            let mut state = self.lock_state()?;
+            let mut state = self.lock_state()?.clone();
             let actor_key = ActorKey::new(
                 tenant_id,
                 adapter_kind,
@@ -254,9 +248,9 @@ impl InMemoryConversationServices {
             state.pairings.remove(&actor_key);
             state.pairing_epochs.remove(&actor_key);
             state.revoke_direct_bindings_for_actor(&actor_key);
-            state.clone()
+            state
         };
-        self.persist_state(old_state, snapshot).await
+        self.persist_state(snapshot).await
     }
 
     pub async fn unpair_external_actor_if_owned_by(
@@ -269,7 +263,6 @@ impl InMemoryConversationServices {
     ) -> Result<ConditionalUnpairOutcome, InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
         let actor_key = ActorKey::new(
             tenant_id,
             adapter_kind,
@@ -277,7 +270,7 @@ impl InMemoryConversationServices {
             external_actor_ref,
         );
         let snapshot = {
-            let mut state = self.lock_state()?;
+            let mut state = self.lock_state()?.clone();
             let Some(current_user_id) = state.pairings.get(&actor_key) else {
                 return Ok(ConditionalUnpairOutcome::AlreadyAbsent);
             };
@@ -289,56 +282,10 @@ impl InMemoryConversationServices {
             state.pairings.remove(&actor_key);
             state.pairing_epochs.remove(&actor_key);
             state.revoke_direct_bindings_for_actor(&actor_key);
-            state.clone()
+            state
         };
-        self.persist_state(old_state, snapshot).await?;
+        self.persist_state(snapshot).await?;
         Ok(ConditionalUnpairOutcome::Unpaired)
-    }
-
-    /// Remove every external actor pairing owned by `user_id` for one
-    /// adapter, optionally narrowed to a specific adapter installation.
-    ///
-    /// Channel lifecycle removal does not always retain the provider's actor
-    /// id, but it still has host-trusted tenant, adapter, installation, and
-    /// user scope. Keeping this bulk operation in the conversation store lets
-    /// removal revoke the same direct conversation routes as actor-specific
-    /// unpairing without parsing provider identity strings in composition.
-    pub async fn unpair_external_actors_owned_by(
-        &self,
-        tenant_id: &TenantId,
-        adapter_kind: &AdapterKind,
-        adapter_installation_id: Option<&AdapterInstallationId>,
-        user_id: &UserId,
-    ) -> Result<usize, InboundTurnError> {
-        let _mutation = self.mutation_lock.lock().await;
-        self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
-        let (snapshot, removed_count) = {
-            let mut state = self.lock_state()?;
-            let actor_keys = state
-                .pairings
-                .iter()
-                .filter(|(actor_key, paired_user_id)| {
-                    actor_key.tenant_id == *tenant_id
-                        && actor_key.adapter_kind == *adapter_kind
-                        && adapter_installation_id
-                            .is_none_or(|expected| actor_key.adapter_installation_id == *expected)
-                        && *paired_user_id == user_id
-                })
-                .map(|(actor_key, _)| actor_key.clone())
-                .collect::<Vec<_>>();
-            for actor_key in &actor_keys {
-                state.pairings.remove(actor_key);
-                state.pairing_epochs.remove(actor_key);
-                state.revoke_direct_bindings_for_actor(actor_key);
-            }
-            (state.clone(), actor_keys.len())
-        };
-        if removed_count == 0 {
-            return Ok(0);
-        }
-        self.persist_state(old_state, snapshot).await?;
-        Ok(removed_count)
     }
 }
 
@@ -542,9 +489,8 @@ impl ConversationBindingService for InMemoryConversationServices {
     ) -> Result<ResetConversationOutcome, InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
-        let outcome = {
-            let mut state = self.lock_state()?;
+        let (outcome, snapshot) = {
+            let mut state = self.lock_state()?.clone();
             let resolve = &request.resolve_request;
             let actor_user_id = state.resolve_actor(
                 &resolve.tenant_id,
@@ -660,10 +606,9 @@ impl ConversationBindingService for InMemoryConversationServices {
                 resolution,
             };
             state.binding_resets.insert(reset_key, outcome.clone());
-            outcome
+            (outcome, state)
         };
-        let snapshot = self.lock_state()?.clone();
-        self.persist_state(old_state, snapshot).await?;
+        self.persist_state(snapshot).await?;
         Ok(outcome)
     }
 
@@ -673,9 +618,8 @@ impl ConversationBindingService for InMemoryConversationServices {
     ) -> Result<LinkedConversationBinding, InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
         let (linked, snapshot) = {
-            let mut state = self.lock_state()?;
+            let mut state = self.lock_state()?.clone();
             let actor_user_id = state.resolve_actor(
                 &request.tenant_id,
                 &request.adapter_kind,
@@ -731,7 +675,7 @@ impl ConversationBindingService for InMemoryConversationServices {
                         source_binding_ref: existing.source_binding_ref,
                         reply_target_binding_ref: existing.reply_target_binding_ref,
                     };
-                    (linked, state.clone())
+                    (linked, state)
                 } else {
                     return Err(InboundTurnError::BindingConflict {
                         thread_id: existing.thread_id.to_string(),
@@ -763,10 +707,10 @@ impl ConversationBindingService for InMemoryConversationServices {
                     reply_target_binding_ref: binding.reply_target_binding_ref.clone(),
                 };
                 state.store_binding(binding_key, binding);
-                (linked, state.clone())
+                (linked, state)
             }
         };
-        self.persist_state(old_state, snapshot).await?;
+        self.persist_state(snapshot).await?;
         Ok(linked)
     }
 
@@ -901,9 +845,8 @@ impl InMemoryConversationServices {
     ) -> Result<ConversationBindingResolution, InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
         let (resolution, snapshot) = {
-            let mut state = self.lock_state()?;
+            let mut state = self.lock_state()?.clone();
             let actor_user_id = state.resolve_actor(
                 &request.tenant_id,
                 &request.adapter_kind,
@@ -1016,7 +959,7 @@ impl InMemoryConversationServices {
                         binding.resolution(actor_user_id, binding_epoch, request.tenant_id.clone())
                     }
                 };
-                (resolution, state.clone())
+                (resolution, state)
             } else {
                 let resolution = match request.route_kind {
                     // First contact on a shared (channel) route: mint the
@@ -1118,10 +1061,10 @@ impl InMemoryConversationServices {
                     &external_conversation_identity,
                     &actor_user_id,
                 )?;
-                (resolution, state.clone())
+                (resolution, state)
             }
         };
-        self.persist_state(old_state, snapshot).await?;
+        self.persist_state(snapshot).await?;
         Ok(resolution)
     }
 }
@@ -1134,9 +1077,8 @@ impl InboundConversationService for InMemoryConversationServices {
     ) -> Result<AcceptedConversationMessage, InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
         let (accepted, snapshot) = {
-            let mut state = self.lock_state()?;
+            let mut state = self.lock_state()?.clone();
             let paired_user_id = state.resolve_actor(
                 &request.tenant_id,
                 &request.adapter_kind,
@@ -1204,7 +1146,7 @@ impl InboundConversationService for InMemoryConversationServices {
             if let Some(existing) = state.message_idempotency.get(&idempotency_key) {
                 let mut duplicate = existing.clone();
                 duplicate.idempotency = MessageIdempotencyStatus::Duplicate;
-                (duplicate, state.clone())
+                (duplicate, state)
             } else {
                 let message_ref = AcceptedMessageRef::new(format!("message:{}", Uuid::new_v4()))
                     .map_err(|reason| InboundTurnError::InvalidCanonicalRef { reason })?;
@@ -1268,10 +1210,10 @@ impl InboundConversationService for InMemoryConversationServices {
                     content_ref: request.content_ref,
                     received_at: request.received_at,
                 });
-                (accepted, state.clone())
+                (accepted, state)
             }
         };
-        self.persist_state(old_state, snapshot).await?;
+        self.persist_state(snapshot).await?;
         Ok(accepted)
     }
 
@@ -1321,9 +1263,8 @@ impl InboundConversationService for InMemoryConversationServices {
     ) -> Result<IdempotencyKey, InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
         let maybe_key_and_snapshot = {
-            let mut state = self.lock_state()?;
+            let mut state = self.lock_state()?.clone();
             if let Some(key) = state.submission_keys.get(message_ref).cloned() {
                 return Ok(key);
             }
@@ -1332,10 +1273,9 @@ impl InboundConversationService for InMemoryConversationServices {
             state
                 .submission_keys
                 .insert(message_ref.clone(), key.clone());
-            (key, state.clone())
+            (key, state)
         };
-        self.persist_state(old_state, maybe_key_and_snapshot.1)
-            .await?;
+        self.persist_state(maybe_key_and_snapshot.1).await?;
         Ok(maybe_key_and_snapshot.0)
     }
 
@@ -1345,15 +1285,14 @@ impl InboundConversationService for InMemoryConversationServices {
     ) -> Result<(), InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
         let snapshot = {
-            let mut state = self.lock_state()?;
+            let mut state = self.lock_state()?.clone();
             state
                 .submission_keys
                 .insert(message_ref.clone(), state_generated_submission_key()?);
-            state.clone()
+            state
         };
-        self.persist_state(old_state, snapshot).await?;
+        self.persist_state(snapshot).await?;
         Ok(())
     }
 
@@ -1364,15 +1303,14 @@ impl InboundConversationService for InMemoryConversationServices {
     ) -> Result<(), InboundTurnError> {
         let _mutation = self.mutation_lock.lock().await;
         self.refresh_state_from_repository().await?;
-        let old_state = self.lock_state()?.clone();
         let snapshot = {
-            let mut state = self.lock_state()?;
+            let mut state = self.lock_state()?.clone();
             state
                 .submitted_message_responses
                 .insert(message_ref.clone(), response);
-            state.clone()
+            state
         };
-        self.persist_state(old_state, snapshot).await?;
+        self.persist_state(snapshot).await?;
         Ok(())
     }
 }
@@ -1383,6 +1321,14 @@ fn state_generated_submission_key() -> Result<IdempotencyKey, InboundTurnError> 
 }
 
 impl InMemoryConversationServices {
+    #[cfg(test)]
+    pub(crate) fn snapshot_for_test(&self) -> InMemoryState {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, InMemoryState>, InboundTurnError> {
         self.state
             .lock()
@@ -1405,6 +1351,8 @@ pub(crate) struct SharedEventBinding {
 pub(crate) struct InMemoryState {
     #[serde(default, skip)]
     pub(crate) persistence_revision: i64,
+    #[serde(default, skip)]
+    pub(crate) persistence_version: Option<ironclaw_filesystem::RecordVersion>,
     pub(crate) pairings: HashMap<ActorKey, UserId>,
     #[serde(default)]
     pub(crate) pairing_epochs: HashMap<ActorKey, ExternalActorBindingEpoch>,

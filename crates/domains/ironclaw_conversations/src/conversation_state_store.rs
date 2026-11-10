@@ -20,13 +20,13 @@
 //! ```
 //!
 //! State revisions are tracked two ways. `revision` on the persisted
-//! record carries the existing [`ConversationStateRepository`] contract
-//! (`save_state(expected_revision, state)`); the underlying filesystem
-//! also returns a `RecordVersion` which we use as the
-//! [`CasExpectation`] for write CAS. Backends that don't implement
-//! versioned `put` reject `CasExpectation::Version` with `Unsupported`;
-//! for those we fall back to `CasExpectation::Any` and rely on the
-//! in-process serialization the caller
+//! record is the monotone counter of the [`ConversationStateRepository`]
+//! contract; the filesystem `RecordVersion` returned by the load is the
+//! [`CasExpectation`] for the write, so a save does not read the document
+//! back. Backends that don't implement versioned `put` reject
+//! `CasExpectation::Version` with `Unsupported`; for those the save compares
+//! the stored revision and falls back to `CasExpectation::Any`, relying on
+//! the in-process serialization the caller
 //! (`InMemoryConversationServices::mutation_lock`) already provides —
 //! same shape as the secrets / processes / run-state stores.
 
@@ -36,7 +36,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use ironclaw_filesystem::{
     CasExpectation, ContentType, Entry, FilesystemError, FilesystemOperation, IndexKey, IndexValue,
-    RootFilesystem, ScopedFilesystem,
+    RecordVersion, RootFilesystem, ScopedFilesystem,
 };
 use ironclaw_host_api::ids::UserId;
 use ironclaw_host_api::turn::{AcceptedMessageRef, IdempotencyKey, SubmitTurnResponse};
@@ -105,10 +105,7 @@ where
 /// several maps by struct values (`ActorKey`, `BindingKey`, `ThreadKey`,
 /// `ExternalEventRouteKey`, `MessageIdempotencyKey`,
 /// `AcceptedMessageReplayKey`, `AcceptedMessageRef`). Wire those as
-/// `Vec<(K, V)>` and rebuild the HashMaps on load. The legacy
-/// libSQL/Postgres adapters did the same shape via individual rows;
-/// this envelope keeps the equivalent contract within a single JSON
-/// document.
+/// `Vec<(K, V)>` and rebuild the HashMaps on load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredConversationState {
     revision: i64,
@@ -199,6 +196,7 @@ impl StoredConversationState {
     fn into_state(self) -> InMemoryState {
         InMemoryState {
             persistence_revision: 0,
+            persistence_version: None,
             pairings: self.pairings.into_iter().collect(),
             pairing_epochs: self.pairing_epochs.into_iter().collect(),
             bindings: collapse_per_actor_shared_bindings(self.bindings),
@@ -285,6 +283,7 @@ where
             return Ok(PersistedConversationState {
                 state: InMemoryState::default(),
                 revision: 0,
+                version: None,
             });
         };
         let stored: StoredConversationState = deserialize(&versioned.entry.body)?;
@@ -292,14 +291,16 @@ where
         Ok(PersistedConversationState {
             state: stored.into_state(),
             revision,
+            version: Some(versioned.version),
         })
     }
 
     async fn save_state(
         &self,
         expected_revision: i64,
+        expected_version: Option<RecordVersion>,
         state: &InMemoryState,
-    ) -> Result<i64, InboundTurnError> {
+    ) -> Result<(i64, RecordVersion), InboundTurnError> {
         let path = state_path()?;
         let new_revision =
             expected_revision
@@ -310,6 +311,32 @@ where
         let stored = StoredConversationState::from_state(new_revision, state);
         let body = serialize(&stored)?;
         let scope = ResourceScope::system();
+
+        // The version the caller loaded is the compare-and-swap token: a
+        // mismatch means another writer got in since that load.
+        let loaded_cas = match expected_version {
+            Some(version) => Some(CasExpectation::Version(version)),
+            None if expected_revision == 0 => Some(CasExpectation::Absent),
+            None => None,
+        };
+        if let Some(cas) = loaded_cas {
+            let entry = state_entry(body.clone(), state);
+            match self.filesystem.put(&scope, &path, entry, cas).await {
+                Ok(version) => return Ok((new_revision, version)),
+                Err(FilesystemError::VersionMismatch { .. }) => {
+                    return Err(InboundTurnError::DurableState {
+                        reason: "stale conversation state revision".to_string(),
+                    });
+                }
+                // No compare-and-swap on this mount: fall back to comparing
+                // the stored revision before an unconditional write.
+                Err(FilesystemError::Unsupported {
+                    operation: FilesystemOperation::WriteFile,
+                    ..
+                }) => {}
+                Err(error) => return Err(filesystem_error(error)),
+            }
+        }
 
         for _ in 0..FILESYSTEM_CAS_RETRIES {
             let current = self
@@ -336,7 +363,7 @@ where
             };
             let entry = state_entry(body.clone(), state);
             match put_with_byte_fallback(&self.filesystem, &scope, &path, entry, cas).await {
-                Ok(()) => return Ok(new_revision),
+                Ok(version) => return Ok((new_revision, version)),
                 Err(FilesystemError::VersionMismatch { .. }) => continue,
                 Err(error) => return Err(filesystem_error(error)),
             }
@@ -429,20 +456,21 @@ async fn put_with_byte_fallback<F>(
     path: &ScopedPath,
     entry: Entry,
     cas: CasExpectation,
-) -> Result<(), FilesystemError>
+) -> Result<RecordVersion, FilesystemError>
 where
     F: RootFilesystem + ?Sized,
 {
     let fallback = entry.clone();
     match filesystem.put(scope, path, entry, cas).await {
-        Ok(_) => Ok(()),
+        Ok(version) => Ok(version),
         Err(FilesystemError::Unsupported {
             operation: FilesystemOperation::WriteFile,
             ..
-        }) => filesystem
-            .put(scope, path, fallback, CasExpectation::Any)
-            .await
-            .map(|_| ()),
+        }) => {
+            filesystem
+                .put(scope, path, fallback, CasExpectation::Any)
+                .await
+        }
         Err(error) => Err(error),
     }
 }
@@ -506,101 +534,6 @@ impl RebornFilesystemConversationServices {
 
     pub fn inner(&self) -> &InMemoryConversationServices {
         &self.inner
-    }
-
-    pub async fn pair_external_actor(
-        &self,
-        tenant_id: ironclaw_host_api::ids::TenantId,
-        adapter_kind: AdapterKind,
-        adapter_installation_id: AdapterInstallationId,
-        external_actor_ref: ExternalActorRef,
-        user_id: ironclaw_host_api::ids::UserId,
-    ) -> Result<(), InboundTurnError> {
-        self.inner
-            .try_pair_external_actor(
-                tenant_id,
-                adapter_kind,
-                adapter_installation_id,
-                external_actor_ref,
-                user_id,
-            )
-            .await
-    }
-
-    pub async fn unpair_external_actor(
-        &self,
-        tenant_id: &ironclaw_host_api::ids::TenantId,
-        adapter_kind: &AdapterKind,
-        adapter_installation_id: &AdapterInstallationId,
-        external_actor_ref: &ExternalActorRef,
-    ) -> Result<(), InboundTurnError> {
-        self.inner
-            .try_unpair_external_actor(
-                tenant_id,
-                adapter_kind,
-                adapter_installation_id,
-                external_actor_ref,
-            )
-            .await
-    }
-
-    pub async fn pair_external_actor_with_epoch(
-        &self,
-        tenant_id: ironclaw_host_api::ids::TenantId,
-        adapter_kind: AdapterKind,
-        adapter_installation_id: AdapterInstallationId,
-        external_actor_ref: ExternalActorRef,
-        user_id: ironclaw_host_api::ids::UserId,
-        binding_epoch: ExternalActorBindingEpoch,
-    ) -> Result<(), InboundTurnError> {
-        self.inner
-            .pair_external_actor_with_epoch(
-                tenant_id,
-                adapter_kind,
-                adapter_installation_id,
-                external_actor_ref,
-                user_id,
-                binding_epoch,
-            )
-            .await
-    }
-
-    pub async fn unpair_external_actor_if_owned_by(
-        &self,
-        tenant_id: &ironclaw_host_api::ids::TenantId,
-        adapter_kind: &AdapterKind,
-        adapter_installation_id: &AdapterInstallationId,
-        external_actor_ref: &ExternalActorRef,
-        expected: &ExpectedExternalActorOwner,
-    ) -> Result<ConditionalUnpairOutcome, InboundTurnError> {
-        self.inner
-            .unpair_external_actor_if_owned_by(
-                tenant_id,
-                adapter_kind,
-                adapter_installation_id,
-                external_actor_ref,
-                expected,
-            )
-            .await
-    }
-
-    /// Remove all pairings and direct conversation routes owned by one user
-    /// for an adapter, optionally narrowed to one installation.
-    pub async fn unpair_external_actors_owned_by(
-        &self,
-        tenant_id: &ironclaw_host_api::ids::TenantId,
-        adapter_kind: &AdapterKind,
-        adapter_installation_id: Option<&AdapterInstallationId>,
-        user_id: &UserId,
-    ) -> Result<usize, InboundTurnError> {
-        self.inner
-            .unpair_external_actors_owned_by(
-                tenant_id,
-                adapter_kind,
-                adapter_installation_id,
-                user_id,
-            )
-            .await
     }
 }
 
@@ -798,3 +731,6 @@ impl InboundConversationService for RebornFilesystemConversationServices {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests;
