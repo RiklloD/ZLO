@@ -52,7 +52,6 @@ use crate::jobs::{self, Generation};
 use crate::state::State;
 
 // `pills_for` and `provider_mark` are for the draft screen (area B) and other views.
-#[allow(unused_imports)]
 pub use slot::{DRAFT, FixedSlot, Slot, close_open, focused_slot};
 pub use view::{pills, pills_for, provider_mark};
 

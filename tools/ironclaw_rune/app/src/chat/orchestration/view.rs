@@ -198,7 +198,7 @@ fn strip(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     let busy = o.busy;
     let mut chips: Vec<El> = Vec::new();
     let title_of =
-        |id: &str| crate::workspace::thread_title(s, id).unwrap_or_else(|| "a conversation".into());
+        |id: &str| crate::workspace::title_of(s, id).unwrap_or_else(|| "a conversation".into());
 
     if let Some(task) = delegation(&chat.thread_id) {
         let parent = task.parent_thread_id.clone();

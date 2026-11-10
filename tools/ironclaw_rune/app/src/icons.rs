@@ -9,7 +9,6 @@
 //! element (a body wrapped in `<g fill="none" stroke=..>` draws filled
 //! blobs). The stroke is 1.75, not Lucide's 2: T3 Code's design pass found
 //! it reads lighter beside text (GPUI `assets.rs` `thin_stroke`).
-#![allow(dead_code)]
 
 use rune::Icon;
 
@@ -115,12 +114,6 @@ pub static CHEVRON_UP: Icon = Icon {
     view: 24.0,
     body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m18 15-6-6-6 6" />"##,
 };
-/// GPUI `IconName::ChevronsUpDown`.
-pub static CHEVRONS_UP_DOWN: Icon = Icon {
-    name: "chevrons-up-down",
-    view: 24.0,
-    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m7 15 5 5 5-5" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m7 9 5-5 5 5" />"##,
-};
 /// GPUI `IconName::CircleAlert`.
 pub static CIRCLE_ALERT: Icon = Icon {
     name: "circle-alert",
@@ -132,12 +125,6 @@ pub static CIRCLE_CHECK: Icon = Icon {
     name: "circle-check",
     view: 24.0,
     body: r##"<circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="12" cy="12" r="10" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m16 9-5.5 5.5L8 12" />"##,
-};
-/// GPUI `IconName::CircleDot`.
-pub static CIRCLE_DOT: Icon = Icon {
-    name: "circle-dot",
-    view: 24.0,
-    body: r##"<circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="12" cy="12" r="1" /> <circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="12" cy="12" r="10" />"##,
 };
 /// GPUI `IconName::CircleUser`.
 pub static CIRCLE_USER: Icon = Icon {
@@ -283,12 +270,6 @@ pub static GIT_FORK: Icon = Icon {
     view: 24.0,
     body: r##"<circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="12" cy="18" r="3" /> <circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="6" cy="6" r="3" /> <circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="18" cy="6" r="3" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M12 12v3" />"##,
 };
-/// GPUI `IconName::GitPullRequest`.
-pub static GIT_PULL_REQUEST: Icon = Icon {
-    name: "git-pull-request",
-    view: 24.0,
-    body: r##"<circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="18" cy="18" r="3" /> <circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="6" cy="6" r="3" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M13 6h3a2 2 0 0 1 2 2v7" /> <line fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" x1="6" x2="6" y1="9" y2="21" />"##,
-};
 /// GPUI `IconName::Globe`.
 pub static GLOBE: Icon = Icon {
     name: "globe",
@@ -342,12 +323,6 @@ pub static LIST_FILTER: Icon = Icon {
     name: "list-filter",
     view: 24.0,
     body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M2 5h20" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M6 12h12" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M9 19h6" />"##,
-};
-/// GPUI `IconName::ListTodo`.
-pub static LIST_TODO: Icon = Icon {
-    name: "list-todo",
-    view: 24.0,
-    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M13 5h8" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M13 12h8" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M13 19h8" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m3 17 2 2 4-4" /> <rect fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" x="3" y="4" width="6" height="6" rx="1" />"##,
 };
 /// GPUI `IconName::Loader`.
 pub static LOADER: Icon = Icon {
@@ -469,12 +444,6 @@ pub static PLUS: Icon = Icon {
     view: 24.0,
     body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M12 5v14" />"##,
 };
-/// GPUI `IconName::Puzzle`.
-pub static PUZZLE: Icon = Icon {
-    name: "puzzle",
-    view: 24.0,
-    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z" />"##,
-};
 /// GPUI `IconName::RefreshCw`.
 pub static REFRESH_CW: Icon = Icon {
     name: "refresh-cw",
@@ -510,12 +479,6 @@ pub static SHIELD_CHECK: Icon = Icon {
     name: "shield-check",
     view: 24.0,
     body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m9 12 2 2 4-4" />"##,
-};
-/// GPUI `IconName::SlidersHorizontal`.
-pub static SLIDERS_HORIZONTAL: Icon = Icon {
-    name: "sliders-horizontal",
-    view: 24.0,
-    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M10 5H3" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M12 19H3" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M14 3v4" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M16 17v4" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M21 12h-9" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M21 19h-5" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M21 5h-7" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M8 10v4" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M8 12H3" />"##,
 };
 /// GPUI `IconName::Sparkles`.
 pub static SPARKLES: Icon = Icon {

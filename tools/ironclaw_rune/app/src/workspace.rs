@@ -41,10 +41,8 @@ pub(crate) mod thread_drag;
 pub(crate) mod ui;
 
 // Voice (area F) and SnapShot (area F) call these.
-#[allow(unused_imports)]
 pub use draft::{
-    ComposerTarget, composer_edit, send as send_draft, stage_snapshot, start_in_profile,
-    voice_composer,
+    composer_edit, send as send_draft, stage_snapshot, start_in_profile, voice_composer,
 };
 pub use inbox::title_of as row_title;
 pub use keys::{menu_items, on_close, quit};
@@ -807,22 +805,12 @@ pub fn window_active(s: &State) -> bool {
     s.workspace.window_active
 }
 
-/// A thread's title if known (the inbox, or fetched by [`ensure_titles`]).
-pub fn thread_title(s: &State, thread_id: &str) -> Option<String> {
-    crate::titles::get(s, thread_id)
-}
-
-/// Same as [`thread_title`] (the pages' name for it).
+/// A thread's title if known (the inbox, or fetched by [`titles_ensure`]).
 pub fn title_of(s: &State, thread_id: &str) -> Option<String> {
     crate::titles::get(s, thread_id)
 }
 
 /// Fetch the titles of these threads if not known yet.
-pub fn ensure_titles(s: &mut State, thread_ids: impl IntoIterator<Item = String>) {
-    crate::titles::ensure(s, thread_ids);
-}
-
-/// Same as [`ensure_titles`] (the pages' name for it).
 pub fn titles_ensure(s: &mut State, thread_ids: impl IntoIterator<Item = String>) {
     crate::titles::ensure(s, thread_ids);
 }

@@ -27,10 +27,9 @@
 //! - `popover(s, key, content) -> El` (floating card, arrives on the pop spring)
 //!
 //! Controls:
-//! - `Button::new(key)` `.label() .icon(&Icon) .icon_size() .primary() .ghost()
-//!   .outline() .danger() .small() .xsmall() .large() .selected() .pill_selected()
-//!   .disabled() .loading() .full() .tooltip() .accessibility_label()
-//!   .on_press(|s: &mut State| ..) .on_press_tx(..) .build(s) -> El`;
+//! - `Button::new(key)` `.label() .icon(&Icon) .variant() .primary() .ghost()
+//!   .outline() .size() .small() .selected() .disabled() .loading() .tooltip()
+//!   .on_press(|s: &mut State| ..) .build(s) -> El`;
 
 //! - `row(s, key, active) -> El` list/sidebar row; `row_ink(s, active) -> (Color, Color)`
 //! - `pill_row(s, key, active) -> El` a row over a `slide_pill`
@@ -284,42 +283,27 @@ pub struct Button {
     key: String,
     label: Option<String>,
     icon: Option<&'static Icon>,
-    icon_px: Option<f32>,
-    text_px: Option<f32>,
     variant: Variant,
     size: Size,
     selected: bool,
-    /// The selection wash is drawn by a gliding pill behind the button;
-    /// `selected` only sets the ink.
-    pill: bool,
     disabled: bool,
     loading: bool,
-    full: bool,
     tooltip: Option<String>,
-    aria: Option<String>,
     on_press: Option<Press>,
 }
 
-// The builder mirrors GPUI's `kit::Button` whole (the gallery scene shows
-// every variant); not every setter has a caller yet.
-#[allow(dead_code)]
 impl Button {
     pub fn new(key: impl Into<String>) -> Self {
         Self {
             key: key.into(),
             label: None,
             icon: None,
-            icon_px: None,
-            text_px: None,
             variant: Variant::Secondary,
             size: Size::Medium,
             selected: false,
-            pill: false,
             disabled: false,
             loading: false,
-            full: false,
             tooltip: None,
-            aria: None,
             on_press: None,
         }
     }
@@ -329,16 +313,6 @@ impl Button {
     }
     pub fn icon(mut self, icon: &'static Icon) -> Self {
         self.icon = Some(icon);
-        self
-    }
-    /// Glyph size over the size preset's, for icons that draw edge to edge.
-    pub fn icon_size(mut self, size: f32) -> Self {
-        self.icon_px = Some(size);
-        self
-    }
-    /// Label size over the size preset's.
-    pub fn text_size(mut self, size: f32) -> Self {
-        self.text_px = Some(size);
         self
     }
     pub fn variant(mut self, v: Variant) -> Self {
@@ -354,27 +328,12 @@ impl Button {
     pub fn outline(self) -> Self {
         self.variant(Variant::Outline)
     }
-    pub fn danger(self) -> Self {
-        self.variant(Variant::Danger)
-    }
     pub fn size(mut self, size: Size) -> Self {
         self.size = size;
         self
     }
     pub fn small(self) -> Self {
         self.size(Size::Small)
-    }
-    pub fn xsmall(self) -> Self {
-        self.size(Size::XSmall)
-    }
-    /// Icon-first header buttons: a 38 pt target with a 20 pt glyph.
-    pub fn large(self) -> Self {
-        self.size(Size::Large)
-    }
-    /// Selected ink over a pill the caller draws ([`slide_pill`]), no own wash.
-    pub fn pill_selected(mut self, on: bool) -> Self {
-        self.pill = true;
-        self.selected(on)
     }
     pub fn selected(mut self, on: bool) -> Self {
         self.selected = on;
@@ -388,25 +347,12 @@ impl Button {
         self.loading = on;
         self
     }
-    /// Stretch to the parent's width, content left-aligned.
-    pub fn full(mut self) -> Self {
-        self.full = true;
-        self
-    }
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip = Some(text.into());
         self
     }
-    pub fn accessibility_label(mut self, text: impl Into<String>) -> Self {
-        self.aria = Some(text.into());
-        self
-    }
     pub fn on_press(mut self, f: impl Fn(&mut State) + 'static) -> Self {
         self.on_press = Some(Rc::new(move |s, _| f(s)));
-        self
-    }
-    pub fn on_press_tx(mut self, f: impl Fn(&mut State, &mut Tx) + 'static) -> Self {
-        self.on_press = Some(Rc::new(f));
         self
     }
 
@@ -426,11 +372,9 @@ impl Button {
             Size::Small => 9.,
             Size::Medium | Size::Large => 12.,
         };
-        let text_px = self.text_px.unwrap_or_else(|| {
-            st.text(match self.size {
-                Size::XSmall | Size::Small => XS,
-                Size::Medium | Size::Large => SM,
-            })
+        let text_px = st.text(match self.size {
+            Size::XSmall | Size::Small => XS,
+            Size::Medium | Size::Large => SM,
         });
         // Ink at rest and while hovered.
         let (ink, hover_ink) = match self.variant {
@@ -447,14 +391,10 @@ impl Button {
             .gap(6.)
             .center_y()
             .radius(st.control_radius)
-            .motion(st.slide);
-        b = if self.full {
-            b.w_full()
-        } else {
-            b.justify_center()
-        };
+            .motion(st.slide)
+            .justify_center();
         b = if icon_only { b.w(height) } else { b.px(pad) };
-        if let Some(a) = self.aria.clone().or_else(|| self.label.clone()) {
+        if let Some(a) = self.label.clone() {
             b = b.label(a);
         }
 
@@ -484,11 +424,13 @@ impl Button {
                     Color::TRANSPARENT
                 })
                 .hover(p.hover),
-            Variant::Ghost => {
-                let wash = self.selected && !self.pill;
-                b.fill(if wash { p.active } else { Color::TRANSPARENT })
-                    .hover(p.hover)
-            }
+            Variant::Ghost => b
+                .fill(if self.selected {
+                    p.active
+                } else {
+                    Color::TRANSPARENT
+                })
+                .hover(p.hover),
             Variant::Danger => b
                 .border(1., p.danger.alpha(0.3))
                 .fill(p.danger.alpha(0.1))
@@ -498,12 +440,12 @@ impl Button {
         if self.loading {
             b = b.child(pulse_dots(&format!("{}-dots", self.key), ink));
         } else if let Some(i) = self.icon {
-            let size = self.icon_px.unwrap_or(match self.size {
+            let size = match self.size {
                 Size::Large => 20.,
                 Size::Medium => 16.,
                 Size::Small => 14.,
                 Size::XSmall => 12.,
-            });
+            };
             b = b.child(icon(i, size).color(ink).group_color(hover_ink));
         }
         if let Some(label) = self.label {

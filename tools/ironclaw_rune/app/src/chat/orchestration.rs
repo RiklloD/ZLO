@@ -220,7 +220,7 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
         related.push(from.source_thread.clone());
     }
     let stale = std::mem::take(&mut o.stale);
-    crate::workspace::ensure_titles(s, related);
+    crate::workspace::titles_ensure(s, related);
     if load_prefix {
         load_fork_prefix(s, asked);
     }
@@ -500,7 +500,7 @@ pub(crate) fn merge_back(s: &mut State, id: &str) {
                 .as_ref()
                 .ok()
                 .and_then(|m| m.target_thread_id.as_deref())
-                .and_then(|id| crate::workspace::thread_title(s, id))
+                .and_then(|id| crate::workspace::title_of(s, id))
                 .unwrap_or_else(|| "the original thread".into());
             // A closed (or closed and reopened) chat's reply is dropped.
             let Some(o) = slot_of(s, &asked, instance) else {
