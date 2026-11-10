@@ -218,11 +218,6 @@ pub struct IdentitySection {
 }
 
 impl IdentitySection {
-    pub fn set_tenant(mut self, tenant: impl Into<String>) -> Self {
-        self.tenant = Some(tenant.into());
-        self
-    }
-
     pub fn set_default_agent(mut self, default_agent: impl Into<String>) -> Self {
         self.default_agent = Some(default_agent.into());
         self
@@ -230,11 +225,6 @@ impl IdentitySection {
 
     pub fn set_default_owner(mut self, default_owner: impl Into<String>) -> Self {
         self.default_owner = Some(default_owner.into());
-        self
-    }
-
-    pub fn set_default_project(mut self, default_project: impl Into<String>) -> Self {
-        self.default_project = Some(default_project.into());
         self
     }
 }

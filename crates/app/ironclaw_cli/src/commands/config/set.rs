@@ -163,14 +163,14 @@ fn set_value_key(
 
 /// After a successful write, print the remaining BYO setup steps for the
 /// capability this key belongs to, via
-/// `capability_config::google_remediation_text`.
+/// `ironclaw_config::google_remediation_text`.
 fn print_remaining_setup_guidance(key: &ConfigKey) {
     match key {
         ConfigKey::GoogleClientId
         | ConfigKey::GoogleClientSecret
         | ConfigKey::GoogleRedirectUri => {
             println!();
-            println!("{}", super::capability_config::google_remediation_text());
+            println!("{}", ironclaw_config::google_remediation_text());
         }
         ConfigKey::LlmApiKey { .. } | ConfigKey::WebuiToken => {}
     }

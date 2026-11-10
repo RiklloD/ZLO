@@ -59,15 +59,15 @@ mod tests {
         ToolResultSafeSummary,
     };
 
-    use crate::outbound::{
-        OutboundDeliveryTargetEntry, OutboundDeliveryTargetOwner, OutboundDeliveryTargetProvider,
-        OutboundDeliveryTargetRegistry,
-    };
     use crate::runtime::filesystem_skill_context_source;
     use ironclaw_assistant::RebornOutboundPreferencesService;
     use ironclaw_extension_manager::extension_lifecycle_capabilities::{
         EXTENSION_INSTALL_CAPABILITY_ID, EXTENSION_REGISTER_HOSTED_MCP_CAPABILITY_ID,
         EXTENSION_REMOVE_CAPABILITY_ID,
+    };
+    use ironclaw_outbound::{
+        OutboundDeliveryTargetEntry, OutboundDeliveryTargetOwner, OutboundDeliveryTargetProvider,
+        OutboundDeliveryTargetRegistry,
     };
 
     #[derive(Default)]

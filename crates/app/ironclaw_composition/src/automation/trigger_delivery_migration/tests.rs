@@ -4,7 +4,7 @@
 //! `model_channel_delivery/tests.rs`); behavior is unchanged.
 
 use super::*;
-use crate::outbound::{
+use ironclaw_outbound::{
     DeliveryTargetCapabilities, OutboundDeliveryTargetEntry, OutboundDeliveryTargetOwner,
     OutboundDeliveryTargetSummary,
 };

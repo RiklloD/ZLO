@@ -16,9 +16,6 @@ It currently supports:
 
 ```bash
 ironclaw --help
-ironclaw channels list              # disabled — errors, see below
-ironclaw channels list --json       # disabled — errors, see below
-ironclaw channels list --verbose    # disabled — errors, see below
 ironclaw completion --shell bash
 ironclaw completion --shell zsh
 ironclaw config path
@@ -27,16 +24,10 @@ ironclaw extension search github
 ironclaw extension search github --json
 ironclaw extension install github-mcp
 ironclaw extension remove github-mcp
-ironclaw hooks list                 # disabled — errors, see below
-ironclaw hooks list --json          # disabled — errors, see below
-ironclaw hooks list --verbose       # disabled — errors, see below
 ironclaw ironhub search github
 ironclaw ironhub list --kind tool
 ironclaw ironhub info github-tool
 ironclaw ironhub install github-tool --kind tool
-ironclaw logs                       # disabled — errors, see below
-ironclaw logs --json                # disabled — errors, see below
-ironclaw logs --verbose             # disabled — errors, see below
 ironclaw models list
 ironclaw models list --json
 ironclaw models status
@@ -69,20 +60,8 @@ ironclaw status --json
 The `traces` command tree is a contributor-only trace client; see
 `crates/app/ironclaw_cli/src/commands/traces/` for its subcommands.
 
-**`channels`, `hooks`, and `logs` are disabled.** They stay in `--help` and
-shell completions so the eventual real implementation has a stable command
-name, but invoking `channels list`, `hooks list`, or `logs` returns an explicit
-`` `<command>` is not implemented yet `` error (non-zero exit) instead of the
-fake-success placeholder output ( `configured: 0` / `status: not-wired`) they
-used to print. Do not treat that old placeholder shape as the current
-contract — see the per-command sections below. `skills` is the one CLI
-surface that looks similar (it also used to read a not-yet-real registry) but
-is a genuine working implementation reading real `SKILL.md` files; it is not
-part of this disable.
-
 Known limitations of this 1.0 release:
 
-- real `channels`/`hooks`/`logs` backends (see above);
 - v1 config, DB, settings, or secrets migration;
 - production extension/tool execution: `extension` and `skills` need a
   local-runtime substrate profile (`local-dev`, `local-dev-yolo`,
@@ -253,30 +232,6 @@ from a browser on the same host against `127.0.0.1`.
 
 ## Commands
 
-### `channels list` — disabled
-
-The Reborn channel registry is not wired yet. The command stays visible in
-`--help`/completions for a stable future name, but invoking `channels list`
-returns an error and a non-zero exit instead of resolving Reborn home, reading v1 channel
-config, or printing channel data:
-
-```bash
-cargo run -q -p ironclaw --bin ironclaw -- channels list
-cargo run -q -p ironclaw --bin ironclaw -- channels list --json
-cargo run -q -p ironclaw --bin ironclaw -- channels list --verbose
-```
-
-All three forms (default/`--json`/`--verbose`) print the same message to
-stderr and exit non-zero:
-
-```
-Error: `channels list` is not implemented yet
-```
-
-Older revisions of this doc described a fake-success placeholder shape
-(`configured: 0`, `status: not-wired`, `v1_state: not-used`) — that output no
-longer exists; do not implement against it.
-
 ### `extension`
 
 Searches and manages local-dev Reborn extensions through the same lifecycle facade exposed to product surfaces. Available extension packages are read from `/system/extensions`, which maps to `<reborn-home>/local-dev/system/extensions` for the local-dev profile.
@@ -386,37 +341,6 @@ Expected fields include:
 - `profile`
 - `v1_state: not-used`
 - `driver_registry: initialized`
-
-### `hooks list` — disabled
-
-Same treatment as `channels list` above: the Reborn hook registry is not
-wired yet, so the command stays visible but invoking `hooks list` errors instead
-of reporting hook data:
-
-```bash
-cargo run -q -p ironclaw --bin ironclaw -- hooks list
-cargo run -q -p ironclaw --bin ironclaw -- hooks list --json
-cargo run -q -p ironclaw --bin ironclaw -- hooks list --verbose
-```
-
-```
-Error: `hooks list` is not implemented yet
-```
-
-### `logs` — disabled
-
-Same treatment: the Reborn log source is not wired yet, so `logs` stays
-visible but invoking it errors instead of reporting log data:
-
-```bash
-cargo run -q -p ironclaw --bin ironclaw -- logs
-cargo run -q -p ironclaw --bin ironclaw -- logs --json
-cargo run -q -p ironclaw --bin ironclaw -- logs --verbose
-```
-
-```
-Error: `logs` is not implemented yet
-```
 
 ### `onboard`
 
@@ -686,14 +610,9 @@ cargo test -p ironclaw_turn_runner model_slots_are_exposed_in_cli_display_order
 cargo test -p ironclaw_architecture_tests reborn
 cargo clippy -p ironclaw --all-targets -- -D warnings
 cargo run -q -p ironclaw --bin ironclaw -- --help
-# channels/hooks/logs are disabled — these are expected to exit non-zero
-# with "is not implemented yet", not to succeed.
-cargo run -q -p ironclaw --bin ironclaw -- channels list; echo "exit: $?"
 cargo run -q -p ironclaw --bin ironclaw -- completion --shell zsh >"$(mktemp -d)/ironclaw.zsh"
 IRONCLAW_REBORN_HOME="$(mktemp -d)/reborn-home" \
   cargo run -q -p ironclaw --bin ironclaw -- config path
-cargo run -q -p ironclaw --bin ironclaw -- hooks list; echo "exit: $?"
-cargo run -q -p ironclaw --bin ironclaw -- logs; echo "exit: $?"
 cargo run -q -p ironclaw --bin ironclaw -- models status
 cargo run -q -p ironclaw --bin ironclaw -- profile list
 IRONCLAW_REBORN_HOME="$(mktemp -d)/reborn-home" \

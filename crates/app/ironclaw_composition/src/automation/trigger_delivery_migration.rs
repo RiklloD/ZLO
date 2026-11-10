@@ -35,7 +35,7 @@ use ironclaw_triggers::{
 /// deletes, but durable rows outlive the code that wrote them.
 const RETIRED_WEB_APP_TARGET_ID: &str = "builtin:web_app";
 
-use crate::outbound::{
+use ironclaw_outbound::{
     MutableOutboundDeliveryTargetRegistry, OutboundDeliveryTargetId,
     OutboundDeliveryTargetProvider as _, OutboundDeliveryTargetScope,
 };

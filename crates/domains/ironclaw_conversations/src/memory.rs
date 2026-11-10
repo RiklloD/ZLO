@@ -1321,15 +1321,9 @@ fn state_generated_submission_key() -> Result<IdempotencyKey, InboundTurnError> 
 }
 
 impl InMemoryConversationServices {
-    #[cfg(test)]
-    pub(crate) fn snapshot_for_test(&self) -> InMemoryState {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, InMemoryState>, InboundTurnError> {
+    pub(crate) fn lock_state(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, InMemoryState>, InboundTurnError> {
         self.state
             .lock()
             .map_err(|_| InboundTurnError::StatePoisoned)

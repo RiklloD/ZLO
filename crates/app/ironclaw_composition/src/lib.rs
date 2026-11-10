@@ -48,7 +48,6 @@ mod notification_store_assembly;
 mod observability;
 mod operator_secret_store;
 mod operator_tool_catalog;
-mod outbound;
 mod outbound_store_assembly;
 mod product_capability;
 mod product_surface;

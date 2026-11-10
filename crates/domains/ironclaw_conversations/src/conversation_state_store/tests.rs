@@ -293,7 +293,8 @@ async fn a_failed_write_through_the_service_rolls_back_and_the_retry_lands() {
     assert!(
         !services
             .inner()
-            .snapshot_for_test()
+            .lock_state()
+            .unwrap()
             .pairings
             .contains_key(&actor_key("b")),
         "a mutation that failed to persist is not visible in memory"
