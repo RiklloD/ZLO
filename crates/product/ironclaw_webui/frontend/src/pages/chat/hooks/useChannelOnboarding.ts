@@ -215,6 +215,9 @@ export function useChannelOnboarding(
   // increasing generation fences every async setup/start/status response, so
   // a late response from flow A cannot complete, fail, or clear newer flow B.
   const pendingOnboardingOauthFlowRef = React.useRef(null);
+  // Starts the flow watcher's poll interval. The interval exists only while a
+  // flow is pending, so an idle chat view holds no timer.
+  const armOauthWatcherRef = React.useRef(() => {});
   const onboardingOauthGenerationRef = React.useRef(0);
   // Source tool-message ids whose pairing panel the user dismissed. Keyed by
   // the durable `tool-<invocation_id>`, so a dismissal survives re-renders and
@@ -337,6 +340,12 @@ export function useChannelOnboarding(
       typeof window !== "undefined" ? window : globalThis?.window || null;
     if (!browserWindow) return;
     let serverCheckInFlight = false;
+    let timer = null;
+    const disarm = () => {
+      if (timer === null) return;
+      browserWindow.clearInterval(timer);
+      timer = null;
+    };
     const flowSnapshotIsCurrent = (snapshot) => {
       const current = pendingOnboardingOauthFlowRef.current;
       return Boolean(
@@ -391,6 +400,7 @@ export function useChannelOnboarding(
       }
       if (!flowSnapshotIsCurrent(pending)) return;
       pendingOnboardingOauthFlowRef.current = null;
+      disarm();
       await notifyChannelConnected({
         channel: pending.channel,
         sourceThreadId: sourceCleared ? threadForResume : null,
@@ -403,6 +413,7 @@ export function useChannelOnboarding(
     const failOauthFlow = (pending, message) => {
       if (!flowSnapshotIsCurrent(pending)) return;
       pendingOnboardingOauthFlowRef.current = null;
+      disarm();
       setPendingOnboarding((current) =>
         current &&
         normalizeConnectionChannel(current.extensionName) ===
@@ -466,11 +477,13 @@ export function useChannelOnboarding(
     };
 
     const unsubscribe = subscribeProductAuthOAuthCompletion(browserWindow, handleCompletion);
-    const timer = browserWindow.setInterval(() => {
+    const tick = () => {
       const pending = pendingOnboardingOauthFlowRef.current;
-      // No in-flight OAuth flow: skip the storage read + server poll entirely
-      // (the interval runs for the lifetime of every chat view).
-      if (!pending) return;
+      // The flow was abandoned (card dismissed) since the last tick.
+      if (!pending) {
+        disarm();
+        return;
+      }
       if (
         !pending.completing &&
         pending.startedAt &&
@@ -481,9 +494,16 @@ export function useChannelOnboarding(
       }
       handleCompletion(readLatestProductAuthOAuthCompletion(browserWindow));
       pollServerState();
-    }, OAUTH_FLOW_POLL_MS);
+    };
+    const arm = () => {
+      if (timer !== null) return;
+      timer = browserWindow.setInterval(tick, OAUTH_FLOW_POLL_MS);
+    };
+    armOauthWatcherRef.current = arm;
+    if (pendingOnboardingOauthFlowRef.current) arm();
     return () => {
-      browserWindow.clearInterval(timer);
+      armOauthWatcherRef.current = () => {};
+      disarm();
       unsubscribe();
     };
   }, [clearOnboardingAfterChannelConnected, setPendingOnboarding, t, threadId]);
@@ -582,6 +602,7 @@ export function useChannelOnboarding(
         threadId: onboarding.threadId || threadId || null,
         startedAt: Date.now(),
       };
+      armOauthWatcherRef.current();
       return response;
     } catch (error) {
       if (popup && !popup.closed) popup.close();

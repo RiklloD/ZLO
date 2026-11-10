@@ -3958,6 +3958,7 @@ test("useChat: Slack OAuth completion consumes the in-chat connection card", asy
   const sendBodies = [];
   const store = new Map();
   const intervalCallbacks = [];
+  const clearedIntervals = [];
   const storage = {
     getItem: (key) => store.get(key) || null,
     setItem: (key, value) => store.set(key, value),
@@ -3972,7 +3973,9 @@ test("useChat: Slack OAuth completion consumes the in-chat connection card", asy
       intervalCallbacks.push(callback);
       return intervalCallbacks.length;
     },
-    clearInterval: () => {},
+    clearInterval: (id) => {
+      clearedIntervals.push(id);
+    },
   };
   const context = channelConnectionContext({
     threadId,
@@ -4012,7 +4015,14 @@ test("useChat: Slack OAuth completion consumes the in-chat connection card", asy
 
   runUseChatSource(context);
   const chat = context.globalThis.__testExports.useChat(threadId);
+  assert.equal(
+    intervalCallbacks.length,
+    0,
+    "a chat view with no pending OAuth flow must not run the watcher interval",
+  );
   await chat.startOnboardingOAuth();
+  assert.equal(intervalCallbacks.length, 1, "starting a flow arms exactly one watcher interval");
+  assert.deepEqual(clearedIntervals, []);
   store.set(
     "ironclaw:product-auth:oauth-complete",
     JSON.stringify({
@@ -4037,6 +4047,8 @@ test("useChat: Slack OAuth completion consumes the in-chat connection card", asy
   assert.equal(sendBodies.length, 1);
   assert.equal(sendBodies[0].threadId, threadId);
   assert.equal(sendBodies[0].content, channelConnectionContinuationMessage("slack"));
+  assert.deepEqual(clearedIntervals, [1], "a finished flow disarms the watcher interval");
+  assert.equal(intervalCallbacks.length, 1);
 });
 
 test("useChat: a late flow A status cannot complete or fail newer flow B", async () => {
