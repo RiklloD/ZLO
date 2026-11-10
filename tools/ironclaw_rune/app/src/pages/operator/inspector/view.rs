@@ -1,4 +1,4 @@
-//! Inspector rendering (GPUI `InspectorPanel`'s `render_*` methods).
+//! Inspector rendering.
 
 use crate::pages::common::controls::{
     Look, Size, button_sized, muted, outlined_tag, rule, spinner,

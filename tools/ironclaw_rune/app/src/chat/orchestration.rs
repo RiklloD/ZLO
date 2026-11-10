@@ -1,8 +1,8 @@
 //! Orchestration around the open thread: the subagent frame above the
 //! composer, the context strip (delegated from, forked from with Merge back,
 //! usage-limit countdown, paused after Stop, interrupted with Continue,
-//! queued follow-ups), the queue panel and the Fork action. Port of GPUI
-//! `chat/orchestration.rs`; the views are in `orchestration/view.rs`.
+//! queued follow-ups), the queue panel and the Fork action. The views are in
+//! `orchestration/view.rs`.
 //!
 //! Refresh is event-driven: on open, when the thread's stream reports a run
 //! end or a timeline reload, and after every mutation here. While a turn
@@ -10,11 +10,11 @@
 //! only while the app window is in front. An idle thread schedules nothing.
 //!
 //! Every chat has its own: the open one and each side chat in its right
-//! pane (GPUI: each `ChatView` owned its `orch`). Functions take the chat's
+//! pane. Functions take the chat's
 //! thread id and find it again with `chat::chat_for`; replies for a chat
 //! that closed meanwhile are dropped.
 //!
-//! # Entry points (area A calls these)
+//! # Entry points (the chat calls these)
 //!
 //! - `opened(s, id)`: after a chat starts.
 //! - `refresh(s, id)`: when the stream reports a run end or a timeline reload.
@@ -71,7 +71,7 @@ thread_local! {
     /// Child thread → the task that created it, for threads delegated from a
     /// thread opened in this session. The routes give a parent its children
     /// but not a child its parent, so this is how a child knows "delegated
-    /// from" (GPUI's `Delegations` global). UI thread only.
+    /// from". UI thread only.
     static DELEGATIONS: RefCell<HashMap<String, TaskView>> = RefCell::new(HashMap::new());
 }
 
@@ -465,9 +465,8 @@ pub fn fork(s: &mut State, id: &str, at_run: Option<u32>) {
             c.fork_thread(&thread_id, &options).await
         },
         move |s, result, _| {
-            // The fork opens as the main chat, from a side chat too (GPUI
-            // `OpenThread` bubbles up to the window); a chat closed since
-            // asking drops it, as GPUI's dropped view does.
+            // The fork opens as the main chat, from a side chat too; a chat
+            // closed since asking drops it.
             let Some(o) = slot_of(s, &asked, instance) else {
                 return;
             };

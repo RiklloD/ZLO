@@ -1,8 +1,8 @@
-//! The window's drawing (GPUI `Workspace::render` and its helpers): the
+//! The window's drawing: the
 //! loading and connection-error screens; then Zeron's shell of full-height
 //! columns — the sidebar (inbox or settings nav, titlebar strip, footer), its
 //! resize edge, and the main panel under the breadcrumb — with the status
-//! bar below, the wallpaper layers over each area (area G draws them), and
+//! bar below, the wallpaper layers over each area (`design::look` draws them), and
 //! the ⌘K menu and dialogs above everything.
 
 use rune::{Cx, El, col, el, row};
@@ -42,7 +42,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         Conn::Failed { message, retry_in } => failed(s, &p, &k, message, *retry_in),
         Conn::Ready => ready(s, &p, cx, &k, &mut layer),
     };
-    // GPUI's shell: the surface at the style's shell alpha. Translucent, the
+    // The shell: the surface at the style's shell alpha. Translucent, the
     // desktop shows through it, blurred by the WindowServer (`backdrop`).
     let st = design::styles::Style::of(&s.prefs);
     let mut root = col()
@@ -114,7 +114,7 @@ fn loading(s: &State, p: &Palette) -> El {
             still: 1.0,
             fps: 15.0, // small pulses read the same at 15 fps, at half the frames
         }))
-        // GPUI's `fade_in_after`: nothing for 700 ms, then a 300 ms fade, so
+        // Nothing for 700 ms, then a 300 ms fade, so
         // a fast connect never shows the line.
         .child(
             t("Starting IronClaw", SM, p.text_muted)

@@ -1,14 +1,13 @@
 //! Window root (t3code's layout): connects to the gateway; the sidebar lists
 //! threads, or the settings pages while one is open; the panel shows the
 //! open chat, the new-thread screen or a settings page under a breadcrumb.
-//! (GPUI `workspace.rs`.)
 //!
-//! GPUI's `Workspace` entity is [`WorkspaceState`] in `State::workspace`. Its
+//! Its state is [`WorkspaceState`] in `State::workspace`. Its
 //! timers (unread badge, status bar, inbox follow-up, the Working tick, the
 //! snooze wake) are deadlines in [`Timers`], run from [`poll`] with
-//! `Tx::wake_after`, instead of spawned loops. Other areas call
+//! `Tx::wake_after`, instead of spawned loops. The chat and the pages call
 //! [`open_thread`], [`show`], [`thread_updated`], [`run_ended`] and
-//! [`open_run_logs`] where GPUI emitted events to the workspace.
+//! [`open_run_logs`] to tell the workspace what happened.
 //!
 //! Files: `shell.rs` draws the window, `keys.rs` holds shortcuts and the
 //! native menu, `status.rs` the bottom bar, `inbox*` the sidebar list,
@@ -40,7 +39,7 @@ mod status;
 pub(crate) mod thread_drag;
 pub(crate) mod ui;
 
-// Voice (area F) and SnapShot (area F) call these.
+// Voice and SnapShot call these.
 pub use draft::{
     composer_edit, send as send_draft, stage_snapshot, start_in_profile, voice_composer,
 };
@@ -62,8 +61,7 @@ const STARTUP_POLL: Duration = Duration::from_millis(150);
 /// Status bar refresh while the window is in use. Telemetry also refreshes
 /// right after each run; usage windows are cached for a minute upstream.
 const STATUS_POLL: Duration = Duration::from_secs(10);
-/// How often terminal sessions are rescanned after the launch import
-/// (GPUI `pages/settings/session_import.rs::RESCAN_EVERY`).
+/// How often terminal sessions are rescanned after the launch import.
 const SESSION_RESCAN: Duration = Duration::from_secs(15 * 60);
 /// The first look for updates after connecting.
 const UPDATES_FIRST_POLL: Duration = Duration::from_secs(8);
@@ -90,7 +88,7 @@ pub struct WorkspaceState {
     pub connect_gen: jobs::Generation,
     pub inbox: inbox::Inbox,
     /// Unread inbox notifications, for the Notifications badge. The
-    /// notifications page (area D) writes it too (GPUI `PageEvent::Unread`).
+    /// notifications page writes it too ([`set_unread`]).
     pub unread: usize,
     pub alerts: Alerts,
     pub titles: crate::titles::Titles,
@@ -116,7 +114,7 @@ pub struct WorkspaceState {
     pub sidebar: rune_kit::shell::PaneState,
     /// A sidebar thread being dragged onto a chat or the draft.
     pub thread_drag: thread_drag::ThreadDrag,
-    /// The window is the key window (GPUI `window.is_window_active()`).
+    /// The window is the key window.
     pub window_active: bool,
     /// A text field held the caret when the window was last in front
     /// (noted by the view, `shell::note_field_focus`), so coming back
@@ -214,9 +212,8 @@ pub fn toggle_scheme(s: &mut State) {
 use sidebar_pane::persist_sidebar;
 pub use sidebar_pane::{set_sidebar_open, sidebar_pane};
 
-/// Fold the sidebar away or bring it back. One spring owns the motion
-/// (GPUI's 240 ms `panels::reveal`): the sidebar, the panel, the transcript
-/// and the composer all move on it.
+/// Fold the sidebar away or bring it back. One spring owns the motion:
+/// the sidebar, the panel, the transcript and the composer all move on it.
 ///
 /// The transcript rewraps at its new width at once. Its rows would hold
 /// their old heights for a moment and then ease to the new ones well after
@@ -555,16 +552,16 @@ pub fn delete_thread(s: &mut State, thread_id: String) {
     );
 }
 
-// ── events from other areas (GPUI `ChatView` events) ───────────────────
+// ── what the chat reports ──────────────────────────────────────────────
 
-/// The open chat changed its thread (GPUI `ThreadUpdated`): the list and
+/// The open chat changed its thread: the list and
 /// the badge catch up.
 pub fn thread_updated(s: &mut State) {
     inbox::refresh(s);
     refresh_unread(s);
 }
 
-/// A run of `thread_id` ended (GPUI `RunEnded`). Area A calls this.
+/// A run of `thread_id` ended; the chat calls this.
 pub fn run_ended(s: &mut State, thread_id: String, failed: bool) {
     status::refresh_telemetry(s);
     crate::run_clock::end(s, &thread_id);
@@ -585,7 +582,7 @@ pub fn run_ended(s: &mut State, thread_id: String, failed: bool) {
     }
 }
 
-/// A chat asked for its run's logs (GPUI `OpenRunLogs`): the Operator page.
+/// A chat asked for its run's logs: the Operator page.
 pub fn open_run_logs(s: &mut State, run: String) {
     show(s, Page::Operator);
     crate::pages::operator::show_run_logs(s, run);
@@ -779,7 +776,7 @@ pub fn window_focus(s: &mut State, focused: bool, tx: &mut Tx) {
     }
 }
 
-/// Keep the composer ready to type (GPUI `restore_composer`): on a chat or
+/// Keep the composer ready to type: on a chat or
 /// the draft, focus it when nothing else holds focus. Another field (the
 /// URL bar, a search box, the command menu, a side chat) keeps its focus.
 fn restore_composer(s: &mut State) {
@@ -805,10 +802,10 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     shell::view(s, cx)
 }
 
-// Cross-area API: thread titles, window focus and the unread badge, as the
-// chat, side pane and pages call them.
+// Thread titles, window focus and the unread badge, as the chat, side pane
+// and pages call them.
 
-/// Whether the main window is in front (GPUI `window.is_window_active()`).
+/// Whether the main window is in front.
 pub fn window_active(s: &State) -> bool {
     s.workspace.window_active
 }

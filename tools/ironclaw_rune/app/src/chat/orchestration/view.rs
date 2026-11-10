@@ -1,5 +1,4 @@
-//! Orchestration's views (GPUI `render_orchestration`, `render_tail`,
-//! `render_queued`, `render_strip`, `render_frame`, `render_queue`).
+//! Orchestration's views.
 
 use chrono::Utc;
 use rune::{El, Icon, TextEdit, col, el, row};
@@ -25,7 +24,7 @@ fn content_width(s: &State) -> f32 {
 
 /// What stays on the composer: notices that change what a send does (the
 /// strip), the queue's controls, and the goal editor while open. `plan` is
-/// area A's plan strip, drawn first. Work, goals and queued turns live at
+/// the chat's plan strip, drawn first. Work, goals and queued turns live at
 /// the transcript's end ([`tail`]), as in T3 Code's timeline pass.
 pub fn composer(s: &State, chat: &ChatState, k: &Kit, plan: Option<El>) -> Option<El> {
     let o = &chat.orchestration;

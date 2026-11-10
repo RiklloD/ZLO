@@ -1,5 +1,5 @@
-//! Documents and web pages inside the window, drawn by macOS itself (GPUI
-//! `native_view.rs`): QuickLook (`QLPreviewView`) for PDF, Word, slides,
+//! Documents and web pages inside the window, drawn by macOS itself:
+//! QuickLook (`QLPreviewView`) for PDF, Word, slides,
 //! sheets and media, and WebKit (`WKWebView`) for HTML and live pages such
 //! as `localhost:3000`. Zeron's browser (MIT) showed the shape; this is the
 //! smallest version.
@@ -19,7 +19,7 @@
 //!
 //! - [`on_window`] (wired with `App::on_window` in `main.rs`) keeps the
 //!   window's content `NSView` from its raw-window-handle; native views are
-//!   its siblings, ordered above it, as in the GPUI app.
+//!   its siblings, ordered above it.
 //! - [`surface`] is the element a tab puts where the view goes: an empty box
 //!   whose drawn rect (`El::on_drawn_layout`) places the view.
 //! - What the pane wants is reconciled with what is on screen whenever it
@@ -321,9 +321,9 @@ pub fn alive() -> bool {
     SURFACES.with(|cell| cell.borrow().iter().any(Option::is_some))
 }
 
-/// GPUI took the keyboard back on any mouse-down in the window
-/// (`capture_any_mouse_down` → `reclaim_focus`). Rune has no window-wide
-/// press hook, so an AppKit local event monitor does it: a left or right
+/// A mouse-down anywhere in the window takes the keyboard back from a
+/// clicked page. Rune has no window-wide press hook, so an AppKit local
+/// event monitor does it: a left or right
 /// click that lands on Rune's view, not on a preview, hands the keyboard
 /// back. Installed once for the app's life; every event passes unchanged.
 fn install_click_monitor() {

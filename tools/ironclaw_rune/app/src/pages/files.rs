@@ -1,5 +1,4 @@
 //! Read-only browser over the gateway's mounts (memory, workspace, skills).
-//! Port of GPUI `pages/files.rs`.
 
 use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};
 use rune_kit::{Kit, Markdown, Spinner};
@@ -27,7 +26,7 @@ pub struct FilesState {
     pub preview: Option<Result<FilePreview, String>>,
     pub error: Option<String>,
     pub loaded: bool,
-    /// The mounts were asked for (GPUI did this once, in `new`).
+    /// The mounts were asked for (once).
     started: bool,
 }
 

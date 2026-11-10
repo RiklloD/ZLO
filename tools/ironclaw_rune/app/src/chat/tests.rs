@@ -1,5 +1,5 @@
-//! Tests for the chat's folding (GPUI `chat/flow.rs` tests). GPUI's
-//! `list_diff` tests have no port: Rune diffs the transcript by key itself.
+//! Tests for the chat's folding. (Rune diffs the transcript by key itself,
+//! so there is no list-diff of the app's own to test.)
 
 use zlo_client::GateDecision;
 use zlo_client::transcript::{GateState, Row, ToolStatus};

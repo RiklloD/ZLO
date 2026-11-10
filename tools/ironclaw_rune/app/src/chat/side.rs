@@ -1,4 +1,4 @@
-//! The chat's two docks, Zeron's arrangement (GPUI `chat/side.rs`). The work
+//! The chat's two docks, Zeron's arrangement. The work
 //! panel (Changes, Files, Outputs) sits beside the conversation; the right
 //! pane (Activity, Browser, Agents, Routines, History, Console and the open
 //! side chat) sits at the window's edge. Each is a resizable column whose
@@ -13,30 +13,28 @@
 //! computer (`crate::remote`), Files reads that thread's workspace through
 //! the gateway and the git and shell tabs say where they run instead.
 //!
-//! # Entry points for the other areas
+//! # Entry points
 //!
-//! Area A (chat layout and events):
-//! - `side::init(s)` once after `chat::open` built the `ChatState` (GPUI
-//!   `side_init`): restores the thread's folder, worktree, side chat and loads
+//! For the chat (layout and events):
+//! - `side::init(s)` once after `chat::open` built the `ChatState`: restores the thread's folder, worktree, side chat and loads
 //!   the shown tabs.
 //! - `side::docks(s, cx, k, layer) -> Vec<El>`: work panel then right pane, to
-//!   put after the conversation column in the chat's row (GPUI
-//!   `render_docks`). Or `side::work_view` / `side::view` one by one.
+//!   put after the conversation column in the chat's row. Or `side::work_view` / `side::view` one by one.
 //! - `side::on_turn_started(s)` before a turn is sent, `side::on_turn_ended(s)`
-//!   when a run ends (GPUI `side_turn_started` / `side_turn_ended`).
+//!   when a run ends.
 //! - `side::open_link(s, href, external, tx)` for links clicked in a reply,
-//!   also from an embedded side chat (GPUI `open_link` / `SideLink`).
+//!   also from an embedded side chat.
 //! - `side::adopt_folder(s, path)`: a mention root picked for a thread without
-//!   a project folder (GPUI `mention_roots` → `side_set_folder(.., true)`).
+//!   a project folder.
 //! - `side::changes_selection(s)` for the composer's `@` selection mention.
 //! - `side::new_side_chat_allowed(s)`: false inside an embedded side chat.
 //!
-//! Area B (workspace):
+//! For the workspace:
 //! - `side::titlebar_actions(s, cx, k, layer) -> El`: the thread's end of the
-//!   window titlebar (GPUI `render_titlebar_actions`).
+//!   window titlebar.
 //! - `side::toggle_right_pane(s)` (⌥⌘B), `side::toggle_work_panel(s)` (⌘E),
 //!   `side::new_side_chat(s)` (⌥⌘N). Off the chat page the toggles only flip
-//!   the preference, as the GPUI workspace did.
+//!   the preference.
 //! - `side::dock_widths(s, viewport)` for the wallpaper's conversation area.
 //! - `main.rs`: `native_view::poll` in `poll`, `native_view::on_window` on
 //!   the `App`; the root view calls `native_view::cover` on every run (see
@@ -84,7 +82,7 @@ pub(crate) const WIDE_SHARE: f32 = 0.62;
 /// Room the conversation and the sidebar keep when the docks are sized.
 pub(crate) const KEEP: f32 = 360. + 240.;
 /// Native views wait this long after their dock opens, so they don't float
-/// over a column that is still sliding in (GPUI waited for the reveal).
+/// over a column that is still sliding in.
 const NATIVE_SETTLE: std::time::Duration = std::time::Duration::from_millis(380);
 
 /// The two columns beside the conversation.
@@ -226,7 +224,7 @@ impl Tab {
     }
 }
 
-/// The side chat shown in the right pane: an embedded chat (area A's
+/// The side chat shown in the right pane: an embedded chat (a
 /// [`crate::chat::ChatState`], built by `chat::build_side_chat`) with its
 /// own stream, drawn with `chat::embedded_view`. Dropping it closes the
 /// stream.
@@ -381,7 +379,7 @@ fn tab_shown(s: &State, tab: Tab) -> bool {
 }
 
 /// Restore this thread's project folder and load the shown tabs. Call once
-/// after `chat::open` (GPUI `side_init`).
+/// after `chat::open`.
 pub fn init(s: &mut State) {
     let Some(thread) = thread_id(s) else { return };
     if let Some(folder) = s.prefs.project_folders.get(&thread).cloned() {
@@ -568,7 +566,7 @@ pub(crate) fn set_folder(s: &mut State, folder: PathBuf, remember: bool) {
 }
 
 /// A mention root picked for a thread with no project folder of its own
-/// adopts that folder (GPUI `mention_roots`).
+/// adopts that folder.
 pub fn adopt_folder(s: &mut State, root: PathBuf) {
     if side(s).is_some_and(|x| x.folder.is_none()) {
         set_folder(s, root, true);

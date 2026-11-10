@@ -1,11 +1,11 @@
-//! One file shown inside the pane (GPUI `chat/side/preview.rs`): code in
+//! One file shown inside the pane: code in
 //! colour (rune-kit Markdown's fenced blocks), Markdown rendered, images
 //! drawn, PDF, Office, slides, HTML and media in a native view
 //! (`native_view`), anything else offered to its default app. Shared by
 //! Outputs and Files.
 //!
 //! Images: PNG, JPEG and WebP decode here (the `image` crate, off the UI
-//! thread) and draw as Rune pixels; the other image types the GPUI app drew
+//! thread) and draw as Rune pixels; the other image types
 //! (GIF, BMP, ICO, TIFF, SVG) go to QuickLook, which draws them natively.
 
 use std::path::{Path, PathBuf};

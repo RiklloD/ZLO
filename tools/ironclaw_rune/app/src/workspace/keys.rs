@@ -1,8 +1,7 @@
-//! Shortcuts and the native menu (GPUI `main.rs` actions, key bindings and
-//! menus, and the workspace's `on_key_down` / `on_action` handlers).
+//! Shortcuts and the native menu.
 //!
 //! The View menu's items carry their key equivalents, so on macOS AppKit
-//! runs them before any field sees the chord, as GPUI's bindings did.
+//! runs them before any field sees the chord.
 //! `on_key` handles the same chords too, for headless scripts and platforms
 //! without a native menu (a menu item that took the key never reaches it).
 
@@ -36,7 +35,7 @@ const BINDINGS: &[Binding] = &[
     }),
 ];
 
-/// The app menu's "Quit ZLO" (GPUI `main.rs`) and its chord.
+/// The app menu's "Quit ZLO" and its chord.
 const QUIT: (&str, &str) = ("Quit ZLO", "cmd+q");
 
 /// The native menus, for `App::menu_item`: "Quit ZLO" in the app menu, then

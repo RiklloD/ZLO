@@ -5,8 +5,7 @@
 //! the app's [`AppHandle`], whose `update` queues a closure that runs on the
 //! UI thread with `&mut State` before the next frame.
 //!
-//! This replaces the GPUI app's `jobs::run(backend, cx, f, done)`: there is
-//! no per-view entity any more, so `done` receives the whole `State` and must
+//! There is no per-view entity, so `done` receives the whole `State` and must
 //! find its own sub-state again (and check it is still the one that asked,
 //! e.g. the same thread id; see [`Generation`]).
 

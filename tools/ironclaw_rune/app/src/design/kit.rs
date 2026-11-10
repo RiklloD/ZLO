@@ -1,5 +1,5 @@
 //! The app's shared widgets, painted from the active [`Style`] and the
-//! palette (GPUI `design/kit.rs` and the helpers of `ui.rs`). Every page and
+//! palette. Every page and
 //! the chat build their buttons, rows, chips and cards from here; rune-kit
 //! components (Menu, Select, Popover, TextInput, Markdown, Switch, Tooltip)
 //! serve everything else and follow the same palette through
@@ -8,13 +8,12 @@
 //! The glass recipes (gradient lit from above, hairline rim, inset top
 //! highlight, short drop) are adapted from Zeron's `glass.rs` (MIT).
 //!
-//! Motion: GPUI faded hover washes and morphed selections through its own
-//! tween store. Here a hover is Rune's paint-only overlay (`El::hover` with
+//! Motion: a hover is Rune's paint-only overlay (`El::hover` with
 //! the style's `hover_motion`, no commit), hover ink is `group_color` under a
 //! `hover_group`, and a selection change is a keyed element whose fill,
-//! border or offset springs on the style's `slide`. GPUI's one-pixel press
-//! sink has no Rune equivalent (layout offsets do not follow the pointer);
-//! a press overlay stands in.
+//! border or offset springs on the style's `slide`. A press is an overlay
+//! too: Rune has no one-pixel press sink (layout offsets do not follow the
+//! pointer).
 //!
 //! # Public API (all take the root `&State` for palette and style)
 //!
@@ -37,7 +36,7 @@
 //! - `segmented(s, key, labels, selected, disabled, on_pick) -> El`
 //! - `chip(s, key, label, on) -> El` toggle chip (caller adds `.on_press`)
 //! - `shortcut_badge(s, index) -> El`, `cmd_digit(&KeyEvent) -> Option<usize>`
-//! - `hover_bg(el, s) -> El` (GPUI `smooth_bg`: a fading hover wash)
+//! - `hover_bg(el, s) -> El` (a fading hover wash)
 //! - `activity_line(s, key, icon, title, detail) -> El`
 //! - `selectable(k, text) -> El` selectable, copyable plain text
 //! - `mono_editor(&edit).label() .rows(min, max) .on_edit(..) .build(k) -> El`
@@ -125,7 +124,7 @@ impl Plate {
 }
 
 /// The neutral raised plate (secondary buttons, chips, cards). `lit` is how
-/// raised it reads at rest (0..1); the hover brightens it (GPUI's `h`).
+/// raised it reads at rest (0..1); the hover brightens it.
 /// One quiet recipe: a faint fill lit from above, a hairline rim and a soft
 /// drop.
 pub fn neutral(st: &Style, p: &Palette, lit: f32) -> Plate {
@@ -208,8 +207,8 @@ pub fn floating(st: &Style, p: &Palette) -> Plate {
 
 /// A glass card: the theme's base plane let through at ~75 %, a hairline rim
 /// and a soft drop, for light menus that float over the wallpaper (the
-/// session card). Add `.backdrop_blur(σ)` to blur what lies under it (GPUI
-/// had no backdrop blur, so the fill stays dense enough on its own).
+/// session card). Add `.backdrop_blur(σ)` to blur what lies under it (the
+/// fill is dense enough to read without one).
 pub fn glass(st: &Style, p: &Palette) -> Plate {
     let e = st.elevation;
     Plate {
@@ -276,7 +275,7 @@ pub enum Size {
 
 type Press = Rc<dyn Fn(&mut State, &mut Tx)>;
 
-/// The app's button (GPUI `kit::Button`, same builder names): the hover
+/// The app's button: the hover
 /// fades in the wash, `selected` morphs the wash in, Primary carries the
 /// accent plate, `loading` swaps the icon for breathing dots.
 pub struct Button {
@@ -693,8 +692,7 @@ pub fn popover(s: &State, key: &str, content: El) -> El {
 }
 
 /// A raised card used for approval prompts and run notices, in the active
-/// style's material (GPUI `ui::card`): a column with 8 pt gaps and 12 pt
-/// padding.
+/// style's material: a column with 8 pt gaps and 12 pt padding.
 pub fn card(s: &State) -> El {
     let st = Style::of(&s.prefs);
     let mut plate = neutral(&st, &s.palette, 0.5);
@@ -707,7 +705,7 @@ pub fn card(s: &State) -> El {
     )
 }
 
-/// Plain text the pointer can select and ⌘C can copy (GPUI `ui::selectable`).
+/// Plain text the pointer can select and ⌘C can copy.
 pub fn selectable(k: &rune_kit::Kit, content: impl Into<String>) -> El {
     text(content.into())
         .selectable(true)
@@ -715,8 +713,7 @@ pub fn selectable(k: &rune_kit::Kit, content: impl Into<String>) -> El {
 }
 
 /// One line of run activity (thinking, tool call, skill activation): the
-/// icon sits in a small tile, the detail folds to three lines (GPUI
-/// `ui::activity_line`). `key` is the row's, so both lines stay selectable
+/// icon sits in a small tile, the detail folds to three lines. `key` is the row's, so both lines stay selectable
 /// while it streams.
 pub fn activity_line(
     s: &State,

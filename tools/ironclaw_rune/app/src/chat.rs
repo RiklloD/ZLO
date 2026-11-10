@@ -1,9 +1,9 @@
-//! One open thread: transcript, live stream, composer, run controls
-//! (GPUI `chat.rs`). Area A owns this file and `chat/*` except the H
-//! (`model_picker`, `goals`, `orchestration`, `computer`) and S (`side`)
-//! modules, whose sub-states sit in [`ChatState`].
+//! One open thread: transcript, live stream, composer, run controls. The
+//! extras (`model_picker`, `goals`, `orchestration`, `computer`) and the
+//! docks (`side`) are modules of their own, whose sub-states sit in
+//! [`ChatState`].
 //!
-//! The GPUI `ChatView` entity becomes [`ChatState`] in `State::chat`; its
+//! The chat is [`ChatState`] in `State::chat`; its
 //! methods are free functions over `&mut State` that find the chat again
 //! (and check it is still the same thread) before writing. The split:
 //!
@@ -14,7 +14,7 @@
 //! | `chat/view.rs` | the main column: transcript list, banner, error, menu, composer |
 //! | `chat/rows.rs` | one transcript row: bubbles, gates, notices, command answers |
 //! | `chat/composer.rs` | the composer card, its keys and round buttons |
-//! | `chat/flow.rs` .. `chat/reject_feedback.rs` | as in the GPUI app |
+//! | `chat/flow.rs` .. `chat/reject_feedback.rs` | one capability each |
 
 pub mod actions;
 pub mod approval_mode;
@@ -93,8 +93,8 @@ pub(crate) struct Reserve {
     pub(crate) held: bool,
 }
 
-/// One open thread. Areas H and S own `side`, `model_picker`, `goals`,
-/// `orchestration` and `computer`; area A owns the rest.
+/// One open thread. `side`, `model_picker`, `goals`, `orchestration` and
+/// `computer` belong to the modules of those names.
 pub struct ChatState {
     pub thread_id: String,
     pub channel: Option<String>,
@@ -341,7 +341,7 @@ pub fn build_side_chat(s: &State, thread_id: String) -> ChatState {
     chat
 }
 
-/// The first loads of a side chat area S just put in its slot.
+/// The first loads of a side chat the side pane just put in its slot.
 pub fn start_side_chat(s: &mut State, thread_id: &str) {
     start(s, thread_id);
 }
@@ -375,9 +375,8 @@ fn start(s: &mut State, id: &str) {
     load_timeline(s, id);
     actions::load_commands(s, id);
     approval_mode::load(s, id);
-    // Every chat, main or side, has its own extras (area H), as each GPUI
-    // `ChatView` owned its picker, orchestration and screen share; the docks
-    // (area S) belong to the open chat only.
+    // Every chat, main or side, has its own extras (picker, orchestration,
+    // screen share); the docks belong to the open chat only.
     orchestration::opened(s, id);
     model_picker::start(s, id);
     computer::start(s, id);
@@ -627,7 +626,7 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     let live = run.is_some();
     let stopping = c.transcript.is_stopping();
     if live || stopping {
-        // Every live fold asks again (GPUI `chat.rs` does too): the
+        // Every live fold asks again: the
         // backend's turn start may have arrived since, and a run id that
         // arrived after the send is noted against the clock.
         let sent = c.transcript.last_prompt_sent_ms();
@@ -810,7 +809,7 @@ fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
 }
 
 /// The new-thread screen's first message and its files, sent once the
-/// thread exists. Area B's draft screen calls this right after `open`.
+/// thread exists. The draft screen calls this right after `open`.
 pub fn send_text(
     s: &mut State,
     text: String,
@@ -830,7 +829,7 @@ pub fn send_text(
     actions::send(s, &id, tx);
 }
 
-/// The model picker changed the thread (area H calls this): a fork opens
+/// The model picker changed the thread: a fork opens
 /// the new thread, a switch moves the live stream, an in-place change only
 /// reloads the timeline for its marker.
 pub fn picker_changed(s: &mut State, id: &str, fork_thread_id: Option<String>, moved: &str) {
@@ -850,8 +849,8 @@ pub fn report_error(s: &mut State, id: &str, message: impl Into<String>) {
     set_error(s, id, message);
 }
 
-/// A side chat drawn inside its parent's pane: area S renders an embedded
-/// `ChatState` with this.
+/// A side chat drawn inside its parent's pane: the side pane renders an
+/// embedded `ChatState` with this.
 pub fn embedded_view(
     s: &State,
     chat: &ChatState,
@@ -863,8 +862,7 @@ pub fn embedded_view(
 }
 
 /// The open thread's titlebar actions at the breadcrumb's right end: the
-/// side pane's toggles (and the screen-share toggle), GPUI
-/// `ChatView::render_titlebar_actions`.
+/// side pane's toggles (and the screen-share toggle).
 pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
     s.chat.as_ref()?;
     Some(side::titlebar_actions(s, cx, k, layer))
