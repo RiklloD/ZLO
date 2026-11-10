@@ -130,15 +130,9 @@ impl GithubCopilotProvider {
 
     fn map_token_error(error: crate::github_copilot_auth::GithubCopilotAuthError) -> LlmError {
         tracing::warn!(error = %error, "Copilot: token exchange failed");
-        match error {
-            crate::github_copilot_auth::GithubCopilotAuthError::AccessDenied
-            | crate::github_copilot_auth::GithubCopilotAuthError::Expired => LlmError::AuthFailed {
-                provider: "github_copilot".to_string(),
-            },
-            _ => LlmError::RequestFailed {
-                provider: "github_copilot".to_string(),
-                reason: format!("Token exchange failed: {error}"),
-            },
+        LlmError::RequestFailed {
+            provider: "github_copilot".to_string(),
+            reason: format!("Token exchange failed: {error}"),
         }
     }
 

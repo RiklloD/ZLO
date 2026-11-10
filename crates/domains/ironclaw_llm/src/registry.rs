@@ -205,8 +205,7 @@ pub enum SetupHint {
         #[serde(default)]
         supports_profile: bool,
     },
-    /// OAuth device-code or PKCE flow handled by [`crate::auth::start_login`].
-    /// The wizard renders a `WizardAuthPrompt` and resumes after token return.
+    /// OAuth device-code or PKCE flow.
     OAuthDeviceCode {
         display_name: String,
         /// Identifier for [`crate::auth::AuthBackend`] in the auth service.
