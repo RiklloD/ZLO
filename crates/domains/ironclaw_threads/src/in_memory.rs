@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -10,11 +7,14 @@ use ironclaw_host_api::turn::TurnRunId;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::context_projection::{
+    context_messages_by_id, context_messages_with_summary_replacements, ensure_draft,
+    ensure_user_accepted, generated_thread_id, history_message, history_messages,
+    history_summary_artifacts,
+};
 use crate::identifiers::SummaryArtifactId;
 use crate::stored_message::serialize_stored_thread_message;
-use crate::summary_artifacts::{
-    find_overlapping_summary, newest_context_barrier, sorted_context_summaries,
-};
+use crate::summary_artifacts::find_overlapping_summary;
 use crate::title::derive_thread_title;
 use crate::tool_result_records::{
     validate_tool_result_record_content, validate_tool_result_record_ref,
@@ -24,19 +24,18 @@ use crate::{
     AcceptedInboundMessageReplay, AcceptedSubagentResult, AppendAssistantDraftRequest,
     AppendCapabilityDisplayPreviewRequest, AppendFinalizedAssistantMessageRequest,
     AppendToolResultReferenceRequest, BoundedThreadMessageSnapshot, BoundedThreadMessages,
-    BoundedThreadMessagesRequest, CapabilityDisplayPreviewEnvelope, ContextMessage,
-    ContextMessages, ContextWindow, CreateSummaryArtifactRequest, DeleteToolResultRecordRequest,
-    EnsureThreadRequest, InboundMessageReplayMetadata, LatestThreadMessageRequest,
-    ListThreadsForScopeRequest, ListThreadsForScopeResponse, LoadContextMessagesRequest,
-    LoadContextWindowRequest, MessageContent, MessageKind, MessageStatus,
-    PublishStructuredFinalizationMessageRequest, PutStructuredFinalizationRequest,
-    PutToolResultRecordRequest, ReadStructuredFinalizationRequest, ReadToolResultRecordRequest,
-    RedactMessageRequest, ReplayAcceptedInboundMessageRequest, SessionThreadError,
-    SessionThreadRecord, SessionThreadService, StructuredFinalizationRecord, SummaryArtifact,
-    SummaryModelContextPolicy, ThreadHistory, ThreadHistoryRequest, ThreadMessageId,
-    ThreadMessageRange, ThreadMessageRangeRequest, ThreadMessageRecord, ThreadScope,
-    ToolResultRecordRead, ToolResultReferenceEnvelope, UpdateAssistantDraftRequest,
-    UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
+    BoundedThreadMessagesRequest, CapabilityDisplayPreviewEnvelope, ContextMessages, ContextWindow,
+    CreateSummaryArtifactRequest, DeleteToolResultRecordRequest, EnsureThreadRequest,
+    InboundMessageReplayMetadata, LatestThreadMessageRequest, ListThreadsForScopeRequest,
+    ListThreadsForScopeResponse, LoadContextMessagesRequest, LoadContextWindowRequest,
+    MessageContent, MessageKind, MessageStatus, PublishStructuredFinalizationMessageRequest,
+    PutStructuredFinalizationRequest, PutToolResultRecordRequest,
+    ReadStructuredFinalizationRequest, ReadToolResultRecordRequest, RedactMessageRequest,
+    ReplayAcceptedInboundMessageRequest, SessionThreadError, SessionThreadRecord,
+    SessionThreadService, StructuredFinalizationRecord, SummaryArtifact, ThreadHistory,
+    ThreadHistoryRequest, ThreadMessageId, ThreadMessageRange, ThreadMessageRangeRequest,
+    ThreadMessageRecord, ThreadScope, ToolResultRecordRead, ToolResultReferenceEnvelope,
+    UpdateAssistantDraftRequest, UpdateToolResultRecordRequest, UpdateToolResultReferenceRequest,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -1416,7 +1415,8 @@ impl SessionThreadService for InMemorySessionThreadService {
     ) -> Result<ContextWindow, SessionThreadError> {
         let state = self.state.lock().await;
         let thread = get_thread(&state, &request.scope, &request.thread_id)?;
-        let messages = context_messages_with_summary_replacements(thread);
+        let messages =
+            context_messages_with_summary_replacements(&thread.messages, &thread.summary_artifacts);
         let (messages, recent_window_truncation) =
             crate::contract::truncate_context_window(messages, request.max_messages);
         Ok(ContextWindow {
@@ -1434,7 +1434,7 @@ impl SessionThreadService for InMemorySessionThreadService {
         let thread = get_thread(&state, &request.scope, &request.thread_id)?;
         Ok(ContextMessages {
             thread_id: request.thread_id,
-            messages: context_messages_by_id(thread, &request.message_ids),
+            messages: context_messages_by_id(&thread.messages, &request.message_ids),
         })
     }
 
@@ -1446,8 +1446,11 @@ impl SessionThreadService for InMemorySessionThreadService {
         let thread = get_thread(&state, &request.scope, &request.thread_id)?;
         Ok(ThreadHistory {
             thread: thread.record.clone(),
-            messages: history_messages(thread),
-            summary_artifacts: history_summary_artifacts(thread),
+            messages: history_messages(&thread.messages),
+            summary_artifacts: history_summary_artifacts(
+                &thread.messages,
+                thread.summary_artifacts.clone(),
+            ),
         })
     }
 
@@ -1476,11 +1479,11 @@ impl SessionThreadService for InMemorySessionThreadService {
             BoundedThreadMessageSnapshot {
                 history: ThreadMessageRange {
                     thread: thread.record.clone(),
-                    messages: history_messages(thread),
+                    messages: history_messages(&thread.messages),
                 },
                 context: ContextMessages {
                     thread_id: request.thread_id,
-                    messages: context_messages_by_id(thread, &message_ids),
+                    messages: context_messages_by_id(&thread.messages, &message_ids),
                 },
             },
         )))
@@ -1949,11 +1952,6 @@ const LIST_THREADS_DEFAULT_PAGE_SIZE: usize = 50;
 /// huge value cannot widen the response unboundedly.
 const LIST_THREADS_MAX_PAGE_SIZE: usize = 200;
 
-fn generated_thread_id() -> Result<ThreadId, SessionThreadError> {
-    ThreadId::new(Uuid::new_v4().to_string())
-        .map_err(|error| SessionThreadError::GeneratedThreadId(error.to_string()))
-}
-
 fn get_thread<'a>(
     state: &'a InMemoryState,
     scope: &ThreadScope,
@@ -2005,234 +2003,4 @@ fn get_message_mut<'a>(
         .iter_mut()
         .find(|message| message.message_id == message_id)
         .ok_or(SessionThreadError::UnknownMessage { message_id })
-}
-
-fn ensure_draft(message: &ThreadMessageRecord) -> Result<(), SessionThreadError> {
-    if message.kind != MessageKind::Assistant || message.status != MessageStatus::Draft {
-        return Err(SessionThreadError::MessageNotDraft {
-            message_id: message.message_id,
-        });
-    }
-    Ok(())
-}
-
-fn ensure_user_accepted(
-    message: &ThreadMessageRecord,
-    attempted: &'static str,
-) -> Result<(), SessionThreadError> {
-    if message.kind == MessageKind::User
-        && matches!(
-            message.status,
-            MessageStatus::Accepted | MessageStatus::DeferredBusy | MessageStatus::Queued
-        )
-    {
-        return Ok(());
-    }
-    Err(SessionThreadError::InvalidMessageTransition {
-        message_id: message.message_id,
-        from: message.status,
-        attempted,
-    })
-}
-
-fn context_messages_with_summary_replacements(thread: &StoredThread) -> Vec<ContextMessage> {
-    if let Some(barrier) = newest_context_barrier(&thread.summary_artifacts, |summary| {
-        !summary_covers_hidden_content(thread, summary)
-    }) {
-        let mut context = vec![ContextMessage {
-            message_id: None,
-            summary_id: Some(barrier.summary_id),
-            sequence: barrier.end_sequence,
-            kind: MessageKind::Summary,
-            tool_result_provider_call: None,
-            content: barrier.content.clone(),
-            image_attachments: Vec::new(),
-        }];
-        context.extend(
-            thread
-                .messages
-                .iter()
-                .filter(|message| {
-                    message.sequence > barrier.end_sequence && is_model_context_visible(message)
-                })
-                .filter_map(|message| {
-                    let content = message.content.clone()?;
-                    Some(ContextMessage::from_transcript_message(message, content))
-                }),
-        );
-        return context;
-    }
-
-    let replacement_summaries = sorted_context_summaries(&thread.summary_artifacts, |summary| {
-        summary.model_context_policy == Some(SummaryModelContextPolicy::ReplaceRangeWhenSelected)
-            && !summary_covers_hidden_content(thread, summary)
-    });
-    let mut skip_through = 0;
-    let mut emitted_summaries = HashSet::new();
-    let mut context = Vec::new();
-    for message in thread
-        .messages
-        .iter()
-        .filter(|message| is_model_context_visible(message))
-    {
-        if message.sequence <= skip_through {
-            continue;
-        }
-        if let Some(summary) = replacement_summaries.iter().find(|summary| {
-            summary.start_sequence <= message.sequence
-                && message.sequence <= summary.end_sequence
-                && !emitted_summaries.contains(&summary.summary_id)
-        }) {
-            context.push(ContextMessage {
-                message_id: None,
-                summary_id: Some(summary.summary_id),
-                sequence: summary.start_sequence,
-                kind: MessageKind::Summary,
-                tool_result_provider_call: None,
-                content: summary.content.clone(),
-                image_attachments: Vec::new(),
-            });
-            emitted_summaries.insert(summary.summary_id);
-            skip_through = summary.end_sequence;
-            continue;
-        }
-        if let Some(content) = message.content.clone() {
-            context.push(ContextMessage::from_transcript_message(message, content));
-        }
-    }
-    context
-}
-
-fn context_messages_by_id(
-    thread: &StoredThread,
-    message_ids: &[ThreadMessageId],
-) -> Vec<ContextMessage> {
-    let visible_messages = thread
-        .messages
-        .iter()
-        .filter(|message| is_model_context_visible(message))
-        .map(|message| (message.message_id, message))
-        .collect::<HashMap<_, _>>();
-    message_ids
-        .iter()
-        .filter_map(|message_id| {
-            let message = visible_messages.get(message_id)?;
-            let content = message.content.clone()?;
-            Some(ContextMessage::from_transcript_message(message, content))
-        })
-        .collect()
-}
-
-const REDACTED_SUMMARY_CONTENT: &str = "[redacted]";
-
-fn history_summary_artifacts(thread: &StoredThread) -> Vec<SummaryArtifact> {
-    thread
-        .summary_artifacts
-        .iter()
-        .map(|summary| {
-            if summary_covers_redacted_or_deleted_content(thread, summary) {
-                let mut redacted = summary.clone();
-                redacted.content = REDACTED_SUMMARY_CONTENT.to_string();
-                redacted.model_context_policy = None;
-                redacted
-            } else {
-                summary.clone()
-            }
-        })
-        .collect()
-}
-
-fn history_messages(thread: &StoredThread) -> Vec<ThreadMessageRecord> {
-    thread.messages.iter().map(history_message).collect()
-}
-
-// Deny-by-default projection: every field is listed deliberately so a newly
-// added sensitive field does NOT auto-flow into persisted history. Do not
-// collapse to `..message.clone()` — `tool_result_provider_call` is dropped
-// here precisely because raw runtime/tool payloads must never surface as
-// ordinary transcript content (see crate guardrails).
-fn history_message(message: &ThreadMessageRecord) -> ThreadMessageRecord {
-    ThreadMessageRecord {
-        message_id: message.message_id,
-        thread_id: message.thread_id.clone(),
-        sequence: message.sequence,
-        kind: message.kind,
-        status: message.status,
-        actor_id: message.actor_id.clone(),
-        source_binding_id: message.source_binding_id.clone(),
-        reply_target_binding_id: message.reply_target_binding_id.clone(),
-        turn_id: message.turn_id.clone(),
-        turn_run_id: message.turn_run_id.clone(),
-        created_at: message.created_at,
-        updated_at: message.updated_at,
-        tool_result_ref: message.tool_result_ref.clone(),
-        tool_result_provider_call: None,
-        content: message.content.clone(),
-        attachments: message.attachments.clone(),
-        redaction_ref: message.redaction_ref.clone(),
-    }
-}
-
-/// Returns true when a non-model-context-visible message within the summary
-/// span could later become model-visible (i.e. it is in a resurfaceable pending
-/// state).  Permanently-terminal non-visible messages (RejectedBusy, capability
-/// previews) never resurface, so a compaction summary spanning them is safe to
-/// apply — blocking it would silently drop a legitimate compacted range.
-///
-/// Resurfaceable statuses (must still block the summary):
-///   Draft | Interrupted | Superseded | Queued | DeferredBusy
-/// Permanent non-visible (must NOT block):
-///   RejectedBusy (terminal, user must explicitly resend)
-///   CapabilityDisplayPreview kind (never model-visible regardless of status)
-///
-/// Note: Redacted/Deleted keep their blocking role here — they were never
-/// model-visible and the separate `summary_covers_redacted_or_deleted_content`
-/// guard (used for history display) doesn't cover the context-build path.
-fn can_resurface_as_model_visible(message: &ThreadMessageRecord) -> bool {
-    matches!(
-        message.status,
-        MessageStatus::Draft
-            | MessageStatus::Interrupted
-            | MessageStatus::Superseded
-            | MessageStatus::Queued
-            | MessageStatus::DeferredBusy
-    )
-}
-
-fn summary_covers_hidden_content(thread: &StoredThread, summary: &SummaryArtifact) -> bool {
-    thread.messages.iter().any(|message| {
-        summary.start_sequence <= message.sequence
-            && message.sequence <= summary.end_sequence
-            && !is_model_context_visible(message)
-            && (can_resurface_as_model_visible(message)
-                || matches!(
-                    message.status,
-                    MessageStatus::Redacted | MessageStatus::Deleted
-                ))
-    })
-}
-
-fn summary_covers_redacted_or_deleted_content(
-    thread: &StoredThread,
-    summary: &SummaryArtifact,
-) -> bool {
-    thread.messages.iter().any(|message| {
-        summary.start_sequence <= message.sequence
-            && message.sequence <= summary.end_sequence
-            && matches!(
-                message.status,
-                MessageStatus::Redacted | MessageStatus::Deleted
-            )
-    })
-}
-
-fn is_model_visible(status: MessageStatus) -> bool {
-    matches!(
-        status,
-        MessageStatus::Accepted | MessageStatus::Submitted | MessageStatus::Finalized
-    )
-}
-
-fn is_model_context_visible(message: &ThreadMessageRecord) -> bool {
-    is_model_visible(message.status) && message.kind != MessageKind::CapabilityDisplayPreview
 }

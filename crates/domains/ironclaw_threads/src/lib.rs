@@ -11,6 +11,7 @@
 
 mod attachment_context;
 mod capability_display_preview;
+mod context_projection;
 mod contract;
 mod error;
 mod external_transcript;
