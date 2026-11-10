@@ -42,7 +42,6 @@ const DRIVER_LINKED_CRATES: &[&str] = &[
     "ironclaw_filesystem",
     // ADR 0004 (`docs/internal/adr/0004-hooks-keeps-its-predicate-state-backends.md`).
     "ironclaw_hooks",
-    "ironclaw_host_runtime",
     // ADR 0003 (`docs/internal/adr/0003-triggers-keeps-hand-written-sql.md`).
     "ironclaw_triggers",
     // Owns the TLS/driver cone for durable event/audit logs (§6.3.2).
