@@ -3,7 +3,6 @@ import React from "react";
 import {
   fetchProjectDetail,
   fetchProjectThreads,
-  fetchProjectWidgets,
 } from "../lib/projects-api";
 
 export function useProjectWorkspace(projectId) {
@@ -24,18 +23,10 @@ export function useProjectWorkspace(projectId) {
     refetchInterval: enabled ? 4000 : false,
   });
 
-  const widgetsQuery = useQuery({
-    queryKey: ["project-widgets", projectId],
-    queryFn: () => fetchProjectWidgets(projectId),
-    enabled,
-    refetchInterval: enabled ? 15000 : false,
-  });
-
   const invalidate = React.useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["projects-overview"] });
     queryClient.invalidateQueries({ queryKey: ["project-detail", projectId] });
     queryClient.invalidateQueries({ queryKey: ["project-threads", projectId] });
-    queryClient.invalidateQueries({ queryKey: ["project-widgets", projectId] });
   }, [projectId, queryClient]);
 
   return {
@@ -43,10 +34,9 @@ export function useProjectWorkspace(projectId) {
     // (not wrapped in `{ project }`), matching `fetchProjectsOverview` entries.
     project: projectQuery.data || null,
     threads: threadsQuery.data?.threads || [],
-    widgets: widgetsQuery.data || [],
     isLoading: enabled && (projectQuery.isLoading || threadsQuery.isLoading),
-    isRefreshing: projectQuery.isFetching || threadsQuery.isFetching || widgetsQuery.isFetching,
-    error: projectQuery.error || threadsQuery.error || widgetsQuery.error || null,
+    isRefreshing: projectQuery.isFetching || threadsQuery.isFetching,
+    error: projectQuery.error || threadsQuery.error || null,
     invalidate,
   };
 }

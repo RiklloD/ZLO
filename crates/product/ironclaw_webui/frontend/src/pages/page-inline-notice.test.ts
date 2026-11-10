@@ -7,7 +7,6 @@ const ALLOWED_NOTICE_TONES = new Set(["info", "success", "warning", "danger"]);
 const ALLOWED_NOTICE_ROLES = new Set(["alert", "status"]);
 
 const PAGE_FILES = [
-  "./jobs/jobs-page.tsx",
   "./projects/projects-page.tsx",
   "./workspace/workspace-page.tsx",
   "./extensions/extensions-page.tsx",
@@ -18,7 +17,7 @@ const NOTICE_CONSUMERS = [
   ["./automations/components/notification-channels-panel.tsx", 3],
   ["./settings/settings-page.tsx", 1],
   ["./settings/components/settings-toolbar.tsx", 1],
-  ["./settings/components/restart-banner.tsx", 3],
+  ["./settings/components/restart-banner.tsx", 1],
   ["./settings/components/skills-tab.tsx", 2],
   ["./settings/components/provider-management.tsx", 2],
   ["./settings/components/tools-tab.tsx", 2],

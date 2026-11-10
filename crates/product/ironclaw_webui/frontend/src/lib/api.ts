@@ -509,108 +509,9 @@ export function listProjects({ limit }: { limit?: number } = {}) {
   return apiFetch(url.pathname + url.search);
 }
 
-export interface ProjectMutationOptions extends ProjectOptions {
-  name?: string;
-  description?: string | null;
-  icon?: string | null;
-  color?: string | null;
-  metadata?: Record<string, unknown> | null;
-  state?: string | null;
-}
-
-export function createProject({
-  name,
-  description,
-  icon,
-  color,
-  metadata,
-}: ProjectMutationOptions = {}) {
-  if (!name) return missingRequired("name");
-  const body: Omit<ProjectMutationOptions, "projectId" | "state"> = { name };
-  if (description != null) body.description = description;
-  if (icon != null) body.icon = icon;
-  if (color != null) body.color = color;
-  if (metadata != null) body.metadata = metadata;
-  return apiFetch(PROJECTS_BASE, { method: "POST", body: JSON.stringify(body) });
-}
-
 export function getProject({ projectId }: ProjectOptions = {}) {
   if (!projectId) return missingRequired("projectId");
   return apiFetch(projectPath(projectId));
-}
-
-export function updateProject({
-  projectId,
-  name,
-  description,
-  icon,
-  color,
-  metadata,
-  state,
-}: ProjectMutationOptions = {}) {
-  if (!projectId) return missingRequired("projectId");
-  const body: Omit<ProjectMutationOptions, "projectId"> = {};
-  if (name != null) body.name = name;
-  if (description != null) body.description = description;
-  if (icon != null) body.icon = icon;
-  if (color != null) body.color = color;
-  if (metadata != null) body.metadata = metadata;
-  if (state != null) body.state = state;
-  return apiFetch(projectPath(projectId), { method: "POST", body: JSON.stringify(body) });
-}
-
-export function deleteProject({ projectId }: ProjectOptions = {}) {
-  if (!projectId) return missingRequired("projectId");
-  return apiFetch(projectPath(projectId), { method: "DELETE" });
-}
-
-export function listProjectMembers({ projectId }: ProjectOptions = {}) {
-  if (!projectId) return missingRequired("projectId");
-  return apiFetch(`${projectPath(projectId)}/members`);
-}
-
-interface ProjectMemberOptions extends ProjectOptions {
-  userId?: string;
-  role?: string;
-}
-
-export function addProjectMember({
-  projectId,
-  userId,
-  role,
-}: ProjectMemberOptions = {}) {
-  if (!projectId || !userId) {
-    return Promise.reject(new Error("projectId and userId are required"));
-  }
-  if (!role) return missingRequired("role");
-  return apiFetch(`${projectPath(projectId)}/members`, {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId, role }),
-  });
-}
-
-export function updateProjectMemberRole({
-  projectId,
-  userId,
-  role,
-}: ProjectMemberOptions = {}) {
-  if (!projectId || !userId) {
-    return Promise.reject(new Error("projectId and userId are required"));
-  }
-  if (!role) return missingRequired("role");
-  return apiFetch(`${projectPath(projectId)}/members/${encodeURIComponent(userId)}`, {
-    method: "POST",
-    body: JSON.stringify({ role }),
-  });
-}
-
-export function removeProjectMember({ projectId, userId }: ProjectMemberOptions = {}) {
-  if (!projectId || !userId) {
-    return Promise.reject(new Error("projectId and userId are required"));
-  }
-  return apiFetch(`${projectPath(projectId)}/members/${encodeURIComponent(userId)}`, {
-    method: "DELETE",
-  });
 }
 
 // --- Outbound delivery targets + notification channels ---
@@ -1127,37 +1028,6 @@ export function setupExtension<T = ApiRecord>(
       body: JSON.stringify(body),
     },
   );
-}
-
-// --- TODO stubs for v1-shaped helpers brought-back code still imports ---
-//
-// Issue #3886 Hard Non-Goal: the browser must not call legacy
-// gateway routes without a v2 counterpart. The functions below
-// preserve the fork's import surface so the admin/settings/extensions
-// pages render, but they return empty/null data without sending any
-// HTTP request. When a v2 equivalent lands, replace the stub body
-// with the real wire call.
-
-export function gatewayStatus(): Promise<{
-  engine_v2_enabled: boolean;
-  restart_enabled: boolean;
-  total_connections: null;
-  llm_backend: null;
-  llm_model: null;
-  extensions?: ApiRecord[];
-  todo: boolean;
-}> {
-  // TODO: requires v2 gateway-status endpoint. Returning a zeroed
-  // shape so any consumer reading `data.engine_v2_enabled`,
-  // `data.llm_backend`, etc. resolves cleanly to falsey values.
-  return Promise.resolve({
-    engine_v2_enabled: false,
-    restart_enabled: false,
-    total_connections: null,
-    llm_backend: null,
-    llm_model: null,
-    todo: true,
-  });
 }
 
 // --- v2 auth surface ---

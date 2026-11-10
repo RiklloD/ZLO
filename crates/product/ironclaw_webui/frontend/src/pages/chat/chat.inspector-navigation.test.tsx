@@ -66,7 +66,6 @@ vi.mock("../../lib/i18n", () => ({
 vi.mock("../../lib/interface-preferences", () => ({
   useInterfacePreferences: () => ({ showChatLogsShortcut: false }),
 }));
-vi.mock("./lib/runtime-context", () => ({ buildRuntimeContext: () => ({}) }));
 vi.mock("./components/empty-state", () => ({ EmptyState: () => null }));
 vi.mock("./components/keyboard-shortcuts", () => ({ KeyboardShortcuts: () => null }));
 
@@ -83,7 +82,6 @@ function NavigationHarness() {
         activeThreadId="thread-a"
         onSelectThread={() => {}}
         isCreatingThread={false}
-        gatewayStatus={{}}
         onConnectionStatusChange={() => {}}
       />
     </>

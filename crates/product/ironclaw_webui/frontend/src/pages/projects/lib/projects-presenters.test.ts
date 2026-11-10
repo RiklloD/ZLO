@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 
 import {
-  formatMessageRole,
-  formatMetricValue,
   formatProjectDate,
   formatProjectRole,
   formatProjectRelativeTime,
@@ -19,12 +17,10 @@ import {
 const t = (key, params = {}) => {
   const translations = {
     "projects.count.steps": "Steps: {count}",
-    "projects.metric.notSet": "Localized not set",
     "projects.relative.hoursAgo": "{count} localized hours ago",
     "projects.relative.inMinutes": "in {count} localized minutes",
     "projects.relative.noActivity": "Localized no activity",
     "projects.date.notAvailable": "Localized date unavailable",
-    "projects.role.assistant": "Localized assistant",
     "projects.projectRole.owner": "Localized owner",
     "projects.projectRole.unknown": "Localized unknown project role",
     "projects.status.active": "Localized active",
@@ -52,7 +48,6 @@ test("project enum formatters localize API-backed state and role values", () => 
   assert.equal(formatThreadState("Done", t), "Localized done");
   assert.equal(formatThreadType("mission_run", t), "Localized mission run");
   assert.equal(formatThreadType("ad_hoc", t), "ad hoc");
-  assert.equal(formatMessageRole("assistant", t), "Localized assistant");
 });
 
 test("project summary uses authoritative API lifecycle counts beyond the loaded page", () => {
@@ -96,10 +91,7 @@ test("date and relative-time formatters use localized fallback and count params"
   }
 });
 
-test("count and metric formatters cover interpolation and unset metric labels", () => {
+test("count formatter interpolates the count", () => {
   assert.equal(projectCount(t, "steps", 7), "Steps: 7");
   assert.equal(projectCount(t, "steps", undefined), "Steps: 0");
-  assert.equal(formatMetricValue(null, t), "Localized not set");
-  assert.equal(formatMetricValue({ current: 3, target: 5, unit: "runs" }, t), "3 runs / 5 runs");
-  assert.equal(formatMetricValue({ target: 5 }, t), "Localized not set / 5");
 });

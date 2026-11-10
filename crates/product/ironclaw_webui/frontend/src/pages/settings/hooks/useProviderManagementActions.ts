@@ -9,8 +9,8 @@ function matchesProvider(provider, query) {
     .some((value) => String(value).toLowerCase().includes(q));
 }
 
-export function useProviderManagementActions({ settings, gatewayStatus, searchQuery, t }) {
-  const providerState = useLlmProviders({ settings, gatewayStatus });
+export function useProviderManagementActions({ settings, searchQuery, t }) {
+  const providerState = useLlmProviders({ settings });
   const [dialogProvider, setDialogProvider] = React.useState(null);
   const [isDialogOpen, setIsDialogOpen] = React.useState(false);
   const [providerToDelete, setProviderToDelete] = React.useState(null);

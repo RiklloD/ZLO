@@ -116,7 +116,6 @@ export function ExtensionsPage({ isAdmin = false } = {}) {
   );
 
   const {
-    status,
     channels,
     tools,
     channelRegistry,

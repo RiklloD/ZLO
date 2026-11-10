@@ -13,7 +13,6 @@ import {
   extensionSurfaces,
   hasAuthSurface,
   hasChannelSurface,
-  hasToolSurface,
   isWebGeneratedCodeConnection,
   primaryAuthAccount,
 } from "./extensions-schema";
@@ -51,22 +50,6 @@ test("hasAuthSurface keys off the typed auth surface", () => {
     false,
   );
   assert.equal(hasAuthSurface({}), false);
-});
-
-test("hasToolSurface keys off a declared tool surface only", () => {
-  assert.equal(
-    hasToolSurface({
-      surfaces: [{ kind: "tool" }, { kind: "channel", inbound: true, outbound: true }],
-    }),
-    true,
-  );
-  assert.equal(
-    hasToolSurface({ surfaces: [{ kind: "channel", inbound: true, outbound: true }] }),
-    false,
-  );
-  assert.equal(hasToolSurface({ surfaces: [] }), false);
-  assert.equal(hasToolSurface({}), false);
-  assert.equal(hasToolSurface(undefined), false);
 });
 
 test("channelSurface and channelConnection extract the typed channel surface", () => {

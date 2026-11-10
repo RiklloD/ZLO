@@ -11,28 +11,6 @@ export function adapterLabel(adapter) {
   return ADAPTER_OPTIONS.find((item) => item.value === adapter)?.label || adapter;
 }
 
-export function parseCustomProviders(value) {
-  if (Array.isArray(value)) return value;
-  if (!value || typeof value !== "string") return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
-    return [];
-  }
-}
-
-export function parseBuiltinOverrides(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) return value;
-  if (!value || typeof value !== "string") return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch (_) {
-    return {};
-  }
-}
-
 export function providerEffectiveBaseUrl(provider, overrides) {
   const override = provider.builtin ? overrides[provider.id] || {} : {};
   return override.base_url || provider.env_base_url || provider.base_url || "";

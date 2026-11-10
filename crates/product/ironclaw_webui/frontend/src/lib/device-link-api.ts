@@ -286,21 +286,6 @@ export async function pollDeviceLink({
   }));
 }
 
-// -> { flow_id, status, device_link }; a pure READ of the durable flow, for a
-// card that is re-rendering and wants to hydrate without advancing anything.
-export async function readDeviceLinkFlow({
-  flowId,
-  invocationId,
-  signal,
-}: DeviceLinkScope): Promise<DeviceLinkFlowResponse> {
-  const query = invocationId
-    ? `?invocation_id=${encodeURIComponent(invocationId)}`
-    : "";
-  return decodeDeviceLinkFlowResponse(await apiFetch(`${deviceLinkStatusPath(flowId)}${query}`, {
-    signal,
-  }));
-}
-
 // -> { flow_id, status, device_link }
 //
 // `revision` is the frame the value was typed against. The engine's

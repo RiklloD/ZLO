@@ -2,7 +2,7 @@
   "name": "ironclaw-webui-v2-frontend",
   "version": "0.0.0",
   "private": true,
-  "description": "Build tooling for the WebUI v2 SPA. Vite builds the TypeScript source and public assets into ignored dist/ output that Rust embeds when webui-v2-beta is enabled.",
+  "description": "Build tooling for the WebUI v2 SPA. Vite builds the TypeScript source and public assets; the Rust crate's build.rs runs the same build into Cargo's OUT_DIR and embeds that output.",
   "packageManager": "pnpm@11.7.0",
   "type": "module",
   "engines": {

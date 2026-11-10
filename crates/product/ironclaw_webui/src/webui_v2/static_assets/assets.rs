@@ -735,8 +735,6 @@ mod tests {
         );
 
         // Unrelated field schemas and extension presentation metadata stay put.
-        assert!(settings_schema.contains("export const AGENT_FIELDS"));
-        assert!(settings_schema.contains("export const NETWORKING_FIELDS"));
         assert!(settings_schema.contains("export const RESTART_REQUIRED_KEYS"));
         assert!(extensions_schema.contains("export const RUNTIME_LABELS"));
         assert!(extensions_schema.contains("export function hasChannelSurface"));
@@ -932,9 +930,22 @@ mod tests {
             );
         }
 
-        let settings_channels = source_text("pages/settings/components/channels-tab.tsx");
-        assert!(settings_channels.contains("channel?.installation_state || \"setup_needed\""));
-        assert!(!settings_channels.contains("channel?.onboarding_state"));
+        let channels_tab = source_text("pages/extensions/components/channels-tab.tsx");
+        assert!(
+            channels_tab.contains("<ExtensionCard"),
+            "installed channels render through the card that derives the public lifecycle state"
+        );
+        let extensions_hook = source_text("pages/extensions/hooks/useExtensions.ts");
+        assert!(
+            extensions_hook.contains("installed?.installation_state === \"setup_needed\""),
+            "post-install setup routing must use the caller-scoped lifecycle projection"
+        );
+        for retired in ["onboarding_state", "needs_setup"] {
+            assert!(
+                !channels_tab.contains(retired) && !extensions_hook.contains(retired),
+                "channel setup must not consume retired lifecycle field {retired}"
+            );
+        }
 
         let configure_modal = source_text("pages/extensions/components/configure-modal.tsx");
         assert!(configure_modal.contains("const isActive = extensionIsActive(extension);"));

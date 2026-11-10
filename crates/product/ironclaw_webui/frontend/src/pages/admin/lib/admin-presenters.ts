@@ -112,14 +112,6 @@ export function adminUserActionErrorMessage(error, t) {
   });
 }
 
-export function summarizeUsers(users) {
-  const total = users.length;
-  const active = users.filter((u) => u.status === USER_STATUS.ACTIVE).length;
-  const suspended = users.filter((u) => u.status === USER_STATUS.SUSPENDED).length;
-  const admins = users.filter((u) => u.role === USER_ROLE.ADMIN).length;
-  return { total, active, suspended, admins };
-}
-
 export function filterUsers(users, { search = "", filter = "all" }) {
   let result = users;
   if (filter === USER_STATUS.ACTIVE) result = result.filter((u) => u.status === USER_STATUS.ACTIVE);

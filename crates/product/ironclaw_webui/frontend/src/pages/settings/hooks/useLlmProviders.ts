@@ -67,11 +67,9 @@ type UpsertProviderPayload = {
 
 export function useLlmProviders({
   settings: _settings,
-  gatewayStatus,
   enabled = true,
 }: {
   settings: Record<string, unknown>;
-  gatewayStatus?: { llm_backend?: string; llm_model?: string } | null;
   enabled?: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -99,22 +97,18 @@ export function useLlmProviders({
     name: provider.description,
     has_api_key: provider.api_key_set === true,
   }));
-  // Whether the backend has a usable active provider. Prefer the persisted
-  // operator snapshot, but also honor runtime/env-configured LLMs surfaced by
-  // gateway status so first-run onboarding does not mask an already-live model.
-  const hasActiveProvider = Boolean(snapshot.active?.provider_id || gatewayStatus?.llm_backend);
+  // Whether the persisted operator snapshot has a usable active provider.
+  const hasActiveProvider = Boolean(snapshot.active?.provider_id);
   // The honest active selection: null when nothing is configured. The grouping,
   // sort, and per-card "active" badge must key off this — otherwise a clean
   // install renders NEAR AI under the "ACTIVE" section even though no provider
   // is selected (#4857). The `nearai` fallback below is for downstream *default*
   // selection only and must never leak into active-state display.
-  const activeProviderId = hasActiveProvider
-    ? snapshot.active?.provider_id || gatewayStatus?.llm_backend
-    : null;
+  const activeProviderId = snapshot.active?.provider_id || null;
   // Default provider id used when the user activates/saves without a prior
   // selection. Intentionally falls back to `nearai`; never used for grouping.
   const defaultProviderId = activeProviderId || "nearai";
-  const selectedModel = snapshot.active?.model || gatewayStatus?.llm_model || "";
+  const selectedModel = snapshot.active?.model || "";
   const builtinProviders = allProviders.filter((provider) => provider.builtin);
   const customProviders = allProviders.filter((provider) => !provider.builtin);
   const providers = [...allProviders].sort((a, b) => {

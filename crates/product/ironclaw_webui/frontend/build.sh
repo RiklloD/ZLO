@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # One-shot refresh of WebUI v2 frontend artifacts for local inspection or
 # vendored dependency updates. Vite writes generated output into ignored
-# dist/. Cargo embeds that prebuilt output when `webui-v2-beta` is enabled, so
-# dist/ must exist locally but must not be committed. Only commit
-# public/vendor/ changes when refreshing pinned vendor assets.
+# dist/, which Cargo does not read: build.rs runs its own Vite build into
+# OUT_DIR and embeds that. Only commit public/vendor/ changes when refreshing
+# pinned vendor assets.
 #
 #   ./build.sh           # vendor + pnpm install + Vite build
 #   ./build.sh --no-vendor   # skip re-downloading vendored CDN assets

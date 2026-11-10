@@ -140,7 +140,6 @@ function renderChat({
     },
     NEW_DRAFT_KEY: "new",
     THREAD_STATE: { NEEDS_ATTENTION: "needs_attention", RUNNING: "running" },
-    buildRuntimeContext: () => ({}),
     buildScopedLogsPath: ({ threadId }) => `/logs?thread_id=${threadId}`,
     clearThreadState: (threadId) =>
       threadStateUpdates.push({ threadId, state: null }),
@@ -181,7 +180,6 @@ function renderChat({
     activeThreadId,
     onSelectThread,
     isCreatingThread: false,
-    gatewayStatus: {},
     globalAutoApproveEnabled,
     pendingRenderedNotification,
     onNotificationRendered,

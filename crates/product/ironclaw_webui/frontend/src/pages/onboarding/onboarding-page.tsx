@@ -193,10 +193,8 @@ function OperatorOnboardingPage() {
   const t = useT();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { gatewayStatus } = useOutletContext<GatewayOutletContext>();
   const actions = useProviderManagementActions({
     settings: {},
-    gatewayStatus,
     searchQuery: "",
     t,
   });

@@ -3,7 +3,6 @@ import {
   useInterfaceTheme,
   type InterfaceTheme,
 } from "../design-system/theme";
-import { useGatewayStatus } from "../hooks/useGatewayStatus";
 import {
   useNotifications,
   type NotificationProfile,
@@ -35,8 +34,6 @@ const CommandPalette = React.lazy(() =>
 );
 
 export type GatewayOutletContext = {
-  gatewayStatus: ReturnType<typeof useGatewayStatus>["data"];
-  gatewayStatusQuery: ReturnType<typeof useGatewayStatus>;
   currentUser: NotificationProfile | null;
   workspaceRequiresScopedProjection: boolean;
   isChecking: boolean;
@@ -80,7 +77,6 @@ export function GatewayLayout({
 }: GatewayLayoutProps) {
   const t = useT();
   const { theme, setTheme, toggleTheme } = useInterfaceTheme();
-  const statusQuery = useGatewayStatus(token);
   const threadsState = useThreads();
   const location = useLocation();
   const activeRouteThreadId = React.useMemo(
@@ -98,7 +94,6 @@ export function GatewayLayout({
   const sidebar = useSidebar({
     onNewChat: () => threadsState.setActiveThreadId(null),
   });
-  const status = statusQuery.data;
   const [headerStatus, setHeaderStatus] = React.useState<React.ReactNode>(null);
 
   // First-run gate: with no LLM provider configured yet, route to the welcome
@@ -109,7 +104,6 @@ export function GatewayLayout({
   const navigate = useNavigate();
   const llmProviders = useLlmProviders({
     settings: {},
-    gatewayStatus: status,
     enabled: isAdmin,
   });
   // Onboarding is admin-only; non-admins never see the first-run gate.
@@ -196,22 +190,8 @@ export function GatewayLayout({
           sidebarOpen={sidebar.currentOpen}
         />
         <main className="min-h-0 min-w-0 flex-1 overflow-hidden">
-          {statusQuery.error &&
-          (
-            <div
-              className={cn(
-                "m-4 rounded-[14px] border px-4 py-3 text-sm",
-                "border-[color-mix(in_srgb,var(--v2-danger-text)_36%,var(--v2-panel-border))]",
-                "bg-[var(--v2-danger-soft)] text-[var(--v2-danger-text)]"
-              )}
-            >
-              {statusQuery.error.message || t("error.gatewayConnection")}
-            </div>
-          )}
           <Outlet
             context={{
-              gatewayStatus: status,
-              gatewayStatusQuery: statusQuery,
               currentUser: profile,
               workspaceRequiresScopedProjection,
               isChecking,

@@ -1,18 +1,9 @@
-// Project endpoints now call the real WebChat v2 `/api/webchat/v2/projects`
-// surface (list/create/read/update/delete + membership ACL) plus the v2
-// project-filtered thread list. Widget reads remain a TODO stub until that v2
-// project child endpoint lands.
+// Project reads call the WebChat v2 `/api/webchat/v2/projects` surface plus the
+// v2 project-filtered thread list.
 
 import {
-  addProjectMember as apiAddProjectMember,
-  createProject as apiCreateProject,
-  deleteProject as apiDeleteProject,
   getProject as apiGetProject,
-  listProjectMembers as apiListProjectMembers,
   listProjects as apiListProjects,
-  removeProjectMember as apiRemoveProjectMember,
-  updateProject as apiUpdateProject,
-  updateProjectMemberRole as apiUpdateProjectMemberRole,
   listThreads as apiListThreads,
 } from "../../../lib/api";
 
@@ -135,37 +126,6 @@ export async function fetchProjectDetail(projectId) {
   return toPageProject(response?.project);
 }
 
-export async function createProject(input) {
-  const response = await apiCreateProject(input);
-  return toPageProject(response?.project);
-}
-
-export async function updateProject(input) {
-  const response = await apiUpdateProject(input);
-  return toPageProject(response?.project);
-}
-
-export function deleteProject(projectId) {
-  return apiDeleteProject({ projectId });
-}
-
-export async function fetchProjectMembers(projectId) {
-  if (!projectId) return { members: [] };
-  return apiListProjectMembers({ projectId });
-}
-
-export function addProjectMember(projectId, userId, role) {
-  return apiAddProjectMember({ projectId, userId, role });
-}
-
-export function updateProjectMemberRole(projectId, userId, role) {
-  return apiUpdateProjectMemberRole({ projectId, userId, role });
-}
-
-export function removeProjectMember(projectId, userId) {
-  return apiRemoveProjectMember({ projectId, userId });
-}
-
 export async function fetchProjectThreads(projectId) {
   if (!projectId) return { threads: [] };
   const response = await apiListThreads({ projectId, limit: 200 });
@@ -175,10 +135,4 @@ export async function fetchProjectThreads(projectId) {
       .filter(Boolean),
     next_cursor: response?.next_cursor || null,
   };
-}
-export function fetchProjectWidgets(_projectId) {
-  return Promise.resolve({ widgets: [], todo: true });
-}
-export function fetchThreadDetail(_threadId) {
-  return Promise.resolve(null);
 }

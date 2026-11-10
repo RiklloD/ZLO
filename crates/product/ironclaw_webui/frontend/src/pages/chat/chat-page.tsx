@@ -10,7 +10,6 @@ import type { ConnectionStatus as ConnectionStatusValue } from "./lib/connection
 export function ChatPage() {
   const {
     threadsState,
-    gatewayStatus,
     regressionArtifactExportEnabled = false,
     globalAutoApproveEnabled = false,
     pendingRenderedNotification = null,
@@ -74,7 +73,6 @@ export function ChatPage() {
         isCreatingThread={threadsState.isCreating}
         composerDraft={composerDraft}
         composerResetKey={location.key}
-        gatewayStatus={gatewayStatus}
         regressionArtifactExportEnabled={regressionArtifactExportEnabled}
         globalAutoApproveEnabled={globalAutoApproveEnabled}
         pendingRenderedNotification={pendingRenderedNotification}

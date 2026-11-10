@@ -39,7 +39,6 @@ function useExtensionsForTest({ extensions, registry }: DynamicTestOptions) {
   const queryData = new Map([
     ["extensions", { extensions }],
     ["extension-registry", { entries: registry }],
-    ["gateway-status-extensions", {}],
   ]);
   const context: vm.Context = {
     React: {
@@ -51,7 +50,6 @@ function useExtensionsForTest({ extensions, registry }: DynamicTestOptions) {
     fetchExtensionRegistry: () => {},
     fetchExtensionSetup: () => {},
     fetchExtensions: () => {},
-    gatewayStatus: () => {},
     globalThis: {},
     installExtension: () => {},
     registerCustomMcp: () => {},
@@ -178,7 +176,6 @@ test("useExtensions exposes catalog errors and refetches both catalog queries", 
     fetchExtensionRegistry: () => {},
     fetchExtensionSetup: () => {},
     fetchExtensions: () => {},
-    gatewayStatus: () => {},
     globalThis: {},
     installExtension: () => {},
     registerCustomMcp: () => {},
@@ -251,7 +248,6 @@ test("extension mutations preserve stable client action ids through hook payload
     fetchExtensionSetup: () => {},
     fetchExtensions: () => {},
     fetchPairingRequests: () => {},
-    gatewayStatus: () => {},
     globalThis: {},
     hasChannelSurface,
     installExtension: (packageRef, options) => {
@@ -341,7 +337,6 @@ function installMutationHarness(authoritativeExtension) {
     fetchExtensionRegistry: () => {},
     fetchExtensionSetup: () => {},
     fetchExtensions: () => {},
-    gatewayStatus: () => {},
     globalThis: {},
     installExtension: () => {},
     registerCustomMcp: () => {},
@@ -611,7 +606,6 @@ test("useOauthSetup waits for flow completion after the OAuth popup closes", asy
       flowStatusRequests.push({ flowId, invocationId });
       return { status: "completed" };
     },
-    gatewayStatus: () => {},
     globalThis: {},
     hasChannelSurface,
     installExtension: () => {},

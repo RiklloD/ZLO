@@ -22,10 +22,6 @@ export function hasAuthSurface(item) {
   return extensionSurfaces(item).some((surface) => surface?.kind === "auth");
 }
 
-export function hasToolSurface(item) {
-  return extensionSurfaces(item).some((surface) => surface?.kind === "tool");
-}
-
 // Channel discovery is extension-surface data: an extension's `surfaces`
 // carry a typed `channel` entry with direction (inbound/outbound), the
 // caller's connection state, and the connect affordance. There is no separate

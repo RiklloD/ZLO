@@ -33,9 +33,9 @@ function GroupHeader({ label, count, dotClass }) {
   );
 }
 
-export function ProviderManagement({ settings, gatewayStatus, searchQuery = "" }) {
+export function ProviderManagement({ settings, searchQuery = "" }) {
   const t = useT();
-  const actions = useProviderManagementActions({ settings, gatewayStatus, searchQuery, t });
+  const actions = useProviderManagementActions({ settings, searchQuery, t });
   const state = actions.providerState;
   const policyCatalog = normalizeModelCatalog({
     models:

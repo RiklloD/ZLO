@@ -16,15 +16,6 @@ function formatEnumLabel(value, t, config) {
   return tx(t, translationKeys[key] || `${keyPrefix}.${key}`, {}, fallback);
 }
 
-const PROJECT_HEALTH_LABELS = {
-  green: "Healthy",
-  yellow: "Needs review",
-  red: "At risk",
-  muted: "Archived",
-  steady: "Steady",
-  unknown: "Unknown",
-};
-
 const PROJECT_STATE_LABELS = {
   active: "Active",
   archived: "Archived",
@@ -48,13 +39,6 @@ const THREAD_STATE_LABELS = {
 
 const THREAD_TYPE_LABELS = {
   mission_run: "Mission run",
-};
-
-const MESSAGE_ROLE_LABELS = {
-  system: "System",
-  user: "User",
-  assistant: "Assistant",
-  tool: "Tool",
 };
 
 export function formatProjectDate(iso, t, options = {}) {
@@ -100,21 +84,6 @@ export function formatProjectRelativeTime(iso, t) {
     : tx(t, "projects.relative.daysAgo", { count: days }, "{count}d ago");
 }
 
-export function formatCurrency(amount) {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: amount >= 100 ? 0 : 2,
-  }).format(Number(amount || 0));
-}
-
-export function healthTone(health) {
-  if (health === "green") return "success";
-  if (health === "yellow") return "warning";
-  if (health === "red") return "danger";
-  return "muted";
-}
-
 export function projectStateTone(state) {
   return state === "active" ? "success" : "muted";
 }
@@ -124,13 +93,6 @@ export function threadTone(state) {
   if (state === "Done" || state === "Completed") return "success";
   if (state === "Failed") return "danger";
   return "warning";
-}
-
-export function formatProjectHealth(health, t) {
-  return formatEnumLabel(health, t, {
-    labels: PROJECT_HEALTH_LABELS,
-    keyPrefix: "projects.health",
-  });
 }
 
 export function formatProjectState(state, t) {
@@ -164,15 +126,7 @@ export function formatThreadType(type, t) {
   });
 }
 
-export function formatMessageRole(role, t) {
-  return formatEnumLabel(role, t, {
-    labels: MESSAGE_ROLE_LABELS,
-    keyPrefix: "projects.role",
-    defaultKey: "system",
-  });
-}
-
-export function parseMissionRunGoal(goal) {
+function parseMissionRunGoal(goal) {
   const text = String(goal || "").trim();
   if (!text) return null;
 
@@ -230,25 +184,4 @@ export function summarizeOverview(overview) {
 
 export function projectCount(t, key, count) {
   return tx(t, `projects.count.${key}`, { count: count || 0 }, "{count}");
-}
-
-export function messageContent(message) {
-  if (!message) return "";
-  if (typeof message.content === "string") return message.content;
-  if (message.content == null) return "";
-  try {
-    return JSON.stringify(message.content, null, 2);
-  } catch {
-    return String(message.content);
-  }
-}
-
-export function formatMetricValue(metric, t) {
-  if (!metric) return tx(t, "projects.metric.notSet", {}, "Not set");
-
-  const unit = metric.unit ? ` ${metric.unit}` : "";
-  const current = metric.current != null ? `${metric.current}${unit}` : tx(t, "projects.metric.notSet", {}, "Not set");
-  const target = metric.target != null ? `${metric.target}${unit}` : null;
-
-  return target ? `${current} / ${target}` : current;
 }

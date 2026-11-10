@@ -42,7 +42,6 @@ export function EmptyState({
   initialText,
   resetKey,
   draftKey,
-  context,
   statusText,
   canCancel,
   onCancel,
@@ -92,7 +91,6 @@ export function EmptyState({
           resetKey={resetKey}
           draftKey={draftKey}
           variant="hero"
-          context={context}
           statusText={statusText}
           canCancel={canCancel}
           onCancel={onCancel}

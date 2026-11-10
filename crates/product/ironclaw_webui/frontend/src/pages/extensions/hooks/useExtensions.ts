@@ -1,6 +1,6 @@
 import React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { clientActionId, gatewayStatus } from "../../../lib/api";
+import { clientActionId } from "../../../lib/api";
 import {
   OAUTH_FLOW_POLL_MS,
   OAUTH_FLOW_STATUS_ERROR_KEYS,
@@ -175,12 +175,6 @@ export function useExtensions() {
   const t = useT();
   const queryClient = useQueryClient();
 
-  const statusQuery = useQuery({
-    queryKey: ["gateway-status-extensions"],
-    queryFn: gatewayStatus,
-    staleTime: 10_000,
-  });
-
   const extensionsQuery = useQuery({
     queryKey: ["extensions"],
     queryFn: fetchExtensions,
@@ -212,7 +206,6 @@ export function useExtensions() {
   const invalidate = React.useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["extensions"] });
     queryClient.invalidateQueries({ queryKey: ["extension-registry"] });
-    queryClient.invalidateQueries({ queryKey: ["gateway-status-extensions"] });
   }, [queryClient]);
 
   const [actionResult, setActionResult] = React.useState<ActionResult | null>(null);
@@ -305,7 +298,6 @@ export function useExtensions() {
     },
   });
 
-  const status = statusQuery.data || {};
   const extensions = extensionsQuery.data?.extensions || [];
   const registry = registryQuery.data?.entries || [];
   const extensionById = new Map(
@@ -369,7 +361,6 @@ export function useExtensions() {
   const isBusy = installMutation.isPending || registerCustomMcpMutation.isPending || removeMutation.isPending || importMutation.isPending;
 
   return {
-    status,
     extensions,
     channels,
     tools,

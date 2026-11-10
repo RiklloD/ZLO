@@ -91,7 +91,6 @@ test("Inference tab omits unsupported operator-config fields", () => {
   const rendered = exports.InferenceTab({
     isAdmin: true,
     settings: {},
-    gatewayStatus: null,
     onSave: () => {},
     savedKeys: {},
     isLoading: false,
@@ -125,7 +124,6 @@ test("Inference tab gives non-admin users model preference without provider cont
   const rendered = exports.InferenceTab({
     isAdmin: false,
     settings: {},
-    gatewayStatus: null,
     onSave: () => {},
     savedKeys: {},
     isLoading: false,

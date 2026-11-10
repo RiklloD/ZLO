@@ -2,10 +2,7 @@ export const defaultRoute = "/chat";
 
 // `hidden: true` keeps the route registered (direct URL access and
 // breadcrumb/title resolution still work) but suppresses it from
-// sidebar navigation. Routes whose page-level API libs are entirely
-// TODO stubs against missing v2 endpoints are hidden here until the
-// matching `/api/webchat/v2/*` contracts land. Remove the flag once
-// the page's `lib/*-api.ts` calls real endpoints.
+// sidebar navigation.
 export const primaryRoutes = [
   { id: "chat", path: "/chat", labelKey: "nav.chat" },
   { id: "workspace", path: "/workspace", labelKey: "nav.workspace" },
@@ -16,7 +13,6 @@ export const primaryRoutes = [
   // the real v2 `/api/webchat/v2/projects` endpoints (list/create/read/update/
   // delete + membership ACL) and the project-filtered thread list.
   { id: "projects", path: "/projects", labelKey: "nav.projects", hidden: true },
-  { id: "jobs", path: "/jobs", labelKey: "nav.jobs", hidden: true },
   { id: "automations", path: "/automations", labelKey: "nav.automations" },
   { id: "extensions", path: "/extensions", labelKey: "nav.extensions" },
   { id: "logs", path: "/logs", labelKey: "nav.logs", hidden: true },
@@ -28,35 +24,17 @@ export const primaryRoutes = [
   { id: "admin", path: "/admin", labelKey: "nav.admin", hidden: false },
 ];
 
-export const routeSectionDefs = [
-  {
-    labelKey: "nav.sectionWork",
-    ids: primaryRoutes
-      .filter(({ id }) => !["extensions", "logs", "settings", "admin"].includes(id))
-      .map(({ id }) => id),
-  },
-  {
-    labelKey: "nav.sectionSystem",
-    ids: ["extensions", "logs", "settings", "admin"],
-  },
-];
-
 export const SETTINGS_SUB_ROUTES = [
-  // Inference is un-hidden: its lib/*-api.ts (LLM providers) now calls the real
-  // v2 `/api/webchat/v2/llm/*` endpoints, per the unhide rule in the header
-  // comment above. The rest stay hidden until their api libs leave stub state.
+  // Inference's lib/*-api.ts (LLM providers) calls the real v2
+  // `/api/webchat/v2/llm/*` endpoints.
   { id: "inference", labelKey: "settings.inference", icon: "spark" },
   // Appearance is browser-local UI preference state and does not need a v2 API.
   { id: "appearance", labelKey: "settings.appearance", icon: "sun" },
-  // { id: "agent", labelKey: "settings.agent", icon: "bolt" },
-  // { id: "channels", labelKey: "settings.channels", icon: "send" },
-  // { id: "networking", labelKey: "settings.networking", icon: "pulse" },
   { id: "tools", labelKey: "settings.tools", icon: "tool" },
   { id: "skills", labelKey: "settings.skills", icon: "file" },
   // Trace Commons is un-hidden: its api lib calls the real v2
   // `/api/webchat/v2/traces/credit` endpoint.
   { id: "traces", labelKey: "settings.traceCommons", icon: "layers" },
-  // { id: "users", labelKey: "settings.users", icon: "lock" },
   { id: "language", labelKey: "settings.language", icon: "globe" },
 ];
 
@@ -77,7 +55,3 @@ export const EXPANDABLE_SUB_ROUTES = {
   extensions: EXTENSIONS_SUB_ROUTES,
   admin: ADMIN_SUB_ROUTES,
 };
-
-export function routeForId(id) {
-  return primaryRoutes.find((route) => route.id === id) || primaryRoutes[0];
-}

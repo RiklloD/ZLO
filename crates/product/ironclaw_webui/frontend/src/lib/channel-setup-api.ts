@@ -22,8 +22,3 @@ export function channelSetupError(error: unknown, fallback: string): string {
       fallback,
   );
 }
-
-export function optionalString(value: unknown): string | null {
-  const normalized = String(value || "").trim();
-  return normalized ? normalized : null;
-}
