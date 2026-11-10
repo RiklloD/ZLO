@@ -54,7 +54,7 @@ pub struct PackageAsset {
 }
 
 pub enum PackageAssetContent {
-    Bytes(Vec<u8>),
+    Bytes(Cow<'static, [u8]>),
 }
 
 /// A package's user-facing onboarding copy, carried as plain data (no host
@@ -91,10 +91,10 @@ pub struct PackageBundle {
 }
 
 /// A byte-content asset addressed by `path`.
-pub(crate) fn bytes_asset(path: &str, bytes: &[u8]) -> PackageAsset {
+pub(crate) fn bytes_asset(path: &str, bytes: &'static [u8]) -> PackageAsset {
     PackageAsset {
         path: path.to_string(),
-        content: PackageAssetContent::Bytes(bytes.to_vec()),
+        content: PackageAssetContent::Bytes(Cow::Borrowed(bytes)),
     }
 }
 

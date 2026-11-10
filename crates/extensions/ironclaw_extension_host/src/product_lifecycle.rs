@@ -5005,16 +5005,17 @@ output_schema_ref = "schemas/search.output.json"
                 AvailableExtensionAsset {
                     path: "manifest.toml".to_string(),
                     content: AvailableExtensionAssetContent::Bytes(
-                        manifest_toml.as_bytes().to_vec(),
+                        manifest_toml.as_bytes().to_vec().into(),
                     ),
                 },
                 AvailableExtensionAsset {
                     path: "wasm/fixture.wasm".to_string(),
-                    content: AvailableExtensionAssetContent::Bytes(b"\0asm\x01\0\0\0".to_vec()),
+                    content: AvailableExtensionAssetContent::Bytes(
+                        b"\0asm\x01\0\0\0".to_vec().into(),
+                    ),
                 },
             ],
             onboarding_override: None,
-            oauth_setup_override: None,
             search_aliases: Vec::new(),
         }
     }
@@ -5103,16 +5104,17 @@ runtime_credentials = [
                 AvailableExtensionAsset {
                     path: "manifest.toml".to_string(),
                     content: AvailableExtensionAssetContent::Bytes(
-                        manifest_toml.as_bytes().to_vec(),
+                        manifest_toml.as_bytes().to_vec().into(),
                     ),
                 },
                 AvailableExtensionAsset {
                     path: "wasm/fixture.wasm".to_string(),
-                    content: AvailableExtensionAssetContent::Bytes(b"\0asm\x01\0\0\0".to_vec()),
+                    content: AvailableExtensionAssetContent::Bytes(
+                        b"\0asm\x01\0\0\0".to_vec().into(),
+                    ),
                 },
             ],
             onboarding_override: None,
-            oauth_setup_override: None,
             search_aliases: Vec::new(),
         }
     }
@@ -5193,16 +5195,17 @@ input_schema_ref = "schemas/fixture_host_internal/dynamic/mcp_server.input.v1.js
                 AvailableExtensionAsset {
                     path: "manifest.toml".to_string(),
                     content: AvailableExtensionAssetContent::Bytes(
-                        manifest_toml.as_bytes().to_vec(),
+                        manifest_toml.as_bytes().to_vec().into(),
                     ),
                 },
                 AvailableExtensionAsset {
                     path: "wasm/fixture.wasm".to_string(),
-                    content: AvailableExtensionAssetContent::Bytes(b"\0asm\x01\0\0\0".to_vec()),
+                    content: AvailableExtensionAssetContent::Bytes(
+                        b"\0asm\x01\0\0\0".to_vec().into(),
+                    ),
                 },
             ],
             onboarding_override: None,
-            oauth_setup_override: None,
             search_aliases: Vec::new(),
         }
     }

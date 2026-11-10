@@ -351,7 +351,7 @@ access_token = "/access_token""#
         assert_eq!(
             schema.content,
             ironclaw_extension_host::AvailableExtensionAssetContent::Bytes(
-                br#"{"type":"object","required":["action"]}"#.to_vec(),
+                br#"{"type":"object","required":["action"]}"#.to_vec().into(),
             ),
             "the model-facing schema must come from the signed package, not a permissive host placeholder",
         );

@@ -376,11 +376,10 @@ instructions = "Open the fixture app and scan the code."
         assets: vec![ironclaw_extension_host::AvailableExtensionAsset {
             path: "manifest.toml".to_string(),
             content: ironclaw_extension_host::AvailableExtensionAssetContent::Bytes(
-                manifest_toml.as_bytes().to_vec(),
+                manifest_toml.as_bytes().to_vec().into(),
             ),
         }],
         onboarding_override: None,
-        oauth_setup_override: None,
         search_aliases: Vec::new(),
     }
 }

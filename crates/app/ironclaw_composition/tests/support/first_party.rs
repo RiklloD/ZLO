@@ -69,7 +69,6 @@ pub(crate) fn test_first_party_bundles() -> Vec<FirstPartyPackageBundle> {
                     setup_url: copy.setup_url,
                     credential_next_step: copy.credential_next_step,
                 }),
-                oauth_setup: None,
                 trust_effects: bundle.trust_effects,
                 search_aliases,
             }

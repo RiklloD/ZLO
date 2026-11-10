@@ -29,7 +29,7 @@ use ironclaw_product_contracts::package_lifecycle::{
     LifecycleExtensionOnboarding, LifecycleExtensionRuntimeKind, LifecycleExtensionSource,
     LifecycleExtensionSummary, LifecyclePackageKind, LifecyclePackageRef,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 use toml::Value;
 
 use crate::ExtensionRemovalCleanupRequirement;
@@ -86,7 +86,7 @@ pub struct AvailableExtensionAsset {
 /// `remove` deleted the extension dir).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AvailableExtensionAssetContent {
-    Bytes(Vec<u8>),
+    Bytes(Cow<'static, [u8]>),
 }
 
 #[derive(Debug, Clone)]
@@ -129,12 +129,6 @@ pub struct AvailableExtensionPackage {
     /// as each package migrates, its copy moves here and its match arm is
     /// deleted. See overview §3 (package self-containment).
     pub onboarding_override: Option<LifecycleExtensionOnboarding>,
-    /// Bespoke OAuth-setup credential requirement carried down from a migrated
-    /// inventory bundle, replacing the manifest-derived requirement. `None` for
-    /// packages whose derived requirement is correct. Used by a package whose
-    /// connect flow authorizes a shared account with setup scopes distinct from
-    /// its per-tool runtime scopes.
-    pub oauth_setup_override: Option<LifecycleExtensionCredentialRequirement>,
     /// Extra catalog search aliases carried down from an injected first-party
     /// bundle (e.g. the GSuite family's "google"/"workspace" terms). Empty for
     /// filesystem/imported packages. Folds the former per-id special-case in
@@ -292,15 +286,6 @@ fn credential_requirements(
 ) -> Vec<LifecycleExtensionCredentialRequirement> {
     if is_host_managed_credential_extension(&package.package_ref) {
         return Vec::new();
-    }
-    // A migrated package may carry a bespoke OAuth-setup connect requirement
-    // (a personal-OAuth connect whose setup scopes differ from the per-tool
-    // runtime scopes) that replaces the manifest-derived one. Composition never
-    // names the package — the override rides down from its inventory bundle.
-    if package.package_ref.kind == LifecyclePackageKind::Extension
-        && let Some(oauth_setup) = &package.oauth_setup_override
-    {
-        return vec![oauth_setup.clone()];
     }
 
     let mut groups: Vec<CredentialRequirementGroup> = Vec::new();
@@ -818,21 +803,6 @@ fn package_from_bundle(
             &copy.credential_next_step,
         )
     });
-    // A bespoke OAuth-setup credential requirement (a personal-OAuth connect)
-    // replaces the manifest-derived one; map the plain bundle data to the host
-    // lifecycle type here.
-    let oauth_setup_override =
-        bundle
-            .oauth_setup
-            .as_ref()
-            .map(|setup| LifecycleExtensionCredentialRequirement {
-                name: setup.requirement_name.clone(),
-                provider: setup.provider.clone(),
-                required: true,
-                setup: LifecycleExtensionCredentialSetup::OAuth {
-                    scopes: setup.scopes.clone(),
-                },
-            });
     let mut package = bundled_extension_package(
         &bundle.id,
         &bundle.display_name,
@@ -840,7 +810,6 @@ fn package_from_bundle(
         assets,
     )?;
     package.onboarding_override = onboarding_override;
-    package.oauth_setup_override = oauth_setup_override;
     package.search_aliases = bundle.search_aliases.clone();
     Ok(package)
 }
@@ -901,7 +870,6 @@ fn bundled_extension_package(
         channel_presentation,
         assets,
         onboarding_override: None,
-        oauth_setup_override: None,
         search_aliases: Vec::new(),
     })
 }
@@ -1073,7 +1041,7 @@ fn nearai_mcp_assets(bundle: PackageBundle, manifest: &str) -> Vec<AvailableExte
 pub fn bytes_asset(path: &str, bytes: &[u8]) -> AvailableExtensionAsset {
     AvailableExtensionAsset {
         path: path.to_string(),
-        content: AvailableExtensionAssetContent::Bytes(bytes.to_vec()),
+        content: AvailableExtensionAssetContent::Bytes(Cow::Owned(bytes.to_vec())),
     }
 }
 
@@ -1241,7 +1209,6 @@ where
         channel_presentation,
         assets,
         onboarding_override: None,
-        oauth_setup_override: None,
         search_aliases: Vec::new(),
     }))
 }
@@ -1356,6 +1323,32 @@ mod tests {
         assert_eq!(visible, vec![CapabilityId::new("fixture.search").unwrap()]);
         assert!(EffectKind::ExternalWrite.is_write());
         assert!(!EffectKind::Network.is_write());
+    }
+
+    #[test]
+    fn bundled_wasm_modules_reach_the_catalog_without_being_copied() {
+        let catalog = AvailableExtensionCatalog::from_first_party_assets().unwrap();
+        let mut modules = 0;
+        for package in &catalog.packages {
+            let ExtensionRuntime::Wasm { module } = &package.package.manifest.runtime else {
+                continue;
+            };
+            let asset = package
+                .assets
+                .iter()
+                .find(|asset| asset.path == module.as_str())
+                .unwrap();
+            assert!(
+                matches!(
+                    asset.content,
+                    AvailableExtensionAssetContent::Bytes(Cow::Borrowed(_))
+                ),
+                "{} WASM module was copied out of the binary's embedded bytes",
+                package.package_ref.id
+            );
+            modules += 1;
+        }
+        assert!(modules > 0, "the bundled catalog has no WASM packages");
     }
 
     /// Every bundled package must SHIP every asset its manifest references.
@@ -2475,7 +2468,7 @@ handle = "web_token"
 
         assert_eq!(
             wasm.content,
-            AvailableExtensionAssetContent::Bytes(b"bundled".to_vec())
+            AvailableExtensionAssetContent::Bytes(b"bundled".to_vec().into())
         );
         assert_eq!(catalog.search("fixture").count(), 1);
     }
@@ -2531,7 +2524,7 @@ handle = "web_token"
             fs.files
                 .lock()
                 .unwrap()
-                .insert(path.as_str().to_string(), bytes.clone());
+                .insert(path.as_str().to_string(), bytes.to_vec());
         }
 
         materialize_available_extension(&fs, &extension)
@@ -2934,15 +2927,16 @@ output_schema_ref = "schemas/write.output.json"
             assets: vec![
                 AvailableExtensionAsset {
                     path: "manifest.toml".to_string(),
-                    content: AvailableExtensionAssetContent::Bytes(MANIFEST.as_bytes().to_vec()),
+                    content: AvailableExtensionAssetContent::Bytes(
+                        MANIFEST.as_bytes().to_vec().into(),
+                    ),
                 },
                 AvailableExtensionAsset {
                     path: "wasm/fixture.wasm".to_string(),
-                    content: AvailableExtensionAssetContent::Bytes(wasm_bytes.to_vec()),
+                    content: AvailableExtensionAssetContent::Bytes(wasm_bytes.to_vec().into()),
                 },
             ],
             onboarding_override: None,
-            oauth_setup_override: None,
             search_aliases: Vec::new(),
         }
     }
