@@ -531,6 +531,15 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
         owner: "substrates/",
         decided_in: "WS6",
     },
+    // Embedding calls go through the policy egress, never a raw client
+    // (`ironclaw_llm::embeddings`); chat providers are unaffected.
+    SameLayerEdge {
+        crate_name: "ironclaw_llm",
+        dependency_name: "ironclaw_network",
+        layer: "substrates",
+        owner: "domains/",
+        decided_in: "embeddings + /v1/embeddings + hybrid memory search (2026-11-11)",
+    },
     SameLayerEdge {
         crate_name: "ironclaw_llm",
         dependency_name: "ironclaw_safety",
@@ -811,7 +820,10 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
 // filesystem substrate rather than coupling notification state to outbound.
 // 80 -> 81: CLI drivers redact approval-card text through `ironclaw_safety`
 // instead of a second copy of the display sanitizer.
-const SAME_LAYER_EDGE_BASELINE: usize = 80;
+// 80 -> 81 (this tree): `ironclaw_llm` embeddings reach providers through
+// `ironclaw_network`'s policy egress (root AGENTS.md: external HTTP goes
+// through ironclaw_network) rather than another hardened reqwest client.
+const SAME_LAYER_EDGE_BASELINE: usize = 81;
 
 /// Sanity floors for the metadata walk. A gate that scans nothing must never
 /// read as success; these are deliberately far below the live values (✎ **65**

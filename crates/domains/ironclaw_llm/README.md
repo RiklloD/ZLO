@@ -36,7 +36,9 @@ isolated here so no non-LLM consumer inherits them.
 
 ## Depends on / consumed by
 
-- **Normal deps (measured):** `ironclaw_common`, `ironclaw_safety`.
+- **Normal deps (measured):** `ironclaw_common`, `ironclaw_host_api`, `ironclaw_safety`,
+  `ironclaw_network` (embeddings egress only — the chat providers keep their
+  hardened reqwest clients; see CONTRACT.md "Embeddings").
 - **Consumed by (6):** `ironclaw_composition`, `ironclaw_extension_host`,
   `ironclaw_loop_host`, `ironclaw_operator`, `ironclaw_stress`,
   `ironclaw_trace_commons` (recording vocabulary — the inventoried

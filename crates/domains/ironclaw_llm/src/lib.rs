@@ -21,6 +21,7 @@ pub mod circuit_breaker;
 pub(crate) mod codex_auth;
 mod codex_chatgpt;
 pub mod config;
+pub mod embeddings;
 pub mod error;
 pub mod failover;
 pub(crate) mod gemini_oauth;

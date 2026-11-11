@@ -3,6 +3,7 @@
 //! Gated behind the `testing` feature (or `cfg(test)`). Downstream test code
 //! can opt in by depending on this crate with `features = ["test-support"]`.
 
+pub mod embeddings;
 pub mod fault_injection;
 
 // ── Config builders ─────────────────────────────────────────────────────
