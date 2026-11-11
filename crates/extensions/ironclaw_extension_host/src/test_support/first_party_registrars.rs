@@ -100,7 +100,7 @@ impl FirstPartyCapabilityHandler for GsuiteFirstPartyHandler {
             return Err(FirstPartyCapabilityError::dispatch_with_host_remediation(
                 RuntimeDispatchErrorKind::OperationFailed,
                 None,
-                ironclaw_config::HostRemediationText::GoogleNotConfigured.text(),
+                ironclaw_extension_support::HostRemediationText::GoogleNotConfigured.text(),
             ));
         }
         let egress = request
@@ -176,7 +176,7 @@ fn gsuite_error(
                         "Google OAuth is configured but the provider rejected the credentials"
                             .to_string(),
                     ),
-                    ironclaw_config::HostRemediationText::GoogleBackendAuth.text(),
+                    ironclaw_extension_support::HostRemediationText::GoogleBackendAuth.text(),
                 )
             }
             _ => FirstPartyCapabilityError::new(error.kind()),

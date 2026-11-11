@@ -54,7 +54,7 @@ Depends on the kernel crates it hosts activity for (`capabilities`,
 (`host_api`, `extension_contracts`, `product_contracts`, `loop_contracts`,
 `common`), domain crates (`auth`, `attachments`, `conversations`, `llm`,
 `outbound`, `skills`, `threads`, `triggers`), substrates, `ironclaw_mcp`,
-`ironclaw_loop_host`, `ironclaw_host_ingress`, and `ironclaw_config` — the full
+`ironclaw_loop_host`, and `ironclaw_host_ingress` — the full
 list is the `Cargo.toml`. It never depends on `ironclaw_assistant` as a normal
 dependency (dev-only fixture edge exists; see the gate below) and never on
 `ironclaw_extension_manager` in any dependency kind.

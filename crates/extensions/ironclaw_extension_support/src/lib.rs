@@ -26,9 +26,11 @@ pub use gsuite::{
     GsuiteCapabilitySpec, GsuiteCredentialDispatchReason, GsuiteCredentialStageError,
     GsuiteCredentialStageRequest, GsuiteCredentialStager, GsuiteDispatchError,
     GsuiteDispatchRequest, GsuiteDispatchResult, GsuiteExecutor, GsuitePackageSpec,
-    find_gsuite_capability, google_api_network_policy, google_provider_id,
-    gsuite_google_account_visible_to_requester, gsuite_network_policy_for, gsuite_package_specs,
-    gsuite_resource_profile, is_gsuite_extension_id,
+    HostRemediationText, apply_step_text, find_gsuite_capability, google_api_network_policy,
+    google_backend_auth_text, google_not_configured_text, google_provider_id,
+    google_remediation_text, google_setup_steps_text, gsuite_google_account_visible_to_requester,
+    gsuite_network_policy_for, gsuite_package_specs, gsuite_resource_profile,
+    is_gsuite_extension_id,
 };
 pub use web_access::{
     EXA_MCP_HOST, NETWORK_EGRESS_LIMIT, WEB_GET_CONTENT_CAPABILITY_ID, WEB_SEARCH_CAPABILITY_ID,

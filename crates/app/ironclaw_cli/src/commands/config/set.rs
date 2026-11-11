@@ -163,14 +163,14 @@ fn set_value_key(
 
 /// After a successful write, print the remaining BYO setup steps for the
 /// capability this key belongs to, via
-/// `ironclaw_config::google_remediation_text`.
+/// `ironclaw_extension_support::google_remediation_text`.
 fn print_remaining_setup_guidance(key: &ConfigKey) {
     match key {
         ConfigKey::GoogleClientId
         | ConfigKey::GoogleClientSecret
         | ConfigKey::GoogleRedirectUri => {
             println!();
-            println!("{}", ironclaw_config::google_remediation_text());
+            println!("{}", ironclaw_extension_support::google_remediation_text());
         }
         ConfigKey::LlmApiKey { .. } | ConfigKey::WebuiToken => {}
     }
@@ -253,7 +253,7 @@ fn write_google_client_secret(
 /// service state.
 ///
 /// This is the CLI-surface twin of
-/// `ironclaw_config::apply_step_text` (the canonical sentence used
+/// `ironclaw_extension_support::apply_step_text` (the canonical sentence used
 /// by the composition-layer tool-error surface, e.g. `gsuite.rs`) — kept
 /// as a separate literal rather than unified onto that helper because
 /// several CLI tests already pin this exact `  to apply: ...` wording;

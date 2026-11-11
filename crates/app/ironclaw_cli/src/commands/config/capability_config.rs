@@ -2,14 +2,10 @@
 //! validation, and remediation text for LLM/Google/Slack capability setup.
 //!
 //! [`super::set::ConfigSetCommand`] is the only consumer of the alias/shape
-//! machinery in this module. The Google remediation text lives in
-//! `ironclaw_config::google_remediation_text` so
-//! `ironclaw_composition::extension_host::gsuite`'s "not configured"
-//! tool-result error can share the exact same wording without depending on
-//! this crate — `ironclaw_cli` sits above `composition` in the
-//! dependency graph (`cli` depends on `composition`, never the reverse), so
-//! composition-layer code cannot import CLI modules directly, but both
-//! already depend on `ironclaw_config`.
+//! machinery in this module. The Google remediation text is package-owned
+//! copy in `ironclaw_extension_support::google_remediation_text`, shared with
+//! the gsuite first-party handler (`crate::first_party::gsuite`) and the
+//! extension-host test doubles so every surface prints the same wording.
 
 /// Where a `config set` value physically lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,7 +329,7 @@ mod tests {
 
     #[test]
     fn remediation_text_points_at_the_right_surfaces() {
-        let google = ironclaw_config::google_remediation_text();
+        let google = ironclaw_extension_support::google_remediation_text();
         assert!(google.contains("console.cloud.google.com"));
         assert!(google.contains("config set google.client_id"));
         assert!(google.contains("config set google.client_secret"));

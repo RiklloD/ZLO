@@ -52,7 +52,6 @@ ironclaw_mcp = { path = "../../lanes/ironclaw_mcp" }
 ironclaw_network = { path = "../../substrates/ironclaw_network" }
 ironclaw_outbound = { path = "../../domains/ironclaw_outbound" }
 ironclaw_processes = { path = "../../kernel/ironclaw_processes" }
-ironclaw_config = { path = "../../app/ironclaw_config" }
 ironclaw_resources = { path = "../../kernel/ironclaw_resources" }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_secrets = { path = "../../substrates/ironclaw_secrets" }

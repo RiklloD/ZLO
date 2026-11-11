@@ -45,17 +45,18 @@ reason to be its own compilation unit.
   (`update.rs`) — the `[update]` table (`method = "source" | "none"`,
   default none; absolute `repo`, required for source; optional plain
   `branch`). Pure: git, the build and the install run in the binary.
-- `capability_remediation.rs` — remediation text helpers (not dead: consumers
-  in four crates).
 
 ## Depends on / consumed by
 
 - **Normal workspace deps (0).** None, ever — in any dependency kind.
-- **Consumed by (4, measured):** `ironclaw` (the binary),
-  `ironclaw_composition`, `ironclaw_operator`, `ironclaw_extension_host`.
+- **Consumed by (3, measured 2026-11-11):** `ironclaw` (the binary),
+  `ironclaw_composition`, `ironclaw_operator`.
   The family target says only the assembly crate and the binary should hold
-  the edge; the operator and extension-host edges are recorded divergences
-  (families/product.md §6.9.2's correction), not precedent.
+  the edge; the operator edge is a recorded divergence
+  (families/product.md §6.9.2's correction), not precedent. The
+  `ironclaw_extension_host` edge (and `ironclaw_extension_manager`'s dev-edge)
+  went away when the Google remediation copy moved to
+  `ironclaw_extension_support::gsuite` on 2026-11-11.
 
 ## Invariants
 
