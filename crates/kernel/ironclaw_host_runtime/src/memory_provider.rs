@@ -55,6 +55,11 @@ pub struct MemoryServiceResolver {
     /// Empty in the default/native configuration, so behavior is unchanged
     /// unless composition injects a provider (e.g. mem0).
     third_party_providers: BTreeMap<String, Arc<dyn MemoryService>>,
+    /// Embedder for the native provider's semantic search, when the
+    /// deployment configured an embedding provider. `None` keeps native
+    /// full-text only.
+    // arch-exempt: optional_arc, a deployment without `[embeddings]` has no embedder by design, plan #embeddings
+    native_embedder: Option<Arc<dyn ironclaw_memory_native::MemoryEmbedder>>,
 }
 
 impl std::fmt::Debug for MemoryServiceResolver {
@@ -73,6 +78,7 @@ impl MemoryServiceResolver {
         Self {
             policy: None,
             third_party_providers: BTreeMap::new(),
+            native_embedder: None,
         }
     }
 
@@ -81,6 +87,7 @@ impl MemoryServiceResolver {
         Self {
             policy: Some(policy),
             third_party_providers: BTreeMap::new(),
+            native_embedder: None,
         }
     }
 
@@ -90,6 +97,7 @@ impl MemoryServiceResolver {
         Self {
             policy,
             third_party_providers: BTreeMap::new(),
+            native_embedder: None,
         }
     }
 
@@ -113,6 +121,21 @@ impl MemoryServiceResolver {
         self
     }
 
+    /// Give the native provider semantic search: chunks it indexes are
+    /// embedded and its searches fuse a vector branch with full text.
+    pub fn with_native_embedder(
+        mut self,
+        embedder: Arc<dyn ironclaw_memory_native::MemoryEmbedder>,
+    ) -> Self {
+        self.native_embedder = Some(embedder);
+        self
+    }
+
+    /// The native provider's embedder, when one is configured.
+    pub fn native_embedder(&self) -> Option<Arc<dyn ironclaw_memory_native::MemoryEmbedder>> {
+        self.native_embedder.clone()
+    }
+
     /// Resolve the bound provider over a per-invocation filesystem.
     ///
     /// Returns `None` (fail-closed) when the memory binding is disabled,
@@ -125,10 +148,13 @@ impl MemoryServiceResolver {
         prompt_write_safety_event_sink: Option<Arc<dyn PromptWriteSafetyEventSink>>,
     ) -> Option<Arc<dyn MemoryService>> {
         match self.provider_resolution() {
-            ProviderResolution::Native => Some(Arc::new(NativeMemoryService::from_filesystem(
-                filesystem,
-                prompt_write_safety_event_sink,
-            ))),
+            ProviderResolution::Native => Some(Arc::new(
+                NativeMemoryService::from_filesystem_with_embedder(
+                    filesystem,
+                    prompt_write_safety_event_sink,
+                    self.native_embedder.clone(),
+                ),
+            )),
             // A registered third-party provider (e.g. mem0) backs the binding.
             // Third-party providers are remote/REST-backed and do not consume the
             // per-invocation filesystem; an unregistered third-party id fails closed.

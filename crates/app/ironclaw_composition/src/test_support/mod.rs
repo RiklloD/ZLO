@@ -69,6 +69,15 @@
 /// whose runs execute on its own turn runtime can start the coordinator's
 /// one publication lane itself with the kernel handles those runs actually
 /// live in (`RebornHostBindings::start_reply_publication_at_build`).
+/// Native memory's embedding port over `provider` — the exact adapter
+/// production composition builds from `[embeddings]` — for harnesses that
+/// assemble the memory tools themselves.
+pub fn memory_embedder_for_test(
+    provider: std::sync::Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider>,
+) -> std::sync::Arc<dyn ironclaw_memory_native::MemoryEmbedder> {
+    crate::embeddings::memory_embedder(provider)
+}
+
 pub fn defer_reply_publication_for_test(input: &mut crate::RebornRuntimeInput) {
     if let Some(services) = input.services.as_mut() {
         services.start_reply_publication_at_build = false;

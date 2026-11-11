@@ -432,16 +432,39 @@ impl RebornIntegrationGroupBuilder {
     /// core-builtins tests lightweight and makes a backend downgrade in the
     /// recall scenario impossible to miss.
     pub async fn builtin_tools_with_native_memory_libsql(
+        self,
+    ) -> HarnessResult<RebornIntegrationGroup> {
+        self.native_memory_libsql_group(None).await
+    }
+
+    /// [`Self::builtin_tools_with_native_memory_libsql`] with an embedding
+    /// provider configured — the `[embeddings]` deployment shape. The memory
+    /// tools and the host-managed memory lifecycle both run the native
+    /// provider with `embedder` (via composition's production adapter), so
+    /// writes embed their chunks and `memory.search` is hybrid.
+    pub async fn builtin_tools_with_semantic_memory_libsql(
+        self,
+        embedder: Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider>,
+    ) -> HarnessResult<RebornIntegrationGroup> {
+        self.native_memory_libsql_group(Some(
+            ironclaw_composition::test_support::memory_embedder_for_test(embedder),
+        ))
+        .await
+    }
+
+    async fn native_memory_libsql_group(
         mut self,
+        memory_embedder: Option<Arc<dyn ironclaw_memory_native::MemoryEmbedder>>,
     ) -> HarnessResult<RebornIntegrationGroup> {
         self.storage = StorageMode::LibSql;
         let base = self.build_base().await?;
         let user_id = base.canonical_actor_user()?;
         let filesystem: Arc<dyn RootFilesystem> = base.composite.clone();
         let provider: Arc<dyn ironclaw_memory::MemoryService> = Arc::new(
-            ironclaw_memory_native::NativeMemoryService::from_filesystem(
+            ironclaw_memory_native::NativeMemoryService::from_filesystem_with_embedder(
                 Arc::clone(&filesystem),
                 None,
+                memory_embedder.clone(),
             ),
         );
         let lifecycle =
@@ -454,6 +477,7 @@ impl RebornIntegrationGroupBuilder {
                 Arc::clone(&base.turn_root),
                 Arc::clone(&base.composite),
                 user_id,
+                memory_embedder,
             )?;
         let capability = GroupCapability::HostRuntime(Arc::new(host_runtime));
         self.into_group(base, capability).await

@@ -145,6 +145,67 @@ impl EmbeddingCredentialSource for OperatorEmbeddingKeySource {
     }
 }
 
+/// Native memory's embedding port over the deployment's embedding provider.
+struct MemoryEmbedderAdapter {
+    provider: Arc<dyn EmbeddingProvider>,
+}
+
+pub(crate) fn memory_embedder(
+    provider: Arc<dyn EmbeddingProvider>,
+) -> Arc<dyn ironclaw_memory_native::MemoryEmbedder> {
+    Arc::new(MemoryEmbedderAdapter { provider })
+}
+
+fn memory_resource_scope(
+    scope: &ironclaw_memory::MemoryDocumentScope,
+) -> Result<ResourceScope, ironclaw_memory_native::MemoryEmbeddingError> {
+    use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, UserId};
+    let invalid = |error: ironclaw_host_api::error::HostApiError| {
+        ironclaw_memory_native::MemoryEmbeddingError::new(format!("memory scope: {error}"))
+    };
+    Ok(ResourceScope {
+        tenant_id: TenantId::new(scope.tenant_id()).map_err(invalid)?,
+        user_id: UserId::new(scope.user_id()).map_err(invalid)?,
+        agent_id: scope
+            .agent_id()
+            .map(AgentId::new)
+            .transpose()
+            .map_err(invalid)?,
+        project_id: scope
+            .project_id()
+            .map(ProjectId::new)
+            .transpose()
+            .map_err(invalid)?,
+        mission_id: None,
+        thread_id: None,
+        invocation_id: InvocationId::new(),
+    })
+}
+
+#[async_trait]
+impl ironclaw_memory_native::MemoryEmbedder for MemoryEmbedderAdapter {
+    fn dimension(&self) -> u32 {
+        self.provider.dimension()
+    }
+
+    fn max_batch(&self) -> usize {
+        self.provider.limits().max_inputs
+    }
+
+    async fn embed(
+        &self,
+        scope: &ironclaw_memory::MemoryDocumentScope,
+        texts: Vec<String>,
+    ) -> Result<Vec<Vec<f32>>, ironclaw_memory_native::MemoryEmbeddingError> {
+        let scope = memory_resource_scope(scope)?;
+        self.provider
+            .embed(EmbeddingRequest::new(scope, texts))
+            .await
+            .map(|response| response.embeddings)
+            .map_err(|error| ironclaw_memory_native::MemoryEmbeddingError::new(error.to_string()))
+    }
+}
+
 /// `POST /v1/embeddings` port over the deployment's embedding provider.
 pub(crate) struct OpenAiCompatEmbeddingsAdapter {
     provider: Arc<dyn EmbeddingProvider>,

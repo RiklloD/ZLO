@@ -47,7 +47,7 @@ use crate::indexer::{MemoryChunkReplaceOutcome, MemoryDocumentIndexRepository};
 use crate::metadata::{MemoryWriteOptions, find_nearest_config, is_config_path};
 use crate::path::{memory_error, valid_memory_path};
 use crate::search::{
-    MemorySearchRequest, MemorySearchResult, RankedMemorySearchResult, rank_memory_search_results,
+    MemorySearchRequest, MemorySearchResult, RankedMemorySearchResult, fuse_memory_search_results,
 };
 use ironclaw_memory::DocumentMetadata;
 use ironclaw_memory::{MemoryDocumentPath, MemoryDocumentScope};
@@ -134,6 +134,41 @@ where
         );
         match self.filesystem.ensure_index(prefix, &fts).await {
             Ok(()) | Err(FilesystemError::Unsupported { .. }) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Declare the vector index for `dim`-sized chunk embeddings. The index
+    /// name carries the dimension, so a deployment that switches to a model
+    /// of another dimension declares a new index instead of conflicting with
+    /// the old one; chunks embedded at the old dimension simply never rank
+    /// (cosine over mismatched lengths is no score) until reindexed.
+    ///
+    /// Returns `false` when the mount cannot serve vector search (e.g. a
+    /// PostgreSQL server without the vector capability, or a conflicting
+    /// declaration): the caller then searches full text only.
+    async fn ensure_vector_index(
+        &self,
+        prefix: &VirtualPath,
+        dim: u32,
+    ) -> Result<bool, FilesystemError> {
+        let Ok(name) = IndexName::new(format!("memory_chunks_embedding_vector_d{dim}")) else {
+            return Ok(false);
+        };
+        let spec = IndexSpec::new(
+            name,
+            vec![Self::index_key(fs_keys::EMBEDDING)],
+            IndexKind::Vector { dim },
+        );
+        match self.filesystem.ensure_index(prefix, &spec).await {
+            Ok(()) => Ok(true),
+            Err(FilesystemError::Unsupported { .. } | FilesystemError::IndexConflict { .. }) => {
+                tracing::debug!(
+                    dim,
+                    "memory vector index unavailable; searching full text only"
+                );
+                Ok(false)
+            }
             Err(error) => Err(error),
         }
     }
@@ -1037,8 +1072,44 @@ where
             request.pre_fusion_limit().min(Page::MAX_LIMIT as usize) as u32,
         );
         let entries = self.filesystem.query(&prefix, &filter, page).await?;
-        Ok(rank_memory_search_results(
-            Self::map_chunk_hits_to_ranked_results(scope, entries),
+        let full_text_hits = Self::map_chunk_hits_to_ranked_results(scope, entries);
+
+        // Vector branch, only when the caller supplied a query embedding (an
+        // embedder is configured). Chunks without an embedding — written
+        // before embeddings were enabled, or whose embedding failed — carry
+        // no `embedding` projection and are reached by full text alone.
+        let mut vector_hits = Vec::new();
+        if let Some(embedding) = request.query_embedding()
+            && let Ok(dim) = u32::try_from(embedding.len())
+            && self.ensure_vector_index(&prefix, dim).await?
+        {
+            let limit = request.pre_fusion_limit().min(Page::MAX_LIMIT as usize) as u32;
+            let filter = Filter::VectorNearest {
+                key: Self::index_key(fs_keys::EMBEDDING),
+                embedding: embedding.to_vec(),
+                limit,
+            };
+            // `VectorNearest` overrides `Page::limit` (a top-k operation);
+            // the bounded page still satisfies the API.
+            match self
+                .filesystem
+                .query(&prefix, &filter, Page::new(0, limit))
+                .await
+            {
+                Ok(entries) => {
+                    vector_hits = Self::map_chunk_hits_to_ranked_results(scope, entries);
+                }
+                // A backend that cannot rank vectors after all degrades to
+                // full text; any other fault is a real search failure.
+                Err(FilesystemError::Unsupported { .. }) => {
+                    tracing::debug!("memory vector query unsupported; searching full text only");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(fuse_memory_search_results(
+            full_text_hits,
+            vector_hits,
             request.limit(),
         ))
     }
@@ -1723,6 +1794,53 @@ mod tests {
         assert_eq!(results.len(), 1, "FTS must filter out non-matching chunks");
         assert_eq!(results[0].path.relative_path(), "notes/alpha.md");
         assert!(results[0].full_text_rank.is_some());
+    }
+
+    #[tokio::test]
+    async fn search_fuses_full_text_and_vector_branches_when_a_query_embedding_is_set() {
+        let (_, repo) = fresh_repo();
+        let alpha = doc("notes/alpha.md");
+        let beta = doc("notes/beta.md");
+        repo.write_document(&alpha, b"alpha").await.unwrap();
+        repo.write_document(&beta, b"beta").await.unwrap();
+        for (path, content, embedding) in [
+            (&alpha, "alpha", vec![1.0, 0.0, 0.0]),
+            (&beta, "beta", vec![0.0, 1.0, 0.0]),
+        ] {
+            repo.replace_document_chunks_if_current(
+                path,
+                &content_sha256(content),
+                &[MemoryChunkWrite {
+                    content: content.to_string(),
+                    embedding: Some(embedding),
+                }],
+            )
+            .await
+            .unwrap();
+        }
+
+        // Word + meaning: alpha is a hybrid match and ranks first.
+        let request = search_request("alpha").with_query_embedding(vec![0.99, 0.01, 0.0]);
+        let results = repo
+            .search_documents(alpha.scope(), &request)
+            .await
+            .unwrap();
+        assert_eq!(results[0].path.relative_path(), "notes/alpha.md");
+        assert!(results[0].is_hybrid(), "alpha should fuse FTS + vector");
+
+        // Meaning only: no full-text term matches, the vector branch still
+        // finds beta first.
+        let request = search_request("gamma").with_query_embedding(vec![0.0, 1.0, 0.0]);
+        let results = repo.search_documents(beta.scope(), &request).await.unwrap();
+        assert_eq!(results[0].path.relative_path(), "notes/beta.md");
+        assert!(results[0].full_text_rank.is_none() && results[0].vector_rank == Some(1));
+
+        // No query embedding: exactly full text (gamma matches nothing).
+        let results = repo
+            .search_documents(beta.scope(), &search_request("gamma"))
+            .await
+            .unwrap();
+        assert!(results.is_empty());
     }
 
     #[tokio::test]

@@ -1246,6 +1246,7 @@ fn search_result_with_agent(
         score,
         snippet: snippet.to_string(),
         full_text_rank: Some(1),
+        vector_rank: None,
     }
 }
 
@@ -1772,5 +1773,136 @@ fn memory_guidance_is_a_compact_self_contained_section() {
     assert!(
         lines <= 18,
         "guidance is appended to every turn's prompt and must stay compact; {lines} lines"
+    );
+}
+
+/// Deterministic embedder: one bucket per known synonym group, so "car" and
+/// "automobile" embed identically while sharing no full-text term.
+struct SynonymEmbedder {
+    fail: bool,
+    calls: std::sync::Mutex<usize>,
+}
+
+impl SynonymEmbedder {
+    fn new(fail: bool) -> Arc<Self> {
+        Arc::new(Self {
+            fail,
+            calls: std::sync::Mutex::new(0),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        *self.calls.lock().unwrap()
+    }
+
+    fn vector(text: &str) -> Vec<f32> {
+        let mut vector = vec![0.0_f32; 3];
+        for word in text.split(|c: char| !c.is_alphanumeric()) {
+            match word.to_ascii_lowercase().as_str() {
+                "car" | "automobile" => vector[0] += 1.0,
+                "banana" | "plantain" => vector[1] += 1.0,
+                "" => {}
+                _ => vector[2] += 0.1,
+            }
+        }
+        vector
+    }
+}
+
+#[async_trait]
+impl ironclaw_memory_native::MemoryEmbedder for SynonymEmbedder {
+    fn dimension(&self) -> u32 {
+        3
+    }
+
+    fn max_batch(&self) -> usize {
+        1
+    }
+
+    async fn embed(
+        &self,
+        _scope: &ironclaw_memory::MemoryDocumentScope,
+        texts: Vec<String>,
+    ) -> Result<Vec<Vec<f32>>, ironclaw_memory_native::MemoryEmbeddingError> {
+        *self.calls.lock().unwrap() += 1;
+        if self.fail {
+            return Err(ironclaw_memory_native::MemoryEmbeddingError::new("offline"));
+        }
+        Ok(texts.iter().map(|text| Self::vector(text)).collect())
+    }
+}
+
+async fn search_paths(service: &NativeMemoryService, query: &str) -> Vec<(String, bool)> {
+    service
+        .search(
+            invocation(),
+            MemoryServiceSearchRequest {
+                query: query.to_string(),
+                limit: 5,
+            },
+        )
+        .await
+        .expect("search")
+        .results
+        .into_iter()
+        .map(|result| (result.path, result.is_hybrid_match))
+        .collect()
+}
+
+// With an embedder, a write embeds its chunks and search fuses a vector
+// branch: a meaning-only query finds the document (not hybrid), a query that
+// matches by word and meaning is a hybrid match, and an unrelated document
+// that full text cannot reach is not dragged in.
+#[tokio::test]
+async fn embedder_makes_native_search_hybrid() {
+    let embedder = SynonymEmbedder::new(false);
+    let service = NativeMemoryService::from_filesystem_with_embedder(
+        Arc::new(InMemoryBackend::new()),
+        None,
+        Some(embedder.clone()),
+    );
+    write_general_doc(&service, "notes/car.md", "my car is teal").await;
+    write_general_doc(&service, "notes/fruit.md", "a banana for lunch").await;
+    assert!(embedder.calls() >= 2, "each write embeds its chunks");
+
+    let meaning = search_paths(&service, "automobile").await;
+    assert_eq!(
+        meaning.first(),
+        Some(&("notes/car.md".to_string(), false)),
+        "{meaning:?}"
+    );
+
+    let both = search_paths(&service, "car automobile").await;
+    assert_eq!(
+        both.first(),
+        Some(&("notes/car.md".to_string(), true)),
+        "{both:?}"
+    );
+
+    // Without an embedder the same meaning-only query finds nothing.
+    let plain = NativeMemoryService::from_filesystem(Arc::new(InMemoryBackend::new()), None);
+    write_general_doc(&plain, "notes/car.md", "my car is teal").await;
+    assert!(search_paths(&plain, "automobile").await.is_empty());
+}
+
+// An embedder failure never fails a write or a search: chunks are indexed
+// text-only and search degrades to full text with today's results.
+#[tokio::test]
+async fn failing_embedder_degrades_to_full_text() {
+    let embedder = SynonymEmbedder::new(true);
+    let service = NativeMemoryService::from_filesystem_with_embedder(
+        Arc::new(InMemoryBackend::new()),
+        None,
+        Some(embedder.clone()),
+    );
+    write_general_doc(&service, "notes/car.md", "my car is teal").await;
+    assert_eq!(
+        search_paths(&service, "car").await,
+        vec![("notes/car.md".to_string(), false)]
+    );
+    assert!(search_paths(&service, "automobile").await.is_empty());
+    assert!(
+        embedder.calls() >= 3,
+        "write and both searches tried the embedder"
     );
 }

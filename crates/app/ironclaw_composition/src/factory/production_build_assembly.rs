@@ -49,10 +49,16 @@ pub(super) async fn build_production_shaped(
             root.hash(&mut hasher);
             memory_provider_connection.app_id = Some(format!("ws-{:016x}", hasher.finish()));
         }
-        crate::resolve_memory_provider(
+        let resolved = crate::resolve_memory_provider(
             memory_binding_policy,
             &crate::MemoryProviderDeps::for_third_party(memory_provider_connection),
-        )?
+        )?;
+        // `[embeddings]` configured: native memory search becomes hybrid.
+        match embeddings.as_ref() {
+            Some(embeddings) => resolved
+                .with_native_embedder(crate::embeddings::memory_embedder(embeddings.provider())),
+            None => resolved,
+        }
     };
     let profile = deployment.profile();
     let wiring_config = production_config(

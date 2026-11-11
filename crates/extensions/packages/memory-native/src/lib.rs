@@ -8,6 +8,7 @@ mod backend;
 mod chunking;
 #[cfg(any(test, feature = "test-support"))]
 pub mod contract_tests;
+mod embedding;
 mod events;
 mod indexer;
 mod metadata;
@@ -21,6 +22,7 @@ mod write_metadata;
 
 pub use backend::{MemoryBackend, MemoryBackendCapabilities, RepositoryMemoryBackend};
 pub use chunking::{ChunkConfig, MemoryChunkWrite, chunk_document};
+pub use embedding::{MemoryEmbedder, MemoryEmbeddingError};
 pub use indexer::{
     ChunkingMemoryDocumentIndexer, MemoryChunkReplaceOutcome, MemoryDocumentIndexRepository,
     MemoryDocumentIndexer,

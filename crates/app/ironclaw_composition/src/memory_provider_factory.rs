@@ -245,6 +245,33 @@ pub struct ResolvedMemoryProvider {
 }
 
 impl ResolvedMemoryProvider {
+    /// Give a NATIVE binding semantic search: its tools and the resolver the
+    /// host's memory calls go through both build the native service with
+    /// `embedder`, so writes embed their chunks and searches fuse vector
+    /// similarity with full text. Any other binding (third party, disabled)
+    /// is returned unchanged — the embedder is native's implementation detail.
+    pub(crate) fn with_native_embedder(
+        mut self,
+        embedder: Arc<dyn ironclaw_memory_native::MemoryEmbedder>,
+    ) -> Self {
+        if !matches!(
+            self.resolver.resolved_binding(),
+            MemoryProviderBinding::Native
+        ) {
+            return self;
+        }
+        let Some(package) = self.package.as_ref() else {
+            return self;
+        };
+        let tool_handler: Arc<dyn FirstPartyCapabilityHandler> = Arc::new(
+            NativeMemoryToolHandler::from_package(package)
+                .with_embedder(Some(Arc::clone(&embedder))),
+        );
+        self.tool_handler = Some(tool_handler);
+        self.resolver = self.resolver.with_native_embedder(embedder);
+        self
+    }
+
     fn unbound(resolver: MemoryServiceResolver) -> Self {
         Self {
             resolver,
@@ -830,5 +857,64 @@ pass = { prompt = "prompts/memory_curation.md", tools = ["ironclaw.memory.read"]
         let unknown = resolve_memory_provider(Some(policy), &deps).expect("unknown resolves");
         assert!(unknown.package.is_none());
         assert!(unknown.lifecycle.lifecycle.is_empty());
+    }
+
+    /// `[embeddings]` reaches a native binding (tools + resolver) and nothing
+    /// else: a disabled binding stays without tools or an embedder.
+    #[test]
+    fn native_embedder_is_applied_only_to_a_native_binding() {
+        struct NeverCalled;
+        #[async_trait::async_trait]
+        impl ironclaw_llm::embeddings::EmbeddingProvider for NeverCalled {
+            fn model_name(&self) -> &str {
+                "never-called"
+            }
+            fn dimension(&self) -> u32 {
+                4
+            }
+            fn limits(&self) -> ironclaw_llm::embeddings::EmbeddingLimits {
+                ironclaw_llm::embeddings::EmbeddingLimits::default()
+            }
+            async fn embed(
+                &self,
+                _request: ironclaw_llm::embeddings::EmbeddingRequest,
+            ) -> Result<
+                ironclaw_llm::embeddings::EmbeddingResponse,
+                ironclaw_llm::embeddings::EmbeddingError,
+            > {
+                Err(ironclaw_llm::embeddings::EmbeddingError::Transport {
+                    reason: "not used by this test".to_string(),
+                })
+            }
+        }
+        let provider: Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider> = Arc::new(NeverCalled);
+        let embedder = crate::embeddings::memory_embedder(provider);
+        let deps = MemoryProviderDeps::for_third_party(Mem0ConnectionConfig::default());
+
+        let native = resolve_memory_provider(None, &deps).expect("native resolves");
+        let plain_handler = native.tool_handler.clone().expect("native has tools");
+        assert!(native.resolver.native_embedder().is_none());
+        let semantic = native.with_native_embedder(Arc::clone(&embedder));
+        assert!(semantic.resolver.native_embedder().is_some());
+        let semantic_handler = semantic.tool_handler.expect("native keeps its tools");
+        assert!(
+            !Arc::ptr_eq(&plain_handler, &semantic_handler),
+            "the native tool handler is rebuilt with the embedder"
+        );
+
+        let policy = MemoryBindingPolicy::resolve(
+            ironclaw_host_runtime::memory_binding::MemoryBindingInput {
+                provider: Some("memory.disabled".to_string()),
+                ..ironclaw_host_runtime::memory_binding::MemoryBindingInput::native_default(
+                    ironclaw_host_runtime::memory_binding::MemoryDeploymentProfile::Standalone,
+                )
+            },
+        )
+        .expect("disabled policy resolves");
+        let disabled = resolve_memory_provider(Some(policy), &deps)
+            .expect("disabled resolves")
+            .with_native_embedder(embedder);
+        assert!(disabled.tool_handler.is_none());
+        assert!(disabled.resolver.native_embedder().is_none());
     }
 }

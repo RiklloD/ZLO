@@ -31,10 +31,14 @@ rule 1).
     `CONFIG_FILE_NAME`) plus this crate's own `MemoryWriteOptions`
     (`metadata`) and internal schema validation (`schema`).
   - Chunking + content hashing (`ChunkConfig`, `chunk_document`,
-    `content_sha256`) and the indexer hooks (`chunking`, `indexer`) — chunks
-    are text-only; no embedding-provider port exists.
-  - Full-text search and per-document ranking: `MemorySearchRequest`,
-    `MemorySearchResult` (`search`). There is no vector or hybrid lane.
+    `content_sha256`) and the indexer hooks (`chunking`, `indexer`). Chunks
+    carry an embedding when the host injected a `MemoryEmbedder`
+    (`embedding`) — the port is the only way vectors are produced; this crate
+    holds no model or HTTP client.
+  - Search and per-document ranking: `MemorySearchRequest`,
+    `MemorySearchResult` (`search`). Full text always; with an embedder, a
+    vector branch fused with full text by reciprocal rank (`is_hybrid` =
+    ranked by both). No embedder ⇒ exactly the full-text ranking.
   - The significant-event sink (`events`), and the prompt-write safety engine
     (`PromptWriteSafetyPolicy` + protected-path/decision/event types, `safety`)
     that implements the vocabulary the neutral contract defines.
@@ -63,7 +67,7 @@ rule 1).
 - Memory backends are plugins behind host-resolved scope. They must not infer
   broader tenant/user/agent/project authority or bypass mount/scoped-filesystem
   checks.
-- Keep search, chunking, and versioning behind
+- Keep search, chunking, embeddings, and versioning behind
   memory-owned repository/indexer abstractions; generic mount/catalog logic
   stays in `ironclaw_filesystem`.
 - Every read/list/search/write/version/chunk operation filters by the full
@@ -76,14 +80,16 @@ rule 1).
 - Capability declarations (`MemoryBackendCapabilities`) are enforcement inputs:
   unsupported file/search behavior fails closed before backend side effects.
 - Treat document writes as committed once persistence succeeds: a derived
-  index refresh failure after persistence must not make the write
-  report failure.
+  index or embedding refresh failure after persistence must not make the
+  write report failure (an embedder failure indexes the chunks text-only;
+  a query-embedding failure searches full text only).
 - Persistence is a single `FilesystemMemoryDocumentRepository` layered on
   `RootFilesystem`; the in-memory repository is test support, never a
   deployment target. Backend-specific (libSQL/Postgres) behavioral coverage
   belongs in `ironclaw_filesystem`'s backend contract tests; this crate's tests
   target the in-memory backend and exercise memory-document semantics
-  (versioning, chunk replace, metadata cascade, full-text search ranking).
+  (versioning, chunk replace, metadata cascade, full-text and hybrid search
+  ranking).
 
 ## Do Not Move In Here
 

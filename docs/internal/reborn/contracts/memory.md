@@ -14,7 +14,7 @@
 > **Crate split (#3537 lift):** `ironclaw_memory` is now the provider-neutral
 > contract (the `MemoryService` trait, operation DTOs, and scope/path/metadata
 > value types). The concrete native implementation of the responsibilities below
-> — repository seams, chunking/indexing/full-text search, prompt-context
+> — repository seams, chunking/indexing/full-text and hybrid search, prompt-context
 > assembly, and seeding/bootstrap/profile sync — lives in
 > `ironclaw_memory_native`. A provider crate depends on `ironclaw_memory`, never
 > the reverse.
@@ -25,7 +25,7 @@ It is responsible for:
 - repository seams for DB-backed memory documents;
 - memory backend plugin contracts;
 - metadata and `.config` inheritance;
-- chunking, indexing, and full-text search;
+- chunking, indexing, embeddings (through an injected port), and search;
 - memory service facades over shared backends;
 - prompt-context assembly policy;
 - seeding/bootstrap/profile sync policy;
@@ -193,14 +193,16 @@ Owns:
 single-scope search
 multi-scope search
 full-text ranking
+full-text + vector fusion (when an embedder is configured)
 search config defaults
 identity-document filtering
 ```
 
 Rules:
 
-- search is full-text only: the native provider has no vector or hybrid lane and generates no embeddings. Chunk hits are ranked by the backend, collapsed to one result per document by summed reciprocal rank, and normalized so the best document scores `1.0`;
-- the `embedding` chunk projection key stays part of the stored chunk grammar and the wire field `is_hybrid_match` stays on search results (always `false` from the native provider), so existing stores and clients keep working;
+- with no embedding provider configured (the default) search is full-text only: chunk hits are ranked by the backend, collapsed to one result per document by summed reciprocal rank, and normalized so the best document scores `1.0`;
+- with an embedding provider configured (`[embeddings]`, 2026-11-11), the native provider receives a `MemoryEmbedder` port from composition: the query is embedded and a `Filter::VectorNearest` branch over the chunk `embedding` projection runs beside full text; both branches' chunk hits feed the same reciprocal-rank sum (`1 / (60 + rank)` per hit), so a document found only by meaning still ranks and a document found by both ranks higher. `is_hybrid_match` is `true` exactly when both branches ranked the document. A query-embedding failure, or a mount that cannot serve vector search, degrades that search to full text;
+- the vector index is declared per dimension (`memory_chunks_embedding_vector_d{dim}`), so changing to a model of another dimension declares a new index instead of conflicting; chunks embedded at the old dimension never rank (no cosine across lengths) until their document is reindexed. Changing to a different model of the SAME dimension mixes vector spaces until documents are rewritten — known limitation;
 - secondary-scope identity/system-prompt documents are excluded from search results;
 - Postgres should implement unified multi-scope search when practical;
 - libSQL may use per-scope merge but must document score comparability limits.
@@ -375,6 +377,7 @@ write document
   -> persist document
   -> if skip_indexing delete chunks
   -> else chunk document
+  -> if an embedder is configured, embed chunks (failure => text-only chunks)
   -> replace chunks if document content hash still matches
 ```
 
