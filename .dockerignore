@@ -3,7 +3,6 @@ target/
 .env
 .env.*
 *.md
-!prompts/**/*.md
 !src/workspace/seeds/**/*.md
 !skills/**/*.md
 !crates/**/*.md

@@ -123,7 +123,7 @@ jobs:
           # against the real crate inventory and against a real first-party
           # extension manifest path, so a renamed, moved or deleted crate fails
           # loudly here instead of quietly falling out of scope.
-          if has_match '^(crates/([^/]+/)*ironclaw_common/|crates/([^/]+/)*ironclaw_wasm/|crates/([^/]+/)*packages/[^/]+/(manifest\.toml|wasm-src/)|registry/|scripts/build-wasm-extensions\.sh$|scripts/check-version-bumps\.sh$|\.github/workflows/(platform-and-compat|nightly-deep-ci)\.yml$)'; then
+          if has_match '^(crates/([^/]+/)*ironclaw_common/|crates/([^/]+/)*ironclaw_wasm/|crates/([^/]+/)*packages/[^/]+/(manifest\.toml|wasm-src/)|scripts/build-wasm-extensions\.sh$|scripts/check-version-bumps\.sh$|\.github/workflows/(platform-and-compat|nightly-deep-ci)\.yml$)'; then
             has_direct_wasm_abi_risk=true
           fi
           echo "has_direct_wasm_abi_risk=$has_direct_wasm_abi_risk" >> "$GITHUB_OUTPUT"
@@ -234,7 +234,7 @@ jobs:
   wasm-wit-compat:
     name: WASM WIT Compatibility
     needs: changes
-    # WIT and registry paths are outside the shared legacy-test classifier;
+    # WIT and WASM package paths are outside the shared legacy-test classifier;
     # the event-specific WASM risk outputs are authoritative for this job.
     if: >
       needs.changes.outputs.docs_only != 'true' &&

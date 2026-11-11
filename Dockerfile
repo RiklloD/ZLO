@@ -95,7 +95,6 @@ FROM deps AS builder
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY tools/ironclaw_stress/ tools/ironclaw_stress/
-COPY migrations/ migrations/
 COPY skills/ skills/
 COPY tests/ tests/
 RUN mkdir -p src \

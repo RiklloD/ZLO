@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Build WASM tools and channels that still have local source entries.
+# Build the first-party WASM extension guests under crates/extensions/packages/
+# and copy each artifact over the committed `.wasm` its manifest names.
 #
-# Verifies local-source registry entries compile against the current WIT
-# definitions. Registry entries that only publish release artifacts are skipped.
+# The v1 `registry/{tools,channels}/*.json` legs (`--tools`, `--channels`) were
+# retired with the `registry/` directory: every entry there published a v0.2x
+# release tarball and declared no local source, so both legs only ever SKIPped.
+# A retired flag now fails loudly instead of silently building nothing.
 #
 # Prerequisites:
 #   rustup target add wasm32-wasip2
@@ -10,10 +13,8 @@
 #   cargo install cargo-component --locked
 #
 # Usage:
-#   ./scripts/build-wasm-extensions.sh           # build all
-#   ./scripts/build-wasm-extensions.sh --tools    # tools only
-#   ./scripts/build-wasm-extensions.sh --channels # channels only
-#   ./scripts/build-wasm-extensions.sh --first-party # first-party extensions only
+#   ./scripts/build-wasm-extensions.sh               # build all (first-party)
+#   ./scripts/build-wasm-extensions.sh --first-party # same; kept for callers
 #
 # The package root is resolved from the crate inventory
 # (scripts/ci/lib/crate_tree.py) by crate NAME, not from a literal path, so the
@@ -90,21 +91,16 @@ cargo_component_build() {
     fi
 }
 
-BUILD_TOOLS=true
-BUILD_CHANNELS=true
-BUILD_FIRST_PARTY=true
 FAILED=()
 
-if [[ "${1:-}" == "--tools" ]]; then
-    BUILD_CHANNELS=false
-    BUILD_FIRST_PARTY=false
-elif [[ "${1:-}" == "--channels" ]]; then
-    BUILD_TOOLS=false
-    BUILD_FIRST_PARTY=false
-elif [[ "${1:-}" == "--first-party" ]]; then
-    BUILD_TOOLS=false
-    BUILD_CHANNELS=false
-fi
+case "${1:-}" in
+    ""|--first-party) ;;
+    *)
+        echo "error: unknown argument '${1}' (only --first-party is accepted; the" \
+            "v1 registry --tools/--channels legs were removed with registry/)" >&2
+        exit 2
+        ;;
+esac
 
 fail_build() {
     local name="$1"
@@ -129,53 +125,6 @@ build_manifest_set() {
     for manifest in "$@"; do
         "$builder" "$manifest"
     done
-}
-
-build_extension() {
-    local manifest_path="$1"
-    local hidden
-    local source_dir
-    local crate_name
-
-    if ! hidden=$(jq -r '.hidden // false' "$manifest_path"); then
-        fail_build "$(basename "$manifest_path" .json)" "could not read hidden flag"
-        return 0
-    fi
-    if [ "$hidden" = "true" ]; then
-        echo "  SKIP $(basename "$manifest_path" .json) (hidden registry entry)"
-        return 0
-    fi
-
-    if ! source_dir=$(jq -r '.source.dir // empty' "$manifest_path"); then
-        fail_build "$(basename "$manifest_path" .json)" "could not read source dir"
-        return 0
-    fi
-    if ! crate_name=$(jq -r '.source.crate_name // empty' "$manifest_path"); then
-        fail_build "$(basename "$manifest_path" .json)" "could not read crate name"
-        return 0
-    fi
-    local name
-    name=$(basename "$manifest_path" .json)
-
-    if [ -z "$source_dir" ]; then
-        echo "  SKIP $name (registry entry has no local source)"
-        return 0
-    fi
-    if [ -z "$crate_name" ]; then
-        echo "  SKIP $name (registry entry has no local crate name)"
-        return 0
-    fi
-    if [ ! -d "$source_dir" ]; then
-        echo "  SKIP $name (source dir $source_dir not found)"
-        return 0
-    fi
-
-    echo "  BUILD $name ($crate_name) from $source_dir"
-    if ! cargo_component_build --release --target wasm32-wasip2 --manifest-path "$source_dir/Cargo.toml" 2>&1; then
-        fail_build "$name" "cargo component build failed"
-        return 0
-    fi
-    echo "  OK   $name"
 }
 
 build_first_party_extension() {
@@ -248,26 +197,14 @@ build_first_party_extension() {
 # 4.4 (macOS ships 3.2) treats an empty array expansion as an unbound variable
 # and dies with a shell diagnostic instead of reaching build_manifest_set's
 # "no manifests found" guard. Same outcome either way — non-zero — but only this
-# form reports WHICH set was empty, which is the actionable half.
-if $BUILD_TOOLS; then
-    tool_manifests=(registry/tools/*.json)
-    build_manifest_set "WASM tools" build_extension ${tool_manifests[@]+"${tool_manifests[@]}"}
+# form reports the actionable "no manifests found" message.
+if first_party_assets=$(resolve_first_party_assets_root); then
+    first_party_manifests=("${first_party_assets}"/*/manifest.toml)
+else
+    first_party_manifests=()
 fi
-
-if $BUILD_FIRST_PARTY; then
-    if first_party_assets=$(resolve_first_party_assets_root); then
-        first_party_manifests=("${first_party_assets}"/*/manifest.toml)
-    else
-        first_party_manifests=()
-    fi
-    build_manifest_set "first-party WASM extensions" build_first_party_extension \
-        ${first_party_manifests[@]+"${first_party_manifests[@]}"}
-fi
-
-if $BUILD_CHANNELS; then
-    channel_manifests=(registry/channels/*.json)
-    build_manifest_set "WASM channels" build_extension ${channel_manifests[@]+"${channel_manifests[@]}"}
-fi
+build_manifest_set "first-party WASM extensions" build_first_party_extension \
+    ${first_party_manifests[@]+"${first_party_manifests[@]}"}
 
 echo ""
 if [ ${#FAILED[@]} -gt 0 ]; then

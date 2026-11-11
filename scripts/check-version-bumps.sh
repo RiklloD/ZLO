@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# CI script: check that version bumps accompany WIT or extension source changes.
+# CI script: check that version bumps accompany WIT ABI changes.
 # Exit 0 if all checks pass, exit 1 if any version wasn't bumped.
 
 ERRORS=0
@@ -83,22 +83,6 @@ extract_rust_const() {
     fi
     sed -n "s/^.*${const_name}[[:space:]]*:[[:space:]]*&str[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$file" \
         | head -n1
-}
-
-# Extract JSON "version" field using jq
-extract_json_version() {
-    local file="$1"
-    if [[ ! -f "$file" ]]; then
-        echo ""
-        return
-    fi
-    jq -r '.version // empty' "$file" 2>/dev/null || true
-}
-
-# Extract JSON "version" from the base branch copy of a file
-extract_json_version_base() {
-    local file="$1"
-    git show "origin/${BASE_BRANCH}:${file}" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true
 }
 
 # Return 0 if $1 (new) is strictly greater than $2 (old) via sort -V, or old is empty.
@@ -203,82 +187,14 @@ fi
 
 if $WIT_TOOL_CHANGED || $WIT_CHANNEL_CHANGED; then
     echo ""
-    echo "  WARNING: WIT interface changed. All published registry extensions should bump their versions for compatibility."
+    echo "  WARNING: WIT interface changed. Rebuild the first-party WASM guests (./scripts/build-wasm-extensions.sh) and bump their package versions for compatibility."
 fi
 
-# --- 2. Tool source changes ---------------------------------------------------
-
-TOOL_NAMES=$(echo "$CHANGED_FILES" | sed -n 's|^tools-src/\([^/]*\)/.*|\1|p' | sort -u)
-
-if [[ -n "$TOOL_NAMES" ]]; then
-    echo ""
-    echo "=== Tool source changes ==="
-fi
-
-for tool in $TOOL_NAMES; do
-    REGISTRY_FILE="registry/tools/${tool}.json"
-    echo ""
-    echo "  --- tools-src/${tool}/ changed ---"
-
-    if [[ ! -d "tools-src/${tool}" ]]; then
-        echo "  SKIP: tools-src/${tool}/ no longer exists (retired local source)."
-        continue
-    fi
-
-    if [[ ! -f "$REGISTRY_FILE" ]]; then
-        echo "  SKIP: ${REGISTRY_FILE} does not exist yet (new extension?)."
-        continue
-    fi
-
-    NEW_VER=$(extract_json_version "$REGISTRY_FILE")
-    OLD_VER=$(extract_json_version_base "$REGISTRY_FILE")
-
-    echo "  Registry version: ${OLD_VER:-<none>} -> ${NEW_VER:-<missing>}"
-
-    if ! version_was_bumped "${NEW_VER}" "${OLD_VER}"; then
-        echo "  ERROR: ${REGISTRY_FILE} version was not bumped (${OLD_VER} -> ${NEW_VER:-<missing>}). Bump the version when changing tools-src/${tool}/."
-        ERRORS=$((ERRORS + 1))
-    else
-        echo "  OK: version bumped."
-    fi
-done
-
-# --- 3. Channel source changes ------------------------------------------------
-
-CHANNEL_NAMES=$(echo "$CHANGED_FILES" | sed -n 's|^channels-src/\([^/]*\)/.*|\1|p' | sort -u)
-
-if [[ -n "$CHANNEL_NAMES" ]]; then
-    echo ""
-    echo "=== Channel source changes ==="
-fi
-
-for channel in $CHANNEL_NAMES; do
-    REGISTRY_FILE="registry/channels/${channel}.json"
-    echo ""
-    echo "  --- channels-src/${channel}/ changed ---"
-
-    if [[ ! -d "channels-src/${channel}" ]]; then
-        echo "  SKIP: channels-src/${channel}/ no longer exists (retired local source)."
-        continue
-    fi
-
-    if [[ ! -f "$REGISTRY_FILE" ]]; then
-        echo "  SKIP: ${REGISTRY_FILE} does not exist yet (new extension?)."
-        continue
-    fi
-
-    NEW_VER=$(extract_json_version "$REGISTRY_FILE")
-    OLD_VER=$(extract_json_version_base "$REGISTRY_FILE")
-
-    echo "  Registry version: ${OLD_VER:-<none>} -> ${NEW_VER:-<missing>}"
-
-    if ! version_was_bumped "${NEW_VER}" "${OLD_VER}"; then
-        echo "  ERROR: ${REGISTRY_FILE} version was not bumped (${OLD_VER} -> ${NEW_VER:-<missing>}). Bump the version when changing channels-src/${channel}/."
-        ERRORS=$((ERRORS + 1))
-    else
-        echo "  OK: version bumped."
-    fi
-done
+# The v1 tools-src/ / channels-src/ -> registry/*.json version-bump checks were
+# removed with registry/: neither source tree has existed since the legacy
+# extension sources were retired (#6594), so both loops matched nothing. The
+# first-party packages' committed `.wasm` freshness is gated separately by
+# scripts/ci/check-wasm-artifact-freshness.py.
 
 # --- Summary ------------------------------------------------------------------
 

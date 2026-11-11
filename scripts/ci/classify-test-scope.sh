@@ -384,7 +384,7 @@ is_reborn_test_path() {
 is_code_path() {
   local path="$1"
   case "$path" in
-    crates/*|tests/*|migrations/*)
+    crates/*|tests/*)
       return 0
       ;;
     Cargo.toml|Cargo.lock|Dockerfile)

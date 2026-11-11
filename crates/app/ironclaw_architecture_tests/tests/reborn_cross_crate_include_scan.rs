@@ -130,7 +130,7 @@ struct EscapingInclude {
     resolved: String,
     /// The workspace package that owns the target, when one does — the
     /// cross-crate reach-ins §11.2.7 exists for. `None` means a repo-root
-    /// asset (`providers.json`, `migrations/`, `tests/fixtures/`).
+    /// asset (`providers.json`, `tests/fixtures/`).
     target_crate: Option<String>,
 }
 
