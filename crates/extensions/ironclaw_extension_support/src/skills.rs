@@ -665,7 +665,7 @@ mod install_files_encoding_tests {
 ///
 /// The fetch context carries no egress port, so a case that wrongly routes to the url arm fails
 /// closed rather than passing for the wrong reason. Asserted end to end in
-/// `ironclaw_host_runtime/tests/first_party_builtin_tools.rs`.
+/// `ironclaw_host_runtime/tests/first_party_builtin_tools_skill_install.rs`.
 #[cfg(test)]
 mod resolve_install_input_tests {
     use ironclaw_host_api::{

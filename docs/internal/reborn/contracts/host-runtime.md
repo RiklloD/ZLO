@@ -134,7 +134,7 @@ retains the extension-install hint; extension install remains approval-gated and
 credential injection remains manifest-scoped to the target audience. This is
 pinned by the `builtin_http_*` status-classification tests (403, 500, save-mode
 403, range boundaries, and diagnostic budget) in
-`first_party_builtin_tools` and the `architecture-runtime` group in
+`first_party_builtin_tools_http_response` and the `architecture-runtime` group in
 `scripts/reborn-e2e-rust.sh`.
 
 For WASM host-mediated HTTP imports, `WasmRuntimeHttpAdapter` carries the invoking capability id into `WasmRuntimeCredentialProvider`. Host composition derives the default provider from validated manifest v2 `runtime_credentials` declarations on WASM capability descriptors. The provider matches the request URL against the declared HTTPS audience through the `ironclaw_network` target parser/matcher, then emits `StagedObligation` injection plans for matching capability+audience pairs. When a declaration uses `source = { type = "product_auth_account", provider = "..." }`, authorization emits an account-backed obligation and the host-runtime resolver stages the selected account's access secret under the declared runtime credential slot handle before egress. Explicit `WasmStagedRuntimeCredentials` rules remain available for named legacy/test composition, but production manifest-backed tools should use the manifest-derived provider. The WASM guest still supplies only method/url/headers/body and never chooses credential handles, account providers, or targets.

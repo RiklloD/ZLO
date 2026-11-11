@@ -25,7 +25,7 @@
 //!    harness. That path is pinned at the crate tier instead, by
 //!    `builtin_write_file_rejects_docx_after_extracted_read_without_changing_bytes`
 //!    and `builtin_write_file_rejects_extracted_read_representation_at_unlisted_extension`
-//!    in `crates/kernel/ironclaw_host_runtime/tests/first_party_builtin_tools.rs`.
+//!    in `crates/kernel/ironclaw_host_runtime/tests/first_party_builtin_tools_coding_edits.rs`.
 
 #[allow(dead_code)]
 #[path = "support/mod.rs"]

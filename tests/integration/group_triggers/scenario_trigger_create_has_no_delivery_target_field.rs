@@ -16,7 +16,7 @@
 //!    no routing field. A model that still passes `delivery_target_id` is
 //!    refused as an unexpected field — pinned at the dispatch tier by
 //!    `builtin_trigger_create_rejects_the_retired_delivery_target_id`
-//!    (`crates/ironclaw_host_runtime/tests/first_party_builtin_tools.rs`).
+//!    (`crates/kernel/ironclaw_host_runtime/tests/first_party_builtin_tools_trigger_create.rs`).
 //! 2. **A stored-target-era record still reads back cleanly.** The created
 //!    routine is rewritten in place with a stored route — reproducing a row
 //!    written before the removal, under the exact scope the tool uses — and

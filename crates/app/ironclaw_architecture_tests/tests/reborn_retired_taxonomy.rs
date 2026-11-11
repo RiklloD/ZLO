@@ -140,7 +140,7 @@ const SANCTIONED_PATHS: &[(&str, &[&str])] = &[
         &["delivery_target_id"],
     ),
     (
-        "host_runtime/tests/first_party_builtin_tools.rs",
+        "host_runtime/tests/first_party_builtin_tools_trigger_create.rs",
         &["delivery_target_id"],
     ),
     (
