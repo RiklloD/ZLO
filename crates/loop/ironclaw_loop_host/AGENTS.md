@@ -26,7 +26,7 @@ files, plus 17 `prompts/*.md`); re-derive the current one with
 list. Stable anchors, by category:
 
 - `lib.rs` — crate root; port implementations are wired here.
-- `capability_port.rs` / `capability_surface_filter.rs` /
+- `capability_port.rs` (+ `capability_port/`: factory, port, dispatch, outcome mapping, gate persistence) / `capability_surface_filter.rs` /
   `capability_surface_policy.rs` — capability-surface adapters, filtering, and
   profile-to-policy resolution (neutral policy vocabulary stays in
   `ironclaw_host_api`).

@@ -529,12 +529,34 @@ fn reborn_every_encoded_output_candidate_has_a_live_reviewed_boundary() {
 #[test]
 fn reborn_generic_durable_writer_and_reader_remain_producer_blind() {
     let root = workspace_root();
+    // `capability_port.rs` was split into a module directory; every production
+    // file that came out of it stays under this producer-blind scan.
+    let capability_port_files = [
+        "dispatch_records",
+        "factory",
+        "failure_preview",
+        "gate_persistence",
+        "gate_stores",
+        "invocation_context",
+        "invoke_dispatch",
+        "loop_port_impl",
+        "outcome",
+        "port",
+        "provider_tool_names",
+        "result_write",
+        "runtime_dispatch",
+    ]
+    .map(|module| {
+        crate_dir(&root, "ironclaw_loop_host").join(format!("src/capability_port/{module}.rs"))
+    });
     let generic_files = [
         crate_dir(&root, "ironclaw_loop_host").join("src/capability_port.rs"),
         crate_dir(&root, "ironclaw_composition").join("src/runtime/capability_host.rs"),
         crate_dir(&root, "ironclaw_loop_host").join("src/result_read.rs"),
         crate_dir(&root, "ironclaw_threads").join("src/tool_result_records.rs"),
-    ];
+    ]
+    .into_iter()
+    .chain(capability_port_files);
     let forbidden = [
         "content_base64",
         "body_base64",

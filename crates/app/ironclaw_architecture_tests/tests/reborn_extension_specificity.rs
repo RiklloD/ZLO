@@ -327,9 +327,10 @@ const PATH_TERM_COLLISIONS: &[(&str, &str, &str)] = &[
         "credential-prefix redaction (github_pat_)",
     ),
     (
-        "crates/ironclaw_loop_host/src/capability_port.rs",
+        "crates/ironclaw_loop_host/src/capability_port/failure_preview.rs",
         "github",
-        "credential-prefix redaction (github_pat_)",
+        "credential-prefix redaction (github_pat_) — moved with the failure-preview \
+         helpers when capability_port.rs became a module directory (pure move)",
     ),
     (
         "crates/ironclaw_webui/frontend/src/pages/chat/lib/failureMessages.ts",
@@ -1422,7 +1423,13 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ("crates/ironclaw_host_api/src/capability.rs", "slack"),
     ("crates/ironclaw_host_api/src/http.rs", "slack"),
     ("crates/ironclaw_host_api/src/ids.rs", "github"),
-    ("crates/ironclaw_loop_host/src/capability_port.rs", "gmail"),
+    // ✎ 2026-11-11: was `crates/ironclaw_loop_host/src/capability_port.rs`; the
+    // doc-comment moved with the runtime-outcome helpers when that file became
+    // a module directory. A 1-for-1 repoint, same `lane-4: doc-str` row.
+    (
+        "crates/ironclaw_loop_host/src/capability_port/outcome.rs",
+        "gmail",
+    ),
     (
         "crates/ironclaw_outbound/src/delivered_gate_routes.rs",
         "slack",

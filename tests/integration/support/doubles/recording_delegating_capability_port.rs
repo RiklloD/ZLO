@@ -1,5 +1,5 @@
 /// Test double substituting the production `LoopCapabilityPort` produced by
-/// `HostRuntimeLoopCapabilityPortFactory` (`crates/loop/ironclaw_loop_host/src/capability_port.rs`).
+/// `HostRuntimeLoopCapabilityPortFactory` (`crates/loop/ironclaw_loop_host/src/capability_port/factory.rs`).
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
