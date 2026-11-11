@@ -48,7 +48,7 @@ Not generic yet — the work:
 | Adapter registry projection is not the production path | `crates/ironclaw_product_adapter_registry/src/lib.rs` |
 | OAuth branches on Slack; providers multiplexed by string | `crates/product/ironclaw_webui/src/product_auth/oauth.rs`, composition provider wiring in `crates/app/ironclaw_composition/src/factory.rs`, `crates/app/ironclaw_composition/src/slack/slack_personal_oauth.rs` |
 | Auth surfaces implicit (derived from tool credentials); provider specs are code constants | `crates/extensions/ironclaw_extension_registry/src/v2.rs`, `ironclaw_auth` recipe data + composition provider wiring |
-| Installed records persist raw TOML and reproject from it | `crates/extensions/ironclaw_extension_registry/src/installations.rs` |
+| Installed records persist raw TOML and reproject from it | `crates/extensions/ironclaw_extension_registry/src/installations/manifest_record.rs` (wire: `installations/wire.rs`) |
 | Hosted MCP mutates capabilities from live `tools/list` | `crates/extensions/ironclaw_extension_registry/src/hosted_mcp_discovery.rs` |
 | Lifecycle emits channel connection copy; workflow has cleanup literals | `crates/extensions/ironclaw_extension_host/src/product_lifecycle.rs`, `crates/product/ironclaw_assistant/src/reborn_services/extensions.rs` |
 | Slack-only frontend components and branches | `crates/product/ironclaw_webui/frontend/src/pages/extensions/components/{slack-setup-panel,slack-channel-picker,channels-tab,configure-modal}.tsx`, `lib/slack-{setup,channels}-api.ts`, `pages/chat/components/auth-oauth-card.tsx`, `lib/channel-connection-events.ts` |

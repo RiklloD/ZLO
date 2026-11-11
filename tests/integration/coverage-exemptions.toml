@@ -48,6 +48,16 @@ reason = "Test-only module stored under src/ for private adapter access; cargo-l
 issue  = "https://github.com/nearai/ironclaw/issues/6284"
 
 [[exemption]]
+module = "crates/extensions/ironclaw_extension_registry/src/installations/store/tests.rs"
+reason = "Test-only module stored under src/ for private store access (moved out of installations.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised installations production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6175"
+
+[[exemption]]
+module = "crates/extensions/ironclaw_extension_registry/src/installations/test_support.rs"
+reason = "Test-only module stored under src/ for private store access (moved out of installations.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised installations production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6175"
+
+[[exemption]]
 module = "crates/domains/ironclaw_llm/src/anthropic_oauth/tests.rs"
 reason = "Test-only module stored under src/ for private transport access; cargo-llvm-cov omits test harness source from production LCOV while the exercised anthropic_oauth.rs production lines remain coverage-gated."
 issue  = "https://github.com/nearai/ironclaw/issues/6984"
