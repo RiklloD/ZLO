@@ -103,6 +103,26 @@ malformed. The earlier filesystem-stored key-check sentinel was removed with the
 tenant-aware `ScopedFilesystem` rework; master-key mismatch is verified on the
 first per-tenant decrypt operation.
 
+Lease listing (`leases_for_scope`) is a bounded keyset traversal of the
+`secret_leases_by_scope_v1` ordered index declared on the `/secrets` mount:
+keys `(lease_scope_key, lease_expires_at, lease_id)`, where `lease_scope_key`
+is a hex SHA-256 over the length-prefixed full lease scope
+(tenant/user/agent/project/mission/thread/invocation). The query runs through
+the caller's `ScopedFilesystem`, so the mount ACL applies, and decoded leases
+are re-checked against the caller's scope. Leases written before the index
+existed are re-projected once per owner lease root (bodies kept
+byte-for-byte, each row through `cas_update`), then a durable marker at
+`<owner>/secret-lease-index-migrations/lease-scope-v1.complete` records
+completion. `SecretStore::migrate_lease_scope_index` reruns that step
+explicitly; run it after a rollback to a pre-index binary followed by a
+re-upgrade. Backends that serve no ordered index (the byte-only local
+filesystem) keep the directory-scan listing.
+
+Encryption-at-rest is still applied inside `SecretStore`/`CredentialBroker`,
+not through the `EncryptedBackend` decorator the filesystem contract
+(invariant 6) describes; the open contract questions are in
+`docs/internal/plans/2026-11-11-secrets-encrypted-backend-question.md`.
+
 The shared Reborn runtime HTTP egress service uses this surface to:
 
 - check metadata for required or optional credential handles

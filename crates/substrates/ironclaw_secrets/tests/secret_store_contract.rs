@@ -398,3 +398,265 @@ fn sample_scope(tenant: &str, user: &str) -> ResourceScope {
         invocation_id: InvocationId::new(),
     }
 }
+
+// -- Lease listing conformance (every backend) ------------------------------
+//
+// `leases_for_scope` must return exactly the caller's leases — same
+// tenant/user/agent/project AND same mission/thread/invocation — with their
+// effective status, on every backend the `/secrets` mount can resolve to.
+// The suite also pins the two properties of the indexed listing path:
+//
+// - steady-state listing is one bounded indexed traversal, not a
+//   `list_dir` + per-entry `get` fan-out (the former N+1);
+// - leases written before the index existed (no lease-scope projection) are
+//   still listed — they are re-projected once, body bytes unchanged.
+
+mod lease_listing {
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use ironclaw_filesystem::{
+        CasExpectation, DiskFilesystem, FaultInjecting, FilesystemOperation, InMemoryBackend,
+        IsolatedPostgresDatabase, IsolatedPostgresProvisioner, LibSqlRootFilesystem,
+        PostgresRootFilesystem, PostgresUnreachable, RootFilesystem,
+    };
+    use ironclaw_host_api::{
+        ids::{InvocationId, ProjectId, SecretHandle},
+        path::{HostPath, VirtualPath},
+        resource::ResourceScope,
+    };
+    use ironclaw_secrets::{
+        SecretLeaseId, SecretLeaseStatus, SecretMaterial, SecretStore, SecretStorePort,
+    };
+
+    use super::sample_scope;
+
+    /// The only indexed projection a lease row carried before the
+    /// lease-scope index existed. Stripping a row back to this set
+    /// reproduces exactly what a pre-index binary persisted.
+    const LEGACY_LEASE_INDEXED_KEYS: &[&str] = &["tenant_id"];
+
+    fn lease_virtual_path(scope: &ResourceScope, lease_id: SecretLeaseId) -> VirtualPath {
+        let mut owner = format!(
+            "/tenants/{}/users/{}/secrets",
+            scope.tenant_id.as_str(),
+            scope.user_id.as_str()
+        );
+        if let Some(agent) = &scope.agent_id {
+            owner.push_str(&format!("/agents/{}", agent.as_str()));
+        }
+        if let Some(project) = &scope.project_id {
+            owner.push_str(&format!("/projects/{}", project.as_str()));
+        }
+        VirtualPath::new(format!("{owner}/secret-leases/{lease_id}.json")).unwrap()
+    }
+
+    /// Rewrite a stored lease as a pre-index binary would have written it:
+    /// same body bytes, legacy projection only. Returns the body bytes.
+    async fn strip_to_legacy_projection<F: RootFilesystem>(
+        backend: &F,
+        scope: &ResourceScope,
+        lease_id: SecretLeaseId,
+    ) -> Vec<u8> {
+        let path = lease_virtual_path(scope, lease_id);
+        let current = backend.get(&path).await.unwrap().expect("lease row exists");
+        let mut entry = current.entry;
+        entry
+            .indexed
+            .retain(|key, _| LEGACY_LEASE_INDEXED_KEYS.contains(&key.as_str()));
+        let body = entry.body.clone();
+        backend
+            .put(&path, entry, CasExpectation::Version(current.version))
+            .await
+            .unwrap();
+        body
+    }
+
+    async fn statuses<F: RootFilesystem>(
+        store: &SecretStore<F>,
+        scope: &ResourceScope,
+    ) -> BTreeMap<String, SecretLeaseStatus> {
+        store
+            .leases_for_scope(scope)
+            .await
+            .unwrap()
+            .into_iter()
+            .inspect(|lease| assert_eq!(&lease.scope, scope, "lease leaked across scopes"))
+            .map(|lease| (lease.id.to_string(), lease.status))
+            .collect()
+    }
+
+    async fn lease_listing_contract<F>(backend: Arc<FaultInjecting<F>>)
+    where
+        F: RootFilesystem + 'static,
+    {
+        let writer = SecretStore::ephemeral_over(Arc::clone(&backend));
+        let handle = SecretHandle::new("api_key").unwrap();
+
+        let scope = sample_scope("tenant-a", "user-a");
+        // Same owner, different invocation: shares the lease directory.
+        let sibling_invocation = ResourceScope {
+            invocation_id: InvocationId::new(),
+            ..scope.clone()
+        };
+        // Different project under the same user.
+        let other_project = ResourceScope {
+            project_id: Some(ProjectId::new("project-b").unwrap()),
+            ..scope.clone()
+        };
+        // Different tenant with the identical user/project/mission/thread/
+        // invocation tuple: isolation must come from the mount, not the ids.
+        let other_tenant = ResourceScope {
+            tenant_id: ironclaw_host_api::ids::TenantId::new("tenant-b").unwrap(),
+            ..scope.clone()
+        };
+        for owner in [&scope, &other_project, &other_tenant] {
+            writer
+                .put(
+                    owner.clone(),
+                    handle.clone(),
+                    SecretMaterial::from("lease-listing-secret"),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let consumed = writer.lease_once(&scope, &handle).await.unwrap();
+        writer.consume(&scope, consumed.id).await.unwrap();
+        let revoked = writer.lease_once(&scope, &handle).await.unwrap();
+        writer.revoke(&scope, revoked.id).await.unwrap();
+        let active = writer.lease_once(&scope, &handle).await.unwrap();
+        let sibling = writer
+            .lease_once(&sibling_invocation, &handle)
+            .await
+            .unwrap();
+        let project_lease = writer.lease_once(&other_project, &handle).await.unwrap();
+        let tenant_lease = writer.lease_once(&other_tenant, &handle).await.unwrap();
+
+        // Leases persisted before the index existed: no lease-scope projection.
+        let legacy_revoked_body =
+            strip_to_legacy_projection(backend.as_ref(), &scope, revoked.id).await;
+        let legacy_sibling_body =
+            strip_to_legacy_projection(backend.as_ref(), &sibling_invocation, sibling.id).await;
+
+        // A fresh store — a restarted process with no in-memory state.
+        let reader = SecretStore::ephemeral_over(Arc::clone(&backend));
+        let expected_scope = BTreeMap::from([
+            (consumed.id.to_string(), SecretLeaseStatus::Consumed),
+            (revoked.id.to_string(), SecretLeaseStatus::Revoked),
+            (active.id.to_string(), SecretLeaseStatus::Active),
+        ]);
+        assert_eq!(statuses(&reader, &scope).await, expected_scope);
+        assert_eq!(
+            statuses(&reader, &sibling_invocation).await,
+            BTreeMap::from([(sibling.id.to_string(), SecretLeaseStatus::Active)])
+        );
+        assert_eq!(
+            statuses(&reader, &other_project).await,
+            BTreeMap::from([(project_lease.id.to_string(), SecretLeaseStatus::Active)])
+        );
+        assert_eq!(
+            statuses(&reader, &other_tenant).await,
+            BTreeMap::from([(tenant_lease.id.to_string(), SecretLeaseStatus::Active)])
+        );
+
+        // Re-projection keeps legacy body bytes byte-for-byte and adds the
+        // index projection, so the next listing no longer depends on it.
+        for (owner, lease_id, legacy_body) in [
+            (&scope, revoked.id, &legacy_revoked_body),
+            (&sibling_invocation, sibling.id, &legacy_sibling_body),
+        ] {
+            let row = backend
+                .get(&lease_virtual_path(owner, lease_id))
+                .await
+                .unwrap()
+                .expect("legacy lease row still present");
+            assert_eq!(&row.entry.body, legacy_body, "legacy lease body rewritten");
+            assert!(
+                row.entry.indexed.len() > LEGACY_LEASE_INDEXED_KEYS.len(),
+                "legacy lease was not re-projected"
+            );
+        }
+
+        // Steady state: one indexed traversal, no directory walk, no
+        // per-lease read.
+        let gets = backend.count(FilesystemOperation::ReadFile);
+        let lists = backend.count(FilesystemOperation::ListDir);
+        let queries = backend.count(FilesystemOperation::Query);
+        assert_eq!(statuses(&reader, &scope).await, expected_scope);
+        assert_eq!(backend.count(FilesystemOperation::ReadFile) - gets, 0);
+        assert_eq!(backend.count(FilesystemOperation::ListDir) - lists, 0);
+        assert_eq!(backend.count(FilesystemOperation::Query) - queries, 1);
+
+        // A status transition keeps the row in the index.
+        writer.consume(&scope, active.id).await.unwrap();
+        assert_eq!(
+            statuses(&reader, &scope).await.get(&active.id.to_string()),
+            Some(&SecretLeaseStatus::Consumed)
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_backend_satisfies_the_lease_listing_contract() {
+        lease_listing_contract(Arc::new(FaultInjecting::new(InMemoryBackend::new()))).await;
+    }
+
+    #[tokio::test]
+    async fn libsql_backend_satisfies_the_lease_listing_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = Arc::new(
+            libsql::Builder::new_local(dir.path().join("secrets.db"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let backend = LibSqlRootFilesystem::new(database).unwrap();
+        backend.run_migrations().await.unwrap();
+        lease_listing_contract(Arc::new(FaultInjecting::new(backend))).await;
+    }
+
+    static POSTGRES: IsolatedPostgresProvisioner = IsolatedPostgresProvisioner::new(
+        "postgres secrets lease listing contract",
+        "IRONCLAW_SECRETS_POSTGRES_URL",
+        "secrets_lease_isolated_",
+        PostgresUnreachable::Skip,
+    );
+
+    async fn postgres_backend() -> Option<(IsolatedPostgresDatabase, PostgresRootFilesystem)> {
+        let db = POSTGRES.provision().await?;
+        let manager = deadpool_postgres::Manager::new(db.config().clone(), tokio_postgres::NoTls);
+        let pool = deadpool_postgres::Pool::builder(manager)
+            .max_size(4)
+            .build()
+            .expect("postgres pool");
+        let backend = PostgresRootFilesystem::new(pool);
+        backend.run_migrations().await.expect("migrate postgres");
+        Some((db, backend))
+    }
+
+    #[tokio::test]
+    async fn postgres_backend_satisfies_the_lease_listing_contract() {
+        let Some((db, backend)) = postgres_backend().await else {
+            return;
+        };
+        lease_listing_contract(Arc::new(FaultInjecting::new(backend))).await;
+        db.cleanup().await;
+    }
+
+    /// The byte-only local backend cannot hold record-shaped lease rows at
+    /// all; listing over it must keep answering "no leases" rather than
+    /// failing because it cannot serve the index.
+    #[tokio::test]
+    async fn local_filesystem_backend_lists_no_leases_without_an_index() {
+        let storage = tempfile::tempdir().unwrap();
+        let mut disk = DiskFilesystem::new();
+        disk.mount_local(
+            VirtualPath::new("/tenants").unwrap(),
+            HostPath::from_path_buf(storage.path().to_path_buf()),
+        )
+        .unwrap();
+        let store = SecretStore::ephemeral_over(Arc::new(disk));
+        let scope = sample_scope("tenant-a", "user-a");
+        assert_eq!(store.leases_for_scope(&scope).await.unwrap(), Vec::new());
+    }
+}

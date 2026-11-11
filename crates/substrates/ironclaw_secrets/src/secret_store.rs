@@ -38,17 +38,28 @@
 //! applied here so the on-disk material does not leak through any backend
 //! mounted at `/secrets/*`. The crypto seam is intentionally narrow so the
 //! decorator port can later strip these calls without touching trait surface.
-//! TODO(reborn/fs-secrets): once `EncryptedBackend` ships, replace the inline
-//! `encrypt`/`decrypt` calls with plaintext writes wrapped by the decorator.
+//! TODO(reborn/fs-secrets): the decorator port is blocked on a filesystem
+//! contract decision, not on implementation work: existing ciphertext is
+//! bound to a domain-tuple AAD built from the raw `ResourceScope` (including
+//! the control-byte system sentinel) that a `VirtualPath`-only decorator
+//! cannot reconstruct, and only individual fields of the stored body are
+//! encrypted. The precise questions are in
+//! `docs/internal/plans/2026-11-11-secrets-encrypted-backend-question.md`;
+//! until they are answered, keep the inline `encrypt`/`decrypt` calls.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use ironclaw_filesystem::{
-    CasApply, CasExpectation, CasUpdateError, ContentType, Entry, FilesystemError, Filter,
-    InMemoryBackend, IndexKey, IndexKind, IndexName, IndexSpec, IndexValue, Page, RecordKind,
-    RecordVersion, RootFilesystem, ScopedFilesystem, cas_update,
+    CasApply, CasExpectation, CasUpdateError, ContentType, Entry, FileType, FilesystemError,
+    Filter, InMemoryBackend, IndexKey, IndexKind, IndexName, IndexSpec, IndexValue, OrderedPage,
+    OrderedQueryCursor, Page, RecordKind, RecordVersion, RootFilesystem, ScopedFilesystem,
+    SortDirection, cas_update,
 };
 use ironclaw_host_api::{
     Timestamp,
@@ -60,6 +71,7 @@ use ironclaw_host_api::{
 };
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -85,6 +97,7 @@ const SECRET_RECORD_KIND: &str = "secret_record";
 const SECRET_LEASE_KIND: &str = "secret_lease";
 const CREDENTIAL_ACCOUNT_KIND: &str = "credential_account";
 const CREDENTIAL_SESSION_KIND: &str = "credential_session";
+const SECRET_LEASE_INDEX_MIGRATION_KIND: &str = "secret_lease_index_migration";
 
 // -- Serialized DTOs --------------------------------------------------------
 //
@@ -216,6 +229,21 @@ where
     crypto: Arc<SecretsCrypto>,
     lease_ttl: Duration,
     tenant_index_roots: Mutex<HashSet<String>>,
+    /// Per resolved lease root: how `leases_for_scope` reads it, once the
+    /// lease-scope index is declared and the root's legacy rows re-projected.
+    /// A cache of durable facts (catalog declaration + migration marker);
+    /// never held across backend I/O.
+    lease_listing_roots: Mutex<HashMap<String, LeaseListing>>,
+}
+
+/// How `leases_for_scope` reads one owner's lease root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaseListing {
+    /// Bounded keyset traversal of the `secret_leases_by_scope_v1` index.
+    Indexed,
+    /// The backend serves no ordered index (byte-only local filesystem):
+    /// list the lease directory and read each entry.
+    DirectoryScan,
 }
 
 impl<F> SecretStore<F>
@@ -228,6 +256,7 @@ where
             crypto,
             lease_ttl: Duration::seconds(DEFAULT_SECRET_LEASE_TTL_SECONDS),
             tenant_index_roots: Mutex::new(HashSet::new()),
+            lease_listing_roots: Mutex::new(HashMap::new()),
         }
     }
 
@@ -241,6 +270,7 @@ where
             crypto,
             lease_ttl,
             tenant_index_roots: Mutex::new(HashSet::new()),
+            lease_listing_roots: Mutex::new(HashMap::new()),
         }
     }
 
@@ -351,6 +381,196 @@ where
         let mut roots = self.tenant_index_roots.lock().await;
         roots.insert(resolved_root);
         Ok(())
+    }
+
+    /// Re-project every lease under `scope`'s owner lease root so it carries
+    /// the `secret_leases_by_scope_v1` projection, keeping each stored body
+    /// byte-for-byte. Returns the number of lease rows rewritten.
+    ///
+    /// Idempotent and safe against live writers: each row goes through the
+    /// shared bounded [`cas_update`], so a concurrent `consume`/`revoke` either
+    /// lands first (and is re-read) or retries against the re-projected row.
+    ///
+    /// [`SecretStorePort::leases_for_scope`] runs this once per owner lease
+    /// root and then records a durable completion marker. Run it explicitly
+    /// after rolling back to a binary that predates the index and upgrading
+    /// again: leases the older binary wrote in between carry no projection,
+    /// and the marker from the first upgrade would otherwise hide them.
+    pub async fn migrate_lease_scope_index(
+        &self,
+        scope: &ResourceScope,
+    ) -> Result<usize, SecretStoreError> {
+        ensure_lease_scope_index_secret(&self.filesystem, scope).await?;
+        let root = lease_root(scope)?;
+        let mut after: Option<String> = None;
+        let mut migrated = 0usize;
+        loop {
+            let entries = match self
+                .filesystem
+                .list_dir_page(scope, &root, after.as_deref(), LEASE_MIGRATION_PAGE)
+                .await
+            {
+                Ok(entries) => entries,
+                Err(error) if is_not_found(&error) => return Ok(migrated),
+                Err(error) => return Err(fs_to_secret_store_error(error)),
+            };
+            let received = entries.len();
+            for entry in &entries {
+                if entry.file_type != FileType::File || !entry.name.ends_with(".json") {
+                    continue;
+                }
+                let path = join_scoped_secret(&root, &entry.name)?;
+                let rewritten = cas_update(
+                    self.filesystem.as_ref(),
+                    scope,
+                    &path,
+                    decode_lease_row,
+                    encode_lease_row,
+                    |current: Option<LeaseRow>| async move {
+                        Ok(match current {
+                            // Deleted since the listing: nothing to project.
+                            None => CasApply::no_op(LeaseRow::default(), false),
+                            // The decoded row is unchanged by design; only the
+                            // indexed sidecar is rebuilt.
+                            Some(row) => CasApply::force_write(row, true),
+                        })
+                    },
+                )
+                .await
+                .map_err(|error| map_cas_error_secret(error, "index migration"))?;
+                if rewritten {
+                    migrated = migrated.saturating_add(1);
+                }
+            }
+            if received < LEASE_MIGRATION_PAGE {
+                return Ok(migrated);
+            }
+            after = entries.last().map(|entry| entry.name.clone());
+        }
+    }
+
+    /// Decide how `leases_for_scope` reads `scope`'s lease root, declaring the
+    /// index and running the one-time re-projection on first use.
+    async fn lease_listing(&self, scope: &ResourceScope) -> Result<LeaseListing, SecretStoreError> {
+        let root = lease_root(scope)?;
+        let resolved_root = self
+            .filesystem
+            .resolve(scope, &root)
+            .map_err(fs_to_secret_store_error)?
+            .as_str()
+            .to_string();
+        if let Some(listing) = self.lease_listing_roots.lock().await.get(&resolved_root) {
+            return Ok(*listing);
+        }
+        let listing = if ensure_lease_scope_index_secret(&self.filesystem, scope).await? {
+            let marker = lease_index_migration_marker_path(scope)?;
+            let migrated = self
+                .filesystem
+                .get(scope, &marker)
+                .await
+                .map_err(fs_to_secret_store_error)?
+                .is_some();
+            if !migrated {
+                self.migrate_lease_scope_index(scope).await?;
+                self.filesystem
+                    .put(
+                        scope,
+                        &marker,
+                        lease_index_migration_marker_entry()?,
+                        CasExpectation::Any,
+                    )
+                    .await
+                    .map_err(fs_to_secret_store_error)?;
+            }
+            LeaseListing::Indexed
+        } else {
+            LeaseListing::DirectoryScan
+        };
+        self.lease_listing_roots
+            .lock()
+            .await
+            .insert(resolved_root, listing);
+        Ok(listing)
+    }
+
+    /// Bounded keyset traversal of the lease-scope index. `None` when the
+    /// backend accepted the declaration but cannot serve ordered queries.
+    async fn leases_from_index(
+        &self,
+        scope: &ResourceScope,
+    ) -> Result<Option<Vec<StoredLease>>, SecretStoreError> {
+        let root = lease_root(scope)?;
+        let filter = Filter::Eq {
+            key: index_key_lease_scope(),
+            value: IndexValue::Text(lease_scope_key(scope)),
+        };
+        let mut after: Option<OrderedQueryCursor> = None;
+        let mut leases = Vec::new();
+        loop {
+            let mut page = OrderedPage::new(
+                index_name_lease_scope(),
+                index_key_lease_expires_at(),
+                index_key_lease_id(),
+                SortDirection::Ascending,
+                Page::MAX_LIMIT,
+            );
+            if let Some(cursor) = after.take() {
+                page = page.after(cursor);
+            }
+            let rows = match self
+                .filesystem
+                .query_ordered(scope, &root, &filter, &page)
+                .await
+            {
+                Ok(rows) => rows,
+                Err(error) if is_not_found(&error) => return Ok(Some(leases)),
+                Err(FilesystemError::Unsupported { .. }) => return Ok(None),
+                Err(error) => return Err(fs_to_secret_store_error(error)),
+            };
+            let received = rows.len();
+            for row in rows {
+                let stored: StoredLease = deserialize_secret(&row.entry.body)?;
+                after = Some(lease_cursor(&stored));
+                leases.push(stored);
+            }
+            if received < page.limit as usize {
+                return Ok(Some(leases));
+            }
+        }
+    }
+
+    /// The pre-index listing, kept for backends that serve no ordered index:
+    /// `list_dir` over the lease root, then one `get` per entry.
+    async fn leases_from_directory_scan(
+        &self,
+        scope: &ResourceScope,
+    ) -> Result<Vec<StoredLease>, SecretStoreError> {
+        let root = lease_root(scope)?;
+        let entries = match self.filesystem.list_dir(scope, &root).await {
+            Ok(entries) => entries,
+            Err(error) if is_not_found(&error) => return Ok(Vec::new()),
+            Err(error) => return Err(fs_to_secret_store_error(error)),
+        };
+        let mut leases = Vec::new();
+        for entry in entries {
+            if !entry.name.ends_with(".json") {
+                continue;
+            }
+            // `list_dir` returned a `VirtualPath`; reconstruct the equivalent
+            // `ScopedPath` under our prefix so the per-op ACL on the follow-up
+            // `get` still runs against the caller's MountView.
+            let scoped_child = join_scoped_secret(&root, &entry.name)?;
+            let Some(versioned) = self
+                .filesystem
+                .get(scope, &scoped_child)
+                .await
+                .map_err(fs_to_secret_store_error)?
+            else {
+                continue;
+            };
+            leases.push(deserialize_secret(&versioned.entry.body)?);
+        }
+        Ok(leases)
     }
 
     fn lease_to_public(stored: &StoredLease) -> SecretLease {
@@ -818,50 +1038,29 @@ where
         &self,
         scope: &ResourceScope,
     ) -> Result<Vec<SecretLease>, SecretStoreError> {
-        // TODO(perf): this is an N+1 scan — list_dir over the per-owner
-        // lease root followed by one `get` per lease entry. The cardinality
-        // is bounded because `lease_root` already encodes the full owner
-        // prefix (tenant/user/[agent]/[project]), so only the missions /
-        // threads / invocations under that owner contribute, and active
-        // one-shot leases are short-lived (TTL `DEFAULT_SECRET_LEASE_TTL_SECONDS`).
-        // If we add an index here it should sit on a composite scope-derived
-        // key (mission_id + thread_id + invocation_id) and route through
-        // `RootFilesystem::query` with `Filter::Eq` — the secrets store
-        // currently declares no indexes (no `ensure_*` calls in `new`), so
-        // adding that path is a follow-up. Until then, the list+get fan-out
-        // is acceptable because N is bounded by the owner prefix.
-        let root = lease_root(scope)?;
-        let entries = match self.filesystem.list_dir(scope, &root).await {
-            Ok(entries) => entries,
-            Err(error) if is_not_found(&error) => return Ok(Vec::new()),
-            Err(error) => return Err(fs_to_secret_store_error(error)),
+        // Indexed path: one keyset traversal of `secret_leases_by_scope_v1`
+        // keyed by the full lease scope (tenant/user/agent/project +
+        // mission/thread/invocation), under the owner lease root resolved
+        // through the caller's MountView — the per-op ACL runs on the query.
+        // Backends without ordered indexes keep the directory scan.
+        let stored = match self.lease_listing(scope).await? {
+            LeaseListing::Indexed => match self.leases_from_index(scope).await? {
+                Some(leases) => leases,
+                None => self.leases_from_directory_scan(scope).await?,
+            },
+            LeaseListing::DirectoryScan => self.leases_from_directory_scan(scope).await?,
         };
         let now = Utc::now();
-        let mut leases = Vec::new();
-        for entry in entries {
-            if !entry.name.ends_with(".json") {
-                continue;
-            }
-            // `list_dir` returned a `VirtualPath`; reconstruct the equivalent
-            // `ScopedPath` under our prefix so the per-op ACL on the follow-up
-            // `get` still runs against the caller's MountView.
-            let scoped_child = join_scoped_secret(&root, &entry.name)?;
-            let Some(versioned) = self
-                .filesystem
-                .get(scope, &scoped_child)
-                .await
-                .map_err(fs_to_secret_store_error)?
-            else {
-                continue;
-            };
-            let mut stored: StoredLease = deserialize_secret(&versioned.entry.body)?;
-            if !same_scope_for_lease(&stored.scope, scope) {
-                continue;
-            }
-            stored.status = Self::effective_status(&stored, now);
-            leases.push(Self::lease_to_public(&stored));
-        }
-        Ok(leases)
+        Ok(stored
+            .into_iter()
+            // Defense in depth: the projection is keyed by a digest of the
+            // scope, so re-check the decoded scope before returning a lease.
+            .filter(|lease| same_scope_for_lease(&lease.scope, scope))
+            .map(|mut lease| {
+                lease.status = Self::effective_status(&lease, now);
+                Self::lease_to_public(&lease)
+            })
+            .collect())
     }
 }
 
@@ -1365,7 +1564,69 @@ fn serialize_lease_entry(lease: &StoredLease) -> Result<Entry, SecretStoreError>
         })?;
     let mut base_entry = Entry::bytes(body).with_content_type(ContentType::json());
     base_entry.kind = Some(kind);
-    Ok(tag_entry_with_tenant(base_entry, &lease.scope))
+    Ok(tag_lease_entry_with_scope_index(
+        tag_entry_with_tenant(base_entry, &lease.scope),
+        lease,
+    ))
+}
+
+/// A stored lease row as the index migration sees it: the exact stored body
+/// plus its decoded lease. Re-encoding keeps `body` byte-for-byte (a field a
+/// newer binary wrote and this one does not know is never dropped) and only
+/// rebuilds the indexed projection.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct LeaseRow {
+    body: Vec<u8>,
+    lease: Option<StoredLease>,
+}
+
+fn decode_lease_row(bytes: &[u8]) -> Result<LeaseRow, SecretStoreError> {
+    Ok(LeaseRow {
+        body: bytes.to_vec(),
+        lease: Some(deserialize_secret(bytes)?),
+    })
+}
+
+fn encode_lease_row(row: &LeaseRow) -> Result<Entry, SecretStoreError> {
+    let lease = row
+        .lease
+        .as_ref()
+        .ok_or_else(|| SecretStoreError::StoreUnavailable {
+            reason: "secret lease index migration encoded an undecoded row".to_string(),
+        })?;
+    let mut entry = serialize_lease_entry(lease)?;
+    entry.body = row.body.clone();
+    Ok(entry)
+}
+
+/// Page size for the explicit lease-index migration's directory walk.
+const LEASE_MIGRATION_PAGE: usize = 256;
+
+fn lease_index_migration_marker_path(
+    scope: &ResourceScope,
+) -> Result<ScopedPath, SecretStoreError> {
+    scoped_path_secret(&format!(
+        "{}/secret-lease-index-migrations/lease-scope-v1.complete",
+        secret_owner_alias(scope)
+    ))
+}
+
+fn lease_index_migration_marker_entry() -> Result<Entry, SecretStoreError> {
+    let kind = RecordKind::new(SECRET_LEASE_INDEX_MIGRATION_KIND).map_err(|error| {
+        SecretStoreError::StoreUnavailable {
+            reason: format!("invalid secret lease index migration record kind: {error}"),
+        }
+    })?;
+    let mut entry = Entry::bytes(b"secret-lease-scope-index-v1".to_vec());
+    entry.kind = Some(kind);
+    Ok(entry)
+}
+
+fn lease_cursor(lease: &StoredLease) -> OrderedQueryCursor {
+    OrderedQueryCursor {
+        value: IndexValue::I64(lease.lease_expires_at.timestamp_millis()),
+        tie_breaker: IndexValue::Text(lease.lease_id.to_string()),
+    }
 }
 
 fn serialize_session_entry(
@@ -1576,6 +1837,108 @@ fn index_name_secrets_tenant() -> IndexName {
     })
 }
 
+fn index_name_lease_scope() -> IndexName {
+    IndexName::new("secret_leases_by_scope_v1").unwrap_or_else(|_| {
+        unreachable!("secrets index name `secret_leases_by_scope_v1` must be a simple identifier")
+    })
+}
+
+fn index_key_lease_scope() -> IndexKey {
+    IndexKey::new("lease_scope_key").unwrap_or_else(|_| {
+        unreachable!("secrets index key `lease_scope_key` must be a simple identifier")
+    })
+}
+
+fn index_key_lease_expires_at() -> IndexKey {
+    IndexKey::new("lease_expires_at").unwrap_or_else(|_| {
+        unreachable!("secrets index key `lease_expires_at` must be a simple identifier")
+    })
+}
+
+fn index_key_lease_id() -> IndexKey {
+    IndexKey::new("lease_id").unwrap_or_else(|_| {
+        unreachable!("secrets index key `lease_id` must be a simple identifier")
+    })
+}
+
+/// `(lease_scope_key, lease_expires_at, lease_id)`: the full lease scope is
+/// the leading equality key (the tenant/domain partition leads, per the
+/// filesystem contract's bounded-query rule), then a stable keyset order.
+fn lease_scope_index_spec() -> IndexSpec {
+    IndexSpec::new(
+        index_name_lease_scope(),
+        vec![
+            index_key_lease_scope(),
+            index_key_lease_expires_at(),
+            index_key_lease_id(),
+        ],
+        IndexKind::Exact,
+    )
+}
+
+const LEASE_SCOPE_KEY_DOMAIN: &[u8] = b"reborn/v1/secret_lease_scope";
+
+/// Equality key for one lease scope: hex SHA-256 over the same
+/// length-prefixed `(tenant, user, agent, project, mission, thread,
+/// invocation)` encoding the AAD builders use. Fixed width, unambiguous, and
+/// free of the control bytes the reserved system sentinel carries, so every
+/// backend's index column stores it verbatim.
+fn lease_scope_key(scope: &ResourceScope) -> String {
+    let key = crate::crypto::ScopeKey::from_full_scope(scope);
+    let encoded = crate::crypto::build_aad(
+        LEASE_SCOPE_KEY_DOMAIN,
+        &[
+            key.tenant_id.as_bytes(),
+            key.user_id.as_bytes(),
+            key.agent_id.as_bytes(),
+            key.project_id.as_bytes(),
+            key.mission_id.as_bytes(),
+            key.thread_id.as_bytes(),
+            key.invocation_id.as_bytes(),
+        ],
+    );
+    let digest = Sha256::digest(&encoded);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
+/// Decorate a lease entry with the `secret_leases_by_scope_v1` projection.
+/// Lease scope ids, expiry, and id are already plaintext in the lease body,
+/// so the projection exposes nothing new.
+fn tag_lease_entry_with_scope_index(entry: Entry, lease: &StoredLease) -> Entry {
+    let cursor = lease_cursor(lease);
+    entry
+        .with_indexed(
+            index_key_lease_scope(),
+            IndexValue::Text(lease_scope_key(&lease.scope)),
+        )
+        .with_indexed(index_key_lease_expires_at(), cursor.value)
+        .with_indexed(index_key_lease_id(), cursor.tie_breaker)
+}
+
+/// Declare the lease-scope index on the `/secrets` mount. `Ok(false)` when
+/// the backend materializes no indexes (byte-only local filesystem).
+async fn ensure_lease_scope_index_secret<F>(
+    filesystem: &ScopedFilesystem<F>,
+    scope: &ResourceScope,
+) -> Result<bool, SecretStoreError>
+where
+    F: RootFilesystem,
+{
+    let root = scoped_path_secret("/secrets")?;
+    match filesystem
+        .ensure_index(scope, &root, &lease_scope_index_spec())
+        .await
+    {
+        Ok(()) => Ok(true),
+        Err(FilesystemError::Unsupported { .. }) => Ok(false),
+        Err(error) => Err(fs_to_secret_store_error(error)),
+    }
+}
+
 /// Decorate `entry` with a `tenant_id` indexed projection scoped to
 /// `scope.tenant_id`. Callers compose this with the existing
 /// `with_content_type` decoration so encrypted-at-rest bodies still
@@ -1605,10 +1968,14 @@ where
     );
     let root = scoped_path_secret("/secrets")?;
     match filesystem.ensure_index(scope, &root, &spec).await {
-        Ok(()) => Ok(()),
-        Err(FilesystemError::Unsupported { .. }) => Ok(()),
-        Err(error) => Err(fs_to_secret_store_error(error)),
+        Ok(()) => {}
+        Err(FilesystemError::Unsupported { .. }) => {}
+        Err(error) => return Err(fs_to_secret_store_error(error)),
     }
+    // Declared before the first lease write so SQL backends' write triggers
+    // project every new lease row; the projection is never backfilled.
+    ensure_lease_scope_index_secret(filesystem, scope).await?;
+    Ok(())
 }
 
 async fn ensure_tenant_id_index_broker<F>(

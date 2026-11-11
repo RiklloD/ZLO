@@ -32,4 +32,15 @@ security-framework = "3"
 secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
 
 [dev-dependencies]
+# Dev-only seams for the lease-listing conformance suite: `FaultInjecting`
+# (op-recorder, to pin the no-N+1 listing) and the isolated-PostgreSQL
+# provisioner. Never enabled by a shipped artifact.
+ironclaw_filesystem = { path = "../ironclaw_filesystem", features = ["test-support"] }
+# libSQL leg of the lease-listing conformance suite.
+libsql = { version = "0.9", default-features = false, features = ["core"] }
+# PostgreSQL leg of the lease-listing conformance suite; skips without
+# IRONCLAW_SECRETS_POSTGRES_URL.
+deadpool-postgres = "0.14"
+tokio-postgres = "0.7"
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
