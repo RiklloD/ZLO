@@ -3606,6 +3606,53 @@ fn doctor_uses_reborn_home_override_without_touching_v1_state() {
 }
 
 #[test]
+fn doctor_bundle_writes_local_zip_without_creating_reborn_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    let bundle = temp.path().join("diagnostics.zip");
+
+    let run = |extra: &[&str]| {
+        reborn_command()
+            .arg("doctor")
+            .arg("--bundle")
+            .arg(&bundle)
+            .args(extra)
+            .env("HOME", temp.path().join("isolated-home"))
+            .env("ZLO_HOME", &reborn_home)
+            .output()
+            .expect("zlo doctor --bundle should run")
+    };
+
+    let output = run(&[]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Wrote diagnostics bundle"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("doctor.json"), "stdout: {stdout}");
+    let bytes = std::fs::read(&bundle).expect("bundle written");
+    assert!(bytes.starts_with(b"PK"), "bundle must be a zip archive");
+    assert!(
+        !reborn_home.exists(),
+        "doctor --bundle must not create state directories"
+    );
+
+    let again = run(&[]);
+    assert!(!again.status.success(), "existing bundle needs --force");
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("--force"),
+        "stderr: {}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    assert!(run(&["--force", "--no-logs"]).status.success());
+}
+
+#[test]
 fn repl_help_mentions_composed_runtime() {
     let output = reborn_command()
         .arg("repl")

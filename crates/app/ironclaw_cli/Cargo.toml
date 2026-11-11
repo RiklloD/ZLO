@@ -87,6 +87,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 tempfile = "3"
+# `zlo doctor --bundle`: reads only `id`/`version` from on-disk extension
+# manifests. Already a dev-dependency here and in the lockfile.
+toml = "1.1"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-util", "io-std", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -94,6 +97,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 zeroize = "1"
+# `zlo doctor --bundle` archive. Same version/features as the workspace's
+# other zip users (ironclaw_extension_host, ironclaw_documents, …); no new
+# crate enters Cargo.lock.
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 # O_NOFOLLOW for the single-handle, symlink-safe token file open in
@@ -129,7 +136,6 @@ ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version =
 # (`put_plaintext`), so this stays a dev-only dependency — see
 # `crates/ironclaw_architecture_tests/tests/reborn_dependency_boundaries.rs::reborn_cli_binary_crate_stays_separate_from_v1_root`.
 ironclaw_secrets = { path = "../../substrates/ironclaw_secrets", version = "0.1.0" }
-toml = "1.1"
 
 # The command ZLO users type. The package keeps the name `ironclaw` so
 # `cargo build -p ironclaw`, CI, and the cargo-dist release config stay valid.

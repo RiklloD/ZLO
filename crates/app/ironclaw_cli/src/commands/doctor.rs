@@ -10,12 +10,39 @@ use std::io::Write;
 #[derive(Debug, Args)]
 pub(crate) struct DoctorCommand {
     /// Output as JSON.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "bundle")]
     json: bool,
+    /// Write a sanitized diagnostics bundle (zip) for a bug report to FILE
+    /// instead of printing checks. Local file only; secrets, tokens and
+    /// conversation content are never included.
+    #[arg(long, value_name = "FILE")]
+    bundle: Option<std::path::PathBuf>,
+    /// With --bundle: leave the service log tails out.
+    #[arg(long, requires = "bundle")]
+    no_logs: bool,
+    /// With --bundle: overwrite FILE if it already exists.
+    #[arg(long, requires = "bundle")]
+    force: bool,
 }
 
 impl DoctorCommand {
     pub(crate) fn execute(self, context: RebornCliContext) -> anyhow::Result<()> {
+        if let Some(out) = self.bundle {
+            let report = crate::diagnostics_bundle::write_bundle(
+                &context,
+                &crate::diagnostics_bundle::BundleOptions {
+                    out,
+                    include_logs: !self.no_logs,
+                    force: self.force,
+                },
+            )?;
+            println!("Wrote diagnostics bundle {}", report.out.display());
+            for entry in &report.entries {
+                println!("  {entry}");
+            }
+            println!("Review it before sharing; nothing was uploaded.");
+            return Ok(());
+        }
         let dto = build_doctor_dto(&context);
         let mode = if self.json {
             OutputMode::Json
@@ -26,7 +53,7 @@ impl DoctorCommand {
     }
 }
 
-fn build_doctor_dto(context: &RebornCliContext) -> DoctorDto {
+pub(crate) fn build_doctor_dto(context: &RebornCliContext) -> DoctorDto {
     let mut checks = Vec::new();
 
     let report = RebornDoctorReport::from_config(context.boot_config().clone());

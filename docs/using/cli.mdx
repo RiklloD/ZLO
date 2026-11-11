@@ -37,6 +37,20 @@ zlo run -m "What changed in my repo today?"
 directory, active profile, whether configuration files were found, and whether each
 driver initialized.
 
+To attach diagnostics to a bug report, write a bundle:
+
+```bash
+zlo doctor --bundle zlo-diagnostics.zip
+```
+
+The zip holds the doctor checks, the status snapshot, your effective configuration, the
+ZLO version and platform, the storage backend kind, installed extension ids and versions,
+the enabled LLM backend kind, and the tail of the service logs. Secrets, tokens, API keys
+and credentials in URLs are replaced with `[REDACTED]`, and your conversations, memory,
+workspace files and database are never read. The file stays on your computer; nothing is
+uploaded. Add `--no-logs` to leave the log tails out, or `--force` to overwrite an existing
+file.
+
 ---
 
 ## Other Devices

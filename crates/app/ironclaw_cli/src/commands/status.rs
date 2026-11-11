@@ -34,7 +34,7 @@ fn build_status_dto(context: &RebornCliContext) -> anyhow::Result<StatusDto> {
 /// Same as [`build_status_dto`] but with the live service-state query
 /// injectable (mirrors `commands::service`'s `*_with_runner` seam), so
 /// tests don't depend on the test host's actual launchd/systemd state.
-fn build_status_dto_with_service_state(
+pub(crate) fn build_status_dto_with_service_state(
     context: &RebornCliContext,
     service: ServiceStateDto,
 ) -> anyhow::Result<StatusDto> {
@@ -128,7 +128,7 @@ fn resolve_google_oauth_degraded(
 /// broken `launchctl`/`systemctl` query) folds to `Unknown` rather than
 /// failing `status`: this is diagnostic best-effort, not a hard
 /// requirement.
-fn resolve_service_state() -> ServiceStateDto {
+pub(crate) fn resolve_service_state() -> ServiceStateDto {
     let state = crate::commands::service::ServicePlatform::detect()
         .and_then(|platform| platform.current_state());
     match state {

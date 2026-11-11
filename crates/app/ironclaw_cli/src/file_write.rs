@@ -24,6 +24,18 @@ pub(crate) fn write_atomic(
     force: bool,
     label: &'static str,
 ) -> anyhow::Result<FileWriteAction> {
+    write_atomic_bytes(path, contents.as_bytes(), force, label)
+}
+
+/// Byte-level form of [`write_atomic`] for binary outputs (for example the
+/// `zlo doctor --bundle` archive): same temp-file-then-persist shape, same
+/// refuse-to-clobber default.
+pub(crate) fn write_atomic_bytes(
+    path: &Path,
+    contents: &[u8],
+    force: bool,
+    label: &'static str,
+) -> anyhow::Result<FileWriteAction> {
     if path.exists() && !force {
         anyhow::bail!(
             "{label} already exists at {}; pass --force to overwrite",
@@ -40,7 +52,7 @@ pub(crate) fn write_atomic(
         .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)
         .map_err(|error| anyhow::anyhow!("create temp file in {}: {error}", parent.display()))?;
-    tmp.write_all(contents.as_bytes())
+    tmp.write_all(contents)
         .map_err(|error| anyhow::anyhow!("write {}: {error}", tmp.path().display()))?;
     tmp.flush()
         .map_err(|error| anyhow::anyhow!("flush {}: {error}", tmp.path().display()))?;

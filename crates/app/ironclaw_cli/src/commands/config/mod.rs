@@ -37,6 +37,15 @@ mod read;
 mod set;
 
 use self::get::ConfigGetCommand;
+
+/// The flattened `config list` view (every leaf key of `config.toml` with
+/// unset sections expanded to defaults), for diagnostics that need the same
+/// key vocabulary without re-deriving it.
+pub(crate) fn config_list_dto(
+    context: &RebornCliContext,
+) -> anyhow::Result<crate::dto::ConfigListDto> {
+    read::build_config_list_dto(context)
+}
 use self::list::ConfigListCommand;
 
 impl ConfigCommand {
