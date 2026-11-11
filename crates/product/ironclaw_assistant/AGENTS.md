@@ -15,7 +15,7 @@ Orientation lives in `README.md`; family rules in `crates/product/AGENTS.md`.
   - `tests/approval_interaction_contract.rs`
   - `tests/inbound_turn_contract.rs`
   - `tests/product_surface_inbound_contract.rs`
-  - `tests/reborn_services_contract.rs`
+  - `tests/reborn_services_contract/` (`main.rs` + one module per scenario group; shared doubles in `support/`)
 
 ## Purpose
 

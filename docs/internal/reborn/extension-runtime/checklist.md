@@ -453,7 +453,7 @@ Rules — kept short on purpose:
   replacing the `connected: Option<bool>` stopgap. The accounts-list shape
   (`account_id`/`label`/`state`/`is_default`) is frozen by the golden fixture
   `list_extensions_golden_wire_multi_surface_extension_freezes_accounts_list`
-  (`reborn_services_contract.rs`), driven through `list_extensions`; the
+  (`reborn_services_contract/extensions.rs`), driven through `list_extensions`; the
   projection `vendor_auth_accounts` (`reborn_services/extensions.rs`) maps a
   live grant to `connected` (MIG-1). Richer per-account state (expired/
   authenticating) flows when the credential service surfaces it with
@@ -1024,7 +1024,7 @@ Rules — kept short on purpose:
   `connected: Option<bool>`), and setup field/secret descriptors
   (`reborn_services/types.rs`). One golden fixture pins the full shape:
   `list_extensions_golden_wire_multi_surface_extension_freezes_accounts_list`
-  (`reborn_services_contract.rs`) freezes an arbitrary channel on a
+  (`reborn_services_contract/extensions.rs`) freezes an arbitrary channel on a
   multi-surface (tool + channel + auth) extension — the surface keys, the
   public-state string, the accounts list, each surface's
   `resolved_account_id` + binding source, and the connection `display_name`.
