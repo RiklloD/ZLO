@@ -161,6 +161,7 @@ pub struct RebornIntegrationHarnessBuilder {
     model_mode: ThreadModelMode,
     /// Wire production's RootFilesystem-backed durable loop milestone sink.
     durable_milestone_event_store: bool,
+    operator_metrics: Option<Arc<ironclaw_operator::OperatorMetrics>>,
     /// C-TRACECAP seam: install an in-memory `TurnEventSink` when `true`.
     turn_event_sink: bool,
     /// Tool disclosure mode for the underlying group's ONE planned runtime.
@@ -386,6 +387,18 @@ impl RebornIntegrationHarnessBuilder {
     /// the same `RootFilesystem` selected by [`Self::storage`].
     pub fn with_durable_milestone_event_store_for_test(mut self) -> Self {
         self.durable_milestone_event_store = true;
+        self
+    }
+
+    /// Record into `metrics` through production's operator-metrics
+    /// decorators (durable event sink + provider chain); implies the durable
+    /// milestone event store.
+    pub fn with_operator_metrics_for_test(
+        mut self,
+        metrics: Arc<ironclaw_operator::OperatorMetrics>,
+    ) -> Self {
+        self.durable_milestone_event_store = true;
+        self.operator_metrics = Some(metrics);
         self
     }
 
@@ -769,6 +782,9 @@ impl RebornIntegrationHarnessBuilder {
         if self.durable_milestone_event_store {
             group_builder = group_builder.with_durable_milestone_event_store_for_test();
         }
+        if let Some(metrics) = self.operator_metrics {
+            group_builder = group_builder.with_operator_metrics_for_test(metrics);
+        }
         group_builder = group_builder.with_tool_disclosure_mode(self.tool_disclosure);
         if let Some(policy) = self.bridged_policy_override {
             group_builder = group_builder.with_capability_surface_policy_for_bridged_test(policy);
@@ -918,6 +934,7 @@ impl RebornIntegrationHarness {
             model_mode: ThreadModelMode::Normal,
             turn_event_sink: false,
             durable_milestone_event_store: false,
+            operator_metrics: None,
             // General integration tests stay hermetic across production default
             // changes. Disclosure-specific tests opt into Bridged explicitly.
             tool_disclosure: ToolDisclosureMode::Off,

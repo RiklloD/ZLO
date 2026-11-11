@@ -82,6 +82,9 @@ const INVERTED_PORTS: &[(&str, &str)] = &[
     ("LlmConfigService", OPERATOR),
     ("NativeModelRoutes", OPERATOR),
     ("OperatorLogsService", OPERATOR),
+    // The Prometheus exposition of the operator metrics registry
+    // (`ironclaw_operator::metrics`); the WebUI transport serves it.
+    ("OperatorMetricsService", OPERATOR),
     // WS3's secrets tightening. Implemented by COMPOSITION for the same reason
     // `OperatorStatusService` is: assembly is the only layer that may name both
     // the products-tier port and the `ironclaw_secrets` substrate behind it,

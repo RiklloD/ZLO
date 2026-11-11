@@ -100,7 +100,7 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **64** group scenarios · **64** flat integration bins (57 in
+Totals: **64** group scenarios · **65** flat integration bins (58 in
 `tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
@@ -224,7 +224,7 @@ ones speak MTProto over a raw socket with no injectable seam.
 
 ---
 
-## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (64)
+## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (65)
 
 One thread, whole real turn. Grouped by what the user experiences.
 
@@ -338,6 +338,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 |---|---|
 | Lifecycle hooks fire at the expected points and a hook deny blocks the tool without wedging | `hooks.rs` |
 | Turn lifecycle events publish to subscribers; trace capture records them | `tracecap.rs`, `trace_capture.rs` |
+| An operator scraping `/api/operator/metrics` after a tool-call turn sees one completed run (with its duration), the tool call counted by capability id, the model calls, and the provider requests by provider/model — and no tenant, user, or thread id in any label — a new bin because no existing scenario composes the metrics registry | `operator_metrics.rs` |
 | Instruction-safety context renders into the prompt | `safety.rs` |
 | Scheduled-origin runs carry their origin into persisted state | `triggered_submit.rs` |
 | The test harness's runtime wiring stays field-identical to production's | `wiring_parity.rs` |
@@ -348,7 +349,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 | A canonical 10-tool-call agent turn's database write volume is measured and reported (for tracking, not gated) on both libSQL and Postgres, and custom-actor group threads are rejected from canonical durable milestones | `db_write_canonical.rs` |
 | A downloaded run artifact carries per-iteration model-call timing evidence for a completed run, and still carries durable per-message timestamps (with an explicit `run_not_resident` reason) when the process-local timing buffer was evicted or the process restarted | `run_artifact_timings.rs` |
 
-One of the 64 registered bins, `delivery_user_journeys.rs`, holds the explicit
+One of the 65 registered bins, `delivery_user_journeys.rs`, holds the explicit
 channel-delivery journeys (two-lane model):
 
 | A user can… | Scenario |
@@ -590,7 +591,7 @@ verify it.
 | **Sub-agents** have no group scenario | `reborn_subagent_spawn_e2e.rs` + `subagent_await_edge.rs` only. |
 | **Python E2E skip/xfail debt** | Tracked separately in `tests/e2e/E2E_DEBT.md` (ClawHub skills, legacy Gmail/MCP OAuth prerequisites, Telegram OAuth placeholders, portfolio widget, v2 auth/OAuth xfails). Do not silently un-xfail. |
 | **Live-model tool-misuse patterns** are documented but not gated | `tests/e2e/LIVE_TOOL_FAILURES.md` — the assistant claiming a write it never made, etc. No test fails on these today. |
-| **Observability** has no scenario coverage | `crates/substrates/ironclaw_observability` is latency-trace macros over `tracing` only — there is no exporter backend to exercise. |
+| **Observability** export is partial | The Prometheus scrape is covered (`operator_metrics.rs`; routes at crate tier in `ironclaw_webui/tests/operator_observability_routes.rs`). There is no OTLP exporter yet, and approval-gate and token metrics have no scenario (decorator-tier only, `ironclaw_operator` `metrics::tests`). |
 
 ---
 

@@ -71,8 +71,17 @@ pub(crate) fn build_approval_interaction_service_with_turn_run_source(
         approval_requests.clone(),
         approval_turn_runs,
     ));
+    // The resolver is where approval gates are decided (`approve` / `deny`);
+    // operator metrics count the committed resolutions. Wrapped here, at the
+    // consumer, so the production-wiring report still classifies the
+    // concrete store type registered with `HostRuntimeServices`.
+    let metered_approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort> =
+        Arc::new(ironclaw_operator::MetricsApprovalRequestStore::new(
+            approval_requests.clone(),
+            ironclaw_operator::operator_metrics(),
+        ));
     let mut approval_resolver =
-        ApprovalResolverPort::new(approval_requests.clone(), capability_leases.clone());
+        ApprovalResolverPort::new(metered_approval_requests, capability_leases.clone());
     if let Some(audit_sink) = audit_sink {
         approval_resolver = approval_resolver.with_audit_sink(audit_sink);
     }

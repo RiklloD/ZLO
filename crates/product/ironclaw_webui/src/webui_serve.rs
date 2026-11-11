@@ -46,6 +46,7 @@ use ironclaw_host_ingress::{
     ProtectedRouteMount, PublicRouteDrains, PublicRouteMount, SplitRouteMount,
 };
 use ironclaw_product_contracts::environment_access::DeviceId;
+use ironclaw_product_contracts::product_wire::RebornOperatorStatusResponse;
 use ironclaw_product_contracts::surface::ProductSurface;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowHeaders, CorsLayer};
@@ -276,6 +277,10 @@ pub struct WebuiServeConfig {
     /// fragments with one shared descriptor inventory. Product-auth is the
     /// current production user.
     pub(crate) split_mounts: Vec<SplitRouteMount>,
+    /// The host's composed readiness snapshot, served (redacted to its stable
+    /// vocabulary) on the public `/api/ready` probe. `None` makes the probe
+    /// answer `503 not_configured` rather than guessing.
+    pub(crate) readiness: Option<RebornOperatorStatusResponse>,
 }
 
 pub struct WebuiV2App {
@@ -313,7 +318,15 @@ impl WebuiServeConfig {
             public_mounts: Vec::new(),
             protected_mounts: Vec::new(),
             split_mounts: Vec::new(),
+            readiness: None,
         }
+    }
+
+    /// Supply the composed readiness snapshot the public `/api/ready` probe
+    /// reports: `200` when its roll-up is `ready`, `503` otherwise.
+    pub fn with_readiness(mut self, readiness: RebornOperatorStatusResponse) -> Self {
+        self.readiness = Some(readiness);
+        self
     }
 
     /// Attach a host-supplied public sub-router PLUS its route
@@ -573,7 +586,13 @@ pub fn webui_v2_app_with_lifecycle(
         .allow_credentials(true);
 
     let mount_operator_routes = config.authenticator.mounts_operator_webui_config_routes();
-    let public_mounts = config.public_mounts;
+    let mut public_mounts = config.public_mounts;
+    // The readiness probe is always mounted, on the descriptor-driven public
+    // stack (per-peer rate limit, no body) — unlike `/api/health`, it reads
+    // state, so it does not get the platform-probe bypass.
+    public_mounts.push(crate::operator_observability::readiness_route_mount(
+        config.readiness,
+    ));
     let protected_mounts = config.protected_mounts;
     let split_mounts = config.split_mounts;
     let public_route_drains = PublicRouteDrains::new(

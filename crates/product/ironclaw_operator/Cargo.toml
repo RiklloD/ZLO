@@ -18,6 +18,13 @@ async-trait = "0.1"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 ironclaw_common = { path = "../../contracts/ironclaw_common" }
+# Operator metrics (`src/metrics/`) fold two durable facts they observe through
+# decorators: the redacted runtime events handed to the durable event sink
+# (`ironclaw_event_log`) and the approval-request store transitions
+# (`ironclaw_approvals::ApprovalRequestStorePort`). Vocabulary + port only —
+# no store, dispatcher, or runtime lane.
+ironclaw_approvals = { path = "../../kernel/ironclaw_approvals" }
+ironclaw_event_log = { path = "../../events/ironclaw_event_log" }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem" }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # Host-owned route-mount carriers. Operator owns the NEAR AI login callback
@@ -28,6 +35,9 @@ ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contract
 ironclaw_llm = { path = "../../domains/ironclaw_llm", default-features = false }
 ironclaw_config = { path = "../../app/ironclaw_config" }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
+# `LlmProvider::cost_per_token` returns `Decimal`; the metrics provider
+# decorator (`src/metrics/llm.rs`) delegates the whole trait.
+rust_decimal = "1"
 nix = { version = "0.31", default-features = false, features = ["process"] }
 libc = "0.2"
 secrecy = "0.10"
@@ -43,6 +53,10 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+# Metrics decorator tests drive the production approval store over its
+# in-memory backend and the `StubLlm` provider double.
+ironclaw_approvals = { path = "../../kernel/ironclaw_approvals", features = ["test-support"] }
+ironclaw_llm = { path = "../../domains/ironclaw_llm", default-features = false, features = ["test-support"] }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
 # The in-memory `OperatorSecretValueStore` fake. WS3 removed this crate's
 # `ironclaw_secrets` edge (PROPOSAL §8.2, §12.1b); the substrate-fidelity tests

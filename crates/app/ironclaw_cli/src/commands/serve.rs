@@ -667,6 +667,15 @@ impl ServeCommand {
             serve_config = serve_config.with_protected_route_mount(
                 crate::commands::update::self_update_routes(Arc::clone(&self_update)),
             );
+            // Operator observability: the public `/api/ready` probe reports the
+            // composed readiness; `/api/operator/metrics` is the operator-only
+            // Prometheus scrape over the process-wide metrics registry the
+            // runtime's sinks record into.
+            serve_config = serve_config
+                .with_readiness(runtime.readiness().operator_status())
+                .with_protected_route_mount(ironclaw_webui::operator_metrics_route_mount(
+                    ironclaw_operator::operator_metrics(),
+                ));
             // Keep the update status fresh for clients (ZLO shows "update
             // available" from it). Ends with the runtime.
             let update_checks = tokio::spawn(crate::commands::update::auto_check(Arc::clone(

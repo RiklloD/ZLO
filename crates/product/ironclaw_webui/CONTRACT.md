@@ -175,6 +175,42 @@ finished job read back, `not_configured`, a body refused); the port's real
 implementation (git, lock, detached job, records) is tested in the binary
 (`crates/app/ironclaw_cli/src/commands/update/`).
 
+## Operator observability (`src/operator_observability.rs`)
+
+Readiness and the metrics scrape. Neither takes a body (`BodyLimitPolicy::NoBody`,
+refused with `413` before the handler); both are descriptor-backed, so the
+body-limit and rate-limit middleware run before the handler. Neither is a row
+of the frozen `webui_v2/descriptors.rs` table.
+
+| Route | Auth | Rate limit | Result |
+|---|---|---|---|
+| `GET /api/health` | public, platform-probe bypass | none | Liveness only: always `200 {"status":"healthy"}`. Unchanged. |
+| `GET /api/ready` | public | 120/min per peer | `200` when the readiness snapshot's `overall` is `ready`, else `503`. Body `{"status":"ready"\|"not_ready","overall":<RebornOperatorStatusState>,"checks":[{"id","status","severity"}]}`. |
+| `GET /api/operator/metrics` | bearer, operator (`403 operator_required` otherwise) | 60/min per caller | Prometheus text (`text/plain; version=0.0.4`) from the `OperatorMetricsService` port. |
+
+Invariants:
+
+- `/api/ready` is mounted by `webui_v2_app` on every host, from
+  `WebuiServeConfig::with_readiness` (the binary passes
+  `RebornReadiness::operator_status()`). With no snapshot it answers `503`
+  with `overall: "not_configured"`, never a guess.
+- The readiness body carries only the stable vocabulary: the roll-up and each
+  check's id, state and severity. Check summaries and remediation are dropped
+  (they are operator prose and may name hosts or paths). A check id outside
+  `[a-z0-9_]{1,64}` is replaced with `unrecognized_check`.
+- `Degraded` (dev-only profile, preview storage, a missing worker) is
+  `503`: readiness means production-ready, while `/api/health` stays the
+  liveness answer.
+- The scrape route renders an in-process registry; it reads no store and
+  takes no request input. The labels it can carry are bounded by the
+  implementor (`ironclaw_operator::metrics`).
+
+Tests: `tests/operator_observability_routes.rs` drives the composed
+`webui_v2_app` (status mapping, redaction, the per-peer limit and body refusal,
+`/api/health` unchanged, the scrape's 401/403/200); the module's unit tests pin
+the body projection. The turn-to-scrape path is
+`tests/integration/operator_metrics.rs` at the repo root.
+
 ## `handlers.rs` module-charter map
 
 `src/webui_v2/handlers.rs` is **4,890 lines** and carries a live

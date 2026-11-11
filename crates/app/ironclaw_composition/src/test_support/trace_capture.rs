@@ -31,3 +31,15 @@ pub fn trace_capture_turn_event_sink_for_test(
     );
     (sink, scope)
 }
+
+/// Build the SAME operator-metrics `TurnEventSink` production fans into the
+/// runtime's turn-event sink inside `build_reborn_runtime`, recording into
+/// the caller's registry instead of the process-wide one.
+#[cfg(feature = "test-support")]
+pub fn operator_metrics_turn_event_sink_for_test(
+    metrics: std::sync::Arc<ironclaw_operator::OperatorMetrics>,
+) -> std::sync::Arc<dyn ironclaw_turns::TurnEventSink> {
+    std::sync::Arc::new(
+        crate::observability::operator_metrics::OperatorMetricsTurnEventSink::new(metrics),
+    )
+}

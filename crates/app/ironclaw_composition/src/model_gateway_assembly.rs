@@ -155,6 +155,12 @@ pub(crate) fn wrap_swappable_gateway(
         Some(factory) => factory(Arc::clone(&swappable_provider)),
         None => swappable_provider,
     };
+    // Outermost, so every request the gateway makes is counted once whatever
+    // the routed provider, and the wrap survives reloads with the rest.
+    let provider: Arc<dyn LlmProvider> = Arc::new(ironclaw_operator::MetricsLlmProvider::new(
+        provider,
+        ironclaw_operator::operator_metrics(),
+    ));
 
     let model_profile_id = ModelProfileId::new("interactive_model").map_err(|reason| {
         RebornRuntimeError::LlmProvider(format!("invalid interactive model profile id: {reason}"))

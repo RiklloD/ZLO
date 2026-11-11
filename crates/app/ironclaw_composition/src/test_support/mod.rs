@@ -206,7 +206,9 @@ pub use standalone_boot::{
     mount_database_roots_for_test,
 };
 #[cfg(feature = "test-support")]
-pub use trace_capture::trace_capture_turn_event_sink_for_test;
+pub use trace_capture::{
+    operator_metrics_turn_event_sink_for_test, trace_capture_turn_event_sink_for_test,
+};
 #[cfg(feature = "test-support")]
 pub use trigger_materializer::materialize_trigger_prompt_for_test;
 #[cfg(feature = "test-support")]

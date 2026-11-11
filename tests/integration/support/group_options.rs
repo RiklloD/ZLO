@@ -126,6 +126,19 @@ impl RebornIntegrationGroupBuilder {
         self
     }
 
+    /// Decorate production's operator metrics around the durable event sink
+    /// and every thread's provider chain, recording into `metrics`. Implies
+    /// [`Self::with_durable_milestone_event_store_for_test`] — the run,
+    /// model-call and capability metrics are folded from those durable events.
+    pub fn with_operator_metrics_for_test(
+        mut self,
+        metrics: Arc<ironclaw_operator::OperatorMetrics>,
+    ) -> Self {
+        self.durable_milestone_event_store = true;
+        self.operator_metrics = Some(metrics);
+        self
+    }
+
     /// Force `ToolDisclosureMode::Bridged` into the group's ONE planned
     /// runtime config (enabler (b)), regardless of `REBORN_TOOL_DISCLOSURE` —
     /// avoids the shared-process env-var race `apply_hermetic_env()` already

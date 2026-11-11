@@ -198,6 +198,9 @@ ironclaw_loop_host = { path = "crates/loop/ironclaw_loop_host", features = ["tes
 # drives the bare router, not the `webui_v2_app` wrapper. The v2 route surface
 # merged into `ironclaw_webui` (as its public `webui_v2` module).
 ironclaw_webui = { path = "crates/product/ironclaw_webui", version = "0.1.0" }
+# `reborn_integration_operator_metrics` records a whole turn through the
+# operator-metrics decorators at their production positions.
+ironclaw_operator = { path = "crates/product/ironclaw_operator", version = "0.1.0" }
 # Direct dev-dep for the same reason as ironclaw_webui above: composition's
 # facade-only rule means it re-exports no SLACK_V2_ADAPTER_ID/SLACK_USER_ACTOR_KIND-style
 # constants; Slack pairing/actor-resolution int-tier tests need them directly.
@@ -406,6 +409,10 @@ path = "tests/integration/golden_payload.rs"
 [[test]]
 name = "reborn_integration_greeting"
 path = "tests/integration/greeting.rs"
+
+[[test]]
+name = "reborn_integration_operator_metrics"
+path = "tests/integration/operator_metrics.rs"
 
 [[test]]
 name = "reborn_integration_hooks"

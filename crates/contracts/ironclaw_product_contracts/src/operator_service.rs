@@ -1,10 +1,11 @@
 //! The deployment-operator control plane's product-side ports (PROPOSAL
 //! §6.1.3, §6.9.2).
 //!
-//! Three ports and their wire vocabulary: operator readiness status, the
-//! operator log ring, and OS-service lifecycle control. None of them is
-//! implemented by `ironclaw_assistant` — the log ring and the service lifecycle
-//! live in `ironclaw_operator`, the readiness status in
+//! Four ports and their wire vocabulary: operator readiness status, the
+//! operator log ring, the operator metrics exposition, and OS-service
+//! lifecycle control. None of them is implemented by `ironclaw_assistant` —
+//! the log ring, the metrics, and the service lifecycle live in
+//! `ironclaw_operator`, the readiness status in
 //! `ironclaw_composition` — which is exactly why declaring them here
 //! rather than in `ironclaw_assistant` un-inverts the ownership: the operator
 //! crate compiles against the product boundary instead of against the crate it
@@ -86,6 +87,18 @@ pub trait OperatorLogsService: Send + Sync {
         caller: ProductSurfaceCaller,
         request: RebornLogQueryRequest,
     ) -> Result<RebornLogQueryResponse, ProductSurfaceError>;
+}
+
+/// The process's operator metrics as Prometheus text exposition (format
+/// 0.0.4). Implemented by `ironclaw_operator::metrics::OperatorMetrics`;
+/// served by the WebUI transport on an operator-only scrape route.
+///
+/// Synchronous on purpose: the exposition is a render of an in-process
+/// registry, never a backend read. The rendered text carries no tenant, user,
+/// thread, or run identifiers — label cardinality is bounded by the
+/// implementor.
+pub trait OperatorMetricsService: Send + Sync {
+    fn render_prometheus(&self) -> String;
 }
 
 /// OS-service (install/start/stop/status) control for the host process.
