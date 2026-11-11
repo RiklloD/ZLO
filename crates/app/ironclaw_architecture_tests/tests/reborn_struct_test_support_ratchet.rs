@@ -433,7 +433,11 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
     FrozenPathCount {
         category: "test-support",
         item_kind: "method",
-        path: "crates/ironclaw_composition/src/runtime.rs",
+        // ✎ 2026-11-11: was `src/runtime.rs`. The runtime.rs split moved every
+        // test-gated `RebornRuntime` method, verbatim, into
+        // `runtime/harness_accessors.rs`; runtime.rs keeps none. Same 43
+        // members, one path for one path — a repoint following the file.
+        path: "crates/ironclaw_composition/src/runtime/harness_accessors.rs",
         // 43 -> 44 (2026-09-01): the delivery-coordinator accessor is
         // test-support again — production wiring takes the coordinator from
         // the factory; only integration harnesses that wire their own

@@ -49,7 +49,7 @@ method directly, and do not call an external service to compute. That last claus
 the `api.mathjs.org` incident above.
 
 It is derived from the resolved policy in
-`crates/ironclaw_reborn_composition/src/runtime.rs::filesystem_skill_context_source`, so **nothing
+`crates/app/ironclaw_composition/src/runtime/skill_context.rs::filesystem_skill_context_source`, so **nothing
 needs editing here**: the moment the resolver returns `TenantSandbox` instead of `None`, this flips to
 `true` on its own and the note disappears.
 

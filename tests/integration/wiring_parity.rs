@@ -46,8 +46,9 @@ use reborn_support::reply::RebornScriptedReply;
 // Part 1: DefaultPlannedRuntimeParts Some/None shape parity
 // ---------------------------------------------------------------------------
 
-/// Hand-derived from `crates/app/ironclaw_composition/src/runtime.rs`
-/// lines 3365-3459 (`build_reborn_runtime`, `Standalone`/`StandaloneUnrestricted`
+/// Hand-derived from the `DefaultPlannedRuntimeParts { .. }` literal in
+/// `assemble_runtime`, `crates/app/ironclaw_composition/src/runtime/assembly.rs`
+/// (moved out of `runtime.rs` 2026-11-11, move-only; reached from `build_reborn_runtime`, `Standalone`/`StandaloneUnrestricted`
 /// profile, `local_runtime: Some(..)`). NOT computed from running code —
 /// RE-DERIVE by re-reading that literal whenever it changes. (Verified
 /// against this range 2026-07-04.) The smoke build below at least proves the

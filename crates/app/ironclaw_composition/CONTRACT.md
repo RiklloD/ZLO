@@ -405,9 +405,12 @@ axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
 Caller-level and unit coverage for the seams above — see each file for
 current test names and assertions rather than a prose transcription here:
 
-- `src/runtime/tests/core.rs` — standalone CLI/WebUI runtime regressions
-  (saved model preference resolution, product surface reuses runtime
-  turn/thread services).
+- `src/runtime/tests/core.rs` plus its scenario modules under
+  `src/runtime/tests/core/` (`llm_gateway.rs`, `webui_bundle.rs`,
+  `send_message.rs`, `skills.rs`, `scheduler.rs`, …) — standalone CLI/WebUI
+  runtime regressions (saved model preference resolution, product surface
+  reuses runtime turn/thread services). `core.rs` holds only the fixtures
+  shared by more than one scenario module.
 - `crates/product/ironclaw_assistant/src/projection/tests/runtime_stream.rs`,
   `turn_stream.rs`, `live_progress_stream.rs` — product event-stream
   projection regressions (run-status drain, request-actor scoping, live-text
