@@ -16,6 +16,8 @@ pub(crate) const MAX_CHAT_BODY_BYTES: usize = 14 * 1024 * 1024;
 
 pub const OPENAI_COMPAT_ROUTE_CHAT_COMPLETIONS: &str = "openai.compat.chat_completions";
 pub const OPENAI_COMPAT_ROUTE_MODELS_LIST: &str = "openai.compat.models.list";
+pub const OPENAI_COMPAT_ROUTE_EMBEDDINGS_V1: &str = "openai.compat.embeddings_v1.create";
+pub const OPENAI_COMPAT_ROUTE_EMBEDDINGS_API: &str = "openai.compat.embeddings_api.create";
 pub const OPENAI_COMPAT_ROUTE_MODELS_API_LIST: &str = "openai.compat.models_api.list";
 pub const OPENAI_COMPAT_ROUTE_RESPONSES_API_CREATE: &str = "openai.compat.responses_api.create";
 pub const OPENAI_COMPAT_ROUTE_RESPONSES_V1_CREATE: &str = "openai.compat.responses_v1.create";
@@ -26,6 +28,8 @@ pub const OPENAI_COMPAT_ROUTE_RESPONSES_V1_CANCEL: &str = "openai.compat.respons
 
 pub const OPENAI_COMPAT_PATTERN_CHAT_COMPLETIONS: &str = "/v1/chat/completions";
 pub const OPENAI_COMPAT_PATTERN_MODELS_LIST: &str = "/v1/models";
+pub const OPENAI_COMPAT_PATTERN_EMBEDDINGS_V1: &str = "/v1/embeddings";
+pub const OPENAI_COMPAT_PATTERN_EMBEDDINGS_API: &str = "/api/v1/embeddings";
 pub const OPENAI_COMPAT_PATTERN_MODELS_API_LIST: &str = "/api/v1/models";
 pub const OPENAI_COMPAT_PATTERN_RESPONSES_API_CREATE: &str = "/api/v1/responses";
 pub const OPENAI_COMPAT_PATTERN_RESPONSES_V1_CREATE: &str = "/v1/responses";
@@ -41,6 +45,8 @@ pub fn openai_compat_routes() -> Vec<IngressRouteDescriptor> {
         chat_completions_descriptor(),
         models_list_descriptor(),
         models_api_list_descriptor(),
+        embeddings_v1_descriptor(),
+        embeddings_api_descriptor(),
         responses_api_create_descriptor(),
         responses_v1_create_descriptor(),
         responses_api_retrieve_descriptor(),
@@ -80,6 +86,24 @@ fn models_api_list_descriptor() -> IngressRouteDescriptor {
         NetworkMethod::Get,
         OPENAI_COMPAT_PATTERN_MODELS_API_LIST,
         retrieve_policy(),
+    )
+}
+
+fn embeddings_v1_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        OPENAI_COMPAT_ROUTE_EMBEDDINGS_V1,
+        NetworkMethod::Post,
+        OPENAI_COMPAT_PATTERN_EMBEDDINGS_V1,
+        embeddings_policy(),
+    )
+}
+
+fn embeddings_api_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        OPENAI_COMPAT_ROUTE_EMBEDDINGS_API,
+        NetworkMethod::Post,
+        OPENAI_COMPAT_PATTERN_EMBEDDINGS_API,
+        embeddings_policy(),
     )
 }
 
@@ -138,6 +162,13 @@ fn responses_v1_cancel_descriptor() -> IngressRouteDescriptor {
 }
 
 fn create_policy(body_limit: BodyLimitPolicy) -> IngressPolicy {
+    create_policy_with_streaming(body_limit, StreamingMode::Sse)
+}
+
+fn create_policy_with_streaming(
+    body_limit: BodyLimitPolicy,
+    streaming: StreamingMode,
+) -> IngressPolicy {
     IngressPolicy::new(IngressPolicyParts {
         listener_class: ListenerClass::LocalGateway,
         auth: bearer_required(),
@@ -146,11 +177,24 @@ fn create_policy(body_limit: BodyLimitPolicy) -> IngressPolicy {
         rate_limit: rate_limit_per_caller(60, 60),
         cors: CorsPolicy::HostConfiguredAllowlist,
         websocket_origin: WebSocketOriginPolicy::NotApplicable,
-        streaming: StreamingMode::Sse,
+        streaming,
         audit: AuditTraceClass::UserAction,
         effect_path: AllowedEffectPath::ProductSurface,
     })
     .expect("OpenAI-compatible create policy must validate") // safety: crate-local constants declare LocalGateway + bearer + AuthenticatedCaller with host-mediated product-surface effects and SSE response support
+}
+
+/// Embeddings: the same bearer/caller-scope/CORS/audit shape and per-caller
+/// rate limit as a create, a body cap shared with the in-handler check
+/// (`MAX_EMBEDDINGS_BODY_BYTES`), no streaming. The effect is a paid provider
+/// call made through a composition port, so it is declared effectful
+/// (`ProductSurface` class: bearer-required, never public) rather than
+/// projection-only.
+fn embeddings_policy() -> IngressPolicy {
+    create_policy_with_streaming(
+        body_limit_kib((crate::embeddings::MAX_EMBEDDINGS_BODY_BYTES / 1024) as u64),
+        StreamingMode::None,
+    )
 }
 
 fn retrieve_policy() -> IngressPolicy {

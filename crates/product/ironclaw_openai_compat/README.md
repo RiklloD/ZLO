@@ -1,7 +1,7 @@
 # ironclaw_openai_compat
 
 The OpenAI-shaped ingress adapter over the product surface: the wire contract
-for Chat Completions and Responses, its route descriptor table, a sanitized
+for Chat Completions, Responses, Embeddings and Models, its route descriptor table, a sanitized
 error taxonomy, the opaque-ref/idempotency store scoped to this surface, and —
 since the WS6 eviction — its own route-mount assembly (`mount.rs`). It is a
 separate crate so the assembly layer can mount the API skin without dragging
@@ -31,7 +31,8 @@ wire-stability promise rides on its own contract tests.
 - Wire DTOs (`chat`, `responses`, `models`), `OpenAiCompatError` helpers
   (`error.rs`), the descriptor table (`descriptors.rs`), the
   `OpenAiCompatRefStore` port + durable adapter (`refs`, `refs_storage`), and
-  `OpenAiCompatModelCatalog` (`models_catalog`, `mount::LlmConfigModelCatalog`).
+  `OpenAiCompatModelCatalog` (`models_catalog`, `mount::LlmConfigModelCatalog`),
+  and the `/v1/embeddings` DTOs + `OpenAiCompatEmbeddings` port (`embeddings`).
 
 ## Depends on / consumed by
 

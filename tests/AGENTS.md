@@ -94,13 +94,13 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Multi-user / scope isolation | 5 | 4 | 9 | ✓ |
 | Tools & tool dispatch | — | 11 | ✓ | ✓ |
 | Turn lifecycle (cancel/steer/retry/restart) | — | 8 | ✓ | ✓ |
-| WebUI surfaces & APIs | 2 | 2 | — | ✓ (largest) |
+| WebUI surfaces & APIs | 2 | 3 | — | ✓ (largest) |
 | Durability & restart | 4 | 6 | ✓ | ✓ |
 | Security & redaction | — | 3 | ✓ | ✓ |
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **64** group scenarios · **64** flat integration bins (57 in
+Totals: **64** group scenarios · **65** flat integration bins (58 in
 `tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
@@ -224,7 +224,7 @@ ones speak MTProto over a raw socket with no injectable seam.
 
 ---
 
-## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (64)
+## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (65)
 
 One thread, whole real turn. Grouped by what the user experiences.
 
@@ -342,13 +342,14 @@ One thread, whole real turn. Grouped by what the user experiences.
 | Scheduled-origin runs carry their origin into persisted state | `triggered_submit.rs` |
 | The test harness's runtime wiring stays field-identical to production's | `wiring_parity.rs` |
 | WebUI v2 routes work over the real services facade | `webui_v2_product_api.rs`, `webui_v2_router_smoke.rs` |
+| An OpenAI-compatible client gets embeddings from `/v1/embeddings` (and `/api/v1/embeddings`) in the OpenAI shape — float or base64 — only with a valid bearer, with a wrong model, token-id input, oversized batch/input or body refused before the provider is called, and the same per-caller rate limit as chat completions; a new bin because no existing suite mounts the OpenAI-compatible routes behind the real WebUI middleware | `openai_compat_embeddings.rs` |
 | Enroll/refresh/remove a browser for web push over the real routes — advertised VAPID key, endpoint redacted to its push-service host, undeclared push hosts rejected, and the `web-app` catalog row selectable through the same notification-channels wire as every vendor channel | `webui_v2_product_api.rs::browser_channel_notification_setup_round_trip_through_production_facade` |
 | Identity resolution runs on the coverage lane | `identity_resolution_smoke.rs` |
 | Pair another device with a one-time code (any case, dashes optional; every bad code gets the same `invalid_code`), use its device token as the operator, revoke it and see it rejected even after a restart; pair in one click only as a tailnet owner and only through the identity listener — a new bin because no existing suite composes the WebUI routes over the identity crate's records | `environment_access.rs` |
 | A canonical 10-tool-call agent turn's database write volume is measured and reported (for tracking, not gated) on both libSQL and Postgres, and custom-actor group threads are rejected from canonical durable milestones | `db_write_canonical.rs` |
 | A downloaded run artifact carries per-iteration model-call timing evidence for a completed run, and still carries durable per-message timestamps (with an explicit `run_not_resident` reason) when the process-local timing buffer was evicted or the process restarted | `run_artifact_timings.rs` |
 
-One of the 64 registered bins, `delivery_user_journeys.rs`, holds the explicit
+One of the 65 registered bins, `delivery_user_journeys.rs`, holds the explicit
 channel-delivery journeys (two-lane model):
 
 | A user can… | Scenario |

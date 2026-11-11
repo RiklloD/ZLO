@@ -140,6 +140,11 @@ pub async fn build_openai_compat_route_mount(
         }),
         llm_config: crate::product_surface::build_llm_config_service(runtime),
         prepared_turn_port: prepared_turn_gateway,
+        // `POST /v1/embeddings`: wired only when `[embeddings]` configured a
+        // provider; otherwise the route stays fail-closed (501).
+        embeddings: runtime
+            .embedding_provider()
+            .map(crate::embeddings::openai_compat_embeddings_port),
     }))
 }
 

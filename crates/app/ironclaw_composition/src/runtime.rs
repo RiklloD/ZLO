@@ -772,6 +772,10 @@ pub struct RebornRuntime {
     boot: Option<ironclaw_config::RebornBootConfig>,
     /// Hot-swap handle for the live LLM provider, when one was wired at boot.
     llm_reload: Option<RebornLlmReloadParts>,
+    /// The deployment's embedding provider (`[embeddings]`); `None` when the
+    /// section is absent.
+    // arch-exempt: optional_arc, a deployment without `[embeddings]` has no embedding provider by design, plan #embeddings
+    embedding_provider: Option<Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider>>,
 }
 
 impl ironclaw_extension_manager::extension_lifecycle_command::RebornExtensionLifecycleRuntime
@@ -1659,6 +1663,13 @@ impl RebornRuntime {
     ) -> Option<Arc<dyn ironclaw_product_contracts::operator_llm::NativeModelRoutes>> {
         let routes = self.llm_reload.as_ref()?.provider_routes.clone()?;
         Some(routes as _)
+    }
+
+    /// The deployment's embedding provider, when `[embeddings]` configured one.
+    pub(crate) fn embedding_provider(
+        &self,
+    ) -> Option<Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider>> {
+        self.embedding_provider.clone()
     }
 
     /// Diagnostic id for the no-profile run profile selected by this runtime.
@@ -5035,6 +5046,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         trigger_process_lifecycle_source: Arc::clone(&services.trigger_process_lifecycle_source),
         broadcast_budget_event_sink,
         external_tool_catalog: services.external_tool_catalog.clone(),
+        embedding_provider: services.embedding_provider.clone(),
         persistent_approval_policies: Arc::clone(&services.persistent_approval_policies),
         tool_permission_overrides: services.tool_permission_overrides.clone(),
         auto_approve_settings: services.auto_approve_settings.clone(),

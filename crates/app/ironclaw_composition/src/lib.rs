@@ -30,6 +30,7 @@ mod cli_bridge_serve;
 #[path = "extension_lifecycle_capabilities_auth_tests.rs"]
 mod composition_extension_lifecycle_auth_tests;
 pub mod deployment;
+mod embeddings;
 mod error;
 mod extension_host_assembly;
 mod factory;
@@ -134,6 +135,8 @@ pub use ironclaw_skills::{
 pub use ironclaw_turns::TurnStatus;
 // consumer: `ironclaw_cli` serve wiring · pinned by: `ironclaw_cli` build
 pub use llm_admin::openai_compat_serve::build_openai_compat_route_mount;
+// consumer: `tests/integration/openai_compat_embeddings.rs` (mounts the production adapter over a deterministic provider) · pinned by: `tests/integration/openai_compat_embeddings.rs`
+pub use embeddings::openai_compat_embeddings_port;
 // consumer: `ironclaw_cli` runtime · pinned by: `composition/tests/memory_mem0_swap.rs`
 pub use memory_binding::{memory_binding_diagnostics, resolve_memory_binding_policy};
 // consumer: `ironclaw_cli` runtime, `tests/integration/group_memory` · pinned by: `composition/tests/memory_mem0_swap.rs` (`MemoryLifecycleConsumers` is the fn's return type)

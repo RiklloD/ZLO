@@ -105,6 +105,10 @@ pub struct RebornConfigFile {
     /// host-runtime binding resolver, which owns the profile catalog; this
     /// config layer only does deployment-agnostic structural validation.
     pub memory: Option<MemorySection>,
+    /// The deployment's text-embedding model. Absent means no embedding
+    /// provider: `/v1/embeddings` stays fail-closed and memory search stays
+    /// full-text only, exactly as before the section existed.
+    pub embeddings: Option<EmbeddingsSection>,
     /// Remote access over the owner's tailnet (`zlo remote enable`).
     /// Absent or `enabled = false` keeps the backend reachable on loopback
     /// only. See [`crate::remote`].
@@ -122,6 +126,34 @@ pub struct RebornConfigFile {
     /// advertise a retired key as settable).
     #[serde(skip)]
     pub retired_sections: RetiredSections,
+}
+
+/// `[embeddings]` config section: which registry provider and model serve
+/// text embeddings.
+///
+/// ```toml
+/// [embeddings]
+/// provider = "openai"              # registry provider id; its stored API key is used
+/// model = "text-embedding-3-small"
+/// # dimension = 1536               # inferred for well-known models
+/// # base_url = "http://localhost:11434/v1"  # override the provider's API root
+/// ```
+///
+/// The API key is never configured here: it is the operator-stored key of
+/// `provider` (the same secret the chat provider of that id uses).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingsSection {
+    /// Registry provider id or alias (`openai`, `ollama`, `openrouter`, …).
+    pub provider: String,
+    /// Embedding model id.
+    pub model: String,
+    /// Vector dimension; required for models without a known dimension.
+    #[serde(default)]
+    pub dimension: Option<u32>,
+    /// OpenAI-compatible API root override (no credentials, no query).
+    #[serde(default)]
+    pub base_url: Option<String>,
 }
 
 /// `[memory]` config section (issue #3537).
@@ -1203,6 +1235,20 @@ impl RebornConfigFile {
                     path: path_str(),
                     found: format!("warn_at={w}, pause_at={p}"),
                     reason: "pause_at must be >= warn_at".to_string(),
+                });
+            }
+        }
+        if let Some(embeddings) = &self.embeddings {
+            check_non_empty_trimmed(Cow::Borrowed("embeddings.provider"), &embeddings.provider)?;
+            check_non_empty_trimmed(Cow::Borrowed("embeddings.model"), &embeddings.model)?;
+            if let Some(base_url) = embeddings.base_url.as_deref() {
+                check_non_empty_trimmed(Cow::Borrowed("embeddings.base_url"), base_url)?;
+            }
+            if embeddings.dimension == Some(0) {
+                return Err(RebornConfigFileError::InvalidField {
+                    path: path_str(),
+                    field: "embeddings.dimension".to_string(),
+                    reason: "must be positive; omit it to infer from the model".to_string(),
                 });
             }
         }
@@ -2574,6 +2620,31 @@ deployment_profile = "*"
             cfg.memory.unwrap().admin_overrides[0].deployment_profile,
             "*"
         );
+    }
+
+    #[test]
+    fn embeddings_section_parses_and_rejects_blank_zero_and_inline_secrets() {
+        let parse = |text: &str| RebornConfigFile::parse_text(text, &attributed());
+        let cfg = parse(
+            r#"
+[embeddings]
+provider = "openai"
+model = "text-embedding-3-small"
+"#,
+        )
+        .expect("a minimal embeddings section parses");
+        let section = cfg.embeddings.expect("section present");
+        assert_eq!(section.provider, "openai");
+        assert_eq!(section.dimension, None);
+        for bad in [
+            "[embeddings]\nprovider = \"  \"\nmodel = \"m\"\n",
+            "[embeddings]\nprovider = \"openai\"\nmodel = \"m\"\ndimension = 0\n",
+            "[embeddings]\nprovider = \"openai\"\nmodel = \"m\"\nbase_url = \"https://h/?key=sk-proj-1234567890abcdef12345678\"\n",
+            "[embeddings]\nprovider = \"openai\"\nmodel = \"m\"\napi_key = \"x\"\n",
+        ] {
+            assert!(parse(bad).is_err(), "must reject: {bad}");
+        }
+        assert!(parse("").expect("empty parses").embeddings.is_none());
     }
 
     #[test]

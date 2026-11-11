@@ -51,6 +51,29 @@ pub async fn models_list(
     Ok(Json(crate::models_catalog::model_list_response(entries)))
 }
 
+/// Handles `POST /v1/embeddings` and its `/api/v1/embeddings` alias.
+///
+/// Order: authenticate (401) → wired? (501) → parse, validate and bound the
+/// whole body against the configured model (400/404/413) → port → re-check
+/// the answer's shape (503) → OpenAI envelope.
+pub async fn embeddings_create(
+    State(state): State<OpenAiCompatRouterState>,
+    caller: Option<Extension<OpenAiCompatAuthenticatedCaller>>,
+    body: Bytes,
+) -> Result<Json<crate::OpenAiEmbeddingsResponse>, OpenAiCompatHttpError> {
+    let caller = require_caller(caller)?;
+    let Some(service) = state.embeddings() else {
+        return Err(OpenAiCompatHttpError::not_wired());
+    };
+    let model = service.model();
+    let (inputs, format) = crate::embeddings::validate_embeddings_request(&body, &model)?;
+    let expected = inputs.len();
+    let batch = service.embed(&caller, inputs).await?;
+    Ok(Json(crate::embeddings::embeddings_response(
+        &model, expected, format, batch,
+    )?))
+}
+
 /// Mounted on both the `/api/v1` and `/v1` responses paths.
 pub async fn responses_create(
     State(state): State<OpenAiCompatRouterState>,
