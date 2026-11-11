@@ -1,9 +1,11 @@
 //! Host/operator control-plane services for Reborn.
 
+pub mod config_reload;
 pub mod llm_admin;
 pub mod operator_logs;
 pub mod operator_service_lifecycle;
 
+pub use config_reload::RebornConfigReloader;
 pub use llm_admin::{
     FilesystemModelSelectionPolicyStore, FilesystemUserModelPreferenceStore, LlmKeyStore,
     LlmKeyStoreError, LlmReloadTrigger, ProviderActiveModelReader, ProviderRepo, ProviderRepoError,

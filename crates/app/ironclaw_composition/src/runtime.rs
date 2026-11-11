@@ -772,6 +772,9 @@ pub struct RebornRuntime {
     boot: Option<ironclaw_config::RebornBootConfig>,
     /// Hot-swap handle for the live LLM provider, when one was wired at boot.
     llm_reload: Option<RebornLlmReloadParts>,
+    /// `config.toml` live reloader; filled once after construction when a
+    /// boot config was supplied (it needs the finished runtime's LLM seam).
+    config_reloader: std::sync::OnceLock<Arc<ironclaw_operator::RebornConfigReloader>>,
 }
 
 impl ironclaw_extension_manager::extension_lifecycle_command::RebornExtensionLifecycleRuntime
@@ -1659,6 +1662,13 @@ impl RebornRuntime {
     ) -> Option<Arc<dyn ironclaw_product_contracts::operator_llm::NativeModelRoutes>> {
         let routes = self.llm_reload.as_ref()?.provider_routes.clone()?;
         Some(routes as _)
+    }
+
+    /// Live `config.toml` reloader (SIGHUP and operator triggers call its
+    /// `reload`). `None` when the runtime was built without a boot config,
+    /// i.e. there is no operator file to reload.
+    pub fn config_reloader(&self) -> Option<Arc<ironclaw_operator::RebornConfigReloader>> {
+        self.config_reloader.get().cloned()
     }
 
     /// Diagnostic id for the no-profile run profile selected by this runtime.
@@ -5123,6 +5133,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         tool_mentions,
         boot,
         llm_reload,
+        config_reloader: std::sync::OnceLock::new(),
     };
     // Channel graphs begin reconciling before the canonical product surface
     // can exist. Fill their first-write-wins command handle only after the
@@ -5143,6 +5154,15 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     // durable state), so the discarded `set` result is deliberate.
     if let Some(channel_connection) = runtime.generic_channel_connection_facade() {
         let _ = runtime.channel_facade_slot.set(channel_connection);
+    }
+    // Baseline is the file as it stands now, i.e. what this boot applied.
+    if let Some(boot) = runtime.boot.as_ref() {
+        let reloader =
+            ironclaw_operator::RebornConfigReloader::new(boot, runtime.webui_llm_reload_trigger())
+                .map_err(|error| RebornRuntimeError::MalformedConfig {
+                    reason: error.redacted_reason(),
+                })?;
+        let _ = runtime.config_reloader.set(Arc::new(reloader));
     }
     Ok((runtime, resource_governor))
 }

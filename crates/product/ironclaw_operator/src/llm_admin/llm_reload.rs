@@ -87,8 +87,15 @@ impl RebornLlmReloadAdapter {
 impl LlmReloadTrigger for RebornLlmReloadAdapter {
     async fn reload(&self) -> Result<(), String> {
         let config_file = RebornConfigFile::load(&self.boot.home().config_file_path())
-            .map_err(|error| error.to_string())?;
-        let Some(resolved) = self.resolve_effective_llm(config_file.as_ref()).await? else {
+            .map_err(|error| error.redacted_reason())?;
+        self.reload_from_config(config_file.as_ref()).await
+    }
+
+    async fn reload_from_config(
+        &self,
+        config_file: Option<&RebornConfigFile>,
+    ) -> Result<(), String> {
+        let Some(resolved) = self.resolve_effective_llm(config_file).await? else {
             // No provider selected yet, so there is nothing to swap.
             return Ok(());
         };

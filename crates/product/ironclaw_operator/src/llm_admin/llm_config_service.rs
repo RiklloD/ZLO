@@ -198,6 +198,17 @@ pub trait LlmReloadTrigger: Send + Sync {
     /// Re-resolve and hot-swap the active provider. The error string is for
     /// logging only and must stay free of secrets / backend internals.
     async fn reload(&self) -> Result<(), String>;
+
+    /// Re-resolve from an already-loaded and validated `config.toml` instead
+    /// of reading it again, so a config reload applies exactly the file it
+    /// validated. The default re-reads through [`Self::reload`]; the runtime
+    /// adapter overrides it.
+    async fn reload_from_config(
+        &self,
+        _config_file: Option<&ironclaw_config::RebornConfigFile>,
+    ) -> Result<(), String> {
+        self.reload().await
+    }
 }
 
 /// Operator-wide LLM configuration service backing the webui2 settings surface.

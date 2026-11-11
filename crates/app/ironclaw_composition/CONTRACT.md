@@ -400,6 +400,23 @@ let listener = tokio::net::TcpListener::bind(addr).await?;
 axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
 ```
 
+### Config hot reload (`config.toml`)
+
+When a runtime is built with a boot config, composition constructs one
+`ironclaw_operator::RebornConfigReloader` after the runtime is assembled and
+exposes it through `RebornRuntime::config_reloader()`. Composition only wires
+it: the reloader is handed the runtime's existing live LLM seam
+(`webui_llm_reload_trigger`) and snapshots the on-disk file as the in-effect
+baseline. Classification of which keys are live lives in `ironclaw_config`
+(`LIVE_RELOADABLE_CONFIG_KEYS`, today only `llm.default`); validation,
+fail-closed apply, and restart-required reporting live in the reloader.
+`zlo serve` calls it on SIGHUP (`crates/app/ironclaw_cli/src/commands/serve_reload.rs`).
+Nothing in the trust/authorization graph (storage, profile, policy, identity,
+`[webui]` listener/auth/origins/body limits, `[google]`, `[remote]`, runner,
+trigger poller, memory provider, budgets) is reloaded; a change to any of them
+is reported as restart-required and never applied. Integration coverage:
+`tests/integration/config_reload.rs`.
+
 ### Tests
 
 Caller-level and unit coverage for the seams above — see each file for

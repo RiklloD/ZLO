@@ -25,6 +25,7 @@ mod boot;
 mod budget;
 mod capability_remediation;
 mod config_file;
+mod config_reload;
 mod config_seed;
 mod doctor;
 mod home;
@@ -55,6 +56,10 @@ pub use config_file::{
     RebornConfigFileError, RebornConfigFileUpdateError, RunnerSection, StorageBackend,
     StorageSection, TriggerPollerConfigSection, begin_default_llm_slot_update,
     begin_google_oauth_config_update, update_default_llm_slot, update_google_oauth_config,
+};
+pub use config_reload::{
+    ConfigChangeSet, ConfigKeyReloadability, ConfigReloadDiffError, ConfigReloadOutcome,
+    ConfigReloadReport, LIVE_RELOADABLE_CONFIG_KEYS, config_key_reloadability, diff_config_files,
 };
 pub use config_seed::{
     RebornConfigSeedError, RebornConfigSeedOutcome, seed_default_config_file_if_missing,

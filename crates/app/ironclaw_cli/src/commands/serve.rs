@@ -672,6 +672,11 @@ impl ServeCommand {
             let update_checks = tokio::spawn(crate::commands::update::auto_check(Arc::clone(
                 &self_update,
             )));
+            // `kill -HUP <pid>` re-reads config.toml: live keys apply,
+            // boot-time keys are reported as restart-required.
+            let config_reload = runtime
+                .config_reloader()
+                .map(crate::commands::serve_reload::spawn_sighup_config_reload);
             // Generic extension channel ingress (extension-runtime P4): one
             // mount serves `/webhooks/extensions/{extension_id}/{route_suffix}`
             // for every active extension; the route table follows the active
@@ -765,6 +770,9 @@ impl ServeCommand {
                 None => Ok(()),
             };
             update_checks.abort();
+            if let Some(config_reload) = config_reload {
+                config_reload.abort();
+            }
             public_route_drains.drain().await;
 
             // Always drain the Reborn runtime, even on serve error, so

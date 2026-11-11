@@ -51,7 +51,7 @@ pub(crate) fn init_tracing() {
     // going to stderr — keeps terminal safety and Logs-panel visibility decoupled.
     let operator_filter = reborn_env_filter(
         "IRONCLAW_REBORN_OPERATOR_LOG",
-        "info,ironclaw_turn_runner=debug,ironclaw_host_runtime=debug",
+        "info,ironclaw_turn_runner=debug,ironclaw_host_runtime=debug,ironclaw::reborn::config_reload=debug",
     );
     let _ = tracing_subscriber::registry()
         .with(
