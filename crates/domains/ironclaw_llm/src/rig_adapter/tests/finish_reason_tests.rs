@@ -1,6 +1,6 @@
 //! Finish-reason conformance for the rig bridge.
 //!
-//! Split out of `rig_adapter.rs` (#6284 item 8, contract clause (e)): the
+//! Split out of `rig_adapter.rs`'s inline tests (#6284 item 8, contract clause (e)): the
 //! matrix and its provider fixtures run to hundreds of lines of payload, and
 //! reading the adapter's production conversion logic should not mean
 //! scrolling past them. This is a child of `rig_adapter`'s `tests` module, so

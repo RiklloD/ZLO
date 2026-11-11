@@ -1542,7 +1542,7 @@ mod tests {
     /// the resulting Responses API JSON would no longer trip the 400. This
     /// is the test that would have caught the original failure mode. The
     /// helper-level tests for the underlying flatten live next to the
-    /// helper itself in `rig_adapter.rs`.
+    /// helper itself in `rig_adapter/tests/schema_tests.rs`.
     #[test]
     fn test_convert_tool_definition_handles_top_level_oneof_dispatcher() {
         let tool = ToolDefinition {

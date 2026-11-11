@@ -26,7 +26,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `failover.rs` | `FailoverProvider` — tries providers in order with per-provider cooldown |
 | `response_cache.rs` | In-memory LLM response cache with TTL and LRU eviction (keyed by SHA-256) |
 | (cost table moved) | The per-model cost table + usage pricing now lives in `ironclaw_common::llm_costs` (shared by every surface that reports cost). Providers import it as `use ironclaw_common::llm_costs as costs;`. |
-| `rig_adapter.rs` | Adapter bridging rig-core `CompletionModel` → `LlmProvider`; used by OpenAI, Anthropic, Ollama, Tinfoil |
+| `rig_adapter.rs` + `rig_adapter/` | Adapter bridging rig-core `CompletionModel` → `LlmProvider`; used by OpenAI, Anthropic, Ollama, Tinfoil. Root holds `RigAdapter` and its builder; `convert.rs` (message/tool/reasoning conversion), `request.rs` (rig request building, prompt caching, finish reasons), `provider_impl.rs` (the `LlmProvider` impl), `models_endpoint.rs` (model discovery), `errors.rs` (rig error mapping); unit tests under `tests.rs` + `tests/` |
 | `smart_routing.rs` | `SmartRoutingProvider` — 13-dimension complexity scorer routes cheap vs primary model |
 | `recording.rs` | `RecordingLlm` — trace capture for E2E replay testing (`IRONCLAW_RECORD_TRACE`) |
 | `bedrock.rs` | AWS Bedrock provider via native Converse API (feature-gated: `--features bedrock`) |
@@ -66,7 +66,7 @@ owner, and a deleted one fails until its entry goes.
 | Sub-owner | Owns | Never contains | Files |
 |---|---|---|---|
 | `core-contract` | The `LlmProvider` trait, the request/response vocabulary, the error taxonomy, the config types, shared HTTP hardening, and the factory that assembles everything | A vendor protocol, or reliability behavior | `lib.rs`, `provider.rs`, `agent_message.rs`, `error.rs`, `config.rs`, `url_check.rs` |
-| `providers` | One concrete `LlmProvider` per vendor and the protocol shims used by that vendor alone | Cross-provider normalization (that is `normalization`), or credential lifecycle (that is `auth-sessions`) | `nearai_chat.rs`, `rig_adapter.rs`, `gemini_oauth.rs`, `codex_chatgpt.rs`, `bedrock.rs`, `openai_codex_provider.rs`, `anthropic_oauth.rs`, `github_copilot.rs`, `github_copilot/tests.rs`, `nearai_tool_message_flattening.rs`, `responses_reasoning.rs`, `anthropic_thinking.rs` |
+| `providers` | One concrete `LlmProvider` per vendor and the protocol shims used by that vendor alone | Cross-provider normalization (that is `normalization`), or credential lifecycle (that is `auth-sessions`) | `nearai_chat.rs`, `rig_adapter.rs`, `rig_adapter/convert.rs`, `rig_adapter/errors.rs`, `rig_adapter/models_endpoint.rs`, `rig_adapter/provider_impl.rs`, `rig_adapter/request.rs`, `gemini_oauth.rs`, `codex_chatgpt.rs`, `bedrock.rs`, `openai_codex_provider.rs`, `anthropic_oauth.rs`, `github_copilot.rs`, `github_copilot/tests.rs`, `nearai_tool_message_flattening.rs`, `responses_reasoning.rs`, `anthropic_thinking.rs` |
 | `auth-sessions` | Acquiring, persisting, refreshing and revoking provider credentials | Request/response shaping | `auth.rs`, `session.rs`, `openai_codex_session.rs`, `chatgpt_plan.rs`, `github_copilot_auth.rs`, `codex_auth.rs`, `token_refreshing.rs` |
 | `registry` | The **provider** catalog: definitions, protocols, base-URL and api-key resolution | Model facts (that is `model-catalog`) | `registry.rs`, `resolution.rs`, `resolution/tests.rs` |
 | `decorators` | Anything that wraps `dyn LlmProvider` and is not credential work: retry, breaker, failover, cache, hot-reload, cost routing | Vendor protocol | `retry.rs`, `circuit_breaker.rs`, `failover.rs`, `response_cache.rs`, `runtime.rs`, `smart_routing.rs`, `provider_routing.rs` |
@@ -74,7 +74,7 @@ owner, and a deleted one fails until its entry goes.
 | `model-catalog` | Facts about **models**: what an endpoint lists, and which models see images or think natively | Provider identity or routing | `models.rs`, `reasoning_models.rs`, `reasoning_effort.rs`, `vision_models.rs` |
 | `recording` | Trace capture and replay, and binding recorded tool arguments to earlier results | Live provider behavior | `recording.rs`, `trace_binding.rs` |
 | `transcription` | Speech in and out: the `TranscriptionProvider` (speech-to-text) and `SpeechSynthesisProvider` (text-to-speech) traits and their implementations — **different traits** from `LlmProvider`, sharing only transports | Anything implementing `LlmProvider` | `transcription/mod.rs`, `transcription/chat_completions.rs`, `transcription/openai.rs`, `speech/mod.rs`, `speech/openai.rs`, `speech/elevenlabs.rs` |
-| `test-support` | Fixtures and fault injection, including the published `test-support` feature downstream harnesses consume | Production behavior | `testing/mod.rs`, `testing/fault_injection.rs`, `codex_test_helpers.rs`, `rig_adapter/tests/finish_reason_tests.rs`, `anthropic_oauth/tests.rs`, `anthropic_oauth/tests/prompt_cache_tests.rs` |
+| `test-support` | Fixtures and fault injection, including the published `test-support` feature downstream harnesses consume | Production behavior | `testing/mod.rs`, `testing/fault_injection.rs`, `codex_test_helpers.rs`, `rig_adapter/tests.rs`, `rig_adapter/tests/convert_tests.rs`, `rig_adapter/tests/error_tests.rs`, `rig_adapter/tests/models_endpoint_tests.rs`, `rig_adapter/tests/provider_tests.rs`, `rig_adapter/tests/request_tests.rs`, `rig_adapter/tests/schema_tests.rs`, `rig_adapter/tests/wire_tests.rs`, `rig_adapter/tests/finish_reason_tests.rs`, `anthropic_oauth/tests.rs`, `anthropic_oauth/tests/prompt_cache_tests.rs` |
 
 Four placement calls worth stating, because each is a file whose *shape*
 suggests one owner and whose *purpose* is another:
@@ -335,7 +335,7 @@ Both Anthropic transports emit explicit `cache_control` breakpoints when
   prompt block, last tool definition, and the last content block of the last
   message, all carrying the retention TTL (`{"type":"ephemeral"}` for short,
   `+ "ttl":"1h"` for long).
-- **API-key transport** (`rig_adapter.rs`, `build_rig_request` +
+- **API-key transport** (`rig_adapter/request.rs`, `build_rig_request` +
   `create_anthropic_from_registry`): the top-level automatic-caching marker,
   an explicit marker on the last tool (moved into rig's raw
   `additional_params.tools`, which rig appends after typed tools), and — for
