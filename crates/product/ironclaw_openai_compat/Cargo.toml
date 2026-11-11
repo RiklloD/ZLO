@@ -15,7 +15,7 @@ layer = "products"
 
 [dependencies]
 async-trait = "0.1"
-base64 = "0.23"
+base64 = { workspace = true }
 chrono = { version = "0.4", features = ["clock"] }
 hex = "0.4"
 ironclaw_common = { path = "../../contracts/ironclaw_common", version = "0.4.2" }

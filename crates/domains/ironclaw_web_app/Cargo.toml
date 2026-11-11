@@ -15,7 +15,7 @@ async-trait = "0.1"
 # aes128gcm content encryption). Already linked workspace-wide via
 # jsonwebtoken's aws_lc_rs backend; no new lockfile entry.
 aws-lc-rs = "1"
-base64 = "0.23"
+base64 = { workspace = true }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem" }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 serde = { version = "1", features = ["derive"] }

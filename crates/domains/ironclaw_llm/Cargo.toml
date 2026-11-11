@@ -30,7 +30,7 @@ ironclaw_safety = { path = "../../substrates/ironclaw_safety", version = "0.2.2"
 
 async-trait = "0.1"
 anyhow = "1"
-base64 = "0.23.0"
+base64 = { workspace = true }
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
@@ -40,7 +40,7 @@ hex = "0.4"
 open = "5"
 rand = "0.10"
 regex = "1"
-reqwest = { version = "0.13", default-features = false, features = ["form", "json", "multipart", "rustls", "stream", "system-proxy"] }
+reqwest = { workspace = true, features = ["form", "json", "multipart", "rustls", "stream", "system-proxy"] }
 # Rig 0.36 preserves non-streaming OpenAI-compatible `reasoning_content`.
 # Older releases classify valid reasoning-only Qwen responses as empty.
 rig-core = { version = "0.36", default-features = false, features = ["reqwest", "rustls"] }

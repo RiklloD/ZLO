@@ -40,7 +40,7 @@ test-support = [
 ]
 [dependencies]
 async-trait = "0.1"
-base64 = "0.23"
+base64 = { workspace = true }
 chrono = "0.4"
 deadpool-postgres = "0.14"
 futures = "0.3"
@@ -105,7 +105,7 @@ ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", ve
 ironclaw_turns = { path = "../../kernel/ironclaw_turns" }
 # WebUI v2 route surface + static SPA bundle merged up into
 # `ironclaw_webui`; no longer a composition dependency.
-libsql = { version = "0.9", default-features = false, features = ["core", "replication", "remote", "tls"] }
+libsql = { workspace = true, features = ["remote", "tls"] }
 axum = { version = "0.8" }
 tower = { version = "0.5" }
 rand = "0.10"

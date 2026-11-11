@@ -33,6 +33,19 @@ wasmtime = { version = "47.0.4", features = ["component-model"] }
 # sccache workers, where registry sidecar WITX files are not present.
 wasmtime-wasi = { version = "47.0.4", default-features = false, features = ["p2"] }
 
+# libSQL driver. Members add `remote` + `tls` when they open Turso/remote
+# databases (`Builder::new_remote`). `replication` (embedded replicas,
+# `Builder::new_remote_replica`) is deliberately NOT enabled: nothing in the
+# workspace uses it, and it alone pulls tonic 0.11 → axum 0.6 / tower-http 0.4.
+# The remaining legacy transport (hyper 0.14 / http 0.2 / h2 0.3 /
+# hyper-rustls 0.25 → rustls 0.22) is still pinned by `remote` + `tls` in
+# every published libsql release up to and including 0.10.0 — see deny.toml.
+libsql = { version = "0.9", default-features = false, features = ["core"] }
+base64 = "0.23"
+# HTTP client. Members opt into TLS (`rustls`, which verifies against the OS
+# trust store via rustls-platform-verifier) and body features explicitly.
+reqwest = { version = "0.13", default-features = false }
+
 # Maintainability guardrails against dead/speculative public API
 # (the "Theme 1" anti-pattern from the maintainability audit: accessors,
 # `_dyn` variants, and getters with zero callers that needlessly expand the
@@ -101,8 +114,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-native-roots", "stream"] }
-base64 = "0.22"
+reqwest = { workspace = true, features = ["json", "multipart", "rustls", "stream"] }
+base64 = { workspace = true }
 rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }
 regex = "1"
 sha2 = "0.11"
@@ -110,7 +123,7 @@ hex = "0.4"
 url = "2"
 toml = "1.1"
 zip = { version = "8", default-features = false, features = ["deflate"] }
-libsql = { version = "0.9", default-features = false, features = ["core", "replication", "remote", "tls"] }
+libsql = { workspace = true, features = ["remote", "tls"] }
 # `test-support` exposes the witness-gated protocol-auth test seam and the
 # messaging conformance helpers used by the integration fixtures. Declared
 # explicitly because cfg(test) and sibling feature unification do not

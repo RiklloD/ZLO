@@ -16,7 +16,7 @@ async-trait = "0.1"
 # injection (Web Push). Already in the lockfile via jsonwebtoken's
 # aws_lc_rs backend; no new lockfile entry.
 aws-lc-rs = "1"
-base64 = "0.23.0"
+base64 = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
 futures-util = "0.3"
@@ -59,7 +59,7 @@ ironclaw_trust = { path = "../ironclaw_trust" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_turns = { path = "../ironclaw_turns" }
 ironclaw_wasm = { path = "../../lanes/ironclaw_wasm" }
-libsql = { version = "0.9", default-features = false, features = ["core", "replication", "remote", "tls"] }
+libsql = { workspace = true, features = ["remote", "tls"] }
 jsonschema = { version = "0.49", default-features = false }
 libc = "0.2"
 rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }

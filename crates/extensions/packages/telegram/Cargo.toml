@@ -15,7 +15,7 @@ layer = "products"
 
 [dependencies]
 async-trait = "0.1"
-base64 = "0.23"
+base64 = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 # Production deps only. `tracing` is here for one purpose: the attachment
 # transfer path must retain the cause of a provider parse failure server-side

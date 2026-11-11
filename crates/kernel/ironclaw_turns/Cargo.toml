@@ -44,12 +44,7 @@ ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version =
 ] }
 # Test-only: the durable-read perf harness (`events_query_stress`) builds a real
 # libSQL-backed store.
-libsql = { version = "0.9", default-features = false, features = [
-    "core",
-    "replication",
-    "remote",
-    "tls",
-] }
+libsql = { workspace = true, features = ["remote", "tls"] }
 # Optional live-Postgres durable replay contract (skips when no test database
 # URL is configured). Versions match the workspace integration harness.
 deadpool-postgres = "0.14"
