@@ -1,3 +1,4 @@
+use super::*;
 use ironclaw_product_contracts::ironhub::IronhubLinkError;
 use ironclaw_product_contracts::surface::{
     ProductSurfaceError, ProductSurfaceErrorCode, ProductSurfaceValidationCode,
@@ -19,6 +20,27 @@ pub(super) fn map_ironhub_link_error(error: IronhubLinkError) -> ProductSurfaceE
             ProductSurfaceError::validation("input", ProductSurfaceValidationCode::InvalidValue)
         }
         IronhubLinkError::Unavailable => ProductSurfaceError::service_unavailable(false),
+    }
+}
+
+impl<I, V> RebornServices<I, V>
+where
+    I: ProductCapabilityInvoker + Clone + 'static,
+    V: RebornViewProvider + Clone + 'static,
+{
+    pub async fn ironhub_deliver_install(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: IronhubInstallDeliveryRequest,
+    ) -> Result<IronhubInstallDeliveryResult, ProductSurfaceError> {
+        let service = self
+            .ironhub_link
+            .as_ref()
+            .ok_or_else(ironhub_link_unavailable)?;
+        service
+            .deliver_install(caller, request)
+            .await
+            .map_err(map_ironhub_link_error)
     }
 }
 

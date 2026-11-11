@@ -7,6 +7,7 @@
 //! always derived from the authenticated caller's tenant + user id (see
 //! [`ironclaw_trace_commons::contribution::trace_scope_key`]).
 
+use super::*;
 use ironclaw_product_contracts::views::RebornViewProvider;
 
 use ironclaw_host_api::ids::{TenantId, UserId};
@@ -221,6 +222,63 @@ pub(super) fn local_trace_credits_for_user(
         recent_explanations: report.explanation_lines,
         note: TRACE_CREDITS_NOTE.to_string(),
     })
+}
+
+pub const TRACE_ACCOUNT_LOGIN_LINK_COMMAND_ID: &str = "trace.account_login_link";
+
+pub const TRACE_ACCOUNT_LOGIN_LINK_COMMAND: ProductSurfaceCommandDescriptor<
+    EmptyProductCommandInput,
+    RebornAccountLoginLinkResponse,
+> = ProductSurfaceCommandDescriptor::new(TRACE_ACCOUNT_LOGIN_LINK_COMMAND_ID);
+
+pub const TRACE_HOLD_AUTHORIZE_COMMAND_ID: &str = "trace.hold_authorize";
+
+pub const TRACE_HOLD_AUTHORIZE_COMMAND: ProductSurfaceCommandDescriptor<
+    RebornTraceHoldAuthorizeProductRequest,
+    RebornTraceHoldAuthorizeResponse,
+> = ProductSurfaceCommandDescriptor::new(TRACE_HOLD_AUTHORIZE_COMMAND_ID);
+
+impl<I, V> RebornServices<I, V>
+where
+    I: ProductCapabilityInvoker + Clone + 'static,
+    V: RebornViewProvider + Clone + 'static,
+{
+    /// Mint a one-time Trace Commons browser login link for the authenticated
+    /// caller. The returned URL is a one-time account-access credential and must
+    /// never be logged or exposed on a model-visible surface.
+    pub(super) async fn trace_account_login_link(
+        &self,
+        caller: ProductSurfaceCaller,
+    ) -> Result<RebornAccountLoginLinkResponse, ProductSurfaceError> {
+        let actor = caller.actor();
+        account_login_link_for_user(&caller.tenant_id, &actor.user_id)
+            .await
+            .map_err(ProductSurfaceError::internal_from)
+    }
+
+    /// Authorize the caller's held manual-review trace for submission.
+    pub(super) async fn authorize_trace_hold(
+        &self,
+        caller: ProductSurfaceCaller,
+        submission_id: String,
+    ) -> Result<RebornTraceHoldAuthorizeResponse, ProductSurfaceError> {
+        let actor = caller.actor();
+        let submission = uuid::Uuid::parse_str(submission_id.trim()).map_err(|_| {
+            ProductSurfaceError::validation(
+                "submission_id",
+                ProductSurfaceValidationCode::InvalidId,
+            )
+        })?;
+        let scope = ironclaw_trace_commons::contribution::trace_scope_key(
+            caller.tenant_id.as_str(),
+            actor.user_id.as_str(),
+        );
+        let authorized = authorize_trace_hold_for_user(&scope, submission).map_err(|error| {
+            tracing::debug!(%error, "failed to authorize Trace Commons held trace");
+            ProductSurfaceError::internal_invariant()
+        })?;
+        Ok(RebornTraceHoldAuthorizeResponse { authorized })
+    }
 }
 
 #[cfg(test)]

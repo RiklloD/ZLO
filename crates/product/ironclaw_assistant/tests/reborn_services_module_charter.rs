@@ -8,18 +8,17 @@
 //! `crates/app/ironclaw_architecture_tests/tests/reborn_service_method_freeze_ratchet.rs`
 //! pins the three-word `ProductSurface` vocabulary and that no local service
 //! trait comes back. This gate pins the other half of that sentence: which
-//! concern a change belongs to *while the file is still one file*, so a later
-//! split inherits a decided seam list instead of an argument.
+//! concern each item belongs to. The seam list it decided is the one the
+//! per-sub-owner submodule split followed, and it keeps new items honest now
+//! that the code lives in `reborn_services/` files.
 //!
 //! It is the sibling of `ironclaw_webui`'s `tests/handlers_module_charter.rs`
 //! (WS6, §6.9.4), and deliberately the same shape, down to the failure
 //! messages: a map nobody checks rots faster than the code it describes.
 //!
-//! **Item granularity, not line ranges.** Owners here are conceptual, not
-//! positional — `reborn_services.rs` interleaves descriptor constants for a
-//! dozen concerns, and a line-range gate would demand exactly the code movement
-//! §6.4.15 calls "module-charter work, **not a split**". Every top-level item
-//! maps to exactly one owner; positions are irrelevant.
+//! **Item granularity, not line ranges.** Every top-level item — in the root
+//! or a `reborn_services/` submodule — maps to exactly one owner; positions
+//! within a file are irrelevant.
 //!
 //! It deliberately checks coverage and existence, not prose. Whether
 //! `caller_browse_scope` is really `workspace-fs` rather than `projects` is a

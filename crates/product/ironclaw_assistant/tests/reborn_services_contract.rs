@@ -14814,7 +14814,36 @@ async fn get_timeline_rejects_malformed_cursor() {
 
 #[test]
 fn service_source_avoids_forbidden_runtime_dependencies() {
-    let source = std::fs::read_to_string("src/reborn_services.rs").expect("service source");
+    // The service is split into `src/reborn_services/` submodules, so the root
+    // alone no longer holds it. `approval_settings.rs` is excluded on purpose:
+    // it is the one focused seam that imports `ironclaw_approvals` so the rest
+    // of the service does not (see that module's doc comment), and it was
+    // never in this check's reach.
+    let mut sources = vec![std::path::PathBuf::from("src/reborn_services.rs")];
+    let mut pending = vec![std::path::PathBuf::from("src/reborn_services")];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("service source dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && path
+                    .file_name()
+                    .is_some_and(|name| name != "approval_settings.rs")
+            {
+                sources.push(path);
+            }
+        }
+    }
+    assert!(
+        sources.len() > 1,
+        "no reborn_services submodule was scanned"
+    );
+    let source = sources
+        .iter()
+        .map(|path| std::fs::read_to_string(path).expect("service source"))
+        .collect::<Vec<_>>()
+        .join("\n");
     for forbidden in [
         "CapabilityHost",
         "ironclaw_capabilities",

@@ -48,8 +48,37 @@ use ratchet_support::{crate_path, strip_comments_and_strings, workspace_root};
 /// file — which is exactly how it failed, loudly, when the file moved.
 const HOST_PRODUCT_SURFACE_SOURCE: &str = "crates/ironclaw_product_contracts/src/surface.rs";
 /// Product implementation source that must not grow another local ProductSurface
-/// trait.
+/// trait. The module root plus every file under its `reborn_services/`
+/// directory: the service was split into per-concern submodules, so reading the
+/// root alone would let a retired trait return in any of them.
 const PRODUCT_REBORN_SERVICES_SOURCE: &str = "crates/ironclaw_assistant/src/reborn_services.rs";
+const PRODUCT_REBORN_SERVICES_DIR: &str = "crates/ironclaw_assistant/src/reborn_services";
+
+/// The root and every `.rs` file beneath `reborn_services/`, recursively.
+fn reborn_services_sources() -> Vec<std::path::PathBuf> {
+    let root = workspace_root();
+    let mut out = vec![crate_path(&root, PRODUCT_REBORN_SERVICES_SOURCE)];
+    let mut pending = vec![crate_path(&root, PRODUCT_REBORN_SERVICES_DIR)];
+    while let Some(dir) = pending.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("failed to read product source dir {dir:?}: {e}"));
+        for entry in entries {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    assert!(
+        out.len() > 1,
+        "no `reborn_services/` submodule was found — the walk is broken and only the root \
+         would be checked"
+    );
+    out
+}
 const PRODUCT_SURFACE_TRAIT: &str = "ProductSurface";
 const RETIRED_PROTO_FACADE_TRAIT: &str = "RebornServicesApi";
 
@@ -194,23 +223,24 @@ fn host_product_surface_method_set_is_frozen() {
 
 #[test]
 fn product_local_product_surface_traits_stay_retired() {
-    let source_path = crate_path(&workspace_root(), PRODUCT_REBORN_SERVICES_SOURCE);
-    let source = std::fs::read_to_string(&source_path)
-        .unwrap_or_else(|e| panic!("failed to read product source {source_path:?}: {e}"));
-    let stripped = strip_comments_and_strings(&source);
     let product_surface_needle = format!("pub trait {PRODUCT_SURFACE_TRAIT}");
     let retired_needle = format!("trait {RETIRED_PROTO_FACADE_TRAIT}");
+    for source_path in reborn_services_sources() {
+        let source = std::fs::read_to_string(&source_path)
+            .unwrap_or_else(|e| panic!("failed to read product source {source_path:?}: {e}"));
+        let stripped = strip_comments_and_strings(&source);
 
-    assert!(
-        !stripped.contains(&product_surface_needle),
-        "`ironclaw_assistant::{PRODUCT_SURFACE_TRAIT}` was retired; use \
-         `ironclaw_product_contracts::surface::{PRODUCT_SURFACE_TRAIT}` and descriptors instead."
-    );
-    assert!(
-        !stripped.contains(&retired_needle),
-        "`{RETIRED_PROTO_FACADE_TRAIT}` was retired into `{PRODUCT_SURFACE_TRAIT}`; do not \
-         reintroduce the proto-service split."
-    );
+        assert!(
+            !stripped.contains(&product_surface_needle),
+            "{source_path:?}: `ironclaw_assistant::{PRODUCT_SURFACE_TRAIT}` was retired; use \
+             `ironclaw_product_contracts::surface::{PRODUCT_SURFACE_TRAIT}` and descriptors instead."
+        );
+        assert!(
+            !stripped.contains(&retired_needle),
+            "{source_path:?}: `{RETIRED_PROTO_FACADE_TRAIT}` was retired into \
+             `{PRODUCT_SURFACE_TRAIT}`; do not reintroduce the proto-service split."
+        );
+    }
 }
 
 /// Self-test: the extractor takes only trait-declaration-depth `fn`s, tolerates

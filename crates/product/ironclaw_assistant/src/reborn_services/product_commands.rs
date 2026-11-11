@@ -606,3 +606,381 @@ fn skill_row(skill: &LifecycleSkillSummary) -> String {
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
+
+pub const PRODUCT_COMMAND_LIST_COMMAND_ID: &str = "product.commands.list";
+
+pub const PRODUCT_COMMAND_LIST_COMMAND: ProductSurfaceCommandDescriptor<
+    EmptyProductCommandInput,
+    RebornProductCommandListResponse,
+> = ProductSurfaceCommandDescriptor::new(PRODUCT_COMMAND_LIST_COMMAND_ID);
+
+pub const PRODUCT_COMMAND_EXECUTE_COMMAND_ID: &str = "product.commands.execute";
+
+pub const PRODUCT_COMMAND_EXECUTE_COMMAND: ProductSurfaceCommandDescriptor<
+    RebornExecuteProductCommandRequest,
+    RebornExecuteProductCommandResponse,
+> = ProductSurfaceCommandDescriptor::new(PRODUCT_COMMAND_EXECUTE_COMMAND_ID);
+
+pub(super) fn command_result_field(label: &str, value: impl Into<String>) -> CommandResultField {
+    CommandResultField {
+        label: label.to_string(),
+        value: value.into(),
+    }
+}
+
+pub(super) fn model_command_view(title: &str, snapshot: &LlmConfigSnapshot) -> CommandResultView {
+    let mut fields = Vec::new();
+    let mut lines = Vec::new();
+    match &snapshot.active {
+        Some(active) => {
+            fields.push(command_result_field("Provider", active.provider_id.clone()));
+            fields.push(command_result_field(
+                "Model",
+                active
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "provider default".to_string()),
+            ));
+        }
+        None => lines.push("No active model configured.".to_string()),
+    }
+    if !snapshot.providers.is_empty() {
+        lines.push(format!(
+            "Providers: {}",
+            snapshot
+                .providers
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    CommandResultView {
+        title: title.to_string(),
+        fields,
+        lines,
+    }
+}
+
+pub(super) fn user_model_preference_command_view(
+    title: &str,
+    catalog: &UserModelCatalog,
+    preference: &UserModelPreference,
+) -> CommandResultView {
+    let mut lines = Vec::new();
+    if catalog.selection_enabled {
+        lines.push(format!("Available models: {}", catalog.models.join(", ")));
+        lines.push("Use `/model use <model>` or `/model default`.".to_string());
+    } else {
+        lines.push("User model selection is not configured for this workspace.".to_string());
+    }
+    let (preferred, effective) = match preference.model.as_deref() {
+        Some(model)
+            if catalog.selection_enabled
+                && catalog.models.iter().any(|available| available == model) =>
+        {
+            (model.to_string(), model.to_string())
+        }
+        Some(model) => {
+            lines.push(
+                "Your saved preference is no longer available. Use `/model default`.".to_string(),
+            );
+            (format!("{model} (unavailable)"), "unavailable".to_string())
+        }
+        None => (
+            "workspace default".to_string(),
+            catalog
+                .workspace_default
+                .clone()
+                .unwrap_or_else(|| "not configured".to_string()),
+        ),
+    };
+    CommandResultView {
+        title: title.to_string(),
+        fields: vec![
+            command_result_field("Preference", preferred),
+            command_result_field("Effective model", effective),
+        ],
+        lines,
+    }
+}
+
+pub(super) fn idle_status_command_view() -> CommandResultView {
+    CommandResultView {
+        title: "Status".to_string(),
+        fields: vec![command_result_field("State", "idle")],
+        lines: vec!["No assistant activity in this conversation yet.".to_string()],
+    }
+}
+
+pub(super) fn nothing_to_stop_command_view() -> CommandResultView {
+    CommandResultView {
+        title: "Nothing to stop".to_string(),
+        fields: vec![command_result_field("State", "idle")],
+        lines: vec!["There is no active run in this conversation.".to_string()],
+    }
+}
+
+/// The one `/new` success copy, shared by the channel preflight
+/// (`execute_product_new_command`) and the WebUI execute door so the two
+/// renderings cannot drift.
+pub(super) fn new_conversation_started_view() -> CommandResultView {
+    CommandResultView {
+        title: "New conversation".to_string(),
+        fields: Vec::new(),
+        lines: vec![
+            "Started a fresh conversation. The previous conversation is still available in history."
+                .to_string(),
+        ],
+    }
+}
+
+pub(super) fn product_command_input<T>(input: serde_json::Value) -> Result<T, ProductSurfaceError>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(input).map_err(|error| {
+        tracing::debug!(?error, "failed to decode product command input");
+        product_capability_input_error("input")
+    })
+}
+
+impl<I, V> RebornServices<I, V>
+where
+    I: ProductCapabilityInvoker + Clone + 'static,
+    V: RebornViewProvider + Clone + 'static,
+{
+    pub(super) async fn execute_product_model_command(
+        &self,
+        caller: ProductSurfaceCaller,
+        action: ProductModelCommand,
+    ) -> Result<CommandResultView, ProductSurfaceError> {
+        match action {
+            ProductModelCommand::Status => {
+                let catalog = self.build_user_model_catalog_view(caller.clone()).await?;
+                let preference = self.build_user_model_preference_view(caller).await?;
+                Ok(user_model_preference_command_view(
+                    "Model",
+                    &catalog,
+                    &preference,
+                ))
+            }
+            ProductModelCommand::Use { model } => {
+                self.invoke_user_model_preference_set(
+                    caller.clone(),
+                    serde_json::json!({ "model": model }),
+                )
+                .await?;
+                let catalog = self.build_user_model_catalog_view(caller.clone()).await?;
+                let preference = self.build_user_model_preference_view(caller).await?;
+                Ok(user_model_preference_command_view(
+                    "Model preference updated",
+                    &catalog,
+                    &preference,
+                ))
+            }
+            ProductModelCommand::Default => {
+                self.invoke_user_model_preference_set(
+                    caller.clone(),
+                    serde_json::json!({ "model": null }),
+                )
+                .await?;
+                let catalog = self.build_user_model_catalog_view(caller.clone()).await?;
+                let preference = self.build_user_model_preference_view(caller).await?;
+                Ok(user_model_preference_command_view(
+                    "Model preference updated",
+                    &catalog,
+                    &preference,
+                ))
+            }
+            ProductModelCommand::Set { model } => {
+                let snapshot = self.build_llm_config_view(caller.clone()).await?;
+                let provider_id = snapshot
+                    .active
+                    .map(|active| active.provider_id)
+                    .ok_or_else(llm_config::llm_config_unavailable)?;
+                self.invoke_llm_active_set(
+                    caller.clone(),
+                    serde_json::json!({
+                        "provider_id": provider_id,
+                        "model": model,
+                    }),
+                )
+                .await?;
+                let snapshot = self.build_llm_config_view(caller).await?;
+                Ok(model_command_view("Model updated", &snapshot))
+            }
+            ProductModelCommand::SetProvider { provider, model } => {
+                self.invoke_llm_active_set(
+                    caller.clone(),
+                    serde_json::json!({
+                        "provider_id": provider,
+                        "model": model,
+                    }),
+                )
+                .await?;
+                let snapshot = self.build_llm_config_view(caller).await?;
+                Ok(model_command_view("Model updated", &snapshot))
+            }
+        }
+    }
+
+    pub(super) async fn execute_product_status_command(
+        &self,
+        caller: ProductSurfaceCaller,
+        input: ProductStatusCommandInput,
+    ) -> Result<CommandResultView, ProductSurfaceError> {
+        let Some(state) = self
+            .latest_product_command_run_state(caller, &input.thread_id)
+            .await?
+        else {
+            return Ok(idle_status_command_view());
+        };
+        let (state_label, detail) = describe_turn_status(state.status);
+        let mut fields = vec![command_result_field("State", state_label)];
+        fields.push(command_result_field("Run", state.run_id.to_string()));
+        fields.push(command_result_field(
+            "Since",
+            state
+                .received_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        ));
+        let lines = detail.into_iter().map(str::to_string).collect();
+        Ok(CommandResultView {
+            title: "Status".to_string(),
+            fields,
+            lines,
+        })
+    }
+
+    pub(super) async fn execute_webui_new_command(
+        &self,
+        caller: ProductSurfaceCaller,
+        current_thread_id: String,
+    ) -> Result<RebornCreateThreadResponse, ProductSurfaceError> {
+        let thread_id = parse_thread_id_field("thread_id", current_thread_id)?;
+        let scope = caller.turn_scope(thread_id);
+        self.resolve_thread_history_for_caller(caller.clone(), &scope)
+            .await?;
+        self.create_thread(
+            caller,
+            ProductCreateThreadRequest {
+                client_action_id: Some(format!("product-new-{}", Uuid::new_v4())),
+                requested_thread_id: None,
+                project_id: None,
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn execute_product_new_command(
+        &self,
+        caller: ProductSurfaceCaller,
+        input: ProductNewCommandInput,
+    ) -> Result<ProductNewCommandOutput, ProductSurfaceError> {
+        let active = self
+            .latest_product_command_run_state(caller, &input.thread_id)
+            .await?
+            .is_some_and(|state| !state.status.is_terminal());
+        if active {
+            return Ok(ProductNewCommandOutput {
+                can_reset: false,
+                result: CommandResultView {
+                    title: "Conversation still running".to_string(),
+                    fields: vec![command_result_field("State", "working")],
+                    lines: vec!["Use /stop first, then try /new again.".to_string()],
+                },
+            });
+        }
+        Ok(ProductNewCommandOutput {
+            can_reset: true,
+            result: new_conversation_started_view(),
+        })
+    }
+
+    pub(super) async fn execute_product_stop_command(
+        &self,
+        caller: ProductSurfaceCaller,
+        input: ProductStopCommandInput,
+    ) -> Result<CommandResultView, ProductSurfaceError> {
+        let Some(state) = self
+            .latest_product_command_run_state(caller.clone(), &input.thread_id)
+            .await?
+        else {
+            return Ok(nothing_to_stop_command_view());
+        };
+        if state.status.is_terminal() {
+            return Ok(nothing_to_stop_command_view());
+        }
+        let response = self
+            .cancel_run(
+                caller,
+                ProductCancelRunRequest {
+                    client_action_id: Some(format!(
+                        "product-{}-{}",
+                        input.invocation.command_name(),
+                        Uuid::new_v4()
+                    )),
+                    thread_id: Some(input.thread_id),
+                    run_id: Some(state.run_id.to_string()),
+                    reason: Some("user_requested".to_string()),
+                },
+            )
+            .await?;
+        let state_label = match response.status {
+            TurnStatus::Cancelled => "cancelled",
+            TurnStatus::CancelRequested => "cancelling",
+            status if status.is_terminal() => "idle",
+            _ => "working",
+        };
+        Ok(CommandResultView {
+            title: format!(
+                "{} requested",
+                if input.invocation == ProductStopInvocation::Stop {
+                    "Stop"
+                } else {
+                    "Interrupt"
+                }
+            ),
+            fields: vec![
+                command_result_field("State", state_label),
+                command_result_field("Run", response.run_id.to_string()),
+            ],
+            lines: Vec::new(),
+        })
+    }
+
+    pub(super) async fn latest_product_command_run_state(
+        &self,
+        caller: ProductSurfaceCaller,
+        thread_id: &str,
+    ) -> Result<Option<RebornGetRunStateResponse>, ProductSurfaceError> {
+        let thread_id = parse_thread_id_field("thread_id", thread_id.to_string())?;
+        let scope = caller.turn_scope(thread_id.clone());
+        let history = match self
+            .resolve_thread_history_for_caller(caller.clone(), &scope)
+            .await
+        {
+            Ok((_thread_scope, history)) => history,
+            Err(error) if error.code == ProductSurfaceErrorCode::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let Some(run_id) = history
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| message.turn_run_id.clone())
+        else {
+            return Ok(None);
+        };
+        self.get_run_state(
+            caller,
+            RebornGetRunStateRequest {
+                thread_id: thread_id.to_string(),
+                run_id,
+            },
+        )
+        .await
+        .map(Some)
+    }
+}
