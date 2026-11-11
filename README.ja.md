@@ -1,341 +1,156 @@
-<p align="center">
-  <img src="ironclaw.png?v=2" alt="IronClaw" width="200"/>
-</p>
+# ZLO
 
-<h1 align="center">IronClaw</h1>
+[English](README.md) | [简体中文](README.zh-CN.md) | [Русский](README.ru.md) | 日本語 | [한국어](README.ko.md)
 
-<p align="center">
-  <strong>あなたの味方になる、安全なパーソナルAIアシスタント</strong>
-</p>
+> この文書は [`README.md`](README.md) の翻訳です。内容が食い違う場合は英語版が正です。
 
-<p align="center">
-  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
-  <a href="https://t.me/ironclawAI"><img src="https://img.shields.io/badge/Telegram-%40ironclawAI-26A5E4?style=flat&logo=telegram&logoColor=white" alt="Telegram: @ironclawAI" /></a>
-  <a href="https://www.reddit.com/r/ironclawAI/"><img src="https://img.shields.io/badge/Reddit-r%2FironclawAI-FF4500?style=flat&logo=reddit&logoColor=white" alt="Reddit: r/ironclawAI" /></a>
-</p>
+私の個人用 AI デスクトップアプリです。macOS 向けに Rust で作っており、ネイティブの [Rune](https://github.com/anomalyco/rune) インターフェースと [IronClaw](https://github.com/nearai/ironclaw) バックエンドを使っています。
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh-CN.md">简体中文</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.ko.md">한국어</a>
-</p>
+私は [Lorik](https://github.com/RiklloD) です。テクノロジーをいじるのが好きな経営学部の学生です。エンジニアリングの経験よりもアイデアのほうが多いので、AI エージェントと一緒に作業して、アイデアを自分で使えるソフトウェアにしています。ZLO は、そうした働き方を中心に作っているアプリです。
 
-<p align="center">
-  <a href="#フィロソフィー">フィロソフィー</a> •
-  <a href="#機能">機能</a> •
-  <a href="#インストール">インストール</a> •
-  <a href="#設定">設定</a> •
-  <a href="#セキュリティ">セキュリティ</a> •
-  <a href="#アーキテクチャ">アーキテクチャ</a>
-</p>
+## なぜ作っているのか
 
----
+デスクトップアプリは、その裏にいるエージェントと同じくらい大事です。軽くて、Mac に自然になじむものが欲しいのです。メモリ使用量とバッテリー持ちは製品の一部であり、機能を全部足したあとで直すものではありません。
 
-## フィロソフィー
+これは私自身の作業環境であり、アイデアを試す場所です。完成したリリースや、あらゆるマシンへの対応を約束するものではありません。
 
-IronClawはシンプルな原則に基づいて構築されています：**あなたのAIアシスタントは、あなたのために働くべきであり、あなたに不利益をもたらすべきではありません。**
+## できること
 
-AIシステムがデータの取り扱いについて不透明になり、企業の利益に沿って調整されることが増えている世界で、IronClawは異なるアプローチを取ります：
+- **ネイティブのインターフェース。** Rune による GPU 描画の Rust。Electron も常駐する組み込みブラウザもありません。ブラウザやドキュメントのビューは必要なときだけ作られます。
+- **チャット、プロファイル、モデル。** タスクごとにモデルを選び、プロファイルを分けて保ち、オーケストレーターを通じて Codex や Claude Code などほかのエージェントに作業を任せられます。
+- IronClaw バックエンドによる**ツール、スキル、メモリ、MCP**。
+- 私がフォークした [computer-use エンジン](https://github.com/RiklloD/hermes-plugin-computer-use-plus)による**コンピューター操作**。
+- **承認。** 各プロファイルは「先に確認する」か「フルアクセス」のどちらかです。自動承認はデフォルトでオフです。
+- **ほかのコンピューターで作業。** バックエンドは Mac mini や Linux サーバーなど別のマシンで動かせて、ノートパソコンの ZLO はウィンドウだけになります。マシン同士は Tailscale か SSH でつながります。[別のコンピューターを使う](tools/ironclaw_rune/docs/remote-computers.md)を参照してください。
 
-- **あなたのデータはあなたのもの** - すべての情報はローカルに保存・暗号化され、あなたの管理下から離れることはありません
-- **設計段階からの透明性** - オープンソース、監査可能、隠れたテレメトリやデータ収集なし
-- **自己拡張する能力** - ベンダーのアップデートを待たずに、新しいツールをその場で構築
-- **多層防御** - 複数のセキュリティレイヤーがプロンプトインジェクションやデータ流出から保護
+アプリは使いながら変えています。現在の状態を知るには、固定の機能一覧よりもコードと開発メモのほうが確かです。
 
-IronClawは、個人生活にも仕事にも本当に信頼できるAIアシスタントです。
+## 動作の仕組み
 
-## 機能
+ZLO は 2 つの部分からなります。**ウィンドウ**(Rune アプリ)と**バックエンド**(エージェント、そのツールとメモリを動かす IronClaw)です。両者は認証付きの HTTP で通信します。バックエンドをどこで動かすかは自由です。
 
-### セキュリティファースト
+| 構成 | どこで何が動くか | 使いどころ |
+| --- | --- | --- |
+| **すべてこの Mac で**(デフォルト) | ZLO が自分のバックエンドを子プロセスとして起動し、終了時に止めます。 | マシン 1 台で、設定不要。 |
+| **バックエンドを別のコンピューターで** | バックエンドはサーバーや別の Mac で動きます。ZLO は tailnet か SSH で接続します。 | ノートパソコンがスリープ中もエージェントを動かし続けたいとき、または性能、リポジトリ、回線がより良いマシンで作業したいとき。 |
+| **アプリのみ**(ZLO Light) | バックエンドを内蔵しない ZLO のビルド。常にほかのコンピューターにだけ接続します。 | 自分ではエージェントを動かすべきでないノートパソコン。 |
 
-- **WASMサンドボックス** - 信頼されていないツールは、機能ベースの権限を持つ隔離されたWebAssemblyコンテナで実行
-- **認証情報の保護** - シークレットはツールに公開されず、リーク検出付きでホスト境界で注入
-- **プロンプトインジェクション防御** - パターン検出、コンテンツサニタイズ、ポリシー適用
-- **エンドポイントの許可リスト** - HTTPリクエストは明示的に許可されたホストとパスのみに制限
+コンピューターは **Settings → Computers** で切り替えられます。ZLO は一度に 1 台のコンピューターで動作します。スレッド、メモリ、設定、プロバイダーキーはバックエンド側にあるので、コンピューターごとに別々です。
 
-### 常時利用可能
+状態は、バックエンドを動かしているマシンの `~/.zlo` に保存されます(別の場所にするには `ZLO_HOME` を設定します)。別の PostgreSQL サーバーではなく libSQL を使います。古いインストールの `~/.ironclaw/reborn` は最初の起動時にそこへ移され、古いパスはリンクとして残るので、それを覚えているものが壊れることはありません。
 
-- **マルチチャネル** - REPL、HTTPウェブフック、WASMチャネル（Telegram、Slack）、Webゲートウェイ
-- **Dockerサンドボックス** - ジョブごとのトークンとオーケストレーター/ワーカーパターンによる隔離されたコンテナ実行
-- **Webゲートウェイ** - リアルタイムSSE/WebSocketストリーミング対応のブラウザUI
-- **ルーティン** - cronスケジュール、イベントトリガー、ウェブフックハンドラーによるバックグラウンド自動化
-- **ハートビートシステム** - 監視・保守タスクのためのプロアクティブなバックグラウンド実行
-- **並列ジョブ** - 隔離されたコンテキストで複数のリクエストを同時に処理
-- **自己修復** - スタックした操作の自動検出と復旧
-
-### 自己拡張
-
-- **動的ツール構築** - 必要なものを説明すると、IronClawがWASMツールとして構築
-- **MCPプロトコル** - Model Context Protocolサーバーに接続して追加機能を利用
-- **プラグインアーキテクチャ** - 再起動なしで新しいWASMツールやチャネルを追加
-
-### 永続メモリ
-
-- **ハイブリッド検索** - Reciprocal Rank Fusionを使用した全文検索+ベクトル検索
-- **ワークスペースファイルシステム** - メモ、ログ、コンテキストのための柔軟なパスベースストレージ
-- **アイデンティティファイル** - セッション間で一貫した人格と設定を維持
+ローカルに保存するからといって、すべての処理がマシン内にとどまるわけではありません。リモートのモデルや外部連携を使うと、そのリクエストに必要なデータがそのプロバイダーに送られます。コンピューター操作には、バックエンドが動くマシンで該当する macOS の権限が必要です。
 
 ## インストール
 
-### 前提条件
-
-- Rust 1.85+
-- PostgreSQL 15+ ([pgvector](https://github.com/pgvector/pgvector)拡張機能を含む)
-- NEAR AIアカウント（セットアップウィザードで認証を処理）
-
-## ダウンロードまたはビルド
-
-最新のアップデートは[リリースページ](https://github.com/nearai/ironclaw/releases/)をご覧ください。
-
-<details>
-  <summary>Windowsインストーラーでインストール（Windows）</summary>
-
-[Windowsインストーラー](https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-x86_64-pc-windows-msvc.msi)をダウンロードして実行してください。
-
-</details>
-
-<details>
-  <summary>PowerShellスクリプトでインストール（Windows）</summary>
+Apple Silicon の Mac で、これをターミナルに貼り付けます。
 
 ```sh
-irm https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-installer.ps1 | iex
+curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 ```
 
-</details>
+ZLO をソースからビルドし、`~/Applications/ZLO.app` にインストールします。Xcode コマンドラインツールがない場合はインストーラーを開き、コマンドをもう一度実行するよう求めます。Rust がなければインストールします。最初のビルドには 10〜20 分かかります。更新するには同じコマンドをもう一度実行します。
 
-<details>
-  <summary>シェルスクリプトでインストール（macOS、Linux、Windows/WSL）</summary>
+`main` 以外のブランチをビルドするには `ZLO_REF` を設定します。
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-installer.sh | sh
+curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | ZLO_REF=my-branch sh
 ```
-</details>
 
-<details>
-  <summary>Homebrewでインストール（macOS/Linux）</summary>
+Apple Development の署名 ID がない場合、アプリはアドホック署名になるため、更新のたびに macOS がアクセシビリティと画面収録の許可をもう一度求めます。
+
+## 別のコンピューターを使う
+
+tailnet 上のサーバーの場合の要約です。
 
 ```sh
-brew install ironclaw
+# サーバー側で
+zlo onboard            # プロバイダーとキー
+zlo service install    # 起動時に開始
+zlo remote enable      # tailnet に公開(インターネットには公開しない)
+zlo service restart
 ```
 
-</details>
+次に Mac で ZLO を開き、**Settings → Computers** に進んで、「Found on your tailnet」の下にあるサーバーの横の **Connect** をクリックします。
 
-<details>
-  <summary>ソースコードからコンパイル（Windows、Linux、macOSでCargo）</summary>
+[**別のコンピューターを使う**](tools/ironclaw_rune/docs/remote-computers.md)で設定全体を説明しています。
 
-`cargo`でインストールします。コンピューターに[Rust](https://rustup.rs)がインストールされていることを確認してください。
+- Linux サーバーや 2 台目の Mac のセットアップ
+- ワンクリック、コード、または SSH によるペアリング
+- ペアリング済みデバイスの管理
+- `zlo transfer user@host`、または `zlo export` / `zlo import` による、設定(スレッド、メモリ、プロファイル、設定、プロバイダーキー)のサーバーへの移行
+- リモートで使える機能
+- 接続の保護方法
+- トラブルシューティング
 
-```bash
-# リポジトリをクローン
-git clone https://github.com/nearai/ironclaw.git
-cd ironclaw
+[**マシンを最新に保つ**](tools/ironclaw_rune/docs/updates.md)では「Update all machines」と `zlo update` を説明しています。
 
-# ビルド
-cargo build --release
+## ソースからのビルド
 
-# テストを実行
+これは macOS 向けの開発環境であり、クロスプラットフォームのインストーラーではありません。Xcode コマンドラインツール、rustup 経由の Rust、Apple Development の署名 ID が必要です。リポジトリは Rust ツールチェーンを [`rust-toolchain.toml`](rust-toolchain.toml) で固定しています。同梱の computer-use エンジンは現在 Apple Silicon 向けです。
+
+```sh
+git clone https://github.com/RiklloD/ZLO.git
+cd zlo
+sh tools/ironclaw_rune/bundle.sh
+```
+
+このスクリプトはバックエンドとデスクトップをビルドし、固定された computer-use エンジンをダウンロードして検証し、バンドルに署名して `~/Applications/ZLO.app` にインストールします。既存のインストールは置き換えます。アプリが動いていれば先に終了させ、開いていた場合は再度開きます。
+
+| コマンド | 結果 |
+| --- | --- |
+| `sh tools/ironclaw_rune/bundle.sh` | ビルドし、`~/Applications/ZLO.app` にインストールして再度開く |
+| `sh tools/ironclaw_rune/bundle.sh --no-install` | ビルドのみ、出力先は `tools/ironclaw_rune/target/ZLO.app` |
+| `sh tools/ironclaw_rune/bundle.sh --light` | バックエンドも computer-use エンジンも持たない **ZLO Light.app** をビルドしてインストール。別のアプリなので ZLO を置き換えることはありません。 |
+
+バックエンド単体(サーバー用)は次のようにビルドします。
+
+```sh
+cargo build --release -p ironclaw     # バイナリは target/release/zlo
+```
+
+デスクトップのワークスペースを変更する場合:
+
+```sh
+cd tools/ironclaw_rune
+cargo check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-**フルリリース**（チャネルソースを変更した後）の場合、まず`./scripts/build-all.sh`を実行してチャネルを再ビルドしてください。
+バックエンドのコードを変更する前に、[`AGENTS.md`](AGENTS.md) と、担当するクレートのガイダンスを読んでください。
 
-</details>
+## リポジトリの歩き方
 
-### データベースのセットアップ
+| パス | 内容 |
+| --- | --- |
+| [`tools/ironclaw_rune/`](tools/ironclaw_rune/) | デスクトップアプリと、その独立した Cargo ワークスペース |
+| [`tools/ironclaw_rune/app/`](tools/ironclaw_rune/app/) | Rune インターフェース、ネイティブビュー、環境設定、バックエンドの監視、コンピューター一覧(`src/remote*`、`src/pages/computers*`) |
+| [`tools/ironclaw_rune/client/`](tools/ironclaw_rune/client/) | デスクトップ用の型付き HTTP クライアント。ペアリング、Tailscale 検出、SSH、キーチェーンを含む |
+| [`tools/ironclaw_rune/docs/`](tools/ironclaw_rune/docs/) | ユーザーガイド: ほかのコンピューター、更新 |
+| [`crates/`](crates/) | IronClaw バックエンドと、それに対する私の拡張 |
+| [`crates/product/ironclaw_webui/`](crates/product/ironclaw_webui/) | ZLO が通信する HTTP ゲートウェイ。ペアリング、デバイス、Tailscale ID リスナーを含む |
+| [`crates/app/ironclaw_cli/`](crates/app/ironclaw_cli/) | `zlo` バイナリ: `serve`、`remote`、`pair`、`devices`、`update`、`service` |
+| [`docs/internal/plans/2026-11-08-zlo-remote-environments.md`](docs/internal/plans/2026-11-08-zlo-remote-environments.md) | リモートコンピューターの設計とワイヤー契約 |
+| [`AGENTS.md`](AGENTS.md) | コーディングエージェントと作業するためのリポジトリのルール |
 
-```bash
-# データベースを作成
-createdb ironclaw
+IronClaw から引き継いだ React フロントエンドは ZLO のデスクトップインターフェースではありません。その裏にあるゲートウェイは今も使われています。
 
-# pgvectorを有効化
-psql ironclaw -c "CREATE EXTENSION IF NOT EXISTS vector;"
-```
+入力するコマンド(`zlo`)とデータフォルダー(`~/.zlo`)は ZLO のものです。内部のクレートは IronClaw の名前(`ironclaw_*`、および `zlo` をビルドする Cargo パッケージ `ironclaw`)を保っており、`~/.ironclaw/` 以下の CLI エージェントの作業フォルダーや、一部の古い Numoh 署名識別子も同様です。これらを安定させておくと、上流のマージと macOS の権限を保守しやすくなります。
 
-## 設定
+## 由来
 
-セットアップウィザードを実行してIronClawを設定します：
+ZLO は、[NEAR AI](https://github.com/nearai) が作った [IronClaw](https://github.com/nearai/ironclaw) の私の個人フォークです。その土台の上にデスクトップアプリを作り、自分用にバックエンドも変え続けています。エージェントランタイム、セキュリティの仕組み、そしてこのリポジトリの多くは彼らの仕事によるものです。
 
-```bash
-ironclaw onboard
-```
+インターフェースは [Rune](https://github.com/anomalyco/rune) を使っています。以前のバージョンのアプリは、Zed のために開発された Rust の UI フレームワーク [GPUI](https://www.gpui.rs/) で作られていました。それは `archive/gpui` ブランチ(タグ `gpui-final`)にアーカイブされています。computer-use ヘルパーは [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus) から来ています。ZLO がほかのコンピューターに接続する方法は [T3 Code](https://github.com/pingdotgg/t3code) のリモート環境にならっており、ホスト型リレーの代わりに Tailscale を使います。
 
-ウィザードは、データベース接続、NEAR AI認証（ブラウザOAuth経由）、シークレットの暗号化（システムキーチェーンを使用）を処理します。設定は接続されたデータベースに永続化されます。ブートストラップ変数（例：`DATABASE_URL`、`LLM_BACKEND`）は、データベース接続前に利用できるよう`~/.ironclaw/.env`に書き込まれます。
-
-### 代替LLMプロバイダー
-
-IronClawはデフォルトでNEAR AIを使用しますが、多くのLLMプロバイダーをすぐに利用できます。組み込みプロバイダーには**Anthropic**、**OpenAI**、**Google Gemini**、**MiniMax**、**Mistral**、**Ollama**（ローカル）が含まれます。**OpenRouter**（300以上のモデル）、**Together AI**、**Fireworks AI**、セルフホストサーバー（**vLLM**、**LiteLLM**）などのOpenAI互換サービスもサポートされています。
-
-ウィザードでプロバイダーを選択するか、環境変数を直接設定してください：
-
-```env
-# 例：MiniMax（組み込み、204Kコンテキスト）
-LLM_BACKEND=minimax
-MINIMAX_API_KEY=...
-
-# 例：OpenAI互換エンドポイント
-LLM_BACKEND=openai_compatible
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_API_KEY=sk-or-...
-LLM_MODEL=anthropic/claude-sonnet-4
-```
-
-完全なプロバイダーガイドは[docs/capabilities/llm-providers.md](docs/capabilities/llm-providers.md)をご覧ください。
-
-## セキュリティ
-
-IronClawは、データを保護し悪用を防ぐために多層防御を実装しています。
-
-### WASMサンドボックス
-
-すべての信頼されていないツールは、隔離されたWebAssemblyコンテナで実行されます：
-
-- **機能ベースの権限** - HTTP、シークレット、ツール呼び出しの明示的なオプトイン
-- **エンドポイントの許可リスト** - 許可されたホスト/パスへのHTTPリクエストのみ
-- **認証情報の注入** - シークレットはホスト境界で注入され、WASMコードに公開されない
-- **リーク検出** - リクエストとレスポンスのシークレット流出試行をスキャン
-- **レート制限** - 悪用防止のためのツールごとのリクエスト制限
-- **リソース制限** - メモリ、CPU、実行時間の制約
-
-```
-WASM ──► 許可リスト ──► リーク    ──► 認証情報 ──► リクエスト ──► リーク    ──► WASM
-         バリデーター    スキャン       注入        実行          スキャン
-                       (リクエスト)                             (レスポンス)
-```
-
-### プロンプトインジェクション防御
-
-外部コンテンツは複数のセキュリティレイヤーを通過します：
-
-- パターンベースのインジェクション試行検出
-- コンテンツのサニタイズとエスケープ
-- 重要度レベル付きポリシールール（ブロック/警告/レビュー/サニタイズ）
-- 安全なLLMコンテキスト注入のためのツール出力ラッピング
-
-### データ保護
-
-- すべてのデータはローカルのPostgreSQLデータベースに保存
-- AES-256-GCMでシークレットを暗号化
-- テレメトリ、分析、データ共有なし
-- すべてのツール実行の完全な監査ログ
-
-## アーキテクチャ
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                          チャネル                               │
-│  ┌──────┐  ┌──────┐   ┌─────────────┐  ┌─────────────┐         │
-│  │ REPL │  │ HTTP │   │WASMチャネル │  │ Web         │         │
-│  └──┬───┘  └──┬───┘   └──────┬──────┘  │ ゲートウェイ│         │
-│     │         │              │         │(SSE + WS)   │         │
-│     │         │              │         └──────┬──────┘         │
-│     └─────────┴──────────────┴────────────────┘                │
-│                              │                                 │
-│                    ┌─────────▼─────────┐                       │
-│                    │  エージェントループ │  インテントルーティング│
-│                    └────┬──────────┬───┘                       │
-│                         │          │                           │
-│              ┌──────────▼────┐  ┌──▼───────────────┐           │
-│              │ スケジューラー │  │ ルーティン       │           │
-│              │ (並列ジョブ)  │  │ エンジン         │           │
-│              └──────┬────────┘  │(cron,event,wh)   │           │
-│                     │           └────────┬─────────┘           │
-│       ┌─────────────┼────────────────────┘                     │
-│       │             │                                          │
-│   ┌───▼─────┐  ┌────▼────────────────┐                         │
-│   │ ローカル │  │  オーケストレーター  │                         │
-│   │ ワーカー │  │  ┌───────────────┐  │                         │
-│   │(プロセス │  │  │ Docker        │  │                         │
-│   │ 内)     │  │  │ サンドボックス│  │                         │
-│   └───┬─────┘  │  │ コンテナ      │  │                         │
-│       │        │  │ ┌───────────┐ │  │                         │
-│       │        │  │ │Worker / CC│ │  │                         │
-│       │        │  │ └───────────┘ │  │                         │
-│       │        │  └───────────────┘  │                         │
-│       │        └─────────┬───────────┘                         │
-│       └──────────────────┤                                     │
-│                          │                                     │
-│              ┌───────────▼──────────┐                          │
-│              │   ツールレジストリ    │                          │
-│              │ 組み込み, MCP, WASM  │                          │
-│              └──────────────────────┘                          │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### コアコンポーネント
-
-| コンポーネント | 目的 |
-|---------------|------|
-| **エージェントループ** | メインのメッセージ処理とジョブの調整 |
-| **ルーター** | ユーザーの意図を分類（コマンド、クエリ、タスク） |
-| **スケジューラー** | 優先度付きの並列ジョブ実行を管理 |
-| **ワーカー** | LLM推論とツール呼び出しでジョブを実行 |
-| **オーケストレーター** | コンテナのライフサイクル、LLMプロキシ、ジョブごとの認証 |
-| **Webゲートウェイ** | チャット、メモリ、ジョブ、ログ、拡張機能、ルーティンのブラウザUI |
-| **ルーティンエンジン** | スケジュール（cron）とリアクティブ（イベント、ウェブフック）のバックグラウンドタスク |
-| **ワークスペース** | ハイブリッド検索付き永続メモリ |
-| **セーフティレイヤー** | プロンプトインジェクション防御とコンテンツサニタイズ |
-
-## 使い方
-
-Engine v2 は現在オプトインです。従来のエージェントループではなく新しいエンジンを使いたい場合は、IronClaw を `ENGINE_V2=true` 付きで起動してください。
-
-```bash
-# 初回セットアップ（データベース、認証などを設定）
-ironclaw onboard
-
-# インストール済みバイナリを起動
-ironclaw
-
-# Engine v2 でインストール済みバイナリを起動
-ENGINE_V2=true ironclaw
-
-# ソースからインタラクティブREPLを起動
-cargo run
-
-# ソースから Engine v2 のインタラクティブREPLを起動
-ENGINE_V2=true cargo run
-
-# Engine v2 をデバッグログ付きで起動
-ENGINE_V2=true RUST_LOG=ironclaw=debug cargo run
-```
-
-## 開発
-
-```bash
-# コードフォーマット
-cargo fmt
-
-# リント
-cargo clippy --all --benches --tests --examples --all-features
-
-# テスト実行
-createdb ironclaw_test
-cargo test
-
-# 特定のテストを実行
-cargo test test_name
-```
-
-- **チャネル**: Telegram、Discord、その他のチャネルの設定は[docs/channels/overview.mdx](docs/channels/overview.mdx)を参照してください。
-
-## OpenClawの系譜
-
-IronClawは[OpenClaw](https://github.com/openclaw/openclaw)にインスパイアされたRust再実装です。完全な対応表は[FEATURE_PARITY.md](FEATURE_PARITY.md)をご覧ください。
-
-主な違い：
-
-- **Rust vs TypeScript** - ネイティブパフォーマンス、メモリ安全性、シングルバイナリ
-- **WASMサンドボックス vs Docker** - 軽量、機能ベースのセキュリティ
-- **PostgreSQL vs SQLite** - 本番環境対応の永続化
-- **セキュリティファースト設計** - 複数の防御レイヤー、認証情報の保護
+このリポジトリは私のプロジェクトであり、IronClaw や NEAR AI の公式リリースではありません。
 
 ## ライセンス
 
-以下のいずれかのライセンスの下で提供されています：
+次のいずれかを選んで利用できます。
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
 
-お好みに応じて選択してください。
+上流のライセンス表示と帰属表示は保持しています。同梱の依存関係と computer-use ヘルパーには、それぞれ独自のライセンスがあります。

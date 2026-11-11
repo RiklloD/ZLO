@@ -1,346 +1,156 @@
-<p align="center">
-  <img src="ironclaw.png?v=2" alt="IronClaw" width="200"/>
-</p>
+# ZLO
 
-<h1 align="center">IronClaw</h1>
+[English](README.md) | 简体中文 | [Русский](README.ru.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-<p align="center">
-  <strong>安全可靠的个人 AI 助手，始终站在你这边</strong>
-</p>
+> 本文是 [`README.md`](README.md) 的翻译。如有出入，以英文版为准。
 
-<p align="center">
-  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
-  <a href="https://t.me/ironclawAI"><img src="https://img.shields.io/badge/Telegram-%40ironclawAI-26A5E4?style=flat&logo=telegram&logoColor=white" alt="Telegram: @ironclawAI" /></a>
-  <a href="https://www.reddit.com/r/ironclawAI/"><img src="https://img.shields.io/badge/Reddit-r%2FironclawAI-FF4500?style=flat&logo=reddit&logoColor=white" alt="Reddit: r/ironclawAI" /></a>
-</p>
+我的个人 AI 桌面应用。用 Rust 为 macOS 构建，采用原生的 [Rune](https://github.com/anomalyco/rune) 界面和 [IronClaw](https://github.com/nearai/ironclaw) 后端。
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh-CN.md">简体中文</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.ko.md">한국어</a>
-</p>
+我是 [Lorik](https://github.com/RiklloD)，一名喜欢折腾技术的商科学生。我的想法比工程经验多，所以我和 AI 智能体一起工作，把这些想法变成自己能用的软件。ZLO 就是我围绕这种工作方式构建的应用。
 
-<p align="center">
-  <a href="#设计理念">设计理念</a> •
-  <a href="#功能特性">功能特性</a> •
-  <a href="#安装">安装</a> •
-  <a href="#配置">配置</a> •
-  <a href="#安全机制">安全机制</a> •
-  <a href="#系统架构">系统架构</a>
-</p>
+## 为什么做它
 
----
+对我来说，桌面应用和它背后的智能体一样重要。我想要一个轻量、在 Mac 上用起来很自然的东西。内存占用和电池续航是产品的一部分，而不是在加完所有功能之后才去修的问题。
 
-## 设计理念
+这是我自己的工作环境，也是尝试想法的地方。它不承诺成为打磨好的正式版本，也不承诺支持所有机器。
 
-IronClaw 基于一个简单的原则：**你的 AI 助手应该为你服务，而不是与你为敌。**
+## 它能做什么
 
-在 AI 系统对数据处理日益不透明、与企业利益捆绑的今天，IronClaw 选择了一条不同的路：
+- **原生界面。** 基于 Rune 的 GPU 渲染 Rust 界面。没有 Electron，也没有常驻的内嵌浏览器；浏览器和文档视图只在需要时才创建。
+- **对话、配置文件和模型。** 按任务选择模型，保留不同的配置文件，并通过编排器把工作委派给其他智能体，包括 Codex 和 Claude Code。
+- 通过 IronClaw 后端提供的**工具、技能、记忆和 MCP**。
+- 通过我 fork 的 [computer-use 引擎](https://github.com/RiklloD/hermes-plugin-computer-use-plus)实现的**电脑操控**。
+- **审批。** 每个配置文件要么先询问，要么给予完全访问权限。自动审批默认关闭。
+- **在其他电脑上工作。** 后端可以运行在另一台机器上，比如 Mac mini 或 Linux 服务器，而笔记本上的 ZLO 只是一个窗口。机器之间通过 Tailscale 或 SSH 连接。参见[使用另一台电脑](tools/ironclaw_rune/docs/remote-computers.md)。
 
-- **数据归你所有** — 所有信息存储在本地，加密保护，始终在你掌控之下
-- **透明至上** — 完全开源，可审计，没有隐藏的遥测或数据收集
-- **自主扩展** — 随时构建新工具，无需等待供应商更新
-- **纵深防御** — 多层安全机制抵御提示注入和数据泄露
+我在使用中不断修改这个应用。要了解它的当前状态，代码和开发笔记比一份固定的功能清单更可靠。
 
-IronClaw 是一个你真正可以信赖的 AI 助手，无论是个人生活还是工作。
+## 运行方式
 
-## 功能特性
+ZLO 分为两部分：**窗口**（Rune 应用）和**后端**（IronClaw，负责运行智能体、它的工具和记忆）。两者通过经过认证的 HTTP 通信。后端在哪里运行由你决定：
 
-### 安全优先
+| 配置 | 什么在哪里运行 | 适用场景 |
+| --- | --- | --- |
+| **全部在这台 Mac 上**（默认） | ZLO 把自己的后端作为子进程启动，退出时将其停止。 | 一台机器，无需任何设置。 |
+| **后端在另一台电脑上** | 后端运行在服务器或另一台 Mac 上。ZLO 通过你的 tailnet 或 SSH 连接它。 | 让智能体在笔记本休眠时继续运行，或在性能更强、有你的代码仓库或网络更好的机器上工作。 |
+| **仅应用**（ZLO Light） | 不内置后端的 ZLO 版本。它只会连接到其他电脑。 | 不应自己运行智能体的笔记本。 |
 
-- **WASM 沙箱** — 不受信任的工具在隔离的 WebAssembly 容器中运行，采用基于能力的权限模型
-- **凭据保护** — 密钥永远不会暴露给工具；在宿主边界注入并进行泄露检测
-- **提示注入防御** — 模式检测、内容清理和策略执行
-- **端点白名单** — HTTP 请求仅限于明确批准的主机和路径
+你可以在 **Settings → Computers** 中切换电脑。ZLO 一次只在一台电脑上工作。每台电脑有自己的线程、记忆、设置和提供商密钥，因为它们都保存在该电脑的后端里。
 
-### 随时可用
+状态保存在运行后端的那台机器的 `~/.zlo` 下（设置 `ZLO_HOME` 可放到别处），使用 libSQL，而不是单独的 PostgreSQL 服务器。旧安装的 `~/.ironclaw/reborn` 会在首次启动时迁移过去，旧路径保留为链接，所以记着旧路径的东西不会出问题。
 
-- **多渠道接入** — REPL、HTTP webhook、WASM 渠道（Telegram、Slack）和 Web 网关
-- **Docker 沙箱** — 隔离的容器执行，支持每任务令牌和编排器/工作器模式
-- **Web 网关** — 浏览器 UI，支持实时 SSE/WebSocket 流式传输
-- **定时任务** — Cron 调度、事件触发器、Webhook 处理器，实现后台自动化
-- **心跳系统** — 主动后台执行，用于监控和维护任务
-- **并行任务** — 使用隔离上下文同时处理多个请求
-- **自修复** — 自动检测并恢复卡住的操作
-
-### 自主扩展
-
-- **动态工具构建** — 描述你的需求，IronClaw 会将其构建为 WASM 工具
-- **MCP 协议** — 连接模型上下文协议（Model Context Protocol）服务器以获取额外能力
-- **插件架构** — 无需重启即可加载新的 WASM 工具和渠道
-
-### 持久记忆
-
-- **混合搜索** — 全文搜索 + 向量搜索，采用倒数排名融合（Reciprocal Rank Fusion）
-- **工作空间文件系统** — 灵活的基于路径的存储，用于笔记、日志和上下文
-- **身份文件** — 跨会话保持一致的个性和偏好设置
+本地存储并不意味着每个任务都留在本机。使用远程模型或外部集成时，请求所需的数据会发送给相应的提供商。电脑操控需要在运行后端的机器上授予相关的 macOS 权限。
 
 ## 安装
 
-### 前置要求
-
-- Rust 1.85+
-- PostgreSQL 15+，需安装 [pgvector](https://github.com/pgvector/pgvector) 扩展
-- NEAR AI 账户（通过设置向导进行身份验证）
-- 如果从源码构建微信语音 / SILK 路径，还需要安装 `libclang` 和可用的 C 编译工具链
-
-## 下载或编译
-
-访问 [Releases 页面](https://github.com/nearai/ironclaw/releases/) 查看最新版本。
-
-<details>
-  <summary>通过 Windows 安装程序安装 (Windows)</summary>
-
-下载 [Windows 安装程序](https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-x86_64-pc-windows-msvc.msi) 并运行。
-
-</details>
-
-<details>
-  <summary>通过 PowerShell 脚本安装 (Windows)</summary>
+在 Apple Silicon Mac 上，把下面这行粘贴到终端：
 
 ```sh
-irm https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-installer.ps1 | iex
+curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 ```
 
-</details>
+它会从源码构建 ZLO 并安装到 `~/Applications/ZLO.app`。如果缺少 Xcode 命令行工具，它会打开安装程序并请你重新运行命令。如果没有 Rust，它会安装 Rust。首次构建需要 10 到 20 分钟。再次运行同一命令即可更新。
 
-<details>
-  <summary>通过 Shell 脚本安装 (macOS、Linux、Windows/WSL)</summary>
+要构建 `main` 以外的分支，设置 `ZLO_REF`：
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-installer.sh | sh
+curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | ZLO_REF=my-branch sh
 ```
-</details>
 
-<details>
-  <summary>通过 Homebrew 安装 (macOS/Linux)</summary>
+如果没有 Apple Development 签名身份，应用会使用临时（ad-hoc）签名，因此每次更新后 macOS 都会再次请求辅助功能和屏幕录制权限。
+
+## 使用另一台电脑
+
+以 tailnet 上的服务器为例，简要步骤如下：
 
 ```sh
-brew install ironclaw
+# 在服务器上
+zlo onboard            # 提供商和密钥
+zlo service install    # 开机启动
+zlo remote enable      # 发布到你的 tailnet（绝不发布到互联网）
+zlo service restart
 ```
 
-</details>
+然后在 Mac 上打开 ZLO，进入 **Settings → Computers**，在 “Found on your tailnet” 下点击服务器旁边的 **Connect**。
 
-<details>
-  <summary>从源码编译 (Windows、Linux、macOS 上使用 Cargo)</summary>
+[**使用另一台电脑**](tools/ironclaw_rune/docs/remote-computers.md)涵盖完整的设置：
 
-确保你已安装 [Rust](https://rustup.rs)。
+- 设置 Linux 服务器或第二台 Mac；
+- 一键配对、用配对码配对或通过 SSH 配对；
+- 管理已配对的设备；
+- 用 `zlo transfer user@host`，或 `zlo export` / `zlo import`，把你的环境（线程、记忆、配置文件、设置、提供商密钥）迁移到服务器；
+- 哪些功能可以远程使用；
+- 连接如何受到保护；
+- 故障排除。
 
-```bash
-# 克隆仓库
-git clone https://github.com/nearai/ironclaw.git
-cd ironclaw
+[**保持机器更新**](tools/ironclaw_rune/docs/updates.md)介绍了 “Update all machines” 和 `zlo update`。
 
-# 编译
-cargo build --release
+## 从源码构建
 
-# 运行测试
+这是 macOS 开发环境，不是跨平台安装程序。它需要 Xcode 命令行工具、通过 rustup 安装的 Rust，以及 Apple Development 签名身份。仓库在 [`rust-toolchain.toml`](rust-toolchain.toml) 中固定了 Rust 工具链版本。内置的 computer-use 引擎目前面向 Apple Silicon。
+
+```sh
+git clone https://github.com/RiklloD/ZLO.git
+cd zlo
+sh tools/ironclaw_rune/bundle.sh
+```
+
+该脚本会构建后端和桌面应用，下载并校验固定版本的 computer-use 引擎，为应用包签名，并安装到 `~/Applications/ZLO.app`。它会替换已有的安装：如果应用正在运行，会先退出它；如果之前是打开的，会重新打开。
+
+| 命令 | 结果 |
+| --- | --- |
+| `sh tools/ironclaw_rune/bundle.sh` | 构建，安装到 `~/Applications/ZLO.app`，重新打开 |
+| `sh tools/ironclaw_rune/bundle.sh --no-install` | 只构建，输出到 `tools/ironclaw_rune/target/ZLO.app` |
+| `sh tools/ironclaw_rune/bundle.sh --light` | 构建并安装 **ZLO Light.app**，它没有后端，也没有 computer-use 引擎。它是一个独立的应用，所以不会替换 ZLO。 |
+
+单独构建后端（用于服务器）：
+
+```sh
+cargo build --release -p ironclaw     # 二进制文件位于 target/release/zlo
+```
+
+修改桌面工作区时：
+
+```sh
+cd tools/ironclaw_rune
+cargo check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-如需进行**完整发布构建**（修改了渠道源码后），先运行 `./scripts/build-all.sh` 重新编译渠道。
+修改后端代码前，请先阅读 [`AGENTS.md`](AGENTS.md) 和所属 crate 的说明。
 
-> **可选：** 微信语音消息（`audio/silk`）需要独立的 `ironclaw-silk-decoder`
-> 辅助二进制才能被转写。该工具因为依赖 `silk-codec`（会引入 `bindgen` /
-> `libclang`），已被排除在默认工作区之外。请使用
-> `./tools/ironclaw_silk_decoder/build.sh` 单独编译（需要 libclang 与 C
-> 编译器），再把生成的二进制放到 `$PATH`、`ironclaw` 同级目录，或通过
-> `IRONCLAW_SILK_DECODER` 环境变量指定路径。即使没有它，语音消息仍会送达，
-> 只是会以原始的 `audio/silk` 数据块形式呈现。
+## 仓库导览
 
-</details>
+| 路径 | 内容 |
+| --- | --- |
+| [`tools/ironclaw_rune/`](tools/ironclaw_rune/) | 桌面应用及其独立的 Cargo 工作区 |
+| [`tools/ironclaw_rune/app/`](tools/ironclaw_rune/app/) | Rune 界面、原生视图、偏好设置、后端监管，以及电脑列表（`src/remote*`、`src/pages/computers*`） |
+| [`tools/ironclaw_rune/client/`](tools/ironclaw_rune/client/) | 桌面端的类型化 HTTP 客户端，包括配对、Tailscale 发现、SSH 和钥匙串 |
+| [`tools/ironclaw_rune/docs/`](tools/ironclaw_rune/docs/) | 用户指南：其他电脑、更新 |
+| [`crates/`](crates/) | IronClaw 后端以及我对它的扩展 |
+| [`crates/product/ironclaw_webui/`](crates/product/ironclaw_webui/) | ZLO 与之通信的 HTTP 网关，包括配对、设备和 Tailscale 身份监听器 |
+| [`crates/app/ironclaw_cli/`](crates/app/ironclaw_cli/) | `zlo` 二进制：`serve`、`remote`、`pair`、`devices`、`update`、`service` |
+| [`docs/internal/plans/2026-11-08-zlo-remote-environments.md`](docs/internal/plans/2026-11-08-zlo-remote-environments.md) | 远程电脑的设计和通信协议 |
+| [`AGENTS.md`](AGENTS.md) | 与编程智能体协作的仓库规则 |
 
-### 数据库设置
+从 IronClaw 继承来的 React 前端不是 ZLO 的桌面界面。它背后的网关仍在使用。
 
-```bash
-# 创建数据库
-createdb ironclaw
+你输入的命令（`zlo`）和数据文件夹（`~/.zlo`）属于 ZLO。内部 crate 保留 IronClaw 的名称（`ironclaw_*`，以及构建 `zlo` 的 Cargo 包 `ironclaw`），`~/.ironclaw/` 下 CLI 智能体的工作文件夹和一些较旧的 Numoh 签名标识符也是如此。保持这些名称不变，可以让与上游合并以及维护 macOS 权限更容易。
 
-# 启用 pgvector 扩展
-psql ironclaw -c "CREATE EXTENSION IF NOT EXISTS vector;"
-```
+## 来源
 
-## 配置
+ZLO 是我对 [NEAR AI](https://github.com/nearai) 所构建的 [IronClaw](https://github.com/nearai/ironclaw) 的个人 fork。我在这个基础上构建了自己的桌面应用，并继续按自己的需要修改后端。智能体运行时、安全机制以及这个仓库的大部分内容都来自他们的工作。
 
-运行设置向导来配置 IronClaw：
+界面使用 [Rune](https://github.com/anomalyco/rune)。应用的早期版本基于 [GPUI](https://www.gpui.rs/)（为 Zed 开发的 Rust UI 框架），已归档在 `archive/gpui` 分支（标签 `gpui-final`）。computer-use 辅助程序来自 [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus)。ZLO 连接其他电脑的方式参照了 [T3 Code](https://github.com/pingdotgg/t3code) 的远程环境，用 Tailscale 代替了它的托管中继。
 
-```bash
-ironclaw onboard
-```
-
-向导将引导你完成数据库连接、NEAR AI 身份验证（通过浏览器 OAuth）和密钥加密（使用系统钥匙串）。设置会保存在数据库中；引导变量（如 `DATABASE_URL`、`LLM_BACKEND`）写入 `~/.ironclaw/.env`，以便在数据库连接前可用。
-
-### 替代 LLM 提供商
-
-IronClaw 默认使用 NEAR AI，但开箱即用地支持多种 LLM 提供商。
-内置提供商包括 **Anthropic**、**OpenAI**、**GitHub Copilot**、**Google Gemini**、**MiniMax**、**Mistral** 和 **Ollama**（本地部署）。同时也支持 OpenAI 兼容服务，如 **OpenRouter**（300+ 模型）、**Together AI**、**Fireworks AI** 以及自托管服务器（**vLLM**、**LiteLLM**）。
-
-在向导中选择你的提供商，或直接设置环境变量：
-
-```env
-# 示例：MiniMax（内置，204K 上下文）
-LLM_BACKEND=minimax
-MINIMAX_API_KEY=...
-
-# 示例：OpenAI 兼容端点
-LLM_BACKEND=openai_compatible
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_API_KEY=sk-or-...
-LLM_MODEL=anthropic/claude-sonnet-4
-```
-
-详见 [docs/capabilities/llm-providers.md](docs/capabilities/llm-providers.md) 获取完整的提供商指南。
-
-## 安全机制
-
-IronClaw 实现了纵深防御策略来保护你的数据并防止滥用。
-
-### WASM 沙箱
-
-所有不受信任的工具都在隔离的 WebAssembly 容器中运行：
-
-- **基于能力的权限** — 明确授权 HTTP、密钥、工具调用等能力
-- **端点白名单** — HTTP 请求仅限已批准的主机和路径
-- **凭据注入** — 密钥在宿主边界注入，永远不会暴露给 WASM 代码
-- **泄露检测** — 扫描请求和响应以防止密钥外泄
-- **速率限制** — 每个工具独立的请求限制，防止滥用
-- **资源限制** — 内存、CPU 和执行时间约束
-
-```
-WASM ──► 白名单  ──► 泄露扫描 ──► 凭据  ──► 执行  ──► 泄露扫描 ──► WASM
-         验证器     (请求)      注入器    请求     (响应)
-```
-
-### 提示注入防御
-
-外部内容需通过多个安全层：
-
-- 基于模式的注入尝试检测
-- 内容清理和转义
-- 带严重级别的策略规则（阻止/警告/审核/清理）
-- 工具输出包装，确保安全的 LLM 上下文注入
-
-### 数据保护
-
-- 所有数据存储在本地 PostgreSQL 数据库中
-- 密钥使用 AES-256-GCM 加密
-- 无遥测、无分析、无数据共享
-- 所有工具执行的完整审计日志
-
-## 系统架构
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                            渠道                                 │
-│  ┌──────┐  ┌──────┐   ┌─────────────┐  ┌─────────────┐         │
-│  │ REPL │  │ HTTP │   │ WASM 渠道   │  │  Web 网关   │         │
-│  └──┬───┘  └──┬───┘   └──────┬──────┘  │ (SSE + WS)  │         │
-│     │         │              │         └──────┬──────┘         │
-│     └─────────┴──────────────┴────────────────┘                │
-│                              │                                 │
-│                    ┌─────────▼─────────┐                       │
-│                    │    代理循环       │  意图路由              │
-│                    └────┬──────────┬───┘                       │
-│                         │          │                           │
-│              ┌──────────▼────┐  ┌──▼───────────────┐           │
-│              │    调度器      │  │   定时任务引擎    │           │
-│              │  (并行任务)    │  │(cron, 事件, Webhook)│          │
-│              └──────┬────────┘  └────────┬─────────┘           │
-│                     │                    │                     │
-│       ┌─────────────┼────────────────────┘                     │
-│       │             │                                          │
-│   ┌───▼─────┐  ┌────▼────────────────┐                         │
-│   │  本地   │  │      编排器          │                         │
-│   │ 工作器  │  │  ┌───────────────┐  │                         │
-│   │(进程内) │  │  │ Docker 沙箱   │  │                         │
-│   └───┬─────┘  │  │     容器      │  │                         │
-│       │        │  │ ┌───────────┐ │  │                         │
-│       │        │  │ │工作器/CC  │ │  │                         │
-│       │        │  │ └───────────┘ │  │                         │
-│       │        │  └───────────────┘  │                         │
-│       │        └─────────┬───────────┘                         │
-│       └──────────────────┤                                     │
-│                          │                                     │
-│              ┌───────────▼──────────┐                          │
-│              │      工具注册表       │                          │
-│              │ 内置、MCP、WASM      │                          │
-│              └──────────────────────┘                          │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### 核心组件
-
-| 组件 | 用途 |
-|------|------|
-| **代理循环** | 主消息处理和任务协调 |
-| **路由器** | 分类用户意图（命令、查询、任务） |
-| **调度器** | 管理带优先级的并行任务执行 |
-| **工作器** | 执行包含 LLM 推理和工具调用的任务 |
-| **编排器** | 容器生命周期、LLM 代理、每任务认证 |
-| **Web 网关** | 浏览器 UI，含聊天、记忆、任务、日志、扩展、定时任务 |
-| **定时任务引擎** | 定时（cron）和响应式（事件、webhook）后台任务 |
-| **工作空间** | 带混合搜索的持久记忆 |
-| **安全层** | 提示注入防御和内容清理 |
-
-## 使用方式
-
-Engine v2 当前需要显式开启。如果你想运行新的引擎而不是旧的代理循环，请在启动 IronClaw 时设置 `ENGINE_V2=true`。
-
-```bash
-# 首次设置（配置数据库、认证等）
-ironclaw onboard
-
-# 启动已安装的二进制
-ironclaw
-
-# 使用 Engine v2 启动已安装的二进制
-ENGINE_V2=true ironclaw
-
-# 从源码启动交互式 REPL
-cargo run
-
-# 从源码启动 Engine v2 交互式 REPL
-ENGINE_V2=true cargo run
-
-# 使用 Engine v2 并启用调试日志
-ENGINE_V2=true RUST_LOG=ironclaw=debug cargo run
-```
-
-## 开发
-
-```bash
-# 格式化代码
-cargo fmt
-
-# 代码检查
-cargo clippy --all --benches --tests --examples --all-features
-
-# 运行测试
-createdb ironclaw_test
-cargo test
-
-# 运行指定测试
-cargo test test_name
-```
-
-- **渠道**：参见 [docs/channels/overview.mdx](docs/channels/overview.mdx) 了解 Telegram、Discord 和其他渠道的设置。
-
-## OpenClaw 传承
-
-IronClaw 是受 [OpenClaw](https://github.com/openclaw/openclaw) 启发的 Rust 重新实现。参见 [FEATURE_PARITY.md](FEATURE_PARITY.md) 了解完整的功能追踪矩阵。
-
-主要差异：
-
-- **Rust vs TypeScript** — 原生性能、内存安全、单一二进制文件
-- **WASM 沙箱 vs Docker** — 轻量级、基于能力的安全机制
-- **PostgreSQL vs SQLite** — 生产级持久化存储
-- **安全优先设计** — 多层防御、凭据保护
+这个仓库是我的个人项目，不是 IronClaw 或 NEAR AI 的官方发布。
 
 ## 许可证
 
-可选择以下任一许可证：
+你可以任选以下其一：
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
+
+上游的许可证和署名声明均已保留。内置的依赖项和 computer-use 辅助程序各有自己的许可证。

@@ -1,348 +1,156 @@
-<p align="center">
-  <img src="ironclaw.png?v=2" alt="IronClaw" width="200"/>
-</p>
+# ZLO
 
-<h1 align="center">IronClaw</h1>
+[English](README.md) | [简体中文](README.zh-CN.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | 한국어
 
-<p align="center">
-  <strong>언제나 당신 편인 안전한 개인 AI 어시스턴트</strong>
-</p>
+> 이 문서는 [`README.md`](README.md)의 번역입니다. 내용이 다르면 영어 원문이 기준입니다.
 
-<p align="center">
-  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
-  <a href="https://t.me/ironclawAI"><img src="https://img.shields.io/badge/Telegram-%40ironclawAI-26A5E4?style=flat&logo=telegram&logoColor=white" alt="Telegram: @ironclawAI" /></a>
-  <a href="https://www.reddit.com/r/ironclawAI/"><img src="https://img.shields.io/badge/Reddit-r%2FironclawAI-FF4500?style=flat&logo=reddit&logoColor=white" alt="Reddit: r/ironclawAI" /></a>
-  <a href="https://gitcgr.com/nearai/ironclaw">
-    <img src="https://gitcgr.com/badge/nearai/ironclaw.svg" alt="gitcgr" />
-  </a>
-</p>
+제 개인용 AI 데스크톱 앱입니다. macOS용으로 Rust로 만들었고, 네이티브 [Rune](https://github.com/anomalyco/rune) 인터페이스와 [IronClaw](https://github.com/nearai/ironclaw) 백엔드를 씁니다.
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh-CN.md">简体中文</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.ko.md">한국어</a>
-</p>
+저는 [Lorik](https://github.com/RiklloD)입니다. 기술을 만지작거리기 좋아하는 경영학과 학생입니다. 엔지니어링 경험보다 아이디어가 더 많아서, AI 에이전트와 함께 일하며 그 아이디어를 제가 쓸 수 있는 소프트웨어로 만듭니다. ZLO는 그런 작업 방식을 중심으로 만들고 있는 앱입니다.
 
-<p align="center">
-  <a href="#철학">철학</a> •
-  <a href="#기능">기능</a> •
-  <a href="#설치">설치</a> •
-  <a href="#설정">설정</a> •
-  <a href="#보안">보안</a> •
-  <a href="#아키텍처">아키텍처</a>
-</p>
+## 왜 만드는가
 
----
+저에게는 데스크톱 앱이 그 뒤의 에이전트만큼 중요합니다. 가볍고 Mac에서 자연스럽게 느껴지는 것을 원합니다. 메모리 사용량과 배터리 수명은 제품의 일부이지, 기능을 모두 넣은 뒤에 고칠 일이 아닙니다.
 
-## 철학
+이것은 제 작업 환경이자 아이디어를 시험해 보는 곳입니다. 완성된 릴리스나 모든 기기 지원을 약속하지 않습니다.
 
-IronClaw는 단순한 원칙 위에 만들어졌습니다: **AI 어시스턴트는 당신을 위해 일해야 하며, 당신을 거슬러서는 안 됩니다**.
+## 할 수 있는 일
 
-AI 시스템이 데이터 처리에 대해 점점 더 불투명해지고 기업의 이익에 맞춰지는 세상에서, IronClaw는 다른 접근 방식을 취합니다:
+- **네이티브 인터페이스.** Rune으로 GPU 렌더링하는 Rust입니다. Electron도, 항상 켜져 있는 내장 브라우저도 없습니다. 브라우저와 문서 뷰는 필요할 때만 만들어집니다.
+- **채팅, 프로필, 모델.** 작업마다 모델을 고르고, 프로필을 따로 두고, 오케스트레이터를 통해 Codex와 Claude Code를 포함한 다른 에이전트에게 작업을 맡깁니다.
+- IronClaw 백엔드를 통한 **도구, 스킬, 메모리, MCP**.
+- 제가 포크한 [computer-use 엔진](https://github.com/RiklloD/hermes-plugin-computer-use-plus)을 통한 **컴퓨터 사용**.
+- **승인.** 각 프로필은 "먼저 묻기" 또는 "전체 접근" 중 하나입니다. 자동 승인은 기본적으로 꺼져 있습니다.
+- **다른 컴퓨터에서 작업.** 백엔드는 Mac mini나 Linux 서버 같은 다른 기기에서 돌리고, 노트북의 ZLO는 창 역할만 할 수 있습니다. 기기들은 Tailscale이나 SSH로 연결됩니다. [다른 컴퓨터 사용하기](tools/ironclaw_rune/docs/remote-computers.md)를 보세요.
 
-- **데이터는 당신의 것** - 모든 정보는 로컬에 저장되고 암호화되며, 절대 당신의 통제를 벗어나지 않습니다
-- **설계에 의한 투명성** - 오픈 소스, 감사 가능, 숨겨진 텔레메트리나 데이터 수집 없음
-- **자가 확장 기능** - 공급업체의 업데이트를 기다리지 않고 즉석에서 새로운 도구를 만들 수 있습니다
-- **심층 방어** - 프롬프트 인젝션 및 데이터 유출로부터 보호하는 다중 보안 계층
+앱은 쓰면서 계속 바꾸고 있습니다. 현재 상태는 고정된 기능 목록보다 코드와 개발 노트가 더 정확합니다.
 
-IronClaw는 개인적, 직업적 삶에서 실제로 신뢰할 수 있는 AI 어시스턴트입니다.
+## 동작 방식
 
-## 기능
+ZLO는 두 부분으로 되어 있습니다. **창**(Rune 앱)과 **백엔드**(에이전트와 그 도구, 메모리를 돌리는 IronClaw)입니다. 둘은 인증된 HTTP로 통신합니다. 백엔드를 어디서 돌릴지는 사용자가 정합니다.
 
-### 보안 우선
+| 구성 | 무엇이 어디서 도는가 | 언제 쓰는가 |
+| --- | --- | --- |
+| **모두 이 Mac에서**(기본값) | ZLO가 자체 백엔드를 자식 프로세스로 시작하고, 종료할 때 멈춥니다. | 기기 한 대, 설정할 것 없음. |
+| **다른 컴퓨터의 백엔드** | 백엔드는 서버나 다른 Mac에서 돕니다. ZLO는 tailnet이나 SSH로 연결합니다. | 노트북이 잠자는 동안에도 에이전트를 계속 돌리거나, 성능, 저장소, 연결이 더 나은 기기에서 작업할 때. |
+| **앱만**(ZLO Light) | 백엔드가 들어 있지 않은 ZLO 빌드입니다. 항상 다른 컴퓨터에만 연결합니다. | 스스로 에이전트를 돌리면 안 되는 노트북. |
 
-- **WASM 샌드박스** - 신뢰할 수 없는 도구는 권한 기반의 격리된 WebAssembly 컨테이너에서 실행됩니다
-- **자격 증명 보호** - 비밀은 도구에 노출되지 않고, 누출 감지와 함께 호스트 경계에서 주입됩니다
-- **프롬프트 인젝션 방어** - 패턴 감지, 콘텐츠 정화, 정책 시행
-- **엔드포인트 화이트리스트** - HTTP 요청은 명시적으로 승인된 호스트와 경로로만 전송됩니다
+컴퓨터는 **Settings → Computers**에서 바꿀 수 있습니다. ZLO는 한 번에 한 컴퓨터에서 동작합니다. 스레드, 메모리, 설정, 프로바이더 키는 백엔드에 있으므로 컴퓨터마다 따로입니다.
 
-### 항상 사용 가능
+상태는 백엔드를 돌리는 기기의 `~/.zlo`에 저장됩니다(다른 곳에 두려면 `ZLO_HOME`을 설정하세요). 별도의 PostgreSQL 서버가 아니라 libSQL을 씁니다. 예전 설치의 `~/.ironclaw/reborn`은 처음 시작할 때 그곳으로 옮겨지고, 옛 경로는 링크로 남아 그 경로를 기억하는 것이 깨지지 않습니다.
 
-- **다중 채널** - REPL, HTTP 웹훅, WASM 채널 (Telegram, Slack), 웹 게이트웨이
-- **Docker 샌드박스** - 작업별 토큰과 오케스트레이터/워커 패턴을 사용한 격리된 컨테이너 실행
-- **웹 게이트웨이** - 실시간 SSE/WebSocket 스트리밍이 있는 브라우저 UI
-- **루틴** - 백그라운드 자동화를 위한 cron 일정, 이벤트 트리거, 웹훅 핸들러
-- **하트비트 시스템** - 모니터링 및 유지 보수 작업을 위한 사전 백그라운드 실행
-- **병렬 작업** - 격리된 컨텍스트로 여러 요청을 동시에 처리합니다
-- **자가 복구** - 중단된 작업의 자동 감지 및 복구
-
-### 자가 확장
-
-- **동적 도구 빌드** - 필요한 것을 설명하면 IronClaw가 WASM 도구로 만들어 줍니다
-- **MCP 프로토콜** - 추가 기능을 위해 Model Context Protocol 서버에 연결합니다
-- **플러그인 아키텍처** - 재시작 없이 새로운 WASM 도구와 채널을 추가할 수 있습니다
-
-### 영구 메모리
-
-- **하이브리드 검색** - Reciprocal Rank Fusion을 사용한 전체 텍스트 + 벡터 검색
-- **워크스페이스 파일시스템** - 노트, 로그, 컨텍스트를 위한 유연한 경로 기반 저장소
-- **아이덴티티 파일** - 세션 간 일관된 성격과 선호도를 유지합니다
+로컬 저장이 모든 작업이 기기 안에 머문다는 뜻은 아닙니다. 원격 모델이나 외부 연동을 쓰면 그 요청에 필요한 데이터가 해당 프로바이더로 전송됩니다. 컴퓨터 사용에는 백엔드가 도는 기기에서 해당 macOS 권한이 필요합니다.
 
 ## 설치
 
-### 사전 요구 사항
-
-- Rust 1.85+
-- [pgvector](https://github.com/pgvector/pgvector) 확장이 있는 PostgreSQL 15+
-- NEAR AI 계정 (인증은 설정 마법사를 통해 처리됨)
-
-## 다운로드 또는 빌드
-
-[릴리스 페이지](https://github.com/nearai/ironclaw/releases/)를 방문하여 최신 업데이트를 확인하세요.
-
-<details>
-  <summary>Windows 인스톨러로 설치 (Windows)</summary>
-
-[Windows 인스톨러](https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-x86_64-pc-windows-msvc.msi)를 다운로드하여 실행하세요.
-
-</details>
-
-<details>
-  <summary>PowerShell 스크립트로 설치 (Windows)</summary>
+Apple Silicon Mac에서 터미널에 다음을 붙여 넣으세요.
 
 ```sh
-irm https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-installer.ps1 | iex
+curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 ```
 
-</details>
+ZLO를 소스에서 빌드해 `~/Applications/ZLO.app`에 설치합니다. Xcode 명령줄 도구가 없으면 설치 프로그램을 열고 명령을 다시 실행하라고 안내합니다. Rust가 없으면 설치합니다. 첫 빌드는 10~20분 걸립니다. 업데이트하려면 같은 명령을 다시 실행하세요.
 
-<details>
-  <summary>셸 스크립트로 설치 (macOS, Linux, Windows/WSL)</summary>
+`main`이 아닌 브랜치를 빌드하려면 `ZLO_REF`를 설정하세요.
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-installer.sh | sh
+curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | ZLO_REF=my-branch sh
 ```
-</details>
 
-<details>
-  <summary>Homebrew로 설치 (macOS/Linux)</summary>
+Apple Development 서명 ID가 없으면 앱이 임시(ad-hoc) 서명되므로, 업데이트할 때마다 macOS가 손쉬운 사용과 화면 기록 권한을 다시 요청합니다.
+
+## 다른 컴퓨터 사용하기
+
+tailnet에 있는 서버를 위한 짧은 버전입니다.
 
 ```sh
-brew install ironclaw
+# 서버에서
+zlo onboard            # 프로바이더와 키
+zlo service install    # 부팅 시 시작
+zlo remote enable      # tailnet에 공개(인터넷에는 절대 공개하지 않음)
+zlo service restart
 ```
 
-</details>
+그다음 Mac에서 ZLO를 열고 **Settings → Computers**로 가서, "Found on your tailnet" 아래 서버 옆의 **Connect**를 클릭하세요.
 
-<details>
-  <summary>소스 코드 컴파일 (Windows, Linux, macOS의 Cargo)</summary>
+[**다른 컴퓨터 사용하기**](tools/ironclaw_rune/docs/remote-computers.md)에서 전체 설정을 다룹니다.
 
-`cargo`로 설치하세요. 컴퓨터에 [Rust](https://rustup.rs)가 설치되어 있는지 확인하세요.
+- Linux 서버나 두 번째 Mac 설정
+- 원클릭, 코드, 또는 SSH로 페어링
+- 페어링된 기기 관리
+- `zlo transfer user@host` 또는 `zlo export` / `zlo import`로 설정(스레드, 메모리, 프로필, 설정, 프로바이더 키)을 서버로 옮기기
+- 원격에서 되는 기능
+- 연결을 보호하는 방식
+- 문제 해결
 
-```bash
-# 저장소 복제
-git clone https://github.com/nearai/ironclaw.git
-cd ironclaw
+[**기기를 최신으로 유지하기**](tools/ironclaw_rune/docs/updates.md)에서 "Update all machines"와 `zlo update`를 설명합니다.
 
-# 빌드
-cargo build --release
+## 소스에서 빌드하기
 
-# 테스트 실행
+이것은 macOS 개발 환경이지 크로스플랫폼 설치 프로그램이 아닙니다. Xcode 명령줄 도구, rustup으로 설치한 Rust, Apple Development 서명 ID가 필요합니다. 저장소는 Rust 툴체인을 [`rust-toolchain.toml`](rust-toolchain.toml)에 고정합니다. 함께 들어 있는 computer-use 엔진은 현재 Apple Silicon을 대상으로 합니다.
+
+```sh
+git clone https://github.com/RiklloD/ZLO.git
+cd zlo
+sh tools/ironclaw_rune/bundle.sh
+```
+
+이 스크립트는 백엔드와 데스크톱을 빌드하고, 고정된 computer-use 엔진을 내려받아 검증하고, 번들에 서명한 뒤 `~/Applications/ZLO.app`에 설치합니다. 기존 설치를 교체하며, 앱이 실행 중이면 먼저 종료하고 열려 있었다면 다시 엽니다.
+
+| 명령 | 결과 |
+| --- | --- |
+| `sh tools/ironclaw_rune/bundle.sh` | 빌드하고 `~/Applications/ZLO.app`에 설치한 뒤 다시 열기 |
+| `sh tools/ironclaw_rune/bundle.sh --no-install` | 빌드만, 결과는 `tools/ironclaw_rune/target/ZLO.app` |
+| `sh tools/ironclaw_rune/bundle.sh --light` | 백엔드와 computer-use 엔진이 없는 **ZLO Light.app**을 빌드하고 설치합니다. 별도의 앱이라 ZLO를 교체하지 않습니다. |
+
+백엔드만(서버용) 빌드하려면:
+
+```sh
+cargo build --release -p ironclaw     # 바이너리는 target/release/zlo
+```
+
+데스크톱 워크스페이스를 바꿀 때:
+
+```sh
+cd tools/ironclaw_rune
+cargo check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-**전체 릴리스**의 경우 (채널 소스를 수정한 후), `./scripts/build-all.sh`를 실행하여 채널을 먼저 다시 빌드하세요.
+백엔드 코드를 바꾸기 전에 [`AGENTS.md`](AGENTS.md)와 담당 크레이트의 안내를 읽으세요.
 
-</details>
+## 저장소 둘러보기
 
-### 데이터베이스 설정
+| 경로 | 내용 |
+| --- | --- |
+| [`tools/ironclaw_rune/`](tools/ironclaw_rune/) | 데스크톱 앱과 그 별도 Cargo 워크스페이스 |
+| [`tools/ironclaw_rune/app/`](tools/ironclaw_rune/app/) | Rune 인터페이스, 네이티브 뷰, 환경설정, 백엔드 감독, 컴퓨터 목록(`src/remote*`, `src/pages/computers*`) |
+| [`tools/ironclaw_rune/client/`](tools/ironclaw_rune/client/) | 데스크톱용 타입이 있는 HTTP 클라이언트. 페어링, Tailscale 탐색, SSH, 키체인 포함 |
+| [`tools/ironclaw_rune/docs/`](tools/ironclaw_rune/docs/) | 사용자 가이드: 다른 컴퓨터, 업데이트 |
+| [`crates/`](crates/) | IronClaw 백엔드와 그에 대한 제 확장 |
+| [`crates/product/ironclaw_webui/`](crates/product/ironclaw_webui/) | ZLO가 통신하는 HTTP 게이트웨이. 페어링, 기기, Tailscale ID 리스너 포함 |
+| [`crates/app/ironclaw_cli/`](crates/app/ironclaw_cli/) | `zlo` 바이너리: `serve`, `remote`, `pair`, `devices`, `update`, `service` |
+| [`docs/internal/plans/2026-11-08-zlo-remote-environments.md`](docs/internal/plans/2026-11-08-zlo-remote-environments.md) | 원격 컴퓨터의 설계와 와이어 계약 |
+| [`AGENTS.md`](AGENTS.md) | 코딩 에이전트와 함께 일하기 위한 저장소 규칙 |
 
-```bash
-# 데이터베이스 생성
-createdb ironclaw
+IronClaw에서 물려받은 React 프론트엔드는 ZLO의 데스크톱 인터페이스가 아닙니다. 그 뒤의 게이트웨이는 여전히 쓰입니다.
 
-# pgvector 활성화
-psql ironclaw -c "CREATE EXTENSION IF NOT EXISTS vector;"
-```
+입력하는 명령(`zlo`)과 데이터 폴더(`~/.zlo`)는 ZLO의 것입니다. 내부 크레이트는 IronClaw 이름(`ironclaw_*`, 그리고 `zlo`를 빌드하는 Cargo 패키지 `ironclaw`)을 유지하며, `~/.ironclaw/` 아래 CLI 에이전트의 작업 폴더와 일부 오래된 Numoh 서명 식별자도 마찬가지입니다. 이것들을 그대로 두면 업스트림 병합과 macOS 권한을 관리하기가 쉬워집니다.
 
-## 설정
+## 출처
 
-설정 마법사를 실행하여 IronClaw를 구성하세요:
+ZLO는 [NEAR AI](https://github.com/nearai)가 만든 [IronClaw](https://github.com/nearai/ironclaw)의 제 개인 포크입니다. 그 기반 위에 데스크톱 앱을 만들었고, 제 용도에 맞게 백엔드도 계속 바꾸고 있습니다. 에이전트 런타임, 보안 장치, 그리고 이 저장소의 많은 부분은 그들의 작업에서 왔습니다.
 
-```bash
-ironclaw onboard
-```
+인터페이스는 [Rune](https://github.com/anomalyco/rune)을 씁니다. 앱의 이전 버전은 Zed를 위해 개발된 Rust UI 프레임워크인 [GPUI](https://www.gpui.rs/)로 만들었고, `archive/gpui` 브랜치(태그 `gpui-final`)에 보관되어 있습니다. computer-use 헬퍼는 [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus)에서 왔습니다. ZLO가 다른 컴퓨터에 연결하는 방식은 [T3 Code](https://github.com/pingdotgg/t3code)의 원격 환경을 따르며, 호스팅된 릴레이 대신 Tailscale을 씁니다.
 
-마법사는 데이터베이스 연결, NEAR AI 인증 (브라우저 OAuth를 통해),
-그리고 비밀 암호화 (시스템 키체인 사용)를 처리합니다. 설정은 연결된
-데이터베이스에 저장됩니다. 부트스트랩 변수 (예: `DATABASE_URL`, `LLM_BACKEND`)는
-데이터베이스가 연결되기 전에 사용할 수 있도록 `~/.ironclaw/.env`에 기록됩니다.
-
-### 대체 LLM 공급자
-
-IronClaw는 기본적으로 NEAR AI를 사용하지만 많은 LLM 공급자를 기본 지원합니다.
-내장 공급자에는 **Anthropic**, **OpenAI**, **GitHub Copilot**, **Google Gemini**, **MiniMax**,
-**Mistral**, **Ollama** (로컬)이 포함됩니다. **OpenRouter**
-(300+ 모델), **Together AI**, **Fireworks AI**, 자체 호스팅 서버 (**vLLM**,
-**LiteLLM**) 같은 OpenAI 호환 서비스도 지원됩니다.
-
-마법사에서 공급자를 선택하거나 환경 변수를 직접 설정하세요:
-
-```env
-# 예: MiniMax (내장, 204K 컨텍스트)
-LLM_BACKEND=minimax
-MINIMAX_API_KEY=...
-
-# 예: OpenAI 호환 엔드포인트
-LLM_BACKEND=openai_compatible
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_API_KEY=sk-or-...
-LLM_MODEL=anthropic/claude-sonnet-4
-```
-
-전체 공급자 가이드는 [docs/capabilities/llm-providers.md](docs/capabilities/llm-providers.md)를 참조하세요.
-
-## 보안
-
-IronClaw는 데이터를 보호하고 오용을 방지하기 위해 심층 방어를 구현합니다.
-
-### WASM 샌드박스
-
-신뢰할 수 없는 모든 도구는 격리된 WebAssembly 컨테이너에서 실행됩니다:
-
-- **권한 기반 권한** - HTTP, 비밀, 도구 호출에 대한 명시적 옵트인
-- **엔드포인트 화이트리스트** - HTTP 요청은 승인된 호스트/경로로만 전송됩니다
-- **자격 증명 주입** - 비밀은 호스트 경계에서 주입되며, WASM 코드에 절대 노출되지 않습니다
-- **누출 감지** - 비밀 유출 시도에 대해 요청과 응답을 스캔합니다
-- **속도 제한** - 남용을 방지하기 위한 도구별 요청 제한
-- **리소스 제한** - 메모리, CPU, 실행 시간 제약
-
-```
-WASM ──► 화이트리스트 ──► 누출 스캔 ──► 자격 증명 ──► 실행 ──► 누출 스캔 ──► WASM
-         검증기            (요청)         주입기         요청       (응답)
-```
-
-### 프롬프트 인젝션 방어
-
-외부 콘텐츠는 여러 보안 계층을 통과합니다:
-
-- 인젝션 시도의 패턴 기반 감지
-- 콘텐츠 정화 및 이스케이핑
-- 심각도 수준이 있는 정책 규칙 (차단/경고/검토/정화)
-- 안전한 LLM 컨텍스트 주입을 위한 도구 출력 래핑
-
-### 데이터 보호
-
-- 모든 데이터는 로컬 PostgreSQL 데이터베이스에 저장됩니다
-- 비밀은 AES-256-GCM으로 암호화됩니다
-- 텔레메트리, 분석, 데이터 공유 없음
-- 모든 도구 실행에 대한 전체 감사 로그
-
-## 아키텍처
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                          채널                                  │
-│  ┌──────┐  ┌──────┐   ┌─────────────┐  ┌─────────────┐         │
-│  │ REPL │  │ HTTP │   │ WASM 채널   │  │ 웹 게이트웨이│         │
-│  └──┬───┘  └──┬───┘   └──────┬──────┘  │ (SSE + WS)  │         │
-│     │         │              │         └──────┬──────┘         │
-│     └─────────┴──────────────┴────────────────┘                │
-│                              │                                 │
-│                    ┌─────────▼─────────┐                       │
-│                    │   에이전트 루프   │  의도 라우팅         │
-│                    └────┬──────────┬───┘                       │
-│                         │          │                           │
-│              ┌──────────▼────┐  ┌──▼───────────────┐           │
-│              │  스케줄러     │  │  루틴 엔진       │           │
-│              │ (병렬 작업)   │  │ (cron, 이벤트, wh)│          │
-│              └──────┬────────┘  └────────┬─────────┘           │
-│                     │                    │                     │
-│       ┌─────────────┼────────────────────┘                     │
-│       │             │                                          │
-│   ┌───▼─────┐  ┌────▼────────────────┐                         │
-│   │ 로컬    │  │   오케스트레이터    │                         │
-│   │ 워커    │  │  ┌───────────────┐  │                         │
-│   │(인프로세스)│ │ │Docker 샌드박스│ │                         │
-│   └───┬─────┘  │  │   컨테이너    │  │                         │
-│       │        │  │ ┌───────────┐ │  │                         │
-│       │        │  │ │Worker / CC│ │  │                         │
-│       │        │  │ └───────────┘ │  │                         │
-│       │        │  └───────────────┘  │                         │
-│       │        └─────────┬───────────┘                         │
-│       └──────────────────┤                                     │
-│                          │                                     │
-│              ┌───────────▼──────────┐                          │
-│              │   도구 레지스트리    │                          │
-│              │  내장, MCP, WASM     │                          │
-│              └──────────────────────┘                          │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### 핵심 구성 요소
-
-| 구성 요소 | 목적 |
-|-----------|---------|
-| **에이전트 루프** | 주요 메시지 처리 및 작업 조정 |
-| **라우터** | 사용자 의도 분류 (명령, 쿼리, 작업) |
-| **스케줄러** | 우선순위가 있는 병렬 작업 실행 관리 |
-| **워커** | LLM 추론과 도구 호출로 작업 실행 |
-| **오케스트레이터** | 컨테이너 라이프사이클, LLM 프록시, 작업별 인증 |
-| **웹 게이트웨이** | 채팅, 메모리, 작업, 로그, 확장, 루틴이 있는 브라우저 UI |
-| **루틴 엔진** | 예약된 (cron) 및 반응형 (이벤트, 웹훅) 백그라운드 작업 |
-| **워크스페이스** | 하이브리드 검색이 있는 영구 메모리 |
-| **안전 계층** | 프롬프트 인젝션 방어 및 콘텐츠 정화 |
-
-## 사용법
-
-Engine v2는 현재 옵트인입니다. 기존 에이전트 루프 대신 새 엔진을 사용하려면 `ENGINE_V2=true`를 설정해서 IronClaw를 시작하세요.
-
-```bash
-# 첫 설정 (데이터베이스, 인증 등 구성)
-ironclaw onboard
-
-# 설치된 바이너리 시작
-ironclaw
-
-# Engine v2로 설치된 바이너리 시작
-ENGINE_V2=true ironclaw
-
-# 소스에서 대화형 REPL 시작
-cargo run
-
-# 소스에서 Engine v2 대화형 REPL 시작
-ENGINE_V2=true cargo run
-
-# Engine v2를 디버그 로깅과 함께 시작
-ENGINE_V2=true RUST_LOG=ironclaw=debug cargo run
-```
-
-## 개발
-
-```bash
-# 코드 포맷
-cargo fmt
-
-# 린트
-cargo clippy --all --benches --tests --examples --all-features
-
-# 테스트 실행
-createdb ironclaw_test
-cargo test
-
-# 특정 테스트 실행
-cargo test test_name
-```
-
-- **채널**: Telegram, Discord 및 기타 채널 설정은 [docs/channels/overview.mdx](docs/channels/overview.mdx)를 참조하세요.
-
-## OpenClaw 역사
-
-IronClaw는 [OpenClaw](https://github.com/openclaw/openclaw)에서 영감을 받은 Rust 재구현입니다. 전체 추적 매트릭스는 [FEATURE_PARITY.md](FEATURE_PARITY.md)를 참조하세요.
-
-주요 차이점:
-
-- **Rust vs TypeScript** - 네이티브 성능, 메모리 안전, 단일 바이너리
-- **WASM 샌드박스 vs Docker** - 가벼운 권한 기반 보안
-- **PostgreSQL vs SQLite** - 프로덕션 준비된 영속성
-- **보안 우선 설계** - 다중 방어 계층, 자격 증명 보호
+이 저장소는 제 프로젝트이며, IronClaw나 NEAR AI의 공식 릴리스가 아닙니다.
 
 ## 라이선스
 
-다음 중 하나를 선택하여 라이선스가 부여됩니다:
+다음 중 하나를 선택해 사용할 수 있습니다.
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
 
-원하는 대로 선택할 수 있습니다.
+업스트림 라이선스와 저작자 표시는 유지됩니다. 함께 들어 있는 의존성과 computer-use 헬퍼에는 각자의 라이선스가 있습니다.
