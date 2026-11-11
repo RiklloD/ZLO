@@ -171,7 +171,9 @@ impl CheckpointStage {
     }
 
     pub(super) async fn emit_progress(&self, ctx: StageContext<'_>, event: LoopProgressEvent) {
-        let _ = ctx.host.emit_loop_progress(event).await;
+        if let Err(error) = ctx.host.emit_loop_progress(event).await {
+            tracing::debug!(error = %error, "loop progress event emit failed");
+        }
     }
 
     /// Append recovery evidence before the recovery transition can continue.

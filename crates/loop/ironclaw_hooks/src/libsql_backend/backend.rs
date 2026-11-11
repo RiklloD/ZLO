@@ -195,7 +195,9 @@ impl LibSqlPredicateStateBackend {
                 .map(|_| ())
                 .map_err(map_err),
             Err(err) => {
-                let _ = conn.execute("ROLLBACK", ()).await;
+                if let Err(error) = conn.execute("ROLLBACK", ()).await {
+                    tracing::debug!(error = %error, "hooks migration ROLLBACK failed; returning the migration error");
+                }
                 Err(err)
             }
         }
@@ -504,7 +506,9 @@ impl PredicateStateBackend for LibSqlPredicateStateBackend {
                 Ok(dropped)
             }
             Err(err) => {
-                let _ = conn.execute("ROLLBACK", ()).await;
+                if let Err(error) = conn.execute("ROLLBACK", ()).await {
+                    tracing::debug!(error = %error, "hooks transaction ROLLBACK failed; returning the original error");
+                }
                 Err(err)
             }
         }
@@ -526,7 +530,9 @@ async fn finish_txn<T>(
             Ok(value)
         }
         Err(err) => {
-            let _ = conn.execute("ROLLBACK", ()).await;
+            if let Err(error) = conn.execute("ROLLBACK", ()).await {
+                tracing::debug!(error = %error, "hooks transaction ROLLBACK failed; returning the original error");
+            }
             Err(err)
         }
     }

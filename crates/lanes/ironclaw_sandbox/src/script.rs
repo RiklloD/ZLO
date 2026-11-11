@@ -496,12 +496,17 @@ fn execute_docker_request(
             break status;
         }
         if started.elapsed() >= timeout {
+            // silent-ok: best-effort kill of a timed-out script; the timeout is returned below
             let _ = child.kill();
+            // silent-ok: reaping the child killed just above
             let _ = child.wait();
             if let Some(stdin_writer) = stdin_writer.take() {
+                // silent-ok: a panicked pipe thread only loses output of a script that already timed out
                 let _ = stdin_writer.join();
             }
+            // silent-ok: a panicked pipe thread only loses output of a script that already timed out
             let _ = stdout_reader.join();
+            // silent-ok: a panicked pipe thread only loses output of a script that already timed out
             let _ = stderr_reader.join();
             return Err(format!(
                 "script timed out after {} ms",
@@ -595,7 +600,9 @@ fn release_after_failure<Budget>(
 where
     Budget: RuntimeResourceBudget + ?Sized,
 {
-    let _ = budget.release(reservation_id);
+    if let Err(error) = budget.release(reservation_id) {
+        tracing::debug!(error = %error, "releasing the script resource reservation after failure failed");
+    }
     original
 }
 

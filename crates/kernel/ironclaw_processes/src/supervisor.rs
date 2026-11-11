@@ -356,8 +356,10 @@ impl ProcessSupervisorHandle {
     }
 
     pub async fn shutdown(mut self) {
+        // silent-ok: no receiver means the supervisor already stopped
         let _ = self.shutdown_tx.send(true);
         if let Some(supervisor) = self.supervisor.take() {
+            // silent-ok: joining only waits for the supervisor to stop
             let _ = supervisor.await;
         }
     }
@@ -365,6 +367,7 @@ impl ProcessSupervisorHandle {
 
 impl Drop for ProcessSupervisorHandle {
     fn drop(&mut self) {
+        // silent-ok: no receiver means the supervisor already stopped
         let _ = self.shutdown_tx.send(true);
     }
 }
@@ -699,6 +702,7 @@ fn spawn_executor(
                 relinquish(&runtime, &identity).await;
             }
             drop(permit);
+            // silent-ok: a closed command channel means the supervisor is shutting down
             let _ = command_tx.send(SupervisorCommand::Drain).await;
             process_id
         }
@@ -894,6 +898,7 @@ fn static_failure(category: &'static str) -> Option<SanitizedFailure> {
 fn schedule_retry(command_tx: mpsc::Sender<SupervisorCommand>, delay: Duration) {
     tokio::spawn(async move {
         sleep(delay).await;
+        // silent-ok: a closed command channel means the supervisor is shutting down
         let _ = command_tx.send(SupervisorCommand::RetryDrain).await;
     });
 }

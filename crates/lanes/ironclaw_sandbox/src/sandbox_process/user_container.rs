@@ -104,8 +104,10 @@ impl UserContainerSweeper {
     }
 
     pub(super) async fn shutdown(&self) {
+        // silent-ok: no receiver means the sweeper already stopped
         let _ = self.shutdown.send(true);
         if let Some(task) = self.take_task() {
+            // silent-ok: joining only waits for the sweeper to stop
             let _ = task.await;
         }
     }
@@ -113,6 +115,7 @@ impl UserContainerSweeper {
 
 impl Drop for UserContainerSweeper {
     fn drop(&mut self) {
+        // silent-ok: no receiver means the sweeper already stopped
         let _ = self.shutdown.send(true);
         if let Some(task) = self.take_task() {
             task.abort();

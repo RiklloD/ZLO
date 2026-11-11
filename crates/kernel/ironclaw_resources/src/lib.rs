@@ -1087,6 +1087,7 @@ fn write_file_snapshot_atomically(
         .and_then(|()| replace_file_atomically(&temp_path, path))
         .and_then(|()| sync_parent_dir(path));
     if write_result.is_err() {
+        // silent-ok: temp-file cleanup; the write error is returned
         let _ = std::fs::remove_file(&temp_path);
     }
     write_result

@@ -527,6 +527,7 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
             Ok(())
         })();
         if result.is_err() {
+            // silent-ok: temp-file cleanup; the original write error is returned
             let _ = std::fs::remove_file(&temp);
         }
         return result;

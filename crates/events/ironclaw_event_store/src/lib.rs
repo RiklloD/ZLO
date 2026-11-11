@@ -1651,6 +1651,7 @@ where
         // exclusive lock held), we still fsync to flush whatever state the
         // OS already has and return the original error.
         let _ = file.set_len(pre_append_len);
+        // silent-ok: best-effort flush of the truncate above; the original error is returned
         let _ = file.sync_data();
         return Err(error);
     }
@@ -1660,6 +1661,7 @@ where
         // fsync the directory entry on POSIX. Best-effort on platforms that
         // don't support it (e.g. Windows handles this implicitly).
         if let Ok(dir) = std::fs::File::open(parent) {
+            // silent-ok: directory fsync is unsupported on some platforms (see above)
             let _ = dir.sync_all();
         }
     }

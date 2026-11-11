@@ -18,8 +18,8 @@ use deadpool_postgres::Pool;
 use ironclaw_hooks::identity::{ExtensionId, HookId, HookLocalId, HookVersion};
 use ironclaw_hooks::postgres_backend::PostgresPredicateStateBackend;
 use ironclaw_hooks::predicate_state::{
-    InvocationKey, MAX_KEYS_PER_TENANT, MAX_SAMPLES_PER_KEY, PredicateEventId,
-    PredicateStateBackend, ValueKey,
+    InvocationKey, MAX_KEYS_PER_TENANT, MAX_SAMPLES_PER_KEY, PredicateBackendError,
+    PredicateEventId, PredicateStateBackend, ValueKey,
 };
 use ironclaw_host_api::ids::TenantId;
 use rust_decimal::Decimal;
@@ -243,8 +243,6 @@ async fn cross_host_value_replay_sums_once() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn per_key_sample_cap_fails_closed_under_flood() {
-    use ironclaw_hooks::predicate_state::PredicateBackendError;
-
     let (url, _guard) = guarded!();
     let hs = hosts(&url, 1).await;
     let backend = &hs[0];
@@ -406,9 +404,13 @@ async fn scope_lru_eviction_serializes_against_victim_writes_no_deadlock() {
             // A fresh key may itself be evicted by a later pass; both Ok and
             // a benign overflow are acceptable — what must NOT happen is a
             // hang or an Unavailable (deadlock/serialization) error.
-            let _ = backend
+            let result = backend
                 .record_invocation(&k, &ev(&format!("fresh-e{i}")), ts, window)
                 .await;
+            assert!(
+                !matches!(result, Err(PredicateBackendError::Unavailable(_))),
+                "fresh record must not fail as Unavailable (deadlock/serialization): {result:?}"
+            );
         }));
     }
     for i in 0..HOT_HITS {
@@ -418,9 +420,13 @@ async fn scope_lru_eviction_serializes_against_victim_writes_no_deadlock() {
         // ids so each is a real insert (subject to the per-key sample cap).
         let ts = base() + chrono::Duration::seconds(20_000 + i as i64);
         handles.push(tokio::spawn(async move {
-            let _ = backend
+            let result = backend
                 .record_invocation(&hot, &ev(&format!("hot-e{i}")), ts, window)
                 .await;
+            assert!(
+                !matches!(result, Err(PredicateBackendError::Unavailable(_))),
+                "hot record must not fail as Unavailable (deadlock/serialization): {result:?}"
+            );
         }));
     }
 

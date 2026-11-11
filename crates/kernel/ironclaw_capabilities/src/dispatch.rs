@@ -354,7 +354,21 @@ where
             "runtime dispatcher observed event"
         );
         if let Some(sink) = self.event_sink.as_ref() {
-            let _ = sink.as_ref().emit(event).await;
+            let event_id = event.event_id;
+            let event_kind = event.kind;
+            let capability_id = event.capability_id.clone();
+            // Best-effort: a failed runtime-event write must not change the
+            // dispatch outcome, but it must stay observable. `debug!` only —
+            // `info!`/`warn!` corrupt the REPL/TUI.
+            if let Err(error) = sink.as_ref().emit(event).await {
+                tracing::debug!(
+                    event_id = %event_id.as_uuid(),
+                    event_kind = ?event_kind,
+                    capability_id = %capability_id,
+                    error = %error,
+                    "runtime event emit failed"
+                );
+            }
         }
         Ok(())
     }

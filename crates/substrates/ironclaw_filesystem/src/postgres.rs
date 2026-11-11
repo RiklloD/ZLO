@@ -1507,7 +1507,9 @@ impl StorageTxn for PostgresStorageTxn {
             }
             Err(error) => {
                 let mapped = db_error(self.prefix.clone(), FilesystemOperation::BeginTxn, error);
-                let _ = client.batch_execute("ROLLBACK").await;
+                if let Err(error) = client.batch_execute("ROLLBACK").await {
+                    tracing::debug!(error = %error, "Postgres ROLLBACK after failed BEGIN failed");
+                }
                 self.active = false;
                 Err(mapped)
             }
@@ -1518,7 +1520,9 @@ impl StorageTxn for PostgresStorageTxn {
         if let Some(client) = self.client.take()
             && self.active
         {
-            let _ = client.batch_execute("ROLLBACK").await;
+            if let Err(error) = client.batch_execute("ROLLBACK").await {
+                tracing::debug!(error = %error, "Postgres ROLLBACK of an abandoned transaction failed");
+            }
             self.active = false;
         }
     }
@@ -1584,7 +1588,9 @@ impl Drop for PostgresStorageTxn {
         }
         if let Some(client) = self.client.take() {
             tokio::spawn(async move {
-                let _ = client.batch_execute("ROLLBACK").await;
+                if let Err(error) = client.batch_execute("ROLLBACK").await {
+                    tracing::debug!(error = %error, "Postgres ROLLBACK of a dropped transaction failed");
+                }
             });
         }
     }

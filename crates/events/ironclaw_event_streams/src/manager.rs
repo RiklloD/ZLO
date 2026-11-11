@@ -468,6 +468,7 @@ async fn forward_subscription_items(
         }
     }
     if let Some(item) = initial_terminal_item {
+        // silent-ok: the subscriber may have disconnected; nothing else to deliver
         let _ = sender.send(item).await;
         return;
     }

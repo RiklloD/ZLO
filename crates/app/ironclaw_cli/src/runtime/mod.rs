@@ -53,6 +53,7 @@ pub(crate) fn init_tracing() {
         "IRONCLAW_REBORN_OPERATOR_LOG",
         "info,ironclaw_turn_runner=debug,ironclaw_host_runtime=debug",
     );
+    // silent-ok: a global subscriber may already be installed (tests, embedders); keep it
     let _ = tracing_subscriber::registry()
         .with(
             fmt::layer()
@@ -302,6 +303,7 @@ async fn run_repl_loop(
         if stdin_is_tty {
             // Prompt to stderr so stdout stays clean for piping.
             eprint!("> ");
+            // silent-ok: the prompt is cosmetic; a closed stderr must not stop the REPL
             let _ = std::io::stderr().flush();
         }
         tokio::select! {

@@ -173,6 +173,7 @@ where
                 .await;
             match publish_result {
                 Ok(()) => {
+                    // silent-ok: a racing emitter already marked the milestone; set-once is the goal
                     let _ = emitted.set(());
                 }
                 Err(error) => {

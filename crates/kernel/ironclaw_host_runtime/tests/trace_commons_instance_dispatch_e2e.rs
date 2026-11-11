@@ -100,6 +100,10 @@ async fn instance_only_user_passes_dispatch_gate_and_mints_login_link() {
             )
     };
     tokio::spawn(async move {
+        #[allow(
+            clippy::let_underscore_must_use,
+            reason = "fake server task; requests against it assert the behavior"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 

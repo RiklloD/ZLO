@@ -53,14 +53,24 @@ dead_code = "warn"
 # fails the build instead of hiding a failure. Verified zero current fires
 # across the workspace, so this only guards against *future* silent drops.
 #
-# Companion clippy lints that catch the other swallow idioms are deferred to
-# follow-up PRs because they need a real cleanup first (measured on this tree):
-#   * `clippy::let_underscore_must_use` — 67 sites (`let _ = <must_use>`), a mix
-#     of safe discards and genuine swallows (e.g. an ignored async delete).
-#   * `clippy::map_err_ignore` — ~861 sites; a blanket deny is wrong here since
-#     `.claude/rules/error-handling.md` permits `map_err` to a *specific* typed
-#     error and only forbids cause-dropping ones. Needs a scoped sweep.
+# Still deferred: `clippy::map_err_ignore` — ~861 sites; a blanket deny is
+# wrong here since `.claude/rules/error-handling.md` permits `map_err` to a
+# *specific* typed error and only forbids cause-dropping ones. Needs a scoped
+# sweep.
 unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# `let _ = <must_use>` is the other swallow idiom. Triaged 2026-11-11: each
+# production site in `crates/` now either logs its failure at `debug!` (never
+# `info!`/`warn!` — they corrupt the REPL/TUI), propagates it, or keeps the
+# discard with a `// silent-ok: <why>` comment (a send to a possibly-closed
+# channel, a set-once cell, reaping a killed child, temp-file cleanup after
+# the original error is returned). Like every `[workspace.lints]` entry this
+# binds only crates that opt in with `[lints] workspace = true`; in those,
+# a kept discard carries `#[allow(clippy::let_underscore_must_use, reason =
+# "...")]` on the statement. One scoped module allow remains:
+# `ironclaw_composition`'s `mod runtime` (held by a parallel refactor).
+let_underscore_must_use = "deny"
 
 [package]
 # Tier B (see docs/internal/plans/2026-07-02-reborn-internal-module-refactor.md §8):

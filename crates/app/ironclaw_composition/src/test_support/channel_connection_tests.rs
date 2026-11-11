@@ -135,6 +135,10 @@ pub fn build_channel_connection_for_test(
     let service = match disconnect_slot.get() {
         Some(existing) => Arc::clone(existing),
         None => {
+            #[allow(
+                clippy::let_underscore_must_use,
+                reason = "the slot was observed empty just above; a racing fill holds an equivalent service"
+            )]
             let _ = disconnect_slot.set(Arc::clone(&service));
             service
         }

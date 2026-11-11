@@ -101,7 +101,7 @@ impl InMemoryConversationServices {
         external_actor_ref: ExternalActorRef,
         user_id: UserId,
     ) {
-        let _ = self
+        if let Err(error) = self
             .try_pair_external_actor(
                 tenant_id,
                 adapter_kind,
@@ -109,7 +109,10 @@ impl InMemoryConversationServices {
                 external_actor_ref,
                 user_id,
             )
-            .await;
+            .await
+        {
+            tracing::debug!(error = %error, "pair_external_actor failed; use try_pair_external_actor to observe the error");
+        }
     }
 
     pub async fn try_pair_external_actor(
@@ -218,14 +221,17 @@ impl InMemoryConversationServices {
         adapter_installation_id: &AdapterInstallationId,
         external_actor_ref: &ExternalActorRef,
     ) {
-        let _ = self
+        if let Err(error) = self
             .try_unpair_external_actor(
                 tenant_id,
                 adapter_kind,
                 adapter_installation_id,
                 external_actor_ref,
             )
-            .await;
+            .await
+        {
+            tracing::debug!(error = %error, "unpair_external_actor failed; use try_unpair_external_actor to observe the error");
+        }
     }
 
     pub async fn try_unpair_external_actor(

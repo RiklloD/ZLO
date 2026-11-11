@@ -268,6 +268,7 @@ fn persist_refreshed_tokens(
     let tmp_path = path.with_extension("json.tmp");
     std::fs::write(&tmp_path, updated)?;
     if let Err(e) = std::fs::rename(&tmp_path, path) {
+        // silent-ok: temp-file cleanup; the rename error is returned
         let _ = std::fs::remove_file(&tmp_path);
         return Err(Box::new(e));
     }

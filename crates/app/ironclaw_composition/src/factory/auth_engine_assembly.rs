@@ -22,7 +22,11 @@ pub(super) struct AdminConfigurationCredentialSlot {
 
 impl AdminConfigurationCredentialSlot {
     pub(super) fn fill(&self, service: Arc<ComposedExtensionAdminConfigurationResolver>) {
-        let _ = self.inner.set(service);
+        if let Err(_already_filled) = self.inner.set(service) {
+            tracing::debug!(
+                "admin configuration credential slot already filled; keeping the first resolver"
+            );
+        }
     }
 
     fn get(&self) -> Option<Arc<ComposedExtensionAdminConfigurationResolver>> {

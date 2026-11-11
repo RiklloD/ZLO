@@ -314,6 +314,7 @@ impl HistoryScanner {
             Some(body) => {
                 if let Some(file) = &self.price_file {
                     if let Some(dir) = file.parent() {
+                        // silent-ok: a missing directory surfaces as the write error handled below
                         let _ = tokio::fs::create_dir_all(dir).await;
                     }
                     if let Err(error) = tokio::fs::write(file, &body).await {

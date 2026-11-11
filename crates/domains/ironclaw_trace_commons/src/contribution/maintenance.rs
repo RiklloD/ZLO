@@ -892,6 +892,7 @@ pub(crate) fn write_json_file<T: Serialize + ?Sized>(
         })?
     };
     if let Err(error) = temp.write_all(body.as_bytes()) {
+        // silent-ok: temp-file cleanup; the write error is returned
         let _ = std::fs::remove_file(&temp_path);
         return Err(anyhow::anyhow!(
             "failed to write temporary {} for {}: {}",
@@ -901,6 +902,7 @@ pub(crate) fn write_json_file<T: Serialize + ?Sized>(
         ));
     }
     if let Err(error) = temp.sync_all() {
+        // silent-ok: temp-file cleanup; the sync error is returned
         let _ = std::fs::remove_file(&temp_path);
         return Err(anyhow::anyhow!(
             "failed to sync temporary {} for {}: {}",
@@ -911,6 +913,7 @@ pub(crate) fn write_json_file<T: Serialize + ?Sized>(
     }
     drop(temp);
     std::fs::rename(&temp_path, path).map_err(|e| {
+        // silent-ok: temp-file cleanup; the rename error is returned
         let _ = std::fs::remove_file(&temp_path);
         anyhow::anyhow!("failed to install {} {}: {}", label, path.display(), e)
     })?;

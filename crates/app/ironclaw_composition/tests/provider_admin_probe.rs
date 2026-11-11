@@ -44,6 +44,10 @@ async fn spawn_models_stub(
         };
         let mut reader = BufReader::new(sock);
         let mut request_line = String::new();
+        #[allow(
+            clippy::let_underscore_must_use,
+            reason = "fake server; the client-side assertions catch a broken exchange"
+        )]
         let _ = reader.read_line(&mut request_line).await;
         let mut authorization = None;
         loop {
@@ -61,6 +65,10 @@ async fn spawn_models_stub(
                 authorization = Some(value.trim().to_string());
             }
         }
+        #[allow(
+            clippy::let_underscore_must_use,
+            reason = "the test may have stopped listening for captured requests"
+        )]
         let _ = tx.send(CapturedProbeRequest {
             method_and_path: request_line.trim_end_matches(['\r', '\n']).to_string(),
             authorization,
@@ -70,7 +78,15 @@ async fn spawn_models_stub(
             body.len()
         );
         let mut sock = reader.into_inner();
+        #[allow(
+            clippy::let_underscore_must_use,
+            reason = "fake server; the client-side assertions catch a broken exchange"
+        )]
         let _ = sock.write_all(response.as_bytes()).await;
+        #[allow(
+            clippy::let_underscore_must_use,
+            reason = "fake server; the client-side assertions catch a broken exchange"
+        )]
         let _ = sock.flush().await;
     });
     (base_url, rx)

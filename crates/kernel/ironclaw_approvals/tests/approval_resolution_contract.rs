@@ -632,6 +632,7 @@ async fn denying_with_feedback_records_it_on_the_audit_event_and_still_denies() 
 }
 
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn approval_audit_event_sink_failure_does_not_change_resolution_outcome() {
     let approvals = in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
@@ -676,6 +677,11 @@ async fn approval_audit_event_sink_failure_does_not_change_resolution_outcome() 
         ApprovalStatus::Approved
     );
     assert_eq!(leases.get(&scope, lease.grant.id).await, Some(lease));
+    // The best-effort audit write must not vanish: its failure is logged with
+    // the sink error and the approval request it belonged to.
+    assert!(logs_contain("approval audit emit failed"));
+    assert!(logs_contain("audit sink unavailable"));
+    assert!(logs_contain(&request_id.to_string()));
 }
 
 #[tokio::test]

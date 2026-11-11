@@ -361,7 +361,26 @@ where
 
     async fn emit_audit_best_effort(&self, record: ironclaw_host_api::audit::AuditEnvelope) {
         if let Some(sink) = self.audit_sink {
-            let _ = sink.emit_audit(record).await;
+            let event_id = record.event_id;
+            let stage = record.stage;
+            let invocation_id = record.invocation_id;
+            let approval_request_id = record.approval_request_id;
+            let decision = record.decision.kind.clone();
+            // Best-effort: a failed audit write must not change the approval
+            // outcome, but it must stay observable. `debug!` only —
+            // `info!`/`warn!` corrupt the REPL/TUI. Only identifiers are
+            // logged, never the action payload.
+            if let Err(error) = sink.emit_audit(record).await {
+                tracing::debug!(
+                    event_id = %event_id,
+                    stage = ?stage,
+                    invocation_id = %invocation_id,
+                    approval_request_id = ?approval_request_id.map(|id| id.to_string()),
+                    decision = %decision,
+                    error = %error,
+                    "approval audit emit failed"
+                );
+            }
         }
     }
 }

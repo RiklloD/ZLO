@@ -177,6 +177,7 @@ impl GithubCopilotProvider {
             tracing::warn!(
                 "Copilot: 401 Unauthorized — refreshing the session token and retrying once"
             );
+            // silent-ok: draining the 401 body before retrying; its content is unused
             let _ = response.text().await;
             self.token_manager.invalidate().await;
             let refreshed = self

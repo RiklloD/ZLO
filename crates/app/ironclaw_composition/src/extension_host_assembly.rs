@@ -378,7 +378,7 @@ pub(crate) async fn build_backend_channel_pairing(
         registry.register(service);
     }
 
-    let _ = disconnect_slot.set(Arc::new(
+    if let Err(_already_filled) = disconnect_slot.set(Arc::new(
         ironclaw_extension_host::channel_connection::GenericChannelConnectionService::new(
             scope.tenant_id,
             Vec::new(),
@@ -392,7 +392,9 @@ pub(crate) async fn build_backend_channel_pairing(
             Some(dm_targets),
             Some(Arc::clone(&registry)),
         ),
-    ));
+    )) {
+        tracing::debug!("channel disconnect slot already filled; keeping the existing service");
+    }
 
     Ok(registry)
 }

@@ -1708,7 +1708,9 @@ impl StorageTxn for LibSqlStorageTxn {
             Err(error) => {
                 let mapped =
                     libsql_db_error(self.prefix.clone(), FilesystemOperation::BeginTxn, error);
-                let _ = conn.execute("ROLLBACK", ()).await;
+                if let Err(error) = conn.execute("ROLLBACK", ()).await {
+                    tracing::debug!(error = %error, "libSQL ROLLBACK after failed BEGIN failed");
+                }
                 self.active = false;
                 Err(mapped)
             }
@@ -1719,7 +1721,9 @@ impl StorageTxn for LibSqlStorageTxn {
         if let Some(conn) = self.conn.take()
             && self.active
         {
-            let _ = conn.execute("ROLLBACK", ()).await;
+            if let Err(error) = conn.execute("ROLLBACK", ()).await {
+                tracing::debug!(error = %error, "libSQL ROLLBACK of an abandoned transaction failed");
+            }
             self.active = false;
         }
     }

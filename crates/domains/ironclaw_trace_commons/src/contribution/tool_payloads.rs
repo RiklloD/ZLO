@@ -432,8 +432,10 @@ pub(crate) fn sanitize_private_url(raw_url: &str, label: &str) -> String {
     url.set_query(None);
     url.set_fragment(None);
     if !url.username().is_empty() {
+        // silent-ok: only fails for cannot-be-a-base URLs, which carry no userinfo
         let _ = url.set_username("");
     }
+    // silent-ok: only fails for cannot-be-a-base URLs, which carry no userinfo
     let _ = url.set_password(None);
     url.to_string()
 }
