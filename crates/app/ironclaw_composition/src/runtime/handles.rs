@@ -193,16 +193,9 @@ impl RebornRuntime {
     pub(crate) fn webui_llm_reload_trigger(
         &self,
     ) -> Option<Arc<dyn ironclaw_operator::LlmReloadTrigger>> {
-        let boot = self.boot.as_ref()?;
-        let parts = self.llm_reload.as_ref()?;
-        Some(Arc::new(ironclaw_operator::RebornLlmReloadAdapter::new(
-            boot.clone(),
-            Arc::clone(&parts.reload_handle),
-            Arc::clone(&parts.session),
-            ironclaw_operator::LlmKeyStore::new(crate::RuntimeOperatorSecretValueStore::shared(
-                self.secret_store(),
-            )),
-        )))
+        self.live_llm_default
+            .clone()
+            .map(|live| live as Arc<dyn ironclaw_operator::LlmReloadTrigger>)
     }
 
     /// Read-only reader exposing the live active/default model id so the WebUI
@@ -224,6 +217,32 @@ impl RebornRuntime {
     ) -> Option<Arc<dyn ironclaw_product_contracts::operator_llm::NativeModelRoutes>> {
         let routes = self.llm_reload.as_ref()?.provider_routes.clone()?;
         Some(routes as _)
+    }
+
+    /// The live `[llm.default]` seam a `config.toml` reloader applies
+    /// through (`zlo serve` builds its `RebornConfigReloader` over it). Shared
+    /// with Settings and the boot apply so every path is serialized and sees
+    /// what the others applied. `None` without a boot config or LLM seam.
+    pub fn live_llm_default(&self) -> Option<Arc<ironclaw_operator::LiveLlmDefault>> {
+        self.live_llm_default.clone()
+    }
+
+    /// A `config.toml` reloader for this runtime. `boot_file` must be the
+    /// snapshot the caller's boot-time decisions were made from (`zlo serve`
+    /// passes the file it parsed at startup); it is the restart-required
+    /// baseline and is never re-read. `[llm.default]` applies through
+    /// [`Self::live_llm_default`]. `None` without a boot config. Only the
+    /// serving process builds one; `run` has nothing to reload.
+    pub fn config_reloader(
+        &self,
+        boot_file: Option<ironclaw_config::RebornConfigFile>,
+    ) -> Option<Arc<ironclaw_operator::RebornConfigReloader>> {
+        let boot = self.boot.as_ref()?;
+        Some(Arc::new(ironclaw_operator::RebornConfigReloader::new(
+            boot.home().config_file_path(),
+            boot_file,
+            self.live_llm_default(),
+        )))
     }
 
     /// Diagnostic id for the no-profile run profile selected by this runtime.

@@ -16,6 +16,7 @@ pub(crate) mod remote;
 pub(crate) mod repl;
 pub(crate) mod run;
 pub(crate) mod serve;
+pub(crate) mod serve_reload;
 pub(crate) mod serve_remote;
 pub(crate) mod serve_sso;
 pub(crate) mod service;

@@ -137,11 +137,11 @@ impl ServeCommand {
                 confirm_host_access: self.confirm_host_access,
             },
         )?;
-        let runtime_input = built.inner;
+        let crate::runtime::BuiltRuntimeInput {
+            inner: runtime_input,
+            config_file,
+        } = built;
         let boot_config = context.boot_config();
-        let config_file =
-            ironclaw_config::RebornConfigFile::load(&boot_config.home().config_file_path())
-                .map_err(anyhow::Error::from)?;
         if let Some(file) = config_file.as_ref() {
             reject_retired_config_sections(file, &boot_config.home().config_file_path())?;
         }
@@ -424,6 +424,8 @@ impl ServeCommand {
             .build()
             .context("failed to build tokio runtime for `serve`")?;
 
+        // The reload baseline: this same parse, not a later re-read.
+        let reload_boot_file = config_file.clone();
         rt.block_on(async move {
             let trigger_poller_enabled = runtime_input.trigger_poller.enabled;
             let sso_enabled = sso_startup.is_some();
@@ -672,6 +674,25 @@ impl ServeCommand {
             let update_checks = tokio::spawn(crate::commands::update::auto_check(Arc::clone(
                 &self_update,
             )));
+            // `kill -HUP <pid>` re-reads config.toml: live keys apply,
+            // boot-time keys are reported as restart-required. Only when
+            // detached from a terminal (the installed service): attached, a
+            // hangup must keep stopping the server. The baseline is the
+            // snapshot this boot was built from, never a re-read.
+            let config_reload = if crate::commands::serve_reload::should_reload_on_sighup(
+                std::io::IsTerminal::is_terminal(&std::io::stdin()),
+            ) {
+                runtime
+                    .config_reloader(reload_boot_file)
+                    .and_then(crate::commands::serve_reload::spawn_sighup_config_reload)
+            } else {
+                tracing::debug!(
+                    target: crate::commands::serve_reload::CONFIG_RELOAD_LOG_TARGET,
+                    "stdin is a terminal; SIGHUP keeps its default (stop) and config reload on \
+                     SIGHUP is off"
+                );
+                None
+            };
             // Generic extension channel ingress (extension-runtime P4): one
             // mount serves `/webhooks/extensions/{extension_id}/{route_suffix}`
             // for every active extension; the route table follows the active
@@ -765,6 +786,9 @@ impl ServeCommand {
                 None => Ok(()),
             };
             update_checks.abort();
+            if let Some(config_reload) = config_reload {
+                config_reload.abort();
+            }
             public_route_drains.drain().await;
 
             // Always drain the Reborn runtime, even on serve error, so

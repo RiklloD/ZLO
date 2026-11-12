@@ -51,7 +51,7 @@ pub(crate) fn init_tracing() {
     // going to stderr — keeps terminal safety and Logs-panel visibility decoupled.
     let operator_filter = reborn_env_filter(
         "IRONCLAW_REBORN_OPERATOR_LOG",
-        "info,ironclaw_turn_runner=debug,ironclaw_host_runtime=debug",
+        "info,ironclaw_turn_runner=debug,ironclaw_host_runtime=debug,ironclaw::reborn::config_reload=debug",
     );
     // silent-ok: a global subscriber may already be installed (tests, embedders); keep it
     let _ = tracing_subscriber::registry()
@@ -649,6 +649,7 @@ pub(crate) fn build_runtime_input_with_options(
 
     Ok(BuiltRuntimeInput {
         inner: runtime_input,
+        config_file: runtime_services.config_file,
     })
 }
 
@@ -725,6 +726,11 @@ pub(crate) struct RuntimeServicesInput {
 
 pub(crate) struct BuiltRuntimeInput {
     pub(crate) inner: RebornRuntimeInput,
+    /// The `config.toml` snapshot `inner` was built from (`None` = no file).
+    /// `serve` makes its own boot decisions from this same parse and hands it
+    /// to the config reloader as the boot baseline, so nothing re-reads a
+    /// file that may have changed since.
+    pub(crate) config_file: Option<ironclaw_config::RebornConfigFile>,
 }
 
 #[derive(Clone, Debug)]

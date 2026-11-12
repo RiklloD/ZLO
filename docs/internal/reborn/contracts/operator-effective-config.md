@@ -29,6 +29,41 @@ using the API-only first-party capability
 `builtin.operator_config_set_auto_approve`, then read back the authoritative
 tenant/user-scoped setting.
 
+## Live reload of hand-edited `config.toml`
+
+Operator-config writes above already take effect live (`set_active` writes
+`[llm.default]`, then hot-swaps the provider). A hand edit of `config.toml` is
+applied by `ironclaw_operator::RebornConfigReloader::reload`, which `zlo serve`
+runs on SIGHUP (`kill -HUP <pid>`) when stdin is not a terminal (the installed
+service). Started from a terminal, SIGHUP keeps its default and stops the
+server, so closing the terminal or an SSH drop still ends it.
+
+- The file is re-parsed with the boot parser (inline-secret rejection, field
+  validation), and a retired setup key is rejected as boot would reject it. A
+  file that fails leaves the previous configuration fully in effect; the
+  report's reason is a fixed category plus byte offset — never the parser's
+  message, which can quote values, field names or enum variants.
+- Changed keys are classified by `ironclaw_config::config_key_reloadability`.
+  Only `llm.default` is live; it is applied by building the new provider chain
+  first and swapping only on success, with the API key still resolved through
+  its env var or the encrypted secret store. Clearing `[llm.default]` is
+  restart-required (the swap seam cannot unwire a provider).
+- `llm.default` is diffed against what was last applied by any path (boot,
+  Settings, login, an earlier reload) — one `ironclaw_operator::LiveLlmDefault`
+  owns that record and a lock spanning file read, resolution, key read and
+  swap, so Settings saves and reloads never interleave and a hand edit that
+  reverts a Settings change is applied.
+- Every other changed key is reported as restart-required and never applied;
+  the baseline is the snapshot `serve` booted from (never re-read), keeping its boot value, so it is reported on every
+  reload until the process restarts. Unknown future sections default to
+  restart-required.
+- Reports carry key names only and are logged at `debug` on target
+  `ironclaw::reborn::config_reload`, which the operator Logs panel captures by
+  default.
+- Provider swaps take effect per model call: a call already in flight finishes
+  on the old provider; a multi-call turn that is mid-run picks up the new
+  provider on its next call (same semantics as the Settings → Inference path).
+
 ## Precedence
 
 Responses should include precedence metadata in this order:

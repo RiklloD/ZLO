@@ -393,6 +393,11 @@ pub(super) async fn assemble_runtime(
     #[cfg(not(any(test, feature = "test-support")))]
     let (model_gateway, llm_cost_table, llm_reload) =
         build_production_model_gateway(boot_provider_factory, provider_routes).await?;
+    let live_llm_default = crate::model_gateway_assembly::live_llm_default(
+        boot.as_ref(),
+        llm_reload.as_ref(),
+        &services.secret_store,
+    );
 
     // Resolved cost table is either: the LLM-policy-derived table (real
     // LLM wired), a test override (so tests can drive deterministic
@@ -1455,6 +1460,7 @@ pub(super) async fn assemble_runtime(
         )),
         Arc::clone(&scoped_filesystem),
         llm_reload.as_ref(),
+        live_llm_default.as_ref(),
     );
     let started_channel_host = crate::extension_host_assembly::build_runtime_channel_host(
         &services,
@@ -1797,23 +1803,16 @@ pub(super) async fn assemble_runtime(
     // path the settings UI uses (see `webui_llm_reload_trigger`). Failure
     // degrades like a boot with no LLM configured: placeholder stays wired,
     // operator retries through Settings -> Inference without a restart.
-    if let (Some(boot_config), Some(reload_parts)) = (boot.as_ref(), llm_reload.as_ref()) {
-        let boot_reload_adapter = ironclaw_operator::RebornLlmReloadAdapter::new(
-            boot_config.clone(),
-            Arc::clone(&reload_parts.reload_handle),
-            Arc::clone(&reload_parts.session),
-            ironclaw_operator::LlmKeyStore::new(crate::RuntimeOperatorSecretValueStore::shared(
-                Arc::clone(&services.secret_store),
-            )),
+    // Through the shared live seam, so the slot it applies is the baseline a
+    // later `config.toml` reload diffs against.
+    if let Some(live) = live_llm_default.as_ref()
+        && let Err(error) = ironclaw_operator::LlmReloadTrigger::reload(live.as_ref()).await
+    {
+        tracing::warn!(
+            %error,
+            "boot-time LLM reload failed; the placeholder provider stays active until the \
+             next successful reload (e.g. through Settings -> Inference)"
         );
-        if let Err(error) = ironclaw_operator::LlmReloadTrigger::reload(&boot_reload_adapter).await
-        {
-            tracing::warn!(
-                %error,
-                "boot-time LLM reload failed; the placeholder provider stays active until the \
-                 next successful reload (e.g. through Settings -> Inference)"
-            );
-        }
     }
 
     let ironhub_link_state = Arc::clone(&services.ironhub_link_state);
@@ -1958,6 +1957,7 @@ pub(super) async fn assemble_runtime(
         tool_mentions,
         boot,
         llm_reload,
+        live_llm_default,
     };
     // Channel graphs begin reconciling before the canonical product surface
     // can exist. Fill their first-write-wins command handle only after the
@@ -1990,7 +1990,8 @@ pub(super) async fn assemble_runtime(
 /// feeding [`bootstrap_nearai_mcp_from_effective_llm`]'s `api_key` presence
 /// check (it inspects the config directly, not the live provider). NOT the
 /// general "stored key -> live provider" mechanism — that's
-/// [`RebornLlmReloadAdapter::reload`], invoked once after boot construction.
+/// the boot apply through `ironclaw_operator::LiveLlmDefault::reload` (which
+/// drives `RebornLlmReloadAdapter`), invoked once after boot construction.
 async fn overlay_stored_llm_key_for_nearai_mcp_bootstrap(
     llm: Option<ResolvedRebornLlm>,
     services: &RebornRuntimeStores,

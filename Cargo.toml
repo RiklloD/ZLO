@@ -569,6 +569,10 @@ name = "reborn_integration_web_access"
 path = "tests/integration/web_access.rs"
 
 [[test]]
+name = "reborn_integration_config_reload"
+path = "tests/integration/config_reload.rs"
+
+[[test]]
 name = "reborn_integration_webui_v2_product_api"
 path = "tests/integration/webui_v2_product_api.rs"
 

@@ -620,6 +620,9 @@ pub struct RebornRuntime {
     boot: Option<ironclaw_config::RebornBootConfig>,
     /// Hot-swap handle for the live LLM provider, when one was wired at boot.
     llm_reload: Option<RebornLlmReloadParts>,
+    /// The one owner of applying `[llm.default]` live (boot apply, Settings,
+    /// login flows, `config.toml` reload); present with `boot` + `llm_reload`.
+    live_llm_default: Option<Arc<ironclaw_operator::LiveLlmDefault>>,
 }
 
 impl ironclaw_extension_manager::extension_lifecycle_command::RebornExtensionLifecycleRuntime

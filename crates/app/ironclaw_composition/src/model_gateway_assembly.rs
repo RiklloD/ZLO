@@ -114,6 +114,29 @@ pub(crate) struct RebornLlmReloadParts {
     pub(crate) provider_routes: Option<Arc<ironclaw_operator::RebornProviderRoutes>>,
 }
 
+/// The single live `[llm.default]` owner for this runtime: the hot-swap
+/// adapter wrapped in the lock and applied-slot record every apply path
+/// shares. `None` without a boot config (no file to apply) or LLM seam.
+pub(crate) fn live_llm_default(
+    boot: Option<&ironclaw_config::RebornBootConfig>,
+    parts: Option<&RebornLlmReloadParts>,
+    secret_store: &Arc<dyn ironclaw_secrets::SecretStorePort>,
+) -> Option<Arc<ironclaw_operator::LiveLlmDefault>> {
+    let (boot, parts) = (boot?, parts?);
+    let swap = ironclaw_operator::RebornLlmReloadAdapter::new(
+        boot.clone(),
+        Arc::clone(&parts.reload_handle),
+        Arc::clone(&parts.session),
+        ironclaw_operator::LlmKeyStore::new(crate::RuntimeOperatorSecretValueStore::shared(
+            Arc::clone(secret_store),
+        )),
+    );
+    Some(Arc::new(ironclaw_operator::LiveLlmDefault::new(
+        boot.home().config_file_path(),
+        Arc::new(swap),
+    )))
+}
+
 async fn build_placeholder_llm_gateway(
     provider_factory: Option<ironclaw_operator::RebornProviderFactory>,
     routes: Option<ProviderRoutesInput>,
