@@ -25,6 +25,7 @@ pub(super) async fn build_production_shaped(
         trust_fixture_extensions_for_test,
         memory_binding_policy,
         memory_provider_connection,
+        embeddings,
         ..
     } = input;
     let owner_id = deployment.owner_id.clone();
@@ -48,10 +49,16 @@ pub(super) async fn build_production_shaped(
             root.hash(&mut hasher);
             memory_provider_connection.app_id = Some(format!("ws-{:016x}", hasher.finish()));
         }
-        crate::resolve_memory_provider(
+        let resolved = crate::resolve_memory_provider(
             memory_binding_policy,
             &crate::MemoryProviderDeps::for_third_party(memory_provider_connection),
-        )?
+        )?;
+        // `[embeddings]` configured: native memory search becomes hybrid.
+        match embeddings.as_ref() {
+            Some(embeddings) => resolved
+                .with_native_embedder(crate::embeddings::memory_embedder(embeddings.provider())?),
+            None => resolved,
+        }
     };
     let profile = deployment.profile();
     let wiring_config = production_config(
@@ -80,6 +87,7 @@ pub(super) async fn build_production_shaped(
         local_runtime_identity,
         process_concurrency_limits,
         resolved_memory: resolved_memory_provider,
+        embeddings,
         scheduler_wake_wiring,
         account_setup_descriptors,
         nearai_mcp_bootstrap_config,
@@ -416,6 +424,9 @@ pub(super) struct RebornProductionBuildContext {
     pub(super) local_runtime_identity: Option<RebornLocalRuntimeIdentity>,
     pub(super) process_concurrency_limits: ProcessConcurrencyLimits,
     pub(super) resolved_memory: crate::ResolvedMemoryProvider,
+    /// The configured embedding provider (`[embeddings]`); its key store is
+    /// bound once the secret store exists.
+    pub(super) embeddings: Option<crate::embeddings::EmbeddingAssembly>,
     pub(super) scheduler_wake_wiring: ironclaw_turn_runner::runtime::SchedulerWakeWiring,
     pub(super) account_setup_descriptors: Vec<ExtensionAccountSetupDescriptor>,
     pub(super) nearai_mcp_bootstrap_config:

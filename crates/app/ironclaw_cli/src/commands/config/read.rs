@@ -68,6 +68,10 @@ fn flatten_config(config: &ironclaw_config::RebornConfigFile) -> anyhow::Result<
         // well — this is the second, explicit half of the same statement.)
         retired_sections: Default::default(),
         memory: Some(config.memory.clone().unwrap_or_default()),
+        // Not expanded: `[embeddings]` has required keys (provider, model),
+        // so a defaulted skeleton would list them as set to "" rather than
+        // unset. Listed only when the operator configured the section.
+        embeddings: config.embeddings.clone(),
         budget: Some(config.budget.clone().unwrap_or_default()),
         trigger_poller: Some(config.trigger_poller.clone().unwrap_or_default()),
         remote: Some(config.remote.clone().unwrap_or_default()),

@@ -825,6 +825,20 @@ pub(crate) fn build_services_input_with_options(
     };
     services_input = services_input.with_memory_provider_connection(memory_provider_connection);
 
+    // The deployment's embedding provider, from `[embeddings]` only (no env
+    // override). Absent keeps `/v1/embeddings` fail-closed and memory search
+    // full-text only. A section that does not resolve against the provider
+    // registry fails startup here; the provider's API key is the operator-
+    // stored key of that provider id, read per call.
+    if let Some(section) = config_file
+        .as_ref()
+        .and_then(|file| file.embeddings.as_ref())
+    {
+        services_input = services_input
+            .with_embeddings_section(section, Some(config.home().providers_file_path().as_path()))
+            .context("invalid [embeddings] configuration")?;
+    }
+
     // Scheduled memory upkeep (#7276 / #7664), from the `[memory]` section
     // only — no env override, matching `provider` and `admin_overrides` rather
     // than the mem0 connection fields. This is an override of the cadence the

@@ -47,7 +47,7 @@ use crate::indexer::{MemoryChunkReplaceOutcome, MemoryDocumentIndexRepository};
 use crate::metadata::{MemoryWriteOptions, find_nearest_config, is_config_path};
 use crate::path::{memory_error, valid_memory_path};
 use crate::search::{
-    MemorySearchRequest, MemorySearchResult, RankedMemorySearchResult, rank_memory_search_results,
+    MemorySearchRequest, MemorySearchResult, RankedMemorySearchResult, fuse_memory_search_results,
 };
 use ironclaw_memory::DocumentMetadata;
 use ironclaw_memory::{MemoryDocumentPath, MemoryDocumentScope};
@@ -73,7 +73,15 @@ pub(crate) mod fs_keys {
     pub(crate) const AGENT: &str = "agent_id";
     pub(crate) const PROJECT: &str = "project_id";
     pub(crate) const CONTENT: &str = "content";
-    pub(crate) const EMBEDDING: &str = "embedding";
+    /// Legacy key of vectors written before fingerprints existed. Never
+    /// read: those vectors have no recorded space, so they are treated as
+    /// incompatible with every embedder and replaced on the document's next
+    /// write. Vectors are now stored under
+    /// `MemoryEmbeddingFingerprint::vector_key()`.
+    #[cfg(test)]
+    pub(crate) const LEGACY_EMBEDDING: &str = "embedding";
+    /// The vector space of the chunk's vector (`MemoryEmbeddingFingerprint`).
+    pub(crate) const EMBEDDING_FINGERPRINT: &str = "embedding_fingerprint";
     pub(crate) const CHUNK_INDEX: &str = "chunk_index";
     pub(crate) const DOC_PATH: &str = "doc_relative_path";
     pub(crate) const VERSION: &str = "version";
@@ -250,11 +258,18 @@ where
                 Self::index_key(fs_keys::DOC_PATH),
                 IndexValue::Text(path.relative_path().to_string()),
             );
-        if let Some(embedding) = &chunk.embedding {
-            entry = entry.with_indexed(
-                Self::index_key(fs_keys::EMBEDDING),
-                IndexValue::Bytes(encode_embedding_blob(embedding)),
-            );
+        if let Some(embedding) = &chunk.embedding
+            && let Ok(vector_key) = IndexKey::new(embedding.fingerprint.vector_key())
+        {
+            entry = entry
+                .with_indexed(
+                    Self::index_key(fs_keys::EMBEDDING_FINGERPRINT),
+                    IndexValue::Text(embedding.fingerprint.as_str().to_string()),
+                )
+                .with_indexed(
+                    vector_key,
+                    IndexValue::Bytes(encode_embedding_blob(&embedding.vector)),
+                );
         }
         entry
     }
@@ -449,6 +464,25 @@ where
             Some(IndexValue::Text(value)) => Some(value.clone()),
             _ => None,
         }
+    }
+
+    /// Cosine similarity of a chunk hit's stored vector to the query, or
+    /// `None` when the chunk's recorded space is not the query's.
+    fn chunk_similarity(
+        versioned: &ironclaw_filesystem::VersionedEntry,
+        vector_key: &IndexKey,
+        query: &crate::MemoryChunkEmbedding,
+    ) -> Option<f32> {
+        let indexed = &versioned.entry.indexed;
+        match indexed.get(&Self::index_key(fs_keys::EMBEDDING_FINGERPRINT)) {
+            Some(IndexValue::Text(fingerprint)) if fingerprint == query.fingerprint.as_str() => {}
+            _ => return None,
+        }
+        let Some(IndexValue::Bytes(bytes)) = indexed.get(vector_key) else {
+            return None;
+        };
+        let vector = decode_embedding_blob(bytes)?;
+        crate::embedding::cosine_similarity(&query.vector, &vector)
     }
 
     fn map_chunk_hits_to_ranked_results(
@@ -1037,8 +1071,62 @@ where
             request.pre_fusion_limit().min(Page::MAX_LIMIT as usize) as u32,
         );
         let entries = self.filesystem.query(&prefix, &filter, page).await?;
-        Ok(rank_memory_search_results(
-            Self::map_chunk_hits_to_ranked_results(scope, entries),
+        let full_text_hits = Self::map_chunk_hits_to_ranked_results(scope, entries);
+
+        // Vector branch, only when the caller supplied a query embedding (an
+        // embedder is configured). It ranks only vectors of the query's own
+        // space: each is stored under its fingerprint's key, so the
+        // substrate's nearest-neighbour scan never sees another model's
+        // vectors. Chunks without a compatible vector — written before
+        // embeddings were enabled, by another model, or whose embedding
+        // failed — are reached by full text alone until they are re-embedded
+        // on the document's next write.
+        //
+        // No index is declared for it: every backend serves `VectorNearest`
+        // by a brute-force cosine scan of the prefix whether or not a
+        // `Vector` index exists, and declaring one per search would take the
+        // DDL lock (libSQL's single writer) on every read.
+        let mut vector_hits = Vec::new();
+        if let Some(query) = request.query_embedding()
+            && let Ok(vector_key) = IndexKey::new(query.fingerprint.vector_key())
+        {
+            let limit = request.pre_fusion_limit().min(Page::MAX_LIMIT as usize) as u32;
+            let filter = Filter::VectorNearest {
+                key: vector_key.clone(),
+                embedding: query.vector.clone(),
+                limit,
+            };
+            // `VectorNearest` overrides `Page::limit` (a top-k operation);
+            // the bounded page still satisfies the API.
+            match self
+                .filesystem
+                .query(&prefix, &filter, Page::new(0, limit))
+                .await
+            {
+                Ok(entries) => {
+                    // Nearest-neighbour search returns its top k however
+                    // unrelated; keep only same-space hits at or above the
+                    // relevance floor, in the substrate's (descending) order.
+                    let relevant = entries
+                        .into_iter()
+                        .filter(|versioned| {
+                            Self::chunk_similarity(versioned, &vector_key, query)
+                                .is_some_and(|score| score >= request.min_vector_similarity())
+                        })
+                        .collect();
+                    vector_hits = Self::map_chunk_hits_to_ranked_results(scope, relevant);
+                }
+                // A backend that cannot rank vectors degrades to full text;
+                // any other fault is a real search failure.
+                Err(FilesystemError::Unsupported { .. }) => {
+                    tracing::debug!("memory vector query unsupported; searching full text only");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(fuse_memory_search_results(
+            full_text_hits,
+            vector_hits,
             request.limit(),
         ))
     }
@@ -1135,6 +1223,22 @@ fn encode_embedding_blob(embedding: &[f32]) -> Vec<u8> {
         .collect()
 }
 
+/// Inverse of [`encode_embedding_blob`]; `None` for an empty or misaligned blob.
+fn decode_embedding_blob(bytes: &[u8]) -> Option<Vec<f32>> {
+    const F32: usize = std::mem::size_of::<f32>();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(F32) {
+        return None;
+    }
+    Some(
+        bytes
+            .as_chunks::<F32>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1157,6 +1261,13 @@ mod tests {
 
     fn search_request(query: &str) -> MemorySearchRequest {
         MemorySearchRequest::new(query).expect("non-empty query")
+    }
+
+    fn chunk_embedding(fingerprint: &str, vector: Vec<f32>) -> crate::MemoryChunkEmbedding {
+        crate::MemoryChunkEmbedding {
+            fingerprint: crate::MemoryEmbeddingFingerprint::new(fingerprint).unwrap(),
+            vector,
+        }
     }
 
     #[tokio::test]
@@ -1371,7 +1482,7 @@ mod tests {
         let chunks = vec![
             MemoryChunkWrite {
                 content: "alpha beta".to_string(),
-                embedding: Some(vec![0.1, 0.2, 0.3]),
+                embedding: Some(chunk_embedding("test:a:3", vec![0.1, 0.2, 0.3])),
             },
             MemoryChunkWrite {
                 content: "gamma".to_string(),
@@ -1723,6 +1834,202 @@ mod tests {
         assert_eq!(results.len(), 1, "FTS must filter out non-matching chunks");
         assert_eq!(results[0].path.relative_path(), "notes/alpha.md");
         assert!(results[0].full_text_rank.is_some());
+    }
+
+    async fn seed_vector_chunks(
+        repo: &FilesystemMemoryDocumentRepository<InMemoryBackend>,
+        docs: &[(
+            &MemoryDocumentPath,
+            &str,
+            Option<crate::MemoryChunkEmbedding>,
+        )],
+    ) {
+        for (path, content, embedding) in docs {
+            repo.write_document(path, content.as_bytes()).await.unwrap();
+            repo.replace_document_chunks_if_current(
+                path,
+                &content_sha256(content),
+                &[MemoryChunkWrite {
+                    content: content.to_string(),
+                    embedding: embedding.clone(),
+                }],
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn search_fuses_full_text_and_vector_branches_when_a_query_embedding_is_set() {
+        let (_, repo) = fresh_repo();
+        let alpha = doc("notes/alpha.md");
+        let beta = doc("notes/beta.md");
+        seed_vector_chunks(
+            &repo,
+            &[
+                (
+                    &alpha,
+                    "alpha",
+                    Some(chunk_embedding("m", vec![1.0, 0.0, 0.0])),
+                ),
+                (
+                    &beta,
+                    "beta",
+                    Some(chunk_embedding("m", vec![0.0, 1.0, 0.0])),
+                ),
+            ],
+        )
+        .await;
+
+        // Word + meaning: alpha is a hybrid match and ranks first.
+        let request = search_request("alpha")
+            .with_query_embedding(chunk_embedding("m", vec![0.99, 0.01, 0.0]));
+        let results = repo
+            .search_documents(alpha.scope(), &request)
+            .await
+            .unwrap();
+        assert_eq!(results[0].path.relative_path(), "notes/alpha.md");
+        assert!(results[0].is_hybrid(), "alpha should fuse FTS + vector");
+
+        // Meaning only: no full-text term matches, the vector branch finds
+        // beta — and only beta: alpha is orthogonal (cosine 0), below the
+        // relevance floor, so it is not dragged in.
+        let request =
+            search_request("gamma").with_query_embedding(chunk_embedding("m", vec![0.0, 1.0, 0.0]));
+        let results = repo.search_documents(beta.scope(), &request).await.unwrap();
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].path.relative_path(), "notes/beta.md");
+        assert!(results[0].full_text_rank.is_none() && results[0].vector_rank == Some(1));
+
+        // No query embedding: exactly full text (gamma matches nothing).
+        let results = repo
+            .search_documents(beta.scope(), &search_request("gamma"))
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unrelated_vectors_below_the_floor_never_rank() {
+        let (_, repo) = fresh_repo();
+        let near = doc("notes/near.md");
+        let far = doc("notes/far.md");
+        let opposite = doc("notes/opposite.md");
+        seed_vector_chunks(
+            &repo,
+            &[
+                (&near, "near", Some(chunk_embedding("m", vec![0.9, 0.1]))),
+                (&far, "far", Some(chunk_embedding("m", vec![0.2, 1.0]))),
+                (
+                    &opposite,
+                    "opposite",
+                    Some(chunk_embedding("m", vec![-1.0, 0.0])),
+                ),
+            ],
+        )
+        .await;
+        let query = || chunk_embedding("m", vec![1.0, 0.0]);
+        let results = repo
+            .search_documents(
+                near.scope(),
+                &search_request("zzz").with_query_embedding(query()),
+            )
+            .await
+            .unwrap();
+        // cos(near) ≈ 0.99, cos(far) ≈ 0.20, cos(opposite) = -1.
+        assert_eq!(
+            results
+                .iter()
+                .map(|r| r.path.relative_path())
+                .collect::<Vec<_>>(),
+            vec!["notes/near.md"]
+        );
+        // A query unrelated to everything returns nothing at all.
+        let results = repo
+            .search_documents(
+                near.scope(),
+                &search_request("zzz").with_query_embedding(chunk_embedding("m", vec![0.0, -1.0])),
+            )
+            .await
+            .unwrap();
+        assert!(results.is_empty(), "{results:?}");
+        // The floor is tunable per request.
+        let results = repo
+            .search_documents(
+                near.scope(),
+                &search_request("zzz")
+                    .with_query_embedding(query())
+                    .with_min_vector_similarity(0.1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn vectors_of_another_space_or_without_a_fingerprint_never_rank() {
+        let (fs, repo) = fresh_repo();
+        let other = doc("notes/other-model.md");
+        let legacy = doc("notes/legacy.md");
+        let same = doc("notes/same-model.md");
+        // Same dimension, identical vector, different model.
+        seed_vector_chunks(
+            &repo,
+            &[
+                (
+                    &other,
+                    "other",
+                    Some(chunk_embedding("model-b:2", vec![1.0, 0.0])),
+                ),
+                (
+                    &same,
+                    "same",
+                    Some(chunk_embedding("model-a:2", vec![1.0, 0.0])),
+                ),
+                (&legacy, "legacy", None),
+            ],
+        )
+        .await;
+        // A pre-fingerprint chunk: its vector sits under the legacy key with
+        // no recorded space.
+        let chunk_path = FilesystemMemoryDocumentRepository::<InMemoryBackend>::chunk_child_path(
+            &legacy,
+            0,
+            FilesystemOperation::WriteFile,
+        )
+        .unwrap();
+        let mut entry = FilesystemMemoryDocumentRepository::<InMemoryBackend>::build_chunk_entry(
+            &legacy,
+            0,
+            &MemoryChunkWrite {
+                content: "legacy".to_string(),
+                embedding: None,
+            },
+        );
+        entry = entry.with_indexed(
+            IndexKey::new(fs_keys::LEGACY_EMBEDDING).unwrap(),
+            IndexValue::Bytes(encode_embedding_blob(&[1.0, 0.0])),
+        );
+        fs.put(&chunk_path, entry, CasExpectation::Any)
+            .await
+            .unwrap();
+
+        let results = repo
+            .search_documents(
+                same.scope(),
+                &search_request("zzz")
+                    .with_query_embedding(chunk_embedding("model-a:2", vec![1.0, 0.0])),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            results
+                .iter()
+                .map(|r| r.path.relative_path())
+                .collect::<Vec<_>>(),
+            vec!["notes/same-model.md"],
+            "only vectors of the query's own space rank"
+        );
     }
 
     #[tokio::test]

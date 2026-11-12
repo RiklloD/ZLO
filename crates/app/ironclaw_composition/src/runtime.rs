@@ -623,6 +623,10 @@ pub struct RebornRuntime {
     /// The one owner of applying `[llm.default]` live (boot apply, Settings,
     /// login flows, `config.toml` reload); present with `boot` + `llm_reload`.
     live_llm_default: Option<Arc<ironclaw_operator::LiveLlmDefault>>,
+    /// The deployment's embedding provider (`[embeddings]`); `None` when the
+    /// section is absent.
+    // arch-exempt: optional_arc, a deployment without `[embeddings]` has no embedding provider by design, plan #embeddings
+    embedding_provider: Option<Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider>>,
 }
 
 impl ironclaw_extension_manager::extension_lifecycle_command::RebornExtensionLifecycleRuntime

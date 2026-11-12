@@ -152,6 +152,36 @@ configured models for OpenAI-compatible clients (model pickers, etc.).
   (`{ object: "list", data: [{ id, object: "model", created, owned_by }] }`);
   it does not reach into `ironclaw_llm` or the runtime directly.
 
+## Embeddings
+
+`POST /v1/embeddings` (and its `/api/v1/embeddings` alias) is the OpenAI
+Embeddings API over the deployment's configured embedding model.
+
+- The model source is the host-injected `OpenAiCompatEmbeddings` port
+  (`src/embeddings.rs`), mirroring the model-catalog port; this crate never
+  calls `ironclaw_llm`. Composition supplies it as
+  `OpenAiCompatRouteMountPorts::embeddings` (an `Option`, `None` when no
+  `[embeddings]` section is configured — the route then fails closed at `501`).
+  The implementation is `ironclaw_composition::openai_compat_embeddings_port`.
+- Same ingress shape as a create: bearer required, authenticated-caller scope,
+  host CORS allowlist, per-caller 60/min rate limit (the gateway keys buckets
+  per route, so `/v1/embeddings` and `/api/v1/embeddings` each have their own
+  60/min, separate from the chat routes'); a provider 429 maps to a plain
+  retryable 429 with no `retry-after`, like the chat routes; body capped at 2 MiB by
+  the descriptor AND re-checked in the handler from the same
+  `MAX_EMBEDDINGS_BODY_BYTES` constant.
+- Order: authenticate (`401`) → wired (`501`) → parse, validate and bound the
+  whole payload (`400`/`404`/`413`) → port → re-check the answer (`503`) →
+  envelope. Validation: `model` must equal the configured model id (else
+  `404`, like OpenAI's `model_not_found`); `input` is a string or an array of
+  strings (token-id arrays rejected); at most `min(port limit, 2048)` inputs,
+  none blank, each at most `min(port limit, 32_000)` UTF-8 bytes; `dimensions`,
+  when sent, must equal the model's dimension; `encoding_format` is `float`
+  (default) or `base64` (little-endian f32, what the OpenAI SDKs request).
+  `user` is accepted and ignored.
+- Provider failures are the deployment's, never the caller's: the port maps
+  them to sanitized `429`/`503` envelopes and logs the cause at `debug!`.
+
 The `model` string on chat/responses create requests is validated at the parse
 boundary (`validate_model_name`): non-empty, no surrounding whitespace, no
 control characters, and at most 256 bytes (the #2673 bounded-resources bound).

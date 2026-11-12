@@ -4,14 +4,18 @@ use axum::Router;
 use axum::routing::{get, post};
 
 use crate::descriptors::{
-    OPENAI_COMPAT_PATTERN_CHAT_COMPLETIONS, OPENAI_COMPAT_PATTERN_MODELS_API_LIST,
+    OPENAI_COMPAT_PATTERN_CHAT_COMPLETIONS, OPENAI_COMPAT_PATTERN_EMBEDDINGS_API,
+    OPENAI_COMPAT_PATTERN_EMBEDDINGS_V1, OPENAI_COMPAT_PATTERN_MODELS_API_LIST,
     OPENAI_COMPAT_PATTERN_MODELS_LIST, OPENAI_COMPAT_PATTERN_RESPONSES_API_CREATE,
     OPENAI_COMPAT_PATTERN_RESPONSES_API_ITEM, OPENAI_COMPAT_PATTERN_RESPONSES_API_ITEM_CANCEL,
     OPENAI_COMPAT_PATTERN_RESPONSES_V1_CREATE, OPENAI_COMPAT_PATTERN_RESPONSES_V1_ITEM,
     OPENAI_COMPAT_PATTERN_RESPONSES_V1_ITEM_CANCEL,
 };
 use crate::handlers;
-use crate::{OpenAiChatCompletionsWorkflow, OpenAiCompatModelCatalog, OpenAiResponsesWorkflow};
+use crate::{
+    OpenAiChatCompletionsWorkflow, OpenAiCompatEmbeddings, OpenAiCompatModelCatalog,
+    OpenAiResponsesWorkflow,
+};
 
 #[derive(Clone, Default)]
 pub struct OpenAiCompatRouterState {
@@ -31,6 +35,11 @@ pub struct OpenAiCompatRouterState {
     /// fail-closed behavior is intentional until host composition wires the
     /// model catalog.
     models: Option<Arc<dyn OpenAiCompatModelCatalog>>,
+    /// Wired by host composition when an embedding provider is configured.
+    /// When `None`, `POST /v1/embeddings` returns 501 fail-closed.
+    /// arch-exempt: optional Arc, genuinely optional by design; a deployment
+    /// with no `[embeddings]` configuration has no embedding provider.
+    embeddings: Option<Arc<dyn OpenAiCompatEmbeddings>>,
 }
 
 impl OpenAiCompatRouterState {
@@ -68,6 +77,15 @@ impl OpenAiCompatRouterState {
         self
     }
 
+    pub fn with_embeddings_service(mut self, embeddings: Arc<dyn OpenAiCompatEmbeddings>) -> Self {
+        self.embeddings = Some(embeddings);
+        self
+    }
+
+    pub(crate) fn embeddings(&self) -> Option<Arc<dyn OpenAiCompatEmbeddings>> {
+        self.embeddings.clone()
+    }
+
     pub(crate) fn chat_completions(&self) -> Option<Arc<OpenAiChatCompletionsWorkflow>> {
         self.chat_completions.clone()
     }
@@ -102,6 +120,14 @@ fn openai_compat_routes() -> Router<OpenAiCompatRouterState> {
         .route(
             OPENAI_COMPAT_PATTERN_MODELS_API_LIST,
             get(handlers::models_list),
+        )
+        .route(
+            OPENAI_COMPAT_PATTERN_EMBEDDINGS_V1,
+            post(handlers::embeddings_create),
+        )
+        .route(
+            OPENAI_COMPAT_PATTERN_EMBEDDINGS_API,
+            post(handlers::embeddings_create),
         )
         .route(
             OPENAI_COMPAT_PATTERN_RESPONSES_API_CREATE,

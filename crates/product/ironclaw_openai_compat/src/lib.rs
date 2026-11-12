@@ -15,6 +15,7 @@ mod chat_workflow;
 mod content_parts;
 mod cost;
 mod descriptors;
+mod embeddings;
 mod error;
 mod external_tools;
 mod handlers;
@@ -51,16 +52,24 @@ pub use chat_workflow::{
 };
 pub use cost::OpenAiCompatCost;
 pub use descriptors::{
-    OPENAI_COMPAT_PATTERN_CHAT_COMPLETIONS, OPENAI_COMPAT_PATTERN_MODELS_API_LIST,
+    OPENAI_COMPAT_PATTERN_CHAT_COMPLETIONS, OPENAI_COMPAT_PATTERN_EMBEDDINGS_API,
+    OPENAI_COMPAT_PATTERN_EMBEDDINGS_V1, OPENAI_COMPAT_PATTERN_MODELS_API_LIST,
     OPENAI_COMPAT_PATTERN_MODELS_LIST, OPENAI_COMPAT_PATTERN_RESPONSES_API_CREATE,
     OPENAI_COMPAT_PATTERN_RESPONSES_API_ITEM, OPENAI_COMPAT_PATTERN_RESPONSES_API_ITEM_CANCEL,
     OPENAI_COMPAT_PATTERN_RESPONSES_V1_CREATE, OPENAI_COMPAT_PATTERN_RESPONSES_V1_ITEM,
     OPENAI_COMPAT_PATTERN_RESPONSES_V1_ITEM_CANCEL, OPENAI_COMPAT_ROUTE_CHAT_COMPLETIONS,
+    OPENAI_COMPAT_ROUTE_EMBEDDINGS_API, OPENAI_COMPAT_ROUTE_EMBEDDINGS_V1,
     OPENAI_COMPAT_ROUTE_MODELS_API_LIST, OPENAI_COMPAT_ROUTE_MODELS_LIST,
     OPENAI_COMPAT_ROUTE_RESPONSES_API_CANCEL, OPENAI_COMPAT_ROUTE_RESPONSES_API_CREATE,
     OPENAI_COMPAT_ROUTE_RESPONSES_API_RETRIEVE, OPENAI_COMPAT_ROUTE_RESPONSES_V1_CANCEL,
     OPENAI_COMPAT_ROUTE_RESPONSES_V1_CREATE, OPENAI_COMPAT_ROUTE_RESPONSES_V1_RETRIEVE,
     openai_compat_routes,
+};
+pub use embeddings::{
+    OpenAiCompatEmbeddingBatch, OpenAiCompatEmbeddingModel, OpenAiCompatEmbeddings,
+    OpenAiEmbeddingEncodingFormat, OpenAiEmbeddingObject, OpenAiEmbeddingVector,
+    OpenAiEmbeddingsInput, OpenAiEmbeddingsRequest, OpenAiEmbeddingsResponse,
+    OpenAiEmbeddingsUsage,
 };
 pub use error::{
     OpenAiCompatError, OpenAiCompatErrorCode, OpenAiCompatErrorKind, OpenAiCompatErrorResponse,
@@ -71,7 +80,8 @@ pub use external_tools::{
     OpenAiCompatExternalToolSpec, OpenAiCompatExternalToolStore,
 };
 pub use handlers::{
-    chat_completions, models_list, responses_cancel, responses_create, responses_retrieve,
+    chat_completions, embeddings_create, models_list, responses_cancel, responses_create,
+    responses_retrieve,
 };
 pub use identity::{
     OPENAI_COMPAT_ACTOR_KIND, OPENAI_COMPAT_ADAPTER_ID, OPENAI_COMPAT_INSTALLATION_ID,

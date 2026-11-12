@@ -30,7 +30,7 @@ fn write(path: &str, content: &str, expected: Option<String>) -> MemoryWriteRequ
 }
 
 async fn round_trip(filesystem: Arc<dyn RootFilesystem>) {
-    let source = NativeMemoryDocuments::new(filesystem, None);
+    let source = NativeMemoryDocuments::new(filesystem, None, None);
     let alice = caller("alice");
 
     let created = source
@@ -195,6 +195,7 @@ async fn page_create_is_literal_and_never_overwrites() {
     let source = Arc::new(NativeMemoryDocuments::new(
         Arc::new(InMemoryBackend::new()),
         None,
+        None,
     ));
     let alice = caller("alice");
     source
@@ -257,6 +258,7 @@ async fn page_writes_to_protected_files_record_safety_events() {
     let source = NativeMemoryDocuments::new(
         Arc::new(InMemoryBackend::new()),
         Some(Arc::clone(&sink) as Arc<dyn ironclaw_memory::PromptWriteSafetyEventSink>),
+        None,
     );
     let alice = caller("alice");
 
@@ -307,4 +309,86 @@ async fn page_writes_to_protected_files_record_safety_events() {
             .status_code,
         404
     );
+}
+
+/// "car" and "automobile" share a bucket; full text sees two unrelated words.
+struct CarEmbedder;
+
+#[async_trait]
+impl ironclaw_memory_native::MemoryEmbedder for CarEmbedder {
+    fn dimension(&self) -> u32 {
+        2
+    }
+    fn max_batch(&self) -> usize {
+        16
+    }
+    fn max_input_bytes(&self) -> usize {
+        32_000
+    }
+    fn fingerprint(&self) -> ironclaw_memory_native::MemoryEmbeddingFingerprint {
+        ironclaw_memory_native::MemoryEmbeddingFingerprint::new("test:car:2").unwrap()
+    }
+    async fn embed(
+        &self,
+        _scope: &ironclaw_memory::MemoryDocumentScope,
+        texts: Vec<String>,
+    ) -> Result<Vec<Vec<f32>>, ironclaw_memory_native::MemoryEmbeddingError> {
+        Ok(texts
+            .iter()
+            .map(|text| {
+                let lower = text.to_ascii_lowercase();
+                if lower.contains("car") || lower.contains("automobile") {
+                    vec![1.0, 0.0]
+                } else {
+                    vec![0.0, 1.0]
+                }
+            })
+            .collect())
+    }
+}
+
+/// Review finding 10: with `[embeddings]` configured, the Memory page writes
+/// through the same embedder as the tools — an edit on the page keeps the
+/// document's vectors (a meaning-only query still finds it, from the page and
+/// from the tools' service over the same store) instead of rewriting its
+/// chunks text-only.
+#[tokio::test]
+async fn page_writes_keep_the_documents_vectors() {
+    let filesystem: Arc<dyn RootFilesystem> = Arc::new(InMemoryBackend::new());
+    let embedder: Arc<dyn ironclaw_memory_native::MemoryEmbedder> = Arc::new(CarEmbedder);
+    let source =
+        NativeMemoryDocuments::new(Arc::clone(&filesystem), None, Some(Arc::clone(&embedder)));
+    let alice = caller("alice");
+    let created = source
+        .write(&alice, write("notes/car.md", "my car is teal", None))
+        .await
+        .unwrap();
+    let hash = created.document.unwrap().content_hash;
+    source
+        .write(
+            &alice,
+            write("notes/car.md", "my car is teal and fast", Some(hash)),
+        )
+        .await
+        .unwrap();
+
+    let hits = source.search(&alice, "automobile", 5).await.unwrap();
+    assert_eq!(
+        hits.iter().map(|hit| hit.path.as_str()).collect::<Vec<_>>(),
+        vec!["notes/car.md"],
+        "page search is hybrid and the edit kept the vectors"
+    );
+    let tools =
+        NativeMemoryService::from_filesystem_with_embedder(filesystem, None, Some(embedder));
+    let response = tools
+        .search(
+            NativeMemoryDocuments::invocation(&alice),
+            MemoryServiceSearchRequest {
+                query: "automobile".to_string(),
+                limit: 5,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.results.len(), 1, "{:?}", response.results);
 }

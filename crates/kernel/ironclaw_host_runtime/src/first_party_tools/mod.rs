@@ -70,7 +70,7 @@ pub use memory::{
     ensure_memory_mount, finish_memory_tool_result,
     invocation_for_request as memory_invocation_for_request, map_memory_service_error,
     memory_tool_profiles, normalize_memory_tool_input, register_memory_tool_handler,
-    register_native_memory_tools,
+    register_native_memory_tools, register_native_memory_tools_with_embedder,
 };
 pub use outbound_deliver::OUTBOUND_DELIVER_CAPABILITY_ID;
 pub use plan_update::PLAN_UPDATE_CAPABILITY_ID;

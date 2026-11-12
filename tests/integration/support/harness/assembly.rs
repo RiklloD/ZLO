@@ -97,6 +97,7 @@ pub(crate) fn standalone_host_runtime_with_registry_and_runtime_http_egress(
         registry,
         egress,
         process_port,
+        None,
     )
 }
 
@@ -109,6 +110,7 @@ pub(crate) fn standalone_host_runtime_over_filesystem_with_registry_and_runtime_
     registry: ExtensionRegistry,
     egress: Arc<RecordingRuntimeHttpEgress>,
     process_port: Option<Arc<dyn RuntimeProcessPort>>,
+    memory_embedder: Option<Arc<dyn ironclaw_memory_native::MemoryEmbedder>>,
 ) -> HarnessResult<Arc<dyn HostRuntime>> {
     // Mirror the production rule (`factory.rs`): the bound memory provider's
     // guarded tool handler is registered exactly when its package is in the
@@ -121,7 +123,12 @@ pub(crate) fn standalone_host_runtime_over_filesystem_with_registry_and_runtime_
         ironclaw_host_runtime::memory_native_extension::NATIVE_MEMORY_EXTENSION_ID,
     )?;
     if registry.get_extension(&native_memory_id).is_some() {
-        ironclaw_host_runtime::register_native_memory_tools(&mut first_party_handlers)?;
+        // Same production registration either way; an embedder (the
+        // `[embeddings]`-configured shape) gives the tools hybrid search.
+        ironclaw_host_runtime::register_native_memory_tools_with_embedder(
+            &mut first_party_handlers,
+            memory_embedder,
+        )?;
     }
     let mut services = HostRuntimeServices::new(
         Arc::new(registry),

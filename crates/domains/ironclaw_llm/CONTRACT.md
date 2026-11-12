@@ -9,6 +9,8 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `lib.rs` | Provider factory (`create_llm_provider`, `build_provider_chain`); registry-protocol dispatch |
 | `config.rs` | LLM config types (`LlmConfig`, `RegistryProviderConfig`, `NearAiConfig`, `BedrockConfig`) |
 | `error.rs` | `LlmError` enum used by all providers |
+| `embeddings/mod.rs` | `EmbeddingProvider` trait, `EmbeddingRequest`/`EmbeddingResponse`/`EmbeddingLimits`/`EmbeddingError`, `EmbeddingsConfig` + registry resolution (`ResolvedEmbeddingEndpoint`), known model dimensions |
+| `embeddings/openai_compatible.rs` | `OpenAiCompatibleEmbeddings` — `POST {base}/embeddings` over `ironclaw_network`'s policy egress |
 | `provider.rs` | `LlmProvider` trait, `ChatMessage`, `ToolCall`, `CompletionRequest`, `sanitize_tool_messages` |
 | `agent_message.rs` | Canonical parts-list message vocabulary (`AgentMessage`) with validity/pairing/bounds validation |
 | `nearai_chat.rs` | NEAR AI Chat Completions provider (dual auth: session token or API key) |
@@ -51,7 +53,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 ## Sub-owner map
 
 The File Map above says what each file *is*. This map says who **owns** it —
-which of the crate's ten concerns a change belongs to, and what must not drift
+which of the crate's eleven concerns a change belongs to, and what must not drift
 into it. PROPOSAL §6.4.13 asks for this map and names five sub-owners
 (providers / auth-sessions / registry / decorators / recording); measured
 against the tree those five cover 28 of 48 files, so five more are named here
@@ -73,8 +75,9 @@ owner, and a deleted one fails until its entry goes.
 | `normalization` | Cross-provider wire hygiene in all three directions: outbound tool schemas, inbound tool arguments, inbound content text | A fix that only one provider needs — that belongs beside it in `providers` | `tool_schema.rs`, `tool_schema/placeholder_stripping.rs`, `tool_args.rs`, `reasoning.rs` |
 | `model-catalog` | Facts about **models**: what an endpoint lists, and which models see images or think natively | Provider identity or routing | `models.rs`, `reasoning_models.rs`, `reasoning_effort.rs`, `vision_models.rs` |
 | `recording` | Trace capture and replay, and binding recorded tool arguments to earlier results | Live provider behavior | `recording.rs`, `trace_binding.rs` |
+| `embeddings` | Text embeddings: the `EmbeddingProvider` trait (a **different trait** from `LlmProvider`), its request/response/limits/config vocabulary, registry resolution, and the OpenAI-compatible implementation over `ironclaw_network`'s policy egress | Chat vocabulary, a raw `reqwest` client, or credential lookup (the caller passes the key) | `embeddings/mod.rs`, `embeddings/openai_compatible.rs` |
 | `transcription` | Speech in and out: the `TranscriptionProvider` (speech-to-text) and `SpeechSynthesisProvider` (text-to-speech) traits and their implementations — **different traits** from `LlmProvider`, sharing only transports | Anything implementing `LlmProvider` | `transcription/mod.rs`, `transcription/chat_completions.rs`, `transcription/openai.rs`, `speech/mod.rs`, `speech/openai.rs`, `speech/elevenlabs.rs` |
-| `test-support` | Fixtures and fault injection, including the published `test-support` feature downstream harnesses consume | Production behavior | `testing/mod.rs`, `testing/fault_injection.rs`, `codex_test_helpers.rs`, `rig_adapter/tests.rs`, `rig_adapter/tests/convert_tests.rs`, `rig_adapter/tests/error_tests.rs`, `rig_adapter/tests/models_endpoint_tests.rs`, `rig_adapter/tests/provider_tests.rs`, `rig_adapter/tests/request_tests.rs`, `rig_adapter/tests/schema_tests.rs`, `rig_adapter/tests/wire_tests.rs`, `rig_adapter/tests/finish_reason_tests.rs`, `anthropic_oauth/tests.rs`, `anthropic_oauth/tests/prompt_cache_tests.rs` |
+| `test-support` | Fixtures and fault injection, including the published `test-support` feature downstream harnesses consume | Production behavior | `testing/mod.rs`, `testing/fault_injection.rs`, `testing/embeddings.rs`, `codex_test_helpers.rs`, `rig_adapter/tests.rs`, `rig_adapter/tests/convert_tests.rs`, `rig_adapter/tests/error_tests.rs`, `rig_adapter/tests/models_endpoint_tests.rs`, `rig_adapter/tests/provider_tests.rs`, `rig_adapter/tests/request_tests.rs`, `rig_adapter/tests/schema_tests.rs`, `rig_adapter/tests/wire_tests.rs`, `rig_adapter/tests/finish_reason_tests.rs`, `anthropic_oauth/tests.rs`, `anthropic_oauth/tests/prompt_cache_tests.rs` |
 
 Four placement calls worth stating, because each is a file whose *shape*
 suggests one owner and whose *purpose* is another:
@@ -247,6 +250,83 @@ To add a new provider:
 3. Wire into the factory dispatch in `lib.rs` (`create_registry_provider_inner` for registry-backed protocols, top-level `create_llm_provider` for backend-string-keyed providers)
 4. Add env vars to `.env.example` and to whichever crate reads them (✎ the v1 `src/config/llm.rs` is gone — deleted with the monolith)
 5. If the provider needs persistent state (session tokens, refresh tokens, etc.), keep it behind the provider's own session type — never reach for `crate::db`, `crate::secrets`, or `crate::bootstrap`. The crate must stay independent of the binary.
+
+## Embeddings
+
+`EmbeddingProvider` (`embeddings/mod.rs`) is the provider-neutral text-embedding
+contract. It is a separate trait from `LlmProvider`, like transcription:
+
+```rust
+#[async_trait]
+pub trait EmbeddingProvider: Send + Sync {
+    fn model_name(&self) -> &str;
+    fn dimension(&self) -> u32;          // every returned vector has exactly this length
+    fn limits(&self) -> EmbeddingLimits; // max inputs per call, max UTF-8 bytes per input
+    fn fingerprint(&self) -> String;     // vector-space identity: provider, model, dimension, params
+    async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, EmbeddingError>;
+}
+```
+
+Rules every implementation follows:
+
+- **Bound before I/O.** `EmbeddingRequest::validate(limits)` runs first: no
+  empty batch, no blank input, at most `min(limits.max_inputs, 2048)` inputs,
+  each at most `min(limits.max_input_bytes, 32_000)` bytes. A provider cannot
+  declare limits above those ceilings.
+- **Validate the answer.** `EmbeddingResponse::validate` before returning: one
+  vector per input, in input order, each exactly `dimension()` finite floats.
+  A provider that ignores the requested model or truncates the batch is an
+  `InvalidResponse`, never a silently short result.
+- **Egress through `ironclaw_network`.** Implementations hold an
+  `Arc<dyn NetworkHttpEgress>` and a `NetworkPolicy` that admits exactly the
+  configured host. Private/loopback addresses stay denied unless the operator
+  configured a loopback host itself (local Ollama / LM Studio) — then that one
+  host:port is the only admitted target. This is the one part of the crate that
+  does not use the `config.rs` hardened reqwest builders.
+- **Credentials come from the caller, per call.** The provider holds an
+  `Arc<dyn EmbeddingCredentialSource>` and reads the key on every request, so
+  a key the operator sets or rotates applies without a restart. Composition
+  implements the source over `LlmKeyStore` (the operator secret store, the same
+  `llm_provider_<id>_api_key` handle the chat providers use);
+  `StaticEmbeddingCredential` is the fixed/keyless form. A registry provider
+  with `api_key_required` and no stored key fails the call with
+  `MissingCredential` before any egress. The key is placed only in the
+  `authorization` header; error messages never carry it or the provider body.
+- **Wrappers delegate the complete trait**, `dimension`, `limits` and
+  `fingerprint` included — consumers size vectors from `dimension()` and
+  never compare vectors across different `fingerprint()`s.
+- **Never leak through errors.** Response-parse failures report only a
+  category and line/column (`serde_json::Error::classify`), never serde's
+  message, which quotes offending values (an echoed input or key).
+
+`EmbeddingsConfig { provider_id, model, dimension, base_url }` resolves against
+the `ProviderRegistry`: the provider must speak `OpenAiCompletions`, `Ollama`
+(served under `{default_base_url}/v1`) or `OpenRouter`; anything else
+(Anthropic, Gemini native, Bedrock, Codex, …) is `InvalidConfig`. The base URL
+is `base_url` or the registry default (OpenAI and OpenRouter have built-in API
+roots); it must be `https` — plain `http` only to a loopback host, because
+the request carries the API key — with no userinfo, query or fragment
+(`validate_embedding_base_url`, re-checked by `OpenAiCompatibleEmbeddings::new`
+because `ResolvedEmbeddingEndpoint` is publicly constructible). The dimension
+is the configured one or `known_model_dimension(model)`; an unknown model
+without one is `InvalidConfig`. A configured dimension below a known model's
+native one is sent upstream as `dimensions` (`request_dimensions`) for models
+that support shortened vectors (`text-embedding-3-*`) and is `InvalidConfig`
+for any other known model. `provider = "openai"` with a custom `base_url`
+sends the stored OpenAI key to that host. No embeddings config means no embedding provider exists —
+every consumer keeps its non-embedding behavior.
+
+`OpenAiCompatibleEmbeddings` is the one implementation: it covers every
+OpenAI-shaped `/embeddings` endpoint, reorders `data` by `index` (all items
+carry a distinct index forming a permutation, or none do — mixed presence and
+duplicates are `InvalidResponse`), derives `limits().max_inputs` from the
+dimension so the largest admitted batch's JSON fits the 64 MiB response cap
+(~909 inputs at 3072 dims, the full 2048 only at small dimensions), maps
+401/403 → `Unauthorized`, 429 → `RateLimited { retry_after }`, other non-2xx →
+`Http`. The test double is `testing::embeddings::ConceptEmbeddings`
+(`test-support`): deterministic bag-of-buckets vectors with declarable synonym
+groups, so a test can make two words semantically close that full-text search
+treats as unrelated.
 
 ## Response Cache
 

@@ -26,6 +26,7 @@ mod scenario_memory_search_finds_seeded;
 mod scenario_memory_tree_reflects_structure;
 mod scenario_paraphrased_prompt_recall_libsql;
 mod scenario_proactive_prompt_recall_libsql;
+mod scenario_semantic_memory_search_libsql;
 mod scenario_write_then_read_cross_thread;
 
 use reborn_support::group::{RebornIntegrationGroup, ScenarioReport};
@@ -136,6 +137,16 @@ async fn memory_group_e2e() {
     report.record(
         "memory_curation_below_threshold_never_fires",
         scenario_memory_curation_below_threshold_never_fires::run().await,
+    );
+
+    // Scenario 12: with an embedding provider configured, `memory.search` is
+    // hybrid — a meaning-only query finds the fact, a word+meaning query is a
+    // hybrid match — and with none the same query stays a full-text miss. Own
+    // groups: the embedder is a construction input, and every other group
+    // must stay full-text only.
+    report.record(
+        "semantic_memory_search_libsql",
+        scenario_semantic_memory_search_libsql::run().await,
     );
 
     report.assert_all_passed();

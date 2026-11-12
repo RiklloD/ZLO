@@ -350,6 +350,7 @@ pub(super) async fn build_backend_production(
         local_runtime_identity,
         process_concurrency_limits,
         resolved_memory,
+        embeddings,
         scheduler_wake_wiring,
         mut account_setup_descriptors,
         nearai_mcp_bootstrap_config,
@@ -397,6 +398,13 @@ pub(super) async fn build_backend_production(
         }
     };
     let secret_store: Arc<dyn SecretStorePort> = stores.secret_credentials.secret_store.clone();
+    // The embedding provider reads its API key per call from the operator
+    // secret store; bind that store now that it exists.
+    if let Some(embeddings) = &embeddings {
+        embeddings.bind_key_store(ironclaw_operator::LlmKeyStore::new(
+            crate::RuntimeOperatorSecretValueStore::shared(Arc::clone(&secret_store)),
+        ));
+    }
     let skill_management_filesystem: Arc<dyn RootFilesystem> = stores.filesystem.clone();
     let skill_management = Arc::new(ScopedSkillManagementPort::new_with_mount_resolver(
         owner_user_id.clone(),
@@ -1480,6 +1488,7 @@ pub(super) async fn build_backend_production(
         memory_lifecycle: resolved_memory.lifecycle.clone(),
         memory_guidance: resolved_memory.guidance.clone(),
         memory_scheduled_pass_prompts: resolved_memory.scheduled_pass_prompts.clone(),
+        embedding_provider: embeddings.as_ref().map(|assembly| assembly.provider()),
         workspace_mounts: runtime_workspace_mounts,
         standalone_storage_root,
         default_system_prompt_path,

@@ -140,6 +140,29 @@ pub enum OwnerWriteOutcome {
 
 pub struct NativeMemoryService {
     backend: Arc<dyn MemoryBackend>,
+    /// When set, search fuses a vector branch with full text (and the backend
+    /// built by [`Self::from_filesystem_with_embedder`] embeds chunks at index
+    /// time). `None` is today's full-text-only provider.
+    // arch-exempt: optional_arc, a deployment without `[embeddings]` searches full text only by design, plan #embeddings
+    embedder: Option<Arc<dyn crate::MemoryEmbedder>>,
+    /// The last query embedding, shared so a prompt-context load that runs
+    /// both recall lanes (concurrently, with the same query) embeds it once:
+    /// the second lane waits on this lock and reuses the first lane's answer,
+    /// including a failure. One entry, reused for at most
+    /// `QUERY_VECTOR_REUSE`; a different query or scope replaces it.
+    last_query_vector: tokio::sync::Mutex<Option<CachedQueryVector>>,
+}
+
+/// How long one query embedding (or its failure) is reused — long enough to
+/// cover both recall lanes of one context load, short enough that a provider
+/// outage does not pin a query to full text.
+const QUERY_VECTOR_REUSE: std::time::Duration = std::time::Duration::from_secs(10);
+
+struct CachedQueryVector {
+    at: std::time::Instant,
+    scope: MemoryDocumentScope,
+    query: String,
+    embedding: Option<crate::MemoryChunkEmbedding>,
 }
 
 impl std::fmt::Debug for NativeMemoryService {
@@ -147,21 +170,96 @@ impl std::fmt::Debug for NativeMemoryService {
         formatter
             .debug_struct("NativeMemoryService")
             .field("backend", &"<native-memory-backend>")
+            .field("semantic_search", &self.embedder.is_some())
             .finish()
     }
 }
 
 impl NativeMemoryService {
     pub fn new(backend: Arc<dyn MemoryBackend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            embedder: None,
+            last_query_vector: tokio::sync::Mutex::new(None),
+        }
     }
 
     pub fn from_filesystem(
         filesystem: Arc<dyn RootFilesystem>,
         prompt_write_safety_event_sink: Option<Arc<dyn PromptWriteSafetyEventSink>>,
     ) -> Self {
+        Self::from_filesystem_with_embedder(filesystem, prompt_write_safety_event_sink, None)
+    }
+
+    /// [`Self::from_filesystem`], plus semantic search when `embedder` is
+    /// set: chunks are embedded at index time and search fuses a vector
+    /// branch with full text by reciprocal rank. `None` is exactly
+    /// [`Self::from_filesystem`].
+    pub fn from_filesystem_with_embedder(
+        filesystem: Arc<dyn RootFilesystem>,
+        prompt_write_safety_event_sink: Option<Arc<dyn PromptWriteSafetyEventSink>>,
+        embedder: Option<Arc<dyn crate::MemoryEmbedder>>,
+    ) -> Self {
         Self {
-            backend: build_native_backend(filesystem, prompt_write_safety_event_sink),
+            backend: build_native_backend(
+                filesystem,
+                prompt_write_safety_event_sink,
+                embedder.clone(),
+            ),
+            embedder,
+            last_query_vector: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Attach the query vector when an embedder is configured. The embedding
+    /// is bounded by `QUERY_EMBEDDING_BUDGET`; a failure or timeout degrades
+    /// this search to full text rather than failing or stalling it. The same
+    /// (scope, query) reuses the last answer, so concurrent recall lanes embed
+    /// once.
+    async fn with_query_vector(
+        &self,
+        scope: &MemoryDocumentScope,
+        request: MemorySearchRequest,
+    ) -> MemorySearchRequest {
+        let Some(embedder) = &self.embedder else {
+            return request;
+        };
+        let mut cached = self.last_query_vector.lock().await;
+        let embedding = match cached.as_ref() {
+            Some(entry)
+                if entry.at.elapsed() < QUERY_VECTOR_REUSE
+                    && entry.scope == *scope
+                    && entry.query == request.query() =>
+            {
+                entry.embedding.clone()
+            }
+            _ => {
+                let embedding =
+                    match crate::embedding::embed_query(embedder.as_ref(), scope, request.query())
+                        .await
+                    {
+                        Ok(embedding) => Some(embedding),
+                        Err(error) => {
+                            tracing::debug!(
+                                %error,
+                                "memory query embedding failed; searching full text only"
+                            );
+                            None
+                        }
+                    };
+                *cached = Some(CachedQueryVector {
+                    at: std::time::Instant::now(),
+                    scope: scope.clone(),
+                    query: request.query().to_string(),
+                    embedding: embedding.clone(),
+                });
+                embedding
+            }
+        };
+        drop(cached);
+        match embedding {
+            Some(embedding) => request.with_query_embedding(embedding),
+            None => request,
         }
     }
 
@@ -192,11 +290,12 @@ impl NativeMemoryService {
         invocation: MemoryInvocation,
         request: MemoryServiceSearchRequest,
     ) -> Result<MemoryServiceSearchResponse, MemoryServiceError> {
-        let (_, context) = self.scoped_context(&invocation)?;
+        let (scope, context) = self.scoped_context(&invocation)?;
         let search_request = MemorySearchRequest::new(&request.query)
             .map_err(MemoryServiceError::input_from)?
             .with_limit(request.limit)
             .with_pre_fusion_limit(request.limit.max(20));
+        let search_request = self.with_query_vector(&scope, search_request).await;
         let results = self
             .backend
             .search(&context, search_request)
@@ -204,7 +303,7 @@ impl NativeMemoryService {
             .map_err(MemoryServiceError::operation_from)?
             .into_iter()
             .map(|result| MemoryServiceSearchResult {
-                is_hybrid_match: false,
+                is_hybrid_match: result.is_hybrid(),
                 content: result.snippet,
                 score: result.score,
                 path: result.path.relative_path().to_string(),
@@ -800,12 +899,13 @@ impl NativeMemoryService {
         {
             return Ok(None);
         }
-        let (_, context) = self.scoped_context(invocation)?;
+        let (scope, context) = self.scoped_context(invocation)?;
         let fetch_limit = request.max_snippets.saturating_mul(8).max(64);
         let search_request = MemorySearchRequest::new(&request.query)
             .map_err(MemoryServiceError::input_from)?
             .with_limit(fetch_limit)
             .with_pre_fusion_limit(fetch_limit.max(20));
+        let search_request = self.with_query_vector(&scope, search_request).await;
         let mut results = self
             .backend
             .search(&context, search_request)
@@ -996,9 +1096,14 @@ fn write_conflict_response(path: &str) -> MemoryServiceWriteResponse {
 fn build_native_backend(
     filesystem: Arc<dyn RootFilesystem>,
     prompt_write_safety_event_sink: Option<Arc<dyn PromptWriteSafetyEventSink>>,
+    embedder: Option<Arc<dyn crate::MemoryEmbedder>>,
 ) -> Arc<dyn MemoryBackend> {
     let repository = Arc::new(FilesystemMemoryDocumentRepository::new(filesystem));
-    let indexer = Arc::new(ChunkingMemoryDocumentIndexer::new(Arc::clone(&repository)));
+    let mut indexer = ChunkingMemoryDocumentIndexer::new(Arc::clone(&repository));
+    if let Some(embedder) = embedder {
+        indexer = indexer.with_embedder(embedder);
+    }
+    let indexer = Arc::new(indexer);
     let mut backend = RepositoryMemoryBackend::new(Arc::clone(&repository))
         .with_indexer(indexer)
         .with_capabilities(

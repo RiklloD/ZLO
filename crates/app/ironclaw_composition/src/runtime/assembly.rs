@@ -968,6 +968,7 @@ pub(super) async fn assemble_runtime(
                     Arc::clone(&local_runtime.extension_filesystem)
                         as Arc<dyn ironclaw_filesystem::RootFilesystem>,
                     local_runtime.memory_prompt_safety_sink.clone(),
+                    local_runtime.memory_service_resolver.native_embedder(),
                 ))
                     as Arc<dyn ironclaw_product_contracts::memory_page::MemoryDocumentsSource>
             }),
@@ -1880,6 +1881,7 @@ pub(super) async fn assemble_runtime(
         trigger_process_lifecycle_source: Arc::clone(&services.trigger_process_lifecycle_source),
         broadcast_budget_event_sink,
         external_tool_catalog: services.external_tool_catalog.clone(),
+        embedding_provider: services.embedding_provider.clone(),
         persistent_approval_policies: Arc::clone(&services.persistent_approval_policies),
         tool_permission_overrides: services.tool_permission_overrides.clone(),
         auto_approve_settings: services.auto_approve_settings.clone(),

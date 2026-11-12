@@ -264,6 +264,7 @@ pub(crate) fn core_builtin_tools_over_shared_filesystem(
     root: Arc<tempfile::TempDir>,
     filesystem: Arc<CompositeRootFilesystem>,
     user_id: UserId,
+    memory_embedder: Option<Arc<dyn ironclaw_memory_native::MemoryEmbedder>>,
 ) -> HarnessResult<HostRuntimeCapabilityHarness> {
     let mut registry = ExtensionRegistry::new();
     registry.insert(ironclaw_host_runtime::builtin_first_party_package()?)?;
@@ -277,6 +278,7 @@ pub(crate) fn core_builtin_tools_over_shared_filesystem(
             registry,
             Arc::clone(&runtime_http_egress),
             Some(Arc::clone(&process_port) as Arc<dyn RuntimeProcessPort>),
+            memory_embedder,
         )?;
     recording_harness_from_runtime(
         root.clone(),

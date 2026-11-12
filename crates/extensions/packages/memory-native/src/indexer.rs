@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use ironclaw_filesystem::{FilesystemError, FilesystemOperation};
 
 use crate::chunking::{ChunkConfig, MemoryChunkWrite, chunk_document};
+use crate::embedding::{MemoryChunkEmbedding, MemoryEmbedder, embed_chunks};
 use crate::events::record_memory_significant_event;
 use crate::metadata::resolve_document_metadata;
 use crate::path::{memory_error, valid_memory_path};
@@ -69,6 +70,9 @@ pub struct ChunkingMemoryDocumentIndexer<R> {
     repository: Arc<R>,
     chunk_config: ChunkConfig,
     memory_event_sink: Option<Arc<dyn MemorySignificantEventSink>>,
+    /// When set, chunk embeddings are computed at index time.
+    // arch-exempt: optional_arc, a deployment without `[embeddings]` indexes text only by design, plan #embeddings
+    embedder: Option<Arc<dyn MemoryEmbedder>>,
 }
 
 impl<R> ChunkingMemoryDocumentIndexer<R>
@@ -80,7 +84,36 @@ where
             repository,
             chunk_config: ChunkConfig::default(),
             memory_event_sink: None,
+            embedder: None,
         }
+    }
+
+    /// Compute and store an embedding for every chunk at index time.
+    pub fn with_embedder(mut self, embedder: Arc<dyn MemoryEmbedder>) -> Self {
+        self.embedder = Some(embedder);
+        self
+    }
+
+    /// One embedding slot per chunk of `chunk_texts`, `None` for a chunk
+    /// stored text-only: no embedder configured, a chunk too long for the
+    /// embedder (skipped alone), or a batch that failed or ran past the
+    /// indexing time budget (that batch and later ones; earlier batches keep
+    /// their vectors). A failure never fails the reindex: the document write
+    /// is already committed, full text stays current, and the next write of
+    /// this document re-embeds it.
+    async fn chunk_embeddings(
+        &self,
+        path: &MemoryDocumentPath,
+        chunk_texts: &[String],
+    ) -> Vec<Option<MemoryChunkEmbedding>> {
+        let Some(embedder) = self.embedder.as_ref() else {
+            return vec![None; chunk_texts.len()];
+        };
+        let (vectors, error) = embed_chunks(embedder.as_ref(), path.scope(), chunk_texts).await;
+        if let Some(error) = error {
+            tracing::debug!(%error, "memory chunk embedding incomplete; indexing the rest text only");
+        }
+        vectors
     }
 
     pub fn with_memory_event_sink<S>(mut self, event_sink: Arc<S>) -> Self
@@ -174,10 +207,11 @@ where
             .await?;
             return Ok(());
         }
-        // Text-only chunks: chunk rows are always persisted with
-        // `embedding = NULL` under the content-hash guard, so full-text
-        // search stays current.
-        let chunks = build_chunk_writes(chunk_texts);
+        // Chunk rows are persisted under the content-hash guard, with an
+        // embedding when an embedder is configured and succeeded, else with
+        // `embedding = NULL` — full-text search stays current either way.
+        let embeddings = self.chunk_embeddings(path, &chunk_texts).await;
+        let chunks = build_chunk_writes(chunk_texts, embeddings);
         // **Re-resolve metadata immediately before the final replace.**
         // A concurrent metadata write that flips `skip_indexing=true`
         // (and runs the matching parent-config chunk-clear) between our
@@ -218,12 +252,16 @@ where
     }
 }
 
-fn build_chunk_writes(chunk_texts: Vec<String>) -> Vec<MemoryChunkWrite> {
+fn build_chunk_writes(
+    chunk_texts: Vec<String>,
+    embeddings: Vec<Option<MemoryChunkEmbedding>>,
+) -> Vec<MemoryChunkWrite> {
+    let mut embeddings = embeddings.into_iter();
     chunk_texts
         .into_iter()
         .map(|content| MemoryChunkWrite {
             content,
-            embedding: None,
+            embedding: embeddings.next().flatten(),
         })
         .collect()
 }

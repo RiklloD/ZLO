@@ -8,6 +8,7 @@ mod backend;
 mod chunking;
 #[cfg(any(test, feature = "test-support"))]
 pub mod contract_tests;
+mod embedding;
 mod events;
 mod indexer;
 mod metadata;
@@ -55,6 +56,9 @@ pub const MEMORY_INPUT_SCHEMAS: &[(&str, &str)] = &[
 
 pub use backend::{MemoryBackend, MemoryBackendCapabilities, RepositoryMemoryBackend};
 pub use chunking::{ChunkConfig, MemoryChunkWrite, chunk_document};
+pub use embedding::{
+    MemoryChunkEmbedding, MemoryEmbedder, MemoryEmbeddingError, MemoryEmbeddingFingerprint,
+};
 pub use indexer::{
     ChunkingMemoryDocumentIndexer, MemoryChunkReplaceOutcome, MemoryDocumentIndexRepository,
     MemoryDocumentIndexer,
@@ -65,7 +69,7 @@ pub use repo::{
     MemoryDocumentHistory, MemoryDocumentRepository, MemoryWriteOutcome,
 };
 pub use safety::DefaultPromptWriteSafetyPolicy;
-pub use search::{MemorySearchRequest, MemorySearchResult};
+pub use search::{DEFAULT_MIN_VECTOR_SIMILARITY, MemorySearchRequest, MemorySearchResult};
 pub use service::{
     MEMORY_ASSETS, MEMORY_CURATION_PASS_PROMPT, MEMORY_CURATION_PASS_PROMPT_REF, MEMORY_GUIDANCE,
     MEMORY_GUIDANCE_DOC_REF, NativeMemoryService, OwnerWriteOutcome, resolve_target_path,

@@ -4654,6 +4654,7 @@ dependencies = [
  "insta",
  "ironclaw_common",
  "ironclaw_host_api",
+ "ironclaw_network",
  "ironclaw_safety",
  "open",
  "proptest",

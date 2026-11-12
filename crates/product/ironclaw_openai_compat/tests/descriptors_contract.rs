@@ -8,7 +8,8 @@ use ironclaw_host_api::ingress::{
 };
 use ironclaw_host_api::{action::NetworkMethod, ingress::IngressScopeSource};
 use ironclaw_openai_compat::{
-    OPENAI_COMPAT_ROUTE_CHAT_COMPLETIONS, OPENAI_COMPAT_ROUTE_MODELS_API_LIST,
+    OPENAI_COMPAT_ROUTE_CHAT_COMPLETIONS, OPENAI_COMPAT_ROUTE_EMBEDDINGS_API,
+    OPENAI_COMPAT_ROUTE_EMBEDDINGS_V1, OPENAI_COMPAT_ROUTE_MODELS_API_LIST,
     OPENAI_COMPAT_ROUTE_MODELS_LIST, OPENAI_COMPAT_ROUTE_RESPONSES_API_CANCEL,
     OPENAI_COMPAT_ROUTE_RESPONSES_API_CREATE, OPENAI_COMPAT_ROUTE_RESPONSES_API_RETRIEVE,
     OPENAI_COMPAT_ROUTE_RESPONSES_V1_CANCEL, OPENAI_COMPAT_ROUTE_RESPONSES_V1_CREATE,
@@ -61,6 +62,26 @@ fn expected_table() -> Vec<Expected> {
             rate_limit_max: 120,
             streaming: StreamingMode::None,
             effect_path: AllowedEffectPath::ProjectionOnly,
+        },
+        // Embeddings: create-class bearer/caller scope/rate limit, a 2 MiB
+        // body cap shared with the in-handler check, no streaming.
+        Expected {
+            route_id: OPENAI_COMPAT_ROUTE_EMBEDDINGS_V1,
+            method: NetworkMethod::Post,
+            pattern: "/v1/embeddings",
+            body_limit: body_limit_kib(2 * 1024),
+            rate_limit_max: 60,
+            streaming: StreamingMode::None,
+            effect_path: AllowedEffectPath::ProductSurface,
+        },
+        Expected {
+            route_id: OPENAI_COMPAT_ROUTE_EMBEDDINGS_API,
+            method: NetworkMethod::Post,
+            pattern: "/api/v1/embeddings",
+            body_limit: body_limit_kib(2 * 1024),
+            rate_limit_max: 60,
+            streaming: StreamingMode::None,
+            effect_path: AllowedEffectPath::ProductSurface,
         },
         Expected {
             route_id: OPENAI_COMPAT_ROUTE_RESPONSES_API_CREATE,
@@ -122,7 +143,7 @@ fn expected_table() -> Vec<Expected> {
 #[test]
 fn route_descriptors_lock_host_owned_ingress_policy() {
     let routes = openai_compat_routes();
-    assert_eq!(routes.len(), 9);
+    assert_eq!(routes.len(), 11);
 
     let mut seen = BTreeSet::new();
     for expected in expected_table() {

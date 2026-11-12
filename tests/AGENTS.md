@@ -89,18 +89,18 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Extension lifecycle | 14 | 6 | ✓ | ✓ |
 | Channels (Slack/Telegram/webhook) | 5 | 3 | ✓ | ✓ |
 | Triggers / automations / routines | 10 | 2 | ✓ | ✓ |
-| Memory & workspace | 11 | 2 | — | ✓ |
+| Memory & workspace | 12 | 2 | — | ✓ |
 | Skills | 1 | 1 | — | ✓ |
 | Multi-user / scope isolation | 5 | 4 | 9 | ✓ |
 | Tools & tool dispatch | — | 11 | ✓ | ✓ |
 | Turn lifecycle (cancel/steer/retry/restart) | — | 8 | ✓ | ✓ |
-| WebUI surfaces & APIs | 2 | 2 | — | ✓ (largest) |
+| WebUI surfaces & APIs | 2 | 3 | — | ✓ (largest) |
 | Durability & restart | 4 | 6 | ✓ | ✓ |
 | Security & redaction | — | 3 | ✓ | ✓ |
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **64** group scenarios · **65** flat integration bins (58 in
+Totals: **65** group scenarios · **67** flat integration bins (60 in
 `tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
@@ -108,7 +108,7 @@ Python scenarios, so its exhaustive totals are intentionally broader.
 
 ---
 
-## 3. Group scenarios — `tests/integration/group_*/` (64)
+## 3. Group scenarios — `tests/integration/group_*/` (65)
 
 Multi-thread journeys over ONE shared runtime and ONE shared set of stores. These are
 the canonical "a user does X in one conversation and sees the effect in another" tests.
@@ -158,7 +158,7 @@ the canonical "a user does X in one conversation and sees the effect in another"
 | Have a stored-but-expired credential rejected, reconnect, and have the tool retry **with the new credential** | `scenario_expired_credential_resume.rs` |
 | Not resolve another person's approval prompt — each user answers their own | `scenario_multi_actor_gate_isolation.rs` |
 
-### 3.4 Memory — `group_memory/` (11)
+### 3.4 Memory — `group_memory/` (12)
 
 | The user can… | Evidence |
 |---|---|
@@ -173,6 +173,7 @@ the canonical "a user does X in one conversation and sees the effect in another"
 | Tell from the run itself that memory retrieval BROKE rather than simply having nothing to say — the two used to be the same silent empty section (#7185/#7275) | `scenario_memory_retrieval_failure_is_visible.rs` |
 | Have their standing memory document tidied for them every so often — redundant entries merged, superseded facts resolved — by a background pass that runs with nobody present, as them and only them (#7276) | `scenario_memory_curation_rewrites_standing_document.rs` |
 | Not pay for that tidying on every single turn: below the configured interval no pass is submitted at all (#7276) | `scenario_memory_curation_below_threshold_never_fires.rs` |
+| On a deployment with an embedding provider configured, search memory by MEANING — a query sharing no word with the saved sentence still finds it, and a word-and-meaning match is reported as hybrid — while a deployment without one keeps exactly today's full-text results (a new scenario because the embedder is a group construction input every other memory scenario must not have) | `scenario_semantic_memory_search_libsql.rs` |
 
 ### 3.5 Multi-user — `group_multiuser/` (5)
 
@@ -224,7 +225,7 @@ ones speak MTProto over a raw socket with no injectable seam.
 
 ---
 
-## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (65)
+## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (67)
 
 One thread, whole real turn. Grouped by what the user experiences.
 
@@ -344,13 +345,14 @@ One thread, whole real turn. Grouped by what the user experiences.
 | The test harness's runtime wiring stays field-identical to production's | `wiring_parity.rs` |
 | An operator edits the default model in `config.toml` and the next turn uses it without a restart; an invalid file or a selection that does not resolve is rejected and the old model keeps serving; edits to listener/origin/identity settings — including one made while the server was booting — are reported restart-required and never applied (drives `build_reborn_runtime` with a boot config, because the turn harness wires neither a boot config nor the live LLM reload handle) | `config_reload.rs` |
 | WebUI v2 routes work over the real services facade | `webui_v2_product_api.rs`, `webui_v2_router_smoke.rs` |
+| An OpenAI-compatible client gets embeddings from `/v1/embeddings` (and `/api/v1/embeddings`) in the OpenAI shape — float or base64 — only with a valid bearer, with a wrong model, token-id input, oversized batch/input or body refused before the provider is called, and the same per-route, per-caller 60/min rate limit as chat completions (each embeddings path its own bucket); and native memory recall works through the production `[embeddings]` chain (real provider + network egress + bound operator key store, against a loopback OpenAI-format stub), with the stored key in `authorization` and degradation to full text when the provider starts failing; a new bin because no existing suite mounts the OpenAI-compatible routes behind the real WebUI middleware | `openai_compat_embeddings.rs` |
 | Enroll/refresh/remove a browser for web push over the real routes — advertised VAPID key, endpoint redacted to its push-service host, undeclared push hosts rejected, and the `web-app` catalog row selectable through the same notification-channels wire as every vendor channel | `webui_v2_product_api.rs::browser_channel_notification_setup_round_trip_through_production_facade` |
 | Identity resolution runs on the coverage lane | `identity_resolution_smoke.rs` |
 | Pair another device with a one-time code (any case, dashes optional; every bad code gets the same `invalid_code`), use its device token as the operator, revoke it and see it rejected even after a restart; pair in one click only as a tailnet owner and only through the identity listener — a new bin because no existing suite composes the WebUI routes over the identity crate's records | `environment_access.rs` |
 | A canonical 10-tool-call agent turn's database write volume is measured and reported (for tracking, not gated) on both libSQL and Postgres, and custom-actor group threads are rejected from canonical durable milestones | `db_write_canonical.rs` |
 | A downloaded run artifact carries per-iteration model-call timing evidence for a completed run, and still carries durable per-message timestamps (with an explicit `run_not_resident` reason) when the process-local timing buffer was evicted or the process restarted | `run_artifact_timings.rs` |
 
-One of the 65 registered bins, `delivery_user_journeys.rs`, holds the explicit
+One of the 67 registered bins, `delivery_user_journeys.rs`, holds the explicit
 channel-delivery journeys (two-lane model):
 
 | A user can… | Scenario |
@@ -592,7 +594,7 @@ verify it.
 | **Sub-agents** have no group scenario | `reborn_subagent_spawn_e2e.rs` + `subagent_await_edge.rs` only. |
 | **Python E2E skip/xfail debt** | Tracked separately in `tests/e2e/E2E_DEBT.md` (ClawHub skills, legacy Gmail/MCP OAuth prerequisites, Telegram OAuth placeholders, portfolio widget, v2 auth/OAuth xfails). Do not silently un-xfail. |
 | **Live-model tool-misuse patterns** are documented but not gated | `tests/e2e/LIVE_TOOL_FAILURES.md` — the assistant claiming a write it never made, etc. No test fails on these today. |
-| **Observability** export is partial | The Prometheus scrape is covered (`operator_metrics.rs`; routes at crate tier in `ironclaw_webui/tests/operator_observability_routes.rs`). There is no OTLP exporter yet, and token metrics have no scenario (scripted replies report zero tokens; decorator-tier only, `ironclaw_operator` `metrics::tests`). Production's decorator call sites are pinned at the composition tier (`runtime/tests/core.rs`). |
+| **Observability** export is partial | The Prometheus scrape is covered (`operator_metrics.rs`; routes at crate tier in `ironclaw_webui/tests/operator_observability_routes.rs`). There is no OTLP exporter yet, and token metrics have no scenario (scripted replies report zero tokens; decorator-tier only, `ironclaw_operator` `metrics::tests`). Production's decorator call sites are pinned at the composition tier (`runtime/tests/core/production_build.rs`, `runtime/tests/core/llm_gateway.rs`). |
 
 ---
 

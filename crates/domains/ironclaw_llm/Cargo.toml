@@ -27,6 +27,9 @@ ironclaw_common = { path = "../../contracts/ironclaw_common", version = "0.4.2" 
 # `AgentMessage` tool-call vocabulary — contracts-tier, no execution.
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api", version = "0.1.0" }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety", version = "0.2.2" }
+# Embedding calls go through the policy egress (AGENTS.md: external HTTP goes
+# through ironclaw_network); chat providers keep their hardened reqwest clients.
+ironclaw_network = { path = "../../substrates/ironclaw_network" }
 
 async-trait = "0.1"
 anyhow = "1"

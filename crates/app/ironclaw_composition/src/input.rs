@@ -246,6 +246,10 @@ pub struct RebornHostBindings {
     /// cadence applies; a provider that declares no op schedules nothing
     /// either way.
     pub(crate) memory_curation_interval_turns: Option<NonZeroU32>,
+    /// The deployment's embedding provider, from the `[embeddings]` config
+    /// section. `None` — the default — means no provider: `/v1/embeddings`
+    /// stays fail-closed and memory search stays full-text only.
+    pub(crate) embeddings: Option<crate::embeddings::EmbeddingAssembly>,
 }
 
 /// One channel extension's binary-assembled vendor binding
@@ -435,6 +439,23 @@ impl RebornHostBindings {
     pub fn with_memory_provider_connection(mut self, connection: Mem0ConnectionConfig) -> Self {
         self.memory_provider_connection = connection;
         self
+    }
+
+    /// Configure the deployment's embedding provider from the `[embeddings]`
+    /// config section, resolved against the provider registry (built-ins plus
+    /// `providers_file`). A section that does not resolve fails here, before
+    /// the runtime is built. The provider's API key is read later, per call,
+    /// from the operator secret store.
+    pub fn with_embeddings_section(
+        mut self,
+        section: &ironclaw_config::EmbeddingsSection,
+        providers_file: Option<&std::path::Path>,
+    ) -> Result<Self, crate::RebornBuildError> {
+        self.embeddings = Some(crate::embeddings::build_embedding_assembly(
+            section,
+            providers_file,
+        )?);
+        Ok(self)
     }
 
     /// Override the bound memory provider's DECLARED upkeep cadence with this
@@ -1008,6 +1029,7 @@ impl RebornHostBindings {
             memory_binding_policy: None,
             memory_provider_connection: Mem0ConnectionConfig::default(),
             memory_curation_interval_turns: None,
+            embeddings: None,
         }
     }
 

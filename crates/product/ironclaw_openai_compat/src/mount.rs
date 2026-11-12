@@ -76,6 +76,10 @@ pub struct OpenAiCompatRouteMountPorts {
     /// Prepared-context door for structured-output / tool-history chat
     /// requests. Production always wires this; it is a required dependency.
     pub prepared_turn_port: Arc<dyn crate::OpenAiCompatPreparedTurnPort>,
+    /// The deployment's embedding model, backing `POST /v1/embeddings`.
+    /// `None` when no embedding provider is configured; the route then stays
+    /// fail-closed (501).
+    pub embeddings: Option<Arc<dyn crate::OpenAiCompatEmbeddings>>,
 }
 
 /// Assemble the OpenAI-compatible router and its ingress descriptors from
@@ -90,6 +94,7 @@ pub fn openai_compat_route_mount(ports: OpenAiCompatRouteMountPorts) -> Protecte
         external_tool_resume,
         llm_config,
         prepared_turn_port,
+        embeddings,
     } = ports;
 
     let projection_streamer = Arc::new(OpenAiCompatRuntimeProjectionStreamer::new(Arc::clone(
@@ -120,6 +125,10 @@ pub fn openai_compat_route_mount(ports: OpenAiCompatRouteMountPorts) -> Protecte
                 Arc::new(LlmConfigModelCatalog::new(llm_config));
             router_state.with_models_catalog(catalog)
         }
+        None => router_state,
+    };
+    let router_state = match embeddings {
+        Some(embeddings) => router_state.with_embeddings_service(embeddings),
         None => router_state,
     };
     ProtectedRouteMount::new(

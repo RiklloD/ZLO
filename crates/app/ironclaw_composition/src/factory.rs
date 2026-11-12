@@ -360,6 +360,10 @@ pub(crate) struct RebornRuntimeStores {
         ironclaw_extension_contracts::memory::MemoryScheduledTrigger,
         String,
     )>,
+    /// The deployment's embedding provider (`[embeddings]`), already bound to
+    /// the operator key store. `None` when no section is configured.
+    // arch-exempt: optional_arc, a deployment without `[embeddings]` has no embedding provider by design, plan #embeddings
+    pub(crate) embedding_provider: Option<Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider>>,
     /// The deployment's single workspace scoping decision, read by every
     /// workspace write lane (grants, approval leases, attachment handles).
     pub(crate) workspace_mounts: crate::runtime_mounts::WorkspaceMountPolicy,

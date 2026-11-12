@@ -219,6 +219,13 @@ impl RebornRuntime {
         Some(routes as _)
     }
 
+    /// The deployment's embedding provider, when `[embeddings]` configured one.
+    pub(crate) fn embedding_provider(
+        &self,
+    ) -> Option<Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider>> {
+        self.embedding_provider.clone()
+    }
+
     /// The live `[llm.default]` seam a `config.toml` reloader applies
     /// through (`zlo serve` builds its `RebornConfigReloader` over it). Shared
     /// with Settings and the boot apply so every path is serialized and sees

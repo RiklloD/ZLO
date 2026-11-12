@@ -154,8 +154,20 @@ impl FirstPartyCapabilityHandler for MemoryToolGuard {
 pub fn register_native_memory_tools(
     registry: &mut FirstPartyCapabilityRegistry,
 ) -> Result<(), ironclaw_extension_registry::ExtensionError> {
+    register_native_memory_tools_with_embedder(registry, None)
+}
+
+/// [`register_native_memory_tools`] with semantic search: when `embedder` is
+/// set the tools' native service embeds what it indexes and fuses vector
+/// similarity into `memory.search`. `None` is exactly
+/// [`register_native_memory_tools`].
+pub fn register_native_memory_tools_with_embedder(
+    registry: &mut FirstPartyCapabilityRegistry,
+    embedder: Option<Arc<dyn ironclaw_memory_native::MemoryEmbedder>>,
+) -> Result<(), ironclaw_extension_registry::ExtensionError> {
     let bundle = crate::memory_native_extension::native_memory_provider_bundle()?;
-    let handler = Arc::new(NativeMemoryToolHandler::from_package(&bundle.package));
+    let handler =
+        Arc::new(NativeMemoryToolHandler::from_package(&bundle.package).with_embedder(embedder));
     register_memory_tool_handler(registry, &bundle.package, handler);
     Ok(())
 }
@@ -173,6 +185,9 @@ struct CachedMemoryService {
 pub struct NativeMemoryToolHandler {
     profiles: BTreeMap<CapabilityId, MemoryToolProfile>,
     cached: Mutex<Option<CachedMemoryService>>,
+    /// Semantic-search embedder for the per-request native service.
+    // arch-exempt: optional_arc, a deployment without `[embeddings]` has no embedder by design, plan #embeddings
+    embedder: Option<Arc<dyn ironclaw_memory_native::MemoryEmbedder>>,
 }
 
 impl std::fmt::Debug for NativeMemoryToolHandler {
@@ -190,7 +205,18 @@ impl NativeMemoryToolHandler {
         Self {
             profiles: memory_tool_profiles(package),
             cached: Mutex::new(None),
+            embedder: None,
         }
+    }
+
+    /// Serve the tools over a native service with semantic search when
+    /// `embedder` is set (`None` keeps full-text only).
+    pub fn with_embedder(
+        mut self,
+        embedder: Option<Arc<dyn ironclaw_memory_native::MemoryEmbedder>>,
+    ) -> Self {
+        self.embedder = embedder;
+        self
     }
 
     fn service_for(
@@ -214,9 +240,10 @@ impl NativeMemoryToolHandler {
             Arc::new(AuditPromptWriteSafetyEventSink { audit_sink })
                 as Arc<dyn PromptWriteSafetyEventSink>
         });
-        let service = Arc::new(NativeMemoryService::from_filesystem(
+        let service = Arc::new(NativeMemoryService::from_filesystem_with_embedder(
             Arc::clone(&filesystem),
             prompt_write_safety_event_sink,
+            self.embedder.clone(),
         ));
         *cached = Some(CachedMemoryService {
             filesystem,

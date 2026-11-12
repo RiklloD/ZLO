@@ -1031,7 +1031,7 @@ where
                 context.scope(),
                 MemorySignificantEventSource::RepositoryMemoryBackend,
                 true,
-                false,
+                request.query_embedding().is_some(),
                 results.len() as u64,
             )
             .with_audit_context(context.audit_context()),
