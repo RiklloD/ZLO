@@ -4,8 +4,6 @@
 //! instead of reaching into turn coordination, thread stores, runtime lanes, DB
 //! stores, dispatchers, or capability hosts directly.
 
-// arch-exempt: large_file, holds the ProductSurface service awaiting the JIT domain-port split, plan #5985
-
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},

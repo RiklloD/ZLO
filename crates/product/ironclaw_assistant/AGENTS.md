@@ -298,12 +298,12 @@ row where a row owned free items or `RebornServices` methods — e.g.
 `operator_config.rs`; builder wiring in `wiring.rs`). The root keeps the
 `dispatch` row: the `RebornServices` struct and constructor, the shared
 caller/error helpers, `invoke`/`query`, and the `ProductSurface` impl. That move
-was a pure relocation — no new surface, no behavior change. The root still
-carries its `// arch-exempt: large_file` waiver naming plan #5985: the waiver
-names the JIT domain-port split, which this file split is **not**, so it stays
-until that plan is resolved (PROPOSAL §6.9.1 — *"the `reborn_services`
-god-object keeps its freeze ratchet and gains a module-charter map (the audited
-≥ 11 sub-owners)"*).
+was a pure relocation — no new surface, no behavior change. The root is now
+under the 1,500-line ARCH-SPRAWL trigger in `scripts/pre-commit-safety.sh`, so
+it no longer carries a `// arch-exempt: large_file` waiver; the JIT domain-port
+split (plan #5985) is separate work this file split does not discharge
+(PROPOSAL §6.9.1 — *"the `reborn_services` god-object keeps its freeze ratchet
+and gains a module-charter map (the audited ≥ 11 sub-owners)"*).
 
 **The freeze ratchet is a different gate and stays.**
 `crates/app/ironclaw_architecture_tests/tests/reborn_service_method_freeze_ratchet.rs`

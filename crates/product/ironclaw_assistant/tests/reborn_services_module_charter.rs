@@ -322,31 +322,6 @@ fn the_map_keeps_at_least_the_audited_sub_owner_count() {
     );
 }
 
-/// The `large_file` waiver **stays**. A charter map is explicitly not the split.
-///
-/// Without this, the natural next move for someone reading the charter is to
-/// delete the waiver as "handled" — which would silently drop the file out of
-/// the ARCH-SPRAWL tracking `scripts/pre-commit-safety.sh` enforces.
-#[test]
-fn the_large_file_waiver_survives_the_charter_map() {
-    let source = std::fs::read_to_string(src_dir().join("reborn_services.rs"))
-        .expect("read reborn_services.rs");
-    assert!(
-        source.contains("// arch-exempt: large_file"),
-        "the `// arch-exempt: large_file` waiver was removed from \
-         reborn_services.rs. The module-charter map does not discharge it — \
-         PROPOSAL §6.4.15 calls this shape \"module-charter work, not a split\". \
-         Restore it, or land the split and delete both."
-    );
-    assert!(
-        source.contains("plan #5985"),
-        "the `large_file` waiver no longer names plan #5985. \
-         `scripts/pre-commit-safety.sh` requires \
-         `// arch-exempt: <category>, <reason>, plan #NNNN`, and the plan number \
-         is the only thing that makes the waiver revocable."
-    );
-}
-
 /// An **aligned** separator row (`|:---|`) must not parse as data.
 ///
 /// The regression this pins: matching the separator with

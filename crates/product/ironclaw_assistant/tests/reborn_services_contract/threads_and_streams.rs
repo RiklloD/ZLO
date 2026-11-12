@@ -871,10 +871,11 @@ async fn get_timeline_rejects_malformed_cursor() {
 #[test]
 fn service_source_avoids_forbidden_runtime_dependencies() {
     // The service is split into `src/reborn_services/` submodules, so the root
-    // alone no longer holds it. `approval_settings.rs` is excluded on purpose:
-    // it is the one focused seam that imports `ironclaw_approvals` so the rest
-    // of the service does not (see that module's doc comment), and it was
-    // never in this check's reach.
+    // alone no longer holds it. `approval_settings.rs` is the one focused seam
+    // that imports `ironclaw_approvals` so the rest of the service does not
+    // (see that module's doc comment); it is exempt from that one token only
+    // and is checked for every other forbidden dependency.
+    const APPROVALS_SEAM: &str = "approval_settings.rs";
     let mut sources = vec![std::path::PathBuf::from("src/reborn_services.rs")];
     let mut pending = vec![std::path::PathBuf::from("src/reborn_services")];
     while let Some(dir) = pending.pop() {
@@ -882,11 +883,7 @@ fn service_source_avoids_forbidden_runtime_dependencies() {
             let path = entry.expect("dir entry").path();
             if path.is_dir() {
                 pending.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs")
-                && path
-                    .file_name()
-                    .is_some_and(|name| name != "approval_settings.rs")
-            {
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
                 sources.push(path);
             }
         }
@@ -895,25 +892,34 @@ fn service_source_avoids_forbidden_runtime_dependencies() {
         sources.len() > 1,
         "no reborn_services submodule was scanned"
     );
-    let source = sources
-        .iter()
-        .map(|path| std::fs::read_to_string(path).expect("service source"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for forbidden in [
-        "CapabilityHost",
-        "ironclaw_capabilities",
-        "ironclaw_host_runtime",
-        "ironclaw_approvals",
-        "ironclaw_storage",
-        "RuntimeLane",
-        "pub fn thread_service",
-        "pub fn turn_coordinator",
-    ] {
-        assert!(
-            !source.contains(forbidden),
-            "RebornServices service must not expose route handlers to {forbidden}"
-        );
+    assert!(
+        sources
+            .iter()
+            .any(|path| path.file_name().is_some_and(|name| name == APPROVALS_SEAM)),
+        "the {APPROVALS_SEAM} seam was not found; update this gate if it moved"
+    );
+    for path in &sources {
+        let source = std::fs::read_to_string(path).expect("service source");
+        let is_approvals_seam = path.file_name().is_some_and(|name| name == APPROVALS_SEAM);
+        for forbidden in [
+            "CapabilityHost",
+            "ironclaw_capabilities",
+            "ironclaw_host_runtime",
+            "ironclaw_approvals",
+            "ironclaw_storage",
+            "RuntimeLane",
+            "pub fn thread_service",
+            "pub fn turn_coordinator",
+        ] {
+            if is_approvals_seam && forbidden == "ironclaw_approvals" {
+                continue;
+            }
+            assert!(
+                !source.contains(forbidden),
+                "RebornServices service must not expose route handlers to {forbidden} ({})",
+                path.display()
+            );
+        }
     }
 
     let _ = Utc::now();
