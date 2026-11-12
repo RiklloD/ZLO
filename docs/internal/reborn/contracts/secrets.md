@@ -103,6 +103,48 @@ malformed. The earlier filesystem-stored key-check sentinel was removed with the
 tenant-aware `ScopedFilesystem` rework; master-key mismatch is verified on the
 first per-tenant decrypt operation.
 
+Lease listing (`leases_for_scope`) reads by directory scan: `list_dir` over
+the owner lease root, one `get` per lease, then a re-check of each decoded
+lease's full scope (mission/thread/invocation included) through the caller's
+`ScopedFilesystem`, so the mount ACL applies to every read. It writes nothing
+and declares nothing, so a read+list mount view is enough.
+
+The `secret_leases_by_scope_v1` ordered index is rolling out in two releases
+(expand, then contract) because a reader that depends on it is wrong while any
+binary that predates it can still write: such a binary writes new leases with
+no projection, and on PostgreSQL its consume/revoke/expiry UPDATE of a lease
+the newer binary wrote removes that row from the ordered index (the projection
+trigger deletes the index row on every UPDATE and re-inserts only when the new
+entry still carries the index keys). Re-running a migration by hand cannot make
+a rolling deploy correct; only removing old writers can.
+
+1. **Expand (current).** Every lease write carries the projection: keys
+   `(lease_scope_key, lease_expires_at, lease_id)`, where `lease_scope_key`
+   is a hex SHA-256 over the length-prefixed full lease scope
+   (tenant/user/agent/project/mission/thread/invocation). Reads stay on the
+   directory scan. `SecretStore::migrate_lease_scope_index(scope)` is the
+   explicit, idempotent backfill for one owner lease root: it skips rows
+   whose stored projection already matches, re-projects the rest through
+   `cas_update` with bodies kept byte-for-byte, needs write permission, and is
+   safe to re-run after a partial failure. Nothing on a request path calls it.
+   `SecretStore::leases_for_scope_via_index_unreleased` holds the indexed read
+   (one bounded `query_ordered` keyset traversal plus the same scope re-check);
+   only the conformance suite calls it.
+2. **Contract (follow-up).** Precondition: the minimum writer version is the
+   expand release, meaning no binary older than it can run against the store,
+   rollback target included. Then a startup or operator migration runs
+   `migrate_lease_scope_index` for every owner lease root to completion, and
+   `leases_for_scope` switches to the indexed read. The contract release can
+   only be rolled back to the expand release, never past it.
+
+Backends that serve no ordered index (the byte-only local filesystem) keep the
+directory scan in both steps.
+
+Encryption-at-rest is still applied inside `SecretStore`/`CredentialBroker`,
+not through the `EncryptedBackend` decorator the filesystem contract
+(invariant 6) describes; the open contract questions are in
+`docs/internal/plans/2026-11-11-secrets-encrypted-backend-question.md`.
+
 The shared Reborn runtime HTTP egress service uses this surface to:
 
 - check metadata for required or optional credential handles
