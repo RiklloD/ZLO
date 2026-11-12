@@ -125,12 +125,10 @@ impl Scrubber {
     /// One line: JSON values inside it are scrubbed structurally, the text
     /// around them by shape.
     fn line(&self, text: &str) -> String {
-        let mut attempts = 0;
-        for (index, _) in text.match_indices(['{', '[']) {
-            if attempts == MAX_JSON_ATTEMPTS_PER_LINE {
-                break;
-            }
-            attempts += 1;
+        for (index, _) in text
+            .match_indices(['{', '['])
+            .take(MAX_JSON_ATTEMPTS_PER_LINE)
+        {
             let mut stream =
                 serde_json::Deserializer::from_str(&text[index..]).into_iter::<Value>();
             let Some(Ok(mut value)) = stream.next() else {

@@ -134,10 +134,10 @@ fn flag_and_scheme_spans(line: &str, spans: &mut Vec<(usize, usize)>) {
         let is_flag = word.starts_with("--") && !word.contains('=') && is_sensitive_key(word);
         let core = trim_punctuation(word);
         let is_scheme = core.eq_ignore_ascii_case("bearer") || core.eq_ignore_ascii_case("basic");
-        if is_flag || is_scheme {
-            if let Some(span) = value_span(line, next_start) {
-                push_span(spans, span);
-            }
+        if (is_flag || is_scheme)
+            && let Some(span) = value_span(line, next_start)
+        {
+            push_span(spans, span);
         }
     }
 }
