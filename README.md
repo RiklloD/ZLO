@@ -1,5 +1,7 @@
 # ZLO
 
+English | [简体中文](README.zh-CN.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
+
 My personal AI desktop app. Built in Rust for macOS, with a native [Rune](https://github.com/anomalyco/rune) interface and an [IronClaw](https://github.com/nearai/ironclaw) backend.
 
 I'm [Lorik](https://github.com/RiklloD). I'm a business student who likes to tinker with tech. I have more ideas than engineering experience, and I work with AI agents to turn those ideas into software I can use. ZLO is the app I'm building around that way of working.
