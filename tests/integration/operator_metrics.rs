@@ -112,6 +112,11 @@ async fn a_tool_call_turn_moves_the_operator_scrape_impl() {
     h.assert_reply_contains("fetched")
         .await
         .expect("final reply finalized");
+    // Runtime events are counted when the write-behind sink's drain commits
+    // them, not when producers hand them over: drain before scraping.
+    h.flush_durable_events()
+        .await
+        .expect("durable events flush");
 
     // Lifecycle sinks are best-effort after the terminal commit; give them a
     // moment rather than racing the status read.

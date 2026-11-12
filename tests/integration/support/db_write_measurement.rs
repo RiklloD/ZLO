@@ -278,6 +278,18 @@ impl RebornIntegrationHarness {
         Ok(())
     }
 
+    /// Drain the write-behind durable event sink: everything accepted before
+    /// the call is durably appended (or its failure returned) on `Ok`.
+    pub async fn flush_durable_events(&self) -> HarnessResult<()> {
+        self._shared
+            .durable_event_sink
+            .as_ref()
+            .ok_or("durable milestone event sink is not wired")?
+            .flush()
+            .await
+            .map_err(|error| format!("flush durable milestone events: {error}").into())
+    }
+
     pub async fn assert_durable_event_count_at_least(&self, minimum: usize) -> HarnessResult<()> {
         self._shared
             .durable_event_sink
