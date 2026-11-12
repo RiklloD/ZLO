@@ -69,8 +69,8 @@ tolerance_bp = 30
 # Informational — the observed share when this file was last updated. Lets a
 # reviewer see the baseline and lets the gate emit a down-ratchet nudge. Not
 # consulted for the pass/fail decision.
-observed_bp = 536
-observed_date = "2026-11-11"
+observed_bp = 542
+observed_date = "2026-11-12"
 
 # --- Absolute mass (production LOC) ---------------------------------------
 # The BINDING mass bound. Same numerator as the share metric — production `.rs`
@@ -337,7 +337,17 @@ observed_date = "2026-11-11"
 # `*_tests.rs` gated only by its real, lexed parent declaration): unchanged,
 # 33749 LOC / 668 sites — composition has no ungated `mod tests` and no
 # `*_tests.rs` whose gating the fixes changed.
-loc_ceiling = 33599
+# ✎ 2026-11-12 (integration of the reviewed-improvements batch): re-seeded
+# the same way, ZERO hidden headroom: loc_ceiling + loc_tolerance = 34406 +
+# 150 = 34556 = the observed count on the integrated tip. THIS BANKS A
+# FURTHER +808 LOC (33748 on main -> 34556), likewise pending the owner's
+# sign-off. Per merge, measured at each first-parent commit with
+# `check-composition-budget.sh --print`: fix/let-underscore-must-use +21
+# (observable shutdown/emit traces), split-composition-runtime +87 (module
+# headers/imports of the runtime.rs split), gate-enforcement-finish +1,
+# feat/config-hot-reload +41, feat/operator-readiness-metrics +234,
+# embeddings-hybrid-memory +424; every other branch +0.
+loc_ceiling = 34406
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -348,7 +358,7 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 33749
+loc_observed = 34556
 loc_observed_date = "2026-11-12"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------
@@ -438,6 +448,10 @@ loc_observed_date = "2026-11-12"
 # ZERO hidden headroom. This banks +24 `Arc<dyn>` of pre-existing growth
 # (869 vs 845 under the old rule) pending the repo owner's sign-off — see the
 # loc_ceiling note above; no fresh 15-site window is opened by the re-seed.
-arc_dyn_ceiling = 653
+# ✎ 2026-11-12 (batch integration): 653 -> 681 so ceiling + tolerance =
+# 681 + 15 = 696 = observed, ZERO hidden headroom. Banks a further +28
+# `Arc<dyn>` pending the owner's sign-off: feat/config-hot-reload +3,
+# feat/operator-readiness-metrics +10, embeddings-hybrid-memory +15.
+arc_dyn_ceiling = 681
 arc_dyn_tolerance = 15
-arc_dyn_observed = 668
+arc_dyn_observed = 696

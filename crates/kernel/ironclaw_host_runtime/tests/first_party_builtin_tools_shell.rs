@@ -441,7 +441,7 @@ async fn builtin_shell_does_not_inherit_unlisted_parent_env() {
     // SAFETY: test uses a crate-local mutex and a unique environment variable;
     // no production code depends on this key.
     unsafe {
-        std::env::set_var("IRONCLAW_SHELL_SECRET_TEST", "must_not_leak");
+        std::env::set_var("IRONCLAW_SHELL_SECRET_TEST", "must_not_leak"); // env-hermetic: test-owned key under ENV_LOCK; the child shell needs a real parent var
     }
     let output = invoke_shell(json!({
         "command": "printf ${IRONCLAW_SHELL_SECRET_TEST:-missing}"
@@ -449,7 +449,7 @@ async fn builtin_shell_does_not_inherit_unlisted_parent_env() {
     .await;
     // SAFETY: clears only the test-owned key set above.
     unsafe {
-        std::env::remove_var("IRONCLAW_SHELL_SECRET_TEST");
+        std::env::remove_var("IRONCLAW_SHELL_SECRET_TEST"); // env-hermetic: test-owned key under ENV_LOCK; the child shell needs a real parent var
     }
 
     let output = output.unwrap();
