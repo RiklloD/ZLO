@@ -38,9 +38,10 @@ secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
 ironclaw_filesystem = { path = "../ironclaw_filesystem", features = ["test-support"] }
 # libSQL leg of the lease-listing conformance suite.
 libsql = { version = "0.9", default-features = false, features = ["core"] }
-# PostgreSQL leg of the lease-listing conformance suite; skips without
-# IRONCLAW_SECRETS_POSTGRES_URL.
+# PostgreSQL leg of the lease-listing conformance suite: `DATABASE_URL` when
+# set (one isolated database per test), else a testcontainers server.
 deadpool-postgres = "0.14"
+testcontainers-modules = { version = "0.12", features = ["postgres"] }
 tokio-postgres = "0.7"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
