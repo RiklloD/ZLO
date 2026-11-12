@@ -45,11 +45,32 @@ zlo doctor --bundle zlo-diagnostics.zip
 
 The zip holds the doctor checks, the status snapshot, your effective configuration, the
 ZLO version and platform, the storage backend kind, installed extension ids and versions,
-the enabled LLM backend kind, and the tail of the service logs. Secrets, tokens, API keys
-and credentials in URLs are replaced with `[REDACTED]`, and your conversations, memory,
-workspace files and database are never read. The file stays on your computer; nothing is
-uploaded. Add `--no-logs` to leave the log tails out, or `--force` to overwrite an existing
-file.
+the enabled LLM backend kind, and the tail of the service logs (at most 2000 lines and
+256 KiB per log). Your conversations, memory, workspace files, database and secret store
+are never read. The file stays on your computer; nothing is uploaded, and your ZLO folder
+is not changed (an old `~/.ironclaw/reborn` folder is read where it is, not moved).
+
+What is redacted, and how far that goes:
+
+- **Values ZLO knows are secret** — the WebUI token, the local secrets master key, and
+  the values of env vars that hold credentials (names from `config.toml`, the built-in
+  provider list, the defaults, and any env var whose name contains `TOKEN`, `SECRET`,
+  `PASSWORD`, `API_KEY` and similar) — are replaced wherever they appear, also when
+  JSON-escaped, percent-encoded or base64-encoded. If one still shows up in any other
+  encoding, the bundle is not written at all.
+- **Recognizable credentials** are replaced with `[REDACTED]`: values of credential-named
+  keys and flags (`token=`, `"password": "…"`, `Authorization: Bearer …`, `--api-key …`),
+  passwords in URLs, URL query strings, PEM private keys, and known token shapes (OpenAI,
+  Anthropic, Slack, GitHub, AWS, Google, Hugging Face, Telegram bot, Notion, JWTs).
+- **Limits.** Log lines are free text. A secret ZLO doesn't know about, written in a
+  shape it doesn't recognize, can survive in a log tail. If you aren't sure what your logs
+  contain, use `--no-logs`. When `config.toml` or `providers.json` is broken, ZLO knows
+  fewer secret values; the command says so and records it in `manifest.json`. On Linux
+  the service logs to the systemd journal, so the bundle carries only the updater's log
+  there, not the service's. Look through the
+  zip before you share it.
+
+Add `--no-logs` to leave the log tails out, or `--force` to overwrite an existing file.
 
 ---
 

@@ -3652,6 +3652,61 @@ fn doctor_bundle_writes_local_zip_without_creating_reborn_home() {
     assert!(run(&["--force", "--no-logs"]).status.success());
 }
 
+/// Through real CLI dispatch: with only a pre-ZLO `~/.ironclaw/reborn`
+/// present, `doctor --bundle` must collect from it where it is and must not
+/// move it to `~/.zlo` (the migrating resolver every other command uses).
+#[test]
+fn doctor_bundle_does_not_migrate_a_legacy_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let user_home = temp.path().join("user");
+    let legacy = user_home.join(".ironclaw").join("reborn");
+    std::fs::create_dir_all(legacy.join("logs")).expect("legacy home");
+    std::fs::write(
+        legacy.join("config.toml"),
+        "[llm.default]\nprovider_id = \"openai\"\n",
+    )
+    .expect("config");
+    std::fs::write(
+        legacy.join("logs").join("serve.stderr.log"),
+        "legacy log line\n",
+    )
+    .expect("log");
+    let bundle = temp.path().join("diagnostics.zip");
+
+    let output = reborn_command()
+        .arg("doctor")
+        .arg("--bundle")
+        .arg(&bundle)
+        .env("HOME", &user_home)
+        .output()
+        .expect("zlo doctor --bundle should run");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        legacy.join("config.toml").is_file()
+            && legacy.join("logs").join("serve.stderr.log").is_file(),
+        "the legacy home must stay where it is"
+    );
+    assert!(
+        !user_home.join(".zlo").exists(),
+        "doctor --bundle must not create or migrate to ~/.zlo"
+    );
+    let file = std::fs::File::open(&bundle).expect("bundle written");
+    let mut archive = zip::ZipArchive::new(file).expect("zip");
+    let mut log = String::new();
+    std::io::Read::read_to_string(
+        &mut archive
+            .by_name("logs/serve.stderr.log.tail.txt")
+            .expect("legacy log collected"),
+        &mut log,
+    )
+    .expect("read log");
+    assert!(log.contains("legacy log line"), "{log}");
+}
+
 #[test]
 fn repl_help_mentions_composed_runtime() {
     let output = reborn_command()

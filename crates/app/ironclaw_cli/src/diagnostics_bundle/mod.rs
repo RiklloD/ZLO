@@ -4,11 +4,19 @@
 //! Read-only with respect to application state: it reuses the same read
 //! paths `doctor`, `status`, `config list` and `models status` already take
 //! (none of which create the home), lists extension manifests on disk, and
-//! tails the service logs. It never opens the database, the secret store,
-//! the workspace, memory, or any conversation record, and never uploads.
+//! tails the service logs (macOS launchd logs under the home and the
+//! updater log; on Linux the service logs to the systemd journal, which is
+//! not collected). It never opens the database, the secret store, the
+//! workspace, memory, or any conversation record, and never uploads. The
+//! CLI resolves the home without the legacy-home migration for this command.
+//!
 //! Every string passes through [`redact::Scrubber`] before it is written,
-//! and the archive is refused if a known secret value survives anyway.
+//! and the archive is refused if a known secret value survives anyway in
+//! any spelling the final check decodes. Known values are collected only to
+//! redact them; free text in logs is otherwise matched by pattern only.
 
+mod encodings;
+mod line;
 mod redact;
 
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
@@ -39,20 +47,31 @@ pub(crate) struct BundleOptions {
 pub(crate) struct BundleReport {
     pub(crate) out: PathBuf,
     pub(crate) entries: Vec<String>,
+    /// Why the list of known secret values may be incomplete; empty when
+    /// every source of known values was readable.
+    pub(crate) degraded: Vec<String>,
 }
 
 /// Process-level facts the bundle reads, injectable so tests stay hermetic
 /// (no live service query, no process-env mutation).
 pub(crate) struct BundleInputs<'a> {
     pub(crate) service: ServiceStateDto,
-    pub(crate) env: &'a dyn Fn(&str) -> Option<String>,
+    /// The process environment, as `(name, value)` pairs.
+    pub(crate) env: &'a [(String, String)],
 }
 
 pub(crate) fn write_bundle(
     context: &RebornCliContext,
     options: &BundleOptions,
 ) -> anyhow::Result<BundleReport> {
-    let env = |name: &str| std::env::var(name).ok();
+    let env: Vec<(String, String)> = std::env::vars_os()
+        .map(|(name, value)| {
+            (
+                name.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
     let inputs = BundleInputs {
         service: crate::commands::status::resolve_service_state(),
         env: &env,
@@ -65,14 +84,21 @@ pub(crate) fn write_bundle_with(
     options: &BundleOptions,
     inputs: &BundleInputs<'_>,
 ) -> anyhow::Result<BundleReport> {
-    let entries = collect_entries(context, inputs, options.include_logs)?;
-    let bytes = encode_zip(&entries)?;
     let out = std::path::absolute(&options.out)
         .map_err(|error| anyhow::anyhow!("resolve {}: {error}", options.out.display()))?;
+    if !options.force && std::fs::symlink_metadata(&out).is_ok() {
+        anyhow::bail!(
+            "diagnostics bundle already exists at {}; pass --force to overwrite",
+            out.display()
+        );
+    }
+    let (entries, degraded) = collect_entries(context, inputs, options.include_logs)?;
+    let bytes = encode_zip(&entries)?;
     crate::file_write::write_atomic_bytes(&out, &bytes, options.force, "diagnostics bundle")?;
     Ok(BundleReport {
         out,
         entries: entries.into_iter().map(|(name, _)| name).collect(),
+        degraded,
     })
 }
 
@@ -82,7 +108,7 @@ fn collect_entries(
     context: &RebornCliContext,
     inputs: &BundleInputs<'_>,
     include_logs: bool,
-) -> anyhow::Result<Vec<Entry>> {
+) -> anyhow::Result<(Vec<Entry>, Vec<String>)> {
     let home = context.boot_config().home();
     let profile = context.boot_config().profile();
     let config_list = crate::commands::config::config_list_dto(context);
@@ -90,12 +116,14 @@ fn collect_entries(
     let providers = admin.list(None, true);
     let llm_status = admin.status();
 
-    let scrubber = redact::Scrubber::new(known_secret_values(
-        home,
+    let known = known_secret_values(
+        context,
         config_list.as_ref().ok(),
         providers.as_ref().ok(),
         inputs.env,
-    )?);
+    );
+    let scrubber = redact::Scrubber::new(known.values);
+    let degraded = known.degraded;
 
     let mut entries: Vec<(String, Value)> = Vec::new();
 
@@ -112,16 +140,17 @@ fn collect_entries(
         },
     ));
 
+    // `None` when config.toml failed to load (already reported in
+    // config.json and doctor.json); `Some(None)` when it is absent.
     let config_file = config_list
         .as_ref()
         .ok()
-        // silent-ok: a config.toml that fails to load is already reported in
-        // config.json and doctor.json; system.json then shows no backend.
-        .and_then(|list| ironclaw_config::RebornConfigFile::load(&list.config_file).ok())
-        .flatten();
+        // silent-ok: the load error is reported in config.json/doctor.json and
+        // system.json says the backend is unknown.
+        .and_then(|list| ironclaw_config::RebornConfigFile::load(&list.config_file).ok());
     entries.push((
         "system.json".to_string(),
-        system_json(context, config_file.as_ref()),
+        system_json(context, config_file.as_ref().map(Option::as_ref)),
     ));
 
     entries.push((
@@ -158,7 +187,7 @@ fn collect_entries(
     let mut log_notes = Vec::new();
     if include_logs {
         for path in log_files(home.path()) {
-            match tail_log(&path)? {
+            match tail_log(&path, scrubber.forms())? {
                 Some(text) => {
                     let name = path
                         .file_name()
@@ -180,9 +209,20 @@ fn collect_entries(
         "created_at": chrono::Utc::now().to_rfc3339(),
         "entries": names,
         "logs": log_notes,
-        "redaction": "Secrets, tokens, credentials, URL userinfo/query strings and API keys \
-                      are replaced with [REDACTED]. Not collected at all: the database, \
-                      the secret store, conversations, memory, workspace files, LLM payloads.",
+        "redaction_inputs": {
+            "degraded": !degraded.is_empty(),
+            "reasons": degraded,
+        },
+        "redaction": "Values this machine knows are secret (WebUI token, the local secrets \
+                      master key, env vars named by config.toml, the built-in provider \
+                      catalog or a credential-like name) are replaced in literal, \
+                      JSON-escaped, percent-encoded and base64 form, and the archive is \
+                      refused if one survives. Credential-named keys, URL userinfo/query \
+                      strings, PEM blocks and recognized token shapes are replaced with \
+                      [REDACTED]. Free text in logs is matched by pattern only: a secret the \
+                      bundle does not know, in a shape it does not recognize, can survive \
+                      in a log tail. Not collected at all: the database, the secret store, \
+                      conversations, memory, workspace files, LLM payloads.",
     });
 
     let mut out: Vec<Entry> = Vec::new();
@@ -200,59 +240,203 @@ fn collect_entries(
         .iter()
         .find(|(_, bytes)| scrubber.contains_known_secret(bytes))
     {
-        anyhow::bail!("refusing to write diagnostics bundle: {name} still contains a secret value");
+        let hint = if name.starts_with("logs/") {
+            "; rerun with --no-logs to leave the log tails out"
+        } else {
+            ""
+        };
+        anyhow::bail!(
+            "refusing to write diagnostics bundle: {name} still contains a known secret value \
+             (possibly in an encoding the scrubber does not undo){hint}"
+        );
     }
-    Ok(out)
+    Ok((out, degraded))
 }
 
-/// Values on this machine that are secret by construction: the WebUI token
-/// file and the values of env vars the config or provider catalog names as
-/// credential sources. Only read to redact them; never written.
+/// Env vars whose values are credentials by default, whatever config says.
+const DEFAULT_SECRET_ENV_NAMES: &[&str] = &[
+    "SECRETS_MASTER_KEY",
+    "IRONCLAW_REBORN_SECRET_MASTER_KEY",
+    "IRONCLAW_REBORN_POSTGRES_URL",
+    "DATABASE_URL",
+];
+/// Bound on files read only to learn secret values.
+const SECRET_SOURCE_MAX_BYTES: u64 = 1024 * 1024;
+
+struct KnownSecrets {
+    values: Vec<String>,
+    /// Sources that could not be read, so `values` may be incomplete.
+    degraded: Vec<String>,
+}
+
+/// Values on this machine that are secret by construction, collected only to
+/// redact them (never written): the WebUI token file, the local secrets
+/// master key file, and the values of env vars that are credential sources —
+/// default names, names the built-in provider catalog uses, names
+/// `config.toml` and `providers.json` configure (from the parsed config and,
+/// independently, from a raw scan of the file so a broken config still
+/// counts), and any env var whose own name is credential-like.
 fn known_secret_values(
-    home: &ironclaw_config::RebornHome,
+    context: &RebornCliContext,
     config_list: Option<&crate::dto::ConfigListDto>,
     providers: Option<&ironclaw_product_contracts::operator_llm::RebornProviderList>,
-    env: &dyn Fn(&str) -> Option<String>,
-) -> anyhow::Result<Vec<String>> {
+    env: &[(String, String)],
+) -> KnownSecrets {
+    let home = context.boot_config().home();
     let mut values = Vec::new();
-    if let Some(link) = crate::webui_token::login_link(home)?
-        && let Some((_, token)) = link.split_once("token=")
-    {
-        values.push(token.to_string());
-    }
-    let mut env_names = vec![crate::webui_token::default_env_token_var().to_string()];
-    if let Some(list) = config_list {
-        for entry in &list.entries {
-            if (entry.key.ends_with("_env") || entry.key.ends_with("_var"))
-                && let Some(crate::dto::ConfigValue::String(name)) = &entry.value
-            {
-                env_names.push(name.clone());
+    let mut degraded = Vec::new();
+
+    match crate::webui_token::login_link(home) {
+        Ok(Some(link)) => {
+            if let Some((_, token)) = link.split_once("token=") {
+                values.push(token.to_string());
             }
         }
+        Ok(None) => {}
+        Err(error) => degraded.push(format!("WebUI token file unreadable: {error}")),
     }
-    if let Some(providers) = providers {
-        env_names.extend(
+    let master_key = home
+        .path()
+        .join(
+            context
+                .boot_config()
+                .profile()
+                .local_runtime_storage_subdir(),
+        )
+        .join(ironclaw_composition::STANDALONE_SECRETS_MASTER_KEY_PATH);
+    match read_bounded_regular_file(&master_key) {
+        Ok(Some(key)) => values.push(key),
+        Ok(None) => {}
+        Err(error) => degraded.push(format!("secrets master key file unreadable: {error}")),
+    }
+
+    let mut env_names: Vec<String> = DEFAULT_SECRET_ENV_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    env_names.push(ironclaw_config::WEBUI_TOKEN_ENV.to_string());
+    env_names.push(ironclaw_config::LEGACY_WEBUI_TOKEN_ENV.to_string());
+    env_names.push(crate::webui_token::default_env_token_var().to_string());
+    env_names.extend(ironclaw_operator::RebornProviderAdmin::builtin_credential_env_names());
+
+    match config_list {
+        Some(list) => {
+            for entry in &list.entries {
+                if (entry.key.ends_with("_env") || entry.key.ends_with("_var"))
+                    && let Some(crate::dto::ConfigValue::String(name)) = &entry.value
+                {
+                    env_names.push(name.clone());
+                }
+            }
+        }
+        None => degraded.push("config.toml did not load; using a raw scan of it".to_string()),
+    }
+    match providers {
+        Some(providers) => env_names.extend(
             providers
                 .providers
                 .iter()
                 .filter_map(|provider| provider.metadata.as_ref()?.api_key_env.clone()),
-        );
+        ),
+        None => degraded.push(
+            "providers.json did not load; only built-in provider env names are known".to_string(),
+        ),
     }
-    values.extend(env_names.iter().filter_map(|name| env(name)));
-    Ok(values)
+    match read_bounded_regular_file(&home.config_file_path()) {
+        Ok(Some(text)) => {
+            if !scan_raw_config(&text, &mut env_names, &mut values) {
+                degraded.push("config.toml is not valid TOML; scanned it line by line".to_string());
+            }
+        }
+        Ok(None) => {}
+        Err(error) => degraded.push(format!("config.toml unreadable: {error}")),
+    }
+
+    for (name, value) in env {
+        let credential_named = redact::is_sensitive_key(name)
+            || (name.to_ascii_uppercase().ends_with("_URL") && value.contains('@'));
+        if credential_named || env_names.iter().any(|known| known == name) {
+            values.push(value.clone());
+        }
+    }
+    KnownSecrets { values, degraded }
+}
+
+/// Collect `*_env`/`*_var` names and credential-keyed values from raw
+/// `config.toml` text. Returns `false` when the text is not valid TOML (it is
+/// then scanned line by line instead).
+fn scan_raw_config(text: &str, env_names: &mut Vec<String>, values: &mut Vec<String>) -> bool {
+    let mut classify = |key: &str, value: &str| {
+        if key.ends_with("_env") || key.ends_with("_var") {
+            env_names.push(value.to_string());
+        } else if redact::is_sensitive_key(key) {
+            values.push(value.to_string());
+        }
+    };
+    match toml::from_str::<toml::Table>(text) {
+        Ok(table) => {
+            let mut stack: Vec<&toml::Table> = vec![&table];
+            while let Some(table) = stack.pop() {
+                for (key, value) in table {
+                    match value {
+                        toml::Value::String(text) => classify(key, text),
+                        toml::Value::Table(inner) => stack.push(inner),
+                        _ => {}
+                    }
+                }
+            }
+            true
+        }
+        Err(_) => {
+            // silent-ok: the parse failure is recorded as a degraded source
+            // by the caller; the line scan below is the fallback.
+            for line in text.lines() {
+                if let Some((key, value)) = line.split_once('=') {
+                    let value = value.trim().trim_matches(|ch| ch == '"' || ch == '\'');
+                    classify(key.trim(), value);
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Contents of a regular, non-symlink file of bounded size; `None` when
+/// absent.
+fn read_bounded_regular_file(path: &Path) -> anyhow::Result<Option<String>> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => anyhow::bail!("stat {}: {error}", path.display()),
+    };
+    if !meta.is_file() || meta.len() > SECRET_SOURCE_MAX_BYTES {
+        anyhow::bail!("{} is not a regular file of bounded size", path.display());
+    }
+    std::fs::read_to_string(path)
+        .map(Some)
+        .map_err(|error| anyhow::anyhow!("read {}: {error}", path.display()))
 }
 
 fn system_json(
     context: &RebornCliContext,
-    config_file: Option<&ironclaw_config::RebornConfigFile>,
+    config_file: Option<Option<&ironclaw_config::RebornConfigFile>>,
 ) -> Value {
     let build = crate::commands::update::current_build();
     let profile = context.boot_config().profile();
-    let configured_storage = config_file
+    let backend = config_file
+        .flatten()
         .and_then(|file| file.storage.as_ref())
-        .and_then(|storage| storage.backend.as_ref())
-        // silent-ok: StorageBackend serializes as a plain string; cannot fail.
-        .and_then(|backend| serde_json::to_value(backend).ok());
+        .and_then(|storage| storage.backend.as_ref());
+    // silent-ok: StorageBackend serializes as a plain string; cannot fail.
+    let configured_storage = backend.and_then(|backend| serde_json::to_value(backend).ok());
+    let effective_kind = match (config_file, backend) {
+        (None, _) => "unknown (config.toml did not load)",
+        (Some(_), None) => "local_libsql",
+        (Some(_), Some(ironclaw_config::StorageBackend::Postgres)) => "postgres",
+        (Some(_), Some(ironclaw_config::StorageBackend::Unknown(_))) => {
+            "unsupported (startup refuses this backend)"
+        }
+    };
     json!({
         "zlo": { "version": build.version, "commit": build.commit },
         "platform": {
@@ -264,7 +448,7 @@ fn system_json(
         "home_source": context.boot_config().home().source_label(),
         "storage": {
             "configured_backend": configured_storage,
-            "effective_kind": if configured_storage.is_some() { "configured" } else { "local_libsql" },
+            "effective_kind": effective_kind,
             "local_storage_subdir": profile.local_runtime_storage_subdir(),
         },
     })
@@ -354,8 +538,9 @@ fn log_files(home: &Path) -> Vec<PathBuf> {
 }
 
 /// The last [`LOG_TAIL_LINES`] lines within the last [`LOG_TAIL_BYTES`] of
-/// a regular (non-symlink) file; `None` when absent.
-fn tail_log(path: &Path) -> anyhow::Result<Option<String>> {
+/// a regular (non-symlink) file; `None` when absent. Not yet scrubbed, but
+/// cut so that scrubbing it is sound: see [`select_tail`].
+fn tail_log(path: &Path, secret_forms: &[String]) -> anyhow::Result<Option<String>> {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -364,23 +549,114 @@ fn tail_log(path: &Path) -> anyhow::Result<Option<String>> {
     if !meta.is_file() {
         return Ok(None);
     }
+    // Read enough before the tail that any known secret overlapping the
+    // retained part is wholly inside what was read.
+    let overlap = secret_forms
+        .iter()
+        .map(String::len)
+        .max()
+        .map_or(0, |longest| longest as u64 + 1)
+        .min(LOG_TAIL_BYTES);
+    let window = LOG_TAIL_BYTES + overlap;
     let mut file = std::fs::File::open(path)
         .map_err(|error| anyhow::anyhow!("open {}: {error}", path.display()))?;
-    let start = meta.len().saturating_sub(LOG_TAIL_BYTES);
+    let start = meta.len().saturating_sub(window);
     file.seek(SeekFrom::Start(start))
         .map_err(|error| anyhow::anyhow!("seek {}: {error}", path.display()))?;
     let mut bytes = Vec::new();
-    file.take(LOG_TAIL_BYTES)
+    file.take(window)
         .read_to_end(&mut bytes)
         .map_err(|error| anyhow::anyhow!("read {}: {error}", path.display()))?;
     let text = String::from_utf8_lossy(&bytes);
-    let mut lines: Vec<&str> = text.lines().collect();
-    if start > 0 && !lines.is_empty() {
-        // The first line was cut mid-way by the byte window.
-        lines.remove(0);
+    Ok(Some(select_tail(
+        &text,
+        start > 0,
+        overlap as usize,
+        secret_forms,
+    )))
+}
+
+/// Pick the retained tail of `raw` without cutting through a known secret.
+///
+/// - The start is a line start at least `overlap` bytes in when `raw` began
+///   mid-file (so a secret straddling the read window is never retained in
+///   part), within the byte and line limits, and never inside an occurrence
+///   of a known secret (a multiline value is kept whole or dropped whole).
+/// - The end drops an incomplete last record (no trailing newline: possibly
+///   still being written) and never lands inside a known secret; if the kept
+///   text then ends with the leading lines of a known multiline secret, they
+///   are replaced with `[REDACTED]`.
+fn select_tail(raw: &str, began_mid_file: bool, overlap: usize, secret_forms: &[String]) -> String {
+    let bytes = raw.as_bytes();
+    let mut spans: Vec<(usize, usize)> = secret_forms
+        .iter()
+        .flat_map(|form| {
+            raw.match_indices(form.as_str())
+                .map(|(index, found)| (index, index + found.len()))
+        })
+        .collect();
+    spans.sort_unstable();
+    let inside = |pos: usize| spans.iter().find(|&&(s, e)| s < pos && pos < e).copied();
+
+    let mut end = if raw.ends_with('\n') {
+        raw.len()
+    } else {
+        raw.rfind('\n').map_or(0, |index| index + 1)
+    };
+    while let Some((span_start, _)) = inside(end) {
+        end = raw[..span_start].rfind('\n').map_or(0, |index| index + 1);
     }
-    let keep = lines.len().saturating_sub(LOG_TAIL_LINES);
-    Ok(Some(lines[keep..].join("\n")))
+
+    // Smallest safe line start at or after `from`.
+    let line_start_from = |from: usize| -> usize {
+        let mut pos = from;
+        loop {
+            let candidate = if pos == 0 && !began_mid_file {
+                0
+            } else {
+                let search = pos.saturating_sub(1);
+                bytes[search..]
+                    .iter()
+                    .position(|&byte| byte == b'\n')
+                    .map_or(raw.len(), |offset| search + offset + 1)
+            };
+            match inside(candidate) {
+                Some((_, span_end)) => pos = span_end,
+                None => return candidate,
+            }
+        }
+    };
+    let mut min_start = raw.len().saturating_sub(LOG_TAIL_BYTES as usize);
+    if began_mid_file {
+        min_start = min_start.max(overlap).max(1);
+    }
+    let mut start = line_start_from(min_start).min(end);
+    let lines = raw[start..end].lines().count();
+    if lines > LOG_TAIL_LINES {
+        let skip = lines - LOG_TAIL_LINES;
+        let cut = raw[start..end]
+            .match_indices('\n')
+            .nth(skip - 1)
+            .map_or(end, |(index, _)| start + index + 1);
+        start = line_start_from(cut).min(end);
+    }
+
+    let mut kept = raw[start..end].to_string();
+    let partial = secret_forms
+        .iter()
+        .flat_map(|form| {
+            form.match_indices('\n')
+                .map(|(index, _)| &form[..=index])
+                .filter(move |prefix| prefix.len() < form.len())
+        })
+        .filter(|prefix| kept.ends_with(prefix))
+        .map(str::len)
+        .max();
+    if let Some(len) = partial {
+        kept.truncate(kept.len() - len);
+        kept.push_str(redact::REDACTED);
+    }
+    kept.trim_end_matches('\n').to_string()
 }
 
 fn encode_zip(entries: &[Entry]) -> anyhow::Result<Vec<u8>> {

@@ -26,6 +26,12 @@ pub(crate) struct DoctorCommand {
 }
 
 impl DoctorCommand {
+    /// `true` for `doctor --bundle`, which resolves its home without the
+    /// legacy-home migration.
+    pub(crate) fn writes_bundle(&self) -> bool {
+        self.bundle.is_some()
+    }
+
     pub(crate) fn execute(self, context: RebornCliContext) -> anyhow::Result<()> {
         if let Some(out) = self.bundle {
             let report = crate::diagnostics_bundle::write_bundle(
@@ -39,6 +45,16 @@ impl DoctorCommand {
             println!("Wrote diagnostics bundle {}", report.out.display());
             for entry in &report.entries {
                 println!("  {entry}");
+            }
+            if !report.degraded.is_empty() {
+                println!(
+                    "Warning: the list of known secret values may be incomplete, so only \
+                     pattern-based redaction protects values from these sources (recorded in \
+                     manifest.json; consider --no-logs):"
+                );
+                for reason in &report.degraded {
+                    println!("  {}", terminal_safe_text(reason));
+                }
             }
             println!("Review it before sharing; nothing was uploaded.");
             return Ok(());
