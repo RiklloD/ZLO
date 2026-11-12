@@ -265,10 +265,13 @@ where
         }
         ProductionEventStoresInput::Prebuilt(stores) => stores,
     };
-    let runtime_event_sink: Arc<dyn NonBlockingEventSink> = Arc::new(CoalescingEventSink::new(
-        Arc::clone(&event_stores.events),
-        EventBatchConfig::default(),
-    ));
+    // Operator metrics fold the rows this sink's drain durably commits.
+    let runtime_event_sink: Arc<dyn NonBlockingEventSink> =
+        crate::observability::operator_metrics::metered_runtime_event_sink(
+            Arc::clone(&event_stores.events),
+            EventBatchConfig::default(),
+            ironclaw_operator::operator_metrics(),
+        );
     let services =
         services.with_production_reborn_event_stores_and_sink(event_stores, runtime_event_sink);
     let services = apply_production_runtime_process_binding(services, process_binding);
@@ -573,10 +576,14 @@ pub(super) async fn build_backend_production(
     .await?;
     let event_log = Arc::clone(&event_stores.events);
     let audit_log = Arc::clone(&event_stores.audit);
-    let runtime_event_sink: Arc<dyn NonBlockingEventSink> = Arc::new(CoalescingEventSink::new(
-        Arc::clone(&event_log),
-        EventBatchConfig::default(),
-    ));
+    // Operator metrics fold the rows this sink's drain durably commits
+    // (`ironclaw_operator::metrics`); the decorator never alters a result.
+    let runtime_event_sink: Arc<dyn NonBlockingEventSink> =
+        crate::observability::operator_metrics::metered_runtime_event_sink(
+            Arc::clone(&event_log),
+            EventBatchConfig::default(),
+            ironclaw_operator::operator_metrics(),
+        );
     let admin_secret_provisioner: Arc<dyn ironclaw_assistant::AdminSecretProvisioner> =
         Arc::new(crate::admin_secrets::FilesystemAdminSecretProvisioner::new(
             Arc::clone(&stores.filesystem),

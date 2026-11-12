@@ -753,8 +753,19 @@ pub(super) async fn assemble_runtime(
     // additively, so the trace-capture path is unchanged). It is active only
     // when a learning model is configured (a stronger model than the run's, via
     // IRONCLAW_SKILL_LEARNING_MODEL); otherwise only trace capture runs.
-    let mut turn_event_sinks: Vec<Arc<dyn ironclaw_turns::TurnEventSink>> =
-        vec![trace_capture_sink, projection_turn_event_wake_sink];
+    // Operator metrics fold committed turn transitions (runs by outcome and
+    // duration, approval gates opened) into the process-wide registry the
+    // `/api/operator/metrics` scrape renders.
+    let operator_metrics_sink: Arc<dyn ironclaw_turns::TurnEventSink> = Arc::new(
+        crate::observability::operator_metrics::OperatorMetricsTurnEventSink::new(
+            ironclaw_operator::operator_metrics(),
+        ),
+    );
+    let mut turn_event_sinks: Vec<Arc<dyn ironclaw_turns::TurnEventSink>> = vec![
+        trace_capture_sink,
+        projection_turn_event_wake_sink,
+        operator_metrics_sink,
+    ];
     let mut skill_learning_extraction_tasks: Option<
         Arc<ironclaw_extension_host::skill_learning::SkillLearningExtractionTasks>,
     > = None;

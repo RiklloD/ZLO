@@ -29,6 +29,9 @@ mod cli_token_login;
 // Tailscale identity listener wrapper. See the module docs.
 mod environment_access;
 mod oidc;
+// Operator observability: the public `/api/ready` probe over the host's
+// readiness snapshot and the operator-only Prometheus scrape. See the module docs.
+mod operator_observability;
 mod product_auth;
 // Self-update ("update all machines"): the operator routes over the
 // binary-implemented `SelfUpdateService` port. See the module docs.
@@ -61,6 +64,9 @@ pub use environment_access::{
 };
 pub use ironclaw_host_ingress::{
     ProtectedRouteMount, PublicRouteDrain, PublicRouteDrains, PublicRouteMount, SplitRouteMount,
+};
+pub use operator_observability::{
+    OPERATOR_METRICS_PATH, READINESS_PATH, operator_metrics_route_mount,
 };
 pub use product_auth::{ProductAuthRouteMount, ProductAuthRouteState, product_auth_route_mount};
 pub use self_update::{SelfUpdateError, SelfUpdateService, self_update_route_mount};

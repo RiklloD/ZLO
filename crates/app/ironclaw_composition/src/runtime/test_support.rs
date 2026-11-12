@@ -12,16 +12,20 @@ fn build_approval_interaction_service_with_parts(
     parts: &InteractionServiceTestParts,
     turn_coordinator: Arc<dyn TurnCoordinator>,
     turn_run_source: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
+    operator_metrics: Arc<ironclaw_operator::OperatorMetrics>,
 ) -> Result<Arc<dyn ApprovalInteractionService>, RebornRuntimeError> {
     let approval_turn_runs = Arc::new(ProcessGateApprovalTurnRunLocator::new(turn_run_source));
     let approval_read_model = Arc::new(RunStateApprovalInteractionReadModel::new(
         parts.approval_requests.clone(),
         approval_turn_runs,
     ));
-    let approval_resolver = Arc::new(ApprovalResolverPort::new(
+    // Production's resolver recipe, metered into the caller's registry.
+    let approval_resolver = approval_interaction_assembly::metered_approval_resolver(
         parts.approval_requests.clone(),
         parts.capability_leases.clone(),
-    ));
+        None,
+        operator_metrics,
+    );
     let persistent_approval_policies: Arc<
         dyn ironclaw_approvals::PersistentApprovalPolicyStorePort,
     > = parts.persistent_approval_policies.clone();
@@ -69,6 +73,7 @@ impl RebornRuntime {
             parts,
             turn_coordinator,
             Arc::clone(&self._process_gate_query_source),
+            Arc::new(ironclaw_operator::OperatorMetrics::new()),
         )
         .map(Some)
     }
@@ -90,7 +95,9 @@ impl RebornRuntime {
     }
 
     /// Like [`standalone_approval_interaction_service_for_test`], but lets
-    /// harnesses substitute the process gate source that owns their runs.
+    /// harnesses substitute the process gate source that owns their runs, and
+    /// records production's approval-resolution metrics into
+    /// `operator_metrics`.
     ///
     /// For tests only -- gated behind `test-support`, ships zero bytes in
     /// production builds.
@@ -101,12 +108,18 @@ impl RebornRuntime {
         &self,
         turn_coordinator: Arc<dyn TurnCoordinator>,
         process_gates: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
+        operator_metrics: Arc<ironclaw_operator::OperatorMetrics>,
     ) -> Result<Option<Arc<dyn ApprovalInteractionService>>, RebornRuntimeError> {
         let Some(parts) = self.interaction_service_test_parts.as_ref() else {
             return Ok(None);
         };
-        build_approval_interaction_service_with_parts(parts, turn_coordinator, process_gates)
-            .map(Some)
+        build_approval_interaction_service_with_parts(
+            parts,
+            turn_coordinator,
+            process_gates,
+            operator_metrics,
+        )
+        .map(Some)
     }
 
     /// Auth-side counterpart of

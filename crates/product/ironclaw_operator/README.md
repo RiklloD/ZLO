@@ -13,7 +13,10 @@ into the conversational core.
 
 - **Family / layer:** `product` / `products` · **Package:** `ironclaw_operator` · **Manifest:** `crates/product/ironclaw_operator/Cargo.toml`
 - **Use this when:** changing LLM provider administration, operator log
-  capture, or host service lifecycle.
+  capture, operator metrics (`src/metrics/`: the registry and the observing
+  decorators over the durable event log, the approval-request store, and the
+  LLM provider chain — `docs/internal/reborn/contracts/operator-observability-backends.md`),
+  or host service lifecycle.
 - **Don't use this when:** changing conversation or channel behavior →
   `ironclaw_assistant`; extension lifecycle → `ironclaw_extension_host` /
   `ironclaw_extension_manager`; declaring a port a product-tier caller must
@@ -32,6 +35,7 @@ Implementations of the operator-service ports declared in
 | `ActiveModelReader` (`operator_llm`) | `llm_admin::active_model::ProviderActiveModelReader` |
 | `OperatorLogsService` (`operator_service`) | `operator_logs::OperatorLogBuffer` |
 | `OperatorServiceLifecycleService` (`operator_service`) | `operator_service_lifecycle::OperatorServiceLifecycle` |
+| `OperatorMetricsService` (`operator_service`) | `metrics::OperatorMetrics` |
 
 (The fifth port in `operator_service`, `OperatorStatusService`, is implemented
 by `ironclaw_composition` — readiness is the one answer only the assembly root

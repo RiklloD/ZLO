@@ -996,3 +996,31 @@ async fn provider_factory_runs_during_production_boot() {
          instrumentation wraps the swappable gateway (regression: #6174 dropped it)"
     );
 }
+
+/// Pins the provider wrap site in `wrap_swappable_gateway`: a gateway call
+/// lands in the process-wide registry under the provider's served model.
+#[tokio::test]
+async fn swappable_gateway_records_llm_requests_into_operator_metrics() {
+    const MODEL: &str = "operator-metrics-pin-model";
+    let raw: Arc<dyn ironclaw_llm::LlmProvider> = Arc::new(RecordingLlmProvider::new(MODEL));
+    let provider_id = raw.provider_id();
+    let session =
+        ironclaw_llm::create_session_manager(ironclaw_llm::SessionConfig::default()).await;
+    let bundle = crate::runtime::wrap_swappable_gateway(raw, session, None, None).expect("gateway bundle");
+    bundle
+        .gateway
+        .stream_model(nearai_gateway_test_request())
+        .await
+        .expect("gateway request");
+
+    let rendered = ironclaw_operator::operator_metrics().render_prometheus();
+    assert!(
+        rendered.lines().any(|line| {
+            line.starts_with("ironclaw_llm_requests_total{")
+                && line.contains(&format!("model=\"{MODEL}\""))
+                && line.contains("outcome=\"success\"")
+                && line.contains(&format!("provider=\"{provider_id}\""))
+        }),
+        "gateway request recorded by provider and model:\n{rendered}"
+    );
+}

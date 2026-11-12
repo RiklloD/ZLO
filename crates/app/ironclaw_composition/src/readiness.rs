@@ -404,6 +404,15 @@ impl Default for RebornReadiness {
 }
 
 impl RebornReadiness {
+    /// This readiness as the operator status snapshot — the same roll-up and
+    /// checks the operator status view reports. The WebUI's public
+    /// `/api/ready` probe serves a redacted projection of it.
+    pub fn operator_status(
+        &self,
+    ) -> ironclaw_product_contracts::product_wire::RebornOperatorStatusResponse {
+        crate::product_surface::status_response_from_readiness(self)
+    }
+
     /// Disabled readiness snapshot with its operator-facing diagnostic.
     ///
     /// This is intentionally not `const`: the rich snapshot includes the

@@ -34,6 +34,28 @@ impl RegistryPersistentApprovalGranteeResolver {
     }
 }
 
+/// The approval resolver: where user-actionable gates are decided
+/// (`approve` / `deny`), so operator metrics count the committed resolutions
+/// on its store. Shared by production and the test-support assembly.
+pub(super) fn metered_approval_resolver(
+    approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
+    capability_leases: Arc<dyn ironclaw_authorization::CapabilityLeaseStorePort>,
+    audit_sink: Option<Arc<dyn ironclaw_event_log::AuditSink>>,
+    metrics: Arc<ironclaw_operator::OperatorMetrics>,
+) -> Arc<ApprovalResolverPort> {
+    let mut approval_resolver = ApprovalResolverPort::new(
+        crate::observability::operator_metrics::metered_approval_requests(
+            approval_requests,
+            metrics,
+        ),
+        capability_leases,
+    );
+    if let Some(audit_sink) = audit_sink {
+        approval_resolver = approval_resolver.with_audit_sink(audit_sink);
+    }
+    Arc::new(approval_resolver)
+}
+
 /// Builds the production approval interaction service.
 pub(crate) fn build_approval_interaction_service(
     runtime: &RebornRuntimeStores,
@@ -71,12 +93,12 @@ pub(crate) fn build_approval_interaction_service_with_turn_run_source(
         approval_requests.clone(),
         approval_turn_runs,
     ));
-    let mut approval_resolver =
-        ApprovalResolverPort::new(approval_requests.clone(), capability_leases.clone());
-    if let Some(audit_sink) = audit_sink {
-        approval_resolver = approval_resolver.with_audit_sink(audit_sink);
-    }
-    let approval_resolver = Arc::new(approval_resolver);
+    let approval_resolver = metered_approval_resolver(
+        approval_requests.clone(),
+        capability_leases.clone(),
+        audit_sink,
+        ironclaw_operator::operator_metrics(),
+    );
 
     Ok(Arc::new(
         DefaultApprovalInteractionService::new(

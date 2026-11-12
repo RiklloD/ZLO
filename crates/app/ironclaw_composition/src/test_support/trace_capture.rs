@@ -31,3 +31,38 @@ pub fn trace_capture_turn_event_sink_for_test(
     );
     (sink, scope)
 }
+
+/// Build the SAME operator-metrics `TurnEventSink` production fans into the
+/// runtime's turn-event sink inside `build_reborn_runtime`, recording into
+/// the caller's registry instead of the process-wide one.
+#[cfg(feature = "test-support")]
+pub fn operator_metrics_turn_event_sink_for_test(
+    metrics: std::sync::Arc<ironclaw_operator::OperatorMetrics>,
+) -> std::sync::Arc<dyn ironclaw_turns::TurnEventSink> {
+    std::sync::Arc::new(
+        crate::observability::operator_metrics::OperatorMetricsTurnEventSink::new(metrics),
+    )
+}
+
+/// Production's runtime event sink (`metered_runtime_event_sink`, the helper
+/// both production backend assemblies call), recording into the caller's
+/// registry instead of the process-wide one.
+#[cfg(feature = "test-support")]
+pub fn operator_metered_runtime_event_sink_for_test(
+    log: std::sync::Arc<dyn ironclaw_event_log::DurableEventLog>,
+    config: ironclaw_event_store::EventBatchConfig,
+    metrics: std::sync::Arc<ironclaw_operator::OperatorMetrics>,
+) -> std::sync::Arc<dyn ironclaw_event_log::NonBlockingEventSink> {
+    crate::observability::operator_metrics::metered_runtime_event_sink(log, config, metrics)
+}
+
+/// Production's outermost provider decorator (`metered_model_provider`, the
+/// helper `wrap_swappable_gateway` calls), recording into the caller's
+/// registry instead of the process-wide one.
+#[cfg(feature = "test-support")]
+pub fn operator_metered_model_provider_for_test(
+    provider: std::sync::Arc<dyn ironclaw_llm::LlmProvider>,
+    metrics: std::sync::Arc<ironclaw_operator::OperatorMetrics>,
+) -> std::sync::Arc<dyn ironclaw_llm::LlmProvider> {
+    crate::observability::operator_metrics::metered_model_provider(provider, metrics)
+}

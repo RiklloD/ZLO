@@ -2,6 +2,7 @@
 
 pub mod config_reload;
 pub mod llm_admin;
+pub mod metrics;
 pub mod operator_logs;
 pub mod operator_service_lifecycle;
 
@@ -13,6 +14,10 @@ pub use llm_admin::{
     RebornLlmReloadAdapter, RebornProviderAdmin, RebornProviderAdminError, RebornProviderFactory,
     RebornProviderRoutes, ResolvedRebornLlm, apply_stored_api_key, nearai_login_callback_mount,
     resolve_reborn_runtime_llm,
+};
+pub use metrics::{
+    MetricsApprovalRequestStore, MetricsDurableEventLog, MetricsLlmProvider, OperatorMetrics,
+    TurnRunOutcome, operator_metrics,
 };
 pub use operator_logs::{OperatorLogLayer, capture_tracing_log, operator_log_buffer};
 pub use operator_service_lifecycle::OperatorServiceLifecycle;

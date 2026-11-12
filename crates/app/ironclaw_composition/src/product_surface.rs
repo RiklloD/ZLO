@@ -667,7 +667,9 @@ fn internal_skill_error() -> ProductSurfaceError {
     }
 }
 
-fn status_response_from_readiness(readiness: &RebornReadiness) -> RebornOperatorStatusResponse {
+pub(crate) fn status_response_from_readiness(
+    readiness: &RebornReadiness,
+) -> RebornOperatorStatusResponse {
     let mut checks = Vec::new();
     let (runtime_status, runtime_severity, runtime_remediation) = match readiness.state {
         crate::RebornReadinessState::Disabled => (
