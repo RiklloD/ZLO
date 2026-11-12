@@ -418,7 +418,7 @@ On a harness built from a `live_approvals` group:
 - `build_runtime_with_resource_governor_for_test(input)` — builds the ordinary production-composed runtime and returns the exact `ResourceGovernor` wired into its capability path. Use only for reservation read-back; resource policy remains owned by `ironclaw_resources`.
 
 `RebornRuntime` (returned by `build_runtime`, test-only methods defined in
-`crates/app/ironclaw_composition/src/runtime.rs` and
+`crates/app/ironclaw_composition/src/runtime/harness_accessors.rs` and
 `crates/app/ironclaw_composition/src/runtime/test_support.rs`) exposes:
 
 - `outbound_delivery_stores_for_test()` — the exact composition-owned outbound

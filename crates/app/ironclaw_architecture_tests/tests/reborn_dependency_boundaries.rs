@@ -2500,8 +2500,6 @@ fn reborn_internal_crate_keeps_directory_of_modules_lib_rs() {
         "pub async fn build_reborn_runtime",
         "pub struct RebornRuntime",
         "use ironclaw_turn_runner::runtime::",
-        "build_default_planned_runtime",
-        "DefaultPlannedRuntimeParts",
     ] {
         assert!(
             composition_runtime_source.contains(required),
@@ -2510,6 +2508,26 @@ fn reborn_internal_crate_keeps_directory_of_modules_lib_rs() {
              ingress points can avoid importing `ironclaw_turn_runner` directly."
         );
     }
+    // After the runtime.rs split the root only *imports* the planned-runtime
+    // builder; the call lives in `runtime/assembly.rs`. Require the call
+    // itself there -- an import alone would pass a substring check even if the
+    // assembly moved out of composition.
+    let composition_assembly =
+        crate_path(&root, "crates/ironclaw_composition/src/runtime/assembly.rs");
+    let composition_assembly_source = std::fs::read_to_string(&composition_assembly)
+        .unwrap_or_else(|error| {
+            panic!(
+                "expected Reborn runtime assembly at {}: {error}",
+                composition_assembly.display()
+            )
+        });
+    assert!(
+        source_assembles_default_planned_runtime(&composition_assembly_source),
+        "composition runtime/assembly.rs must build `DefaultPlannedRuntimeParts {{ .. }}` and \
+         call `build_default_planned_runtime(..)` -- the runtime assembly slice must live in \
+         `ironclaw_composition` so the CLI and other ingress points can avoid importing \
+         `ironclaw_turn_runner` directly."
+    );
     assert!(
         composition_runtime_sources.contains("use ironclaw_loop_host::")
             && composition_runtime_sources.contains("LoopCapabilityPortFactory"),
@@ -2517,6 +2535,42 @@ fn reborn_internal_crate_keeps_directory_of_modules_lib_rs() {
          the host adapter assembly may live in a runtime submodule, but it must stay inside \
          `ironclaw_composition` rather than the CLI or other ingress points."
     );
+}
+
+/// True when `source` (outside comments and string literals) constructs a
+/// `DefaultPlannedRuntimeParts { .. }` literal and calls
+/// `build_default_planned_runtime(..)`; a `use` import of either name does not
+/// count.
+fn source_assembles_default_planned_runtime(source: &str) -> bool {
+    let mut in_block_comment = false;
+    let code = source
+        .lines()
+        .map(|line| strip_line_strings_and_comments(line, &mut in_block_comment))
+        .filter(|line| !line.trim_start().starts_with("use "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let compact: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("build_default_planned_runtime(")
+        && compact.contains("DefaultPlannedRuntimeParts{")
+}
+
+#[test]
+fn default_planned_runtime_call_site_detector_rejects_import_only_sources() {
+    let import_only = r#"
+        use ironclaw_turn_runner::runtime::{
+            DefaultPlannedRuntimeParts, ProcessRuntimeSystem, build_default_planned_runtime,
+        };
+        // build_default_planned_runtime(parts) happens elsewhere now.
+        const NOTE: &str = "DefaultPlannedRuntimeParts { .. }";
+    "#;
+    assert!(!source_assembles_default_planned_runtime(import_only));
+    let call_site = r#"
+        let parts = DefaultPlannedRuntimeParts {
+            scheduler_wake_wiring: None,
+        };
+        let composition = build_default_planned_runtime(parts)?;
+    "#;
+    assert!(source_assembles_default_planned_runtime(call_site));
 }
 
 #[test]

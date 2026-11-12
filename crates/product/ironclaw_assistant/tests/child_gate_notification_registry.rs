@@ -21,7 +21,8 @@
 //! `crates/loop/ironclaw_turn_runner/src/runtime.rs:294-299`), and
 //! `ironclaw_composition::build_runtime` reads that deny list internally with
 //! no input seam to override it
-//! (`crates/app/ironclaw_composition/src/runtime.rs:4055`), so no
+//! (`unattended_denied_capability_ids` wiring in
+//! `crates/app/ironclaw_composition/src/runtime/assembly.rs`), so no
 //! composition-tier test can spawn a real child process today. That
 //! end-to-end proof — a live `spawn_subagent` call landing a suspension in
 //! this same store under production wiring — waits on the R9 enable slice /

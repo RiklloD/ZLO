@@ -5,6 +5,7 @@
 // Lives under `crate::runtime` (not `factory.rs`) — the recipe needs
 // module-private types only reachable from here.
 
+use super::assembly_support::build_webui_auth_interaction_service_with_turn_run_source;
 use super::*;
 
 fn build_approval_interaction_service_with_parts(

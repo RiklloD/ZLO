@@ -1411,7 +1411,14 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "crates/ironclaw_auth/src/product_auth/api/auth.rs",
         "nearai_mcp",
     ),
-    ("crates/ironclaw_composition/src/runtime.rs", "nearai_mcp"),
+    // ✎ 2026-11-11: was `src/runtime.rs`. The runtime.rs split moved
+    // `assemble_runtime` and the two NEAR AI MCP bootstrap helpers it calls,
+    // verbatim, into `runtime/assembly.rs`; runtime.rs no longer names the
+    // term. A 1-for-1 repoint following the file, not a new carve-out.
+    (
+        "crates/ironclaw_composition/src/runtime/assembly.rs",
+        "nearai_mcp",
+    ),
     // lane-4: migration — one-time forward-migration call sites naming the v1 vocabulary they fold forward — correct-by-design (same pattern the retired-taxonomy gate sanctions); would become a SANCTIONED_PATHS carve if the sites move into a dedicated migration module
     // lane-4: doc-str — incidental doc-comment / error-string / tool-description examples that NAME an extension but branch on nothing — the code routes by a manifest field (display_name/provider/effects); reword or leave (Ben's call)
     (
