@@ -47,7 +47,7 @@
 //! `docs/internal/plans/2026-11-11-secrets-encrypted-backend-question.md`;
 //! until they are answered, keep the inline `encrypt`/`decrypt` calls.
 
-use std::{collections::HashSet, fmt::Write as _, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -1851,12 +1851,7 @@ fn lease_scope_key(scope: &ResourceScope) -> String {
             key.invocation_id.as_bytes(),
         ],
     );
-    let digest = Sha256::digest(&encoded);
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+    crate::keychain::bytes_to_hex(&Sha256::digest(&encoded))
 }
 
 /// Decorate a lease entry with the `secret_leases_by_scope_v1` projection.

@@ -134,7 +134,7 @@ fn validate_master_key_bytes(bytes: &[u8]) -> Result<(), SecretError> {
     }
 }
 
-fn bytes_to_hex(bytes: &[u8]) -> String {
+pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
