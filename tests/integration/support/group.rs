@@ -2033,7 +2033,7 @@ impl<'g> RebornThreadBuilder<'g> {
                 .clone()
                 .unwrap_or_else(|| Arc::new(ironclaw_operator::OperatorMetrics::new()));
             let approval_interaction_service = reborn_services
-                .standalone_approval_interaction_service_with_turn_state_and_metrics_for_test(
+                .standalone_approval_interaction_service_with_turn_state_for_test(
                     Arc::clone(&shared.coordinator),
                     shared.process_system.gates(),
                     approval_metrics,

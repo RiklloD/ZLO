@@ -94,7 +94,9 @@ impl RebornRuntime {
     }
 
     /// Like [`standalone_approval_interaction_service_for_test`], but lets
-    /// harnesses substitute the process gate source that owns their runs.
+    /// harnesses substitute the process gate source that owns their runs, and
+    /// records production's approval-resolution metrics into
+    /// `operator_metrics`.
     ///
     /// For tests only -- gated behind `test-support`, ships zero bytes in
     /// production builds.
@@ -102,27 +104,6 @@ impl RebornRuntime {
     /// [`standalone_approval_interaction_service_for_test`]: Self::standalone_approval_interaction_service_for_test
     #[cfg(feature = "test-support")]
     pub fn standalone_approval_interaction_service_with_turn_state_for_test(
-        &self,
-        turn_coordinator: Arc<dyn TurnCoordinator>,
-        process_gates: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
-    ) -> Result<Option<Arc<dyn ApprovalInteractionService>>, RebornRuntimeError> {
-        self.standalone_approval_interaction_service_with_turn_state_and_metrics_for_test(
-            turn_coordinator,
-            process_gates,
-            Arc::new(ironclaw_operator::OperatorMetrics::new()),
-        )
-    }
-
-    /// Like [`standalone_approval_interaction_service_with_turn_state_for_test`],
-    /// with production's approval-resolution metrics recorded into
-    /// `operator_metrics` instead of a private registry.
-    ///
-    /// For tests only -- gated behind `test-support`, ships zero bytes in
-    /// production builds.
-    ///
-    /// [`standalone_approval_interaction_service_with_turn_state_for_test`]: Self::standalone_approval_interaction_service_with_turn_state_for_test
-    #[cfg(feature = "test-support")]
-    pub fn standalone_approval_interaction_service_with_turn_state_and_metrics_for_test(
         &self,
         turn_coordinator: Arc<dyn TurnCoordinator>,
         process_gates: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,

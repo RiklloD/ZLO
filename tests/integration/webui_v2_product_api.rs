@@ -2042,6 +2042,7 @@ async fn approval_gate_rediscovered_and_resolved_after_refresh() {
         .standalone_approval_interaction_service_with_turn_state_for_test(
             h.coordinator.clone(),
             h.process_gates_for_test(),
+            Arc::new(ironclaw_operator::OperatorMetrics::new()),
         )
         .expect("local-dev capability policy is valid")
         .expect("harness has a local-dev runtime");
