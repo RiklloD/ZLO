@@ -443,6 +443,8 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         // the factory; only integration harnesses that wire their own
         // run-delivery observer read it back. The field stays ungated
         // (shutdown uses it).
+        // 44 -> 43 (2026-11-10): the unused
+        // `pairing_connection_notices_for_test` accessor was deleted.
         count: 43,
     },
     FrozenPathCount {
