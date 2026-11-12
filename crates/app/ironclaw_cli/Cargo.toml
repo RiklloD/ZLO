@@ -136,3 +136,6 @@ toml = "1.1"
 [[bin]]
 name = "zlo"
 path = "src/main.rs"
+
+[lints]
+workspace = true

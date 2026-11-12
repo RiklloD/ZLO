@@ -63,8 +63,7 @@ pub const NATIVE_MEMORY_PROVIDER_SERVICE: &str = "native_memory_provider";
 const NATIVE_MEMORY_PACKAGE_ROOT: &str = "/system/extensions/ironclaw.memory";
 
 /// Raw bundled manifest TOML for the native memory extension.
-pub const NATIVE_MEMORY_MANIFEST_TOML: &str =
-    include_str!("../../../extensions/packages/memory-native/manifest.toml");
+pub const NATIVE_MEMORY_MANIFEST_TOML: &str = ironclaw_memory_native::MANIFEST_TOML;
 
 /// Resolve a bundled provider's declared `[memory].guidance_doc` against ITS
 /// OWN bundled asset table (#7185).
@@ -162,13 +161,6 @@ pub const MEM0_MEMORY_EXTENSION_ID: &str = "mem0.local.memory";
 /// runtime.
 pub const MEM0_MEMORY_PROVIDER_SERVICE: &str = "mem0_memory_provider";
 
-/// Raw bundled manifest TOML for the mem0 memory backend: mem0's own tool
-/// declarations (under the stable `ironclaw.memory.*` ids) plus its honest
-/// lifecycle set. The mem0 `MemoryService` is constructed from `[memory]`
-/// config in composition, gated by the `memory-mem0` feature.
-pub const MEM0_MEMORY_MANIFEST_TOML: &str =
-    include_str!("../../../extensions/packages/mem0/manifest.toml");
-
 /// Parse the bundled `ironclaw.memory` manifest into the internal manifest
 /// model. Fail-closed: the reserved id, `first_party` runtime, `[memory]`
 /// surface, schema refs, and provider-prefixed tool ids are validated by the
@@ -250,16 +242,18 @@ pub fn native_memory_provider_bundle() -> Result<BundledMemoryProvider, Extensio
 /// used when the compose-time `[memory]` binding selects mem0 AND the mem0
 /// provider is actually constructible.
 ///
-/// `memory_assets` is the mem0 provider's own asset table. This crate does
-/// not (and, per the memory-provider naming gate, must not) depend on
-/// `ironclaw_memory_mem0` — only the provider packages and the binary may name
-/// a memory provider — so composition, which already depends on it behind the
-/// `memory-mem0` feature, passes the table in.
+/// `manifest_toml` and `memory_assets` are the mem0 provider's own manifest
+/// and asset table (`ironclaw_memory_mem0::{MANIFEST_TOML, MEMORY_ASSETS}`).
+/// This crate does not (and, per the memory-provider naming gate, must not)
+/// depend on `ironclaw_memory_mem0` — only the provider packages and the
+/// binary may name a memory provider — so composition, which already depends
+/// on it behind the `memory-mem0` feature, passes both in.
 pub fn mem0_memory_provider_bundle(
+    manifest_toml: &str,
     memory_assets: &'static [(&'static str, &'static str)],
 ) -> Result<BundledMemoryProvider, ExtensionError> {
     memory_provider_bundle(
-        MEM0_MEMORY_MANIFEST_TOML,
+        manifest_toml,
         MEM0_MEMORY_PACKAGE_ROOT,
         "mem0",
         memory_assets,
@@ -357,19 +351,6 @@ mod tests {
         );
     }
 
-    /// mem0 deliberately ships no guidance: its recall is search-first, so the
-    /// native provider's standing-document advice would be wrong under it.
-    /// Absent must mean "append nothing", never "fall back to native's". mem0's
-    /// own asset table is empty (`ironclaw_memory_mem0::MEMORY_ASSETS`);
-    /// this crate cannot name that crate (memory-provider naming gate), so the
-    /// test passes an equivalent empty table directly.
-    #[test]
-    fn a_provider_without_a_guidance_declaration_resolves_to_none() {
-        let bundle = mem0_memory_provider_bundle(&[]).expect("mem0 bundle loads");
-        assert!(bundle.lifecycle.guidance_doc.is_none());
-        assert!(bundle.guidance.is_none());
-    }
-
     /// FAIL LOUD, not fail-quiet: a declared `guidance_doc` ref that the
     /// bundled provider's own asset table does not carry is a manifest/asset
     /// desync (a rename that touched one and not the other), not something to
@@ -421,15 +402,6 @@ mod tests {
             prompt.contains("Never invent, infer, or extrapolate"),
             "the anti-fabrication rule is the pass's load-bearing constraint and must reach it"
         );
-    }
-
-    /// A provider that schedules nothing resolves no prompts — absent must mean
-    /// "nothing is scheduled", never "fall back to another provider's pass".
-    #[test]
-    fn a_provider_without_scheduled_ops_resolves_no_pass_prompts() {
-        let bundle = mem0_memory_provider_bundle(&[]).expect("mem0 bundle loads");
-        assert!(bundle.lifecycle.scheduled_ops.is_empty());
-        assert!(bundle.scheduled_pass_prompts.is_empty());
     }
 
     /// Same fail-loud posture as the guidance desync, for the declaration that
@@ -621,94 +593,5 @@ guidance_doc = "prompts/missing.md"
                 "native must declare {hook:?}"
             );
         }
-    }
-
-    #[test]
-    fn mem0_provider_bundle_builds_with_its_honest_lifecycle_and_tools() {
-        use ironclaw_extension_contracts::memory::MemoryLifecycleHook;
-        let bundle = mem0_memory_provider_bundle(&[]).expect("mem0 bundle builds");
-        assert_eq!(
-            bundle.package.manifest.id.as_str(),
-            MEM0_MEMORY_EXTENSION_ID
-        );
-        assert!(bundle.lifecycle.declares(MemoryLifecycleHook::ReadLongTerm));
-        assert!(bundle.lifecycle.declares(MemoryLifecycleHook::ProfileRead));
-        assert!(
-            !bundle
-                .lifecycle
-                .declares(MemoryLifecycleHook::ReadShortTerm)
-        );
-        assert!(
-            !bundle
-                .lifecycle
-                .declares(MemoryLifecycleHook::RecordInteraction)
-        );
-        let ids: Vec<&str> = bundle
-            .package
-            .manifest
-            .capabilities
-            .iter()
-            .map(|capability| capability.id.as_str())
-            .collect();
-        assert_eq!(
-            ids,
-            vec![
-                MEMORY_READ_CAPABILITY_ID,
-                MEMORY_WRITE_CAPABILITY_ID,
-                MEMORY_SEARCH_CAPABILITY_ID,
-                MEMORY_TREE_CAPABILITY_ID,
-                crate::PROFILE_SET_CAPABILITY_ID,
-            ]
-        );
-    }
-
-    #[test]
-    fn mem0_backend_manifest_is_a_valid_v3_memory_provider() {
-        let record = memory_manifest_record(MEM0_MEMORY_MANIFEST_TOML, None)
-            .expect("mem0 backend manifest must parse");
-        assert_eq!(record.manifest().id.as_str(), MEM0_MEMORY_EXTENSION_ID);
-        match &record.manifest().runtime {
-            ExtensionRuntimeV2::FirstParty { service } => {
-                assert_eq!(service, MEM0_MEMORY_PROVIDER_SERVICE);
-            }
-            other => panic!("expected first_party runtime, got {other:?}"),
-        }
-        // mem0's manifest is the source of truth for its own tool surface:
-        // the four document tools, declared under the reserved stable
-        // `ironclaw.memory.*` ids so a backend swap never renames the
-        // model's tools.
-        let ids: Vec<&str> = record
-            .manifest()
-            .capabilities
-            .iter()
-            .map(|capability| capability.id.as_str())
-            .collect();
-        assert_eq!(
-            ids,
-            vec![
-                MEMORY_READ_CAPABILITY_ID,
-                MEMORY_WRITE_CAPABILITY_ID,
-                MEMORY_SEARCH_CAPABILITY_ID,
-                MEMORY_TREE_CAPABILITY_ID,
-                crate::PROFILE_SET_CAPABILITY_ID,
-            ]
-        );
-        for capability in &record.manifest().capabilities {
-            assert_eq!(capability.visibility, CapabilityVisibility::Model);
-        }
-        let memory = record
-            .resolved()
-            .memory
-            .as_ref()
-            .expect("mem0 manifest declares the [memory] surface");
-        // The lifecycle declaration is honest (F5): mem0 implements the
-        // long-term retrieval lane and profile reads, has no thread
-        // partitioning (no short-term lane), and does not record
-        // interactions — undeclared hooks are never called by the host.
-        use ironclaw_extension_contracts::memory::MemoryLifecycleHook;
-        assert!(memory.declares(MemoryLifecycleHook::ReadLongTerm));
-        assert!(memory.declares(MemoryLifecycleHook::ProfileRead));
-        assert!(!memory.declares(MemoryLifecycleHook::ReadShortTerm));
-        assert!(!memory.declares(MemoryLifecycleHook::RecordInteraction));
     }
 }

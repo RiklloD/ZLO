@@ -45,3 +45,6 @@ ironclaw_common = { path = "../../contracts/ironclaw_common", version = "0.4.2" 
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version = "0.1.0", features = ["test-support"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
+
+[lints]
+workspace = true

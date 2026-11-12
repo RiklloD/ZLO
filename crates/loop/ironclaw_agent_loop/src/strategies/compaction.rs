@@ -50,8 +50,8 @@ pub(crate) struct DefaultCompactionStrategy {
 }
 
 impl DefaultCompactionStrategy {
-    pub const DEFAULT_PRESERVE_TAIL_TOKENS: u64 = 8_000;
-    pub const DEFAULT_DEADLINE_MS: u64 = 30_000;
+    pub(crate) const DEFAULT_PRESERVE_TAIL_TOKENS: u64 = 8_000;
+    pub(crate) const DEFAULT_DEADLINE_MS: u64 = 30_000;
 
     pub(super) fn can_evaluate(&self, state: &LoopExecutionState) -> bool {
         if state.compaction_prompt.message_index.is_empty() {
@@ -266,10 +266,10 @@ pub(crate) struct ByteCapStrategy {
 
 impl ByteCapStrategy {
     /// Default cap applied to any capability not explicitly listed.
-    pub const DEFAULT_FALLBACK_CAP_BYTES: u64 = 32_000;
+    pub(crate) const DEFAULT_FALLBACK_CAP_BYTES: u64 = 32_000;
 
     /// Built-in default caps. Override or extend via `with_cap`.
-    pub fn with_defaults() -> Self {
+    pub(crate) fn with_defaults() -> Self {
         let mut caps = BTreeMap::new();
         // spawn_subagent results can carry larger structured payloads.
         caps.insert(

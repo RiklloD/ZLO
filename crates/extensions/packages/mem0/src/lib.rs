@@ -73,6 +73,15 @@ pub const MEM0_MEMORY_EXTENSION_ID: &str = "mem0.local.memory";
 /// it schedules no upkeep of its own.
 pub const MEMORY_ASSETS: &[(&str, &str)] = &[];
 
+/// This package's bundled `reborn.extension_manifest.v3` manifest: mem0's own
+/// tool declarations (under the stable `ironclaw.memory.*` ids) plus its honest
+/// lifecycle set. Exposed through this package's public API — the host may not
+/// name this crate, so composition passes it to
+/// `ironclaw_host_runtime::memory_native_extension::mem0_memory_provider_bundle`
+/// alongside [`MEMORY_ASSETS`], instead of the host compiling this package's
+/// tree into itself (§11.2.7).
+pub const MANIFEST_TOML: &str = include_str!("../manifest.toml");
+
 pub use config::Mem0Config;
 pub use error::Mem0Error;
 pub use service::Mem0MemoryService;

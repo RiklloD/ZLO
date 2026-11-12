@@ -25,7 +25,7 @@ use ironclaw_slack_extension::SlackWebApiMethod;
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StreamState {
+pub(crate) enum StreamState {
     Streaming,
     Stopped {
         session_status: String,
@@ -36,7 +36,7 @@ pub enum StreamState {
 }
 
 #[derive(Debug, Clone)]
-pub struct FakeStream {
+pub(crate) struct FakeStream {
     pub channel: String,
     pub thread_ts: Option<String>,
     pub recipient_user_id: Option<String>,
@@ -56,14 +56,14 @@ pub struct FakeStream {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionCall {
+pub(crate) struct SessionCall {
     pub channel_id: Option<String>,
     pub thread_ts: Option<String>,
     pub status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PostedMessage {
+pub(crate) struct PostedMessage {
     pub channel: String,
     pub thread_ts: Option<String>,
     pub text: String,
@@ -72,7 +72,7 @@ pub struct PostedMessage {
 
 /// One injected failure, consumed by the next call of its method.
 #[derive(Debug, Clone)]
-pub enum Fault {
+pub(crate) enum Fault {
     /// HTTP 429 with `Retry-After` and `{"ok":false,"error":"ratelimited"}`.
     RateLimited {
         method: SlackWebApiMethod,
@@ -141,39 +141,39 @@ struct State {
 }
 
 #[derive(Default)]
-pub struct FakeSlackAgentApi {
+pub(crate) struct FakeSlackAgentApi {
     state: Mutex<State>,
 }
 
 impl FakeSlackAgentApi {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn inject(&self, fault: Fault) {
+    pub(crate) fn inject(&self, fault: Fault) {
         self.lock().faults.push_back(fault);
     }
 
     /// Read-backs answer a found message with no `text` field, as Slack does
     /// for a message rendered only from blocks.
-    pub fn omit_read_back_text(&self) {
+    pub(crate) fn omit_read_back_text(&self) {
         self.lock().read_back_omits_text = true;
     }
 
     /// Slack's stop button: the stream stops answering appends.
-    pub fn stop_by_user(&self, ts: &str) {
+    pub(crate) fn stop_by_user(&self, ts: &str) {
         if let Some(stream) = self.lock().streams.get_mut(ts) {
             stream.state = StreamState::StoppedByUser;
         }
     }
 
-    pub fn requests(&self) -> Vec<RestrictedEgressRequest> {
+    pub(crate) fn requests(&self) -> Vec<RestrictedEgressRequest> {
         self.lock().requests.clone()
     }
 
     /// The Slack method names called, in order (`files.slack.com` uploads
     /// appear as `upload`).
-    pub fn calls(&self) -> Vec<String> {
+    pub(crate) fn calls(&self) -> Vec<String> {
         self.requests()
             .iter()
             .map(|request| match endpoint_for(request) {
@@ -184,7 +184,7 @@ impl FakeSlackAgentApi {
     }
 
     /// Parsed JSON bodies of every call to `method`, in order.
-    pub fn bodies(&self, method: SlackWebApiMethod) -> Vec<Value> {
+    pub(crate) fn bodies(&self, method: SlackWebApiMethod) -> Vec<Value> {
         self.requests()
             .iter()
             .filter(|request| endpoint_for(request) == Some(method))
@@ -195,7 +195,7 @@ impl FakeSlackAgentApi {
             .collect()
     }
 
-    pub fn streams(&self) -> Vec<(String, FakeStream)> {
+    pub(crate) fn streams(&self) -> Vec<(String, FakeStream)> {
         self.lock()
             .streams
             .iter()
@@ -204,19 +204,19 @@ impl FakeSlackAgentApi {
     }
 
     /// Messages retracted through `chat.delete`, in order.
-    pub fn deleted(&self) -> Vec<String> {
+    pub(crate) fn deleted(&self) -> Vec<String> {
         self.lock().deleted.clone()
     }
 
-    pub fn stream(&self, ts: &str) -> Option<FakeStream> {
+    pub(crate) fn stream(&self, ts: &str) -> Option<FakeStream> {
         self.lock().streams.get(ts).cloned()
     }
 
-    pub fn sessions(&self) -> Vec<SessionCall> {
+    pub(crate) fn sessions(&self) -> Vec<SessionCall> {
         self.lock().sessions.clone()
     }
 
-    pub fn posted(&self) -> Vec<PostedMessage> {
+    pub(crate) fn posted(&self) -> Vec<PostedMessage> {
         self.lock().posted.clone()
     }
 
@@ -648,6 +648,6 @@ fn absorb_chunks(stream: &mut FakeStream, body: &Value) -> Result<(), &'static s
 }
 
 /// The `NetworkMethod` an endpoint expects, for tests asserting on requests.
-pub fn expected_method(method: SlackWebApiMethod) -> NetworkMethod {
+pub(crate) fn expected_method(method: SlackWebApiMethod) -> NetworkMethod {
     method.http_method()
 }

@@ -4,7 +4,6 @@
 //! the adapter-safe [`TurnCoordinator`] API with canonical refs resolved by the
 //! binding/session layer. Trusted workers use [`runner`] explicitly; runner
 //! transition APIs are intentionally not re-exported from this crate prelude.
-#![warn(unreachable_pub)]
 
 mod activation_streak;
 mod admission;

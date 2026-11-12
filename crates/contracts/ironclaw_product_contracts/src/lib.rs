@@ -30,7 +30,6 @@
 //!   every type here is defined here exactly once and no other crate
 //!   re-exports it. There is deliberately no second import path for anything
 //!   in this crate.
-#![warn(unreachable_pub)]
 
 pub mod account_setup;
 pub mod action;

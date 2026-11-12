@@ -41,7 +41,7 @@ pub(crate) enum ReplyAdmissionOutcome {
 /// artifacts are rejected so weak-model echoes do not become user-visible final
 /// answers.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct DefaultReplyAdmissionStrategy;
+pub(crate) struct DefaultReplyAdmissionStrategy;
 
 #[async_trait]
 impl ReplyAdmissionStrategy for DefaultReplyAdmissionStrategy {
@@ -65,7 +65,7 @@ impl ReplyAdmissionStrategy for DefaultReplyAdmissionStrategy {
 /// directing the model to the result tool. Exhausted rejections fail the run
 /// as `invalid_model_output` through the standard stop-condition escape.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct StructuredOutputReplyAdmissionStrategy;
+pub(crate) struct StructuredOutputReplyAdmissionStrategy;
 
 #[async_trait]
 impl ReplyAdmissionStrategy for StructuredOutputReplyAdmissionStrategy {

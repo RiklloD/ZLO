@@ -310,6 +310,7 @@ pub fn resolve_memory_provider(
                 return Ok(match create_mem0_provider(deps) {
                     Some(provider) => {
                         let bundle = memory_extension::mem0_memory_provider_bundle(
+                            ironclaw_memory_mem0::MANIFEST_TOML,
                             ironclaw_memory_mem0::MEMORY_ASSETS,
                         )
                         .map_err(|error| {

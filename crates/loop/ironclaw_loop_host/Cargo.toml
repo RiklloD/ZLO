@@ -69,3 +69,6 @@ rust_decimal_macros = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
+
+[lints]
+workspace = true

@@ -47,7 +47,7 @@ fn _assert_object_safe(_: &dyn CapabilityStrategy) {}
 /// strategy declines to filter further, leaving capability visibility entirely
 /// to the host's authoritative policy.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultCapabilityStrategy;
+pub(crate) struct DefaultCapabilityStrategy;
 
 #[async_trait]
 impl CapabilityStrategy for DefaultCapabilityStrategy {

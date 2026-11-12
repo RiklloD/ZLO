@@ -55,7 +55,7 @@ pub const TELEGRAM_BOT_TOKEN_HANDLE: &str = "telegram_bot_token";
 
 /// Path placeholder the manifest's `[[channel.egress]] injection` declares;
 /// the host substitutes the token host-side (`/bot{telegram_bot_token}/…`).
-pub const TELEGRAM_TOKEN_PLACEHOLDER: &str = "telegram_bot_token";
+pub(crate) const TELEGRAM_TOKEN_PLACEHOLDER: &str = "telegram_bot_token";
 
 /// The Telegram channel adapter. The constructor policy remains available for
 /// compatibility and tests; shipping ingress overlays the receiving bot

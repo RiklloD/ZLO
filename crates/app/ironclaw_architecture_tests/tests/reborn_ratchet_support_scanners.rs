@@ -193,6 +193,42 @@ fn line_anchored_stripper_ends_a_bodiless_gated_item_at_its_semicolon() {
     assert!(!stripped.contains("mod tests;"));
 }
 
+/// Braces inside a test item's string and char literals, and a multiline
+/// string line starting `#[cfg(test)]`, must not move the raw-source family:
+/// both used to strip every production line after them (gate audit 2026-08
+/// §9). Anchor and depth now read the stripped twin of each line.
+#[test]
+fn line_anchored_stripper_ignores_braces_and_markers_inside_literals() {
+    let braces = "#[cfg(test)]\nmod tests {\n    const S: &str = \"{{{{\";\n    \
+                  const C: char = '{';\n}\npub struct AfterBraces;\n";
+    let stripped = strip_line_anchored_cfg_test_items(braces);
+    assert!(stripped.contains("AfterBraces"), "{stripped:?}");
+    assert!(
+        !stripped.contains("const C"),
+        "the test item is still stripped: {stripped:?}"
+    );
+    let marker_in_string =
+        "const DOC: &str = \"\n#[cfg(test)]\nmod x {\";\npub struct AfterString;\n";
+    let stripped = strip_line_anchored_cfg_test_items(marker_in_string);
+    assert!(stripped.contains("AfterString"), "{stripped:?}");
+    // Raw lines are still what it emits (its callers scan comments).
+    assert!(
+        strip_line_anchored_cfg_test_items("// vendor note\npub struct K;\n")
+            .contains("// vendor note")
+    );
+}
+
+/// A `\<newline>` string continuation still ends a source line: dropping it
+/// undercounted lines and shifted every later offender's line number.
+#[test]
+fn comment_and_string_stripper_keeps_escaped_newlines() {
+    let source = "let s = \"a\\\n    b\";\nlet marker = 1;\n";
+    assert_eq!(source.lines().count(), 3);
+    let stripped = strip_comments_and_strings(source);
+    assert_eq!(stripped.lines().count(), 3, "{stripped:?}");
+    assert_eq!(stripped.lines().nth(2), Some("let marker = 1;"));
+}
+
 // ---------------------------------------------------------------------------
 // balanced_angle_close
 // ---------------------------------------------------------------------------

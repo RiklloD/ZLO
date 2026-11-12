@@ -103,7 +103,7 @@ pub fn build_reply_target_binding(
 }
 
 /// Telegram limits message text to 4096 UTF-16 code units.
-pub const TELEGRAM_MESSAGE_MAX_UTF16_UNITS: usize = 4096;
+pub(crate) const TELEGRAM_MESSAGE_MAX_UTF16_UNITS: usize = 4096;
 
 /// Split without tearing surrogate pairs. Concatenation reproduces `text`.
 pub(crate) fn chunk_text_utf16(text: &str, max_units: usize) -> Vec<&str> {

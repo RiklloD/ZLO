@@ -12,3 +12,6 @@ layer = "contracts"
 thiserror = "2"
 
 [dev-dependencies]
+
+[lints]
+workspace = true

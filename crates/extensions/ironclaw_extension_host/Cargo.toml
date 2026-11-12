@@ -126,3 +126,6 @@ name = "admin_configuration_service_contract"
 
 [[test]]
 name = "lifecycle_restore_contract"
+
+[lints]
+workspace = true

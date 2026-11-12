@@ -49,7 +49,7 @@
 //! root, which is a **third** owner in `AGENTS.md`'s sub-owner map rather than
 //! being charged to either engine.
 
-pub mod admission;
+pub(crate) mod admission;
 mod dcr;
 mod exchange;
 mod http;

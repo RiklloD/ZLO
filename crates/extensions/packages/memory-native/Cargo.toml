@@ -59,3 +59,6 @@ libsql = { workspace = true, features = ["remote", "tls"] }
 # preemptive races against `replace_document_chunks_if_current`
 # (PR #3180 invariant 6).
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true

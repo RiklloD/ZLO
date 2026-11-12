@@ -34,7 +34,7 @@ const MAX_REGEX_MATCH_MESSAGE_BYTES: usize = 64 * 1024;
 
 /// Result of prefiltering with score information.
 #[derive(Debug)]
-pub struct ScoredSkill<'a> {
+pub(crate) struct ScoredSkill<'a> {
     pub skill: &'a LoadedSkill,
     pub score: u32,
 }

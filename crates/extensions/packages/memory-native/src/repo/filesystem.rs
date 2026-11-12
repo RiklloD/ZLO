@@ -68,15 +68,15 @@ const VERSIONS_SUFFIX: &str = ".versions";
 
 /// Stable indexed-projection keys carried on memory records.
 pub(crate) mod fs_keys {
-    pub const TENANT: &str = "tenant_id";
-    pub const USER: &str = "user_id";
-    pub const AGENT: &str = "agent_id";
-    pub const PROJECT: &str = "project_id";
-    pub const CONTENT: &str = "content";
-    pub const EMBEDDING: &str = "embedding";
-    pub const CHUNK_INDEX: &str = "chunk_index";
-    pub const DOC_PATH: &str = "doc_relative_path";
-    pub const VERSION: &str = "version";
+    pub(crate) const TENANT: &str = "tenant_id";
+    pub(crate) const USER: &str = "user_id";
+    pub(crate) const AGENT: &str = "agent_id";
+    pub(crate) const PROJECT: &str = "project_id";
+    pub(crate) const CONTENT: &str = "content";
+    pub(crate) const EMBEDDING: &str = "embedding";
+    pub(crate) const CHUNK_INDEX: &str = "chunk_index";
+    pub(crate) const DOC_PATH: &str = "doc_relative_path";
+    pub(crate) const VERSION: &str = "version";
 }
 
 /// Filesystem-backed memory document repository.

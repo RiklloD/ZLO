@@ -12,7 +12,6 @@
 //! assigned home by a *pinned rule*, not by preference — the measurements are
 //! in `AGENTS.md`. Do not add a fourth, and do not treat their presence as
 //! precedent for new domain data.
-#![warn(unreachable_pub)]
 
 mod attachment;
 pub mod attachment_format;

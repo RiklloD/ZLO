@@ -17,19 +17,25 @@
 //! in `ironclaw_capabilities`; this test keeps it the only one.
 
 // Each integration-test binary compiles the shared module independently; this
-// binary uses only the comment/string stripper, so the other shared helpers
-// are dead code HERE (and live in the sibling ratchet binaries).
+// binary uses the comment/string stripper and the implementor census, so the
+// other shared helpers are dead code HERE (and live in the sibling binaries).
 #[allow(dead_code)]
 mod ratchet_support;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ratchet_support::impl_census::{
+    file_implements, header_implements, impl_headers, implementor_names,
+};
 use ratchet_support::{strip_comments_and_strings, workspace_root};
 
 /// The single crate permitted to implement `CapabilityAuthorizer` (the kernel
 /// authorizer that owns `authorize()`).
 const KERNEL_CRATE_DIR: &str = "ironclaw_capabilities";
+
+/// The sealing trait whose implementations confer `AuthorizationGrant`.
+const TRAIT_NAME: &str = "CapabilityAuthorizer";
 
 /// Sanity floor for the production walk. Far below the real count (~1300) — it
 /// is not a ratchet and is never expected to bind. It exists because this gate
@@ -127,31 +133,55 @@ fn capability_authorizer_is_implemented_only_by_the_kernel() {
         scanned_production_files(&crates_dir).expect("production walk must measure the workspace");
 
     let mut offenders = Vec::new();
+    let mut kernel_impls = 0usize;
+    let mut headers_seen = 0usize;
     for file in files {
         let source = read_source(&file).expect("every scanned source must be readable");
-        // Comments and string literals are stripped (shared ratchet lexer), so
-        // doc mentions and error-message text cannot false-positive — and a
-        // qualified path (`impl crate::CapabilityAuthorizer for`) or a
-        // multiline `impl<...>\n CapabilityAuthorizer for` header cannot evade
-        // a starts_with("impl") check: any stripped line containing the
-        // `CapabilityAuthorizer for` implementation head counts.
+        // The shared implementor census (`ratchet_support::impl_census`, born
+        // in `reborn_sealed_evidence_mint_ratchet.rs`): comments and strings
+        // stripped, every `impl` header collapsed onto one line, and in-file
+        // `use … as …` aliases resolved. Until 2026-11-11 this gate matched
+        // `contains("CapabilityAuthorizer for")` per physical line, so
+        // `use …::CapabilityAuthorizer as A; impl A for Rogue {}` and
+        // `impl CapabilityAuthorizer\n    for Rogue {}` both forged an
+        // `Authorized` undetected (gate audit 2026-08 §2.1 / §3 item 5).
         let stripped = strip_comments_and_strings(&source);
-        for raw in stripped.lines() {
-            let line = raw.trim();
-            if line.contains("CapabilityAuthorizer for") {
-                let path = file.to_string_lossy().to_string();
-                // Platform-agnostic containment check: `components()` avoids
-                // hardcoding a separator (Windows paths use backslashes).
-                let in_kernel = file
-                    .components()
-                    .any(|component| component.as_os_str() == KERNEL_CRATE_DIR);
-                if !in_kernel {
-                    offenders.push(format!("{path}: {line}"));
-                }
+        let names = implementor_names(&stripped, TRAIT_NAME);
+        for header in impl_headers(&stripped) {
+            headers_seen += 1;
+            if !header_implements(&header.text, &names) {
+                continue;
+            }
+            // Platform-agnostic containment check: `components()` avoids
+            // hardcoding a separator (Windows paths use backslashes).
+            let in_kernel = file
+                .components()
+                .any(|component| component.as_os_str() == KERNEL_CRATE_DIR);
+            if in_kernel {
+                kernel_impls += 1;
+            } else {
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    file.to_string_lossy(),
+                    header.line,
+                    header.text
+                ));
             }
         }
     }
 
+    // A census that parses nothing reports every trait as unimplemented — the
+    // fail-open shape the floor above guards at the file level.
+    assert!(
+        headers_seen > 1000,
+        "the impl-header scan found only {headers_seen} headers — the extractor is broken, \
+         not the workspace"
+    );
+    assert!(
+        kernel_impls >= 1,
+        "no `{TRAIT_NAME}` implementation found in `{KERNEL_CRATE_DIR}` — the kernel lost its \
+         grant source, or the census stopped seeing it (either way this seal measures nothing)"
+    );
     assert!(
         offenders.is_empty(),
         "`CapabilityAuthorizer` may be implemented ONLY in `{KERNEL_CRATE_DIR}` — it is the sole \
@@ -282,22 +312,40 @@ fn workspace_root_search_survives_a_family_move() {
     );
 }
 
+/// Guards the matcher the gate actually runs (the shared census), not a local
+/// re-implementation of it — the previous self-test asserted a
+/// `starts_with("impl") && contains(..)` predicate the gate never used.
 #[test]
 fn seal_ratchet_self_test_detects_a_non_kernel_impl() {
-    // Guards the matcher itself: the check must fire on an impl outside the kernel.
-    let sample_line = "impl CapabilityAuthorizer for RogueMinter {}";
-    let matches =
-        sample_line.trim().starts_with("impl") && sample_line.contains("CapabilityAuthorizer for");
-    assert!(matches, "matcher must detect a bare non-kernel impl");
-    // And must NOT fire on the trait definition or a comment.
-    for benign in [
-        "pub trait CapabilityAuthorizer {",
-        "// impl CapabilityAuthorizer for Foo (in docs)",
-        "/// See CapabilityAuthorizer for details",
+    // Positive fixtures: every spelling that mints a grant must be seen.
+    for rogue in [
+        "impl CapabilityAuthorizer for RogueMinter {}",
+        "impl ironclaw_host_api::authorized::CapabilityAuthorizer for RogueMinter {}",
+        "impl<T> CapabilityAuthorizer for Rogue<T> {}",
+        // Line break between the trait and `for` (rustfmt or by hand).
+        "impl CapabilityAuthorizer\n    for RogueMinter\n{\n}",
+        // In-file alias, plain and in a braced group.
+        "use ironclaw_host_api::authorized::CapabilityAuthorizer as Grant;\nimpl Grant for RogueMinter {}",
+        "use ironclaw_host_api::authorized::{Authorized, CapabilityAuthorizer as G};\nimpl G for R {}",
     ] {
-        let t = benign.trim();
-        let fires =
-            !t.starts_with("//") && t.starts_with("impl") && t.contains("CapabilityAuthorizer for");
-        assert!(!fires, "matcher must not fire on: {benign}");
+        assert!(
+            file_implements(rogue, TRAIT_NAME),
+            "the census must detect a rogue impl spelled: {rogue}"
+        );
+    }
+    // Negative fixtures: the trait definition, prose, string literals, a
+    // longer trait name, and an unrelated alias must not fire.
+    for benign in [
+        "pub trait CapabilityAuthorizer {\n    fn grant(&self);\n}",
+        "// impl CapabilityAuthorizer for Foo (in docs)",
+        "/// See CapabilityAuthorizer for details\nfn f() {}",
+        "const S: &str = \"impl CapabilityAuthorizer for Foo {}\";",
+        "impl MyCapabilityAuthorizer for Foo {}",
+        "use other::Thing as CapabilityAuthorizerLike;\nimpl Display for Foo {}",
+    ] {
+        assert!(
+            !file_implements(benign, TRAIT_NAME),
+            "the census must not fire on: {benign}"
+        );
     }
 }

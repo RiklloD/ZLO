@@ -51,3 +51,6 @@ tokio = { version = "1", features = ["macros", "rt"] }
 # `runtime_dispatch_event_contract` asserts the dispatcher's tracing output via
 # `#[traced_test]` (moved in with the suite from the deleted ironclaw_dispatcher).
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
+
+[lints]
+workspace = true

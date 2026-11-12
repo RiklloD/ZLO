@@ -87,7 +87,7 @@ fn substitute_json(value: &serde_json::Value, config: &[(String, String)]) -> se
 /// `host` is the uniquely matching declared `[[channel.egress]]` host selected
 /// by [`resolve_vendor_call_target`]. Egress policy re-checks it, so this is
 /// composition of a URL, not a grant.
-pub fn render_vendor_call(
+pub(crate) fn render_vendor_call(
     recipe: &ChannelVendorCallRecipe,
     host: &str,
     credential_handle: Option<&ironclaw_host_api::ids::SecretHandle>,
@@ -162,7 +162,7 @@ pub(crate) fn resolve_vendor_call_target<'a>(
 
 /// Run one recipe and classify the outcome. A non-2xx is vendor wiring
 /// failure, never a partial success.
-pub async fn run_vendor_call(
+pub(crate) async fn run_vendor_call(
     recipe: &ChannelVendorCallRecipe,
     host: &str,
     credential_handle: Option<&ironclaw_host_api::ids::SecretHandle>,

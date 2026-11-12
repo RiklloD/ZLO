@@ -45,7 +45,7 @@ pub trait AgentLoopPlanner: sealed::Sealed + Send + Sync { /* ... */ }
 pub(crate) trait AgentLoopPlannerInternal: AgentLoopPlanner { /* ... */ }
 ```
 
-Use `crates/loop/ironclaw_agent_loop/src/planner.rs` as the sealed-trait template, then pair the pattern with `#![warn(unreachable_pub)]` at the owning crate root and `pub(crate)` on strategy modules. Re-verify the template exists: `grep -n "mod sealed" crates/loop/ironclaw_agent_loop/src/planner.rs`.
+Use `crates/loop/ironclaw_agent_loop/src/planner.rs` as the sealed-trait template, then pair the pattern with the workspace lint inheritance (`[lints] workspace = true` in the crate manifest, which denies `unreachable_pub`) and `pub(crate)` on strategy modules. Re-verify the template exists: `grep -n "mod sealed" crates/loop/ironclaw_agent_loop/src/planner.rs`.
 
 ## 3. Re-exports: facade vs laundering
 

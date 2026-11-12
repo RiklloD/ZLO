@@ -200,7 +200,7 @@ pub(crate) enum StopKind {
 ///
 /// On no signal, returns `Continue`.
 #[derive(Debug, Clone, Copy)]
-pub struct DefaultStopConditionStrategy {
+pub(crate) struct DefaultStopConditionStrategy {
     /// Consecutive identical calls required before rendering an advisory.
     pub repetition_threshold: usize,
     /// Min trailing rejected replies required before aborting as invalid model
@@ -326,7 +326,7 @@ impl StopConditionStrategy for DefaultStopConditionStrategy {
 /// tool is the result tool) fails as `invalid_model_output`. Everything else
 /// delegates to the default stop conditions.
 #[derive(Debug, Clone)]
-pub struct StructuredResultStopStrategy {
+pub(crate) struct StructuredResultStopStrategy {
     inner: DefaultStopConditionStrategy,
     result_capability: CapabilityId,
     /// Trailing all-failed capability batches required to abort.
@@ -334,7 +334,7 @@ pub struct StructuredResultStopStrategy {
 }
 
 impl StructuredResultStopStrategy {
-    pub fn new(result_capability: CapabilityId) -> Self {
+    pub(crate) fn new(result_capability: CapabilityId) -> Self {
         Self {
             inner: DefaultStopConditionStrategy::default(),
             result_capability,

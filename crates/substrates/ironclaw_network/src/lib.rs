@@ -5,7 +5,6 @@
 //! and owns outbound HTTP transport for host-mediated runtime requests. It does
 //! not inject secrets, reserve resources, emit audit/events, or run product
 //! workflow.
-#![warn(unreachable_pub)]
 
 mod egress;
 mod error;

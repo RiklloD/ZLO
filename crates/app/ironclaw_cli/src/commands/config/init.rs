@@ -311,6 +311,29 @@ mod tests {
     // The assertions are unchanged and strictly stronger there (it also pins
     // the base-url env and the catalog's location).
 
+    /// `PROVIDERS_STUB` seeds exactly one overlay entry, and its id is the
+    /// contract's `EXAMPLE_OVERLAY_PROVIDER_ID` — the id the operator's
+    /// onboard menu filters out
+    /// (`ironclaw_operator`'s `menu_entries_excludes_the_example_overlay_provider`).
+    /// This drift guard used to live in the operator crate and compile this
+    /// file in through a cross-crate `include_str!`; the owner of the stub now
+    /// pins it against the constant directly.
+    #[test]
+    fn providers_stub_seeds_exactly_the_example_overlay_provider() {
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(PROVIDERS_STUB).expect("PROVIDERS_STUB must parse as JSON");
+        assert_eq!(
+            entries.len(),
+            1,
+            "PROVIDERS_STUB must seed exactly one overlay entry: {entries:?}"
+        );
+        assert_eq!(
+            entries[0]["id"].as_str(),
+            Some(ironclaw_product_contracts::operator_llm::EXAMPLE_OVERLAY_PROVIDER_ID),
+            "PROVIDERS_STUB's overlay id has drifted from EXAMPLE_OVERLAY_PROVIDER_ID"
+        );
+    }
+
     /// The config stub written by `onboard`/`config init` must carry NO
     /// `[llm.default]` selection at all — `default_llm_slot()` must return
     /// `None` (not `Some` with empty fields — a bare header still fails

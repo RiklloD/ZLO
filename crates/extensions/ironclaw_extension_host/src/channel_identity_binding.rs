@@ -945,7 +945,7 @@ app_id = "/app_id"
     }
 
     #[derive(Default)]
-    pub struct RecordingIdentityStore {
+    pub(super) struct RecordingIdentityStore {
         bindings: Mutex<Vec<RebornUserIdentityBinding>>,
         existing: Mutex<HashMap<String, UserId>>,
         deletes: Mutex<Vec<(String, UserId, Option<String>)>>,

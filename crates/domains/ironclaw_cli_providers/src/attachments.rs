@@ -25,7 +25,7 @@ pub(crate) struct InlineImage {
 }
 
 impl InlineImage {
-    pub fn data_url(&self) -> String {
+    pub(crate) fn data_url(&self) -> String {
         format!("data:{};base64,{}", self.mime, self.base64)
     }
 }

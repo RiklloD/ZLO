@@ -16,7 +16,6 @@
 //! schema validation fail. Callers must handle [`ResourceError::Storage`] the
 //! same way as quota denials: do not start costed or quota-limited work until a
 //! reservation operation succeeds.
-#![warn(unreachable_pub)]
 
 mod cas_snapshot;
 mod event;

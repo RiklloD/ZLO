@@ -122,10 +122,11 @@ the DTO module — a `llm_config` module does not exist, #7018 consolidated it.)
   `ironclaw_composition`, because a fake asserting its own repeatability
   proves nothing. Adding a secret substrate back to this crate is a boundary
   failure, not a convenience.
-- **`llm_admin/provider_admin.rs` `include_str!`s CLI source** (into
-  `crates/app/ironclaw_cli/src/commands/config/init.rs`). Inventoried by
-  `reborn_cross_crate_include_scan.rs`, which is still report-only; CHECKLIST
-  WS2 flips it to enforcing.
+- ~~**`llm_admin/provider_admin.rs` `include_str!`s CLI source**~~
+  **Discharged 2026-11-11.** The `PROVIDERS_STUB` drift guard now lives in the
+  CLI that owns the stub (`providers_stub_seeds_exactly_the_example_overlay_provider`),
+  pinned against `EXAMPLE_OVERLAY_PROVIDER_ID`; this crate's menu test uses a
+  same-shape fixture keyed on that constant.
 - **`nearai_mcp.rs` is forked.** `ironclaw_extension_host/src/nearai_mcp.rs`
   is a near-verbatim copy of the endpoint/config half. This crate's copy is the
   richer one (it also holds the env and `LlmConfig` loaders and the bootstrap

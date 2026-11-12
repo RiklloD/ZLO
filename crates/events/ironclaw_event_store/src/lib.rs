@@ -25,7 +25,6 @@
 //! invocation boundary. Adding it requires changes to `ironclaw_event_log`,
 //! the JSONL/in-memory `matches_event` / `matches_audit` predicates, and
 //! every replay caller — tracked as a follow-up.
-#![warn(unreachable_pub)]
 
 use std::{
     collections::HashMap,

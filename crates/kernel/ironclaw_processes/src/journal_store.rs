@@ -46,10 +46,8 @@ mod observer;
 mod rows;
 mod state;
 
-pub use state::{
-    CRASH_RETRY_EXHAUSTED_FAILURE_CATEGORY, LEASE_EXPIRED_FAILURE_CATEGORY,
-    MAX_CRASH_RECOVERY_RECLAIMS,
-};
+pub use state::MAX_CRASH_RECOVERY_RECLAIMS;
+pub(crate) use state::{CRASH_RETRY_EXHAUSTED_FAILURE_CATEGORY, LEASE_EXPIRED_FAILURE_CATEGORY};
 mod validation;
 use command::StoredProcessCommand;
 use migration::{

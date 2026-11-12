@@ -51,3 +51,6 @@ deadpool-postgres = "0.14"
 tokio-postgres = "0.7"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

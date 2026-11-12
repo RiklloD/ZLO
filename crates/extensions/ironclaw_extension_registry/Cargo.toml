@@ -35,3 +35,6 @@ libsql = { workspace = true }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }
 tokio-postgres = "0.7"
+
+[lints]
+workspace = true

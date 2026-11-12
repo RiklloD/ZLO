@@ -32,7 +32,6 @@
 //! - [`messaging`]: [`StandardMessagingOp`], the closed standard messaging
 //!   operation vocabulary, canonical input/output schemas, description cores,
 //!   and the `messaging.*` error-code taxonomy.
-#![warn(unreachable_pub)]
 
 pub mod action;
 pub mod agent_plan;

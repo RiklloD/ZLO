@@ -6,7 +6,6 @@
 //! runtimes, emit audit records, or expose raw values through metadata. Runtime
 //! injection is not enforced until a higher-level obligation-handler/runtime
 //! composition slice consumes these primitives.
-#![warn(unreachable_pub)]
 
 mod crypto;
 pub mod keychain;

@@ -15,7 +15,10 @@ const COMPOSITION_CRATE: &str = "ironclaw_composition";
 // the crate inventory, so the family move (PROPOSAL section 5) repoints them
 // without editing the literals. Identity on today's tree - pinned by
 // `reborn_crate_inventory.rs` (CHECKLIST WS10).
-use ratchet_support::{crate_path, workspace_root};
+use ratchet_support::{
+    cfg_test_only_files, crate_path, strip_cfg_test_blocks, strip_comments_and_strings,
+    workspace_root,
+};
 
 const SUBSTRATE_CRATES: &[&str] = &[
     "ironclaw_auth",
@@ -468,6 +471,15 @@ fn reborn_binary_main_is_thin_bootstrap() {
 /// path) and forbids ALL of those Installed-tier-minting primitives crate-wide.
 /// The only sanctioned way for this crate to install an installed-tier binding
 /// is `HookRegistrar::install`.
+///
+/// # Known residual
+///
+/// The scan reads token text. It catches the variant path, a `use … as`
+/// alias, a `type T = HookTrustClass;` alias (then `T::Installed`), a variant
+/// group import and a glob. It does NOT catch construction from a string —
+/// `"installed".parse::<HookTrustClass>()`, a serde deserialize of a trust
+/// class — or a path a macro generates; those need a type-level seal on the
+/// variant (a private constructor in `ironclaw_hooks`), not a text gate.
 #[test]
 fn composition_crate_installs_installed_tier_only_through_registrar() {
     let crate_src = crate_path(&workspace_root(), "crates/ironclaw_composition/src");
@@ -495,20 +507,38 @@ fn composition_crate_installs_installed_tier_only_through_registrar() {
         "insert_binding(",
         // A hand-constructed installed-tier binding is the lowest-level bypass.
         "HookTrustClass::Installed",
+        // ...and the spellings that reach the same variant without that
+        // literal path: an alias (`use …::HookTrustClass as T;` then
+        // `T::Installed`), a variant group import (`HookTrustClass::{Installed}`),
+        // and a glob (`HookTrustClass::*` then bare `Installed`). The scan
+        // reads whitespace-normalized source, so a line break inside the path
+        // (`HookTrustClass::\n    Installed`) is the same token sequence.
+        "HookTrustClass as ",
+        "HookTrustClass::{",
+        "HookTrustClass::*",
     ];
 
     let mut saw_registrar_install = false;
+    // Dedicated unit-test module files (e.g. `hooks/tests.rs`, declared via
+    // `#[cfg(test)] mod tests;`) legitimately exercise builder APIs directly
+    // and are not production code. They are skipped when their declarations
+    // GATE them (`cfg_test_only_files`), never by file name: a `tests.rs`
+    // declared `pub mod tests;` ships and is scanned. The inline
+    // `#[cfg(test)] mod tests { .. }` stripping below covers same-file test
+    // modules.
+    let test_only = cfg_test_only_files(&crate_src);
     for (path, contents) in &sources {
-        // Dedicated unit-test module files (e.g. `hooks/tests.rs`, declared via
-        // `#[cfg(test)] mod tests;`) legitimately exercise builder APIs directly
-        // and are not production code. Skip them wholesale — the inline
-        // `#[cfg(test)] mod tests { .. }` stripping below covers same-file test
-        // modules. This keeps the invariant robust across the #3951 finding-#4
-        // decomposition (which moved the test matrix into its own file).
-        if is_test_module_file(path) {
+        if is_under_tests_dir(path) || test_only.contains(path) {
             continue;
         }
-        let production = strip_test_module(contents);
+        let production = production_tokens(contents);
+        if aliases_hook_trust_class(&production) {
+            panic!(
+                "{path:?}: `type … = HookTrustClass;` aliases the trust class, so \
+                 `Alias::Installed` would mint an installed-tier binding past this \
+                 gate. Install through HookRegistrar::install."
+            );
+        }
         if production.contains("registrar.install(") {
             saw_registrar_install = true;
         }
@@ -533,19 +563,92 @@ fn composition_crate_installs_installed_tier_only_through_registrar() {
     );
 }
 
-/// Strip trailing `#[cfg(test)] mod <name> { .. }` unit-test module(s) so the
-/// architecture invariant applies to production code only (tests legitimately
-/// exercise builder APIs directly). Matches the `#[cfg(test)]` attribute line
-/// immediately followed by a `mod ` declaration of ANY name (so a refactor that
-/// renames `mod tests` or adds a second `#[cfg(test)] mod` block is still fully
-/// stripped), and cuts from the FIRST such occurrence onward — a bare
-/// `#[cfg(test)]` substring also appears in doc comments, hence the `\nmod `
-/// anchor rather than a bare match.
-fn strip_test_module(contents: &str) -> &str {
-    match contents.find("#[cfg(test)]\nmod ") {
-        Some(idx) => &contents[..idx],
-        None => contents,
+/// The production view of a composition source file the registrar gate scans:
+/// comments and string literals blanked, **every** `#[cfg(test)]`-gated item
+/// removed by brace matching (not just a trailing module), and whitespace
+/// normalized so a path split across lines reads as one token sequence.
+///
+/// This replaced a `strip_test_module` that cut the file at the FIRST
+/// `#[cfg(test)]\nmod ` and discarded everything after it — so production code
+/// placed below an inline test module escaped the scan entirely (fail-open by
+/// file layout; gate audit 2026-08 §2.1, fixed 2026-11-11).
+/// `registrar_gate_production_view_self_test` pins both directions.
+fn production_tokens(contents: &str) -> String {
+    let stripped = strip_cfg_test_blocks(&strip_comments_and_strings(contents));
+    let collapsed = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Remove the spaces rustfmt or a hand-wrap can put around path and group
+    // punctuation, so `HookTrustClass :: Installed` and
+    // `HookTrustClass::{ Installed }` normalize to their compact spellings.
+    let mut normalized = collapsed;
+    for punct in ["::", "{", "}", "(", ")", ",", "."] {
+        normalized = normalized
+            .replace(&format!(" {punct}"), punct)
+            .replace(&format!("{punct} "), punct);
     }
+    normalized
+}
+
+#[test]
+fn registrar_gate_production_view_self_test() {
+    // Negative fixture: production code AFTER an inline test module must still
+    // be scanned (the old first-module truncation dropped it).
+    let after_tests = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() { insert_binding(x); }\n}\n\
+                       fn later() { builder.insert_binding(b); }\n";
+    let view = production_tokens(after_tests);
+    assert!(
+        view.contains("insert_binding("),
+        "production code below an inline test module must stay visible: {view}"
+    );
+    // ...while the test module's own body is removed, wherever it sits.
+    let only_in_tests =
+        "fn a() {}\n#[cfg(test)]\nmod tests { fn t() { install_observer(x); } }\nfn b() {}\n";
+    assert!(!production_tokens(only_in_tests).contains("install_observer("));
+    // A second, later test module is removed too.
+    let two_modules = "#[cfg(test)]\nmod a { fn x() {} }\nfn p() {}\n#[cfg(test)]\nmod b { fn y() { HookTrustClass::Installed; } }\n";
+    let view = production_tokens(two_modules);
+    assert!(view.contains("fn p()") && !view.contains("HookTrustClass::Installed"));
+    // Positive fixtures: the evasion spellings normalize onto a forbidden token.
+    assert!(
+        production_tokens("let t = HookTrustClass::\n    Installed;")
+            .contains("HookTrustClass::Installed")
+    );
+    assert!(
+        production_tokens("use ironclaw_hooks::{HookTrustClass as T};")
+            .contains("HookTrustClass as ")
+    );
+    assert!(
+        production_tokens("use ironclaw_hooks::HookTrustClass::{\n    Installed,\n};")
+            .contains("HookTrustClass::{")
+    );
+    // Positive: a `type` alias of the class is caught, path-qualified or not.
+    for alias in [
+        "type T = HookTrustClass;\nfn f() { T::Installed; }",
+        "pub(crate) type T=ironclaw_hooks::HookTrustClass;",
+        "fn f() { type T = HookTrustClass; let _ = T::Installed; }",
+    ] {
+        assert!(
+            aliases_hook_trust_class(&production_tokens(alias)),
+            "{alias}"
+        );
+    }
+    // Negative: using a variant, aliasing a different type, or the view
+    // type's own variants is not an alias of the class.
+    for benign in [
+        "let t = HookTrustClass::Bundled;",
+        "type V = HookTrustClassView;",
+        "use ironclaw_hooks::HookTrustClass;",
+        "trust_class: HookTrustClassView::Installed,",
+    ] {
+        assert!(
+            !aliases_hook_trust_class(&production_tokens(benign)),
+            "{benign}"
+        );
+    }
+    // Negative fixture: a comment or a string naming the primitive is not code.
+    let prose =
+        "// never call insert_binding( here\nconst DOC: &str = \"HookTrustClass::Installed\";\n";
+    let view = production_tokens(prose);
+    assert!(!view.contains("insert_binding(") && !view.contains("HookTrustClass::Installed"));
 }
 
 const EXTENSION_HOST_MOVED_MODULES: &[&str] = &[
@@ -633,14 +736,32 @@ fn has_module_decl(contents: &str, declaration: &str) -> bool {
         .any(|line| line.trim_start() == declaration)
 }
 
-/// A dedicated unit-test module file: a `tests.rs` module file, or any source
-/// under a `tests/` directory. These are test-only and may use builder APIs
-/// directly, so the production-only invariant scan skips them.
-fn is_test_module_file(path: &Path) -> bool {
-    path.file_name().and_then(|name| name.to_str()) == Some("tests.rs")
-        || path
-            .components()
-            .any(|component| component.as_os_str() == "tests")
+/// Any source under a `tests/` directory: test-only by directory, so the
+/// production-only invariant scan skips it. (A `tests.rs` FILE is skipped only
+/// when `cfg_test_only_files` finds its declaration gated.)
+fn is_under_tests_dir(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "tests")
+}
+
+/// Whether normalized production tokens hold a `type Alias = HookTrustClass;`
+/// (optionally path-qualified, optionally `pub`): `Alias::Installed` then
+/// reaches the variant without any forbidden literal.
+fn aliases_hook_trust_class(production: &str) -> bool {
+    production.split(';').any(|statement| {
+        let statement = statement.rsplit(['{', '}']).next().unwrap_or(statement);
+        let Some((left, right)) = statement.split_once('=') else {
+            return false;
+        };
+        let target = right.trim();
+        let names_class = target == "HookTrustClass" || target.ends_with("::HookTrustClass");
+        // Normalization glues punctuation to words (`pub(crate)type T`), so
+        // split on every non-identifier character, not on whitespace.
+        names_class
+            && left
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|word| word == "type")
+    })
 }
 
 /// Is this file crate guidance rather than a shipped asset?

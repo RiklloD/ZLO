@@ -6,7 +6,6 @@
 //! else. Nothing that merely *produces a value a trace happens to record*
 //! belongs here — that measurement belongs to whoever produces the thing being
 //! measured (see `crates/substrates/ironclaw_observability/AGENTS.md`).
-#![warn(unreachable_pub)]
 
 use std::time::Instant;
 

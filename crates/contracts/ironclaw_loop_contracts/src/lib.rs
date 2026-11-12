@@ -21,7 +21,6 @@
 //! The initial host-managed implementation supports only [`PromptMode::TextOnly`]
 //! and rejects checkpoint-backed prompt state until a durable checkpoint prompt
 //! store is introduced.
-#![warn(unreachable_pub)]
 
 mod checkpoint_payload;
 mod compaction;

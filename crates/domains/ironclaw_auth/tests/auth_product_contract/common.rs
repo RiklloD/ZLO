@@ -1,5 +1,5 @@
-pub use chrono::{Duration, Utc};
-pub use ironclaw_auth::{
+pub(crate) use chrono::{Duration, Utc};
+pub(crate) use ironclaw_auth::{
     AuthChallenge, AuthContinuationRef, AuthErrorCode, AuthFlowKind, AuthFlowManager,
     AuthFlowStatus, AuthGateRef, AuthInteractionService, AuthProductError, AuthProductScope,
     AuthProviderClient, AuthProviderId, AuthSessionId, AuthSurface, AuthorizationCodeHash,
@@ -18,13 +18,13 @@ pub use ironclaw_auth::{
     SecretCleanupRequest, SecretCleanupService, SecretSubmitRequest, SecretSubmitResult,
     TurnRunRef,
 };
-pub use ironclaw_host_api::{
+pub(crate) use ironclaw_host_api::{
     ids::{ExtensionId, InvocationId, SecretHandle, ThreadId, UserId},
     resource::ResourceScope,
 };
-pub use secrecy::SecretString;
+pub(crate) use secrecy::SecretString;
 
-pub fn scope(user: &str) -> AuthProductScope {
+pub(crate) fn scope(user: &str) -> AuthProductScope {
     AuthProductScope::new(
         ResourceScope::local_default(UserId::new(user).expect("valid user"), InvocationId::new())
             .expect("valid scope"),
@@ -40,33 +40,33 @@ pub fn scope(user: &str) -> AuthProductScope {
 /// #4935 defect-A shape. At durable owner granularity this is the same owner,
 /// so the reconnect must update the existing account; full scope equality would
 /// reject it.
-pub fn reconnect_scope(user: &str, thread: &str) -> AuthProductScope {
+pub(crate) fn reconnect_scope(user: &str, thread: &str) -> AuthProductScope {
     let mut scope = scope(user);
     scope.resource.thread_id = Some(ThreadId::new(thread).expect("valid thread"));
     scope
 }
 
-pub fn provider() -> AuthProviderId {
+pub(crate) fn provider() -> AuthProviderId {
     AuthProviderId::new("github").expect("valid provider")
 }
 
-pub fn label(value: &str) -> CredentialAccountLabel {
+pub(crate) fn label(value: &str) -> CredentialAccountLabel {
     CredentialAccountLabel::new(value).expect("valid label")
 }
 
-pub fn state_hash(value: &str) -> OpaqueStateHash {
+pub(crate) fn state_hash(value: &str) -> OpaqueStateHash {
     OpaqueStateHash::new(fake_digest(value)).expect("valid state hash")
 }
 
-pub fn pkce_hash(value: &str) -> PkceVerifierHash {
+pub(crate) fn pkce_hash(value: &str) -> PkceVerifierHash {
     PkceVerifierHash::new(fake_digest(value)).expect("valid pkce hash")
 }
 
-pub fn code_hash(value: &str) -> AuthorizationCodeHash {
+pub(crate) fn code_hash(value: &str) -> AuthorizationCodeHash {
     AuthorizationCodeHash::new(fake_digest(value)).expect("valid code hash")
 }
 
-pub fn fake_digest(value: &str) -> String {
+pub(crate) fn fake_digest(value: &str) -> String {
     format!(
         "{:064x}",
         value.bytes().fold(0_u64, |hash, byte| {
@@ -75,23 +75,23 @@ pub fn fake_digest(value: &str) -> String {
     )
 }
 
-pub fn authorization_url(value: &str) -> OAuthAuthorizationUrl {
+pub(crate) fn authorization_url(value: &str) -> OAuthAuthorizationUrl {
     OAuthAuthorizationUrl::new(value).expect("valid authorization url")
 }
 
-pub fn provider_scope(value: &str) -> ProviderScope {
+pub(crate) fn provider_scope(value: &str) -> ProviderScope {
     ProviderScope::new(value).expect("valid provider scope")
 }
 
-pub fn provider_scopes(values: &[&str]) -> Vec<ProviderScope> {
+pub(crate) fn provider_scopes(values: &[&str]) -> Vec<ProviderScope> {
     values.iter().map(|value| provider_scope(value)).collect()
 }
 
-pub fn secret(value: &str) -> SecretString {
+pub(crate) fn secret(value: &str) -> SecretString {
     SecretString::from(value.to_string())
 }
 
-pub fn account_request(
+pub(crate) fn account_request(
     owner: AuthProductScope,
     label_value: &str,
     status: CredentialAccountStatus,
@@ -113,7 +113,7 @@ pub fn account_request(
 /// The sanctioned shape a device link mints: extension-owned by exactly one
 /// extension, no grants (PROPOSAL §4.5). `bump_link_revision` refuses anything
 /// else, so this is the only fixture that can become a linked device.
-pub fn linked_device_account_request(
+pub(crate) fn linked_device_account_request(
     owner: AuthProductScope,
     label_value: &str,
     owner_extension: &ExtensionId,
@@ -127,7 +127,7 @@ pub fn linked_device_account_request(
     )
 }
 
-pub fn account_ids(accounts: &[CredentialAccountProjection]) -> Vec<CredentialAccountId> {
+pub(crate) fn account_ids(accounts: &[CredentialAccountProjection]) -> Vec<CredentialAccountId> {
     let mut ids = accounts
         .iter()
         .map(|account| account.id)
@@ -136,7 +136,7 @@ pub fn account_ids(accounts: &[CredentialAccountProjection]) -> Vec<CredentialAc
     ids
 }
 
-pub fn update_binding(account: &CredentialAccount) -> CredentialAccountUpdateBinding {
+pub(crate) fn update_binding(account: &CredentialAccount) -> CredentialAccountUpdateBinding {
     CredentialAccountUpdateBinding {
         account_id: account.id,
         ownership: account.ownership,
@@ -145,7 +145,7 @@ pub fn update_binding(account: &CredentialAccount) -> CredentialAccountUpdateBin
     }
 }
 
-pub async fn oauth_flow(
+pub(crate) async fn oauth_flow(
     services: &InMemoryAuthProductServices,
     owner: AuthProductScope,
 ) -> ironclaw_auth::AuthFlowRecord {
@@ -173,7 +173,7 @@ pub async fn oauth_flow(
         .expect("flow")
 }
 
-pub async fn oauth_update_flow(
+pub(crate) async fn oauth_update_flow(
     services: &InMemoryAuthProductServices,
     owner: AuthProductScope,
     account: &CredentialAccount,
@@ -183,7 +183,7 @@ pub async fn oauth_update_flow(
         .expect("update flow")
 }
 
-pub async fn try_oauth_update_flow(
+pub(crate) async fn try_oauth_update_flow(
     services: &InMemoryAuthProductServices,
     owner: AuthProductScope,
     account: &CredentialAccount,

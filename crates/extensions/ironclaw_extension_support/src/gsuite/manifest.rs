@@ -4,17 +4,17 @@ use ironclaw_host_api::{
     resource::{ResourceCeiling, ResourceEstimate, ResourceProfile, SandboxQuota},
 };
 
-pub const CALENDAR_EXTENSION_ID: &str = "google-calendar";
-pub const GOOGLE_DOCS_EXTENSION_ID: &str = "google-docs";
-pub const GOOGLE_DRIVE_EXTENSION_ID: &str = "google-drive";
-pub const GOOGLE_SHEETS_EXTENSION_ID: &str = "google-sheets";
-pub const GOOGLE_SLIDES_EXTENSION_ID: &str = "google-slides";
-pub const GMAIL_EXTENSION_ID: &str = "gmail";
+pub(super) const CALENDAR_EXTENSION_ID: &str = "google-calendar";
+pub(super) const GOOGLE_DOCS_EXTENSION_ID: &str = "google-docs";
+pub(super) const GOOGLE_DRIVE_EXTENSION_ID: &str = "google-drive";
+pub(super) const GOOGLE_SHEETS_EXTENSION_ID: &str = "google-sheets";
+pub(super) const GOOGLE_SLIDES_EXTENSION_ID: &str = "google-slides";
+pub(super) const GMAIL_EXTENSION_ID: &str = "gmail";
 
 pub const GSUITE_RESPONSE_BODY_LIMIT: u64 = 1024 * 1024;
 pub const GSUITE_REQUEST_BODY_LIMIT: usize = 64 * 1024;
 pub const GSUITE_OUTPUT_BYTES_LIMIT: u64 = GSUITE_RESPONSE_BODY_LIMIT + 4096;
-pub const GSUITE_TIMEOUT_MS: u32 = 30_000;
+pub(super) const GSUITE_TIMEOUT_MS: u32 = 30_000;
 const DEFAULT_NETWORK_EGRESS_BYTES: u64 = 16 * 1024;
 const MAX_NETWORK_EGRESS_BYTES: u64 = 512 * 1024;
 
@@ -224,7 +224,7 @@ pub const GSUITE_PROVIDER_SCOPES: &[&str] = &[
     ironclaw_auth::GOOGLE_GMAIL_SEND_SCOPE,
     ironclaw_auth::GOOGLE_GMAIL_MODIFY_SCOPE,
 ];
-pub const GSUITE_EXTENSION_IDS: &[&str] = &[
+pub(super) const GSUITE_EXTENSION_IDS: &[&str] = &[
     CALENDAR_EXTENSION_ID,
     GMAIL_EXTENSION_ID,
     GOOGLE_DOCS_EXTENSION_ID,
@@ -256,7 +256,7 @@ pub fn find_gsuite_capability(
 const GSUITE_PACKAGE_SPECS: [GsuitePackageSpec; 2] =
     [calendar_package_spec(), gmail_package_spec()];
 
-pub const fn calendar_package_spec() -> GsuitePackageSpec {
+pub(super) const fn calendar_package_spec() -> GsuitePackageSpec {
     GsuitePackageSpec {
         extension_id: CALENDAR_EXTENSION_ID,
         name: "Google Calendar",
@@ -269,7 +269,7 @@ pub const fn calendar_package_spec() -> GsuitePackageSpec {
     }
 }
 
-pub const fn gmail_package_spec() -> GsuitePackageSpec {
+pub(super) const fn gmail_package_spec() -> GsuitePackageSpec {
     GsuitePackageSpec {
         extension_id: GMAIL_EXTENSION_ID,
         name: "Gmail",

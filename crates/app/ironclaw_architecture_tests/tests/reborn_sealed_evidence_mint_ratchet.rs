@@ -92,6 +92,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ratchet_support::impl_census::{
+    file_implements, header_implements, impl_headers, implementor_names, is_ident_char, starts_word,
+};
 use ratchet_support::{
     cfg_test_only_files, crate_path, strip_cfg_test_blocks, strip_comments_and_strings,
     workspace_root,
@@ -607,202 +610,11 @@ fn assert_sole_implementor(trait_name: &str, permitted_crate: &str) {
 // shape it cannot see is a way to mint forged evidence.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One `impl … for …` header, collapsed onto a single line.
-struct ImplHeader {
-    /// 1-based line of the `impl` keyword, for the offender report.
-    line: usize,
-    text: String,
-}
-
-/// Every `impl` header in already-stripped `source`, whitespace-normalized.
-///
-/// Line-oriented matching is what let a rogue impl hide behind a line break:
-/// `impl ChannelIngressVerifier\n    for RogueAdapter` never puts the trait
-/// name and `for` on one line, so a `contains("<Trait> for")` scan over
-/// `.lines()` read it as absent. Collapsing the header first removes that
-/// formatting degree of freedom entirely.
-///
-/// The header region runs from the `impl` keyword to the first `{`, `;`, or
-/// `where`, or — at angle-bracket depth zero — `,` or `)`. The last two stop an
-/// `impl Trait` in argument position from swallowing a function body; the depth
-/// check keeps `impl T for HashMap<K, V>` intact. `impl` in return position
-/// (`-> impl Iterator<…>`) yields a header with no `for`, which matches nothing.
-fn impl_headers(source: &str) -> Vec<ImplHeader> {
-    let chars: Vec<char> = source.chars().collect();
-    let mut headers = Vec::new();
-    let mut line = 1usize;
-    let mut index = 0usize;
-    while index < chars.len() {
-        if chars[index] == '\n' {
-            line += 1;
-            index += 1;
-            continue;
-        }
-        if !starts_word(&chars, index, "impl") {
-            index += 1;
-            continue;
-        }
-        let start_line = line;
-        let mut cursor = index + "impl".len();
-        let mut depth = 0usize;
-        let mut text = String::from("impl");
-        while cursor < chars.len() {
-            let ch = chars[cursor];
-            // `->` is an arrow, not a closing angle bracket. Without this a
-            // return type inside generics (`Box<dyn Fn() -> u8>`) would close
-            // the bracket early and truncate the header.
-            if ch == '-' && chars.get(cursor + 1) == Some(&'>') {
-                text.push_str("->");
-                cursor += 2;
-                continue;
-            }
-            match ch {
-                '{' | ';' => break,
-                '<' => depth += 1,
-                '>' => depth = depth.saturating_sub(1),
-                ',' | ')' if depth == 0 => break,
-                '\n' => line += 1,
-                _ => {}
-            }
-            if depth == 0 && starts_word(&chars, cursor, "where") {
-                break;
-            }
-            text.push(ch);
-            cursor += 1;
-        }
-        headers.push(ImplHeader {
-            line: start_line,
-            text: text.split_whitespace().collect::<Vec<_>>().join(" "),
-        });
-        index = cursor;
-    }
-    headers
-}
-
-/// The canonical trait name plus every name bound to it by a `use … as …` in
-/// this file.
-///
-/// `use path::ChannelIngressVerifier as Verifier; impl Verifier for Rogue {}`
-/// never names the trait on the impl line, so a census keyed only to the
-/// canonical spelling cannot see it. Braced groups
-/// (`use path::{Trait as V, Other}`) and raw-identifier aliases (`as r#type`)
-/// bind the same way and are resolved the same way. Cross-file re-export
-/// chains (`pub use … as …` in crate A, imported by crate B) stay out of reach
-/// of a per-file census — recorded as residual, not closed.
-fn implementor_names(source: &str, trait_name: &str) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    names.insert(trait_name.to_string());
-    let chars: Vec<char> = source.chars().collect();
-    let mut index = 0usize;
-    while index < chars.len() {
-        if !starts_word(&chars, index, trait_name) {
-            index += 1;
-            continue;
-        }
-        let mut cursor = index + trait_name.chars().count();
-        // ` as <ident>` — the only construct that can rename a trait in scope.
-        // A cast (`x as u64`) cannot apply to a trait name, so no disambiguation
-        // beyond the word boundary is needed.
-        while chars.get(cursor).is_some_and(|c| c.is_whitespace()) {
-            cursor += 1;
-        }
-        if starts_word(&chars, cursor, "as") {
-            cursor += 2;
-            while chars.get(cursor).is_some_and(|c| c.is_whitespace()) {
-                cursor += 1;
-            }
-            if chars.get(cursor) == Some(&'r') && chars.get(cursor + 1) == Some(&'#') {
-                cursor += 2;
-            }
-            let alias: String = chars[cursor..]
-                .iter()
-                .take_while(|c| is_ident_char(**c))
-                .collect();
-            if !alias.is_empty() {
-                names.insert(alias);
-            }
-        }
-        index += trait_name.chars().count();
-    }
-    names
-}
-
-/// Whether a collapsed header implements one of `names`.
-///
-/// Requires the name to appear on an identifier boundary — so a longer trait
-/// that merely ends in the same text (`MyChannelIngressVerifier`) is not a hit
-/// — followed, after any generic arguments, by the `for` keyword. Qualified
-/// paths (`a::b::Trait for`) and generic impls (`impl<T> Trait<T> for`) still
-/// match, which is what the pre-hardening scan did.
-fn header_implements(header: &str, names: &BTreeSet<String>) -> bool {
-    let chars: Vec<char> = header.chars().collect();
-    for name in names {
-        let mut index = 0usize;
-        while index < chars.len() {
-            if !starts_word(&chars, index, name) {
-                index += 1;
-                continue;
-            }
-            let mut cursor = index + name.chars().count();
-            // Whitespace may separate the name from its generic arguments —
-            // `impl Trait <> for X {}` compiles, and the header collapse *makes*
-            // that space whenever a line break falls between the two. Skipping
-            // it before looking for `<` is what keeps the normalization total;
-            // without it the generic-argument branch is never entered, the
-            // whitespace loop below lands on `<`, `for` is not found, and the
-            // impl mints evidence undetected.
-            while chars.get(cursor).is_some_and(|c| c.is_whitespace()) {
-                cursor += 1;
-            }
-            // Skip the trait's own generic arguments: `Trait<T> for X`.
-            if chars.get(cursor) == Some(&'<') {
-                let mut depth = 0usize;
-                while cursor < chars.len() {
-                    // `->` inside the arguments is an arrow, not a closer.
-                    if chars[cursor] == '-' && chars.get(cursor + 1) == Some(&'>') {
-                        cursor += 2;
-                        continue;
-                    }
-                    match chars[cursor] {
-                        '<' => depth += 1,
-                        '>' => {
-                            depth = depth.saturating_sub(1);
-                            if depth == 0 {
-                                cursor += 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    cursor += 1;
-                }
-            }
-            while chars.get(cursor).is_some_and(|c| c.is_whitespace()) {
-                cursor += 1;
-            }
-            if starts_word(&chars, cursor, "for") {
-                return true;
-            }
-            index += name.chars().count();
-        }
-    }
-    false
-}
-
-/// Whether `word` starts at `index` on both-side identifier boundaries.
-fn starts_word(chars: &[char], index: usize, word: &str) -> bool {
-    if index > 0 && is_ident_char(chars[index - 1]) {
-        return false;
-    }
-    let mut cursor = index;
-    for expected in word.chars() {
-        if chars.get(cursor) != Some(&expected) {
-            return false;
-        }
-        cursor += 1;
-    }
-    !chars.get(cursor).is_some_and(|c| is_ident_char(*c))
-}
+// The census primitives (`impl_headers`, `implementor_names`,
+// `header_implements`, `starts_word`) live in `ratchet_support::impl_census`
+// since 2026-11-11, shared with `reborn_authorized_seal_ratchet.rs` — the
+// older seal ratchet's line-based matcher missed the alias and line-break
+// shapes this census closes (gate audit 2026-08 §3 item 5).
 
 /// Every `pub`-visible `use` **item** in already-stripped `source` that names one
 /// of the two witness traits, as `(1-based line of the visibility, collapsed
@@ -910,16 +722,8 @@ fn file_reexports(source: &str) -> Vec<(usize, String)> {
     grant_trait_reexports(&strip_comments_and_strings(source))
 }
 
-/// The full census for one file, as the production scan runs it. Self-tests
-/// drive this rather than reimplementing the pipeline, so a test cannot pass
-/// against logic the gate does not use.
-fn file_implements(source: &str, trait_name: &str) -> bool {
-    let stripped = strip_comments_and_strings(source);
-    let names = implementor_names(&stripped, trait_name);
-    impl_headers(&stripped)
-        .iter()
-        .any(|header| header_implements(&header.text, &names))
-}
+// `file_implements` (the full per-file census pipeline the self-tests drive)
+// is shared from `ratchet_support::impl_census`.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Refutes: second import paths and off-seam call sites.
@@ -1495,10 +1299,6 @@ fn mentions_symbol(line: &str, symbol: &str) -> bool {
         start = at + symbol.len();
     }
     false
-}
-
-fn is_ident_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

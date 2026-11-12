@@ -15,9 +15,9 @@
 //! `failure_lane`, the retry disposition) stay with the producer: they are typed
 //! on loop/agent-loop vocabulary that this crate must never depend on.
 //!
-//! Adding a constant here obliges a matching arm in [`super::summary`]; the
-//! product projection's `failure_summary_covers_reborn_failure_category_constants`
-//! scans this file and fails when the two drift.
+//! Adding a constant here obliges a matching arm in [`super::summary`];
+//! `tests/failure_category_summary_parity.rs` in this crate scans this file and
+//! fails when the two drift.
 
 /// Failure category identifier for model provider credit exhaustion.
 /// Exposed for cross-crate consumers that project this category to a user-facing message.

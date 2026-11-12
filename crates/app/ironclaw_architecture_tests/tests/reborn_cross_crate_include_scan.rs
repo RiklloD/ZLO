@@ -98,11 +98,24 @@ const WS0_CROSS_CRATE_INCLUDE_SITES: usize = 19;
 ///     class of reach-in, and it is not repointable while the layer matrix
 ///     forbids `runtimes → products`. Recorded here deliberately, per this
 ///     ratchet's own rule that adding a site must edit this file.
-///   * `ironclaw_host_runtime` → `memory-native`/`mem0` (7) — five of them in
-///     `first_party_tools/schemas.rs`.
-///   * source-scraping drift guards (5): `ironclaw_assistant`'s failure-
-///     explanation tests compile three sibling crates' `.rs` files, and
-///     `ironclaw_operator::llm_admin::provider_admin` compiles the CLI's.
+///   * ~~`ironclaw_host_runtime` → `memory-native`/`mem0` (7)~~ and
+///     ~~source-scraping drift guards (5)~~ — **discharged 2026-11-11, 17 → 5.**
+///     Each moved to its owner rather than being repointed:
+///     `ironclaw_memory_native` exposes `MANIFEST_TOML` +
+///     `MEMORY_INPUT_SCHEMAS` and `ironclaw_memory_mem0` exposes
+///     `MANIFEST_TOML` (composition passes it in beside `MEMORY_ASSETS`, the
+///     #7185 precedent, since the host may not name mem0); the failure-summary
+///     parity guards now live in the crates whose source they scan
+///     (`ironclaw_loop_contracts`, `ironclaw_host_api`, `ironclaw_agent_loop`
+///     — each `tests/*_parity.rs` reading its own `src/`), and the
+///     `PROVIDERS_STUB` drift guard lives in the CLI that owns the stub,
+///     pinned against the contract constant the operator filters on.
+///
+/// The **5** that remain are all the first category: they need an
+/// `ironclaw_extension_support` (runtimes) → slack/telegram package (products)
+/// inversion that the layer matrix forbids as an edge — the package inventory
+/// has to arrive from the binary instead (#7093). Until then `REPORT_ONLY`
+/// cannot flip.
 ///
 /// **Why an equality and not `<=`.** The lesson `reborn_extension_specificity`
 /// paid for (#7147): a ceiling sitting above the live list is an unclaimed
@@ -111,7 +124,7 @@ const WS0_CROSS_CRATE_INCLUDE_SITES: usize = 19;
 /// that removes a reach-in must lower this constant in the same change and a PR
 /// that adds one is red. When it reaches **0**, flip `REPORT_ONLY` and delete
 /// this constant with the gate that reads it.
-const CROSS_CRATE_INCLUDE_SITES: usize = 17;
+const CROSS_CRATE_INCLUDE_SITES: usize = 5;
 
 /// This file's own fixtures are include-shaped strings; skip it the way the
 /// shared type-def scanner skips the ratchet files (defense in depth).

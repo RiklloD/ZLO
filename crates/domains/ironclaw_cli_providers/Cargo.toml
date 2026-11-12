@@ -51,3 +51,6 @@ ironclaw_libsql_runtime = { path = "../../substrates/ironclaw_libsql_runtime" }
 libsql = { workspace = true }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }
+
+[lints]
+workspace = true

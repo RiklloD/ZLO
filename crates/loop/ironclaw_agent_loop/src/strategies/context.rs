@@ -39,7 +39,7 @@ pub(crate) struct ContextPlan {
 /// CodeAct-shaped prompts or want to inject nudges swap this strategy
 /// rather than mutating state.
 #[derive(Debug, Clone, Copy)]
-pub struct DefaultContextStrategy {
+pub(crate) struct DefaultContextStrategy {
     /// Max messages to ask the host to include in the bundle. Default
     /// [`Self::DEFAULT_MAX_MESSAGES`].
     pub max_messages: u32,
@@ -50,7 +50,7 @@ impl DefaultContextStrategy {
     ///
     /// Host adapters apply token budgeting after the scan, so this should be
     /// large enough for compaction to observe more than the latest chat exchange.
-    pub const DEFAULT_MAX_MESSAGES: u32 = 128;
+    pub(crate) const DEFAULT_MAX_MESSAGES: u32 = 128;
 }
 
 impl Default for DefaultContextStrategy {

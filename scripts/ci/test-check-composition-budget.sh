@@ -103,6 +103,13 @@ make_fixture() {
 # 3000 comp / (3000+7000) = 30.00% = 3000 bp
 make_fixture "${tmp}/crates" 3000 7000
 
+# Append the declaration that makes a sibling `tests.rs` test-only. Both lines
+# are test context (the attribute and the gated item), so lib.rs still counts
+# exactly its `let` lines.
+gate_tests_module() {  # lib.rs path
+    printf '#[cfg(test)]\nmod tests;\n' >> "$1"
+}
+
 budget() {  # enforce ceiling_bp tolerance_bp [arc_ceiling=0] [arc_tol=0] [loc_ceiling] [loc_nudge_slack]
     # arc_ceiling defaults to 0: mass-focused fixtures have no Arc<dyn>, so a
     # 0 ceiling neither breaches nor emits a dispatch nudge, isolating the mass
@@ -203,8 +210,11 @@ assert_rc       "C8b missing ceiling_bp exits 1"   1 "${CAP_RC}"
 assert_contains "C8b reports schema error not crash" "${CAP_OUT}" "ceiling_bp must be an integer"
 
 # C8c: test-only FILES are excluded from the metric. Add a big tests.rs to the
-# composition fixture; the observed share must stay 30.00% (3000 bp), unchanged.
+# composition fixture behind a real `#[cfg(test)] mod tests;` declaration; the
+# observed share must stay 30.00% (3000 bp), unchanged. (A `tests.rs` that no
+# gated declaration includes is production — case L11 below.)
 make_fixture "${tmp}/crates" 3000 7000
+gate_tests_module "${tmp}/crates/ironclaw_composition/src/lib.rs"
 printf 'let _ = 9;\n%.0s' $(seq 1 5000) > "${tmp}/crates/ironclaw_composition/src/tests.rs"
 budget true 3000 30; run_gate
 assert_rc       "C8c test file excluded exits 0"   0 "${CAP_RC}"
@@ -474,10 +484,22 @@ assert_contains "L9 --print shows absolute LOC"    "${CAP_OUT}" "composition abs
 
 # L10: test-only FILES are excluded from the absolute metric too (same
 #      numerator as the share metric — one definition, two bounds).
+gate_tests_module "${tmp}/crates/ironclaw_composition/src/lib.rs"
 printf 'let _ = 9;\n%.0s' $(seq 1 5000) > "${tmp}/crates/ironclaw_composition/src/tests.rs"
 budget true 3000 30 0 0 3000 0; run_gate
 assert_rc       "L10 test file excluded exits 0"   0 "${CAP_RC}"
 assert_contains "L10 absolute ignores tests.rs"    "${CAP_OUT}" "[abs] composition src  : 3000 LOC"
+make_fixture "${tmp}/crates" 3000 7000  # restore clean fixture
+
+# L11: an UNGATED `tests.rs` is production and counts — the name is a
+#      convention, not a gate (gate audit 2026-08 §6.2). The declaration line
+#      counts too, and a commented-out gated declaration hides nothing:
+#      3000 + `pub mod tests;` + the comment line + 5000 = 8002.
+printf 'pub mod tests;\n// #[cfg(test)] mod tests;\n' >> "${tmp}/crates/ironclaw_composition/src/lib.rs"
+printf 'let _ = 9;\n%.0s' $(seq 1 5000) > "${tmp}/crates/ironclaw_composition/src/tests.rs"
+budget true 3000 30 0 0 3000 0; run_gate
+assert_rc       "L11 ungated tests.rs breaches"    1 "${CAP_RC}"
+assert_contains "L11 ungated tests.rs counts"      "${CAP_OUT}" "[abs] composition src  : 8002 LOC"
 make_fixture "${tmp}/crates" 3000 7000  # restore clean fixture
 
 # C10: guard against committing a red gate — the REAL repo budget file must pass

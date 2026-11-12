@@ -7,7 +7,7 @@ use ironclaw_extension_contracts::linked_session::{LinkedSessionVersion, Session
 use ironclaw_host_api::ids::{ExtensionId, SecretHandle};
 use secrecy::ExposeSecret;
 
-pub mod device_link;
+pub(crate) mod device_link;
 
 use crate::{
     AuthChallenge, AuthContinuationEvent, AuthContinuationRef, AuthFlowId, AuthFlowManager,

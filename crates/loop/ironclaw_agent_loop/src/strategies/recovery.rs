@@ -259,7 +259,7 @@ pub(crate) enum RetryScope {
 /// - Aborts immediately on `CheckpointRejected`, which is owned by its
 ///   separate recovery follow-up.
 #[derive(Debug, Clone, Copy)]
-pub struct DefaultRecoveryStrategy {
+pub(crate) struct DefaultRecoveryStrategy {
     /// Max retries per error class before giving up. Default `2`.
     pub max_attempts_per_class: u32,
     /// Max consecutive retries for availability-class model errors

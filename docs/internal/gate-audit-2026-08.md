@@ -427,6 +427,10 @@ registrar-gate first-test-module truncation; the webui HTTP-ingress
 documented gap; `REPORT_ONLY` on the include scan; the older seal ratchet's
 evasion shapes; the six unwired self-tests.
 
+> **Status 2026-11-11:** all six followed up — five fixed, `REPORT_ONLY`
+> shrunk but not flippable. See §8. Two reviews of that follow-up found
+> several of the new gates fail-open themselves; fixed 2026-11-12, see §9.
+
 ---
 
 ## 6. Sabotage log (methods and outputs)
@@ -507,3 +511,58 @@ the two remaining fail-open fixes (R4); seal/branching-ratchet retrofits
 (R5); the `REPORT_ONLY` decision (R6); charter small-arms (R7); orphan
 self-test wiring (R8); `quality_gate_strict.sh` deletion; hook-install-story
 reconciliation and preflight adoption (§4.3).
+
+---
+
+## 8. Follow-up status (2026-11-11)
+
+Each item re-checked against the live tree before it was changed. Every
+scanner change ships with positive and negative fixtures (CHECKLIST WS10 rule).
+
+| Item | Status | What changed |
+|---|---|---|
+| §5 slack/telegram `BoundaryRule` skip (#3212 fail-open) | **Fixed** | `reborn_boundary_rules_active_crates_are_workspace_members` resolves rule crates by `[package] name` (`workspace_crate_manifests_by_package_name`), not directory basename, and pins `ironclaw_slack_extension`, `ironclaw_telegram_extension`, `ironclaw` as checked. Fixtures: `manifest_package_name_reads_only_the_package_table`, `boundary_rule_crates_resolve_by_package_name_not_directory_basename`. |
+| §5 registrar-gate first-test-module truncation | **Fixed** | `composition_crate_installs_installed_tier_only_through_registrar` scans `production_tokens`: comments/strings blanked, every `#[cfg(test)]` item brace-stripped, whitespace normalized. Alias (`HookTrustClass as`), variant-group (`HookTrustClass::{`), glob, and line-break spellings are now forbidden tokens. Fixture: `registrar_gate_production_view_self_test`. |
+| §5 webui HTTP-ingress documented gap | **Fixed** | `reborn_product_api_crates_do_not_bind_http_ingress` now scans webui production files. The family charter is the ruling the gate asked for ("only `ironclaw_webui` binds a listener", `crates/product/AGENTS.md`), so the exemption is the two serve-loop functions (`bind_webui_v2` / `serve_bound_webui_v2` in `src/lib.rs`; narrowed from the whole file on 2026-11-12), with a staleness check that both still bind/serve. Test items are stripped (OAuth mock servers) on comment/string-stripped code (§9). Fixtures: `server_lifecycle_hits_self_test`, `webui_serve_loop_exemption_is_the_two_functions_not_the_file`. |
+| §5 / R6 `REPORT_ONLY` on the include scan | **Shrunk, not flipped** | Cross-crate count 17 → **5**: memory-native/mem0 manifests + schemas come through the owning packages' public API (`MANIFEST_TOML`, `MEMORY_INPUT_SCHEMAS`; mem0's manifest passed in by composition, as `MEMORY_ASSETS` already was); the failure-summary parity guards live in the crates whose source they read; the `PROVIDERS_STUB` guard lives in the CLI. The 5 left are `ironclaw_extension_support` → slack/telegram, which need an upward edge the layer matrix forbids (#7093). The gate's condition is 0, so `REPORT_ONLY` stays `true`. |
+| §5 / R5 older seal ratchet's evasion shapes | **Fixed** | `reborn_authorized_seal_ratchet.rs` uses the mint ratchet's implementor census, now shared as `ratchet_support::impl_census`: collapsed headers, in-file alias resolution, a >1000-header parse floor, and a ≥1 kernel-impl floor. The old self-test asserted a predicate the gate never ran; it now drives `file_implements` with alias, braced-alias, line-break, qualified and generic positives and six negatives. The deployment-branching ratchet half of R5 is **not done**. |
+| §5 / R8 six unwired self-tests | **Wired** | `test-import-reborn-run-artifact.py`, `test-reset-extension-state.sh`, `test-pre-commit-safety.sh`, `tests/test_check_reborn_responses_e2e_manifest.py` added to Code Style's `Static-check self-tests`; `test_cut_ironclaw_release.py` was already wired. `test-pre-commit-safety.sh` was red (0/21) on the base: every case hit the composition budget, which was itself red on the base (next row). |
+| §3.2 counting rule (relocation mints headroom) | **Fixed** | One rule for both LOC ceilings. Shell: `scripts/ci/lib/production_loc.py` (panic-gate lexer, `is_test_only_path`; self-tested) behind `check-composition-budget.sh`. Arch: `ratchet_support::production_line_count` behind the contracts size ceiling — since 2026-11-12 a Rust port of the same cfg evaluator and line tracker, so both counters apply one rule (§9). Moving a test module out of a file no longer changes the count (`production_line_count_is_relocation_neutral`, `test_relocating_a_test_module_is_loc_neutral`), and an ungated `*_tests.rs` now counts. Pins re-seeded to the new-rule counts; WS0 records re-measured from `ae0989c37` under the same rule. **Owner note:** under the old rule, the composition budget was already red on this base (45,885 LOC against an effective 43,573; 869 `Arc<dyn>` against 845). Re-seeding banks that growth, and `composition-budget.toml` records this. |
+| §4.3 one local command | **Done** | `scripts/preflight-gates.sh` now runs script gates, the `Static-check self-tests` list (read from `code_style.yml` at run time, so it cannot drift), the panic and budget self-tests, the arch suite with `--no-fail-fast`, and charters for changed crates. It picks a Python with `tomllib` (else ≥ 3.10), reports SKIPPED (with the reason) for the four self-tests whose host prerequisites a stock Mac lacks (§9), reports every failure in one pass, and supports `--layer`/`--list`. Self-test: `scripts/ci/test-preflight-gates.sh` (wired). Still not a default hook; that adoption call stays with the owner. |
+
+---
+
+## 9. Review of the follow-up (2026-11-12)
+
+Two independent reviews of §8 found that some of the new gates were
+themselves fail-open, and that the composition-budget self-test was red. Each
+finding was reproduced on the branch before it was changed; every scanner fix
+ships a positive and a negative fixture that fails on the pre-fix code.
+
+| Finding | Status | What changed |
+|---|---|---|
+| Budget self-test red (C8c, L10) | **Fixed** | The fixtures wrote a `src/tests.rs` that no `#[cfg(test)] mod tests;` declared, which the new rule rightly counts. They now append the gated declaration; new case L11 proves an *ungated* `tests.rs` (and a commented-out gated declaration beside it) counts: 8002 LOC. |
+| `mod tests` by name is test code | **Fixed, both gates** | `check_no_panics.is_test_item` dropped the name rule: only a test-only cfg makes an item test code. `pub mod tests { pub fn shipped(_: Arc<dyn A>) {} }` now counts loc=3, arc=1. The panic gate was tightened rather than left looser: no ungated `mod tests` exists in `crates/` (measured), so it costs nothing and a shipped `mod tests` can no longer hide a panic. Its own self-test, which pinned the loose rule, is inverted (`test_ungated_tests_module_is_production`). |
+| Comment / ancestor file hides an ungated `*_tests.rs` | **Fixed** | `has_cfg_test_module_declaration` now resolves declarations the way rustc does, on lexed code (comments and strings blanked), through the panic gate's own `module_declarations` / `line_module_directories`: only the real parent module counts, `#[path]` must resolve to this exact file, and *every* declaration must be gated (one ungated one means production). For whole files `feature = "test-support"` is not test (preserves the `contract_tests.rs` pin). Fixtures: `test_declaration_must_be_real_gated_code_in_the_parent_module` (comment, string, unrelated ancestor, one-ungated-of-two, test-support, gated parent, gated inline parent), `test_commented_declaration_does_not_gate_a_tests_file`. |
+| "One counting rule" not true on the Rust side | **Fixed** | `production_rust_files` no longer drops `tests.rs` / `*_tests.rs` by basename: `cfg_test_only_files` now returns every file whose every declaration is test-gated (transitively), whatever its name. The Rust counter is a port of the Python cfg evaluator and line tracker (`ratchet_support::{cfg_predicate_is_test_only, attribute_line_is_test_only, test_context_lines, production_line_count}`), so `cfg(all(test, …))`, `not(not(test))` and `feature = "test-support"` items are handled identically and the gated attribute line is test context in both. The registrar gate's basename skip (`is_test_module_file`) moved to the same set. |
+| Re-pins after the counter fixes | **Measured** | Composition (shell): unchanged, 33,749 LOC / 668 `Arc<dyn>` — no ungated `mod tests` and no re-classified `*_tests.rs` there. Contracts size ceiling (Rust, now equal to `production_loc.py` for all six): common 1,991 → 1,980, extension_contracts 8,861 → 8,160, host_api 16,351 → 16,093, loop_contracts 10,810 → 10,787, product_contracts 16,316 → 15,784, prompt_envelope 265 → 264. The drop is the gating attribute line (now test context, as in Python), compound test-only cfgs, and the `src/test_support` root (682 lines in extension_contracts, 302 in product_contracts, 168 in host_api) that Python already excluded. Panic baseline: one duplicate row removed (`ensure_search_indexes`, stale on main since `83a581d1f`). |
+| Ingress scan's strip swallows production code | **Fixed** | `server_lifecycle_hits` reads `production_code_lines` (comments/strings stripped with line structure kept, then the shared tracker). `strip_line_anchored_cfg_test_items` itself now anchors and counts braces on the stripped twin of each line while still emitting raw lines, so its other callers (specificity, reparse, output audit) get the fix too. The `lib.rs` exemption is narrowed to the two serve-loop functions. |
+| Membership parser drops valid manifests | **Fixed** | `manifest_package_name` parses with the `toml` crate (already a dev-dependency) and returns an error for malformed or name-less package metadata; `workspace_crate_manifests_by_package_name` panics on that instead of treating an active crate as a retired pin. Fixtures: `[package] # comment`, `name = 'x'`, inline `package = { name = … }` (positive); malformed TOML, non-string name, sub-table only (negative). |
+| `\<newline>` drops a line in `strip_comments_and_strings` | **Fixed** | The newline is emitted. |
+| Registrar gate misses `type T = HookTrustClass;` | **Fixed + residual noted** | `aliases_hook_trust_class` fails the gate on a `type` alias of the class (plain or path-qualified). Known residual, recorded in the gate header: string-based construction (`"installed".parse::<HookTrustClass>()`, serde) and macro-generated paths; closing those needs a type-level seal on the variant, not a text gate. |
+| `unreachable_pub = "deny"` | **Walked back to `warn`** | Reachability varies with the feature set (`#[cfg(any(test, feature = "test-support"))] pub use …` in approvals, authorization, host_runtime, processes), and per-package feature-subset lanes plus the Rune workspace build combinations clippy never lints. CI's `-D warnings` lanes still enforce it. |
+| Budget re-seed opened fresh headroom | **Zero headroom** | `loc_ceiling` 33,749 → 33,599 (+150 tolerance = 33,749 observed) and `arc_dyn_ceiling` 668 → 653 (+15 = 668 observed). The rationale states plainly that the re-seed banks **+2,312 LOC and +24 `Arc<dyn>`** of pre-existing growth **pending owner sign-off**; the next added line or site trips the gate. |
+| Preflight Python choice / macOS self-tests | **Fixed** | Versioned `python3.X` with `tomllib` first, then bare `python3` with it, then ≥ 3.10. Four self-tests are reported SKIPPED with the reason when their prerequisite is missing (wasm freshness: PATH `python3` without `tomllib`; integration batch runner: `/usr/bin/python3` without it; apt install: GNU `timeout`; docker entrypoint: GNU `readlink -m`). CI's invocation is unchanged. Self-test cases 4 and 5 in `test-preflight-gates.sh`. |
+| `test-pre-commit-safety.sh` coupled to the real budget | **Decoupled** | Its fixtures stage `crates/**.rs`, which runs the real-tree budget gate. The self-test now exports `BUDGET_FILE` at a permissive fixture budget (the gate's existing override); the real tree stays guarded by C10/C11. Verified by tripping the real budget: the old self-test goes red, the new one stays green. The branch wired this self-test into CI (commit C) while it was red until commit D, so it should be squash-merged for bisectability. |
+
+**Residuals, recorded not fixed.** (1) Files under a `src/**/tests/` directory
+stay test-only by directory in both counters (a `pub mod tests;` *directory*
+module would still be dropped); no such ungated module exists in `crates/`.
+(2) A single-line `#[cfg(test)] mod x_tests;` (attribute and item on one line)
+is read as ungated by both trackers — the fail-closed direction; the form does
+not occur in `crates/`. (3) Other arch-test walkers still filter by basename
+(`reborn_extension_specificity`, `reborn_manifest_reparse_gate`,
+`reborn_contracts_vendor_census`, `reborn_struct_test_support_ratchet`,
+`reborn_sealed_evidence_mint_ratchet`, `reborn_registration_pipeline_boundary`,
+`reborn_deployment_mode_branching_ratchet`); they do not consume
+`production_rust_files` and are a follow-up sweep.

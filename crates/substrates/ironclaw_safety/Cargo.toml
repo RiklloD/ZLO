@@ -42,3 +42,6 @@ harness = false
 [[bench]]
 name = "safety_pipeline"
 harness = false
+
+[lints]
+workspace = true

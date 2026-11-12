@@ -47,7 +47,6 @@
 //! exact policy that gated an invocation. [`EffectiveRuntimePolicy::was_reduced`]
 //! flags the case where deployment or tenant/org policy narrowed the requested
 //! profile.
-#![warn(unreachable_pub)]
 
 mod planner;
 mod resolver;

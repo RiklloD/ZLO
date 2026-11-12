@@ -54,3 +54,6 @@ ironclaw_resources = { path = "../../kernel/ironclaw_resources" }
 rust_decimal_macros = "1"
 tokio = { version = "1", features = ["macros", "rt"] }
 x509-parser = { version = "0.18", features = ["verify"] }
+
+[lints]
+workspace = true

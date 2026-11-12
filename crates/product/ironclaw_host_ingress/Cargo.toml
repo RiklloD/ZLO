@@ -28,3 +28,6 @@ layer = "substrates"
 axum = "0.8"
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 
+
+[lints]
+workspace = true

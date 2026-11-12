@@ -9,6 +9,8 @@
 //! definition in an inline `#[cfg(test)]` module in src IS inventoried — keep
 //! test doubles under `tests/` (or justify an allowlist entry in review).
 
+pub(crate) mod impl_census;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -47,7 +49,7 @@ use std::path::{Path, PathBuf};
 /// e.g. the durable/no-durable alias pairs in composition's `factory.rs` — are
 /// legitimate same-name definitions, not duplicate debt).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeDefOccurrence {
+pub(crate) struct TypeDefOccurrence {
     pub path: PathBuf,
     pub cfg_gated: bool,
 }
@@ -69,7 +71,7 @@ pub struct TypeDefOccurrence {
 /// true — nothing about resolving scopes prevents a test binary from declaring
 /// `mod ratchet_support`).
 #[allow(dead_code)]
-pub fn find_workspace_root(start: &Path) -> Result<PathBuf, String> {
+pub(crate) fn find_workspace_root(start: &Path) -> Result<PathBuf, String> {
     let mut current = Some(start);
     while let Some(directory) = current {
         if directory.join("crates").is_dir() && directory.join("Cargo.toml").is_file() {
@@ -83,7 +85,7 @@ pub fn find_workspace_root(start: &Path) -> Result<PathBuf, String> {
     ))
 }
 
-pub fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     find_workspace_root(Path::new(env!("CARGO_MANIFEST_DIR")))
         .expect("architecture crate must sit inside the workspace")
 }
@@ -119,7 +121,7 @@ pub fn workspace_root() -> PathBuf {
 /// Fail-closed floor, mirroring `crate_tree.py`'s. Far below the real count
 /// (65 at the WS0 baseline, 64 after WS7 moved the silk decoder to `tools/`); a handful of results always means the walk lost
 /// the tree rather than that the tree shrank.
-pub const MIN_CRATE_DIRECTORIES: usize = 20;
+pub(crate) const MIN_CRATE_DIRECTORIES: usize = 20;
 
 const CRATES_ROOT: &str = "crates";
 const WORKSPACE_TABLE_HEADER: &str = "[workspace]";
@@ -127,7 +129,7 @@ const WORKSPACE_TABLE_HEADER: &str = "[workspace]";
 /// Every crate directory under `crates/`, repo-relative, POSIX-separated,
 /// sorted. Errors carry the reason so the caller can panic with it.
 #[allow(dead_code)]
-pub fn try_crate_directories(root: &Path) -> Result<Vec<String>, String> {
+pub(crate) fn try_crate_directories(root: &Path) -> Result<Vec<String>, String> {
     let crates_root = root.join(CRATES_ROOT);
     if !crates_root.is_dir() {
         return Err(format!(
@@ -177,14 +179,14 @@ pub fn try_crate_directories(root: &Path) -> Result<Vec<String>, String> {
 
 /// `try_crate_directories`, panicking on refusal.
 #[allow(dead_code)]
-pub fn crate_directories(root: &Path) -> Vec<String> {
+pub(crate) fn crate_directories(root: &Path) -> Vec<String> {
     try_crate_directories(root).unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Directories under `crates/` that are roots of a *separate* workspace, and so
 /// are excluded from the inventory by construction rather than by omission.
 #[allow(dead_code)]
-pub fn nested_workspace_roots(root: &Path) -> Vec<String> {
+pub(crate) fn nested_workspace_roots(root: &Path) -> Vec<String> {
     let mut roots = Vec::new();
     let crates_root = root.join(CRATES_ROOT);
     if crates_root.is_dir() {
@@ -259,7 +261,7 @@ fn relative_posix(root: &Path, path: &Path) -> String {
 /// Absent or ambiguous is an error, never a silent empty scope: a gate that
 /// names a crate must fail at the name it can no longer resolve.
 #[allow(dead_code)]
-pub fn try_crate_directory(root: &Path, name: &str) -> Result<String, String> {
+pub(crate) fn try_crate_directory(root: &Path, name: &str) -> Result<String, String> {
     let inventory = try_crate_directories(root)?;
     let matches: Vec<&String> = inventory
         .iter()
@@ -278,13 +280,13 @@ pub fn try_crate_directory(root: &Path, name: &str) -> Result<String, String> {
 
 /// `try_crate_directory`, panicking on refusal.
 #[allow(dead_code)]
-pub fn crate_directory(root: &Path, name: &str) -> String {
+pub(crate) fn crate_directory(root: &Path, name: &str) -> String {
     try_crate_directory(root, name).unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Absolute path of the crate directory named `name`.
 #[allow(dead_code)]
-pub fn crate_dir(root: &Path, name: &str) -> PathBuf {
+pub(crate) fn crate_dir(root: &Path, name: &str) -> PathBuf {
     root.join(crate_directory(root, name))
 }
 
@@ -308,7 +310,7 @@ pub fn crate_dir(root: &Path, name: &str) -> PathBuf {
 /// A trailing `/` is preserved, so allowlist entries used as `contains`
 /// fragments (`crates/ironclaw_llm/src/`) resolve to fragments.
 #[allow(dead_code)]
-pub fn try_resolve_crate_relative(root: &Path, logical: &str) -> Result<String, String> {
+pub(crate) fn try_resolve_crate_relative(root: &Path, logical: &str) -> Result<String, String> {
     let prefix = format!("{CRATES_ROOT}/");
     if !logical.starts_with(&prefix) {
         return Ok(logical.to_string());
@@ -342,14 +344,14 @@ pub fn try_resolve_crate_relative(root: &Path, logical: &str) -> Result<String, 
 
 /// `try_resolve_crate_relative`, panicking on refusal.
 #[allow(dead_code)]
-pub fn resolve_crate_relative(root: &Path, logical: &str) -> String {
+pub(crate) fn resolve_crate_relative(root: &Path, logical: &str) -> String {
     try_resolve_crate_relative(root, logical).unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Absolute path for a logical `crates/<crate>/<remainder>` spelling —
 /// the drop-in replacement for `root.join("crates/ironclaw_x/…")`.
 #[allow(dead_code)]
-pub fn crate_path(root: &Path, logical: &str) -> PathBuf {
+pub(crate) fn crate_path(root: &Path, logical: &str) -> PathBuf {
     root.join(resolve_crate_relative(root, logical))
 }
 
@@ -363,7 +365,7 @@ pub fn crate_path(root: &Path, logical: &str) -> PathBuf {
 /// question against a directory name and silently attributes code to the wrong
 /// owner. Outermost-wins, exactly like the inventory.
 #[allow(dead_code)]
-pub fn owning_crate_name(root: &Path, path: &Path) -> String {
+pub(crate) fn owning_crate_name(root: &Path, path: &Path) -> String {
     let Ok(relative) = path.strip_prefix(root) else {
         return String::new();
     };
@@ -386,7 +388,7 @@ pub fn owning_crate_name(root: &Path, path: &Path) -> String {
 /// compile branches of the same type, the factory durable/no-durable pattern).
 /// A mix of gated and ungated occurrences is still flagged.
 #[allow(dead_code)]
-pub fn duplicate_definitions(
+pub(crate) fn duplicate_definitions(
     found: &BTreeMap<String, Vec<TypeDefOccurrence>>,
 ) -> Vec<(&str, &Vec<TypeDefOccurrence>)> {
     found
@@ -406,7 +408,7 @@ pub fn duplicate_definitions(
 /// `skip_files` (the ratchet files themselves, as defense in depth — their
 /// fixtures are already excluded by string stripping).
 #[allow(dead_code)]
-pub fn collect_type_defs(
+pub(crate) fn collect_type_defs(
     dir: &Path,
     keywords: &[&str],
     matches: &dyn Fn(&str) -> bool,
@@ -457,7 +459,7 @@ pub fn collect_type_defs(
 /// block — used to exempt mutually exclusive compile branches from the
 /// duplicate check.
 #[allow(dead_code)]
-pub fn scan_type_defs(
+pub(crate) fn scan_type_defs(
     source: &str,
     keywords: &[&str],
     matches: &dyn Fn(&str) -> bool,
@@ -539,7 +541,7 @@ pub fn scan_type_defs(
 /// `use … as alias;` and `extern crate … as alias;` forms, through which the
 /// dependency would keep compiling while the scan reports it gone.
 #[allow(dead_code)]
-pub fn names_crate(code: &str, krate: &str) -> bool {
+pub(crate) fn names_crate(code: &str, krate: &str) -> bool {
     let bytes = code.as_bytes();
     let mut search = 0;
     while let Some(pos) = code[search..].find(krate) {
@@ -575,7 +577,7 @@ pub fn names_crate(code: &str, krate: &str) -> bool {
 /// production-named file could satisfy a residue row or an implementor pin.
 /// Raised by @serrrfirat on #7000.
 #[allow(dead_code)]
-pub fn out_of_line_mod_decls(stripped: &str) -> Vec<(String, bool)> {
+pub(crate) fn out_of_line_mod_decls(stripped: &str) -> Vec<(String, bool)> {
     let bytes = stripped.as_bytes();
     let mut decls = Vec::new();
     let mut search = 0;
@@ -600,7 +602,7 @@ pub fn out_of_line_mod_decls(stripped: &str) -> Vec<(String, bool)> {
             continue;
         }
         let before = strip_trailing_visibility(&stripped[..at]);
-        let gated = trailing_attribute_run_contains(before, "cfg(test)");
+        let gated = trailing_attribute_run_is_test_only(before);
         decls.push((name, gated));
     }
     decls
@@ -611,7 +613,7 @@ pub fn out_of_line_mod_decls(stripped: &str) -> Vec<(String, bool)> {
 /// explicit file path. The scan tolerates further attributes between the
 /// `path` attribute and the `mod` keyword.
 #[allow(dead_code)]
-pub fn explicit_mod_paths(raw: &str) -> BTreeMap<String, String> {
+pub(crate) fn explicit_mod_paths(raw: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let mut search = 0;
     while let Some(pos) = raw[search..].find("#[path") {
@@ -702,15 +704,17 @@ fn strip_trailing_visibility(before: &str) -> &str {
 }
 
 /// Whether the contiguous run of `#[…]` attributes ending at the end of
-/// `before` contains `needle`. Strings are already stripped, so `#[` inside a
-/// literal cannot mislead the backwards walk.
-fn trailing_attribute_run_contains(before: &str, needle: &str) -> bool {
+/// `before` holds a test-only one ([`attribute_line_is_test_only`], strict:
+/// `feature = "test-support"` is a real build, and its string value is blanked
+/// here anyway). Strings are already stripped, so `#[` inside a literal cannot
+/// mislead the backwards walk.
+fn trailing_attribute_run_is_test_only(before: &str) -> bool {
     let mut rest = before.trim_end();
     while rest.ends_with(']') {
         let Some(open) = rest.rfind("#[") else {
             return false;
         };
-        if rest[open..].contains(needle) {
+        if attribute_line_is_test_only(&rest[open..], false) {
             return true;
         }
         rest = rest[..open].trim_end();
@@ -738,18 +742,17 @@ fn is_pruned_dir(name: &str) -> bool {
     NON_PRODUCTION_DIRS.contains(&name) && name != WALKED_FOR_DECLARATIONS
 }
 
-/// Whether `path`'s file name is one of the conventional test-file shapes.
-fn is_test_file_name(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    name == "tests.rs" || name.ends_with("_tests.rs")
-}
-
 /// **The** definition of "a production Rust file under `src`", as absolute
-/// paths, sorted: the fatal walk, the conventional name/directory exclusions,
-/// and the [`cfg_test_only_files`] subtraction, composed once.
+/// paths, sorted: the fatal walk, the `tests/` / build-output directory
+/// exclusions, and the [`cfg_test_only_files`] subtraction, composed once.
+///
+/// A file NAME never makes a file test-only. `tests.rs` / `*_tests.rs` /
+/// `*_test.rs` are excluded only when [`cfg_test_only_files`] finds them
+/// reachable solely through test-only `mod` declarations — until 2026-11-12 any
+/// such basename was dropped, so a `pub mod foo_tests;` holding a
+/// `TcpListener::bind` was invisible to every gate built on this walk (gate
+/// audit 2026-08 §6.2). Same rule as `scripts/check_no_panics.py`'s
+/// `is_test_only_path`.
 ///
 /// Ratchets used to each spell this two-step recipe themselves, and they had
 /// already drifted: `reborn_extension_host_port_inversion.rs` skipped
@@ -767,15 +770,14 @@ fn is_test_file_name(path: &Path) -> bool {
 /// this helper across them is tracked separately — see the module note in
 /// `reborn_extension_manager_split.rs`.
 #[allow(dead_code)]
-pub fn production_rust_files(src: &Path) -> Vec<PathBuf> {
+pub(crate) fn production_rust_files(src: &Path) -> Vec<PathBuf> {
     let test_only = cfg_test_only_files(src);
     let mut all = Vec::new();
     all_rust_files(src, &mut all);
     let mut out: Vec<PathBuf> = all
         .into_iter()
         .filter(|path| {
-            !is_test_file_name(path)
-                && !test_only.contains(path)
+            !test_only.contains(path)
                 && path
                     .strip_prefix(src)
                     .map(|relative| {
@@ -792,21 +794,26 @@ pub fn production_rust_files(src: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Every `.rs` file under `src` that is test-only **despite a
-/// production-looking name**: reachable only through a `#[cfg(test)]`-gated
-/// out-of-line `mod` declaration, or (transitively) declared from a file that
-/// is itself test-only. The name-based exclusions the production walkers use
-/// (`tests.rs`, `*_tests.rs`, `tests/` directories) cannot see these — e.g. a
-/// `#[cfg(test)] mod e2e_tests;` whose `e2e_tests.rs` then declares
-/// `mod fixture;` leaves `fixture.rs` looking like production code. A scan
-/// that counts such a file can keep a residue row or an implementor pin
-/// "satisfied" with a test double. I/O errors are fatal, same as the walkers.
+/// Every `.rs` file under `src` (outside `tests/` directories, which the walks
+/// exclude by directory) that is test-only: every `mod` declaration that
+/// includes it is gated by a test-only cfg (`#[cfg(test)]`,
+/// `#[cfg(all(test, …))]`, an enclosing gated inline module — the
+/// [`test_context_lines`] tracker, strict about `feature = "test-support"`),
+/// or sits in a file that is itself test-only (transitively). A file with no
+/// declaration, or with any one ungated declaration, is production — whatever
+/// its name. The name conventions (`tests.rs`, `*_tests.rs`) are NOT a rule:
+/// e.g. a `#[cfg(test)] mod e2e_tests;` whose `e2e_tests.rs` declares
+/// `mod fixture;` makes `fixture.rs` test-only through the chain, while a
+/// `pub mod foo_tests;` keeps `foo_tests.rs` production. A scan that counts a
+/// test-only file can keep a residue row or an implementor pin "satisfied"
+/// with a test double; one that drops a production file hides real code. I/O
+/// errors are fatal, same as the walkers.
 #[allow(dead_code)]
-pub fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
+pub(crate) fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
     let mut all = Vec::new();
     all_rust_files(src, &mut all);
 
-    // file -> (declared module name, cfg(test)-gated) for out-of-line decls,
+    // file -> (declared module name, test-only-gated) for out-of-line decls,
     // plus any `#[path = "…"]` overrides (read from raw source — the path
     // lives in a string literal the stripper blanks).
     let mut decls: BTreeMap<PathBuf, Vec<(String, bool)>> = BTreeMap::new();
@@ -814,7 +821,15 @@ pub fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
     for file in &all {
         let source = std::fs::read_to_string(file)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
-        let found = out_of_line_mod_decls(&strip_comments_and_strings(&source));
+        let gated = test_context_lines(&source, false);
+        let found: Vec<(String, bool)> = strip_comments_and_strings(&source)
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                out_of_line_mod_name(line)
+                    .map(|name| (name, gated.get(index).copied().unwrap_or(false)))
+            })
+            .collect();
         if !found.is_empty() {
             decls.insert(file.clone(), found);
         }
@@ -854,52 +869,50 @@ pub fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
         .find(|candidate| candidate.is_file())
     };
 
-    let is_test_by_name = |path: &Path| -> bool {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        name == "tests.rs"
-            || name.ends_with("_tests.rs")
-            || path
-                .strip_prefix(src)
-                .map(|relative| {
-                    relative
-                        .components()
-                        .any(|component| component.as_os_str() == "tests")
-                })
-                .unwrap_or(false)
+    let under_tests_dir = |path: &Path| -> bool {
+        path.strip_prefix(src)
+            .map(|relative| {
+                relative
+                    .components()
+                    .any(|component| component.as_os_str() == "tests")
+            })
+            .unwrap_or(false)
     };
 
-    // Seed: targets of `#[cfg(test)] mod …;` declarations, plus every file the
-    // name convention already marks (so test-only-ness propagates *through*
-    // them into production-named children).
-    let mut test_only: BTreeSet<PathBuf> = all
-        .iter()
-        .filter(|file| is_test_by_name(file))
-        .cloned()
-        .collect();
+    // target -> every (declaring file, gated) that includes it.
+    let mut declared_by: BTreeMap<PathBuf, Vec<(PathBuf, bool)>> = BTreeMap::new();
     for (declaring, mods) in &decls {
         for (name, gated) in mods {
-            if *gated && let Some(target) = resolve(declaring, name) {
-                test_only.insert(target);
+            if let Some(target) = resolve(declaring, name) {
+                declared_by
+                    .entry(target)
+                    .or_default()
+                    .push((declaring.clone(), *gated));
             }
         }
     }
 
-    // Fixpoint: everything declared from a test-only file is test-only.
+    // Seed: files under `tests/` directories (excluded by directory
+    // everywhere, and test-only-ness propagates *through* them). Fixpoint: a
+    // file is test-only once every declaration of it is gated or sits in a
+    // test-only file. Monotone, so it terminates.
+    let mut test_only: BTreeSet<PathBuf> = all
+        .iter()
+        .filter(|file| under_tests_dir(file))
+        .cloned()
+        .collect();
     loop {
         let mut grew = false;
-        for (declaring, mods) in &decls {
-            if !test_only.contains(declaring) {
+        for (target, declarations) in &declared_by {
+            if test_only.contains(target) {
                 continue;
             }
-            for (name, _) in mods {
-                if let Some(target) = resolve(declaring, name)
-                    && test_only.insert(target)
-                {
-                    grew = true;
-                }
+            if declarations
+                .iter()
+                .all(|(declaring, gated)| *gated || test_only.contains(declaring))
+            {
+                test_only.insert(target.clone());
+                grew = true;
             }
         }
         if !grew {
@@ -907,10 +920,10 @@ pub fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
         }
     }
 
-    // Only the surprises: the name-based ones are already excluded everywhere.
+    // The directory-excluded ones are already dropped by every walk.
     test_only
         .into_iter()
-        .filter(|file| !is_test_by_name(file))
+        .filter(|file| !under_tests_dir(file))
         .collect()
 }
 
@@ -967,7 +980,7 @@ fn all_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// adopting this body restores it, which can only ever KEEP more production code
 /// (the fail-closed direction).
 #[allow(dead_code)]
-pub fn strip_cfg_test_blocks(source: &str) -> String {
+pub(crate) fn strip_cfg_test_blocks(source: &str) -> String {
     const MARKER: &str = "#[cfg(test)]";
     let mut out = String::with_capacity(source.len());
     let mut rest = source;
@@ -1031,11 +1044,19 @@ pub fn strip_cfg_test_blocks(source: &str) -> String {
 /// Skips the attribute run, then the annotated item: a braced item ends when the
 /// brace depth returns to zero, a bodiless one (`mod tests;`) at its semicolon.
 #[allow(dead_code)]
-pub fn strip_line_anchored_cfg_test_items(source: &str) -> String {
+pub(crate) fn strip_line_anchored_cfg_test_items(source: &str) -> String {
+    // Anchor and brace depth read the comment/string-STRIPPED twin of each
+    // line (line structure preserved), while the kept output is the raw line.
+    // Counting raw braces let a test item holding `"{{{{"` or `'{'` never
+    // close, stripping every production line after it; anchoring on raw text
+    // let a multiline string line starting `#[cfg(test)]` strip real code.
+    let stripped = strip_comments_and_strings(source);
+    let mut code_lines = stripped.lines();
     let mut kept = String::with_capacity(source.len());
     let mut lines = source.lines();
     while let Some(line) = lines.next() {
-        if !line.trim_start().starts_with("#[cfg(test)]") {
+        let code = code_lines.next().unwrap_or("");
+        if !code.trim_start().starts_with("#[cfg(test)]") {
             kept.push_str(line);
             kept.push('\n');
             continue;
@@ -1043,15 +1064,16 @@ pub fn strip_line_anchored_cfg_test_items(source: &str) -> String {
         // Skip attribute lines, then the annotated item.
         let mut depth: i64 = 0;
         let mut opened = false;
-        for skipped in lines.by_ref() {
-            let trimmed = skipped.trim_start();
+        for _skipped in lines.by_ref() {
+            let code = code_lines.next().unwrap_or("");
+            let trimmed = code.trim_start();
             if !opened && trimmed.starts_with("#[") {
                 continue;
             }
-            depth += skipped.matches('{').count() as i64;
-            depth -= skipped.matches('}').count() as i64;
+            depth += code.matches('{').count() as i64;
+            depth -= code.matches('}').count() as i64;
             if !opened {
-                if skipped.contains('{') {
+                if code.contains('{') {
                     opened = true;
                 } else if trimmed.ends_with(';') {
                     // `mod tests;` — single-line item, nothing else to skip.
@@ -1070,7 +1092,7 @@ pub fn strip_line_anchored_cfg_test_items(source: &str) -> String {
 /// generics). Used to reject the fragments a substring-oriented scan produces
 /// when it reads a shape it does not understand.
 #[allow(dead_code)]
-pub fn is_rust_identifier(ident: &str) -> bool {
+pub(crate) fn is_rust_identifier(ident: &str) -> bool {
     let mut chars = ident.chars();
     match chars.next() {
         Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
@@ -1083,7 +1105,7 @@ pub fn is_rust_identifier(ident: &str) -> bool {
 /// `None` when the brackets never balance (a truncated slice), which the caller
 /// treats as "not an impl header I can read" rather than guessing.
 #[allow(dead_code)]
-pub fn balanced_angle_close(text: &str) -> Option<usize> {
+pub(crate) fn balanced_angle_close(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut depth = 0usize;
     for (index, ch) in text.char_indices() {
@@ -1113,7 +1135,7 @@ pub fn balanced_angle_close(text: &str) -> Option<usize> {
 /// Composes the two strippers in the only sound order — comments and strings
 /// first, then `#[cfg(test)]` — so callers cannot get it wrong.
 #[allow(dead_code)]
-pub fn implemented_trait_names(source: &str) -> BTreeSet<String> {
+pub(crate) fn implemented_trait_names(source: &str) -> BTreeSet<String> {
     let cleaned = strip_cfg_test_blocks(&strip_comments_and_strings(source));
     let mut names = BTreeSet::new();
     for segment in cleaned.split("impl").skip(1) {
@@ -1150,7 +1172,7 @@ pub fn implemented_trait_names(source: &str) -> BTreeSet<String> {
 /// line-based matcher keeps operating on real code lines only. A minimal
 /// lexer — good enough for rustfmt'd source; it intentionally errs on the side
 /// of stripping (a mis-lex would surface loudly as a frozen-set mismatch).
-pub fn strip_comments_and_strings(source: &str) -> String {
+pub(crate) fn strip_comments_and_strings(source: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
     let mut out = String::with_capacity(source.len());
     let mut i = 0;
@@ -1212,6 +1234,12 @@ pub fn strip_comments_and_strings(source: &str) -> String {
             i += 1;
             while i < chars.len() {
                 if chars[i] == '\\' {
+                    // A `\<newline>` continuation still ends a source line:
+                    // dropping it undercounts lines and shifts every later
+                    // offender's reported line number.
+                    if chars.get(i + 1) == Some(&'\n') {
+                        out.push('\n');
+                    }
                     i += 2;
                     continue;
                 }
@@ -1249,4 +1277,391 @@ pub fn strip_comments_and_strings(source: &str) -> String {
         i += 1;
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Line-level test context — the ONE counting rule, mirrored from
+// `scripts/check_no_panics.py` (`CfgParser`, `cfg_possible_values`,
+// `attribute_is_test_only`, `line_test_contexts_from_code`), which the shell
+// LOC gate (`scripts/ci/lib/production_loc.py`) and the panic gate use. Keep the
+// two in step: a change here without the Python twin (or vice versa) is two
+// gates disagreeing about what production code is.
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CfgPredicate {
+    Test,
+    TestSupport,
+    Unknown,
+    Not(Box<CfgPredicate>),
+    All(Vec<CfgPredicate>),
+    Any(Vec<CfgPredicate>),
+}
+
+#[allow(dead_code)]
+fn cfg_tokens(source: &str) -> Option<Vec<String>> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() {
+            i += 1;
+        } else if c.is_ascii_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            tokens.push(chars[start..i].iter().collect());
+        } else if c == '"' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            if i >= chars.len() {
+                return None;
+            }
+            i += 1;
+            tokens.push(chars[start..i].iter().collect());
+        } else if matches!(c, '(' | ')' | ',' | '=') {
+            tokens.push(c.to_string());
+            i += 1;
+        } else {
+            return None;
+        }
+    }
+    Some(tokens)
+}
+
+#[allow(dead_code)]
+struct CfgParser {
+    tokens: Vec<String>,
+    position: usize,
+}
+
+#[allow(dead_code)]
+impl CfgParser {
+    fn peek(&self, token: &str) -> bool {
+        self.tokens.get(self.position).is_some_and(|t| t == token)
+    }
+
+    fn consume(&mut self, token: &str) -> bool {
+        let found = self.peek(token);
+        if found {
+            self.position += 1;
+        }
+        found
+    }
+
+    fn expression(&mut self) -> Option<CfgPredicate> {
+        let name = self.tokens.get(self.position)?.clone();
+        if !is_rust_identifier(&name) {
+            return None;
+        }
+        self.position += 1;
+        if self.consume("=") {
+            // A value blanked by the comment/string stripper leaves `key =`
+            // with nothing after it: an unknown predicate, never `test`.
+            let value = self
+                .tokens
+                .get(self.position)
+                .filter(|t| t.starts_with('"') || is_rust_identifier(t))
+                .cloned();
+            if value.is_some() {
+                self.position += 1;
+            }
+            return Some(
+                if name == "feature" && value.as_deref() == Some("\"test-support\"") {
+                    CfgPredicate::TestSupport
+                } else {
+                    CfgPredicate::Unknown
+                },
+            );
+        }
+        if !self.consume("(") {
+            return Some(if name == "test" {
+                CfgPredicate::Test
+            } else {
+                CfgPredicate::Unknown
+            });
+        }
+        let mut arguments = Vec::new();
+        if !self.peek(")") {
+            loop {
+                arguments.push(self.expression()?);
+                if !self.consume(",") {
+                    break;
+                }
+            }
+        }
+        if !self.consume(")") {
+            return None;
+        }
+        match name.as_str() {
+            "not" if arguments.len() == 1 => {
+                arguments.pop().map(|a| CfgPredicate::Not(Box::new(a)))
+            }
+            "not" => None,
+            "all" => Some(CfgPredicate::All(arguments)),
+            "any" => Some(CfgPredicate::Any(arguments)),
+            _ => Some(CfgPredicate::Unknown),
+        }
+    }
+}
+
+/// `(can be true, can be false)` of a cfg predicate in a production build.
+#[allow(dead_code)]
+fn cfg_possible(predicate: &CfgPredicate, test_support_is_test: bool) -> (bool, bool) {
+    match predicate {
+        CfgPredicate::Test => (false, true),
+        CfgPredicate::TestSupport if test_support_is_test => (false, true),
+        CfgPredicate::TestSupport | CfgPredicate::Unknown => (true, true),
+        CfgPredicate::Not(inner) => {
+            let (t, f) = cfg_possible(inner, test_support_is_test);
+            (f, t)
+        }
+        CfgPredicate::All(arguments) => {
+            let values: Vec<_> = arguments
+                .iter()
+                .map(|a| cfg_possible(a, test_support_is_test))
+                .collect();
+            (values.iter().all(|v| v.0), values.iter().any(|v| v.1))
+        }
+        CfgPredicate::Any(arguments) => {
+            let values: Vec<_> = arguments
+                .iter()
+                .map(|a| cfg_possible(a, test_support_is_test))
+                .collect();
+            (values.iter().any(|v| v.0), values.iter().all(|v| v.1))
+        }
+    }
+}
+
+/// Whether a cfg predicate (the text inside `cfg(...)`) can never hold in a
+/// production build: `test`, `all(test, …)`, `not(not(test))`, and — when
+/// `test_support_is_test` — `feature = "test-support"` / `any(test, …)` of it.
+/// An unparseable predicate is not test-only (the fail-closed direction).
+#[allow(dead_code)]
+pub(crate) fn cfg_predicate_is_test_only(predicate: &str, test_support_is_test: bool) -> bool {
+    let Some(tokens) = cfg_tokens(predicate) else {
+        return false;
+    };
+    let mut parser = CfgParser {
+        tokens,
+        position: 0,
+    };
+    let Some(expression) = parser.expression() else {
+        return false;
+    };
+    parser.position == parser.tokens.len() && !cfg_possible(&expression, test_support_is_test).0
+}
+
+/// Whether one source line is exactly a test-only attribute: `#[test]`,
+/// `#[tokio::test…]`, `#[rstest…]`, `#[test_case…]`, or a whole-line
+/// `#[cfg(<predicate>)]` whose predicate [`cfg_predicate_is_test_only`].
+#[allow(dead_code)]
+pub(crate) fn attribute_line_is_test_only(line: &str, test_support_is_test: bool) -> bool {
+    let trimmed = line.trim();
+    let Some(rest) = trimmed
+        .strip_prefix('#')
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix('['))
+        .map(str::trim_start)
+    else {
+        return false;
+    };
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+        .collect();
+    let after = rest[name.len()..].trim_start();
+    match name.as_str() {
+        "test" => return after.starts_with(']'),
+        "tokio::test" | "rstest" | "test_case" => {
+            return after.starts_with(']') || (after.starts_with('(') && after.contains(']'));
+        }
+        "cfg" => {}
+        _ => return false,
+    }
+    let Some(predicate) = after
+        .strip_prefix('(')
+        .and_then(|inner| inner.trim_end().strip_suffix(']'))
+        .and_then(|inner| inner.trim_end().strip_suffix(')'))
+    else {
+        return false;
+    };
+    cfg_predicate_is_test_only(predicate, test_support_is_test)
+}
+
+/// Whether a (comment/string-stripped) code line opens an item the tracker
+/// follows: `fn mod struct enum trait union impl const static`, after an
+/// optional visibility and `async`/`unsafe`/`const` qualifiers.
+#[allow(dead_code)]
+fn line_opens_item(code: &str) -> bool {
+    let mut rest = code.trim_start();
+    if let Some(after) = rest.strip_prefix("pub") {
+        let after_trim = after.trim_start();
+        if let Some(group) = after_trim.strip_prefix('(') {
+            match group.find(')') {
+                Some(close) => rest = group[close + 1..].trim_start(),
+                None => return false,
+            }
+        } else if after.starts_with(char::is_whitespace) {
+            rest = after_trim;
+        }
+    } else if let Some(after) = rest.strip_prefix("crate")
+        && after.starts_with(char::is_whitespace)
+    {
+        rest = after.trim_start();
+    }
+    let word = |text: &str| -> String {
+        text.chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect()
+    };
+    loop {
+        let first = word(rest);
+        match first.as_str() {
+            "fn" | "mod" | "struct" | "enum" | "trait" | "union" | "impl" | "static" => {
+                return true;
+            }
+            "const" => {
+                // `const NAME` (an item) or a `const fn` qualifier.
+                return true;
+            }
+            "async" | "unsafe" => rest = rest[first.len()..].trim_start(),
+            _ => return false,
+        }
+    }
+}
+
+/// Per line of `source`: whether it is **test** context — inside an item gated
+/// by a test-only attribute (or inside such an item's block), or the gating
+/// attribute line itself. Comments and string literals are stripped first with
+/// line structure preserved, so a brace or a `#[cfg(test)]` inside a literal
+/// or comment moves nothing. A module merely *named* `tests` is not test
+/// context unless gated (it ships in release builds otherwise).
+#[allow(dead_code)]
+pub(crate) fn test_context_lines(source: &str, test_support_is_test: bool) -> Vec<bool> {
+    let code = strip_comments_and_strings(source);
+    let raw: Vec<&str> = source.lines().collect();
+    let code_lines: Vec<&str> = code.lines().collect();
+    let mut contexts = vec![false; code_lines.len()];
+    let mut block_stack: Vec<bool> = Vec::new();
+    let mut pending_attr = false;
+    let mut pending_block: Option<bool> = None;
+    for (index, line) in code_lines.iter().enumerate() {
+        let stripped = line.trim();
+        let current = block_stack.last().copied().unwrap_or(false);
+        let is_attr = stripped.starts_with("#[");
+        let test_attr = is_attr
+            && raw.get(index).is_some_and(|raw_line| {
+                attribute_line_is_test_only(raw_line, test_support_is_test)
+            });
+        if test_attr {
+            pending_attr = true;
+        }
+        if line_opens_item(line) {
+            pending_block = Some(pending_attr || current);
+            pending_attr = false;
+        } else if !stripped.is_empty() && !is_attr && pending_attr {
+            pending_attr = false;
+        }
+        contexts[index] = current || pending_block.unwrap_or(false) || test_attr;
+        for ch in line.chars() {
+            match ch {
+                '{' => block_stack.push(
+                    pending_block
+                        .take()
+                        .unwrap_or_else(|| block_stack.last().copied().unwrap_or(false)),
+                ),
+                '}' => {
+                    block_stack.pop();
+                }
+                _ => {}
+            }
+        }
+        if stripped.ends_with(';') {
+            pending_block = None;
+        }
+    }
+    contexts
+}
+
+/// Production lines of one source file under the one counting rule
+/// ([`test_context_lines`], `feature = "test-support"` counting as test, as in
+/// `scripts/ci/lib/production_loc.py`). Comment and blank lines in production
+/// context still count, matching the `wc -l` semantics the ceilings were
+/// seeded with.
+#[allow(dead_code)]
+pub(crate) fn production_line_count(source: &str) -> usize {
+    test_context_lines(source, true)
+        .into_iter()
+        .filter(|in_test| !in_test)
+        .count()
+}
+
+/// The comment/string-stripped code of each **production** line of `source`,
+/// with its 1-based line number — what a production-only scan should read.
+#[allow(dead_code)]
+pub(crate) fn production_code_lines(source: &str) -> Vec<(usize, String)> {
+    let contexts = test_context_lines(source, true);
+    strip_comments_and_strings(source)
+        .lines()
+        .zip(contexts)
+        .enumerate()
+        .filter(|(_, (_, in_test))| !in_test)
+        .map(|(index, (line, _))| (index + 1, line.to_string()))
+        .collect()
+}
+
+/// For a stripped code line that is exactly an out-of-line `mod name;`
+/// (optionally `pub`/`pub(..)`), the module name.
+#[allow(dead_code)]
+fn out_of_line_mod_name(code: &str) -> Option<String> {
+    let mut rest = code.trim_start();
+    if let Some(after) = rest.strip_prefix("pub") {
+        let after_trim = after.trim_start();
+        if let Some(group) = after_trim.strip_prefix('(') {
+            rest = group[group.find(')')? + 1..].trim_start();
+        } else if after.starts_with(char::is_whitespace) {
+            rest = after_trim;
+        } else {
+            return None;
+        }
+    }
+    let after_mod = rest.strip_prefix("mod")?;
+    if !after_mod.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let after_mod = after_mod.trim_start();
+    let name: String = after_mod
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() || !after_mod[name.len()..].trim_start().starts_with(';') {
+        return None;
+    }
+    Some(name)
+}
+
+/// Whether `path` is the feature-gated `src/test_support` root (the file
+/// `src/test_support.rs` or anything under `src/test_support/`) — the one
+/// path-based exclusion the LOC counters share with
+/// `scripts/check_no_panics.py`'s `is_test_only_path`. Not applied by
+/// [`production_rust_files`]: an `impl` behind `feature = "test-support"` is a
+/// real build edge for the impl ratchets, but it is not production mass.
+#[allow(dead_code)]
+pub(crate) fn is_test_support_root(src: &Path, path: &Path) -> bool {
+    path.strip_prefix(src)
+        .ok()
+        .and_then(|relative| relative.components().next())
+        .is_some_and(|first| {
+            first.as_os_str() == "test_support" || first.as_os_str() == "test_support.rs"
+        })
 }

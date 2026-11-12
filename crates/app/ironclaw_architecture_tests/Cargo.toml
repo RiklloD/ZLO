@@ -32,3 +32,6 @@ toml = "1.1"
 # asserted in a comment.
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+[lints]
+workspace = true

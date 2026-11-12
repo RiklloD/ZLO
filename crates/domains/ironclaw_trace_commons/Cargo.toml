@@ -40,3 +40,6 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 [dev-dependencies]
 axum = { version = "0.8", features = ["ws"] }
 tempfile = "3"
+
+[lints]
+workspace = true

@@ -324,17 +324,27 @@ class CfgParser:
         return True
 
 
-def cfg_possible_values(expression: tuple) -> set[bool]:
+def cfg_possible_values(
+    expression: tuple, test_support_is_test: bool = True
+) -> set[bool]:
+    """Possible values of a cfg predicate in a production (non-test) build.
+
+    ``test_support_is_test=False`` treats ``feature = "test-support"`` as an
+    unknown feature that a production build may enable — the stricter reading
+    used for whole-file gating (``has_cfg_test_module_declaration``).
+    """
     kind = expression[0]
     if kind == "test":
         return {False}
     if kind == "test-support":
-        return {False}
+        return {False} if test_support_is_test else {False, True}
     if kind == "unknown":
         return {False, True}
 
     arguments = expression[1]
-    values = [cfg_possible_values(argument) for argument in arguments]
+    values = [
+        cfg_possible_values(argument, test_support_is_test) for argument in arguments
+    ]
     if kind == "not":
         return {not value for value in values[0]}
     if kind == "all":
@@ -354,14 +364,16 @@ def cfg_possible_values(expression: tuple) -> set[bool]:
     return {False, True}
 
 
-def attribute_is_test_only(line: str) -> bool:
+def attribute_is_test_only(line: str, test_support_is_test: bool = True) -> bool:
     if TEST_ATTR_PATTERN.match(line):
         return True
     match = CFG_ATTR_PATTERN.match(line)
     if match is None:
         return False
     expression = CfgParser(match.group(1)).parse()
-    return expression is not None and True not in cfg_possible_values(expression)
+    return expression is not None and True not in cfg_possible_values(
+        expression, test_support_is_test
+    )
 
 
 def item_kind_and_name(line: str) -> tuple[str, str | None] | None:
@@ -375,18 +387,25 @@ def item_kind_and_name(line: str) -> tuple[str, str | None] | None:
 
 
 def is_test_item(line: str, pending_test_attr: bool) -> tuple[bool, bool]:
+    """Return (is an item, is a test-only item).
+
+    An item is test-only only when a test-only attribute gates it. A module
+    merely *named* ``tests`` used to count as test code too; a
+    ``pub mod tests { ... }`` with no ``#[cfg(test)]`` ships in release builds,
+    so that name rule hid production panics here and production mass from the
+    LOC ceilings (``scripts/ci/lib/production_loc.py``). No ungated
+    ``mod tests`` existed in ``crates/`` when the rule was dropped (2026-11-12).
+    """
     item = item_kind_and_name(line)
     if item is None:
         return False, False
-
-    kind, name = item
-    named_tests_module = kind == "mod" and name == "tests"
-    return True, pending_test_attr or named_tests_module
+    return True, pending_test_attr
 
 
 def line_test_contexts_from_code(
     code_lines: tuple[str, ...],
     raw_lines: tuple[str, ...] | list[str],
+    test_support_is_test: bool = True,
 ) -> list[bool]:
     contexts = [False] * len(code_lines)
     block_stack: list[bool] = []
@@ -397,7 +416,9 @@ def line_test_contexts_from_code(
         stripped = code.strip()
         current_context = block_stack[-1] if block_stack else False
 
-        if stripped.startswith("#[") and attribute_is_test_only(raw_lines[idx].strip()):
+        if stripped.startswith("#[") and attribute_is_test_only(
+            raw_lines[idx].strip(), test_support_is_test
+        ):
             pending_test_attr = True
 
         item_found, item_is_test = is_test_item(code, pending_test_attr)
@@ -425,60 +446,104 @@ def line_test_contexts_from_code(
     return contexts
 
 
+_DECLARATION_SCANS: dict[tuple[pathlib.Path, str], tuple["SourceScan", list[bool]]] = {}
+
+
+def _declaration_scan(path: pathlib.Path) -> tuple["SourceScan", list[bool]]:
+    """Lex ``path`` once per distinct content, with strict test contexts.
+
+    Keyed by content, not path alone: a long-lived process (the LOC counter's
+    self-tests) may rewrite a declaring file between lookups.
+    """
+    text = path.read_text(encoding="utf-8")
+    key = (path, text)
+    cached = _DECLARATION_SCANS.get(key)
+    if cached is not None:
+        return cached
+    lines = tuple(text.splitlines())
+    code, comments = lex_lines(lines)
+    scan = SourceScan(
+        path=path,
+        lines=lines,
+        code=code,
+        line_comments=comments,
+        test_contexts=tuple(line_test_contexts_from_code(code, lines)),
+        item_contexts=(),
+        module_directories=tuple(line_module_directories(path, code)),
+    )
+    strict = line_test_contexts_from_code(code, lines, test_support_is_test=False)
+    _DECLARATION_SCANS[key] = (scan, strict)
+    return scan, strict
+
+
 def has_cfg_test_module_declaration(
-    path: str, repository_root: pathlib.Path = pathlib.Path(".")
+    path: str,
+    repository_root: pathlib.Path = pathlib.Path("."),
+    _visiting: frozenset[pathlib.Path] = frozenset(),
 ) -> bool:
-    """Return whether ``path`` is included by an exact ``#[cfg(test)] mod``.
+    """Return whether every module declaration that includes ``path`` is test-only.
 
     Filename suffixes are only a convention. Some ``*_tests.rs`` modules are
     also compiled by ``feature = "test-support"``, so exempting them by name
-    alone can hide panics from non-test builds.
+    alone can hide panics (and production LOC) from non-test builds.
+
+    The declarations are found the way rustc resolves them, on lexed code:
+
+    * only ``mod <stem>;`` items whose enclosing module directory *is* the
+      file's directory (``line_module_directories``) — the actual parent
+      module — or a ``#[path]`` item that resolves to exactly this file; a
+      same-named module elsewhere in an ancestor file is not the parent;
+    * comments and string literals are blanked by the lexer first, so a
+      ``// #[cfg(test)] mod x_tests;`` comment declares nothing;
+    * a declaration is test-only when the panic gate's cfg evaluator puts it
+      in a test context (``#[cfg(test)]``, ``#[cfg(all(test, ...))]``, an
+      enclosing gated inline module) or the declaring file is itself
+      test-only. Here ``feature = "test-support"`` does NOT count as test:
+      ``#[cfg(any(test, feature = "test-support"))] pub mod contract_tests;``
+      is a shared fixture module other crates compile, so it stays in scope.
+
+    No declaration, or any one ungated declaration, means production. A
+    single-line ``#[cfg(test)] mod x_tests;`` is not recognized as gated (the
+    tracker reads one attribute per line; the form does not occur in
+    ``crates/``), which errs toward counting the file.
     """
-    posix_path = pathlib.PurePosixPath(path)
-    module_name = posix_path.stem
-    parent = pathlib.Path(*posix_path.parent.parts)
-    candidates = [
-        repository_root / parent / "mod.rs",
-        repository_root / parent.with_suffix(".rs"),
-    ]
-    source_parent = repository_root / parent
-    if source_parent.is_dir():
-        candidates.extend(source_parent.glob("*.rs"))
-        repository_root_resolved = repository_root.resolve()
-        for ancestor in source_parent.resolve().parents:
-            if ancestor == repository_root_resolved.parent:
-                break
-            candidates.extend(ancestor.glob("*.rs"))
-    if posix_path.parent.name == "src":
-        candidates.extend(
-            [
-                repository_root / parent / "lib.rs",
-                repository_root / parent / "main.rs",
-            ]
-        )
-    declaration = re.compile(
-        rf"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*"
-        rf"(?:pub(?:\([^)]*\))?\s+)?mod\s+{re.escape(module_name)}\s*;"
-    )
-    path_declaration = re.compile(
-        rf"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*"
-        r"#\s*\[\s*path\s*=\s*[\"']([^\"']+)[\"']\s*\]\s*"
-        r"(?:#\s*\[[^\]]+\]\s*)*"
-        r"(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*;"
-    )
-    target = (repository_root / pathlib.Path(*posix_path.parts)).resolve()
-    for candidate in candidates:
-        try:
-            source = candidate.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError, UnicodeError):
+    target = (repository_root / pathlib.Path(path)).resolve()
+    if target in _visiting:
+        return False
+    visiting = _visiting | {target}
+    repository_root_resolved = repository_root.resolve()
+
+    candidates: set[pathlib.Path] = set()
+    for directory in (target.parent, *target.parent.parents):
+        if directory.is_dir():
+            candidates.update(directory.glob("*.rs"))
+        if directory == repository_root_resolved or directory == repository_root_resolved.parent:
+            break
+
+    declared = False
+    for candidate in sorted(candidates):
+        resolved = candidate.resolve()
+        if resolved == target:
             continue
-        if declaration.search(source):
-            return True
-        for path_match in path_declaration.finditer(source):
-            declared = (candidate.parent / pathlib.Path(path_match.group(1))).resolve()
-            if declared == target:
-                return True
-    return False
+        try:
+            scan, strict_contexts = _declaration_scan(resolved)
+        except (OSError, UnicodeError):
+            continue
+        for _name, module_candidates, test_context in module_declarations(
+            scan, strict_contexts
+        ):
+            if target not in {c.resolve() for c in module_candidates}:
+                continue
+            declared = True
+            if test_context:
+                continue
+            try:
+                declaring = resolved.relative_to(repository_root_resolved).as_posix()
+            except ValueError:
+                return False
+            if not _is_test_only_path(declaring, repository_root, visiting):
+                return False
+    return declared
 
 
 def line_test_contexts(lines: list[str]) -> list[bool]:
@@ -584,7 +649,19 @@ def is_test_only_path(path: str) -> bool:
     NOTE: the scanner only ever looks at ``src/`` and ``crates/`` (see
     ``changed_rust_files``). Top-level ``tests/**`` integration tests and their
     support trees are never scanned at all, so they need no exemption here.
+
+    A ``tests.rs`` / ``*_test.rs`` / ``*_tests.rs`` is test-only only when
+    ``has_cfg_test_module_declaration`` finds its real parent declaration
+    gated.
     """
+    return _is_test_only_path(path, pathlib.Path("."), frozenset())
+
+
+def _is_test_only_path(
+    path: str,
+    repository_root: pathlib.Path,
+    visiting: frozenset[pathlib.Path],
+) -> bool:
     posix_path = pathlib.PurePosixPath(path)
     parts = posix_path.parts
     if (
@@ -595,7 +672,7 @@ def is_test_only_path(path: str) -> bool:
                 or posix_path.name.endswith("_test.rs")
                 or posix_path.name.endswith("_tests.rs")
             )
-            and has_cfg_test_module_declaration(path)
+            and has_cfg_test_module_declaration(path, repository_root, visiting)
         )
     ):
         return True
@@ -736,18 +813,23 @@ def default_module_candidates(
     return module_dir / f"{name}.rs", module_dir / name / "mod.rs"
 
 
-def module_edges(
+def module_declarations(
     scan: SourceScan,
-    inherited_test_only: bool,
-) -> list[tuple[pathlib.Path, bool]]:
+    test_contexts: tuple[bool, ...] | list[bool] | None = None,
+) -> list[tuple[str, tuple[pathlib.Path, ...], bool]]:
+    """Every out-of-line ``mod name;`` in ``scan``: name, candidate files, test context.
+
+    Matches lexed code, so commented-out or string-embedded declarations are
+    not modules. ``test_contexts`` overrides the scan's own (loose) contexts.
+    """
     pending_path: str | None = None
     pending_path_directory: pathlib.Path | None = None
-    edges: list[tuple[pathlib.Path, bool]] = []
+    declarations: list[tuple[str, tuple[pathlib.Path, ...], bool]] = []
 
     for raw, code, local_test_context, module_dir in zip(
         scan.lines,
         scan.code,
-        scan.test_contexts,
+        scan.test_contexts if test_contexts is None else test_contexts,
         scan.module_directories,
     ):
         path_attr = PATH_ATTR_PATTERN.match(raw)
@@ -762,25 +844,10 @@ def module_edges(
                 path_directory = pending_path_directory or module_dir
                 if path_directory == root_module_directory(scan.path):
                     path_directory = scan.path.parent
-                candidates = (path_directory / pending_path,)
+                candidates: tuple[pathlib.Path, ...] = (path_directory / pending_path,)
             else:
                 candidates = default_module_candidates(module_dir, module.group(1))
-            for candidate in candidates:
-                if candidate.is_file():
-                    edges.append(
-                        (
-                            candidate.resolve(),
-                            inherited_test_only
-                            or local_test_context
-                            or is_test_only_path(candidate.as_posix()),
-                        )
-                    )
-                    break
-            else:
-                raise RuntimeError(
-                    f"{scan.path}: could not resolve `mod {module.group(1)};`; "
-                    f"tried {[str(candidate) for candidate in candidates]}"
-                )
+            declarations.append((module.group(1), candidates, local_test_context))
             pending_path = None
             pending_path_directory = None
             continue
@@ -790,6 +857,31 @@ def module_edges(
             pending_path = None
             pending_path_directory = None
 
+    return declarations
+
+
+def module_edges(
+    scan: SourceScan,
+    inherited_test_only: bool,
+) -> list[tuple[pathlib.Path, bool]]:
+    edges: list[tuple[pathlib.Path, bool]] = []
+    for name, candidates, local_test_context in module_declarations(scan):
+        for candidate in candidates:
+            if candidate.is_file():
+                edges.append(
+                    (
+                        candidate.resolve(),
+                        inherited_test_only
+                        or local_test_context
+                        or is_test_only_path(candidate.as_posix()),
+                    )
+                )
+                break
+        else:
+            raise RuntimeError(
+                f"{scan.path}: could not resolve `mod {name};`; "
+                f"tried {[str(candidate) for candidate in candidates]}"
+            )
     return edges
 
 
@@ -1270,6 +1362,75 @@ class CheckNoPanicsTests(unittest.TestCase):
             is_test_only_path("crates/extensions/packages/memory-native/src/contract_tests.rs")
         )
 
+    def test_declaration_must_be_real_gated_code_in_the_parent_module(self) -> None:
+        # Gate audit follow-up: the declaration lookup regex-searched raw text
+        # of every `.rs` in the parent and ancestor directories, so a comment,
+        # a string, or a same-named module in an unrelated file "gated" an
+        # ungated production `*_tests.rs`.
+        cases = {
+            "comment": (
+                {"src/lib.rs": "pub mod probe_tests;\n// #[cfg(test)] mod probe_tests;\n"},
+                "src/probe_tests.rs",
+                False,
+            ),
+            "string": (
+                {
+                    "src/lib.rs": "pub mod probe_tests;\n"
+                    'const S: &str = "#[cfg(test)] mod probe_tests;";\n'
+                },
+                "src/probe_tests.rs",
+                False,
+            ),
+            "unrelated ancestor": (
+                {
+                    "src/lib.rs": "pub mod sub;\n#[cfg(test)]\nmod probe_tests;\n",
+                    "src/sub.rs": "pub mod probe_tests;\n",
+                },
+                "src/sub/probe_tests.rs",
+                False,
+            ),
+            "one ungated of two": (
+                {
+                    "src/lib.rs": "#[cfg(test)]\nmod probe_tests;\n",
+                    "src/main.rs": "pub mod probe_tests;\n",
+                },
+                "src/probe_tests.rs",
+                False,
+            ),
+            "test-support feature": (
+                {
+                    "src/lib.rs": '#[cfg(any(test, feature = "test-support"))]\n'
+                    "pub mod probe_tests;\n"
+                },
+                "src/probe_tests.rs",
+                False,
+            ),
+            "gated in the parent": (
+                {"src/sub.rs": "#[cfg(all(test, unix))]\nmod probe_tests;\n"},
+                "src/sub/probe_tests.rs",
+                True,
+            ),
+            "gated inline parent": (
+                {"src/lib.rs": "#[cfg(test)]\nmod sub {\n    mod probe_tests;\n}\n"},
+                "src/sub/probe_tests.rs",
+                True,
+            ),
+        }
+        for name, (files, target, expected) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory(dir=REPO_ROOT) as directory:
+                root = pathlib.Path(directory)
+                for relative, text in files.items():
+                    (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                    (root / relative).write_text(text, encoding="utf-8")
+                (root / target).parent.mkdir(parents=True, exist_ok=True)
+                (root / target).write_text("pub fn shipped() {}\n", encoding="utf-8")
+                self.assertEqual(
+                    has_cfg_test_module_declaration(
+                        (root / target).as_posix(), root
+                    ),
+                    expected,
+                )
+
     def test_cfg_path_declaration_walks_ancestor_modules(self) -> None:
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as directory:
             root = pathlib.Path(directory)
@@ -1332,18 +1493,21 @@ class CheckNoPanicsTests(unittest.TestCase):
         self.assertTrue(contexts[2], "fn with 'static should be test context")
         self.assertTrue(contexts[7], "later helper should still be test context")
 
-    def test_named_tests_module_marks_context(self) -> None:
+    def test_ungated_tests_module_is_production(self) -> None:
+        # A module merely named `tests` ships in release builds unless a
+        # test-only cfg gates it; its panics are production panics.
         lines = [
-            "mod tests {\n",
-            "    fn helper() {\n",
+            "pub mod tests {\n",
+            "    pub fn helper() {\n",
             "        assert!(true);\n",
             "    }\n",
             "}\n",
         ]
 
-        contexts = line_test_contexts(lines)
+        self.assertFalse(any(line_test_contexts(lines)))
 
-        self.assertTrue(all(contexts))
+        gated = ["#[cfg(all(test, unix))]\n", *lines]
+        self.assertTrue(all(line_test_contexts(gated)[1:]))
 
     def test_all_panic_style_macros_are_detected(self) -> None:
         sources = [

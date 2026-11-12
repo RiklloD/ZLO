@@ -35,8 +35,8 @@ impl From<DefaultCompactionStrategy> for ActiveTaskPreservingCompactionStrategy 
 }
 
 impl ActiveTaskPreservingCompactionStrategy {
-    pub const DEFAULT_MINIMUM_COMPACTED_MESSAGES: usize = 3;
-    pub const DEFAULT_MINIMUM_TAIL_MESSAGES: usize = 3;
+    pub(crate) const DEFAULT_MINIMUM_COMPACTED_MESSAGES: usize = 3;
+    pub(crate) const DEFAULT_MINIMUM_TAIL_MESSAGES: usize = 3;
 }
 
 impl CompactionStrategy for ActiveTaskPreservingCompactionStrategy {

@@ -34,7 +34,7 @@ use ironclaw_product_contracts::package_lifecycle::LifecyclePackageKind;
 /// endpoint; saturation is returned as a retryable product failure.
 const MAX_CONCURRENT_HOSTED_MCP_REGISTRATION_PREFLIGHTS: usize = 8;
 
-pub struct HostedMcpPreparationService {
+pub(crate) struct HostedMcpPreparationService {
     installation_store: Arc<dyn ExtensionInstallationStorePort>,
     catalog: Arc<RwLock<AvailableExtensionCatalog>>,
     lifecycle_service: Arc<Mutex<ExtensionLifecycleService>>,
@@ -52,7 +52,7 @@ pub struct HostedMcpPreparationDependencies {
 }
 
 impl HostedMcpPreparationService {
-    pub fn new(
+    pub(crate) fn new(
         installation_store: Arc<dyn ExtensionInstallationStorePort>,
         catalog: Arc<RwLock<AvailableExtensionCatalog>>,
         lifecycle_service: Arc<Mutex<ExtensionLifecycleService>>,
@@ -73,7 +73,7 @@ impl HostedMcpPreparationService {
         }
     }
 
-    pub async fn register(
+    pub(crate) async fn register(
         &self,
         request: RegisterHostedMcpRequest,
         scope: ResourceScope,
@@ -244,7 +244,7 @@ impl HostedMcpPreparationService {
         }
     }
 
-    pub async fn prepare_if_pending(
+    pub(crate) async fn prepare_if_pending(
         &self,
         package_ref: &LifecyclePackageRef,
         scope: ResourceScope,
@@ -336,7 +336,7 @@ impl HostedMcpPreparationService {
         Ok(None)
     }
 
-    pub async fn select_auth(
+    pub(crate) async fn select_auth(
         &self,
         package_ref: &LifecyclePackageRef,
         auth_selection: HostedMcpAuthSelection,

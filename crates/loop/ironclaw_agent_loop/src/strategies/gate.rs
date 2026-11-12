@@ -33,7 +33,7 @@ fn _gate_handling_strategy_object_safe(_: &dyn GateHandlingStrategy) {}
 /// `LoopExit::Blocked`. Loop families that want skip-and-continue or abort
 /// semantics swap this strategy.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultGateHandlingStrategy;
+pub(crate) struct DefaultGateHandlingStrategy;
 
 #[async_trait]
 impl GateHandlingStrategy for DefaultGateHandlingStrategy {
@@ -52,7 +52,7 @@ impl GateHandlingStrategy for DefaultGateHandlingStrategy {
 /// the ExternalTool gate: its resolver is the submitting client itself, so it
 /// parks exactly like the default strategy.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct GateNotSupportedStrategy;
+pub(crate) struct GateNotSupportedStrategy;
 
 #[async_trait]
 impl GateHandlingStrategy for GateNotSupportedStrategy {

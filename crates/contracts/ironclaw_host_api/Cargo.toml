@@ -54,3 +54,6 @@ static_assertions = "1"
 toml = "1.1"
 # `#[tokio::test]` for the async `dispatch_test_support::TestDispatcher` tests.
 tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

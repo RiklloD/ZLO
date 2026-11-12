@@ -82,21 +82,49 @@ gate (COMPOSITION_CRATE) in the same PR rather than letting the ratchet measure 
     COMPOSITION_SRC="${discovery_root}/${composition_matches}/src"
 fi
 
-# Files that are test-only, excluded from the production-code metric. Matches
-# `tests.rs` / `test.rs`, `test_*.rs`, `*_test.rs`, `*_tests.rs`, and anything
-# under a `/tests/` directory. Inline `#[cfg(test)]` modules inside otherwise-
-# production files are NOT excluded (a line-counter cannot parse them) — a
-# documented, symmetric residual that applies to numerator and denominator
-# alike, so it does not bias composition's *share*.
-TEST_FILE_RE='(^|/)(tests?\.rs|test_[^/]*\.rs|[^/]*_tests?\.rs)$|/tests/'
+# --- production LOC: one counting rule, shared with the panic gate -----------
+# `scripts/ci/lib/production_loc.py` counts a line only when it is production:
+# test-only FILES are those `check_no_panics.py`'s `is_test_only_path` names
+# (a `tests/` dir, or a `tests.rs` / `*_test(s).rs` whose real parent module
+# declares it — lexed code, so a comment declares nothing — only behind a
+# test-only cfg), and inside every other file the panic gate's lexer drops
+# items under a test-only cfg (`#[cfg(test)]`, `cfg(all(test, ...))`,
+# `feature = "test-support"`) and `#[test]` fns. A module merely NAMED `tests`
+# counts unless gated. The contracts size ceiling in
+# `reborn_dependency_boundaries.rs` applies the same rule through its Rust
+# twin (`ratchet_support::production_line_count` over `production_rust_files`).
+#
+# Until 2026-11-11 this was a basename regex over whole files plus `wc -l`,
+# which (a) counted inline test modules as production mass, so relocating one
+# to its own file "fixed" a trip while evicting nothing (gate audit 2026-08
+# §3.2 — #7157 did it twice), and (b) excluded any `*_tests.rs` by NAME even
+# when nothing gated it, so production code could hide there (§6.2).
+# The lexer needs Python >= 3.10; take $PYTHON, else the first python3[.X] on
+# PATH that qualifies (macOS ships a 3.9 `python3`). None found is a schema
+# error, never a silent fallback to the old whole-file count.
+if [ -z "${PYTHON:-}" ]; then
+    for candidate in python3 python3.15 python3.14 python3.13 python3.12 python3.11 python3.10; do
+        if command -v "${candidate}" >/dev/null 2>&1 \
+            && "${candidate}" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
+                2>/dev/null; then
+            PYTHON="${candidate}"
+            break
+        fi
+    done
+fi
+[ -n "${PYTHON:-}" ] || fail_schema "no Python >= 3.10 on PATH for scripts/ci/lib/production_loc.py (set PYTHON=...)"
+PRODUCTION_LOC="${repo_root}/scripts/ci/lib/production_loc.py"
+
+production_loc() {
+    "${PYTHON}" "${PRODUCTION_LOC}" "$@" \
+        || fail_schema "production LOC counter failed (${PYTHON} ${PRODUCTION_LOC} $*)"
+}
 
 # --- count LOC of production *.rs under a directory (0 if it does not exist) --
 count_loc() {
     local dir="$1"
     [ -d "${dir}" ] || { echo 0; return; }
-    find "${dir}" -name '*.rs' -type f 2>/dev/null \
-        | { grep -vE "${TEST_FILE_RE}" || true; } \
-        | tr '\n' '\0' | xargs -0 cat 2>/dev/null | wc -l | tr -d ' '
+    production_loc loc "${dir}"
 }
 
 # --- sum LOC of every discovered crate's src tree (the denominator) ----------
@@ -106,15 +134,18 @@ count_loc() {
 # (ironclaw_safety/fuzz, the assets/*/wasm-src guests) are attributed to their
 # enclosing crate by the inventory exactly as `crates/*/src` skipped them.
 count_denominator() {
-    local total=0 rel loc
+    local rel
+    local -a dirs=()
     while IFS= read -r rel; do
         [ -n "${rel}" ] || continue
-        loc="$(count_loc "${discovery_root}/${rel}/src")"
-        total=$((total + loc))
+        if [ -d "${discovery_root}/${rel}/src" ]; then
+            dirs+=("${discovery_root}/${rel}/src")
+        fi
     done <<EOF
 ${CRATE_DIRS}
 EOF
-    echo "${total}"
+    [ "${#dirs[@]}" -gt 0 ] || { echo 0; return; }
+    production_loc loc "${dirs[@]}"
 }
 
 # Dispatch (Arc<dyn>) sub-metric is scoped to composition PRODUCTION files, but
@@ -127,14 +158,9 @@ DISPATCH_EXCLUDE_RE='/(slack|telegram|extension_host)/'
 # --- count Arc<dyn> dispatch sites in governed composition production code ----
 count_arc_dyn() {
     [ -d "${COMPOSITION_SRC}" ] || { echo 0; return; }
-    # `|| true` on the xargs grep: grep exits 1 (and xargs 123) when there are
-    # no Arc<dyn> matches — a valid zero, not a failure — which would otherwise
-    # abort the gate under set -e + pipefail.
-    find "${COMPOSITION_SRC}" -name '*.rs' -type f 2>/dev/null \
-        | { grep -vE "${TEST_FILE_RE}" || true; } \
-        | { grep -vE "${DISPATCH_EXCLUDE_RE}" || true; } \
-        | tr '\n' '\0' \
-        | { xargs -0 grep -ho 'Arc<dyn' 2>/dev/null || true; } | wc -l | tr -d ' '
+    # Lexed production code only: an `Arc<dyn` in a comment, a string, or a
+    # test module is not a dispatch site.
+    production_loc arc-dyn --exclude "${DISPATCH_EXCLUDE_RE}" "${COMPOSITION_SRC}"
 }
 
 # --- parse one scalar key from the [gate] TOML table -------------------------

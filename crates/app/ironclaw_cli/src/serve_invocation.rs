@@ -14,7 +14,7 @@ use ironclaw_config::{REBORN_HOME_ENV, REBORN_PROFILE_ENV, RebornBootConfig, pro
 /// caller must set so `serve` resolves the same Reborn home/profile as
 /// the invoking process.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServeInvocation {
+pub(crate) struct ServeInvocation {
     pub exe: PathBuf,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
@@ -29,7 +29,7 @@ pub struct ServeInvocation {
 /// `RebornBootConfig::profile()` (which always resolves to a default),
 /// because baking a silently-defaulted profile into a long-lived service
 /// unit would pin behavior the operator never asked for.
-pub fn serve_invocation() -> Result<ServeInvocation> {
+pub(crate) fn serve_invocation() -> Result<ServeInvocation> {
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let boot_config = RebornBootConfig::resolve_from_env()
         .context("failed to resolve Reborn home for the serve invocation")?;

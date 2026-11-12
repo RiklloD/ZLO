@@ -41,3 +41,6 @@ ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem" }
 tempfile = "3"
 testcontainers-modules = { version = "0.12", features = ["postgres"] }
 tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

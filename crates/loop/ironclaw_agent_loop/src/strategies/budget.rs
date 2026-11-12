@@ -32,7 +32,7 @@ fn assert_budget_strategy_object_safe(_: &dyn BudgetStrategy) {}
 /// alongside them. This iteration count is the last-resort ceiling behind
 /// both. Long agentic coding turns legitimately run hundreds of model calls
 /// — a small cap here fails the turn closed mid-work.
-pub const DEFAULT_ITERATION_BACKSTOP: u32 = 1_024;
+pub(crate) const DEFAULT_ITERATION_BACKSTOP: u32 = 1_024;
 
 /// Reference baseline `BudgetStrategy`: runaway-backstop iteration cap with
 /// no wall-clock limit.
@@ -40,7 +40,7 @@ pub const DEFAULT_ITERATION_BACKSTOP: u32 = 1_024;
 /// Loop families that need shorter or longer budgets construct this struct
 /// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DefaultBudgetStrategy {
+pub(crate) struct DefaultBudgetStrategy {
     /// Hard ceiling on iteration count. Default
     /// [`DEFAULT_ITERATION_BACKSTOP`].
     pub iteration_limit: u32,

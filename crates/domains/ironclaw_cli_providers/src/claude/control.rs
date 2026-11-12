@@ -150,7 +150,7 @@ pub(super) struct BridgedTurn {
 }
 
 impl BridgedTurn {
-    pub fn new(
+    pub(super) fn new(
         bridge: Arc<CliBridge>,
         stdin: SharedStdin,
         thread: ThreadId,
@@ -170,11 +170,11 @@ impl BridgedTurn {
         }
     }
 
-    pub fn awaiting_ack(&self) -> bool {
+    pub(super) fn awaiting_ack(&self) -> bool {
         self.prompt.is_some()
     }
 
-    pub async fn on_line(&mut self, line: &str) -> Step {
+    pub(super) async fn on_line(&mut self, line: &str) -> Step {
         let Ok(frame) = serde_json::from_str::<Value>(line.trim()) else {
             return Step::Continue;
         };

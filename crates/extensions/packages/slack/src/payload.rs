@@ -613,7 +613,7 @@ fn contains_slack_user_mention(text: &str, expected_user_id: Option<&str>) -> bo
 /// configuration (`slack_bot_user_id`). Absent only on an installation
 /// configured before the handle existed; mention detection then degrades to
 /// `app_mention` alone, which is the behavior that shipped before this.
-pub fn slack_bot_user_id(config: &[(String, String)]) -> Option<&str> {
+pub(crate) fn slack_bot_user_id(config: &[(String, String)]) -> Option<&str> {
     config
         .iter()
         .find(|(handle, _)| handle == SLACK_BOT_USER_ID_HANDLE)

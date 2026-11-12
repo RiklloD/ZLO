@@ -31,3 +31,6 @@ tokio = { version = "1", features = ["sync"] }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

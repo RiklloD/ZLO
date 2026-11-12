@@ -75,7 +75,7 @@ owns the concept.
   that file (`loc_ceiling`, `arc_dyn_ceiling`); run
   `bash scripts/ci/check-composition-budget.sh --print` for today's values
   rather than trusting a number restated in prose here. The share metric
-  (`ceiling_bp = 658`) is a deliberately-frozen WS0 record, not a moving
+  (`ceiling_bp = 653`, the WS0 share re-measured under the 2026-11-11 production-line counting rule) is a deliberately-frozen WS0 record, not a moving
   ratchet. One-directional: re-ratchet down in the same PR as any eviction;
   raising needs a one-line PR rationale.
 - **Nothing depends on `app`.** No substrate reaches the composition root

@@ -39,3 +39,6 @@ test-support = []
 [dev-dependencies]
 # Test substrate only: drives the async `MemoryService` default-impl unit test.
 tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

@@ -5,39 +5,17 @@ use crate::first_party_tools::time::UNIX_MILLIS_THRESHOLD;
 /// Input schemas for the native memory extension (`ironclaw.memory`),
 /// served inline by `surface.rs` the way builtin schemas are.
 ///
-/// The bundled v3 manifest's asset schema files are the single source of truth:
-/// they are compiled in here and parsed, rather than materialized to the
-/// filesystem, because native memory rides the always-on lane. `document-{read,
-/// write}`, `search`, and `tree` each reference their own bundled schema file.
+/// The bundled v3 manifest's asset schema files are the single source of truth.
+/// The owning package exposes them as `ironclaw_memory_native::MEMORY_INPUT_SCHEMAS`
+/// (keyed by the manifest's schema ref), so this crate reads them through that
+/// package's public API rather than compiling its tree in (§11.2.7). Native
+/// memory rides the always-on lane, so nothing is materialized to the
+/// filesystem.
 pub(crate) fn resolve_native_memory_input_schema_ref(reference: &str) -> Option<Value> {
-    let raw = match reference {
-        "schemas/memory/document-read.input.v1.json" => {
-            include_str!(
-                "../../../../extensions/packages/memory-native/schemas/memory/document-read.input.v1.json"
-            )
-        }
-        "schemas/memory/document-write.input.v1.json" => {
-            include_str!(
-                "../../../../extensions/packages/memory-native/schemas/memory/document-write.input.v1.json"
-            )
-        }
-        "schemas/memory/search.input.v1.json" => {
-            include_str!(
-                "../../../../extensions/packages/memory-native/schemas/memory/search.input.v1.json"
-            )
-        }
-        "schemas/memory/tree.input.v1.json" => {
-            include_str!(
-                "../../../../extensions/packages/memory-native/schemas/memory/tree.input.v1.json"
-            )
-        }
-        "schemas/memory/profile-set.input.v1.json" => {
-            include_str!(
-                "../../../../extensions/packages/memory-native/schemas/memory/profile-set.input.v1.json"
-            )
-        }
-        _ => return None,
-    };
+    let raw = ironclaw_memory_native::MEMORY_INPUT_SCHEMAS
+        .iter()
+        .find(|(schema_ref, _)| *schema_ref == reference)
+        .map(|(_, raw)| *raw)?;
     // silent-ok: these are compile-embedded assets validated by the
     // `memory_native_schema_validation` test; a malformed schema fails that test
     // and the build, so `.ok()` here cannot silently mask a real fault.

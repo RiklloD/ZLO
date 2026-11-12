@@ -24,3 +24,6 @@ tokio = { version = "1", features = ["macros", "sync", "rt"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ironclaw_event_log = { path = "../ironclaw_event_log" }
 tokio = { version = "1", features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true

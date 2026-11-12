@@ -31,3 +31,6 @@ ironclaw_resources = { path = "../../kernel/ironclaw_resources" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
+
+[lints]
+workspace = true

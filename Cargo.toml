@@ -59,7 +59,28 @@ reqwest = { version = "0.13", default-features = false }
 # - `dead_code`: warn on never-used items (this is the rustc default, declared
 #   here so it survives any future `#![allow(dead_code)]` creep at the crate root).
 [workspace.lints.rust]
+# Every crates/** package inherits these (`[lints] workspace = true`) except
+# `ironclaw_assistant` and `ironclaw_webui`, whose remaining `unreachable_pub`
+# fires are the rustc false-positive class on `pub use` re-exports routed
+# through a private module (`reborn_services.rs` -> `lib.rs`); see CHECKLIST
+# WS8's dated note.
+#
+# `warn`, not `deny`, for the same reason as `dead_code` below: whether an item
+# is reachable varies with the feature set. Several crates re-export behind
+# `#[cfg(any(test, feature = "test-support"))] pub use …` (approvals,
+# authorization, host_runtime, processes), so a combination that enables one
+# side of such a pair can turn a clean item into an unreachable one. CI builds
+# combinations clippy never lints — the per-package feature-subset lanes
+# (`scripts/ci/package-feature-flags.sh`, `reborn-tests.yml`) and the separate
+# Rune desktop workspace — where `deny` would make a lint fire a hard build
+# failure. CI's `-D warnings` clippy lanes (default + all-features) still
+# enforce it on every PR/merge. (`deny` shipped briefly on this branch,
+# 2026-11-11, and was walked back 2026-11-12.)
 unreachable_pub = "warn"
+# Stays `warn`: dead code is feature-set dependent, and several CI build lanes
+# compile feature combinations clippy never lints (`package-feature-flags.sh`),
+# where `deny` would turn a warning into a hard build failure. CI's
+# `-D warnings` clippy lanes (default + all-features) still enforce it.
 dead_code = "warn"
 # A `Result`/`#[must_use]` value that is silently discarded is a swallowed
 # error. `unused_must_use` is warn-by-default; deny it so a dropped `Result`

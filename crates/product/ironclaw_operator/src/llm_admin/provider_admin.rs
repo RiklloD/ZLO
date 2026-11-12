@@ -889,23 +889,32 @@ mod tests {
         .expect("valid reborn home");
         std::fs::create_dir_all(home.path()).expect("create reborn home dir");
 
-        // Built from the REAL `ironclaw_cli::commands::config::init::
-        // PROVIDERS_STUB` JSON (not a hand-typed duplicate) so this test
-        // catches drift between that stub's id and
-        // `EXAMPLE_OVERLAY_PROVIDER_ID` instead of two disjoint fixtures
-        // agreeing by coincidence.
-        let stub_definitions: Vec<ironclaw_llm::registry::ProviderDefinition> =
-            serde_json::from_str(providers_stub_json()).expect("PROVIDERS_STUB must parse as JSON");
-        assert_eq!(
-            stub_definitions.len(),
-            1,
-            "this test assumes PROVIDERS_STUB seeds exactly one overlay entry: {stub_definitions:?}"
-        );
-        let overlay_definition = stub_definitions.into_iter().next().expect("checked above");
-        assert_eq!(
-            overlay_definition.id, EXAMPLE_OVERLAY_PROVIDER_ID,
-            "PROVIDERS_STUB's overlay id has drifted from EXAMPLE_OVERLAY_PROVIDER_ID"
-        );
+        // Same shape as the stub `config init`/`onboard` write. The pairing
+        // with the real stub is pinned owner-side: the CLI's
+        // `providers_stub_seeds_exactly_the_example_overlay_provider` asserts
+        // `PROVIDERS_STUB` is one entry whose id is
+        // `EXAMPLE_OVERLAY_PROVIDER_ID` — this test previously compiled the
+        // CLI's source in via a cross-crate `include_str!` (§11.2.7).
+        let overlay_definition: ironclaw_llm::registry::ProviderDefinition =
+            serde_json::from_value(serde_json::json!({
+                "id": EXAMPLE_OVERLAY_PROVIDER_ID,
+                "aliases": [],
+                "protocol": "open_ai_completions",
+                "api_key_env": "ACME_OPENROUTER_KEY",
+                "api_key_required": true,
+                "default_base_url": "https://openrouter.ai/api/v1",
+                "default_model": "anthropic/claude-3.5-sonnet",
+                "model_env": "ACME_OPENROUTER_MODEL",
+                "description": "Tenant-pinned OpenRouter route (example; rename or delete)",
+                "setup": {
+                    "kind": "api_key",
+                    "secret_name": "llm_acme_openrouter_api_key",
+                    "key_url": "https://openrouter.ai/keys",
+                    "display_name": "OpenRouter (Acme)",
+                    "can_list_models": true
+                }
+            }))
+            .expect("example overlay fixture must parse as a provider definition");
         crate::ProviderRepo::new(home.providers_file_path())
             .upsert(overlay_definition)
             .expect("write example overlay");
@@ -922,28 +931,6 @@ mod tests {
             "the tenant-pinned OpenRouter example overlay must never appear on the onboard \
              menu: {entries:?}"
         );
-    }
-
-    /// Extract the raw JSON text of `PROVIDERS_STUB` from
-    /// `ironclaw_cli::commands::config::init`'s source, via
-    /// `include_str!` — composition can't depend on `ironclaw_cli`
-    /// (only the reverse), so this reads the file text directly rather than
-    /// duplicating the JSON literal, keeping the fixture used above tied to
-    /// the actual stub `config init`/`onboard` write.
-    fn providers_stub_json() -> &'static str {
-        const INIT_RS: &str =
-            include_str!("../../../../app/ironclaw_cli/src/commands/config/init.rs");
-        const START_MARKER: &str = "const PROVIDERS_STUB: &str = r#\"";
-        let start = INIT_RS.find(START_MARKER).unwrap_or_else(|| {
-            panic!(
-                "PROVIDERS_STUB definition not found in ironclaw_cli's init.rs — this \
-                 test's extraction marker has drifted from the real source"
-            )
-        }) + START_MARKER.len();
-        let end = INIT_RS[start..]
-            .find("\"#;")
-            .expect("PROVIDERS_STUB closing delimiter `\"#;` not found");
-        &INIT_RS[start..start + end]
     }
 
     /// `detect_env_llm` must return `Ok(None)` with no LLM env vars set —

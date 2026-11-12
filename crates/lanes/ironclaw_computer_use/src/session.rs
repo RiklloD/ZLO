@@ -205,7 +205,7 @@ struct Flags {
 const STATE_UNCHANGED: &str = "(no accessibility tree changes since your last get_app_state: that tree and its element indexes are still current. Do not read the state again; act on it with click, type_text, press_key or scroll, or answer from what you already have.)";
 
 /// Screenshots a model keeps in context, newest first (Hermes keeps 3).
-pub const MODEL_FRAMES: usize = 3;
+pub(crate) const MODEL_FRAMES: usize = 3;
 
 struct Session {
     /// Held for the whole call: calls on one thread run one at a time.

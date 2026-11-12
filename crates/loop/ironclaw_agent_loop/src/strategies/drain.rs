@@ -27,7 +27,7 @@ fn assert_input_drain_strategy_object_safe(_: &dyn InputDrainStrategy) {}
 /// points: steering before each model call, followup before otherwise
 /// stopping.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultInputDrainStrategy;
+pub(crate) struct DefaultInputDrainStrategy;
 
 #[async_trait]
 impl InputDrainStrategy for DefaultInputDrainStrategy {

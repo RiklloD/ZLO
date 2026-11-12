@@ -241,6 +241,16 @@ jobs:
           # `reborn-e2e.yml` string that no longer existed.
           python3 -m unittest scripts.reborn_webui_v2_live_qa.test_run_live_qa
           bash .github/scripts/test-pr-labeler.sh
+          # Gate audit 2026-08 §2.3: self-tests no lane ran (the #7144 shape
+          # above). Wired 2026-11-11; each passed when wired.
+          python3 scripts/test-import-reborn-run-artifact.py
+          bash scripts/test-reset-extension-state.sh
+          bash scripts/test-pre-commit-safety.sh
+          python3 tests/test_check_reborn_responses_e2e_manifest.py
+          # The shared production-LOC counter behind the composition budget
+          # (gate audit §3.2 counting rule) and the local preflight runner.
+          python3 scripts/ci/lib/production_loc.py --self-test
+          bash scripts/ci/test-preflight-gates.sh
       - name: Self-test panic checker
         if: github.event_name != 'push'
         run: python3 scripts/check_no_panics.py --self-test

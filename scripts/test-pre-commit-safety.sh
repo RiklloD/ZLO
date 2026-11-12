@@ -16,6 +16,28 @@ cd "$ROOT_DIR"
 PASS=0
 FAIL=0
 
+# Decouple from the REAL tree's composition budget. Every fixture below stages
+# a `crates/**.rs` file, which makes the hook run the composition mass gate —
+# and that gate measures this repository, not the fixture repo. Against the
+# committed budget, any real-tree budget trip turned this self-test red too,
+# for reasons unrelated to the grep pipelines it pins. The gate's own
+# `BUDGET_FILE` override points it at a permissive fixture budget instead; the
+# real tree's budget is guarded by `test-check-composition-budget.sh` (C10/C11).
+fixture_budget_dir=$(mktemp -d "${TMPDIR:-/tmp}/precommit-budget.XXXXXX")
+trap 'rm -rf "$fixture_budget_dir"' EXIT
+cat > "$fixture_budget_dir/budget.toml" <<'BUDGET'
+[gate]
+enforce = true
+ceiling_bp = 10000
+tolerance_bp = 0
+arc_dyn_ceiling = 1000000
+arc_dyn_tolerance = 0
+loc_ceiling = 100000000
+loc_tolerance = 0
+loc_nudge_slack = 100000000
+BUDGET
+export BUDGET_FILE="$fixture_budget_dir/budget.toml"
+
 assert_filtered() {
     local label="$1" input="$2" positive="$3" exclusions="$4"
     # Emulate the production pipeline: `grep -n '^+'` adds the line-number

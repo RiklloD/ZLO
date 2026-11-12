@@ -3,4 +3,4 @@
 
 #![allow(dead_code)]
 
-pub mod fake_slack_agent_api;
+pub(crate) mod fake_slack_agent_api;

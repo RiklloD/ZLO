@@ -10,10 +10,10 @@ use ironclaw_extension_contracts::hosted_mcp::HostedMcpEndpoint;
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CanonicalHostedMcpEndpoint(String);
+pub(crate) struct CanonicalHostedMcpEndpoint(String);
 
 impl CanonicalHostedMcpEndpoint {
-    pub fn parse(input: &HostedMcpEndpoint) -> Result<Self, HostedMcpAdmissionError> {
+    pub(crate) fn parse(input: &HostedMcpEndpoint) -> Result<Self, HostedMcpAdmissionError> {
         let url = url::Url::parse(input.as_str())
             .map_err(|_| HostedMcpAdmissionError::InvalidEndpoint)?;
         if url.scheme() != "https"
@@ -76,20 +76,20 @@ impl CanonicalHostedMcpEndpoint {
         Ok(Self(url.to_string()))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostedMcpAdmissionError {
+pub(crate) enum HostedMcpAdmissionError {
     InvalidEndpoint,
     InvalidVendorId,
 }
 
 /// Deterministic provider identity; the endpoint itself never becomes a
 /// provider id, log field, or durable package name.
-pub fn hosted_mcp_vendor_id(
+pub(crate) fn hosted_mcp_vendor_id(
     endpoint: &CanonicalHostedMcpEndpoint,
 ) -> Result<VendorId, HostedMcpAdmissionError> {
     let digest = Sha256::digest(endpoint.as_str().as_bytes());

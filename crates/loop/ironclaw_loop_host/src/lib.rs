@@ -4,7 +4,6 @@
 //! This crate adapts durable Reborn support boundaries (threads/transcripts plus
 //! host-managed model gateways) into the narrow `AgentLoopHost` ports. It does
 //! not own provider clients, tool dispatchers, secrets, or runtime handles.
-#![warn(unreachable_pub)]
 
 use std::{
     collections::{HashMap, HashSet},

@@ -37,25 +37,26 @@ fn reborn_boundary_rules_active_crates_are_workspace_members() {
         .collect::<std::collections::HashSet<_>>();
 
     let root = workspace_root();
-    // Resolved through the crate inventory, not `crates/<name>/`: a family move
-    // (PROPOSAL §5) makes the flat join miss every crate at once, and the
-    // `continue` below then skips the whole check while the test still passes.
-    // That fail-open is the WS10 dark-verdict shape, so the scan is counted.
+    // Resolved by **package name**, not by directory basename. The basename
+    // lookup this used to do (`try_crate_directory`) cannot see a crate whose
+    // directory is not spelled like its package — `packages/slack` holds
+    // `ironclaw_slack_extension`, `packages/telegram` holds
+    // `ironclaw_telegram_extension` — so both rules took the "no directory,
+    // retired pin" `continue` and the #3212 fail-open stayed open for exactly
+    // those two crates: drop either from `workspace.members` and
+    // `assert_no_normal_workspace_deps` returns silently on the metadata-absent
+    // crate (gate audit 2026-08 §2.1, fixed 2026-11-11). The scan is counted,
+    // and the two crates that motivated the fix are pinned below.
+    let manifests_by_package = workspace_crate_manifests_by_package_name(&root);
     let mut checked = 0usize;
+    let mut checked_names = BTreeSet::new();
     for rule in boundary_rules() {
-        let manifest = if rule.crate_name == "ironclaw" {
-            crate_path(&root, "crates/ironclaw_cli/Cargo.toml")
-        } else {
-            match try_crate_directory(&root, rule.crate_name) {
-                Ok(directory) => root.join(directory).join("Cargo.toml"),
-                // A rule naming a crate with no directory (a retired-crate
-                // reintroduction pin) is legitimate and tolerated.
-                Err(_) => continue,
-            }
-        };
-        if !manifest.exists() {
+        // A rule naming a package with no manifest on disk (a retired-crate
+        // reintroduction pin) is legitimate and tolerated.
+        let Some(manifest) = manifests_by_package.get(rule.crate_name) else {
             continue;
-        }
+        };
+        checked_names.insert(rule.crate_name);
         checked += 1;
         assert!(
             registered.contains(rule.crate_name),
@@ -67,12 +68,154 @@ fn reborn_boundary_rules_active_crates_are_workspace_members() {
         );
     }
 
+    for pinned in [
+        "ironclaw_slack_extension",
+        "ironclaw_telegram_extension",
+        "ironclaw",
+    ] {
+        assert!(
+            checked_names.contains(pinned),
+            "{pinned} has a BoundaryRule but its manifest was not resolved by package name — \
+             the membership check skipped it, which is the fail-open this test exists to close"
+        );
+    }
     assert!(
         checked >= 30,
         "expected every active boundary rule's crate to resolve to a real manifest; only \
          {checked} did. A rule set that resolves to nothing checks nothing while passing \
          (docs/internal/reborn/target-architecture/CHECKLIST.md WS10)."
     );
+}
+
+/// `[package] name` of a `Cargo.toml`'s text: `Ok(None)` only for a virtual
+/// workspace manifest (`[workspace]` and no `[package]`), an `Err` for anything
+/// else that does not yield a package name.
+///
+/// Parsed with the `toml` crate, not by line. The line scanner this replaced
+/// accepted only an exact `[package]` header and a double-quoted value, so
+/// valid TOML — `[package] # comment`, `name = 'x'`, an inline
+/// `package = { name = … }` — read as "no package", the manifest dropped out of
+/// `workspace_crate_manifests_by_package_name`, and the membership gate then
+/// skipped that ACTIVE crate as a retired pin: the fail-open the gate exists to
+/// close. Malformed or name-less metadata now fails the gate loudly.
+fn manifest_package_name(manifest_text: &str) -> Result<Option<String>, String> {
+    let document: toml::Table =
+        toml::from_str(manifest_text).map_err(|error| format!("not valid TOML: {error}"))?;
+    match document.get("package") {
+        Some(toml::Value::Table(package)) => match package.get("name") {
+            Some(toml::Value::String(name)) if !name.is_empty() => Ok(Some(name.clone())),
+            Some(other) => Err(format!(
+                "`[package] name` is not a non-empty string: {other}"
+            )),
+            None => Err("`[package]` has no `name`".to_string()),
+        },
+        Some(other) => Err(format!("`package` is not a table: {other}")),
+        None if document.contains_key("workspace") => Ok(None),
+        None => Err("neither `[package]` nor `[workspace]`".to_string()),
+    }
+}
+
+/// Every crate manifest under `crates/` (through the shared inventory, which
+/// fails closed on a partial tree), keyed by its `[package] name`. A manifest
+/// whose package metadata cannot be read panics rather than vanishing from the
+/// map (which the caller would read as a retired pin).
+fn workspace_crate_manifests_by_package_name(root: &std::path::Path) -> BTreeMap<String, PathBuf> {
+    let mut manifests = BTreeMap::new();
+    for directory in ratchet_support::crate_directories(root) {
+        let manifest = root.join(&directory).join("Cargo.toml");
+        let text = std::fs::read_to_string(&manifest)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", manifest.display()));
+        match manifest_package_name(&text) {
+            Ok(Some(name)) => {
+                manifests.insert(name, manifest);
+            }
+            Ok(None) => {}
+            Err(reason) => panic!(
+                "{}: cannot read its package name ({reason}); a crate whose name the \
+                 membership gate cannot read would be skipped as a retired pin",
+                manifest.display()
+            ),
+        }
+    }
+    manifests
+}
+
+#[test]
+fn manifest_package_name_reads_only_the_package_table() {
+    // Positive: the package name, wherever `[package]` sits and however the
+    // value is spaced, quoted, or commented — every valid TOML spelling.
+    for (text, want) in [
+        (
+            "[package]\nname = \"ironclaw_slack_extension\"\nversion = \"0.1.0\"\n",
+            "ironclaw_slack_extension",
+        ),
+        (
+            "[lib]\nname = \"not_this\"\n\n[package]\nedition = \"2024\"\nname=\"pkg\" # trailing\n",
+            "pkg",
+        ),
+        // The two shapes the line scanner returned `None` for (fail-open).
+        (
+            "[package] # the crate\nname = \"commented_header\"\n",
+            "commented_header",
+        ),
+        ("[package]\nname = 'single_quoted'\n", "single_quoted"),
+        ("package = { name = \"inline_table\" }\n", "inline_table"),
+    ] {
+        assert_eq!(
+            manifest_package_name(text),
+            Ok(Some(want.to_string())),
+            "{text}"
+        );
+    }
+    // A virtual workspace manifest has no package, legitimately.
+    assert_eq!(
+        manifest_package_name("[workspace]\nmembers = []\n"),
+        Ok(None)
+    );
+    // Negative: a `name` key outside `[package]`, a `[package.metadata]`
+    // sub-table without a name, malformed TOML, and a manifest declaring
+    // neither are errors — never a silent "no package".
+    for text in [
+        "[[bin]]\nname = \"zlo\"\n[dependencies]\nname = \"x\"\n",
+        "[package.metadata.ironclaw]\nname = \"layer\"\n",
+        "[package\nname = \"broken\"\n",
+        "[package]\nname = 7\n",
+    ] {
+        assert!(manifest_package_name(text).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn boundary_rule_crates_resolve_by_package_name_not_directory_basename() {
+    let root = workspace_root();
+    let manifests = workspace_crate_manifests_by_package_name(&root);
+    // Positive: the two packages whose directory basename differs from their
+    // package name resolve, to the directories they really occupy.
+    for (package, directory) in [
+        ("ironclaw_slack_extension", "packages/slack"),
+        ("ironclaw_telegram_extension", "packages/telegram"),
+        ("ironclaw", "ironclaw_cli"),
+    ] {
+        let manifest = manifests
+            .get(package)
+            .unwrap_or_else(|| panic!("{package} must resolve by package name"));
+        assert!(
+            manifest
+                .parent()
+                .is_some_and(|parent| parent.ends_with(directory)),
+            "{package} resolved to {} (expected …/{directory})",
+            manifest.display()
+        );
+        // The old basename lookup is exactly what missed these.
+        assert!(
+            package == "ironclaw" || try_crate_directory(&root, package).is_err(),
+            "{package} now resolves by basename too; this fixture no longer pins the fail-open"
+        );
+    }
+    // Negative: a retired/never-existing package resolves to nothing, so the
+    // membership check tolerates it as a reintroduction pin rather than
+    // inventing a manifest.
+    assert!(!manifests.contains_key("ironclaw_zzz_probe_never_a_crate"));
 }
 
 /// A `forbidden` entry must name a **package**, never a crate *directory*.
@@ -659,6 +802,63 @@ fn contracts_ceiling_verdict(lines: usize, ceiling: usize) -> CeilingVerdict {
     }
 }
 
+/// Production lines of one source file — `ratchet_support::production_line_count`,
+/// the Rust twin of `scripts/ci/lib/production_loc.py` (same cfg evaluator,
+/// same line tracker, mirrored from `scripts/check_no_panics.py`).
+///
+/// ✎ **2026-11-11 (gate audit 2026-08 §3.2, the open half).** This used to be
+/// `.lines().count()` over the whole file, so an inline `#[cfg(test)] mod
+/// tests { … }` counted as production mass (26–41% of every contracts crate)
+/// and splitting it into `tests.rs` "fixed" a trip while evicting nothing. PR
+/// #7157 did exactly that twice. With this rule a test module counts zero
+/// lines wherever it lives — inline, or in a file [`production_rust_files`]
+/// drops because its only declarations are test-gated (a NAME alone drops
+/// nothing) — so relocation is LOC-neutral
+/// (`production_line_count_is_relocation_neutral`) and a trip means behavior
+/// accreted. Comment and blank lines in production context still count,
+/// matching the `wc -l` semantics the pins were seeded with.
+///
+/// ✎ **2026-11-12.** The first cut stripped only the exact text
+/// `#[cfg(test)]` by brace matching, while the Python counter evaluated
+/// `cfg(all(test, …))` and `feature = "test-support"`; both now share one
+/// rule, and the gated attribute line itself is test context in both.
+fn production_line_count(source: &str) -> usize {
+    ratchet_support::production_line_count(source)
+}
+
+#[test]
+fn production_line_count_is_relocation_neutral() {
+    let inline = "pub fn a() -> u8 {\n    1\n}\n#[cfg(test)]\nmod tests {\n    #[test]\n    \
+                  fn t() { assert_eq!(super::a(), 1); }\n}\n";
+    let relocated = "pub fn a() -> u8 {\n    1\n}\n#[cfg(test)]\nmod tests;\n";
+    // Positive: production lines count, in both spellings, identically.
+    assert_eq!(
+        production_line_count(inline),
+        production_line_count(relocated)
+    );
+    assert_eq!(production_line_count(relocated), 3);
+    // Negative: the test body contributes nothing, and a brace inside a string
+    // or comment in the test module cannot desynchronize the strip and drag
+    // production lines after it out of the count.
+    let tricky = "#[cfg(test)]\nmod tests {\n    const S: &str = \"}}}\";\n    // {{\n}\n\
+                  pub fn after() {}\n";
+    assert_eq!(production_line_count(tricky), 1);
+    // A whole-file test-only source counts as nothing.
+    assert_eq!(
+        production_line_count("#[cfg(test)]\nmod t { fn x() {} }\n"),
+        0
+    );
+    // One rule with the Python counter: compound test-only cfgs are test
+    // context (the first cut kept them, as it matched only `#[cfg(test)]`)...
+    let compound = "pub fn a() {}\n#[cfg(all(test, unix))]\nmod t {\n    fn x() {}\n}\n\
+                    #[cfg(any(test, feature = \"test-support\"))]\npub fn fixture() {}\n";
+    assert_eq!(production_line_count(compound), 1);
+    // ...while a module merely NAMED `tests`, or gated by a cfg a release
+    // build can satisfy, ships and counts.
+    let shipped = "pub mod tests {\n    pub fn shipped() {}\n}\n#[cfg(not(test))]\nfn real() {}\n";
+    assert_eq!(production_line_count(shipped), 5);
+}
+
 #[test]
 fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
     /// `(crate, production line ceiling)` — captured 2026-08-05 by running this
@@ -681,7 +881,28 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
     /// re-pins from main's 832 (the last row still carrying the +400 seed
     /// pad) to its measured count per the capture rule above.
     const SIZE_CEILINGS: &[(&str, usize)] = &[
-        ("ironclaw_common", 3_393),
+        // ✎ 2026-11-11 COUNTING-RULE re-pin (gate audit 2026-08 §3.2): the
+        // measure is now `production_line_count`, so inline `#[cfg(test)]`
+        // mass no longer counts and relocating a test module stops minting
+        // headroom. Every row below was re-read from this test's own
+        // failure message under the new rule; the old-rule pins in the
+        // notes stay for the record (append-only). Old -> new: common
+        // 3_393 -> 1_991, extension_contracts 12_491 -> 8_861, host_api
+        // 22_289 -> 16_351, loop_contracts 13_760 -> 10_810,
+        // product_contracts 21_451 -> 16_316, prompt_envelope 432 -> 265.
+        // ✎ 2026-11-12 ALIGNMENT re-pin (gate audit 2026-08 §9): the Rust
+        // counter is now a port of the Python one (`production_loc.py`) — the
+        // gating attribute line is test context, compound test-only cfgs
+        // (`all(test, …)`, `any(test, feature = "test-support")`) are
+        // stripped, and the feature-gated `src/test_support` root is not
+        // production mass. Read from this test's own failure message with
+        // every ceiling at 0, and equal to `production_loc.py loc <src>` for
+        // all six. Old -> new (attribute lines / test_support root / other
+        // cfg): common 1_991 -> 1_980 (-11: 11/0/0), extension_contracts
+        // 8_861 -> 8_160 (-701: 19/682/0), host_api 16_351 -> 16_093 (-258:
+        // 46/168/44), loop_contracts 10_810 -> 10_787 (-23), product_contracts
+        // 16_316 -> 15_784 (-532: 46/302/184), prompt_envelope 265 -> 264 (-1).
+        ("ironclaw_common", 1_980),
         // 7_727 -> 7_748 (2026-08-05, #7157): +21 lines for the
         // `ActivePreferenceTargetCodecs` port beside its sibling
         // `PreferenceTargetCodec` — a trait plus a test-shape blanket impl,
@@ -869,7 +1090,7 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // 13_026 -> 12_491 (2026-11-10): the fake-only `ProtocolHttpEgress` /
         // `OutboundDeliverySink` ports and their request/response/status
         // types were deleted. Count read from this test's own failure message.
-        ("ironclaw_extension_contracts", 12_491),
+        ("ironclaw_extension_contracts", 8_160),
         // Raised 17_501 -> 18_570 by #6831 (standardized messaging framework):
         // the growth is the `messaging` vocabulary — the StandardMessagingOp
         // enum, the 12-code error taxonomy, compiled-in canonical schema/prompt
@@ -989,7 +1210,7 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // form/answer byte cap, unique labels and picks, and text length /
         // pick-count constraints. Validation of the type's own shape only.
         // Count read from this test's failure message.
-        ("ironclaw_host_api", 22_289),
+        ("ironclaw_host_api", 16_093),
         // 14_479 -> 13_949 (2026-08-07, #7157): downward re-capture after the
         // delivery-heuristic vocabulary (stored trigger delivery targets and
         // their run-profile plumbing) left this crate with the two-lane
@@ -1073,7 +1294,7 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // 13_608 -> 13_760 (2026-10-26, 5088a847b live thinking stream): the
         // reasoning-delta event variant and its DTO fields; the streaming
         // itself lives in the loop host. Count read from this test's failure.
-        ("ironclaw_loop_contracts", 13_760),
+        ("ironclaw_loop_contracts", 10_787),
         // Raised 15_685 -> 15_758 by #7220 (operator inspector API): the growth
         // is bounded, output-only read-view descriptors. Capture, retention,
         // authorization, and transport behavior remain in their owning
@@ -1203,11 +1424,11 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `ironclaw_assistant`, implementor `ironclaw_computer_use`). The
         // rest is the concurrent `self_update` and `thread_repo` wire
         // modules. Walk, expansion and preflight live in the owning crates.
-        ("ironclaw_product_contracts", 21_451),
+        ("ironclaw_product_contracts", 15_784),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
-        ("ironclaw_prompt_envelope", 432),
+        ("ironclaw_prompt_envelope", 264),
     ];
 
     let root = workspace_root();
@@ -1224,11 +1445,12 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         );
         let lines: usize = files
             .iter()
+            .filter(|path| !ratchet_support::is_test_support_root(&src, path))
             .map(|path| {
-                std::fs::read_to_string(path)
-                    .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
-                    .lines()
-                    .count()
+                production_line_count(
+                    &std::fs::read_to_string(path)
+                        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display())),
+                )
             })
             .sum();
 
@@ -3864,13 +4086,15 @@ fn reborn_product_api_crates_do_not_bind_http_ingress() {
     // `crates/ironclaw_assistant/src` also appeared three times, a leftover of the
     // #6583 four-crate fold; duplicates only multiplied the reported violations.
     //
-    // KNOWN GAP, deliberately not closed here: the trailing comment below
-    // describes a WebChat v2 route-surface entry that is absent, so the rule
-    // does not cover `crates/product/ironclaw_webui/src` at all. Adding it turns this
-    // gate red (that tree carries `axum::serve` and `TcpListener::bind` hits),
-    // which is an architecture decision — either webui owns server lifecycle it
-    // should not, or the rule owes it an `exempt`. Not a gate repoint; recorded
-    // for the owner rather than silently introduced by a CI-gates change.
+    //
+    // `crates/product/ironclaw_webui/src` is covered separately below, not in
+    // this list: it is the one crate the product family charter lets own the
+    // serve loop ("only `ironclaw_webui` binds a listener",
+    // `crates/product/AGENTS.md`; webui's own charter: "routes, SPA, middleware,
+    // serve loop"). Until 2026-11-11 it was not covered at all — the documented
+    // gap gate audit 2026-08 §2.1 recorded. The ruling it asked for is the
+    // charter text above, so the sanctioned owner is now one *file*, not the
+    // whole crate.
     let reborn_product_api_src_roots = [
         "crates/ironclaw_turn_runner/src",
         "crates/ironclaw_cli/src",
@@ -3886,11 +4110,6 @@ fn reborn_product_api_crates_do_not_bind_http_ingress() {
         "crates/ironclaw_turns/src",
         "crates/ironclaw_threads/src",
         "crates/ironclaw_loop_host/src",
-        // WebChat v2 route surface: a Product/API crate that exposes
-        // axum handler functions and `IngressRouteDescriptor`s but must
-        // never bind sockets or call `axum::serve` itself — that is
-        // host composition's job. Without this entry the contract fails
-        // open for the new route crate.
     ];
 
     let missing: Vec<&str> = reborn_product_api_src_roots
@@ -3911,11 +4130,208 @@ fn reborn_product_api_crates_do_not_bind_http_ingress() {
         collect_forbidden_uses(&dir, &root, &forbidden, &mut violations);
     }
 
+    // WebUI: production code may bind/serve ONLY inside the two serve-loop
+    // functions (`bind_webui_v2` / `serve_bound_webui_v2` in `lib.rs`) — the
+    // exemption is those function bodies, not the whole file, so a second
+    // listener added elsewhere in `lib.rs` fails like one in any other file.
+    // Test items are stripped first — the OAuth provider tests spin up loopback
+    // mock servers, which ship in no artifact. Every other production file is
+    // held to the same rule as the crates above.
+    let webui_src = crate_path(&root, "crates/ironclaw_webui/src");
+    let webui_serve_owner = webui_src.join("lib.rs");
+    let mut webui_owner_hits = BTreeSet::new();
+    let mut webui_files = 0usize;
+    for file in ratchet_support::production_rust_files(&webui_src) {
+        webui_files += 1;
+        let source = std::fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", file.display()));
+        let relative = file.strip_prefix(&root).unwrap_or(&file);
+        for hit in server_lifecycle_hits(&source, &forbidden) {
+            if file == webui_serve_owner
+                && let Some(function) = hit.enclosing_fn.as_deref()
+                && WEBUI_SERVE_LOOP_FNS.contains(&function)
+            {
+                webui_owner_hits.insert(function.to_string());
+                continue;
+            }
+            violations.push(format!(
+                "{}:{} contains `{}` outside the sanctioned serve-loop functions {:?} ({})",
+                relative.display(),
+                hit.line,
+                hit.pattern,
+                WEBUI_SERVE_LOOP_FNS,
+                hit.reason
+            ));
+        }
+    }
+    assert!(
+        webui_files > 20,
+        "the webui server-lifecycle scan read only {webui_files} files under {} — a scan of \
+         a moved or emptied tree must not read as clean",
+        webui_src.display()
+    );
+    // Staleness: the exemption is a claim that `lib.rs` owns the serve loop. If
+    // the loop moves, the exemption must move with it rather than silently
+    // exempting a file that no longer needs it.
+    let expected_owners: BTreeSet<String> = WEBUI_SERVE_LOOP_FNS
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        webui_owner_hits,
+        expected_owners,
+        "{}: every sanctioned serve-loop function must still bind/serve; repoint \
+         WEBUI_SERVE_LOOP_FNS in this gate when the loop moves rather than exempting a \
+         function that no longer needs it",
+        webui_serve_owner.display()
+    );
+
     assert!(
         violations.is_empty(),
         "Reborn HTTP ingress must be host-owned; product/API crates may expose descriptors or route fragments but must not bind/serve listeners:\n{}",
         violations.join("\n")
     );
+}
+
+/// The functions in `ironclaw_webui/src/lib.rs` sanctioned to bind and serve.
+const WEBUI_SERVE_LOOP_FNS: &[&str] = &["bind_webui_v2", "serve_bound_webui_v2"];
+
+/// One server-lifecycle pattern found in production code.
+#[derive(Debug)]
+struct LifecycleHit {
+    line: usize,
+    pattern: &'static str,
+    reason: &'static str,
+    /// The top-level `fn` whose body holds the hit, if any.
+    enclosing_fn: Option<String>,
+}
+
+/// The name of the top-level `fn` each line of stripped `code` sits in.
+fn top_level_fn_per_line(code: &str) -> Vec<Option<String>> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut pending: Option<String> = None;
+    let mut current: Option<String> = None;
+    for line in code.lines() {
+        if depth == 0 {
+            let words: Vec<&str> = line
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|word| !word.is_empty())
+                .collect();
+            if let Some(position) = words.iter().position(|word| *word == "fn")
+                && let Some(name) = words.get(position + 1)
+            {
+                pending = Some((*name).to_string());
+            }
+        }
+        let mut line_fn = current.clone();
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    if depth == 0 {
+                        current = pending.take();
+                        line_fn = current.clone();
+                    }
+                    depth += 1;
+                }
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        current = None;
+                    }
+                }
+                ';' if depth == 0 => pending = None,
+                _ => {}
+            }
+        }
+        out.push(line_fn);
+    }
+    out
+}
+
+/// The server-lifecycle patterns `source` uses in **production** code: comments
+/// and string literals stripped with line structure preserved, then test-only
+/// items dropped by the shared line tracker
+/// ([`ratchet_support::production_code_lines`]). The earlier raw-text,
+/// line-anchored strip counted braces inside strings and char literals (a test
+/// item holding `"{{{{"` never closed and swallowed every production line after
+/// it) and fired on a multiline string line starting `#[cfg(test)]`.
+fn server_lifecycle_hits(source: &str, forbidden: &[ForbiddenUse]) -> Vec<LifecycleHit> {
+    let code = strip_comments_and_strings(source);
+    let functions = top_level_fn_per_line(&code);
+    let mut hits = Vec::new();
+    for (line, text) in ratchet_support::production_code_lines(source) {
+        for rule in forbidden {
+            if text.contains(rule.pattern) {
+                hits.push(LifecycleHit {
+                    line,
+                    pattern: rule.pattern,
+                    reason: rule.reason,
+                    enclosing_fn: functions.get(line - 1).cloned().flatten(),
+                });
+            }
+        }
+    }
+    hits
+}
+
+#[test]
+fn server_lifecycle_hits_self_test() {
+    let forbidden = [ForbiddenUse {
+        pattern: "TcpListener::bind",
+        reason: "fixture",
+        exempt: None,
+    }];
+    // Positive: a production bind is reported, including one placed after a
+    // test module.
+    let source = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() { TcpListener::bind(x); }\n}\n\
+                  fn serve() { let l = TcpListener::bind(addr); }\n";
+    let hits = server_lifecycle_hits(source, &forbidden);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].line, 6);
+    assert_eq!(hits[0].enclosing_fn.as_deref(), Some("serve"));
+    // Positive: braces inside a test item's string / char literals, and a
+    // multiline string whose line starts `#[cfg(test)]`, cannot swallow the
+    // production bind after them (both were stripped by the raw-text scan).
+    let braces_in_literals = "#[cfg(test)]\nmod tests {\n    const S: &str = \"{{{{\";\n    \
+                              const C: char = '{';\n}\npub fn serve() {\n    \
+                              TcpListener::bind(addr);\n}\n";
+    let hits = server_lifecycle_hits(braces_in_literals, &forbidden);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].line, 7);
+    let string_marker = "const DOC: &str = \"\n#[cfg(test)]\nmod x {\";\npub fn serve() {\n    \
+                         TcpListener::bind(addr);\n}\n";
+    assert_eq!(server_lifecycle_hits(string_marker, &forbidden).len(), 1);
+    // Negative: a bind only inside a test module (including a compound
+    // test-only cfg), in a comment, or in a string literal, is not a hit.
+    let tests_only =
+        "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() { TcpListener::bind(x); }\n}\n";
+    assert!(server_lifecycle_hits(tests_only, &forbidden).is_empty());
+    let compound =
+        "#[cfg(all(test, unix))]\nmod tests {\n    fn t() { TcpListener::bind(x); }\n}\n";
+    assert!(server_lifecycle_hits(compound, &forbidden).is_empty());
+    let comment = "// we never call TcpListener::bind here\nfn a() {}\n";
+    assert!(server_lifecycle_hits(comment, &forbidden).is_empty());
+    let literal = "const S: &str = \"TcpListener::bind\";\n";
+    assert!(server_lifecycle_hits(literal, &forbidden).is_empty());
+}
+
+#[test]
+fn webui_serve_loop_exemption_is_the_two_functions_not_the_file() {
+    let forbidden = [ForbiddenUse {
+        pattern: "TcpListener::bind",
+        reason: "fixture",
+        exempt: None,
+    }];
+    // A bind in the sanctioned function is attributed to it; a second one in
+    // another function of the same file is not, so the gate reports it.
+    let lib = "pub async fn bind_webui_v2(addr: A) -> R {\n    let l = TcpListener::bind(addr)\n\
+               .await;\n}\n\npub async fn sneaky() {\n    TcpListener::bind(other);\n}\n";
+    let hits = server_lifecycle_hits(lib, &forbidden);
+    let owners: Vec<Option<&str>> = hits.iter().map(|hit| hit.enclosing_fn.as_deref()).collect();
+    assert_eq!(owners, vec![Some("bind_webui_v2"), Some("sneaky")]);
+    assert!(WEBUI_SERVE_LOOP_FNS.contains(&"bind_webui_v2"));
+    assert!(!WEBUI_SERVE_LOOP_FNS.contains(&"sneaky"));
 }
 
 #[test]
@@ -6576,10 +6992,11 @@ fn collect_forbidden_uses_detects_violation() {
 /// probe is there to prevent: the gate would keep passing after the production
 /// runtime it guards was deleted. So the concatenation is narrowed twice:
 ///
-/// - [`production_rust_files`] drops `tests.rs`/`*_tests.rs`, files reachable
-///   only through a `#[cfg(test)]` `mod` declaration, and the
-///   `target`/`node_modules`/`tests` directory names, so no test fixture and no
-///   build output can satisfy a probe;
+/// - [`production_rust_files`] drops every file reachable only through
+///   test-gated `mod` declarations (whatever its name — a `pub mod
+///   foo_tests;` ships and is scanned) and the `target`/`node_modules`/`tests`
+///   directory names, so no test fixture and no build output can satisfy a
+///   probe;
 /// - [`strip_comments_and_strings`] blanks comment and string bodies (newlines
 ///   preserved), so prose and literals cannot either.
 ///
@@ -6612,6 +7029,57 @@ fn production_crate_source_tokens(src_root: &std::path::Path) -> String {
 /// a `#[cfg(test)]` fixture. Each of those is checked separately so a partial
 /// regression (say, dropping the string stripper but keeping the comment one)
 /// cannot pass.
+/// A file NAME never makes a file test-only: `production_rust_files` drops a
+/// `tests.rs` / `*_tests.rs` only when every declaration of it is test-gated.
+/// Until 2026-11-12 any such basename was dropped, so a webui `foo_tests.rs`
+/// declared `pub mod foo_tests;` could call `TcpListener::bind` unseen by the
+/// HTTP-ingress scan (gate audit 2026-08 §9). Driven through the caller: the
+/// ingress scan over `production_rust_files`.
+#[test]
+fn production_rust_files_requires_a_gating_declaration_not_a_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).expect("create src");
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod probe_tests;\n\
+         // #[cfg(test)] mod probe_tests;\n\
+         #[cfg(all(test, unix))]\n\
+         mod gated_tests;\n\
+         #[cfg(any(test, feature = \"test-support\"))]\n\
+         pub mod shared_tests;\n",
+    )
+    .expect("write lib.rs");
+    for name in ["probe_tests.rs", "gated_tests.rs", "shared_tests.rs"] {
+        std::fs::write(
+            src.join(name),
+            "pub fn serve() { TcpListener::bind(addr); }\n",
+        )
+        .expect("write module");
+    }
+    let files = production_rust_files(&src);
+    // Positive: ungated (a comment declares nothing) and test-support-gated
+    // modules ship, so they are production.
+    assert!(files.contains(&src.join("probe_tests.rs")), "{files:?}");
+    assert!(files.contains(&src.join("shared_tests.rs")), "{files:?}");
+    // Negative: a compound test-only cfg gates the file out.
+    assert!(!files.contains(&src.join("gated_tests.rs")), "{files:?}");
+
+    let forbidden = [ForbiddenUse {
+        pattern: "TcpListener::bind",
+        reason: "fixture",
+        exempt: None,
+    }];
+    let binds: usize = files
+        .iter()
+        .map(|file| {
+            let source = std::fs::read_to_string(file).expect("read module");
+            server_lifecycle_hits(&source, &forbidden).len()
+        })
+        .sum();
+    assert_eq!(binds, 2, "the ingress scan must see both shipped binds");
+}
+
 #[test]
 fn a_marker_in_non_production_text_does_not_prove_a_lane_exists() {
     const MARKER: &str = "pub struct McpRuntime<C>";
@@ -6632,6 +7100,8 @@ fn a_marker_in_non_production_text_does_not_prove_a_lane_exists() {
              pub const NAME: &str = \"{MARKER}\";\n\
              #[cfg(test)]\n\
              mod fixture;\n\
+             #[cfg(test)]\n\
+             mod tests;\n\
              pub struct SomethingElse;\n"
         ),
     )
@@ -6639,7 +7109,8 @@ fn a_marker_in_non_production_text_does_not_prove_a_lane_exists() {
     // Reachable only through the `#[cfg(test)]` decl above — production-looking
     // name, test-only file.
     std::fs::write(src.join("fixture.rs"), format!("{MARKER} {{}}\n")).expect("write fixture.rs");
-    // Conventional test-file names, and a `tests/` directory.
+    // A gated `tests.rs` (excluded by its declaration, not its name), and a
+    // `tests/` directory.
     std::fs::write(src.join("tests.rs"), format!("{MARKER} {{}}\n")).expect("write tests.rs");
     std::fs::write(
         src.join("tests").join("more.rs"),

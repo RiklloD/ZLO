@@ -32,7 +32,7 @@ fn _assert_object_safe(_: &dyn ModelStrategy) {}
 /// The executor advances `fallback_index` only after an explicit recovery
 /// alteration, and the host returns authoritative route evidence on success.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultModelStrategy;
+pub(crate) struct DefaultModelStrategy;
 
 #[async_trait]
 impl ModelStrategy for DefaultModelStrategy {
@@ -51,12 +51,12 @@ impl ModelStrategy for DefaultModelStrategy {
 /// tool choice onto the synthetic result capability. First attempts stay on
 /// provider "auto" so the model can use ordinary tools before finishing.
 #[derive(Debug, Clone)]
-pub struct StructuredResultModelStrategy {
+pub(crate) struct StructuredResultModelStrategy {
     result_capability: CapabilityId,
 }
 
 impl StructuredResultModelStrategy {
-    pub fn new(result_capability: CapabilityId) -> Self {
+    pub(crate) fn new(result_capability: CapabilityId) -> Self {
         Self { result_capability }
     }
 }

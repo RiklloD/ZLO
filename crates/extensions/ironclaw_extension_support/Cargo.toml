@@ -67,3 +67,6 @@ ironclaw_auth = { path = "../../domains/ironclaw_auth", features = ["test-suppor
 ironclaw_turns = { path = "../../kernel/ironclaw_turns" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true

@@ -13,7 +13,6 @@
 //! being modified between containment checks and opens. Production hardening for
 //! hostile local directories should use fd-relative traversal such as `openat2`
 //! with `RESOLVE_BENEATH`, `O_NOFOLLOW`, or a capability filesystem crate.
-#![warn(unreachable_pub)]
 
 mod backend;
 mod cas;

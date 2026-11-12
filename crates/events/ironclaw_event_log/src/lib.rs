@@ -36,7 +36,6 @@
 //! unsafe value is collapsed to `Unclassified`. Optional `error_summary`
 //! strings are host-authored and bounded; unsafe non-empty summaries are
 //! collapsed to a fixed safe display marker.
-#![warn(unreachable_pub)]
 
 mod cursor;
 mod error;

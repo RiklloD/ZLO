@@ -70,3 +70,6 @@ proptest = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
 tracing-test = "0.2"
+
+[lints]
+workspace = true

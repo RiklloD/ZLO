@@ -80,7 +80,7 @@ static DEFAULT_RUNTIME_POLICY: LazyLock<EffectiveRuntimePolicy> =
 /// Permissive `HostPolicyFacts` double: every credential is present and no
 /// persistent grants exist, so the kernel's in-fold credential pre-flight
 /// (§5.3.2/§9) never fires and existing test outcomes are unchanged.
-pub struct PermissiveHostPolicyFacts;
+pub(crate) struct PermissiveHostPolicyFacts;
 
 #[async_trait]
 impl HostPolicyFacts for PermissiveHostPolicyFacts {
@@ -109,7 +109,7 @@ static DEFAULT_POLICY_FACTS: LazyLock<PermissiveHostPolicyFacts> =
 /// credential (one required secret + one requirement). Drives the
 /// credential-before-approval regression: the kernel must return
 /// `AuthorizationRequiresAuth` before the authorizer's approval decision.
-pub struct MissingCredentialPolicyFacts;
+pub(crate) struct MissingCredentialPolicyFacts;
 
 #[async_trait]
 impl HostPolicyFacts for MissingCredentialPolicyFacts {
@@ -144,12 +144,12 @@ impl HostPolicyFacts for MissingCredentialPolicyFacts {
 /// persistent-approval regression: the kernel's `authorize()` fold must adopt the
 /// grant that flips the authorizer to `Allow`, dispatching without an approval
 /// gate.
-pub struct PersistentGrantPolicyFacts {
+pub(crate) struct PersistentGrantPolicyFacts {
     grant: CapabilityGrant,
 }
 
 impl PersistentGrantPolicyFacts {
-    pub fn new(grant: CapabilityGrant) -> Self {
+    pub(crate) fn new(grant: CapabilityGrant) -> Self {
         Self { grant }
     }
 }
@@ -181,7 +181,7 @@ impl HostPolicyFacts for PersistentGrantPolicyFacts {
 /// signature (e.g. the §5.3.2 milestone adding the trust-policy / runtime-policy
 /// inputs) touches this one place rather than ~130 call sites. The trust-policy
 /// and runtime-policy defaults are supplied here as `&'static` permissive values.
-pub fn capability_host<'a, D>(
+pub(crate) fn capability_host<'a, D>(
     registry: &'a ExtensionRegistry,
     dispatcher: &'a D,
     authorizer: &'a dyn TrustAwareCapabilityDispatchAuthorizer,
@@ -203,7 +203,7 @@ where
 /// double (trust and runtime policy stay the permissive defaults). Use when a
 /// test needs the kernel's in-fold credential pre-flight to fire — e.g. the
 /// credential-before-approval regression with [`MissingCredentialPolicyFacts`].
-pub fn capability_host_with_policy_facts<'a, D>(
+pub(crate) fn capability_host_with_policy_facts<'a, D>(
     registry: &'a ExtensionRegistry,
     dispatcher: &'a D,
     authorizer: &'a dyn TrustAwareCapabilityDispatchAuthorizer,
@@ -225,12 +225,12 @@ where
 /// Trust policy double returning a caller-chosen fixed decision, for tests that
 /// exercise the kernel's in-fold trust ceiling (§5.3.2/§9) — e.g. a decision
 /// whose authority ceiling omits an effect, so a trust-aware authorizer denies.
-pub struct FixedTrustPolicy {
+pub(crate) struct FixedTrustPolicy {
     decision: TrustDecision,
 }
 
 impl FixedTrustPolicy {
-    pub fn with_effects(allowed_effects: Vec<EffectKind>) -> Self {
+    pub(crate) fn with_effects(allowed_effects: Vec<EffectKind>) -> Self {
         Self {
             decision: trust_decision_with_effects(allowed_effects),
         }
@@ -246,7 +246,7 @@ impl TrustPolicy for FixedTrustPolicy {
 /// `capability_host` variant that injects a caller-supplied trust policy (the
 /// runtime policy stays the permissive default). Use only when a test needs a
 /// non-default kernel trust ceiling; otherwise use [`capability_host`].
-pub fn capability_host_with_trust_policy<'a, D>(
+pub(crate) fn capability_host_with_trust_policy<'a, D>(
     registry: &'a ExtensionRegistry,
     dispatcher: &'a D,
     authorizer: &'a dyn TrustAwareCapabilityDispatchAuthorizer,
@@ -266,13 +266,13 @@ where
 }
 
 #[derive(Default)]
-pub struct RecordingDispatcher {
+pub(crate) struct RecordingDispatcher {
     request: Mutex<Option<ironclaw_host_api::dispatch_test_support::AuthorizedDispatchRecord>>,
     dispatch_count: AtomicUsize,
 }
 
 impl RecordingDispatcher {
-    pub fn take_request(
+    pub(crate) fn take_request(
         &self,
     ) -> ironclaw_host_api::dispatch_test_support::AuthorizedDispatchRecord {
         self.request
@@ -282,14 +282,14 @@ impl RecordingDispatcher {
             .unwrap()
     }
 
-    pub fn has_request(&self) -> bool {
+    pub(crate) fn has_request(&self) -> bool {
         self.request
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_some()
     }
 
-    pub fn dispatch_count(&self) -> usize {
+    pub(crate) fn dispatch_count(&self) -> usize {
         self.dispatch_count.load(Ordering::SeqCst)
     }
 }
@@ -350,12 +350,12 @@ impl CapabilityDispatcher for RecordingDispatcher {
 
 // The shared `CapabilityDispatcher` double. Re-exported so every test file that
 // does `use support::*` gets it without importing the feature-gated module path.
-pub use ironclaw_host_api::dispatch_test_support::TestDispatcher;
+pub(crate) use ironclaw_host_api::dispatch_test_support::TestDispatcher;
 
 /// The standard success dispatch result, echoing the request's capability id,
 /// scope, and estimate — the exact shape the retired hand-rolled
 /// `RecordingDispatcher` returned.
-pub fn ok_dispatch_result(
+pub(crate) fn ok_dispatch_result(
     request: &ironclaw_host_api::dispatch_test_support::AuthorizedDispatchRecord,
 ) -> CapabilityDispatchResult {
     dispatch_result_with_output(request, json!({"ok": true}))
@@ -363,7 +363,7 @@ pub fn ok_dispatch_result(
 
 /// Like [`ok_dispatch_result`] but with a caller-supplied output payload — the
 /// replacement for the retired `OutputDispatcher`.
-pub fn dispatch_result_with_output(
+pub(crate) fn dispatch_result_with_output(
     request: &ironclaw_host_api::dispatch_test_support::AuthorizedDispatchRecord,
     output: serde_json::Value,
 ) -> CapabilityDispatchResult {
@@ -387,11 +387,11 @@ pub fn dispatch_result_with_output(
 /// Drop-in replacement for the retired `RecordingDispatcher`: records every
 /// dispatched request and returns the standard success result. Assert on it via
 /// `.recorded()` / `.call_count()` / `.last_request()`.
-pub fn recording_dispatcher() -> TestDispatcher {
+pub(crate) fn recording_dispatcher() -> TestDispatcher {
     TestDispatcher::responding(|request, _| Ok(ok_dispatch_result(request)))
 }
 
-pub struct ApprovalAuthorizer;
+pub(crate) struct ApprovalAuthorizer;
 
 #[async_trait]
 impl TrustAwareCapabilityDispatchAuthorizer for ApprovalAuthorizer {
@@ -419,7 +419,7 @@ impl TrustAwareCapabilityDispatchAuthorizer for ApprovalAuthorizer {
     }
 }
 
-pub struct MismatchedApprovalAuthorizer;
+pub(crate) struct MismatchedApprovalAuthorizer;
 
 #[async_trait]
 impl TrustAwareCapabilityDispatchAuthorizer for MismatchedApprovalAuthorizer {
@@ -457,7 +457,7 @@ impl TrustAwareCapabilityDispatchAuthorizer for MismatchedApprovalAuthorizer {
     }
 }
 
-pub struct ObligatingAuthorizer;
+pub(crate) struct ObligatingAuthorizer;
 
 #[async_trait]
 impl TrustAwareCapabilityDispatchAuthorizer for ObligatingAuthorizer {
@@ -474,7 +474,7 @@ impl TrustAwareCapabilityDispatchAuthorizer for ObligatingAuthorizer {
     }
 }
 
-pub fn registry_with_echo_capability() -> ExtensionRegistry {
+pub(crate) fn registry_with_echo_capability() -> ExtensionRegistry {
     let manifest = ExtensionManifest::parse(
         ECHO_MANIFEST,
         ManifestSource::InstalledLocal,
@@ -492,7 +492,7 @@ pub fn registry_with_echo_capability() -> ExtensionRegistry {
     registry
 }
 
-pub fn registry_with_github_comment_capability() -> ExtensionRegistry {
+pub(crate) fn registry_with_github_comment_capability() -> ExtensionRegistry {
     let manifest = ExtensionManifest::parse(
         GITHUB_COMMENT_MANIFEST,
         ManifestSource::InstalledLocal,
@@ -510,7 +510,7 @@ pub fn registry_with_github_comment_capability() -> ExtensionRegistry {
     registry
 }
 
-pub fn execution_context(grants: CapabilitySet) -> ExecutionContext {
+pub(crate) fn execution_context(grants: CapabilitySet) -> ExecutionContext {
     let mut context = ExecutionContext::local_default(
         UserId::new("user").unwrap(),
         ExtensionId::new("caller").unwrap(),
@@ -526,18 +526,18 @@ pub fn execution_context(grants: CapabilitySet) -> ExecutionContext {
     context
 }
 
-pub fn dispatch_grant() -> CapabilityGrant {
+pub(crate) fn dispatch_grant() -> CapabilityGrant {
     capability_grant_with_effects(vec![EffectKind::DispatchCapability])
 }
 
-pub fn spawn_grant() -> CapabilityGrant {
+pub(crate) fn spawn_grant() -> CapabilityGrant {
     capability_grant_with_effects(vec![
         EffectKind::DispatchCapability,
         EffectKind::SpawnProcess,
     ])
 }
 
-pub fn capability_grant_with_effects(allowed_effects: Vec<EffectKind>) -> CapabilityGrant {
+pub(crate) fn capability_grant_with_effects(allowed_effects: Vec<EffectKind>) -> CapabilityGrant {
     CapabilityGrant {
         id: CapabilityGrantId::new(),
         capability: capability_id(),
@@ -555,14 +555,14 @@ pub fn capability_grant_with_effects(allowed_effects: Vec<EffectKind>) -> Capabi
     }
 }
 
-pub fn trust_decision() -> TrustDecision {
+pub(crate) fn trust_decision() -> TrustDecision {
     trust_decision_with_effects(vec![
         EffectKind::DispatchCapability,
         EffectKind::SpawnProcess,
     ])
 }
 
-pub fn trust_decision_with_effects(allowed_effects: Vec<EffectKind>) -> TrustDecision {
+pub(crate) fn trust_decision_with_effects(allowed_effects: Vec<EffectKind>) -> TrustDecision {
     TrustDecision {
         effective_trust: EffectiveTrustClass::user_trusted(),
         authority_ceiling: AuthorityCeiling {
@@ -574,7 +574,7 @@ pub fn trust_decision_with_effects(allowed_effects: Vec<EffectKind>) -> TrustDec
     }
 }
 
-pub fn capability_id() -> CapabilityId {
+pub(crate) fn capability_id() -> CapabilityId {
     CapabilityId::new("echo.say").unwrap()
 }
 
@@ -584,15 +584,15 @@ pub fn capability_id() -> CapabilityId {
 /// mismatch check fires — instead of an unknown id, which now short-circuits to
 /// `UnknownCapability` in `resume_preflight` (existence-first, matching
 /// host_runtime's deleted pre-authorization; see the resume-preflight change).
-pub fn other_capability_id() -> CapabilityId {
+pub(crate) fn other_capability_id() -> CapabilityId {
     CapabilityId::new("echo.other").unwrap()
 }
 
-pub fn github_comment_capability_id() -> CapabilityId {
+pub(crate) fn github_comment_capability_id() -> CapabilityId {
     CapabilityId::new("github.comment_issue").unwrap()
 }
 
-pub fn extension_id() -> ExtensionId {
+pub(crate) fn extension_id() -> ExtensionId {
     ExtensionId::new("echo").unwrap()
 }
 

@@ -57,9 +57,18 @@ const WS0_MEASURED_FROM: &str = "origin/main @ ae0989c37 (2026-07-30)";
 /// from both sides — see `scripts/ci/composition-budget.toml` for the full
 /// definition). CHECKLIST WS6 re-baselines the gate's ceiling once the eviction
 /// inventory lands; this record is what "before" was.
-const WS0_COMPOSITION_SRC_LOC: usize = 43_936;
-const WS0_COMPOSITION_DENOMINATOR_LOC: usize = 667_978;
-const WS0_COMPOSITION_SHARE_BP: usize = 658;
+///
+/// ✎ **Re-expressed 2026-11-11 under the production-line counting rule**
+/// (gate audit 2026-08 §3.2; `scripts/ci/lib/production_loc.py`): inline
+/// test-context lines no longer count, and test-only files are decided by the
+/// panic gate's `is_test_only_path`. The same WS0 tree, `git archive`d from
+/// `ae0989c37` and re-measured with the new counter, reads **29858 / 457082 =
+/// 653 bp** (it read 43936 / 667978 = 658 bp under the old whole-file rule).
+/// A record must be measured by the rule the gate enforces, or the
+/// comparisons below compare two different quantities.
+const WS0_COMPOSITION_SRC_LOC: usize = 29_858;
+const WS0_COMPOSITION_DENOMINATOR_LOC: usize = 457_082;
+const WS0_COMPOSITION_SHARE_BP: usize = 653;
 
 /// Composition's **absolute** production LOC on `origin/main` @ `676d86ce02`
 /// (2026-08-04), from the same `--print` run: "composition absolute: 44021 LOC
@@ -217,11 +226,17 @@ const WS0_COMPOSITION_SHARE_BP: usize = 658;
 /// ✎ Re-measured 43_151 -> 43_423 on 2026-10-24 for the CLI approval bridge:
 /// bridge plumbing beside the engine and the loopback MCP route mount; the
 /// bridge logic lives in `ironclaw_cli_providers::bridge`.
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 43_423;
+/// ✎ Re-seeded 43_423 -> 33_749 on 2026-11-11 by the counting-rule change
+/// (same tree: 45_885 under the old rule, which was already 2_312 over its
+/// effective ceiling on this base — recorded in `composition-budget.toml`).
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 33_749;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".
-const WS0_COMPOSITION_ARC_DYN_SITES: usize = 827;
+///
+/// ✎ Re-expressed 827 -> 618 on 2026-11-11: the WS0 tree re-measured with the
+/// new counter, which counts `Arc<dyn` in lexed production code only.
+const WS0_COMPOSITION_ARC_DYN_SITES: usize = 618;
 
 /// Integration-coverage floor, read from `tests/integration/coverage-floor.toml`
 /// `[global].floor_percent` at the WS0 commit (captured there from PR #6886's

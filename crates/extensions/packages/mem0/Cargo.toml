@@ -45,3 +45,6 @@ ironclaw_memory_mem0 = { path = ".", features = ["test-support"] }
 # tests/memory_service_contract.rs (over a stateful fake mem0 server).
 ironclaw_memory = { path = "../../../domains/ironclaw_memory", features = ["test-support"] }
 tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

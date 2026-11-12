@@ -75,7 +75,7 @@ pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// How often the idle sweeper runs. Deliberately coarse relative to
 /// [`SESSION_IDLE_TIMEOUT`]: the sweep exists to release sockets, not to be
 /// punctual.
-pub const SESSION_IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+pub(crate) const SESSION_IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// In-progress device links one process will park at once.
 ///

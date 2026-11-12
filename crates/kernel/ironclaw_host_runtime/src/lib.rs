@@ -22,7 +22,6 @@
 //!   filtering of which surface a particular UI or upper service is allowed to
 //!   render is intentionally an upper-layer concern — the host does not bake
 //!   in upper-stack vocabulary (e.g. agent loop / adapter / admin).
-#![warn(unreachable_pub)]
 
 use async_trait::async_trait;
 use ironclaw_host_api::capability_surface::CapabilitySurfacePolicy;

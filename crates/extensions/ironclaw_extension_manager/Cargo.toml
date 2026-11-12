@@ -98,3 +98,6 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", 
 # makes that distinction the whole point of the lifecycle warning. Installing a
 # scoped subscriber is the only way to assert the diagnostic actually survives.
 tracing-subscriber = "0.3"
+
+[lints]
+workspace = true
