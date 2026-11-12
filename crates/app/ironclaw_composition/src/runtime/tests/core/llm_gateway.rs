@@ -1006,7 +1006,8 @@ async fn swappable_gateway_records_llm_requests_into_operator_metrics() {
     let provider_id = raw.provider_id();
     let session =
         ironclaw_llm::create_session_manager(ironclaw_llm::SessionConfig::default()).await;
-    let bundle = crate::runtime::wrap_swappable_gateway(raw, session, None, None).expect("gateway bundle");
+    let bundle =
+        crate::runtime::wrap_swappable_gateway(raw, session, None, None).expect("gateway bundle");
     bundle
         .gateway
         .stream_model(nearai_gateway_test_request())

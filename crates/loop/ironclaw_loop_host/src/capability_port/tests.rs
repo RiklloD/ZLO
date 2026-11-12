@@ -1,4 +1,3 @@
-
 use super::*;
 mod capability_info_tests;
 mod decorators;
