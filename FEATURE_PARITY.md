@@ -318,7 +318,7 @@ Trace Commons: the client in this tree is `crates/domains/ironclaw_trace_commons
 | Adaptive→provider thinking maps | ✅ | ❌ | |
 | Native Codex app-server runtime | ✅ | ✅ | Codex runs as an orchestrator turn runtime (`ironclaw_cli_providers::codex`), alongside Claude Code |
 | Codex Computer Use | ✅ | ➖ | IronClaw has its own computer use (`ironclaw_computer_use`, Open Computer Use over stdio MCP) |
-| Codex hooks bridge | ✅ | ✅ | CLI tool calls pass a PreToolUse hook into IronClaw approvals (`ironclaw_cli_providers::hook_approval`) |
+| Codex hooks bridge | ✅ | 🚧 | No native Codex hook bridge. Codex app-server approval requests (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`) are bridged into IronClaw approvals in `ironclaw_cli_providers::codex`; the PreToolUse hook bridge belongs to the Claude adapter (`ironclaw_cli_providers::claude`) |
 | Codex sub-agent metadata | ✅ | ❌ | |
 | Codex context-engine integration | ✅ | ❌ | |
 | Active Memory plugin | ✅ | 🚧 | With a Supermemory key, recall runs automatically before each turn (`ironclaw_supermemory`) |
@@ -741,7 +741,7 @@ Reborn automations are `ironclaw_triggers` records (`TriggerSchedule::Cron` with
 | Per-group tool policies | ✅ | ❌ | |
 | Exec approvals | ✅ | ✅ | Approval gates with durable `AlwaysAllow` policy; automatic approval off by default |
 | Owner allowlists | ✅ | ❌ | |
-| TLS 1.3 minimum | ✅ | ✅ | rustls via `ironclaw_network` |
+| TLS 1.3 minimum | ✅ | ❌ | `ironclaw_network` uses rustls defaults (TLS 1.2+); no TLS 1.3 floor is set |
 | SSRF protection | ✅ | ✅ | `ironclaw_network`: private-address denial after DNS resolution, redirect hardening |
 | SSRF IPv6 transition bypass block | ✅ | ✅ | IPv4-mapped IPv6 addresses are unwrapped before the check (`policy.rs`) |
 | Cron webhook SSRF guard | ✅ | ➖ | No outbound cron webhooks |
