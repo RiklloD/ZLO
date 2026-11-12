@@ -229,7 +229,14 @@ const WS0_COMPOSITION_SHARE_BP: usize = 653;
 /// ✎ Re-seeded 43_423 -> 33_749 on 2026-11-11 by the counting-rule change
 /// (same tree: 45_885 under the old rule, which was already 2_312 over its
 /// effective ceiling on this base — recorded in `composition-budget.toml`).
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 33_749;
+/// ✎ Re-measured 33_749 -> 34_556 on 2026-11-12 integrating the
+/// reviewed-improvements batch (+808 over main's 33_748: hot-reload +41,
+/// operator metrics +234, embeddings +424, runtime.rs split +87,
+/// let-underscore traces +21, gate enforcement +1). Measured per merge with
+/// `bash scripts/ci/check-composition-budget.sh --print`; the manifest's
+/// `loc_ceiling`/`loc_observed` move with it in the same commit, pending the
+/// owner's sign-off recorded there.
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_556;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".
