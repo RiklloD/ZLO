@@ -239,6 +239,7 @@ async fn dispatcher_marks_loop_dispatch_failure_events_with_parent_run() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn dispatcher_ignores_event_sink_failures_on_success() {
     let governor = Arc::new(InMemoryResourceGovernor::new());
     let events = FailingEventSink;
@@ -257,9 +258,13 @@ async fn dispatcher_ignores_event_sink_failures_on_success() {
         .unwrap();
 
     assert_eq!(result.output, json!({"message": "event sink fails"}));
+    // Best-effort, but the failed write must be observable, not vanish.
+    assert!(logs_contain("runtime event emit failed"));
+    assert!(logs_contain("event sink unavailable"));
 }
 
 #[tokio::test]
+#[traced_test]
 async fn dispatcher_preserves_original_error_when_failure_event_sink_fails() {
     let governor = Arc::new(InMemoryResourceGovernor::new());
     let events = FailingEventSink;
@@ -275,6 +280,8 @@ async fn dispatcher_preserves_original_error_when_failure_event_sink_fails() {
         .unwrap_err();
 
     assert!(matches!(err, DispatchError::UnknownCapability { .. }));
+    assert!(logs_contain("runtime event emit failed"));
+    assert!(logs_contain("event sink unavailable"));
 }
 
 #[tokio::test]

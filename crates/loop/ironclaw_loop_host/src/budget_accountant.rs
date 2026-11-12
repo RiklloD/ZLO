@@ -435,7 +435,9 @@ impl GovernorBackedAccountant {
                         });
                     }
                     Entry::Occupied(_) => {
-                        let _ = self.governor.release(outcome.reservation.id);
+                        if let Err(error) = self.governor.release(outcome.reservation.id) {
+                            tracing::debug!(error = %error, "releasing the duplicate model budget reservation failed");
+                        }
                         return Err(LoopModelGatewayError::new(
                             AgentLoopHostErrorKind::BudgetAccountingFailed,
                             "budget accountant has an in-flight reservation for this run",

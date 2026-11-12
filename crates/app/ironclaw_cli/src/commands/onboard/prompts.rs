@@ -353,6 +353,7 @@ impl RawModeGuard {
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
+        // silent-ok: restoring the terminal in Drop has no caller to report to
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
@@ -586,6 +587,7 @@ pub(crate) fn read_masked_line() -> std::io::Result<String> {
 fn drain_pending_events() {
     use crossterm::event;
     while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+        // silent-ok: discarding stale input; a read error ends the next poll anyway
         let _ = event::read();
     }
 }

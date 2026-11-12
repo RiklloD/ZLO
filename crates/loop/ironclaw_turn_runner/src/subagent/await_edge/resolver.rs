@@ -89,6 +89,10 @@ where
     ) -> Self {
         let result_writer_cell = OnceLock::new();
         // Always succeeds — the cell was just created empty.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the cell was created empty just above, so set cannot fail"
+        )]
         let _ = result_writer_cell.set(result_writer);
         Self {
             store,

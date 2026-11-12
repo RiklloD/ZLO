@@ -1896,7 +1896,9 @@ async fn postgres_process_journal_writes_are_visible_over_the_data_plane_and_sur
         })
         .await
         .expect("the journal heartbeat must not queue behind an exhausted data-plane pool");
-    let _ = (held_a, held_b);
+    // The heartbeat completed while both pool connections were held;
+    // release them now.
+    drop((held_a, held_b));
     assert_eq!(
         heartbeat, claimed_cursor,
         "heartbeat preserves the claimed journal cursor"

@@ -726,13 +726,17 @@ impl ManagedEgressRuntime {
             )
             .await
         {
-            let _ = remove_proxy_if_present(docker, proxy_name).await;
+            if let Err(error) = remove_proxy_if_present(docker, proxy_name).await {
+                tracing::debug!(error = %error, "sandbox proxy cleanup after failed network attach failed");
+            }
             return Err(RuntimeProcessError::ExecutionFailed(format!(
                 "sandbox proxy upstream network attach failed: {error}"
             )));
         }
         if let Err(error) = start_proxy_container(docker, proxy_name).await {
-            let _ = remove_proxy_if_present(docker, proxy_name).await;
+            if let Err(error) = remove_proxy_if_present(docker, proxy_name).await {
+                tracing::debug!(error = %error, "sandbox proxy cleanup after failed start failed");
+            }
             return Err(error);
         }
         let inspected = inspect_proxy(docker, proxy_name).await?.ok_or_else(|| {
@@ -743,7 +747,9 @@ impl ManagedEgressRuntime {
         let proxy_ip = match proxy_ip_on_network(&inspected, network_name) {
             Ok(proxy_ip) => proxy_ip,
             Err(error) => {
-                let _ = remove_proxy_if_present(docker, proxy_name).await;
+                if let Err(error) = remove_proxy_if_present(docker, proxy_name).await {
+                    tracing::debug!(error = %error, "sandbox proxy cleanup after failed address lookup failed");
+                }
                 return Err(error);
             }
         };
@@ -751,12 +757,16 @@ impl ManagedEgressRuntime {
         if let Err(error) =
             write_atomic_material_file(&proxy_config_path, proxy_config.as_bytes()).await
         {
-            let _ = remove_proxy_if_present(docker, proxy_name).await;
+            if let Err(error) = remove_proxy_if_present(docker, proxy_name).await {
+                tracing::debug!(error = %error, "sandbox proxy cleanup after failed config write failed");
+            }
             return Err(error);
         }
         if let Err(error) = wait_proxy_ready(docker, proxy_name).await {
             let detail = proxy_failure_detail(docker, proxy_name).await;
-            let _ = remove_proxy_if_present(docker, proxy_name).await;
+            if let Err(error) = remove_proxy_if_present(docker, proxy_name).await {
+                tracing::debug!(error = %error, "sandbox proxy cleanup after failed readiness wait failed");
+            }
             return Err(RuntimeProcessError::ExecutionFailed(format!(
                 "{error}{detail}"
             )));

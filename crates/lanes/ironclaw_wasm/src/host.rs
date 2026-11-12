@@ -446,6 +446,7 @@ where
         let result = egress
             .await
             .unwrap_or_else(|_| Err(runtime_http_egress_panicked()));
+        // silent-ok: the guest call may have been cancelled and dropped the receiver
         let _ = sender.send(result);
     });
     receiver

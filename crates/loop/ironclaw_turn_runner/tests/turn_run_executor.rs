@@ -644,6 +644,10 @@ async fn execute_claimed_run_sweeps_with_human_initiated_true_for_default_proven
 
     let claimed = claimed_run_with_provenance(&context, None);
     let claimed_scope = claimed.state.scope.clone();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the run outcome is not under test; the sweep is asserted through the settler"
+    )]
     let _ = executor.execute_claimed_run(claimed, transitions).await;
 
     let calls = settler.calls();
@@ -671,6 +675,10 @@ async fn execute_claimed_run_sweeps_with_human_initiated_false_for_system_proven
 
     let claimed =
         claimed_run_with_provenance(&context, Some(ironclaw_turns::ActivationProvenance::System));
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the run outcome is not under test; the sweep is asserted through the settler"
+    )]
     let _ = executor.execute_claimed_run(claimed, transitions).await;
 
     let calls = settler.calls();
@@ -692,6 +700,10 @@ async fn execute_claimed_run_sweeps_with_human_initiated_false_for_parent_agent_
         &context,
         Some(ironclaw_turns::ActivationProvenance::ParentAgent),
     );
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the run outcome is not under test; the sweep is asserted through the settler"
+    )]
     let _ = executor.execute_claimed_run(claimed, transitions).await;
 
     assert!(!settler.calls()[0].1);

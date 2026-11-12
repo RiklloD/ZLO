@@ -753,6 +753,7 @@ where
             if let Err(error) = publish_result {
                 tracing::debug!("failed to emit personal context admitted milestone: {error}");
             } else {
+                // silent-ok: a racing emitter already marked the milestone; set-once is the goal
                 let _ = identity_candidates
                     .personal_context_admitted_cell_for_mode(mode)
                     .set(());

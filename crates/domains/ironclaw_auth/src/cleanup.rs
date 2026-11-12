@@ -175,6 +175,7 @@ pub struct DeferredLinkedDeviceRevoker {
 impl DeferredLinkedDeviceRevoker {
     /// Bind the real revoker. First fill wins; a second is ignored.
     pub fn fill(&self, revoker: Arc<dyn LinkedDeviceRevoker>) {
+        // silent-ok: first fill wins by contract; a second fill is ignored
         let _ = self.inner.set(revoker);
     }
 }

@@ -450,6 +450,7 @@ fn run_delta_journal_flusher<F>(
         Ok(runtime) => runtime,
         Err(error) => {
             while let Ok(request) = receiver.recv() {
+                // silent-ok: the requester may have given up waiting for the ack
                 let _ = request
                     .ack
                     .send(Err(DeltaJournalFailure::fatal(storage_error(format!(
@@ -483,6 +484,7 @@ fn run_delta_journal_flusher<F>(
             if request.generation == current {
                 return true;
             }
+            // silent-ok: the requester may have given up waiting for the ack
             let _ = request
                 .ack
                 .send(Err(DeltaJournalFailure::transient(storage_error(
@@ -501,6 +503,7 @@ fn run_delta_journal_flusher<F>(
         match result {
             Ok(seqs) => {
                 for (request, seq) in requests.into_iter().zip(seqs) {
+                    // silent-ok: the requester may have given up waiting for the ack
                     let _ = request.ack.send(Ok(seq));
                 }
             }
@@ -511,6 +514,7 @@ fn run_delta_journal_flusher<F>(
                 // instead of appending on top of the gap this batch left.
                 generation.fetch_add(1, Ordering::SeqCst);
                 for request in requests {
+                    // silent-ok: the requester may have given up waiting for the ack
                     let _ = request.ack.send(Err(failure.clone()));
                 }
                 if transient {

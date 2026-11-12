@@ -588,6 +588,7 @@ impl CredentialManager {
                              <h1>Invalid Request</h1>\
                              <p>No authorization code received.</p>"
                         };
+                        // silent-ok: the browser page is cosmetic; the OAuth result is decided below
                         let _ = tcp_stream.write_all(html.as_bytes()).await;
 
                         if let Some(err_msg) = ep {

@@ -152,6 +152,7 @@ impl IsolatedPostgresProvisioner {
             },
         };
         tokio::spawn(async move {
+            // silent-ok: the connection task ends with an error when the database is dropped
             let _ = connection.await;
         });
         self.stale_sweep
@@ -183,9 +184,11 @@ impl IsolatedPostgresProvisioner {
                         if !stale_enough {
                             continue;
                         }
-                        let _ = admin
+                        if let Err(error) = admin
                             .execute(&format!("DROP DATABASE IF EXISTS {name}"), &[])
-                            .await;
+                            .await {
+                            tracing::debug!(error = %error, "dropping a stale isolated test database failed");
+                        }
                     }
                 }
             })
@@ -237,9 +240,12 @@ impl IsolatedPostgresDatabase {
     /// handles drop.
     pub async fn cleanup(self) {
         let Self { admin, name, .. } = self;
-        let _ = admin
+        if let Err(error) = admin
             .execute(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"), &[])
-            .await;
+            .await
+        {
+            tracing::debug!(error = %error, "dropping the isolated test database failed");
+        }
     }
 }
 

@@ -405,6 +405,7 @@ fn seeded_result_ref(thread_id: &ThreadId, index: usize) -> String {
     let mut hex = String::with_capacity(32);
     for byte in digest.iter().take(16) {
         use std::fmt::Write as _;
+        // silent-ok: fmt::Write for String cannot fail
         let _ = write!(&mut hex, "{byte:02x}");
     }
     format!("result:seed.{hex}")

@@ -292,8 +292,10 @@ impl OpenAiCodexSessionManager {
     /// Ensure we have a valid session. Loads from disk, refreshes, or prompts login.
     pub async fn ensure_authenticated(&self) -> Result<(), LlmError> {
         // Try loading from disk if we don't have a session
-        if !self.has_session().await {
-            let _ = self.load_session().await;
+        if !self.has_session().await
+            && let Err(error) = self.load_session().await
+        {
+            tracing::debug!(error = %error, "loading the persisted Codex session failed; authenticating fresh");
         }
 
         if !self.has_session().await {

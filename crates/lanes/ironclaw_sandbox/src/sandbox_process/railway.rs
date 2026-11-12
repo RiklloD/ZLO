@@ -937,7 +937,9 @@ impl PrivateRailwayCliHome {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(
                 |error| {
                     tracing::error!(?error, "Railway CLI private state permission update failed");
-                    let _ = std::fs::remove_dir_all(&path);
+                    if let Err(error) = std::fs::remove_dir_all(&path) {
+                        tracing::debug!(error = %error, "Railway CLI private state cleanup failed");
+                    }
                     RuntimeProcessError::ExecutionFailed(
                         "Railway preview could not secure private CLI state".to_string(),
                     )

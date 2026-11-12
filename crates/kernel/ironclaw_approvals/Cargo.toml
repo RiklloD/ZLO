@@ -42,3 +42,9 @@ ironclaw_authorization = { path = "../ironclaw_authorization", features = ["test
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+# Asserts the best-effort audit emit logs its failure (`no-env-filter` so the
+# library crate's `debug!` lines are captured, not only the test crate's).
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
+
+[lints]
+workspace = true

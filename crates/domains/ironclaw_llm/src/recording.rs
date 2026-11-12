@@ -321,9 +321,11 @@ fn redact_url(url: &str) -> String {
     // (e.g. `https://user:pat@api.example.com/...`).
     let had_userinfo = parsed.password().is_some() || !parsed.username().is_empty();
     if parsed.password().is_some() {
+        // silent-ok: only fails for cannot-be-a-base URLs, which carry no userinfo
         let _ = parsed.set_password(None);
     }
     if !parsed.username().is_empty() {
+        // silent-ok: only fails for cannot-be-a-base URLs, which carry no userinfo
         let _ = parsed.set_username("");
     }
 
@@ -1024,6 +1026,7 @@ impl RecordingLlm {
         let temp_path = PathBuf::from(temp_path);
         tokio::fs::write(&temp_path, json).await?;
         if let Err(error) = tokio::fs::rename(&temp_path, &self.output_path).await {
+            // silent-ok: temp-file cleanup; the rename error is returned
             let _ = tokio::fs::remove_file(&temp_path).await;
             return Err(error);
         }

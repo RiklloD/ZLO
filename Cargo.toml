@@ -66,14 +66,33 @@ dead_code = "warn"
 # fails the build instead of hiding a failure. Verified zero current fires
 # across the workspace, so this only guards against *future* silent drops.
 #
-# Companion clippy lints that catch the other swallow idioms are deferred to
-# follow-up PRs because they need a real cleanup first (measured on this tree):
-#   * `clippy::let_underscore_must_use` — 67 sites (`let _ = <must_use>`), a mix
-#     of safe discards and genuine swallows (e.g. an ignored async delete).
-#   * `clippy::map_err_ignore` — ~861 sites; a blanket deny is wrong here since
-#     `.claude/rules/error-handling.md` permits `map_err` to a *specific* typed
-#     error and only forbids cause-dropping ones. Needs a scoped sweep.
+# Still deferred: `clippy::map_err_ignore` — ~861 sites; a blanket deny is
+# wrong here since `.claude/rules/error-handling.md` permits `map_err` to a
+# *specific* typed error and only forbids cause-dropping ones. Needs a scoped
+# sweep.
 unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# `let _ = <must_use>` is the other swallow idiom. Triaged 2026-11-11: each
+# production site in `crates/` now either logs its failure at `debug!` (never
+# `info!`/`warn!` — they corrupt the REPL/TUI), propagates it, or keeps the
+# discard with a stated reason (a send to a possibly-closed channel, a
+# set-once cell, reaping a killed child, temp-file cleanup after the original
+# error is returned).
+#
+# Scope: like every `[workspace.lints]` entry this binds only crates that opt
+# in with `[lints] workspace = true`. Today that is ironclaw_approvals,
+# ironclaw_attachments, ironclaw_composition, ironclaw_documents,
+# ironclaw_event_log, ironclaw_hooks, ironclaw_host_runtime,
+# ironclaw_identity, ironclaw_notifications, ironclaw_openai_compat,
+# ironclaw_operator and ironclaw_turn_runner — all targets, tests included.
+# In those crates a kept discard carries a statement-level
+# `#[expect(clippy::let_underscore_must_use, reason = "...")]`, so a stale
+# exemption fails the build. Every other crate is unenforced: production
+# sites under `crates/` were triaged once (kept discards marked
+# `// silent-ok: <why>`), but their test sites and all of
+# `tools/ironclaw_stress` were not, and nothing stops new discards in them.
+let_underscore_must_use = "deny"
 
 [package]
 # Tier B (see docs/internal/plans/2026-07-02-reborn-internal-module-refactor.md §8):

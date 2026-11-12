@@ -340,10 +340,12 @@ async fn wait_for_callback(listener: &TcpListener) -> Result<Callback, LlmError>
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or("");
         let Ok(url) = url::Url::parse(&format!("http://127.0.0.1{target}")) else {
+            // silent-ok: the browser may have closed; the callback listener keeps waiting
             let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
             continue;
         };
         if url.path() != CALLBACK_PATH {
+            // silent-ok: the browser may have closed; the callback listener keeps waiting
             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n").await;
             continue;
         }
@@ -367,6 +369,7 @@ async fn wait_for_callback(listener: &TcpListener) -> Result<Callback, LlmError>
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
             page.len()
         );
+        // silent-ok: the callback is already captured; the browser page is cosmetic
         let _ = stream.write_all(response.as_bytes()).await;
         return Ok(callback);
     }

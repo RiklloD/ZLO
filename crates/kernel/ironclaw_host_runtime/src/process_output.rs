@@ -639,8 +639,10 @@ mod tests {
             .expect("saved stream path")
             .to_path_buf();
         let saved = fs::read_to_string(&saved_path).expect("saved stream readable");
-        #[allow(clippy::let_underscore_must_use)]
-        // best-effort test teardown; cleanup failure is irrelevant
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort test teardown; cleanup failure is irrelevant"
+        )]
         let _ = fs::remove_file(&saved_path);
 
         assert!(output.inline_output().is_empty());
@@ -690,8 +692,10 @@ mod tests {
             .expect("capture succeeds");
         let saved_output = output.saved_output.expect("saved output metadata");
         let saved = fs::read_to_string(&saved_output.path).expect("saved output readable");
-        #[allow(clippy::let_underscore_must_use)]
-        // best-effort test teardown; cleanup failure is irrelevant
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort test teardown; cleanup failure is irrelevant"
+        )]
         let _ = fs::remove_file(&saved_output.path);
 
         assert!(output.preview.contains("... [truncated "));
@@ -714,8 +718,10 @@ mod tests {
             .expect("capture succeeds");
         let saved_output = output.saved_output.expect("saved output metadata");
         let saved = fs::read_to_string(&saved_output.path).expect("saved output readable");
-        #[allow(clippy::let_underscore_must_use)]
-        // best-effort test teardown; cleanup failure is irrelevant
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort test teardown; cleanup failure is irrelevant"
+        )]
         let _ = fs::remove_file(&saved_output.path);
 
         assert_eq!(
@@ -737,8 +743,10 @@ mod tests {
             .expect("capture succeeds");
         let saved_output = output.saved_output.expect("saved output metadata");
         let saved = fs::read(&saved_output.path).expect("saved output readable");
-        #[allow(clippy::let_underscore_must_use)]
-        // best-effort test teardown; cleanup failure is irrelevant
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort test teardown; cleanup failure is irrelevant"
+        )]
         let _ = fs::remove_file(&saved_output.path);
 
         assert_eq!(saved, raw);
@@ -762,8 +770,10 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        #[allow(clippy::let_underscore_must_use)]
-        // best-effort test teardown; cleanup failure is irrelevant
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort test teardown; cleanup failure is irrelevant"
+        )]
         let _ = fs::remove_file(&saved_output.path);
 
         assert_eq!(mode, 0o600);
@@ -818,8 +828,10 @@ mod tests {
         let dir = ensure_scoped_output_dir(&scope).expect("ensure dir");
         let mode = fs::metadata(&dir).expect("metadata").permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "scoped save dir must be owner-only");
-        #[allow(clippy::let_underscore_must_use)]
-        // best-effort test teardown; cleanup failure is irrelevant
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort test teardown; cleanup failure is irrelevant"
+        )]
         let _ = fs::remove_dir_all(&dir);
     }
 }

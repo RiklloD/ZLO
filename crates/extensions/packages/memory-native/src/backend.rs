@@ -556,10 +556,12 @@ where
             .with_audit_context(context.audit_context()),
         )
         .await;
-        if let Some(indexer) = &self.indexer {
-            let _ = indexer
+        if let Some(indexer) = &self.indexer
+            && let Err(error) = indexer
                 .reindex_document_with_audit_context(path, context.audit_context())
-                .await;
+                .await
+        {
+            tracing::debug!(error = %error, "memory reindex after write failed; the document is stored and reindexes on next write");
         }
         Ok(())
     }
@@ -758,10 +760,12 @@ where
                 .with_audit_context(context.audit_context()),
             )
             .await;
-            if let Some(indexer) = &self.indexer {
-                let _ = indexer
+            if let Some(indexer) = &self.indexer
+                && let Err(error) = indexer
                     .reindex_document_with_audit_context(path, context.audit_context())
-                    .await;
+                    .await
+            {
+                tracing::debug!(error = %error, "memory reindex after write failed; the document is stored and reindexes on next write");
             }
         }
         Ok(outcome)
@@ -860,10 +864,12 @@ where
                     .with_audit_context(context.audit_context()),
                 )
                 .await;
-                if let Some(indexer) = &self.indexer {
-                    let _ = indexer
+                if let Some(indexer) = &self.indexer
+                    && let Err(error) = indexer
                         .reindex_document_with_audit_context(path, context.audit_context())
-                        .await;
+                        .await
+                {
+                    tracing::debug!(error = %error, "memory reindex after write failed; the document is stored and reindexes on next write");
                 }
                 return Ok(());
             }
@@ -964,10 +970,12 @@ where
                 .with_audit_context(context.audit_context()),
             )
             .await;
-            if let Some(indexer) = &self.indexer {
-                let _ = indexer
+            if let Some(indexer) = &self.indexer
+                && let Err(error) = indexer
                     .reindex_document_with_audit_context(path, context.audit_context())
-                    .await;
+                    .await
+            {
+                tracing::debug!(error = %error, "memory reindex after write failed; the document is stored and reindexes on next write");
             }
         }
         Ok(outcome)

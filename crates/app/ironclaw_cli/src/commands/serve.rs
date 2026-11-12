@@ -861,14 +861,19 @@ async fn wait_for_shutdown_signal() {
                 }
             }
             // If the SIGTERM handler can't be installed, still honor Ctrl-C.
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
+            Err(sigterm_error) => {
+                tracing::debug!(error = %sigterm_error, "SIGTERM handler unavailable; honoring Ctrl-C only");
+                if let Err(error) = tokio::signal::ctrl_c().await {
+                    tracing::debug!(error = %error, "Ctrl-C handler unavailable; shutting down");
+                }
             }
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::debug!(error = %error, "Ctrl-C handler unavailable; shutting down");
+        }
     }
 }
 
@@ -880,6 +885,7 @@ fn webui_shutdown_signal() -> tokio::sync::oneshot::Receiver<()> {
             target: "ironclaw::reborn::cli::serve",
             "shutdown signal (SIGTERM/SIGINT) received; signalling WebChat v2 graceful shutdown",
         );
+        // silent-ok: the receiver is gone only once the server has already stopped
         let _ = shutdown_tx.send(());
     });
     shutdown_rx
@@ -1151,29 +1157,33 @@ fn print_serve_banner(
     // harness that stopped reading, a detached terminal) must not take the
     // listener down with a broken-pipe panic, so every write is best effort.
     let mut stderr = std::io::stderr().lock();
-    let _ = writeln!(stderr, "ironclaw: WebChat v2 listener");
-    let _ = writeln!(stderr, "  binary    : ironclaw");
-    let _ = writeln!(stderr, "  version   : {}", env!("CARGO_PKG_VERSION"));
-    let _ = writeln!(stderr, "  listen    : http://{listen_addr}");
-    let _ = writeln!(
-        stderr,
-        "  auth      : env-bearer (token ${env_token_var}, user ${env_user_id_var})"
-    );
-    if allowed_origins.is_empty() {
-        let _ = writeln!(
+    let write_banner = |stderr: &mut std::io::StderrLock<'_>| -> std::io::Result<()> {
+        writeln!(stderr, "ironclaw: WebChat v2 listener")?;
+        writeln!(stderr, "  binary    : ironclaw")?;
+        writeln!(stderr, "  version   : {}", env!("CARGO_PKG_VERSION"))?;
+        writeln!(stderr, "  listen    : http://{listen_addr}")?;
+        writeln!(
             stderr,
-            "  cors      : fail-closed (no allowed origins configured)"
-        );
-    } else {
-        let _ = writeln!(
-            stderr,
-            "  cors      : {} origin(s) ({})",
-            allowed_origins.len(),
-            allowed_origins.join(", "),
-        );
-    }
-    let _ = writeln!(stderr, "  readiness : {readiness:?}");
-    let _ = writeln!(stderr);
+            "  auth      : env-bearer (token ${env_token_var}, user ${env_user_id_var})"
+        )?;
+        if allowed_origins.is_empty() {
+            writeln!(
+                stderr,
+                "  cors      : fail-closed (no allowed origins configured)"
+            )?;
+        } else {
+            writeln!(
+                stderr,
+                "  cors      : {} origin(s) ({})",
+                allowed_origins.len(),
+                allowed_origins.join(", "),
+            )?;
+        }
+        writeln!(stderr, "  readiness : {readiness:?}")?;
+        writeln!(stderr)
+    };
+    // silent-ok: a closed stderr only loses the informational banner (see above).
+    let _ = write_banner(&mut stderr);
 }
 
 /// Parse `IRONCLAW_REBORN_DEV_SECRET__<handle>=<value>` pairs from an

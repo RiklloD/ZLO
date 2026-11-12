@@ -377,11 +377,14 @@ impl ExtensionHost {
                 "ingress deregistration failed; deactivation continues"
             );
         }
-        let _ = self
+        if let Err(error) = self
             .deps
             .drain
             .drain(extension_id, self.deps.hook_deadline)
-            .await;
+            .await
+        {
+            tracing::debug!(error = %error, "hook drain failed; deactivation continues");
+        }
         self.persist_state(&record, InstallationState::Installed, None)
             .await?;
         Ok(())

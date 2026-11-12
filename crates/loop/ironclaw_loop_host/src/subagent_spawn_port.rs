@@ -431,7 +431,7 @@ impl SpawnCompensationState {
                 run_context.run_id, run_id
             )) {
                 Ok(idempotency_key) => {
-                    let _ = deps
+                    if let Err(error) = deps
                         .agent_turn_runtime
                         .request_cancel(CancelRunRequest {
                             scope: scope.clone(),
@@ -440,7 +440,10 @@ impl SpawnCompensationState {
                             reason: SanitizedCancelReason::Superseded,
                             idempotency_key,
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::debug!(error = %error, "subagent spawn rollback: cancelling the child run failed");
+                    }
                 }
                 Err(reason) => {
                     tracing::warn!(
@@ -452,11 +455,13 @@ impl SpawnCompensationState {
                 }
             }
         }
-        if let Some((child_scope, child_run_id)) = self.edge_written.as_ref() {
-            let _ = deps
+        if let Some((child_scope, child_run_id)) = self.edge_written.as_ref()
+            && let Err(error) = deps
                 .await_edge_writer
                 .abandon_awaited_child(child_scope, run_context.run_id, *child_run_id)
-                .await;
+                .await
+        {
+            tracing::debug!(error = %error, "subagent spawn rollback: abandoning the await edge failed");
         }
         if let Some((scope, tree_root)) = self.submitted_child_tree.as_ref() {
             // Idempotency key for the release-tree-descendants dedup guard
@@ -468,13 +473,18 @@ impl SpawnCompensationState {
                 .as_ref()
                 .map(|(_, _, run_id)| *run_id)
                 .unwrap_or(*tree_root);
-            let _ = deps
+            if let Err(error) = deps
                 .agent_turn_runtime
                 .release_tree_descendants(scope, *tree_root, 1, idempotency_key)
-                .await;
+                .await
+            {
+                tracing::debug!(error = %error, "subagent spawn rollback: releasing tree descendants failed");
+            }
         }
-        if let Some((scope, thread_id)) = self.thread_written.as_ref() {
-            let _ = deps.thread_service.delete_thread(scope, thread_id).await;
+        if let Some((scope, thread_id)) = self.thread_written.as_ref()
+            && let Err(error) = deps.thread_service.delete_thread(scope, thread_id).await
+        {
+            tracing::debug!(error = %error, "subagent spawn rollback: deleting the child thread failed");
         }
     }
 }

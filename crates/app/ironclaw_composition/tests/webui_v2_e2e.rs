@@ -308,6 +308,10 @@ impl DelayedStreamingTextGateway {
             .expect("first update lock poisoned")
             .take()
         {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the test may already have stopped waiting for the first update"
+            )]
             let _ = first_update.send(());
         }
 
@@ -317,6 +321,10 @@ impl DelayedStreamingTextGateway {
             .expect("release lock poisoned")
             .take()
             .expect("delayed streaming gateway should be called once");
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a dropped release sender also means proceed"
+        )]
         let _ = release.await;
 
         sink.safe_text_update("Hello".to_string()).await;

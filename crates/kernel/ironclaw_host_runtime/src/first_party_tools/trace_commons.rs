@@ -1234,11 +1234,15 @@ fn persist_account_login_link(scope: &str, link: &AccountLoginLink) -> std::io::
         file.sync_all()
     };
     if let Err(error) = write_temp() {
-        let _ = std::fs::remove_file(&temp_path);
+        if let Err(error) = std::fs::remove_file(&temp_path) {
+            tracing::debug!(error = %error, "account login link temp-file cleanup failed");
+        }
         return Err(error);
     }
     if let Err(error) = std::fs::rename(&temp_path, &path) {
-        let _ = std::fs::remove_file(&temp_path);
+        if let Err(error) = std::fs::remove_file(&temp_path) {
+            tracing::debug!(error = %error, "account login link temp-file cleanup failed");
+        }
         return Err(error);
     }
     Ok(path)
@@ -1266,8 +1270,10 @@ fn prune_stale_account_login_links(dir: &std::path::Path) {
         let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
             continue;
         };
-        if now.duration_since(modified).is_ok_and(|age| age > MAX_AGE) {
-            let _ = std::fs::remove_file(entry.path());
+        if now.duration_since(modified).is_ok_and(|age| age > MAX_AGE)
+            && let Err(error) = std::fs::remove_file(entry.path())
+        {
+            tracing::debug!(error = %error, "stale account login link prune failed");
         }
     }
 }
