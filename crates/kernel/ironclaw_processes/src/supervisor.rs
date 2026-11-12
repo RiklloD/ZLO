@@ -358,9 +358,14 @@ impl ProcessSupervisorHandle {
     pub async fn shutdown(mut self) {
         // silent-ok: no receiver means the supervisor already stopped
         let _ = self.shutdown_tx.send(true);
-        if let Some(supervisor) = self.supervisor.take() {
-            // silent-ok: joining only waits for the supervisor to stop
-            let _ = supervisor.await;
+        if let Some(supervisor) = self.supervisor.take()
+            && let Err(error) = supervisor.await
+        {
+            tracing::debug!(
+                panicked = error.is_panic(),
+                cancelled = error.is_cancelled(),
+                "process supervisor task join failed at shutdown"
+            );
         }
     }
 }

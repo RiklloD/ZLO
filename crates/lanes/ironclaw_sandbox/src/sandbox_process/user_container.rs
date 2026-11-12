@@ -106,9 +106,14 @@ impl UserContainerSweeper {
     pub(super) async fn shutdown(&self) {
         // silent-ok: no receiver means the sweeper already stopped
         let _ = self.shutdown.send(true);
-        if let Some(task) = self.take_task() {
-            // silent-ok: joining only waits for the sweeper to stop
-            let _ = task.await;
+        if let Some(task) = self.take_task()
+            && let Err(error) = task.await
+        {
+            tracing::debug!(
+                panicked = error.is_panic(),
+                cancelled = error.is_cancelled(),
+                "user container sweeper task join failed at shutdown"
+            );
         }
     }
 }

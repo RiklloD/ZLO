@@ -362,8 +362,10 @@ async fn f6_hard_cap_denied_before_provider_call() {
             .any(|e| matches!(e, BudgetEvent::Denied { .. })),
         "hard cap must emit Denied — got {events:?}"
     );
-    #[allow(clippy::let_underscore_must_use)]
-    // outcome intentionally unused; the assertions above check the side effects
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "outcome intentionally unused; the assertions above check the side effects"
+    )]
     let _ = outcome;
 
     runtime.shutdown().await.expect("shutdown");

@@ -63,13 +63,22 @@ unused_must_use = "deny"
 # `let _ = <must_use>` is the other swallow idiom. Triaged 2026-11-11: each
 # production site in `crates/` now either logs its failure at `debug!` (never
 # `info!`/`warn!` — they corrupt the REPL/TUI), propagates it, or keeps the
-# discard with a `// silent-ok: <why>` comment (a send to a possibly-closed
-# channel, a set-once cell, reaping a killed child, temp-file cleanup after
-# the original error is returned). Like every `[workspace.lints]` entry this
-# binds only crates that opt in with `[lints] workspace = true`; in those,
-# a kept discard carries `#[allow(clippy::let_underscore_must_use, reason =
-# "...")]` on the statement. One scoped module allow remains:
-# `ironclaw_composition`'s `mod runtime` (held by a parallel refactor).
+# discard with a stated reason (a send to a possibly-closed channel, a
+# set-once cell, reaping a killed child, temp-file cleanup after the original
+# error is returned).
+#
+# Scope: like every `[workspace.lints]` entry this binds only crates that opt
+# in with `[lints] workspace = true`. Today that is ironclaw_approvals,
+# ironclaw_attachments, ironclaw_composition, ironclaw_documents,
+# ironclaw_event_log, ironclaw_hooks, ironclaw_host_runtime,
+# ironclaw_identity, ironclaw_notifications, ironclaw_openai_compat,
+# ironclaw_operator and ironclaw_turn_runner — all targets, tests included.
+# In those crates a kept discard carries a statement-level
+# `#[expect(clippy::let_underscore_must_use, reason = "...")]`, so a stale
+# exemption fails the build. Every other crate is unenforced: production
+# sites under `crates/` were triaged once (kept discards marked
+# `// silent-ok: <why>`), but their test sites and all of
+# `tools/ironclaw_stress` were not, and nothing stops new discards in them.
 let_underscore_must_use = "deny"
 
 [package]

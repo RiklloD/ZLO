@@ -1259,8 +1259,10 @@ mod tests {
         .expect("command succeeds");
         let saved_output = output.saved_output.expect("saved output metadata");
         let saved = std::fs::read_to_string(&saved_output.path).expect("saved output readable");
-        #[allow(clippy::let_underscore_must_use)]
-        // best-effort test teardown; cleanup failure is irrelevant
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort test teardown; cleanup failure is irrelevant"
+        )]
         let _ = std::fs::remove_file(&saved_output.path);
 
         assert_eq!(exit_code, 0);

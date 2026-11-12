@@ -1070,7 +1070,7 @@ async fn standalone_authorizer_releases_global_auto_approve_inflight_when_leader
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     leader.abort();
-    #[allow(
+    #[expect(
         clippy::let_underscore_must_use,
         reason = "joining an aborted task only waits for it to stop; Cancelled is expected"
     )]

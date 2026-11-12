@@ -55,13 +55,6 @@ mod production_runtime_policy;
 mod profile_approval_mode;
 mod readiness;
 mod root;
-// `runtime.rs` is held by a parallel refactor; its two `let _ =` discards
-// (an aborted-join await already marked `silent-ok`, and a set-once
-// `channel_facade_slot` fill) are triaged there when that refactor lands.
-#[allow(
-    clippy::let_underscore_must_use,
-    reason = "runtime.rs sites deferred to the parallel runtime refactor"
-)]
 mod runtime;
 mod runtime_input;
 mod runtime_mounts;

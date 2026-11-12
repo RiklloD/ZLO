@@ -514,7 +514,7 @@ fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        #[allow(
+        #[expect(
             clippy::let_underscore_must_use,
             reason = "fmt::Write for String cannot fail"
         )]

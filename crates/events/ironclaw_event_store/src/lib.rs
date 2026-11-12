@@ -1649,8 +1649,15 @@ where
         // truncation error: the original write failure is the load-bearing
         // signal. If truncation itself fails (extremely rare — open file,
         // exclusive lock held), we still fsync to flush whatever state the
-        // OS already has and return the original error.
-        let _ = file.set_len(pre_append_len);
+        // OS already has and return the original error. A failed truncate
+        // can leave the torn tail on disk, so it is traced (path only).
+        if let Err(truncate_error) = file.set_len(pre_append_len) {
+            tracing::debug!(
+                path = %path.display(),
+                error = %truncate_error,
+                "jsonl event store failed to truncate torn tail after failed append"
+            );
+        }
         // silent-ok: best-effort flush of the truncate above; the original error is returned
         let _ = file.sync_data();
         return Err(error);

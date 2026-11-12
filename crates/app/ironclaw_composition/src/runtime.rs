@@ -2605,7 +2605,14 @@ impl RebornRuntime {
         // Stop the boot-recovery sweep before its leases are released below.
         if let Some(recovery) = self.reply_publication_recovery {
             recovery.abort();
-            let _ = recovery.await; // silent-ok: an aborted join is Cancelled.
+            if let Err(error) = recovery.await {
+                // An aborted join is normally `Cancelled`; a panic that beat
+                // the abort is the one outcome worth a trace.
+                tracing::debug!(
+                    panicked = error.is_panic(),
+                    "reply publication recovery sweep join failed at shutdown"
+                );
+            }
         }
         // Hand open reply publications back: their leases are released so
         // a publisher on the next process (or another node) resumes them
@@ -5142,6 +5149,10 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     // slot before the runtime was built keeps its facade (same stores, same
     // durable state), so the discarded `set` result is deliberate.
     if let Some(channel_connection) = runtime.generic_channel_connection_facade() {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "OnceLock first write wins; a pre-filled test facade is kept"
+        )]
         let _ = runtime.channel_facade_slot.set(channel_connection);
     }
     Ok((runtime, resource_governor))

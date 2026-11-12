@@ -1417,13 +1417,13 @@ fn responses_context_to_product_text(context: &serde_json::Value) -> String {
                     }
                     let field = sanitize_product_text_fragment(field);
                     let value = context_value_to_product_text(value);
-                    #[allow(
+                    #[expect(
                         clippy::let_underscore_must_use,
                         reason = "fmt::Write for String cannot fail"
                     )]
                     let _ = write!(&mut fields, "{field}: {value}");
                 }
-                #[allow(
+                #[expect(
                     clippy::let_underscore_must_use,
                     reason = "fmt::Write for String cannot fail"
                 )]
@@ -1431,7 +1431,7 @@ fn responses_context_to_product_text(context: &serde_json::Value) -> String {
             }
             None => {
                 let value = context_value_to_product_text(value);
-                #[allow(
+                #[expect(
                     clippy::let_underscore_must_use,
                     reason = "fmt::Write for String cannot fail"
                 )]

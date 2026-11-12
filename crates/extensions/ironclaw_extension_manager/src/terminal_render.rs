@@ -29,7 +29,7 @@ pub(crate) fn terminal_safe(value: &str) -> String {
 /// Append one formatted line to `output`.
 pub(crate) fn push_line(output: &mut String, args: std::fmt::Arguments<'_>) {
     use std::fmt::Write as _;
-    #[allow(clippy::let_underscore_must_use)] // writing to a String is infallible
+    // silent-ok: writing to a String is infallible
     let _ = output.write_fmt(args);
     output.push('\n');
 }
