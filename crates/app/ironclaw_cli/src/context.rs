@@ -18,6 +18,18 @@ impl RebornCliContext {
         Ok(Self { boot_config })
     }
 
+    /// [`Self::resolve_from_env`] without the first-run home move: when only
+    /// the pre-ZLO `~/.ironclaw/reborn` exists it is used where it is. For
+    /// read-only commands (`doctor --bundle`) that must not change the home.
+    pub(crate) fn resolve_from_env_without_migrating() -> anyhow::Result<Self> {
+        let home = ironclaw_config::RebornHome::resolve_from_env_without_migrating()?;
+        let profile =
+            ironclaw_config::RebornProfile::from_env_value(ironclaw_config::profile_env_value())?;
+        Ok(Self {
+            boot_config: RebornBootConfig::new(home, profile),
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn from_boot_config(boot_config: RebornBootConfig) -> Self {
         Self { boot_config }

@@ -2,6 +2,7 @@ mod backend_client;
 mod cli;
 mod commands;
 mod context;
+mod diagnostics_bundle;
 mod dto;
 mod file_write;
 mod first_party;

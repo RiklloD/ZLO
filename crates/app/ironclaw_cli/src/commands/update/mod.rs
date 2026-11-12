@@ -37,6 +37,7 @@ use ironclaw_product_contracts::self_update::{BuildInfo, UpdateMethod, UpdateSta
 
 use crate::context::RebornCliContext;
 
+pub(crate) use records::UpdatePaths;
 pub(crate) use service::{SourceSelfUpdate, auto_check};
 
 /// The bearer-authed self-update routes over `service`.

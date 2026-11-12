@@ -90,7 +90,14 @@ impl Command {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::Doctor(command) => {
-                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+                // `doctor --bundle` is read-only: it must not move a legacy
+                // home to `~/.zlo` before collecting from it.
+                let context = if command.writes_bundle() {
+                    crate::context::RebornCliContext::resolve_from_env_without_migrating()?
+                } else {
+                    crate::context::RebornCliContext::resolve_from_env()?
+                };
+                command.execute(context)
             }
             Self::Export(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)

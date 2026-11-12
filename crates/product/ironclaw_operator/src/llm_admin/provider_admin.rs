@@ -29,6 +29,34 @@ impl RebornProviderAdmin {
         Self { boot }
     }
 
+    /// Names of every env var the compiled-in provider catalog reads a
+    /// credential or credential-bearing setting from (`api_key_env`,
+    /// `base_url_env`, `extra_headers_env`). Independent of the home's
+    /// `providers.json` and `config.toml`, so it still answers when either
+    /// is broken.
+    pub fn builtin_credential_env_names() -> Vec<String> {
+        let Ok(registry) = ironclaw_llm::ProviderRegistry::try_load_from_path(None) else {
+            // silent-ok: the built-in catalog is compiled in; an overlay of
+            // `None` cannot fail to load.
+            return Vec::new();
+        };
+        let mut names: Vec<String> = registry
+            .all()
+            .iter()
+            .flat_map(|definition| {
+                [
+                    definition.api_key_env.clone(),
+                    definition.base_url_env.clone(),
+                    definition.extra_headers_env.clone(),
+                ]
+            })
+            .flatten()
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     pub fn list(
         &self,
         provider: Option<&str>,
