@@ -36,7 +36,7 @@ For each open PR, determine the primary module it touches by examining the `file
 | **Agent Core** | `crates/domains/ironclaw_skills/` |
 | **Tools & Extensions** | `crates/extensions/ironclaw_extension_support/`, `crates/extensions/ironclaw_extension_host/`, `crates/extensions/ironclaw_extension_registry/` |
 | **Channels** | `crates/extensions/packages/slack/`, `crates/extensions/packages/telegram/` |
-| **Storage & Memory** | `crates/substrates/ironclaw_filesystem/`, `crates/domains/ironclaw_memory*/`, `crates/substrates/ironclaw_libsql_runtime/`, `crates/*/*/migrations/` |
+| **Storage & Memory** | `crates/substrates/ironclaw_filesystem/`, `crates/domains/ironclaw_memory*/`, `crates/substrates/ironclaw_libsql_runtime/`, `crates/**/migrations/` |
 | **Security** | `crates/substrates/ironclaw_safety/`, `crates/substrates/ironclaw_secrets/`, `crates/kernel/ironclaw_trust/`, `crates/kernel/ironclaw_authorization/`, `crates/kernel/ironclaw_approvals/` |
 | **Config & Setup** | `crates/app/ironclaw_config/` |
 | **Sandbox & Processes** | `crates/lanes/ironclaw_sandbox/`, `crates/kernel/ironclaw_processes/`, `crates/lanes/ironclaw_wasm*/` |
