@@ -86,7 +86,6 @@ ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", ve
 ironclaw_network = { path = "../../substrates/ironclaw_network" }
 ironclaw_processes = { path = "../../kernel/ironclaw_processes", features = ["test-support"] }
 ironclaw_assistant = { path = "../../product/ironclaw_assistant", features = ["test-support"] }
-ironclaw_config = { path = "../../app/ironclaw_config" }
 ironclaw_resources = { path = "../../kernel/ironclaw_resources", features = ["test-support"] }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_triggers = { path = "../../domains/ironclaw_triggers" }

@@ -1486,14 +1486,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ("crates/ironclaw_skills/src/types.rs", "github"),
     ("crates/ironclaw_skills/src/types.rs", "google"),
     ("crates/ironclaw_skills/src/types.rs", "slack"),
-    (
-        "crates/ironclaw_config/src/capability_remediation.rs",
-        "gmail",
-    ),
-    (
-        "crates/ironclaw_config/src/capability_remediation.rs",
-        "google",
-    ),
     ("crates/ironclaw_config/src/config_file.rs", "gmail"),
     ("crates/ironclaw_config/src/config_file.rs", "google"),
     // The retired-section gravestones: the only place this crate still
@@ -1701,7 +1693,11 @@ const ALLOWLIST: &[(&str, &str)] = &[
 // 110 -> 111 (2026-10-24, desktop Usage page): Antigravity's plan quota is
 // read from Google's API hosts in `ironclaw_usage/src/antigravity.rs`; Google
 // is the plan vendor there, not the google extensions vendor.
-const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 100;
+// 100 -> 98 (2026-11-11, PROPOSAL §6.10.3): the Google remediation copy left
+// `ironclaw_config/src/capability_remediation.rs` for the package-support
+// crate (`ironclaw_extension_support::gsuite::remediation`, scan-exempt as the
+// sanctioned vendor home), retiring its "gmail" and "google" carve-outs.
+const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 98;
 
 /// §11.2.8 vendor-scope shrink, armed at the WS0 baseline.
 ///

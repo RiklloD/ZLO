@@ -3,6 +3,7 @@ mod credential;
 mod handlers;
 mod manifest;
 mod network;
+mod remediation;
 
 pub use account_policy::gsuite_google_account_visible_to_requester;
 pub use credential::{
@@ -31,3 +32,7 @@ pub use manifest::{
     find_gsuite_capability, gsuite_package_specs, gsuite_resource_profile, is_gsuite_extension_id,
 };
 pub use network::{google_api_network_policy, gsuite_network_policy_for};
+pub use remediation::{
+    HostRemediationText, apply_step_text, google_backend_auth_text, google_not_configured_text,
+    google_remediation_text, google_setup_steps_text,
+};

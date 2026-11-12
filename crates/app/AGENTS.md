@@ -1,6 +1,6 @@
 # `crates/app/` — assembly and enforcement; composition wires owners, never becomes one
 
-**Layer(s):** `app`, except `ironclaw_config` at `substrates` (declared since #5852; its zero-dep rule is what matters) · **Crates:** 4 · **May depend on:** everything — the one family whose crates are permitted to see the whole workspace · **Depended on by:** nothing; no other crate may import any of these (`ironclaw_config` is the exception by design: a pure leaf consumed by `ironclaw`, `ironclaw_composition`, `ironclaw_operator`, and `ironclaw_extension_host`)
+**Layer(s):** `app`, except `ironclaw_config` at `substrates` (declared since #5852; its zero-dep rule is what matters) · **Crates:** 4 · **May depend on:** everything — the one family whose crates are permitted to see the whole workspace · **Depended on by:** nothing; no other crate may import any of these (`ironclaw_config` is the exception by design: a pure leaf consumed by `ironclaw`, `ironclaw_composition`, and `ironclaw_operator`)
 
 ## What this family is
 

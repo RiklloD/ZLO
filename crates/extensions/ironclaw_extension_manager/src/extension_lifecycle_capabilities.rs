@@ -2789,8 +2789,8 @@ mod tests {
 
         let reason = format!(
             "{}\n\n{}",
-            ironclaw_config::google_remediation_text(),
-            ironclaw_config::apply_step_text()
+            ironclaw_extension_support::google_remediation_text(),
+            ironclaw_extension_support::apply_step_text()
         );
         let mapped = lifecycle_error(ProductOperationFailure::ProviderInstanceNotConfigured {
             reason: reason.clone(),
