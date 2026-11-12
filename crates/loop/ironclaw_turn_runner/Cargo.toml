@@ -54,7 +54,7 @@ ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", ve
 # hands it to `ironclaw_trace_commons::capture`, which owns the pipeline.
 ironclaw_trace_commons = { path = "../../domains/ironclaw_trace_commons", version = "0.1.0" }
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", version = "0.1.0" }
-libsql = { version = "0.9", default-features = false, features = ["core", "replication", "remote", "tls"] }
+libsql = { workspace = true, features = ["remote", "tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -82,7 +82,7 @@ ironclaw_skills = { path = "../../domains/ironclaw_skills", version = "0.3.0", d
 ironclaw_trust = { path = "../../kernel/ironclaw_trust", version = "0.1.0" }
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", version = "0.1.0", features = ["test-support"] }
 rust_decimal = "1"
-reqwest = { version = "0.13", default-features = false, features = ["json"] }
+reqwest = { workspace = true, features = ["json"] }
 serde = "1"
 serde_json = "1"
 tempfile = "3"

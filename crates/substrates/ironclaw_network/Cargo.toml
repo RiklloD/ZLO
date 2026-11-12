@@ -21,7 +21,7 @@ test-support = []
 async-trait = "0.1"
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 percent-encoding = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+reqwest = { workspace = true, features = ["rustls"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt"] }
 tracing = "0.1"

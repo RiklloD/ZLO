@@ -5,8 +5,11 @@ ignore = [
     # Pre-existing advisories — tracked for upgrade in separate PRs
     # tokio-tar PAX header parsing — sandbox containers only
     "RUSTSEC-2025-0111",
-    # rustls-webpki advisories — 0.102.8 remains pinned by a libsql 0.9.30 transitive dep
-    # (via rustls 0.22 → hyper-rustls 0.25); keep ignored until that pin is gone.
+    # rustls-webpki advisories — 0.102.8 remains pinned by libsql's `tls` feature
+    # (libsql → hyper-rustls 0.25 → rustls 0.22 → rustls-webpki 0.102). Every
+    # published libsql release through 0.10.0 still requires hyper-rustls ^0.25 /
+    # hyper ^0.14 / http ^0.2, so no upgrade clears these; `tls` is needed for
+    # remote (Turso) databases. Keep ignored until libsql ships a hyper 1 stack.
     # RUSTSEC-2026-0104: panic on empty `onlySomeReasons` BIT STRING during CRL parsing.
     # We do not use CRLs, and the advisory explicitly notes apps that don't parse CRLs
     # are unaffected. Same transitive pin as 0049/0098/0099 — tracked with them.
@@ -15,9 +18,11 @@ ignore = [
     "RUSTSEC-2026-0099",
     "RUSTSEC-2026-0104",
     # h2 unbounded empty DATA frames — h2 0.4 is patched in Cargo.lock, but
-    # libsql 0.9.30 still pins tonic/hyper to h2 0.3.27. The advisory provides
-    # no patched 0.3.x release, so keep the legacy line ignored until libsql's
-    # transport stack can move to h2 >=0.4.16.
+    # libsql's `remote` feature enables hyper 0.14 with `http2`, which pins
+    # h2 0.3.27 (tonic, the other 0.3 consumer, left with the unused
+    # `replication` feature). The advisory provides no patched 0.3.x release,
+    # and libsql 0.10.0 keeps hyper ^0.14, so keep the legacy line ignored
+    # until libsql's transport stack can move to h2 >=0.4.16.
     "RUSTSEC-2026-0258",
     # rsa Marvin timing side-channel — test-only dependency used to mint
     # throwaway local OIDC JWT fixtures; no production network-observable
