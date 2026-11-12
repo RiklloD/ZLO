@@ -402,15 +402,22 @@ axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
 
 ### Config hot reload (`config.toml`)
 
-When a runtime is built with a boot config, composition constructs one
-`ironclaw_operator::RebornConfigReloader` after the runtime is assembled and
-exposes it through `RebornRuntime::config_reloader()`. Composition only wires
-it: the reloader is handed the runtime's existing live LLM seam
-(`webui_llm_reload_trigger`) and snapshots the on-disk file as the in-effect
-baseline. Classification of which keys are live lives in `ironclaw_config`
+When a runtime is built with a boot config and an LLM seam, composition
+builds one `ironclaw_operator::LiveLlmDefault` — the single owner of applying
+`[llm.default]` — and routes every apply path through it: the boot-time apply,
+the Settings service and NEAR AI/ChatGPT login flows (`webui_llm_reload_trigger`),
+and config reload. It holds one lock across file read, resolution, stored-key
+read and swap, and records the slot last applied, which is the reload's
+`llm.default` baseline. Composition does not build a reloader during assembly
+(so `zlo run` gets none and assembly never re-reads the file);
+`RebornRuntime::config_reloader(boot_file)` builds one on request over the
+caller's boot-parsed snapshot, which `zlo serve` passes from the same parse its
+boot decisions used. Classification of which keys are live lives in `ironclaw_config`
 (`LIVE_RELOADABLE_CONFIG_KEYS`, today only `llm.default`); validation,
 fail-closed apply, and restart-required reporting live in the reloader.
-`zlo serve` calls it on SIGHUP (`crates/app/ironclaw_cli/src/commands/serve_reload.rs`).
+`zlo serve` calls it on SIGHUP (`crates/app/ironclaw_cli/src/commands/serve_reload.rs`),
+only when stdin is not a terminal (the installed service); attached to a
+terminal, SIGHUP keeps its default and stops the server.
 Nothing in the trust/authorization graph (storage, profile, policy, identity,
 `[webui]` listener/auth/origins/body limits, `[google]`, `[remote]`, runner,
 trigger poller, memory provider, budgets) is reloaded; a change to any of them

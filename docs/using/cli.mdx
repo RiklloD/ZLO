@@ -103,6 +103,19 @@ replaced in place, then `zlo service` is restarted when it is installed (otherwi
 restart `zlo serve` yourself). The outcome and a log are kept under
 `<home>/update/`, so ZLO's "Update all machines" can read them after the restart.
 
+### Reloading `config.toml` without a restart
+
+When `zlo serve` runs as a service (installed with `zlo service`, or any start
+whose standard input is not a terminal), `kill -HUP <pid>` re-reads
+`config.toml`. A changed `[llm.default]` is applied to the next model call;
+every other change is reported as needing a restart and is not applied. A file
+that does not validate is rejected and the running configuration stays as it
+was. The result is shown in the Logs panel.
+
+Started from a terminal, `zlo serve` keeps the normal hangup behavior: closing
+the terminal or losing the SSH session stops the server, and SIGHUP does not
+reload.
+
 ---
 
 ## Setup and Configuration

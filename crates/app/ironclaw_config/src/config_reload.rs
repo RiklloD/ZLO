@@ -27,6 +27,13 @@ use crate::config_file::{RebornConfigFile, RebornConfigFileError};
 ///   LLM slot. Applied by rebuilding the provider chain and swapping it into
 ///   the live provider; the key itself is still resolved through the env var
 ///   or the encrypted secret store, never read from this file.
+///
+/// Classification is per key, not per field: every field of
+/// [`crate::LlmSlotSelection`] becomes live with `llm.default`. A boot-only
+/// field added to that struct would therefore be applied live without anyone
+/// deciding so; `llm_slot_selection_fields_are_all_live_safe` destructures the
+/// struct exhaustively so such an addition fails to compile until it is
+/// reviewed here.
 pub const LIVE_RELOADABLE_CONFIG_KEYS: &[&str] = &["llm.default"];
 
 /// Whether a changed key can be applied to a running server.
@@ -202,26 +209,41 @@ impl fmt::Display for ConfigReloadReport {
 impl RebornConfigFileError {
     /// A reason safe to show on a reload report or in a log line.
     ///
-    /// The plain `Display` of a TOML parse error quotes the offending source
-    /// line, and a field-validation reason can quote the field's value; either
-    /// can be a secret an operator pasted by mistake. This keeps the location
-    /// and the kind of failure and drops the quoted text.
+    /// Every message the parser produces can quote operator input: a TOML
+    /// syntax error quotes the source line, and a schema error quotes the
+    /// offending value (`invalid type: string "…"`), variant
+    /// (`unknown variant `…``) or field name (`unknown field `…``) — all
+    /// before inline-secret validation runs. Any of them can be a secret an
+    /// operator pasted by mistake, so this emits a fixed category plus the
+    /// byte offset and never the parser's own message. The full error stays
+    /// available to the caller through `Display`/`source()`.
     pub fn redacted_reason(&self) -> String {
         match self {
             Self::Toml { path, source } => {
                 let location = source
                     .span()
-                    .map(|span| format!(" (byte offset {})", span.start))
+                    .map(|span| format!(" at byte offset {}", span.start))
                     .unwrap_or_default();
                 format!(
-                    "config file `{path}` is not valid TOML{location}: {}",
-                    source.message()
+                    "config file `{path}` is not valid TOML for the config schema \
+                     (syntax or type error{location})"
                 )
             }
             Self::InvalidField { path, field, .. } => {
                 format!("config file `{path}` field `{field}` is invalid")
             }
-            other => other.to_string(),
+            Self::IncompatibleApiVersion { path, expected, .. } => format!(
+                "config file `{path}` declares an api_version this binary does not speak \
+                 (expected `{expected}`)"
+            ),
+            Self::InvalidApiVersion { path, .. } => {
+                format!("config file `{path}` api_version could not be parsed")
+            }
+            Self::Io { path, source } => {
+                format!("could not read config file `{path}`: {}", source.kind())
+            }
+            // Names the field label and the matched pattern, never the value.
+            Self::InlineSecret { .. } => self.to_string(),
         }
     }
 }
@@ -324,6 +346,50 @@ mod tests {
         let reason = error.redacted_reason();
         assert!(!reason.contains(secret), "reason leaked the line: {reason}");
         assert!(reason.contains("not valid TOML"), "{reason}");
+    }
+
+    /// Serde messages quote the offending value, field name or variant; a
+    /// pasted secret in any of those positions must not reach the report.
+    #[test]
+    fn redacted_reason_never_quotes_values_field_names_or_variants() {
+        let secret = "sk-live-0123456789abcdef0123456789abcdef";
+        let cases = [
+            (
+                "wrong type",
+                format!("[webui]\nlisten_port = \"{secret}\"\n"),
+            ),
+            (
+                "unknown variant",
+                format!("[storage]\nbackend = \"{secret}\"\n"),
+            ),
+            ("unknown field", format!("[webui]\n{secret} = 1\n")),
+            ("api version", format!("api_version = \"{secret}\"\n")),
+        ];
+        for (case, text) in cases {
+            let error = RebornConfigFile::parse_text(&text, Path::new("/cfg/config.toml"))
+                .expect_err("invalid file must not parse");
+            let reason = error.redacted_reason();
+            assert!(
+                !reason.contains("sk-live"),
+                "{case}: reason leaked input: {reason}"
+            );
+            assert!(reason.contains("/cfg/config.toml"), "{case}: {reason}");
+        }
+    }
+
+    /// Guard for [`LIVE_RELOADABLE_CONFIG_KEYS`]: `llm.default` is live as a
+    /// whole, so each field of its slot is applied live. Adding a field here
+    /// is a compile error until it is listed below — only list it if the
+    /// provider-chain swap really honours it at runtime; otherwise split the
+    /// key so the new field stays restart-required.
+    #[test]
+    fn llm_slot_selection_fields_are_all_live_safe() {
+        let crate::LlmSlotSelection {
+            provider_id: _,
+            model: _,
+            api_key_env: _,
+            base_url: _,
+        } = crate::LlmSlotSelection::default();
     }
 
     #[test]

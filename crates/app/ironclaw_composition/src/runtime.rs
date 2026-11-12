@@ -772,9 +772,9 @@ pub struct RebornRuntime {
     boot: Option<ironclaw_config::RebornBootConfig>,
     /// Hot-swap handle for the live LLM provider, when one was wired at boot.
     llm_reload: Option<RebornLlmReloadParts>,
-    /// `config.toml` live reloader; filled once after construction when a
-    /// boot config was supplied (it needs the finished runtime's LLM seam).
-    config_reloader: std::sync::OnceLock<Arc<ironclaw_operator::RebornConfigReloader>>,
+    /// The one owner of applying `[llm.default]` live (boot apply, Settings,
+    /// login flows, `config.toml` reload); present with `boot` + `llm_reload`.
+    live_llm_default: Option<Arc<ironclaw_operator::LiveLlmDefault>>,
 }
 
 impl ironclaw_extension_manager::extension_lifecycle_command::RebornExtensionLifecycleRuntime
@@ -1631,16 +1631,9 @@ impl RebornRuntime {
     pub(crate) fn webui_llm_reload_trigger(
         &self,
     ) -> Option<Arc<dyn ironclaw_operator::LlmReloadTrigger>> {
-        let boot = self.boot.as_ref()?;
-        let parts = self.llm_reload.as_ref()?;
-        Some(Arc::new(ironclaw_operator::RebornLlmReloadAdapter::new(
-            boot.clone(),
-            Arc::clone(&parts.reload_handle),
-            Arc::clone(&parts.session),
-            ironclaw_operator::LlmKeyStore::new(crate::RuntimeOperatorSecretValueStore::shared(
-                self.secret_store(),
-            )),
-        )))
+        self.live_llm_default
+            .clone()
+            .map(|live| live as Arc<dyn ironclaw_operator::LlmReloadTrigger>)
     }
 
     /// Read-only reader exposing the live active/default model id so the WebUI
@@ -1664,11 +1657,30 @@ impl RebornRuntime {
         Some(routes as _)
     }
 
-    /// Live `config.toml` reloader (SIGHUP and operator triggers call its
-    /// `reload`). `None` when the runtime was built without a boot config,
-    /// i.e. there is no operator file to reload.
-    pub fn config_reloader(&self) -> Option<Arc<ironclaw_operator::RebornConfigReloader>> {
-        self.config_reloader.get().cloned()
+    /// The live `[llm.default]` seam a `config.toml` reloader applies
+    /// through (`zlo serve` builds its `RebornConfigReloader` over it). Shared
+    /// with Settings and the boot apply so every path is serialized and sees
+    /// what the others applied. `None` without a boot config or LLM seam.
+    pub fn live_llm_default(&self) -> Option<Arc<ironclaw_operator::LiveLlmDefault>> {
+        self.live_llm_default.clone()
+    }
+
+    /// A `config.toml` reloader for this runtime. `boot_file` must be the
+    /// snapshot the caller's boot-time decisions were made from (`zlo serve`
+    /// passes the file it parsed at startup); it is the restart-required
+    /// baseline and is never re-read. `[llm.default]` applies through
+    /// [`Self::live_llm_default`]. `None` without a boot config. Only the
+    /// serving process builds one; `run` has nothing to reload.
+    pub fn config_reloader(
+        &self,
+        boot_file: Option<ironclaw_config::RebornConfigFile>,
+    ) -> Option<Arc<ironclaw_operator::RebornConfigReloader>> {
+        let boot = self.boot.as_ref()?;
+        Some(Arc::new(ironclaw_operator::RebornConfigReloader::new(
+            boot.home().config_file_path(),
+            boot_file,
+            self.live_llm_default(),
+        )))
     }
 
     /// Diagnostic id for the no-profile run profile selected by this runtime.
@@ -3568,6 +3580,11 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     #[cfg(not(any(test, feature = "test-support")))]
     let (model_gateway, llm_cost_table, llm_reload) =
         build_production_model_gateway(boot_provider_factory, provider_routes).await?;
+    let live_llm_default = crate::model_gateway_assembly::live_llm_default(
+        boot.as_ref(),
+        llm_reload.as_ref(),
+        &services.secret_store,
+    );
 
     // Resolved cost table is either: the LLM-policy-derived table (real
     // LLM wired), a test override (so tests can drive deterministic
@@ -4630,6 +4647,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         )),
         Arc::clone(&scoped_filesystem),
         llm_reload.as_ref(),
+        live_llm_default.as_ref(),
     );
     let started_channel_host = crate::extension_host_assembly::build_runtime_channel_host(
         &services,
@@ -4972,23 +4990,16 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     // path the settings UI uses (see `webui_llm_reload_trigger`). Failure
     // degrades like a boot with no LLM configured: placeholder stays wired,
     // operator retries through Settings -> Inference without a restart.
-    if let (Some(boot_config), Some(reload_parts)) = (boot.as_ref(), llm_reload.as_ref()) {
-        let boot_reload_adapter = ironclaw_operator::RebornLlmReloadAdapter::new(
-            boot_config.clone(),
-            Arc::clone(&reload_parts.reload_handle),
-            Arc::clone(&reload_parts.session),
-            ironclaw_operator::LlmKeyStore::new(crate::RuntimeOperatorSecretValueStore::shared(
-                Arc::clone(&services.secret_store),
-            )),
+    // Through the shared live seam, so the slot it applies is the baseline a
+    // later `config.toml` reload diffs against.
+    if let Some(live) = live_llm_default.as_ref()
+        && let Err(error) = ironclaw_operator::LlmReloadTrigger::reload(live.as_ref()).await
+    {
+        tracing::warn!(
+            %error,
+            "boot-time LLM reload failed; the placeholder provider stays active until the \
+             next successful reload (e.g. through Settings -> Inference)"
         );
-        if let Err(error) = ironclaw_operator::LlmReloadTrigger::reload(&boot_reload_adapter).await
-        {
-            tracing::warn!(
-                %error,
-                "boot-time LLM reload failed; the placeholder provider stays active until the \
-                 next successful reload (e.g. through Settings -> Inference)"
-            );
-        }
     }
 
     let ironhub_link_state = Arc::clone(&services.ironhub_link_state);
@@ -5133,7 +5144,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
         tool_mentions,
         boot,
         llm_reload,
-        config_reloader: std::sync::OnceLock::new(),
+        live_llm_default,
     };
     // Channel graphs begin reconciling before the canonical product surface
     // can exist. Fill their first-write-wins command handle only after the
@@ -5154,15 +5165,6 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
     // durable state), so the discarded `set` result is deliberate.
     if let Some(channel_connection) = runtime.generic_channel_connection_facade() {
         let _ = runtime.channel_facade_slot.set(channel_connection);
-    }
-    // Baseline is the file as it stands now, i.e. what this boot applied.
-    if let Some(boot) = runtime.boot.as_ref() {
-        let reloader =
-            ironclaw_operator::RebornConfigReloader::new(boot, runtime.webui_llm_reload_trigger())
-                .map_err(|error| RebornRuntimeError::MalformedConfig {
-                    reason: error.redacted_reason(),
-                })?;
-        let _ = runtime.config_reloader.set(Arc::new(reloader));
     }
     Ok((runtime, resource_governor))
 }
@@ -5536,7 +5538,8 @@ fn filesystem_skill_context_source(
 /// feeding [`bootstrap_nearai_mcp_from_effective_llm`]'s `api_key` presence
 /// check (it inspects the config directly, not the live provider). NOT the
 /// general "stored key -> live provider" mechanism — that's
-/// [`RebornLlmReloadAdapter::reload`], invoked once after boot construction.
+/// the boot apply through `ironclaw_operator::LiveLlmDefault::reload` (which
+/// drives `RebornLlmReloadAdapter`), invoked once after boot construction.
 async fn overlay_stored_llm_key_for_nearai_mcp_bootstrap(
     llm: Option<ResolvedRebornLlm>,
     services: &RebornRuntimeStores,

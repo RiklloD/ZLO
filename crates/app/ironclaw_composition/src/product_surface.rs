@@ -413,6 +413,7 @@ pub(crate) fn compose_llm_config_service(
     keys: ironclaw_operator::LlmKeyStore,
     scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     llm_reload: Option<&RebornLlmReloadParts>,
+    live_llm_default: Option<&Arc<ironclaw_operator::LiveLlmDefault>>,
 ) -> Option<Arc<ironclaw_operator::RebornLlmConfigService>> {
     let boot = boot?;
     let model_policy_store = Arc::new(ironclaw_operator::FilesystemModelSelectionPolicyStore::new(
@@ -424,15 +425,9 @@ pub(crate) fn compose_llm_config_service(
     let mut llm_config = ironclaw_operator::RebornLlmConfigService::new(boot.clone(), keys.clone())
         .with_model_policy_store(model_policy_store)
         .with_user_model_preference_store(user_model_preference_store);
-    if let Some(parts) = llm_reload {
-        let reload = Arc::new(ironclaw_operator::RebornLlmReloadAdapter::new(
-            boot.clone(),
-            Arc::clone(&parts.reload_handle),
-            Arc::clone(&parts.session),
-            keys.clone(),
-        ));
+    if let (Some(parts), Some(live)) = (llm_reload, live_llm_default) {
         llm_config = llm_config
-            .with_reload_trigger(reload)
+            .with_reload_trigger(Arc::clone(live) as Arc<dyn ironclaw_operator::LlmReloadTrigger>)
             .with_nearai_session(Arc::clone(&parts.session))
             .with_nearai_login_states(Arc::clone(&parts.nearai_login_states));
     }

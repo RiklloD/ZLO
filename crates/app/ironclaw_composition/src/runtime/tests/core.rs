@@ -3040,7 +3040,7 @@ async fn provider_factory_runs_during_production_boot() {
 /// selected purely through `config.toml` + a stored API key (no env var set)
 /// must reach the turn-serving provider. This exercises the ONLY mechanism
 /// that now applies a stored key to the live gateway — the post-construction
-/// `RebornLlmReloadAdapter::reload()` invoked once inside
+/// boot apply (`LiveLlmDefault::reload()` over `RebornLlmReloadAdapter`) invoked once inside
 /// `build_reborn_runtime` — by supplying a real `boot` config (so the
 /// reload adapter can re-resolve `[llm.default]` from disk) instead of
 /// pre-baking the stored key into a directly-supplied `ResolvedRebornLlm`

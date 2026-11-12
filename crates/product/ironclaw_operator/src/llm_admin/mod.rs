@@ -1,4 +1,5 @@
 pub mod active_model;
+pub mod live_llm_default;
 pub mod llm_catalog;
 pub mod llm_config_service;
 pub mod llm_key_store;
@@ -14,6 +15,7 @@ mod task_models;
 mod user_model_preference_store;
 
 pub use active_model::ProviderActiveModelReader;
+pub use live_llm_default::{LiveLlmDefault, LiveLlmDefaultGuard};
 pub use llm_catalog::{apply_stored_api_key, resolve_reborn_runtime_llm};
 pub use llm_config_service::{LlmReloadTrigger, RebornLlmConfigService};
 pub use llm_key_store::{LlmKeyStore, LlmKeyStoreError};

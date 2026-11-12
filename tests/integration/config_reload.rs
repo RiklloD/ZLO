@@ -5,8 +5,9 @@
 //! at a local endpoint. The endpoint records the `model` of every chat
 //! request — the seam: it is what the provider actually sent upstream after
 //! the full `ironclaw_llm` chain ran. Each test edits the file, calls the same
-//! `RebornConfigReloader::reload` that `zlo serve`'s SIGHUP handler calls, and
-//! asserts on the next model request.
+//! `RebornConfigReloader::reload` that `zlo serve`'s SIGHUP handler calls
+//! (built the way serve builds it, over the boot-parsed snapshot), and asserts
+//! on the next model request.
 //!
 //! Tier note: this drives `build_reborn_runtime` rather than
 //! `RebornIntegrationHarness`, because the harness assembles its own stack
@@ -24,7 +25,9 @@ use ironclaw_composition::{
     RebornRuntime, RebornRuntimeIdentity, RebornRuntimeInput, build_reborn_runtime,
     local_filesystem_build_input, standalone_runtime_policy,
 };
-use ironclaw_config::{ConfigReloadOutcome, RebornBootConfig, RebornHome, RebornProfile};
+use ironclaw_config::{
+    ConfigReloadOutcome, RebornBootConfig, RebornConfigFile, RebornHome, RebornProfile,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -85,6 +88,8 @@ struct Booted {
     base_url: String,
     seen: SeenModels,
     runtime: RebornRuntime,
+    /// The file as boot parsed it: the reloader's restart-required baseline.
+    boot_file: Option<RebornConfigFile>,
 }
 
 impl Booted {
@@ -111,9 +116,11 @@ impl Booted {
         self.seen.last().expect("the endpoint saw a model call")
     }
 
+    /// A fresh reloader per call on purpose: all reload state lives in the
+    /// runtime's shared live-LLM owner, not in the reloader.
     async fn reload(&self) -> ironclaw_config::ConfigReloadReport {
         self.runtime
-            .config_reloader()
+            .config_reloader(self.boot_file.clone())
             .expect("a boot-config runtime has a reloader")
             .reload()
             .await
@@ -135,6 +142,7 @@ async fn boot(initial_model: &str, extra: &str) -> Booted {
         ),
     )
     .expect("write config.toml");
+    let boot_file = RebornConfigFile::load(&config_path).expect("boot parse");
     let input = RebornRuntimeInput::from_build_input(
         local_filesystem_build_input("config-reload-owner", root.path().join("storage"))
             .with_runtime_policy(standalone_runtime_policy().expect("standalone policy")),
@@ -153,6 +161,7 @@ async fn boot(initial_model: &str, extra: &str) -> Booted {
         base_url,
         seen,
         runtime,
+        boot_file,
     }
 }
 
@@ -187,8 +196,12 @@ async fn invalid_config_is_rejected_and_the_old_model_keeps_serving() {
     assert!(report.applied.is_empty());
     assert_eq!(b.model_of_next_turn().await, "model-a");
 
-    // Parses, but the live seam refuses it (unknown provider): the provider
-    // chain is built before the swap, so the old provider stays wired.
+    // Parses, but the live seam refuses it: the selection does not resolve
+    // (unknown provider), so nothing is built or swapped and the old provider
+    // stays wired. A selection that resolves but whose chain fails to build
+    // leaves the old chain in place too; that is pinned where the build
+    // happens, `ironclaw_llm`'s
+    // `llm_reload_handle_preserves_old_chain_on_build_failure`.
     b.write("[llm.default]\nprovider_id = \"no-such-provider\"\nmodel = \"model-b\"\n");
     let report = b.reload().await;
     assert!(
@@ -201,6 +214,27 @@ async fn invalid_config_is_rejected_and_the_old_model_keeps_serving() {
     b.write(&b.llm_section("model-b"));
     assert_eq!(b.reload().await.outcome, ConfigReloadOutcome::Applied);
     assert_eq!(b.model_of_next_turn().await, "model-b");
+    b.runtime.shutdown().await.expect("shutdown");
+}
+
+/// The boot parse, not a re-read at the end of assembly, is the baseline: a
+/// boot-time key edited while the server was starting is still reported.
+#[tokio::test]
+async fn edit_racing_boot_is_reported_restart_required() {
+    let b = boot("model-a", "").await;
+    // Lands after the boot parse but before any reload.
+    b.write(&format!(
+        "{}[webui]\nlisten_port = 4300\n",
+        b.llm_section("model-a")
+    ));
+    let report = b.reload().await;
+    assert_eq!(
+        report.outcome,
+        ConfigReloadOutcome::RestartRequired,
+        "{report}"
+    );
+    assert_eq!(report.restart_required, vec!["webui"]);
+    assert_eq!(b.model_of_next_turn().await, "model-a");
     b.runtime.shutdown().await.expect("shutdown");
 }
 

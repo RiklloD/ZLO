@@ -330,8 +330,10 @@ impl LlmReloadHandle {
             // Asymmetry: no cheap wrapper was allocated at startup, so a
             // newly-configured cheap model cannot be activated via hot-reload.
             // Surfacing this through tracing so ops don't think the swap
-            // silently took effect.
-            tracing::warn!(
+            // silently took effect. `debug!`, not `warn!`: reloads also run
+            // from background tasks (SIGHUP config reload, login flows),
+            // where `warn!` would corrupt the REPL/TUI.
+            tracing::debug!(
                 "llm hot-reload: cheap provider is now configured but was not at startup; \
                  it will only take effect after a full restart",
             );

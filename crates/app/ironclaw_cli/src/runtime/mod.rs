@@ -647,6 +647,7 @@ pub(crate) fn build_runtime_input_with_options(
 
     Ok(BuiltRuntimeInput {
         inner: runtime_input,
+        config_file: runtime_services.config_file,
     })
 }
 
@@ -723,6 +724,11 @@ pub(crate) struct RuntimeServicesInput {
 
 pub(crate) struct BuiltRuntimeInput {
     pub(crate) inner: RebornRuntimeInput,
+    /// The `config.toml` snapshot `inner` was built from (`None` = no file).
+    /// `serve` makes its own boot decisions from this same parse and hands it
+    /// to the config reloader as the boot baseline, so nothing re-reads a
+    /// file that may have changed since.
+    pub(crate) config_file: Option<ironclaw_config::RebornConfigFile>,
 }
 
 #[derive(Clone, Debug)]
