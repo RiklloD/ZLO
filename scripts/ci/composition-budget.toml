@@ -338,16 +338,17 @@ observed_date = "2026-11-12"
 # 33749 LOC / 668 sites — composition has no ungated `mod tests` and no
 # `*_tests.rs` whose gating the fixes changed.
 # ✎ 2026-11-12 (integration of the reviewed-improvements batch): re-seeded
-# the same way, ZERO hidden headroom: loc_ceiling + loc_tolerance = 34406 +
-# 150 = 34556 = the observed count on the integrated tip. THIS BANKS A
-# FURTHER +808 LOC (33748 on main -> 34556), likewise pending the owner's
+# the same way, ZERO hidden headroom: loc_ceiling + loc_tolerance = 34410 +
+# 150 = 34560 = the observed count on the integrated tip. THIS BANKS A
+# FURTHER +812 LOC (33748 on main -> 34560), likewise pending the owner's
 # sign-off. Per merge, measured at each first-parent commit with
 # `check-composition-budget.sh --print`: fix/let-underscore-must-use +21
 # (observable shutdown/emit traces), split-composition-runtime +87 (module
 # headers/imports of the runtime.rs split), gate-enforcement-finish +1,
 # feat/config-hot-reload +41, feat/operator-readiness-metrics +234,
-# embeddings-hybrid-memory +424; every other branch +0.
-loc_ceiling = 34406
+# embeddings-hybrid-memory +424, and +4 for the integration's own
+# let_underscore_must_use expect in embeddings.rs; every other branch +0.
+loc_ceiling = 34410
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -358,7 +359,7 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 34556
+loc_observed = 34560
 loc_observed_date = "2026-11-12"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------
