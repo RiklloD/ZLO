@@ -23,6 +23,8 @@
 //! - **Fails loudly.** A failed move (cross-device, permissions, …) is a
 //!   [`RebornConfigError::HomeMigration`]; ZLO never silently starts on an
 //!   empty `~/.zlo` while the data still sits in `~/.ironclaw/reborn`.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::{
     fmt, fs, io,

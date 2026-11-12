@@ -6,6 +6,8 @@
 //! → verification → panic-isolated `inbound` → durable admission before any
 //! 2xx. Checklist: ING-1/2/5/6/7/8-unit/9/11-storage; the recipe byte
 //! semantics themselves are pinned by the verifier unit tests (ING-3/4).
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
 use ironclaw_extension_contracts::state::InstallationState;

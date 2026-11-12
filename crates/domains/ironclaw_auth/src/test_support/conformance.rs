@@ -23,6 +23,8 @@
 //! (`#[cfg(any(test, feature = "test-support"))]`, under [`crate::test_support`]):
 //! this crate's charter is auth contracts *and* their test vocabulary, but the
 //! panic-on-violation harness must not ship in production binaries.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use chrono::{Duration, Utc};
 

@@ -14,6 +14,8 @@
 //!
 //! Any change to the escaping rule belongs here, and `terminal_safe_escapes_*`
 //! below is the pin that keeps the two surfaces agreeing.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 /// Render untrusted text safely for a terminal by escaping every character
 /// that is not printable ASCII.

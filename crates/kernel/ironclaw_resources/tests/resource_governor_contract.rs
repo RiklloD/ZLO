@@ -1,4 +1,6 @@
 // arch-exempt: large_file, resource governor contract suite decomposition, plan #5662
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 use std::{
     fs,
     sync::{Arc, Barrier},

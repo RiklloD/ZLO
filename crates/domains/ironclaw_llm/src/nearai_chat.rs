@@ -6,6 +6,8 @@
 //! - **Session token auth**: Otherwise, uses `SessionManager` for Bearer session token
 //!   with automatic renewal on 401 errors
 // arch-exempt: large_file, provider-local streaming regression tests require private parser access pending provider adapter decomposition, plan #6175
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::sync::Arc;

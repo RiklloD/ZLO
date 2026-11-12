@@ -32,6 +32,8 @@
 //! identical binding/event id produce different on-disk keys.
 //! `replay_accepted_inbound_message` recomputes that key from its scoped
 //! request and performs one exact read.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 mod history_search_index;
 mod history_search_query;

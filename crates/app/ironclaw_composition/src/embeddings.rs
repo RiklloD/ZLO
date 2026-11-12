@@ -62,7 +62,11 @@ impl EmbeddingAssembly {
     /// Bind the operator key store once the runtime's secret store exists.
     /// Idempotent: a second bind is ignored.
     pub(crate) fn bind_key_store(&self, keys: LlmKeyStore) {
-        let _ = self.keys.set(keys); // silent-ok: first bind wins; every build binds the same runtime secret store
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "OnceLock first bind wins; every build binds the same runtime secret store"
+        )]
+        let _ = self.keys.set(keys);
     }
 }
 

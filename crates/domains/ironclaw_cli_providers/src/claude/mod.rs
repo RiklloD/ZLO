@@ -16,6 +16,8 @@
 //! rules, prompts answered "no", never `--dangerously-skip-permissions`,
 //! and the CLI's own subagent tools (`Agent`, `Workflow`) are disallowed:
 //! subagents are orchestrator threads (`t3_delegate`).
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 mod compact;
 mod control;

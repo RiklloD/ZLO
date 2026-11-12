@@ -14,6 +14,8 @@
 //! Files are memoised by size and mtime, and a grown file resumes from where
 //! the last scan stopped when the bytes before that point are unchanged.
 //! Prices come from models.dev's public catalog, cached on disk for a day.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};

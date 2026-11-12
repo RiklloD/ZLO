@@ -4,6 +4,8 @@
 //! - `is_retryable()` — `LlmError`-level retryability classification (shared with `failover.rs`)
 //! - `retry_backoff_delay()` — exponential backoff with jitter
 //! - `RetryProvider` — decorator that wraps any `LlmProvider` with automatic retries
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::future::Future;
 use std::sync::Arc;

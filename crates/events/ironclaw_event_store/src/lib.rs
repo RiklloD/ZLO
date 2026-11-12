@@ -25,6 +25,8 @@
 //! invocation boundary. Adding it requires changes to `ironclaw_event_log`,
 //! the JSONL/in-memory `matches_event` / `matches_audit` predicates, and
 //! every replay caller — tracked as a follow-up.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::{
     collections::HashMap,

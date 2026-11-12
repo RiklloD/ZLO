@@ -15,6 +15,8 @@
 //! compaction only. Hot reserve/reconcile/release paths update per-account
 //! shards in memory, enqueue one delta, and ack the caller after the group
 //! commit flusher durably appends that delta.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

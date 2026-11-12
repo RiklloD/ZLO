@@ -22,6 +22,8 @@
 //!   [`LlmReloadHandle::reload`] rebuilds the chain from config and drops
 //!   the override. Callers that rely on a model override must persist it
 //!   through the normal settings path.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};

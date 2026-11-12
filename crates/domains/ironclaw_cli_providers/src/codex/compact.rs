@@ -8,6 +8,8 @@
 //! app-server has exited. A compaction never re-arms the timer and is not
 //! reported to the engine as a turn; the journal gets one "Context
 //! compacted." row.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

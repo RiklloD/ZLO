@@ -16,6 +16,8 @@
 //! resolver settles dependencies and resumes the parent process from inside
 //! `observe_process_commit`), so a flusher that blocked on delivery could never
 //! commit the command delivery is waiting on.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::mem;
 

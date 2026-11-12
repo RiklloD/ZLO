@@ -1,6 +1,8 @@
 //! The desktop's schedule surface: list by owner, preview, a server-made
 //! signing secret revealed only on request, rotation, and the last webhook
 //! delivery and run thread on each row.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use hmac::{Hmac, KeyInit, Mac};
 

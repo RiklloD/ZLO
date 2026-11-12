@@ -19,6 +19,8 @@
 //! [`CliBridge::record_to`] has a store, every call is also written to
 //! `orch_cli_approvals` when asked and when answered, and a call that cannot
 //! be recorded is denied.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

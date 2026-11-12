@@ -1,4 +1,6 @@
 // arch-exempt: large_file, backend parity contracts stay in one shared behavioral suite, plan #5274
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 use std::time::Duration;
 
 use ironclaw_filesystem::PostgresRootFilesystem;

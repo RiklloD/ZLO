@@ -12,6 +12,8 @@
 //!   results for verifying tool output during replay
 //!
 //! Enable by setting `IRONCLAW_RECORD_TRACE=1` at runtime.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;

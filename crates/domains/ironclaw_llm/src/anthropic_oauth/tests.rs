@@ -4,6 +4,8 @@
 //! capture-server tests pinning the request JSON — including the #6984
 //! `cache_control` breakpoint layout — plus direct branch tests for
 //! `apply_cache_breakpoints`.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use super::*;
 /// The tail host reminder must not create a second consecutive user

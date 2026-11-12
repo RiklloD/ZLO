@@ -102,17 +102,20 @@ unused_must_use = "deny"
 # error is returned).
 #
 # Scope: like every `[workspace.lints]` entry this binds only crates that opt
-# in with `[lints] workspace = true`. Today that is ironclaw_approvals,
+# in with `[lints] workspace = true` — since gate-enforcement-finish that is
+# 69 of 71 crates (not ironclaw_assistant / ironclaw_webui), all targets,
+# tests included. The discards were triaged in ironclaw_approvals,
 # ironclaw_attachments, ironclaw_composition, ironclaw_documents,
 # ironclaw_event_log, ironclaw_hooks, ironclaw_host_runtime,
 # ironclaw_identity, ironclaw_notifications, ironclaw_openai_compat,
-# ironclaw_operator and ironclaw_turn_runner — all targets, tests included.
-# In those crates a kept discard carries a statement-level
-# `#[expect(clippy::let_underscore_must_use, reason = "...")]`, so a stale
-# exemption fails the build. Every other crate is unenforced: production
-# sites under `crates/` were triaged once (kept discards marked
-# `// silent-ok: <why>`), but their test sites and all of
-# `tools/ironclaw_stress` were not, and nothing stops new discards in them.
+# ironclaw_operator and ironclaw_turn_runner: a kept discard there carries a
+# statement-level `#[expect(clippy::let_underscore_must_use, reason = "...")]`,
+# so a stale exemption fails the build. When the wider opt-in landed, 124
+# files elsewhere still held 428 untriaged discards (production sites marked
+# `// silent-ok: <why>`, test sites unmarked); each carries a file-level
+# `#![allow(clippy::let_underscore_must_use)]` under an "untriaged discards"
+# comment. That list only shrinks: triage a file, delete its allow. New files
+# and every other file are denied.
 let_underscore_must_use = "deny"
 
 [package]

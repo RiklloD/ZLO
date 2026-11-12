@@ -35,6 +35,8 @@
 //! bumps it, every pooled entry checks it before each vendor RPC
 //! ([`PooledSession::check_fence`]), and the entry is dropped immediately. The
 //! honest residue: a write already on the wire cannot be recalled.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

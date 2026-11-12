@@ -1,4 +1,6 @@
 //! LLM provider error types.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::time::Duration;
 

@@ -1,3 +1,5 @@
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;

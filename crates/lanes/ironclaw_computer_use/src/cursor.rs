@@ -4,6 +4,8 @@
 //! destination is followed from the session's observation file (the app agent
 //! writes it, `OPEN_COMPUTER_USE_VISUAL_CURSOR_OBSERVATION_FILE`), so the
 //! viewer's cursor moves with it.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

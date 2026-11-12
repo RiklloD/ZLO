@@ -38,6 +38,8 @@
 //! file's `Environment=` lines. A CLI install replacing a facade-installed
 //! unit is therefore a security improvement, not just a collision to
 //! avoid.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

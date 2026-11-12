@@ -11,6 +11,8 @@
 //! `LlmProvider` and share only the hardened HTTP transport in `config.rs`.
 //! Credentials arrive as [`secrecy::SecretString`] resolved by the caller's
 //! secrets path; they are never logged or echoed in errors.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 mod elevenlabs;
 mod openai;

@@ -22,6 +22,8 @@
 //! The trait surface is intentionally private — only the two filesystem
 //! stores in this crate consume it. Downstream crates use the
 //! per-store public APIs.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::future::Future;
 use std::sync::{

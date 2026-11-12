@@ -15,6 +15,8 @@
 //! through [`crate::permissions::decide`]: an IronClaw approval in the
 //! thread when the host has a bridge. Without one, shell and writes are off
 //! too (`--disable-shell --disable-write`) and approvals are denied.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 mod fold;
 

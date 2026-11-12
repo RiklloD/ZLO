@@ -10,6 +10,8 @@
 //! architecture-linting tests. `ironclaw_wasm` previously kept a
 //! verbatim copy (plus the `memory_used`/`memory_limit` accessors, now folded
 //! in here); it imports this one instead.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use wasmtime::ResourceLimiter;
 

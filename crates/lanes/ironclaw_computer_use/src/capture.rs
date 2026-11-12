@@ -10,6 +10,8 @@
 //! read. Each picture is fenced by the desktop lease: nothing is captured
 //! while a person holds the desktop, and a picture taken across a takeover
 //! (the epoch moved) is dropped.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::io::Cursor;

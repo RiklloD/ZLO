@@ -1,4 +1,6 @@
 //! Manual-review holds and the queue-flush paths, including their failure classification.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

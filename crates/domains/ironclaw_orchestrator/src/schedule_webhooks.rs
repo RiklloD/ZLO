@@ -9,6 +9,8 @@
 //! `{{request}}`. The request is untrusted, so the rendered prompt is bounded
 //! and runs through the planner's unattended-prompt scan before it is posted.
 //! The HTTP route lives in composition; this module decides everything.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use base64::Engine as _;
 use hmac::{Hmac, KeyInit, Mac};

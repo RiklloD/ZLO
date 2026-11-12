@@ -1,4 +1,6 @@
 //! Shared Docker lifecycle helpers for the local user-sandbox acceptance suites.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::{
     collections::{HashMap, HashSet},

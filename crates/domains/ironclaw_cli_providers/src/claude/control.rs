@@ -5,6 +5,8 @@
 //! Every hook callback is answered with an explicit allow or deny. Never an
 //! error response: the CLI treats a failed hook as "no opinion" and goes on
 //! with its own permission rules, which auto-approve reads.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::sync::Arc;
 

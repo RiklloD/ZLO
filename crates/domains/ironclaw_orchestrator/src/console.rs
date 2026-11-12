@@ -10,6 +10,8 @@
 //! refuses to start. Stop, the timeout, and shutdown kill the command's
 //! whole process tree. Output is not persisted, logged or shown to a model:
 //! it goes back only to the operator who typed the command.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;

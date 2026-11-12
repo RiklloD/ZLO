@@ -1,3 +1,5 @@
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 use super::*;
 
 const WEBUI_TOKEN: &str = "zlo-diag-webui-token-canary-0123456789abcdef";

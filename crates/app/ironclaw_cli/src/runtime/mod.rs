@@ -1,4 +1,6 @@
 // arch-exempt: large_file, Google OAuth resolution hardening remains at the existing runtime config seam, plan #4088
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Duration;

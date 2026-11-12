@@ -1,6 +1,8 @@
 //! A thread's repository and console for a remote client, over real
 //! temporary git repositories, driven through the engine's public calls
 //! (`thread_git`, `thread_git_change`, `thread_console*`).
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -4,6 +4,8 @@
 //! host-selected backend. Extension manifests describe the command metadata, but
 //! extensions do not receive raw Docker flags, host paths, ambient environment,
 //! secrets, or network by default.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::{
     io::{Read, Write},

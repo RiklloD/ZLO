@@ -1,5 +1,7 @@
 //! Shared fixtures for the `contribution` test modules: privacy-filter and
 //! credential-provider fakes, env guards, and record builders.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

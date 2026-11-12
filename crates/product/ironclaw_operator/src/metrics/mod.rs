@@ -352,104 +352,112 @@ impl OperatorMetrics {
     pub fn render_prometheus(&self) -> String {
         let state = self.state();
         let mut out = String::with_capacity(4096);
-        render_counter(
-            &mut out,
-            "ironclaw_turn_runs_total",
-            "Turn runs that committed a terminal state, by outcome.",
-            &["outcome"],
-            &state.runs,
-        );
-        render_histogram(
-            &mut out,
-            "ironclaw_turn_run_duration_seconds",
-            "Turn run wall-clock duration from its first observed lifecycle transition to its terminal one, gate waits included.",
-            &["outcome"],
-            &state.run_duration,
-        );
-        render_counter(
-            &mut out,
-            "ironclaw_model_calls_total",
-            "Model calls made by the agent loop, by outcome.",
-            &["outcome"],
-            &state.model_calls,
-        );
-        render_histogram(
-            &mut out,
-            "ironclaw_model_call_duration_seconds",
-            "Agent-loop model call duration.",
-            &["outcome"],
-            &state.model_call_duration,
-        );
-        render_counter(
-            &mut out,
-            "ironclaw_capability_invocations_total",
-            "Capability (tool) invocations requested by the agent loop, by capability and outcome.",
-            &["capability_id", "outcome"],
-            &state.capability_invocations,
-        );
-        render_counter(
-            &mut out,
-            "ironclaw_capability_failures_total",
-            "Failed capability invocations, by capability and sanitized failure kind.",
-            &["capability_id", "reason"],
-            &state.capability_failures,
-        );
-        render_counter(
-            &mut out,
-            "ironclaw_llm_requests_total",
-            "LLM provider requests, by provider, model and outcome.",
-            &["provider", "model", "outcome"],
-            &state.llm_requests,
-        );
-        render_counter(
-            &mut out,
-            "ironclaw_llm_errors_total",
-            "Failed LLM provider requests, by provider, model and error kind.",
-            &["provider", "model", "kind"],
-            &state.llm_errors,
-        );
-        render_counter(
-            &mut out,
-            "ironclaw_llm_tokens_total",
-            "Tokens reported by LLM providers, by provider, model and token kind.",
-            &["provider", "model", "kind"],
-            &state.llm_tokens,
-        );
-        render_histogram(
-            &mut out,
-            "ironclaw_llm_request_duration_seconds",
-            "LLM provider request duration, by outcome.",
-            &["outcome"],
-            &state.llm_request_duration,
-        );
-        let _ = writeln!(
-            out,
-            "# HELP ironclaw_approval_gates_opened_total Turn runs that blocked on an approval gate."
-        );
-        let _ = writeln!(out, "# TYPE ironclaw_approval_gates_opened_total counter");
-        let _ = writeln!(
-            out,
-            "ironclaw_approval_gates_opened_total {}",
-            state.approvals_opened
-        );
-        render_counter(
-            &mut out,
-            "ironclaw_approval_gates_resolved_total",
-            "User-actionable approval gates that left the pending state, by resolution.",
-            &["resolution"],
-            &state.approvals_resolved,
-        );
-        let _ = writeln!(
-            out,
-            "# HELP ironclaw_metrics_series_overflow_total Samples folded into the __other__ series because a family hit its series ceiling."
-        );
-        let _ = writeln!(out, "# TYPE ironclaw_metrics_series_overflow_total counter");
-        for (family, count) in &state.overflow {
-            let _ = writeln!(
+        let render = |out: &mut String| -> std::fmt::Result {
+            render_counter(
                 out,
-                "ironclaw_metrics_series_overflow_total{{family=\"{family}\"}} {count}"
-            );
-        }
+                "ironclaw_turn_runs_total",
+                "Turn runs that committed a terminal state, by outcome.",
+                &["outcome"],
+                &state.runs,
+            )?;
+            render_histogram(
+                out,
+                "ironclaw_turn_run_duration_seconds",
+                "Turn run wall-clock duration from its first observed lifecycle transition to its terminal one, gate waits included.",
+                &["outcome"],
+                &state.run_duration,
+            )?;
+            render_counter(
+                out,
+                "ironclaw_model_calls_total",
+                "Model calls made by the agent loop, by outcome.",
+                &["outcome"],
+                &state.model_calls,
+            )?;
+            render_histogram(
+                out,
+                "ironclaw_model_call_duration_seconds",
+                "Agent-loop model call duration.",
+                &["outcome"],
+                &state.model_call_duration,
+            )?;
+            render_counter(
+                out,
+                "ironclaw_capability_invocations_total",
+                "Capability (tool) invocations requested by the agent loop, by capability and outcome.",
+                &["capability_id", "outcome"],
+                &state.capability_invocations,
+            )?;
+            render_counter(
+                out,
+                "ironclaw_capability_failures_total",
+                "Failed capability invocations, by capability and sanitized failure kind.",
+                &["capability_id", "reason"],
+                &state.capability_failures,
+            )?;
+            render_counter(
+                out,
+                "ironclaw_llm_requests_total",
+                "LLM provider requests, by provider, model and outcome.",
+                &["provider", "model", "outcome"],
+                &state.llm_requests,
+            )?;
+            render_counter(
+                out,
+                "ironclaw_llm_errors_total",
+                "Failed LLM provider requests, by provider, model and error kind.",
+                &["provider", "model", "kind"],
+                &state.llm_errors,
+            )?;
+            render_counter(
+                out,
+                "ironclaw_llm_tokens_total",
+                "Tokens reported by LLM providers, by provider, model and token kind.",
+                &["provider", "model", "kind"],
+                &state.llm_tokens,
+            )?;
+            render_histogram(
+                out,
+                "ironclaw_llm_request_duration_seconds",
+                "LLM provider request duration, by outcome.",
+                &["outcome"],
+                &state.llm_request_duration,
+            )?;
+            writeln!(
+                out,
+                "# HELP ironclaw_approval_gates_opened_total Turn runs that blocked on an approval gate."
+            )?;
+            writeln!(out, "# TYPE ironclaw_approval_gates_opened_total counter")?;
+            writeln!(
+                out,
+                "ironclaw_approval_gates_opened_total {}",
+                state.approvals_opened
+            )?;
+            render_counter(
+                out,
+                "ironclaw_approval_gates_resolved_total",
+                "User-actionable approval gates that left the pending state, by resolution.",
+                &["resolution"],
+                &state.approvals_resolved,
+            )?;
+            writeln!(
+                out,
+                "# HELP ironclaw_metrics_series_overflow_total Samples folded into the __other__ series because a family hit its series ceiling."
+            )?;
+            writeln!(out, "# TYPE ironclaw_metrics_series_overflow_total counter")?;
+            for (family, count) in &state.overflow {
+                writeln!(
+                    out,
+                    "ironclaw_metrics_series_overflow_total{{family=\"{family}\"}} {count}"
+                )?;
+            }
+            Ok(())
+        };
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "fmt::Write for String never fails"
+        )]
+        let _ = render(&mut out);
         out
     }
 }
@@ -540,16 +548,17 @@ fn render_counter(
     help: &str,
     label_names: &[&str],
     counter: &LabeledCounter,
-) {
-    let _ = writeln!(out, "# HELP {name} {help}");
-    let _ = writeln!(out, "# TYPE {name} counter");
+) -> std::fmt::Result {
+    writeln!(out, "# HELP {name} {help}")?;
+    writeln!(out, "# TYPE {name} counter")?;
     for (values, count) in &counter.series {
-        let _ = writeln!(
+        writeln!(
             out,
             "{name}{} {count}",
             label_set(label_names, values, None)
-        );
+        )?;
     }
+    Ok(())
 }
 
 fn render_histogram(
@@ -558,29 +567,30 @@ fn render_histogram(
     help: &str,
     label_names: &[&str],
     histogram: &LabeledHistogram,
-) {
-    let _ = writeln!(out, "# HELP {name} {help}");
-    let _ = writeln!(out, "# TYPE {name} histogram");
+) -> std::fmt::Result {
+    writeln!(out, "# HELP {name} {help}")?;
+    writeln!(out, "# TYPE {name} histogram")?;
     for (values, series) in &histogram.series {
         let mut cumulative = 0_u64;
         for (bound, count) in DURATION_BUCKETS_SECONDS.iter().zip(series.buckets.iter()) {
             cumulative += count;
-            let _ = writeln!(
+            writeln!(
                 out,
                 "{name}_bucket{} {cumulative}",
                 label_set(label_names, values, Some(&bound.to_string()))
-            );
+            )?;
         }
-        let _ = writeln!(
+        writeln!(
             out,
             "{name}_bucket{} {}",
             label_set(label_names, values, Some("+Inf")),
             series.count
-        );
+        )?;
         let labels = label_set(label_names, values, None);
-        let _ = writeln!(out, "{name}_sum{labels} {}", series.sum_seconds);
-        let _ = writeln!(out, "{name}_count{labels} {}", series.count);
+        writeln!(out, "{name}_sum{labels} {}", series.sum_seconds)?;
+        writeln!(out, "{name}_count{labels} {}", series.count)?;
     }
+    Ok(())
 }
 
 fn label_set(names: &[&str], values: &[String], le: Option<&str>) -> String {

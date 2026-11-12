@@ -4,6 +4,8 @@
 //! This crate adapts durable Reborn support boundaries (threads/transcripts plus
 //! host-managed model gateways) into the narrow `AgentLoopHost` ports. It does
 //! not own provider clients, tool dispatchers, secrets, or runtime handles.
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 
 use std::{
     collections::{HashMap, HashSet},

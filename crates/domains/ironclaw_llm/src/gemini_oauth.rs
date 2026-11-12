@@ -1,4 +1,6 @@
 // arch-exempt: large_file, one match arm forced by the new Role::HostReminder variant (#6985); no new concern in this file, plan #6985
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};

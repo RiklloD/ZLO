@@ -1,4 +1,6 @@
 // arch-exempt: large_file, model-visible extension removal adapter and caller tests, plan #5905
+// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
+#![allow(clippy::let_underscore_must_use)]
 use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
