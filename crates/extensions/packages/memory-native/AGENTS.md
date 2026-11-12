@@ -39,6 +39,9 @@ rule 1).
     `MemorySearchResult` (`search`). Full text always; with an embedder, a
     vector branch fused with full text by reciprocal rank (`is_hybrid` =
     ranked by both). No embedder ⇒ exactly the full-text ranking.
+    Vector hits below `DEFAULT_MIN_VECTOR_SIMILARITY` never rank, and the
+    vector branch only ranks vectors stored under the query embedder's
+    `MemoryEmbeddingFingerprint` (contract: `docs/internal/reborn/contracts/memory.md` §5.2).
   - The significant-event sink (`events`), and the prompt-write safety engine
     (`PromptWriteSafetyPolicy` + protected-path/decision/event types, `safety`)
     that implements the vocabulary the neutral contract defines.

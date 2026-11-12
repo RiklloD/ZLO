@@ -145,6 +145,24 @@ pub struct NativeMemoryService {
     /// time). `None` is today's full-text-only provider.
     // arch-exempt: optional_arc, a deployment without `[embeddings]` searches full text only by design, plan #embeddings
     embedder: Option<Arc<dyn crate::MemoryEmbedder>>,
+    /// The last query embedding, shared so a prompt-context load that runs
+    /// both recall lanes (concurrently, with the same query) embeds it once:
+    /// the second lane waits on this lock and reuses the first lane's answer,
+    /// including a failure. One entry, reused for at most
+    /// `QUERY_VECTOR_REUSE`; a different query or scope replaces it.
+    last_query_vector: tokio::sync::Mutex<Option<CachedQueryVector>>,
+}
+
+/// How long one query embedding (or its failure) is reused — long enough to
+/// cover both recall lanes of one context load, short enough that a provider
+/// outage does not pin a query to full text.
+const QUERY_VECTOR_REUSE: std::time::Duration = std::time::Duration::from_secs(10);
+
+struct CachedQueryVector {
+    at: std::time::Instant,
+    scope: MemoryDocumentScope,
+    query: String,
+    embedding: Option<crate::MemoryChunkEmbedding>,
 }
 
 impl std::fmt::Debug for NativeMemoryService {
@@ -162,6 +180,7 @@ impl NativeMemoryService {
         Self {
             backend,
             embedder: None,
+            last_query_vector: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -188,11 +207,15 @@ impl NativeMemoryService {
                 embedder.clone(),
             ),
             embedder,
+            last_query_vector: tokio::sync::Mutex::new(None),
         }
     }
 
-    /// Attach the query vector when an embedder is configured. An embedding
-    /// failure degrades this search to full text rather than failing it.
+    /// Attach the query vector when an embedder is configured. The embedding
+    /// is bounded by `QUERY_EMBEDDING_BUDGET`; a failure or timeout degrades
+    /// this search to full text rather than failing or stalling it. The same
+    /// (scope, query) reuses the last answer, so concurrent recall lanes embed
+    /// once.
     async fn with_query_vector(
         &self,
         scope: &MemoryDocumentScope,
@@ -201,16 +224,42 @@ impl NativeMemoryService {
         let Some(embedder) = &self.embedder else {
             return request;
         };
-        let query = vec![request.query().to_string()];
-        match crate::embedding::embed_all(embedder.as_ref(), scope, &query).await {
-            Ok(mut vectors) => match vectors.pop() {
-                Some(vector) => request.with_query_embedding(vector),
-                None => request,
-            },
-            Err(error) => {
-                tracing::debug!(%error, "memory query embedding failed; searching full text only");
-                request
+        let mut cached = self.last_query_vector.lock().await;
+        let embedding = match cached.as_ref() {
+            Some(entry)
+                if entry.at.elapsed() < QUERY_VECTOR_REUSE
+                    && entry.scope == *scope
+                    && entry.query == request.query() =>
+            {
+                entry.embedding.clone()
             }
+            _ => {
+                let embedding =
+                    match crate::embedding::embed_query(embedder.as_ref(), scope, request.query())
+                        .await
+                    {
+                        Ok(embedding) => Some(embedding),
+                        Err(error) => {
+                            tracing::debug!(
+                                %error,
+                                "memory query embedding failed; searching full text only"
+                            );
+                            None
+                        }
+                    };
+                *cached = Some(CachedQueryVector {
+                    at: std::time::Instant::now(),
+                    scope: scope.clone(),
+                    query: request.query().to_string(),
+                    embedding: embedding.clone(),
+                });
+                embedding
+            }
+        };
+        drop(cached);
+        match embedding {
+            Some(embedding) => request.with_query_embedding(embedding),
+            None => request,
         }
     }
 

@@ -56,7 +56,7 @@ pub(super) async fn build_production_shaped(
         // `[embeddings]` configured: native memory search becomes hybrid.
         match embeddings.as_ref() {
             Some(embeddings) => resolved
-                .with_native_embedder(crate::embeddings::memory_embedder(embeddings.provider())),
+                .with_native_embedder(crate::embeddings::memory_embedder(embeddings.provider())?),
             None => resolved,
         }
     };

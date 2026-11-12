@@ -45,6 +45,13 @@ impl ConceptEmbeddings {
         self
     }
 
+    /// Report a different model id (and so a different
+    /// [`EmbeddingProvider::fingerprint`]): exercises a model switch.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
     /// Every call fails with a transport error (exercises degradation).
     pub fn failing(mut self) -> Self {
         self.fail = true;
@@ -106,6 +113,10 @@ impl EmbeddingProvider for ConceptEmbeddings {
 
     fn limits(&self) -> EmbeddingLimits {
         EmbeddingLimits::default()
+    }
+
+    fn fingerprint(&self) -> String {
+        format!("test:{}:{}:native", self.model, self.dimension)
     }
 
     async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, EmbeddingError> {

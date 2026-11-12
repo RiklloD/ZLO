@@ -447,7 +447,7 @@ impl RebornIntegrationGroupBuilder {
         embedder: Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider>,
     ) -> HarnessResult<RebornIntegrationGroup> {
         self.native_memory_libsql_group(Some(
-            ironclaw_composition::test_support::memory_embedder_for_test(embedder),
+            ironclaw_composition::test_support::memory_embedder_for_test(embedder)?,
         ))
         .await
     }

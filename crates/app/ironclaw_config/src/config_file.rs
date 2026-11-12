@@ -140,7 +140,20 @@ pub struct RebornConfigFile {
 /// ```
 ///
 /// The API key is never configured here: it is the operator-stored key of
-/// `provider` (the same secret the chat provider of that id uses).
+/// `provider` (the same secret the chat provider of that id uses). That key is
+/// sent to whatever host the endpoint resolves to — so `provider = "openai"`
+/// with a custom `base_url` sends the stored OpenAI key to that host. The base
+/// URL must be `https` (plain `http` only to a loopback host) and carry no
+/// credentials, query, or fragment.
+///
+/// A `dimension` other than a model's native one is requested upstream as
+/// `dimensions` (only `text-embedding-3-*` support that; any other known
+/// model with a non-native dimension fails startup).
+///
+/// Memory: documents written before this section was added, or whose
+/// embedding failed, are not backfilled — they stay full-text only until
+/// their next write re-embeds them. Embedding calls are not yet counted
+/// against budgets.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddingsSection {

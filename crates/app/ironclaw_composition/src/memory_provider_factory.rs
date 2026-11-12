@@ -875,6 +875,9 @@ pass = { prompt = "prompts/memory_curation.md", tools = ["ironclaw.memory.read"]
             fn limits(&self) -> ironclaw_llm::embeddings::EmbeddingLimits {
                 ironclaw_llm::embeddings::EmbeddingLimits::default()
             }
+            fn fingerprint(&self) -> String {
+                "test:never-called:4:native".to_string()
+            }
             async fn embed(
                 &self,
                 _request: ironclaw_llm::embeddings::EmbeddingRequest,
@@ -888,7 +891,7 @@ pass = { prompt = "prompts/memory_curation.md", tools = ["ironclaw.memory.read"]
             }
         }
         let provider: Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider> = Arc::new(NeverCalled);
-        let embedder = crate::embeddings::memory_embedder(provider);
+        let embedder = crate::embeddings::memory_embedder(provider).expect("valid fingerprint");
         let deps = MemoryProviderDeps::for_third_party(Mem0ConnectionConfig::default());
 
         let native = resolve_memory_provider(None, &deps).expect("native resolves");

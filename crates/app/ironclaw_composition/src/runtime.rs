@@ -4128,6 +4128,7 @@ async fn assemble_runtime(input: RebornRuntimeInput) -> Result<BuiltRuntime, Reb
                     Arc::clone(&local_runtime.extension_filesystem)
                         as Arc<dyn ironclaw_filesystem::RootFilesystem>,
                     local_runtime.memory_prompt_safety_sink.clone(),
+                    local_runtime.memory_service_resolver.native_embedder(),
                 ))
                     as Arc<dyn ironclaw_product_contracts::memory_page::MemoryDocumentsSource>
             }),

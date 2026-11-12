@@ -41,7 +41,8 @@ impl ChunkConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryChunkWrite {
     pub content: String,
-    pub embedding: Option<Vec<f32>>,
+    /// The chunk's vector and its space; `None` stores the chunk text-only.
+    pub embedding: Option<crate::MemoryChunkEmbedding>,
 }
 
 /// Split a document into overlapping chunks using current workspace semantics.

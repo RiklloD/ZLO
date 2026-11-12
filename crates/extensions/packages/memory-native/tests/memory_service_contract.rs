@@ -1777,22 +1777,41 @@ fn memory_guidance_is_a_compact_self_contained_section() {
 }
 
 /// Deterministic embedder: one bucket per known synonym group, so "car" and
-/// "automobile" embed identically while sharing no full-text term.
+/// "automobile" embed identically while sharing no full-text term. Records
+/// every batch; can fail, report another model (fingerprint), or stall its
+/// single-text (query) calls.
 struct SynonymEmbedder {
     fail: bool,
-    calls: std::sync::Mutex<usize>,
+    model: &'static str,
+    stall_queries: std::sync::atomic::AtomicBool,
+    calls: std::sync::Mutex<Vec<Vec<String>>>,
 }
 
 impl SynonymEmbedder {
     fn new(fail: bool) -> Arc<Self> {
+        Self::for_model("synonym-a", fail)
+    }
+
+    fn for_model(model: &'static str, fail: bool) -> Arc<Self> {
         Arc::new(Self {
             fail,
-            calls: std::sync::Mutex::new(0),
+            model,
+            stall_queries: std::sync::atomic::AtomicBool::new(false),
+            calls: std::sync::Mutex::new(Vec::new()),
         })
     }
 
     fn calls(&self) -> usize {
-        *self.calls.lock().unwrap()
+        self.calls.lock().unwrap().len()
+    }
+
+    fn calls_for(&self, text: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|batch| batch.iter().any(|t| t == text))
+            .count()
     }
 
     fn vector(text: &str) -> Vec<f32> {
@@ -1819,14 +1838,26 @@ impl ironclaw_memory_native::MemoryEmbedder for SynonymEmbedder {
         1
     }
 
+    fn max_input_bytes(&self) -> usize {
+        32_000
+    }
+
+    fn fingerprint(&self) -> ironclaw_memory_native::MemoryEmbeddingFingerprint {
+        ironclaw_memory_native::MemoryEmbeddingFingerprint::new(format!("test:{}:3", self.model))
+            .unwrap()
+    }
+
     async fn embed(
         &self,
         _scope: &ironclaw_memory::MemoryDocumentScope,
         texts: Vec<String>,
     ) -> Result<Vec<Vec<f32>>, ironclaw_memory_native::MemoryEmbeddingError> {
-        *self.calls.lock().unwrap() += 1;
+        self.calls.lock().unwrap().push(texts.clone());
         if self.fail {
             return Err(ironclaw_memory_native::MemoryEmbeddingError::new("offline"));
+        }
+        if self.stall_queries.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
         Ok(texts.iter().map(|text| Self::vector(text)).collect())
     }
@@ -1852,7 +1883,8 @@ async fn search_paths(service: &NativeMemoryService, query: &str) -> Vec<(String
 // With an embedder, a write embeds its chunks and search fuses a vector
 // branch: a meaning-only query finds the document (not hybrid), a query that
 // matches by word and meaning is a hybrid match, and an unrelated document
-// that full text cannot reach is not dragged in.
+// that full text cannot reach is not dragged in — not anywhere in the
+// results, since the vector branch has a relevance floor.
 #[tokio::test]
 async fn embedder_makes_native_search_hybrid() {
     let embedder = SynonymEmbedder::new(false);
@@ -1867,22 +1899,150 @@ async fn embedder_makes_native_search_hybrid() {
 
     let meaning = search_paths(&service, "automobile").await;
     assert_eq!(
-        meaning.first(),
-        Some(&("notes/car.md".to_string(), false)),
-        "{meaning:?}"
+        meaning,
+        vec![("notes/car.md".to_string(), false)],
+        "only the related document, never the unrelated one"
     );
 
     let both = search_paths(&service, "car automobile").await;
-    assert_eq!(
-        both.first(),
-        Some(&("notes/car.md".to_string(), true)),
-        "{both:?}"
+    assert_eq!(both, vec![("notes/car.md".to_string(), true)], "{both:?}");
+
+    // A query related to nothing returns nothing (the floor, not top-k).
+    assert!(
+        search_paths(&service, "plantain")
+            .await
+            .iter()
+            .all(|(path, _)| path != "notes/car.md")
     );
+    assert!(search_paths(&service, "hello").await.is_empty());
 
     // Without an embedder the same meaning-only query finds nothing.
     let plain = NativeMemoryService::from_filesystem(Arc::new(InMemoryBackend::new()), None);
     write_general_doc(&plain, "notes/car.md", "my car is teal").await;
     assert!(search_paths(&plain, "automobile").await.is_empty());
+}
+
+async fn libsql_filesystem(path: &std::path::Path) -> Arc<dyn ironclaw_filesystem::RootFilesystem> {
+    let database = Arc::new(libsql::Builder::new_local(path).build().await.unwrap());
+    let backend = ironclaw_filesystem::LibSqlRootFilesystem::new(database).unwrap();
+    backend.run_migrations().await.unwrap();
+    Arc::new(backend)
+}
+
+// Vectors persist with their model's fingerprint. Reopening the store with the
+// same model keeps semantic recall; switching to another model of the SAME
+// dimension never ranks the old model's vectors (a different space) — the
+// document falls back to full text until its next write re-embeds it under
+// the new model.
+#[tokio::test]
+async fn a_model_switch_never_mixes_vector_spaces_across_a_reopen() {
+    let storage = tempfile::tempdir().unwrap();
+    let db = storage.path().join("memory.db");
+    {
+        let model_a = SynonymEmbedder::for_model("synonym-a", false);
+        let service = NativeMemoryService::from_filesystem_with_embedder(
+            libsql_filesystem(&db).await,
+            None,
+            Some(model_a),
+        );
+        write_general_doc(&service, "notes/car.md", "my car is teal").await;
+    }
+    {
+        let model_a = SynonymEmbedder::for_model("synonym-a", false);
+        let reopened = NativeMemoryService::from_filesystem_with_embedder(
+            libsql_filesystem(&db).await,
+            None,
+            Some(model_a),
+        );
+        assert_eq!(
+            search_paths(&reopened, "automobile").await,
+            vec![("notes/car.md".to_string(), false)],
+            "the same model finds its stored vectors after a reopen"
+        );
+    }
+    let model_b = SynonymEmbedder::for_model("synonym-b", false);
+    let switched = NativeMemoryService::from_filesystem_with_embedder(
+        libsql_filesystem(&db).await,
+        None,
+        Some(model_b.clone()),
+    );
+    assert!(
+        search_paths(&switched, "automobile").await.is_empty(),
+        "model B must not rank model A's vectors"
+    );
+    assert_eq!(
+        search_paths(&switched, "car").await,
+        vec![("notes/car.md".to_string(), false)],
+        "full text still reaches the document"
+    );
+    write_general_doc(&switched, "notes/car.md", "my car is teal and fast").await;
+    assert_eq!(
+        search_paths(&switched, "automobile").await,
+        vec![("notes/car.md".to_string(), false)],
+        "the next write re-embeds under model B"
+    );
+}
+
+// A stalled embedding provider cannot hold a search: past the query budget
+// it degrades to full text.
+#[tokio::test]
+async fn a_stalled_query_embedding_falls_back_to_full_text_within_budget() {
+    let embedder = SynonymEmbedder::new(false);
+    let service = NativeMemoryService::from_filesystem_with_embedder(
+        Arc::new(InMemoryBackend::new()),
+        None,
+        Some(embedder.clone()),
+    );
+    write_general_doc(&service, "notes/car.md", "my car is teal").await;
+    embedder
+        .stall_queries
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    assert_eq!(
+        search_paths(&service, "car").await,
+        vec![("notes/car.md".to_string(), false)]
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "search waited {:?} for a stalled embedder",
+        started.elapsed()
+    );
+}
+
+// A prompt-context load runs both recall lanes concurrently with the same
+// query; the query is embedded once and shared.
+#[tokio::test]
+async fn both_recall_lanes_share_one_query_embedding() {
+    let embedder = SynonymEmbedder::new(false);
+    let service = NativeMemoryService::from_filesystem_with_embedder(
+        Arc::new(InMemoryBackend::new()),
+        None,
+        Some(embedder.clone()),
+    );
+    write_general_doc(&service, "notes/car.md", "my car is teal").await;
+    let mut scoped = invocation();
+    scoped.scope.thread_id = Some(ThreadId::new("convo").unwrap());
+    let request = || MemoryServiceContextRequest {
+        query: "automobile".to_string(),
+        max_snippets: 5,
+        context_profile_id: MemoryContextProfileId::new("default").unwrap(),
+    };
+    let (long, short) = tokio::join!(
+        service.read_long_term(scoped.clone(), request()),
+        service.read_short_term(scoped.clone(), request()),
+    );
+    let long = long.expect("long-term lane");
+    short.expect("short-term lane");
+    assert!(
+        long.iter()
+            .any(|snippet| snippet.relative_path == "notes/car.md"),
+        "{long:?}"
+    );
+    assert_eq!(
+        embedder.calls_for("automobile"),
+        1,
+        "one query embedding per load"
+    );
 }
 
 // An embedder failure never fails a write or a search: chunks are indexed

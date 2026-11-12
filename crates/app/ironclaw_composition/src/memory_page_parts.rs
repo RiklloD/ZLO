@@ -52,12 +52,22 @@ impl NativeMemoryDocuments {
     /// `prompt_safety_sink` is the redacted audit-backed sink the memory
     /// tools use; with it, page writes to protected files record the same
     /// safety events (and warned writes, which require one, go through).
+    ///
+    /// `embedder` is the native binding's embedder (`[embeddings]`), the same
+    /// one its tools and host-managed memory use: without it, a page edit
+    /// would rewrite the document's chunks text-only and drop its vectors,
+    /// and page search would stay full-text only.
     pub(crate) fn new(
         filesystem: Arc<dyn RootFilesystem>,
         prompt_safety_sink: Option<Arc<dyn ironclaw_memory::PromptWriteSafetyEventSink>>,
+        embedder: Option<Arc<dyn ironclaw_memory_native::MemoryEmbedder>>,
     ) -> Self {
         Self {
-            service: NativeMemoryService::from_filesystem(filesystem, prompt_safety_sink),
+            service: NativeMemoryService::from_filesystem_with_embedder(
+                filesystem,
+                prompt_safety_sink,
+                embedder,
+            ),
         }
     }
 

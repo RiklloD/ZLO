@@ -148,12 +148,24 @@ impl EmbeddingCredentialSource for OperatorEmbeddingKeySource {
 /// Native memory's embedding port over the deployment's embedding provider.
 struct MemoryEmbedderAdapter {
     provider: Arc<dyn EmbeddingProvider>,
+    fingerprint: ironclaw_memory_native::MemoryEmbeddingFingerprint,
 }
 
+/// The memory port over `provider`. Fails startup when the provider's
+/// vector-space fingerprint is not storable (empty, too long, control chars).
 pub(crate) fn memory_embedder(
     provider: Arc<dyn EmbeddingProvider>,
-) -> Arc<dyn ironclaw_memory_native::MemoryEmbedder> {
-    Arc::new(MemoryEmbedderAdapter { provider })
+) -> Result<Arc<dyn ironclaw_memory_native::MemoryEmbedder>, RebornBuildError> {
+    let fingerprint = ironclaw_memory_native::MemoryEmbeddingFingerprint::new(
+        provider.fingerprint(),
+    )
+    .map_err(|error| RebornBuildError::InvalidConfig {
+        reason: format!("[embeddings]: {error}"),
+    })?;
+    Ok(Arc::new(MemoryEmbedderAdapter {
+        provider,
+        fingerprint,
+    }))
 }
 
 fn memory_resource_scope(
@@ -190,6 +202,14 @@ impl ironclaw_memory_native::MemoryEmbedder for MemoryEmbedderAdapter {
 
     fn max_batch(&self) -> usize {
         self.provider.limits().max_inputs
+    }
+
+    fn max_input_bytes(&self) -> usize {
+        self.provider.limits().max_input_bytes
+    }
+
+    fn fingerprint(&self) -> ironclaw_memory_native::MemoryEmbeddingFingerprint {
+        self.fingerprint.clone()
     }
 
     async fn embed(

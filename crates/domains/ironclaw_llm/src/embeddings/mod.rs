@@ -19,9 +19,9 @@
 //!   [`EmbeddingProvider::dimension`] finite floats) before returning it.
 //!
 //! A wrapper around `dyn EmbeddingProvider` must delegate **every** trait
-//! method, including `dimension` and `limits` — a wrapper that forgets them
-//! silently changes the vector-index dimension or the request bounds of the
-//! provider it wraps.
+//! method, including `dimension`, `limits` and `fingerprint` — a wrapper that
+//! forgets them silently changes the vector dimension, the request bounds, or
+//! the vector-space identity of the provider it wraps.
 
 mod openai_compatible;
 
@@ -222,6 +222,13 @@ pub trait EmbeddingProvider: Send + Sync {
     /// Request bounds this provider accepts.
     fn limits(&self) -> EmbeddingLimits;
 
+    /// Identity of the vector space this provider produces: provider, model,
+    /// dimension, and every request parameter that changes the vectors. Two
+    /// providers with equal fingerprints produce comparable vectors; vectors
+    /// stored under one fingerprint must never be ranked against a query
+    /// embedded under another (two 1536-dim models are different spaces).
+    fn fingerprint(&self) -> String;
+
     /// Embed a validated batch. Implementations call
     /// [`EmbeddingRequest::validate`] before I/O and
     /// [`EmbeddingResponse::validate`] before returning.
@@ -254,9 +261,71 @@ pub struct ResolvedEmbeddingEndpoint {
     pub model: String,
     pub dimension: u32,
     /// API root without a trailing slash; requests go to `{base_url}/embeddings`.
+    /// Must be `https`, or `http` only to a loopback host
+    /// ([`validate_embedding_base_url`]); the provider constructor re-checks.
     pub base_url: String,
     /// Whether the registry says this provider needs an API key.
     pub api_key_required: bool,
+    /// Sent upstream as the OpenAI `dimensions` parameter: set when the
+    /// configured dimension differs from the model's native one (only models
+    /// that support shortened vectors accept that), `None` otherwise.
+    pub request_dimensions: Option<u32>,
+}
+
+impl ResolvedEmbeddingEndpoint {
+    /// The vector-space identity of this endpoint (see
+    /// [`EmbeddingProvider::fingerprint`]). The base URL is deliberately not
+    /// part of it: the same model behind another host is the same space.
+    pub fn fingerprint(&self) -> String {
+        let parameters = self
+            .request_dimensions
+            .map_or_else(|| "native".to_string(), |dims| format!("dimensions={dims}"));
+        format!(
+            "{}:{}:{}:{parameters}",
+            self.provider_id, self.model, self.dimension
+        )
+    }
+}
+
+/// Check an embedding API root before anything is sent to it: `http(s)`, no
+/// userinfo, query or fragment, and plaintext `http` only to a loopback host
+/// (a local Ollama / LM Studio) — the request carries the provider's API key
+/// in a header, which must never cross the network unencrypted.
+pub fn validate_embedding_base_url(base_url: &str) -> Result<url::Url, EmbeddingError> {
+    let url = url::Url::parse(base_url)
+        .map_err(|error| EmbeddingError::invalid_config(format!("base URL: {error}")))?;
+    match url.scheme() {
+        "https" => {}
+        "http" if url.host().is_some_and(|host| is_loopback_url_host(&host)) => {}
+        "http" => {
+            return Err(EmbeddingError::invalid_config(
+                "base URL must be https (plain http is allowed only for a loopback host)",
+            ));
+        }
+        _ => {
+            return Err(EmbeddingError::invalid_config(
+                "base URL must be http or https",
+            ));
+        }
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(EmbeddingError::invalid_config(
+            "base URL must not carry credentials, a query, or a fragment",
+        ));
+    }
+    Ok(url)
+}
+
+fn is_loopback_url_host(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    }
 }
 
 impl EmbeddingsConfig {
@@ -309,21 +378,11 @@ impl EmbeddingsConfig {
                 ))
             })?;
         let base_url = base_url.trim_end_matches('/').to_string();
-        let url = url::Url::parse(&base_url)
-            .map_err(|error| EmbeddingError::invalid_config(format!("base URL: {error}")))?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(EmbeddingError::invalid_config(
-                "base URL must be http or https",
-            ));
-        }
-        if !url.username().is_empty() || url.password().is_some() || url.query().is_some() {
-            return Err(EmbeddingError::invalid_config(
-                "base URL must not carry credentials or a query",
-            ));
-        }
+        validate_embedding_base_url(&base_url)?;
+        let native = known_model_dimension(model);
         let dimension = match self.dimension {
             Some(dimension) => dimension,
-            None => known_model_dimension(model).ok_or_else(|| {
+            None => native.ok_or_else(|| {
                 EmbeddingError::invalid_config(format!(
                     "dimension is unknown for model `{model}`; set it"
                 ))
@@ -334,12 +393,33 @@ impl EmbeddingsConfig {
                 "dimension {dimension} is outside 1..={MAX_EMBEDDING_DIMENSION}"
             )));
         }
+        // A dimension other than the model's native one must be requested
+        // upstream, or every response comes back native-sized and fails
+        // validation. Only models with shortenable vectors accept that.
+        let request_dimensions = match native {
+            Some(native) if native != dimension => {
+                if !supports_shortened_dimensions(model) {
+                    return Err(EmbeddingError::invalid_config(format!(
+                        "model `{model}` always returns {native}-dimension vectors; \
+                         dimension {dimension} cannot be requested"
+                    )));
+                }
+                if dimension > native {
+                    return Err(EmbeddingError::invalid_config(format!(
+                        "dimension {dimension} exceeds model `{model}`'s native {native}"
+                    )));
+                }
+                Some(dimension)
+            }
+            _ => None,
+        };
         Ok(ResolvedEmbeddingEndpoint {
             provider_id: definition.id.clone(),
             model: model.to_string(),
             dimension,
             base_url,
             api_key_required: definition.api_key_required,
+            request_dimensions,
         })
     }
 }
@@ -347,11 +427,23 @@ impl EmbeddingsConfig {
 const OPENAI_API_ROOT: &str = "https://api.openai.com/v1";
 const OPENROUTER_API_ROOT: &str = "https://openrouter.ai/api/v1";
 
+fn bare_model_name(model: &str) -> &str {
+    let name = model.rsplit('/').next().unwrap_or(model);
+    name.split(':').next().unwrap_or(name)
+}
+
+/// Models that accept the OpenAI `dimensions` request parameter (shortened
+/// vectors). Every other known model returns its native dimension only.
+fn supports_shortened_dimensions(model: &str) -> bool {
+    matches!(
+        bare_model_name(model),
+        "text-embedding-3-small" | "text-embedding-3-large"
+    )
+}
+
 /// Native dimension of well-known embedding models.
 pub fn known_model_dimension(model: &str) -> Option<u32> {
-    let name = model.rsplit('/').next().unwrap_or(model);
-    let name = name.split(':').next().unwrap_or(name);
-    match name {
+    match bare_model_name(model) {
         "text-embedding-3-small" | "text-embedding-ada-002" => Some(1536),
         "text-embedding-3-large" => Some(3072),
         "nomic-embed-text" => Some(768),
@@ -487,6 +579,94 @@ mod tests {
         let mut zero = config("openai", "text-embedding-3-small");
         zero.dimension = Some(0);
         assert!(zero.resolve(&registry).is_err());
+    }
+
+    #[test]
+    fn plaintext_http_is_rejected_for_any_non_loopback_host() {
+        let registry = ProviderRegistry::load_from_path(None);
+        for url in [
+            "http://api.example.com/v1",
+            "http://203.0.113.7/v1",
+            "http://localhost.example.com/v1",
+        ] {
+            let mut cfg = config("openai", "text-embedding-3-small");
+            cfg.base_url = Some(url.to_string());
+            assert!(cfg.resolve(&registry).is_err(), "{url} must be rejected");
+        }
+        for url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:8080/v1",
+            "https://api.example.com/v1",
+        ] {
+            let mut cfg = config("openai", "text-embedding-3-small");
+            cfg.base_url = Some(url.to_string());
+            assert!(cfg.resolve(&registry).is_ok(), "{url} must be accepted");
+        }
+    }
+
+    #[test]
+    fn base_url_with_a_fragment_is_rejected() {
+        let registry = ProviderRegistry::load_from_path(None);
+        let mut cfg = config("openai", "text-embedding-3-small");
+        cfg.base_url = Some("https://api.example.com/v1#x".to_string());
+        assert!(cfg.resolve(&registry).is_err());
+        assert!(validate_embedding_base_url("https://api.example.com/v1#").is_err());
+    }
+
+    #[test]
+    fn a_shortened_dimension_is_requested_upstream_or_rejected() {
+        let registry = ProviderRegistry::load_from_path(None);
+        let mut short = config("openai", "text-embedding-3-small");
+        short.dimension = Some(512);
+        let endpoint = short.resolve(&registry).expect("3-small shortens");
+        assert_eq!(endpoint.dimension, 512);
+        assert_eq!(endpoint.request_dimensions, Some(512));
+
+        let mut native = config("openai", "text-embedding-3-small");
+        native.dimension = Some(1536);
+        assert_eq!(
+            native.resolve(&registry).unwrap().request_dimensions,
+            None,
+            "the native dimension is never sent"
+        );
+        // A model with no `dimensions` support, or a dimension above native,
+        // fails startup instead of failing every request.
+        let mut ada = config("openai", "text-embedding-ada-002");
+        ada.dimension = Some(512);
+        assert!(ada.resolve(&registry).is_err());
+        let mut larger = config("openai", "text-embedding-3-small");
+        larger.dimension = Some(2048);
+        assert!(larger.resolve(&registry).is_err());
+        // An unknown model's configured dimension is its native one.
+        let mut custom = config("ollama", "custom-embedder");
+        custom.dimension = Some(512);
+        assert_eq!(custom.resolve(&registry).unwrap().request_dimensions, None);
+    }
+
+    #[test]
+    fn fingerprint_separates_models_dimensions_and_parameters() {
+        let registry = ProviderRegistry::load_from_path(None);
+        let small = config("openai", "text-embedding-3-small")
+            .resolve(&registry)
+            .unwrap();
+        let ada = config("openai", "text-embedding-ada-002")
+            .resolve(&registry)
+            .unwrap();
+        let mut short_cfg = config("openai", "text-embedding-3-small");
+        short_cfg.dimension = Some(512);
+        let short = short_cfg.resolve(&registry).unwrap();
+        // Same dimension, different model: different spaces.
+        assert_eq!(small.dimension, ada.dimension);
+        assert_ne!(small.fingerprint(), ada.fingerprint());
+        assert_ne!(small.fingerprint(), short.fingerprint());
+        // The host is not part of the space.
+        let mut moved_cfg = config("openai", "text-embedding-3-small");
+        moved_cfg.base_url = Some("https://proxy.example.com/v1".to_string());
+        assert_eq!(
+            moved_cfg.resolve(&registry).unwrap().fingerprint(),
+            small.fingerprint()
+        );
     }
 
     #[test]

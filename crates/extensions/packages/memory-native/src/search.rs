@@ -24,11 +24,26 @@ pub struct MemorySearchRequest {
     query: String,
     limit: usize,
     pre_fusion_limit: usize,
-    /// The query's embedding, set only when an embedder is configured. When
-    /// present the repository also runs a vector branch and fuses it with full
-    /// text; when absent search is full-text only.
-    query_embedding: Option<Vec<f32>>,
+    /// The query's embedding and its vector space, set only when an embedder
+    /// is configured. When present the repository also runs a vector branch
+    /// over vectors of the same space and fuses it with full text; when absent
+    /// search is full-text only.
+    query_embedding: Option<crate::MemoryChunkEmbedding>,
+    /// Vector hits below this cosine similarity are dropped before fusion.
+    min_vector_similarity: f32,
 }
+
+/// Default relevance floor of the vector branch (cosine similarity).
+///
+/// Nearest-neighbour search always returns its top k, however unrelated, and
+/// rank fusion then normalizes the best hit to `1.0`; without a floor every
+/// search (and every prompt recall) would surface the least-unrelated
+/// documents. `0.3` keeps paraphrases for the OpenAI `text-embedding-3`
+/// family and the common open models (`nomic-embed-text`, `bge-m3`), while
+/// unrelated text there scores well below it. Models whose unrelated pairs
+/// score high (`text-embedding-ada-002` sits around 0.7) are only partly
+/// filtered at this floor.
+pub const DEFAULT_MIN_VECTOR_SIMILARITY: f32 = 0.3;
 
 impl MemorySearchRequest {
     pub fn new(query: impl Into<String>) -> Result<Self, HostApiError> {
@@ -45,6 +60,7 @@ impl MemorySearchRequest {
             limit: 20,
             pre_fusion_limit: 50,
             query_embedding: None,
+            min_vector_similarity: DEFAULT_MIN_VECTOR_SIMILARITY,
         })
     }
 
@@ -71,17 +87,31 @@ impl MemorySearchRequest {
         self
     }
 
-    /// Add a vector branch. An empty or non-finite embedding is ignored, so a
-    /// broken query vector degrades to full text rather than failing search.
-    pub fn with_query_embedding(mut self, embedding: Vec<f32>) -> Self {
-        if !embedding.is_empty() && embedding.iter().all(|value| value.is_finite()) {
+    /// Add a vector branch over vectors of `embedding.fingerprint`'s space.
+    /// An empty or non-finite embedding is ignored, so a broken query vector
+    /// degrades to full text rather than failing search.
+    pub fn with_query_embedding(mut self, embedding: crate::MemoryChunkEmbedding) -> Self {
+        if !embedding.vector.is_empty() && embedding.vector.iter().all(|value| value.is_finite()) {
             self.query_embedding = Some(embedding);
         }
         self
     }
 
-    pub fn query_embedding(&self) -> Option<&[f32]> {
-        self.query_embedding.as_deref()
+    pub fn query_embedding(&self) -> Option<&crate::MemoryChunkEmbedding> {
+        self.query_embedding.as_ref()
+    }
+
+    /// Override the vector branch's relevance floor (cosine similarity,
+    /// clamped to `-1.0..=1.0`; non-finite values keep the default).
+    pub fn with_min_vector_similarity(mut self, min: f32) -> Self {
+        if min.is_finite() {
+            self.min_vector_similarity = min.clamp(-1.0, 1.0);
+        }
+        self
+    }
+
+    pub fn min_vector_similarity(&self) -> f32 {
+        self.min_vector_similarity
     }
 
     pub fn query(&self) -> &str {
@@ -328,24 +358,53 @@ mod tests {
 
     #[test]
     fn non_finite_or_empty_query_embeddings_are_ignored() {
+        let embedding = |vector: Vec<f32>| crate::MemoryChunkEmbedding {
+            fingerprint: crate::MemoryEmbeddingFingerprint::new("test:q:1").unwrap(),
+            vector,
+        };
         let request = MemorySearchRequest::new("q").unwrap();
         assert!(
             request
                 .clone()
-                .with_query_embedding(Vec::new())
+                .with_query_embedding(embedding(Vec::new()))
                 .query_embedding()
                 .is_none()
         );
         assert!(
             request
                 .clone()
-                .with_query_embedding(vec![f32::NAN])
+                .with_query_embedding(embedding(vec![f32::NAN]))
                 .query_embedding()
                 .is_none()
         );
         assert_eq!(
-            request.with_query_embedding(vec![0.5]).query_embedding(),
+            request
+                .with_query_embedding(embedding(vec![0.5]))
+                .query_embedding()
+                .map(|e| e.vector.as_slice()),
             Some(&[0.5][..])
+        );
+    }
+
+    #[test]
+    fn the_vector_floor_defaults_and_ignores_non_finite_overrides() {
+        let request = MemorySearchRequest::new("q").unwrap();
+        assert_eq!(
+            request.min_vector_similarity(),
+            DEFAULT_MIN_VECTOR_SIMILARITY
+        );
+        assert_eq!(
+            request
+                .clone()
+                .with_min_vector_similarity(f32::NAN)
+                .min_vector_similarity(),
+            DEFAULT_MIN_VECTOR_SIMILARITY
+        );
+        assert_eq!(
+            request
+                .with_min_vector_similarity(2.0)
+                .min_vector_similarity(),
+            1.0
         );
     }
 

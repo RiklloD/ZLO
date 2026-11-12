@@ -74,8 +74,48 @@
 /// assemble the memory tools themselves.
 pub fn memory_embedder_for_test(
     provider: std::sync::Arc<dyn ironclaw_llm::embeddings::EmbeddingProvider>,
-) -> std::sync::Arc<dyn ironclaw_memory_native::MemoryEmbedder> {
+) -> Result<std::sync::Arc<dyn ironclaw_memory_native::MemoryEmbedder>, crate::RebornBuildError> {
     crate::embeddings::memory_embedder(provider)
+}
+
+/// The production `[embeddings]` → native-memory chain, for the integration
+/// tier: `RebornHostBindings::with_embeddings_section` (registry resolution +
+/// the real `OpenAiCompatibleEmbeddings` over the production network egress)
+/// → the operator key stored through `LlmKeyStore` into `operator_secrets`
+/// → `EmbeddingAssembly::bind_key_store` → `memory_embedder` →
+/// `ResolvedMemoryProvider::with_native_embedder` → the resolver's native
+/// service over `filesystem` (what host-managed recall uses). Nothing is
+/// substituted: the only test input is where the HTTP endpoint and secret
+/// store live.
+pub async fn semantic_native_memory_for_test(
+    section: &ironclaw_config::EmbeddingsSection,
+    operator_secrets: std::sync::Arc<
+        dyn ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore,
+    >,
+    api_key: secrecy::SecretString,
+    filesystem: std::sync::Arc<dyn ironclaw_filesystem::RootFilesystem>,
+) -> Result<std::sync::Arc<dyn ironclaw_memory::MemoryService>, crate::RebornBuildError> {
+    let invalid = |reason: String| crate::RebornBuildError::InvalidConfig { reason };
+    let bindings =
+        crate::RebornHostBindings::disabled("test-owner").with_embeddings_section(section, None)?;
+    let assembly = bindings
+        .embeddings
+        .clone()
+        .ok_or_else(|| invalid("[embeddings] built no assembly".to_string()))?;
+    let keys = ironclaw_operator::LlmKeyStore::new(operator_secrets);
+    keys.put(&section.provider, api_key)
+        .await
+        .map_err(|error| invalid(format!("seed operator key: {error}")))?;
+    assembly.bind_key_store(keys);
+    let resolved = crate::resolve_memory_provider(
+        None,
+        &crate::MemoryProviderDeps::for_third_party(crate::Mem0ConnectionConfig::default()),
+    )?
+    .with_native_embedder(crate::embeddings::memory_embedder(assembly.provider())?);
+    resolved
+        .resolver
+        .resolve_provider(filesystem, None)
+        .ok_or_else(|| invalid("native memory did not resolve".to_string()))
 }
 
 pub fn defer_reply_publication_for_test(input: &mut crate::RebornRuntimeInput) {

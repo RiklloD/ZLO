@@ -164,7 +164,10 @@ Embeddings API over the deployment's configured embedding model.
   `[embeddings]` section is configured — the route then fails closed at `501`).
   The implementation is `ironclaw_composition::openai_compat_embeddings_port`.
 - Same ingress shape as a create: bearer required, authenticated-caller scope,
-  host CORS allowlist, per-caller 60/min rate limit; body capped at 2 MiB by
+  host CORS allowlist, per-caller 60/min rate limit (the gateway keys buckets
+  per route, so `/v1/embeddings` and `/api/v1/embeddings` each have their own
+  60/min, separate from the chat routes'); a provider 429 maps to a plain
+  retryable 429 with no `retry-after`, like the chat routes; body capped at 2 MiB by
   the descriptor AND re-checked in the handler from the same
   `MAX_EMBEDDINGS_BODY_BYTES` constant.
 - Order: authenticate (`401`) → wired (`501`) → parse, validate and bound the

@@ -24,8 +24,31 @@ use super::{
 /// Per-request timeout. Embedding calls are one-shot, small, and not gated by
 /// the runner lease.
 const EMBEDDING_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-/// Response cap: 2048 inputs × 3072 dims of JSON floats fits well under this.
+/// Response cap. A JSON float is budgeted at [`JSON_BYTES_PER_FLOAT`] bytes,
+/// so the full 2048-input batch does NOT fit at large dimensions (2048 × 3072
+/// floats is ~75–150 MB of JSON); [`limits_for_dimension`] instead derives
+/// the per-request input count from the dimension so every admitted batch's
+/// response fits under this cap.
 const EMBEDDING_RESPONSE_BODY_LIMIT: u64 = 64 * 1024 * 1024;
+/// Worst-case JSON bytes per float (`-1.2345678e-05,` plus headroom).
+const JSON_BYTES_PER_FLOAT: u64 = 24;
+/// Per-item JSON overhead (`{"object":"embedding","index":N,"embedding":[]}`).
+const JSON_BYTES_PER_ITEM: u64 = 128;
+/// Envelope overhead (`object`, `model`, `usage`).
+const JSON_ENVELOPE_BYTES: u64 = 64 * 1024;
+
+/// Request bounds whose worst-case response fits [`EMBEDDING_RESPONSE_BODY_LIMIT`].
+fn limits_for_dimension(dimension: u32) -> EmbeddingLimits {
+    let per_item = u64::from(dimension) * JSON_BYTES_PER_FLOAT + JSON_BYTES_PER_ITEM;
+    let fits = (EMBEDDING_RESPONSE_BODY_LIMIT - JSON_ENVELOPE_BYTES) / per_item.max(1);
+    let max_inputs = usize::try_from(fits)
+        .unwrap_or(usize::MAX)
+        .clamp(1, super::MAX_EMBEDDING_INPUTS);
+    EmbeddingLimits {
+        max_inputs,
+        ..EmbeddingLimits::default()
+    }
+}
 
 /// OpenAI-compatible embeddings client.
 pub struct OpenAiCompatibleEmbeddings {
@@ -52,11 +75,28 @@ impl OpenAiCompatibleEmbeddings {
     /// loopback addresses are denied unless the operator configured a
     /// loopback host itself (a local Ollama / LM Studio), in which case that
     /// single host:port is the only target admitted.
+    ///
+    /// The base URL is re-validated here, not only in
+    /// [`EmbeddingsConfig::resolve`](super::EmbeddingsConfig::resolve):
+    /// [`ResolvedEmbeddingEndpoint`] is publicly constructible, and the
+    /// request carries the API key, so a plaintext `http` URL to a
+    /// non-loopback host (or one with a query/fragment/userinfo) is refused
+    /// before any provider exists to send it.
     pub fn new(
         endpoint: ResolvedEmbeddingEndpoint,
         credentials: Arc<dyn EmbeddingCredentialSource>,
         egress: Arc<dyn NetworkHttpEgress>,
     ) -> Result<Self, EmbeddingError> {
+        super::validate_embedding_base_url(&endpoint.base_url)?;
+        if endpoint.dimension == 0 || endpoint.dimension > super::MAX_EMBEDDING_DIMENSION {
+            return Err(EmbeddingError::InvalidConfig {
+                reason: format!(
+                    "dimension {} is outside 1..={}",
+                    endpoint.dimension,
+                    super::MAX_EMBEDDING_DIMENSION
+                ),
+            });
+        }
         let target = network_target_for_url(&endpoint.base_url).map_err(|error| {
             EmbeddingError::InvalidConfig {
                 reason: format!("base URL: {error}"),
@@ -73,13 +113,14 @@ impl OpenAiCompatibleEmbeddings {
             max_egress_bytes: None,
         };
         let url = format!("{}/embeddings", endpoint.base_url);
+        let limits = limits_for_dimension(endpoint.dimension);
         Ok(Self {
             egress,
             endpoint,
             credentials,
             policy,
             url,
-            limits: EmbeddingLimits::default(),
+            limits,
         })
     }
 
@@ -137,6 +178,54 @@ struct WireRequest<'a> {
     model: &'a str,
     input: &'a [String],
     encoding_format: &'static str,
+    /// OpenAI's shortened-vector parameter; omitted for the native dimension.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<u32>,
+}
+
+/// A body parse failure described without any of the body: serde's own
+/// messages quote offending values (`invalid type: string "…"`), which may be
+/// an echoed input or credential, so only the category and position are kept.
+fn safe_parse_failure(error: &serde_json::Error) -> String {
+    let category = match error.classify() {
+        serde_json::error::Category::Io => "io",
+        serde_json::error::Category::Syntax => "syntax",
+        serde_json::error::Category::Data => "unexpected shape",
+        serde_json::error::Category::Eof => "truncated",
+    };
+    format!(
+        "body is not an embeddings list ({category} at line {}, column {})",
+        error.line(),
+        error.column()
+    )
+}
+
+/// Put `data` in input order. `index` is authoritative when the provider
+/// sends it, but only as a complete permutation: either every item omits it
+/// (wire order is input order) or every item carries a distinct index in
+/// `0..len`. Mixed presence or duplicates could attach a vector to the wrong
+/// input, so they are rejected.
+fn order_by_index(mut data: Vec<WireEmbedding>) -> Result<Vec<WireEmbedding>, EmbeddingError> {
+    let indexed = data.iter().filter(|item| item.index.is_some()).count();
+    if indexed == 0 {
+        return Ok(data);
+    }
+    if indexed != data.len() {
+        return Err(EmbeddingError::InvalidResponse {
+            reason: "embedding indexes are present on some items but not others".to_string(),
+        });
+    }
+    data.sort_by_key(|item| item.index);
+    let permutation = data
+        .iter()
+        .enumerate()
+        .all(|(position, item)| item.index == Some(position));
+    if !permutation {
+        return Err(EmbeddingError::InvalidResponse {
+            reason: "embedding indexes are not a permutation of the inputs".to_string(),
+        });
+    }
+    Ok(data)
 }
 
 #[derive(Deserialize)]
@@ -183,6 +272,10 @@ impl EmbeddingProvider for OpenAiCompatibleEmbeddings {
         self.limits
     }
 
+    fn fingerprint(&self) -> String {
+        self.endpoint.fingerprint()
+    }
+
     async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, EmbeddingError> {
         request.validate(self.limits)?;
         let api_key = self.credentials.api_key().await?;
@@ -195,6 +288,7 @@ impl EmbeddingProvider for OpenAiCompatibleEmbeddings {
             model: &self.endpoint.model,
             input: &request.inputs,
             encoding_format: "float",
+            dimensions: self.endpoint.request_dimensions,
         })
         .map_err(|error| EmbeddingError::InvalidRequest {
             reason: format!("request body: {error}"),
@@ -223,24 +317,12 @@ impl EmbeddingProvider for OpenAiCompatibleEmbeddings {
         }
         let wire: WireResponse = serde_json::from_slice(&response.body).map_err(|error| {
             EmbeddingError::InvalidResponse {
-                reason: format!("body is not an embeddings list: {error}"),
+                reason: safe_parse_failure(&error),
             }
         })?;
         // Providers may return `data` out of order; `index` is authoritative
         // when present.
-        let mut data = wire.data;
-        if data.iter().all(|item| item.index.is_some()) {
-            data.sort_by_key(|item| item.index);
-            let in_order = data
-                .iter()
-                .enumerate()
-                .all(|(position, item)| item.index == Some(position));
-            if !in_order {
-                return Err(EmbeddingError::InvalidResponse {
-                    reason: "embedding indexes are not a permutation of the inputs".to_string(),
-                });
-            }
-        }
+        let data = order_by_index(wire.data)?;
         let result = EmbeddingResponse {
             embeddings: data.into_iter().map(|item| item.embedding).collect(),
             usage: wire
@@ -319,6 +401,7 @@ mod tests {
             dimension,
             base_url: base_url.to_string(),
             api_key_required: true,
+            request_dimensions: None,
         }
     }
 
@@ -434,6 +517,146 @@ mod tests {
             assert!(matched, "status {status}: unexpected {error:?}");
             assert!(!error.to_string().contains("sk-test"));
         }
+    }
+
+    #[test]
+    fn plaintext_or_malformed_base_urls_are_refused_before_any_egress() {
+        let egress = RecordingEgress::answering(200, serde_json::json!({}));
+        for url in [
+            "http://api.example.com/v1",
+            "http://8.8.8.8/v1",
+            "https://api.example.com/v1#x",
+            "https://api.example.com/v1?key=1",
+            "https://user:pw@api.example.com/v1",
+        ] {
+            let built =
+                OpenAiCompatibleEmbeddings::new(endpoint(url, 2), key("sk-test"), egress.clone());
+            assert!(
+                matches!(built, Err(EmbeddingError::InvalidConfig { .. })),
+                "{url} must be refused"
+            );
+        }
+        assert!(egress.requests.lock().unwrap().is_empty());
+    }
+
+    #[tracing_test::traced_test]
+    #[tokio::test]
+    async fn malformed_response_errors_quote_neither_the_key_nor_the_input() {
+        const SECRET: &str = "sk-live-SECRET-0123456789";
+        const MARKER: &str = "SENSITIVE-INPUT-MARKER";
+        let echoed = format!("{SECRET} {MARKER}");
+        for body in [
+            serde_json::json!({"data": [{"embedding": echoed}]}),
+            serde_json::json!({"data": [{"index": echoed, "embedding": [1.0, 0.0]}]}),
+            serde_json::json!({"data": echoed}),
+        ] {
+            let provider = OpenAiCompatibleEmbeddings::new(
+                endpoint("https://api.example.com/v1", 2),
+                key(SECRET),
+                RecordingEgress::answering(200, body),
+            )
+            .unwrap();
+            let error = provider.embed(request(&[MARKER])).await.unwrap_err();
+            assert!(matches!(error, EmbeddingError::InvalidResponse { .. }));
+            tracing::debug!(%error, "embedding request failed");
+            for rendered in [error.to_string(), format!("{error:?}")] {
+                assert!(!rendered.contains(SECRET), "{rendered}");
+                assert!(!rendered.contains(MARKER), "{rendered}");
+            }
+        }
+        assert!(logs_contain("embedding request failed"));
+        assert!(!logs_contain(SECRET));
+        assert!(!logs_contain(MARKER));
+    }
+
+    #[tokio::test]
+    async fn mixed_or_duplicate_indexes_are_rejected() {
+        for data in [
+            serde_json::json!([
+                {"index": 1, "embedding": [0.0, 1.0]},
+                {"embedding": [1.0, 0.0]}
+            ]),
+            serde_json::json!([
+                {"embedding": [1.0, 0.0]},
+                {"index": 0, "embedding": [0.0, 1.0]}
+            ]),
+            serde_json::json!([
+                {"index": 0, "embedding": [1.0, 0.0]},
+                {"index": 0, "embedding": [0.0, 1.0]}
+            ]),
+        ] {
+            let provider = OpenAiCompatibleEmbeddings::new(
+                endpoint("https://api.example.com/v1", 2),
+                key("sk-test"),
+                RecordingEgress::answering(200, serde_json::json!({ "data": data })),
+            )
+            .unwrap();
+            let result = provider.embed(request(&["a", "b"])).await;
+            assert!(
+                matches!(result, Err(EmbeddingError::InvalidResponse { .. })),
+                "{data}: {result:?}"
+            );
+        }
+        // All absent: wire order is input order.
+        let provider = OpenAiCompatibleEmbeddings::new(
+            endpoint("https://api.example.com/v1", 2),
+            key("sk-test"),
+            RecordingEgress::answering(
+                200,
+                serde_json::json!({"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}]}),
+            ),
+        )
+        .unwrap();
+        let response = provider.embed(request(&["a", "b"])).await.unwrap();
+        assert_eq!(response.embeddings, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+    }
+
+    #[tokio::test]
+    async fn a_shortened_dimension_is_sent_as_the_dimensions_parameter() {
+        let egress = RecordingEgress::answering(
+            200,
+            serde_json::json!({"data": [{"embedding": [1.0, 0.0]}]}),
+        );
+        let mut short = endpoint("https://api.example.com/v1", 2);
+        short.request_dimensions = Some(2);
+        let provider =
+            OpenAiCompatibleEmbeddings::new(short, key("sk-test"), egress.clone()).unwrap();
+        provider.embed(request(&["a"])).await.unwrap();
+        let native = OpenAiCompatibleEmbeddings::new(
+            endpoint("https://api.example.com/v1", 2),
+            key("sk-test"),
+            egress.clone(),
+        )
+        .unwrap();
+        native.embed(request(&["a"])).await.unwrap();
+        let requests = egress.requests.lock().unwrap();
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].2).unwrap();
+        assert_eq!(sent["dimensions"], 2);
+        let sent: serde_json::Value = serde_json::from_slice(&requests[1].2).unwrap();
+        assert!(sent.get("dimensions").is_none(), "{sent}");
+        assert_ne!(provider.fingerprint(), native.fingerprint());
+    }
+
+    #[test]
+    fn the_largest_admitted_batch_fits_the_response_cap() {
+        for dimension in [
+            1,
+            384,
+            1536,
+            3072,
+            crate::embeddings::MAX_EMBEDDING_DIMENSION,
+        ] {
+            let limits = limits_for_dimension(dimension);
+            let worst = limits.max_inputs as u64
+                * (u64::from(dimension) * JSON_BYTES_PER_FLOAT + JSON_BYTES_PER_ITEM)
+                + JSON_ENVELOPE_BYTES;
+            assert!(
+                worst <= EMBEDDING_RESPONSE_BODY_LIMIT,
+                "dimension {dimension}"
+            );
+            assert!(limits.max_inputs >= 1);
+        }
+        assert!(limits_for_dimension(3072).max_inputs < crate::embeddings::MAX_EMBEDDING_INPUTS);
     }
 
     #[tokio::test]

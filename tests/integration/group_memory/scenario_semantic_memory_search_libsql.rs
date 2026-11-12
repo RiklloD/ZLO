@@ -19,6 +19,7 @@ use ironclaw_llm::testing::embeddings::ConceptEmbeddings;
 use serde_json::{Value, json};
 
 const FACT: &str = "remember that my car is painted teal-quokka-9";
+const MEANING_QUERY: &str = "is my automobile";
 
 pub async fn run() -> HarnessResult<()> {
     let embedder = Arc::new(ConceptEmbeddings::new(16).with_concept(["car", "automobile"]));
@@ -35,8 +36,11 @@ pub async fn run() -> HarnessResult<()> {
         return Err("the written memory chunk never reached the embedder".into());
     }
 
-    // Meaning-only query: no word in common with the fact.
-    let hits = search(&semantic, "conv-semantic-meaning", "automobile").await?;
+    // Meaning-only query: a paraphrase whose only content word ("automobile")
+    // is not in the fact — "is" and "my" are full-text stop words — so full
+    // text misses and only vector similarity (above the relevance floor) can
+    // find it.
+    let hits = search(&semantic, "conv-semantic-meaning", MEANING_QUERY).await?;
     let hit = find_fact(&hits)
         .ok_or_else(|| format!("semantic search must find the fact by meaning; got {hits}"))?;
     if hit["is_hybrid_match"] != json!(false) {
@@ -44,7 +48,7 @@ pub async fn run() -> HarnessResult<()> {
     }
 
     // A query matching by word ("car") and by meaning ("automobile").
-    let hits = search(&semantic, "conv-semantic-both", "car automobile").await?;
+    let hits = search(&semantic, "conv-semantic-both", "is my car automobile").await?;
     let hit =
         find_fact(&hits).ok_or_else(|| format!("hybrid search must find the fact; got {hits}"))?;
     if hit["is_hybrid_match"] != json!(true) {
@@ -55,7 +59,7 @@ pub async fn run() -> HarnessResult<()> {
     // stays a full-text miss — behavior unchanged.
     let plain = RebornIntegrationGroup::builtin_tools_with_native_memory_libsql().await?;
     seed(&plain, "conv-plain-writer").await?;
-    let hits = search(&plain, "conv-plain-meaning", "automobile").await?;
+    let hits = search(&plain, "conv-plain-meaning", MEANING_QUERY).await?;
     if find_fact(&hits).is_some() {
         return Err(
             format!("without embeddings, search must stay full-text only; got {hits}").into(),

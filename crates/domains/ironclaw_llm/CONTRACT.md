@@ -262,6 +262,7 @@ pub trait EmbeddingProvider: Send + Sync {
     fn model_name(&self) -> &str;
     fn dimension(&self) -> u32;          // every returned vector has exactly this length
     fn limits(&self) -> EmbeddingLimits; // max inputs per call, max UTF-8 bytes per input
+    fn fingerprint(&self) -> String;     // vector-space identity: provider, model, dimension, params
     async fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse, EmbeddingError>;
 }
 ```
@@ -291,21 +292,36 @@ Rules every implementation follows:
   with `api_key_required` and no stored key fails the call with
   `MissingCredential` before any egress. The key is placed only in the
   `authorization` header; error messages never carry it or the provider body.
-- **Wrappers delegate the complete trait**, `dimension` and `limits` included —
-  the vector index dimension is read from `dimension()`.
+- **Wrappers delegate the complete trait**, `dimension`, `limits` and
+  `fingerprint` included — consumers size vectors from `dimension()` and
+  never compare vectors across different `fingerprint()`s.
+- **Never leak through errors.** Response-parse failures report only a
+  category and line/column (`serde_json::Error::classify`), never serde's
+  message, which quotes offending values (an echoed input or key).
 
 `EmbeddingsConfig { provider_id, model, dimension, base_url }` resolves against
 the `ProviderRegistry`: the provider must speak `OpenAiCompletions`, `Ollama`
 (served under `{default_base_url}/v1`) or `OpenRouter`; anything else
 (Anthropic, Gemini native, Bedrock, Codex, …) is `InvalidConfig`. The base URL
 is `base_url` or the registry default (OpenAI and OpenRouter have built-in API
-roots); it must be http(s) with no userinfo or query. The dimension is the
-configured one or `known_model_dimension(model)`; an unknown model without one
-is `InvalidConfig`. No embeddings config means no embedding provider exists —
+roots); it must be `https` — plain `http` only to a loopback host, because
+the request carries the API key — with no userinfo, query or fragment
+(`validate_embedding_base_url`, re-checked by `OpenAiCompatibleEmbeddings::new`
+because `ResolvedEmbeddingEndpoint` is publicly constructible). The dimension
+is the configured one or `known_model_dimension(model)`; an unknown model
+without one is `InvalidConfig`. A configured dimension below a known model's
+native one is sent upstream as `dimensions` (`request_dimensions`) for models
+that support shortened vectors (`text-embedding-3-*`) and is `InvalidConfig`
+for any other known model. `provider = "openai"` with a custom `base_url`
+sends the stored OpenAI key to that host. No embeddings config means no embedding provider exists —
 every consumer keeps its non-embedding behavior.
 
 `OpenAiCompatibleEmbeddings` is the one implementation: it covers every
-OpenAI-shaped `/embeddings` endpoint, reorders `data` by `index`, maps
+OpenAI-shaped `/embeddings` endpoint, reorders `data` by `index` (all items
+carry a distinct index forming a permutation, or none do — mixed presence and
+duplicates are `InvalidResponse`), derives `limits().max_inputs` from the
+dimension so the largest admitted batch's JSON fits the 64 MiB response cap
+(~909 inputs at 3072 dims, the full 2048 only at small dimensions), maps
 401/403 → `Unauthorized`, 429 → `RateLimited { retry_after }`, other non-2xx →
 `Http`. The test double is `testing::embeddings::ConceptEmbeddings`
 (`test-support`): deterministic bag-of-buckets vectors with declarable synonym
