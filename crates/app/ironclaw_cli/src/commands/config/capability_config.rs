@@ -5,7 +5,8 @@
 //! machinery in this module. The Google remediation text is package-owned
 //! copy in `ironclaw_extension_support::google_remediation_text`, shared with
 //! the gsuite first-party handler (`crate::first_party::gsuite`) and the
-//! extension-host test doubles so every surface prints the same wording.
+//! extension-host test doubles. (`super::set` keeps its own short `to apply:`
+//! line on purpose; it is not part of that shared copy.)
 
 /// Where a `config set` value physically lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,7 +337,7 @@ mod tests {
         assert!(google.contains("config set google.redirect_uri"));
         // The remediation text itself must NOT embed the restart step: that
         // sentence is appended exactly once by the surface (CLI's
-        // `print_apply_step` / composition's `apply_step_text`), never
+        // `print_apply_step` / `ironclaw_extension_support`'s `apply_step_text`), never
         // baked into the remediation text, or callers that append it too
         // produce a duplicate "service restart" instruction.
         assert_eq!(

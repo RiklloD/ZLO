@@ -11,7 +11,10 @@
 //! - `ironclaw::first_party::gsuite` — the Gmail/Google Workspace "not
 //!   configured" / backend-auth tool-result errors a capability dispatch
 //!   returns before (or instead of) credential resolution.
-//! - the activation-time readiness reason, via the CLI.
+//!
+//! The activation-time readiness reason is NOT built from this copy: it is a
+//! separate short literal in `ironclaw_composition`'s production backend
+//! assembly, so editing the text here does not change that message.
 //!
 //! The text still names the `config set google.*` keys because those are the
 //! live operator path today (`[google]` in `config.toml` plus
@@ -33,9 +36,8 @@ pub fn google_remediation_text() -> String {
 }
 
 /// Canonical "apply the change" follow-up sentence: `config set` never
-/// restarts the service itself (see the module-level design note in
-/// `google_remediation_text` and `ironclaw_cli::commands::config::set`),
-/// so every surface that tells a caller "go configure this" must also tell
+/// restarts the service itself (see `ironclaw::commands::config::set`), so
+/// every surface that tells a caller "go configure this" must also tell
 /// them the explicit next step rather than implying it happens automatically.
 pub fn apply_step_text() -> &'static str {
     "Run `zlo service restart` to apply the change, then ask again."
@@ -44,13 +46,11 @@ pub fn apply_step_text() -> &'static str {
 /// The console steps plus the apply step — the complete "here is how to
 /// configure Google on this instance" body.
 ///
-/// TWO independent enforcement points produce a "Google is not configured"
-/// message, and they stay separate on purpose (defense in depth at different
-/// lifecycle stages): the activation-time readiness map
-/// (`extension_host::provider_instance_readiness`) and the dispatch-time
-/// backstop (`extension_host::gsuite`). What they must NOT do is compose the
-/// same body two different ways — that is how the two strings drift. Both call
-/// this one function; only the leading sentence differs.
+/// The one production caller is [`HostRemediationText::text`], which the
+/// dispatch-time gsuite handler (`ironclaw::first_party::gsuite`) uses for its
+/// "not configured" tool results. Keep the body composed here, in one place,
+/// so surfaces that show it cannot drift apart; only the leading sentence
+/// differs per surface.
 pub fn google_setup_steps_text() -> String {
     format!("{}\n\n{}", google_remediation_text(), apply_step_text())
 }
