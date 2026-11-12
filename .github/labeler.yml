@@ -66,7 +66,7 @@
   - changed-files:
       - any-glob-to-any-file:
           - src/db/postgres.rs
-          - migrations/**
+          - crates/**/migrations/**
 
 "scope: db/libsql":
   - changed-files:
@@ -168,5 +168,5 @@
 "DB MIGRATION":
   - changed-files:
       - any-glob-to-any-file:
-          - migrations/**
+          - crates/**/migrations/**
           - src/db/libsql_migrations.rs

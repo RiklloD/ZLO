@@ -45,7 +45,7 @@ reviews:
     - "!tests/e2e/**/*.png"
     - "!fuzz/corpus/**"
     - "!crates/substrates/ironclaw_safety/fuzz/corpus/**"
-    - "!**/*.wasm" # compiled artifacts; new binaries surface via registry/ and manifest review
+    - "!**/*.wasm" # compiled artifacts; new binaries surface via package manifest review
     - "!crates/ironclaw_webui_v2_static/static/assets/**" # binary icons; static/js IS hand-written and reviewed
     - "!wix/**" # cargo-dist/WiX installer boilerplate
     - "!ironclaw.png"
@@ -85,18 +85,17 @@ reviews:
         Do NOT flag: .unwrap()/.expect()/assert! in production (scripts/check_no_panics.py is
         a blocking CI gate), rustfmt/clippy-level style, dependency licenses/advisories
         (cargo-deny), or pre-existing issues the PR does not touch.
-    - path: "migrations/**"
+    - path: "crates/**/migrations/**"
       instructions: |
-        Refinery PostgreSQL migrations. Released migrations are IMMUTABLE: any edit to an
-        existing V*.sql or to a pinned hash in migrations/checksums.lock is a hard error (the
-        released_migrations_are_immutable test enforces SipHasher13 checksums). New
-        migrations: next sequential V{n}__snake_case.sql, up-only, PostgreSQL dialect.
-        Dual-backend mandate: schema changes generally need a matching hand-translated update
-        in src/db/libsql_migrations.rs (UUID→TEXT, TIMESTAMPTZ→ISO-8601 TEXT, JSONB→TEXT,
-        BYTEA→BLOB, VECTOR→F32_BLOB) — flag a new V*.sql without a libSQL twin change unless
-        justified. Ported schema must include indexes and seed data, with semantic
-        differences documented. Destructive DDL is review track C: 2 approvals + documented
-        rollback plan (CONTRIBUTING.md).
+        Crate-local idempotent schema SQL (`include_str!`-embedded and applied on connect,
+        e.g. ironclaw_filesystem's Postgres RootFilesystem schema, ironclaw_hooks' predicate
+        state). These are not refinery migrations: every statement must stay idempotent
+        (`CREATE ... IF NOT EXISTS`, guarded ALTERs) because the whole set re-runs on every
+        start. Never drop or rewrite a column/table that holds data already written by a
+        released build. Dual-backend parity: a Postgres schema change generally needs the
+        matching libSQL change in the same crate, with semantic differences documented.
+        Destructive DDL is review track C: 2 approvals + documented rollback plan
+        (CONTRIBUTING.md).
     - path: "src/db/**"
       instructions: |
         Dual-backend persistence: every new persistence feature supports BOTH PostgreSQL and
@@ -123,12 +122,6 @@ reviews:
         grant (network hosts, workspace paths, secrets, tool-invoke) is a security decision:
         require justification, prefer the narrowest scope, flag wildcard or broad-domain
         grants.
-    - path: "registry/**"
-      instructions: |
-        Registry manifests are embedded into the binary and drive extension installation.
-        Verify URLs point at expected upstreams, artifact references carry checksums, and no
-        un-audited prebuilt WASM is introduced (root build.rs documents committed WASM as a
-        supply-chain risk).
     - path: "{src/sandbox/**,src/secrets/**,src/safety/**,src/gate/**,src/pairing/**,src/auth/**,crates/substrates/ironclaw_safety/**,crates/substrates/ironclaw_secrets/**,crates/substrates/ironclaw_network/**,crates/kernel/ironclaw_trust/**,crates/kernel/ironclaw_authorization/**,crates/kernel/ironclaw_capabilities/**,crates/ironclaw_process_sandbox/**,crates/contracts/ironclaw_prompt_envelope/**,crates/product/ironclaw_webui/**}"
       instructions: |
         Kernel/safety boundary — review track C (2 approvals + rollback plan). Hold the line
@@ -201,7 +194,7 @@ reviews:
     hadolint:
       enabled: true # 6 hand-written Dockerfiles, unlinted
     sqlfluff:
-      enabled: true # 31 refinery migrations, unlinted
+      enabled: true # crate-local schema SQL (crates/**/migrations), otherwise unlinted
     osvScanner:
       enabled: false # cargo-deny (PR-time) + Dependabot own dependency advisories
     trivy:
@@ -228,9 +221,6 @@ reviews:
     #   - name: "FEATURE_PARITY same-branch update"
     #     mode: warning
     #     instructions: "If the PR changes the implementation status of any capability tracked in FEATURE_PARITY.md (❌/🚧/✅, notes, priorities), FEATURE_PARITY.md must be updated in this same PR (AGENTS.md / CONTRIBUTING.md 'Feature Parity Requirement')."
-    #   - name: "Released migrations are immutable"
-    #     mode: warning
-    #     instructions: "Fail if the PR edits an existing migrations/V*.sql or rewrites a pinned hash in migrations/checksums.lock; released refinery migrations must never be modified."
 
   finishing_touches:
     docstrings:

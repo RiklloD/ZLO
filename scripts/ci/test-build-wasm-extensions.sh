@@ -67,7 +67,7 @@ CRATE_FLOOR_PADDING=$(( $(read_crate_floor "${crate_tree}") + CRATE_FLOOR_HEADRO
 make_repo() {  # dir first_party_crate_dir
     local dir="$1" fp="$2" i name
     rm -rf "${dir}"
-    mkdir -p "${dir}/scripts/ci/lib" "${dir}/registry/tools" "${dir}/registry/channels"
+    mkdir -p "${dir}/scripts/ci/lib"
     cp "${script_under_test}" "${dir}/scripts/build-wasm-extensions.sh"
     cp "${crate_tree}" "${dir}/scripts/ci/lib/crate_tree.py"
     for i in $(seq 1 "${CRATE_FLOOR_PADDING}"); do
@@ -160,13 +160,25 @@ assert_rc       "W5 thin inventory exits 1"     1 "${CAP_RC}"
 assert_contains "W5 thin inventory refuses"     "${CAP_OUT}" "crate discovery failed"
 
 # ---------------------------------------------------------------------------
-# W6: NEGATIVE — the registry tool set has the same empty-set guard. Pins that
-#     the other two manifest sets also refuse rather than exiting 0.
+# W6: NEGATIVE — the retired v1 registry legs (`--tools`, `--channels`) must
+#     fail loudly, not exit 0 having built nothing: a stale CI caller of the
+#     removed registry/ build has to surface as a red step.
 # ---------------------------------------------------------------------------
-make_repo "${tmp}/notools" "crates/extensions/ironclaw_extension_support"
-run_set "${tmp}/notools" --tools
-assert_rc       "W6 empty registry/tools exits 1" 1 "${CAP_RC}"
-assert_contains "W6 empty registry/tools refuses" "${CAP_OUT}" "no manifests found"
+make_repo "${tmp}/retired" "crates/extensions/ironclaw_extension_support"
+add_manifest "${tmp}/retired/crates/extensions/packages" slack
+for retired_flag in --tools --channels; do
+    run_set "${tmp}/retired" "${retired_flag}"
+    assert_rc       "W6 ${retired_flag} is rejected"   2 "${CAP_RC}"
+    assert_contains "W6 ${retired_flag} names the arg" "${CAP_OUT}" "unknown argument '${retired_flag}'"
+done
+
+# ---------------------------------------------------------------------------
+# W7: POSITIVE — no argument builds the first-party set (the default every
+#     no-arg CI caller relies on).
+# ---------------------------------------------------------------------------
+run_set "${tmp}/retired" ""
+assert_rc       "W7 no-arg exits 0"             0 "${CAP_RC}"
+assert_contains "W7 no-arg finds slack"         "${CAP_OUT}" "SKIP first-party/slack"
 
 echo ""
 echo "build-wasm-extensions discovery tests: ${PASS} passed, ${FAIL} failed"

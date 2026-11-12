@@ -127,17 +127,15 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@62b0f2dec647a8e604c6a0fda0e38530180dce20 # cargo-llvm-cov
 
-      - name: Install cargo-component
-        uses: ./.github/actions/install-cargo-component
-
-      - name: Build WASM channels (for integration tests)
-        run: ./scripts/build-wasm-extensions.sh --channels
-
       - name: Run database migrations
         if: matrix.has_postgres
         run: |
           set -euo pipefail
-          readarray -t migration_files < <(printf '%s\n' migrations/V*.sql | sort -V)
+          # The Postgres RootFilesystem schema is crate-local (the v1
+          # repo-root migrations/ directory was retired); resolve the crate by
+          # name so a family move cannot leave this glob matching nothing.
+          fs_crate_dir="$(scripts/ci/crate-dir.sh ironclaw_filesystem)"
+          readarray -t migration_files < <(printf '%s\n' "${fs_crate_dir}"/migrations/V*.sql | sort -V)
           for f in "${migration_files[@]}"; do
             echo "Applying $f..."
             psql -v ON_ERROR_STOP=1 -f "$f"

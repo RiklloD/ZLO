@@ -36,7 +36,7 @@ For each open PR, determine the primary module it touches by examining the `file
 | **Agent Core** | `crates/domains/ironclaw_skills/` |
 | **Tools & Extensions** | `crates/extensions/ironclaw_extension_support/`, `crates/extensions/ironclaw_extension_host/`, `crates/extensions/ironclaw_extension_registry/` |
 | **Channels** | `crates/extensions/packages/slack/`, `crates/extensions/packages/telegram/` |
-| **Storage & Memory** | `crates/substrates/ironclaw_filesystem/`, `crates/domains/ironclaw_memory*/`, `crates/substrates/ironclaw_libsql_runtime/`, `migrations/` |
+| **Storage & Memory** | `crates/substrates/ironclaw_filesystem/`, `crates/domains/ironclaw_memory*/`, `crates/substrates/ironclaw_libsql_runtime/`, `crates/**/migrations/` |
 | **Security** | `crates/substrates/ironclaw_safety/`, `crates/substrates/ironclaw_secrets/`, `crates/kernel/ironclaw_trust/`, `crates/kernel/ironclaw_authorization/`, `crates/kernel/ironclaw_approvals/` |
 | **Config & Setup** | `crates/app/ironclaw_config/` |
 | **Sandbox & Processes** | `crates/lanes/ironclaw_sandbox/`, `crates/kernel/ironclaw_processes/`, `crates/lanes/ironclaw_wasm*/` |
@@ -47,7 +47,7 @@ For each open PR, determine the primary module it touches by examining the `file
 
 If a PR touches multiple modules, assign it to the **primary** module (most files changed) but note the cross-cutting modules.
 
-Note: CI's own scope labeler (`.github/workflows/pr-label-scope.yml` + `.github/labeler.yml`) still fires a handful of non-`src/**` labels (`scope: ci` for `.github/**`, `scope: docs` for `**/*.md` and `docs/**`, `scope: dependencies` for `Cargo.toml`/`Cargo.lock`, `DB MIGRATION` for `migrations/**`), but every `src/**`-scoped label (`scope: agent`, `scope: tool*`, `scope: db*`, `scope: safety`, `scope: llm`, …) targets pre-Reborn paths that no longer exist and can never fire on a current PR — `grep -c 'src/' .github/labeler.yml` shows the extent. For unlabelled `crates/**` changes, or to classify anything the labeler doesn't cover, use this manual table; when a `scope: *` label from the list above is already present, use it instead of re-deriving.
+Note: CI's own scope labeler (`.github/workflows/pr-label-scope.yml` + `.github/labeler.yml`) still fires a handful of non-`src/**` labels (`scope: ci` for `.github/**`, `scope: docs` for `**/*.md` and `docs/**`, `scope: dependencies` for `Cargo.toml`/`Cargo.lock`, `DB MIGRATION` for `crates/substrates/ironclaw_filesystem/migrations/**`), but every `src/**`-scoped label (`scope: agent`, `scope: tool*`, `scope: db*`, `scope: safety`, `scope: llm`, …) targets pre-Reborn paths that no longer exist and can never fire on a current PR — `grep -c 'src/' .github/labeler.yml` shows the extent. For unlabelled `crates/**` changes, or to classify anything the labeler doesn't cover, use this manual table; when a `scope: *` label from the list above is already present, use it instead of re-deriving.
 
 ## Step 3: Assess review state
 

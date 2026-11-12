@@ -361,10 +361,14 @@ fn dockerfile_reborn_builds_without_backend_feature_flags() {
         .split_once("FROM deps AS builder")
         .map(|(_, stage)| stage)
         .expect("Dockerfile should define a builder stage");
+    // The Postgres RootFilesystem schema is crate-local
+    // (`ironclaw_filesystem/migrations/`, pulled in by `include_str!`), so the
+    // builder stage's `COPY crates/ crates/` is what carries it. The v1
+    // repo-root `migrations/` directory is gone; a COPY of it would fail the
+    // build on a missing source.
     assert!(
-        builder_stage.contains("COPY migrations/ migrations/")
-            && dockerfile.matches("COPY migrations/ migrations/").count() == 1,
-        "Dockerfile must copy repo-level SQL migrations exactly once in the builder stage for postgres include_str! builds: {dockerfile}"
+        builder_stage.contains("COPY crates/ crates/") && !dockerfile.contains("COPY migrations/"),
+        "Dockerfile builder stage must copy crates/ (which carries the crate-local postgres include_str! migrations) and must not COPY the retired repo-root migrations/: {dockerfile}"
     );
     assert!(
         !dockerfile.contains("IRONCLAW_REBORN_HOME=/data/ironclaw-reborn"),

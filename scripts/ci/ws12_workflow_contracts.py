@@ -1253,7 +1253,7 @@ CRATE_SCOPE_FILTERS: tuple[CrateScopeFilter, ...] = (
     CrateScopeFilter(
         workflow=CODE_STYLE_WORKFLOW,
         name="has_code",
-        anchor="migrations/",
+        anchor="deny\\.toml$",
         kind="regex",
         in_scope=(
             "crates/ironclaw_llm/src/lib.rs",
@@ -1400,8 +1400,8 @@ CRATE_SCOPE_FILTERS: tuple[CrateScopeFilter, ...] = (
             ("ironclaw_wasm", "wit/*.wit"),
         ),
         in_scope=(
-            "registry/tools/x.json",
             "scripts/build-wasm-extensions.sh",
+            "scripts/check-version-bumps.sh",
         ),
         out_of_scope=(
             "crates/ironclaw_llm/src/lib.rs",

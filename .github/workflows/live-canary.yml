@@ -389,17 +389,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: false
-      # wasm32-wasip2 + cargo-component + the channels build are all
-      # required: the lane's telegram_channel_install /
-      # telegram_round_trip / routine_visibility_from_telegram /
-      # manual_trigger_from_telegram scenarios call
-      # `/api/extensions/install` for the bundled telegram WASM
-      # channel, which requires the CI-built telegram.wasm artifact.
-      # Other live-canary lanes that
-      # exercise WASM extensions follow the same pattern.
-      # `--channels` skips the WASM tools build (~5 tools that
-      # workflow-canary doesn't exercise) to keep the lane under
-      # ~6 min on a fresh runner.
+      # No WASM guest build here: the telegram scenarios
+      # (telegram_channel_install / telegram_round_trip /
+      # routine_visibility_from_telegram / manual_trigger_from_telegram)
+      # install the host-native first-party telegram extension
+      # (crates/extensions/packages/telegram, runtime kind
+      # `first_party`). The former `build-wasm-extensions.sh --channels`
+      # step read the retired v1 `registry/channels/*.json` set, whose
+      # entries declared no local source, so it built nothing.
       - uses: ./.github/actions/setup-rust
         with:
           targets: wasm32-wasip2
@@ -417,10 +414,6 @@ jobs:
           cache-ssh-private-key: ${{ secrets.SCCACHE_CACHE_SSH_PRIVATE_KEY }}
           cache-ssh-known-hosts: ${{ secrets.SCCACHE_CACHE_SSH_KNOWN_HOSTS }}
           redis-password: ${{ secrets.SCCACHE_REDIS_PASSWORD }}
-      - name: Install cargo-component
-        run: cargo install cargo-component --locked || true
-      - name: Build WASM channels
-        run: ./scripts/build-wasm-extensions.sh --channels
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"

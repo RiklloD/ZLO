@@ -2713,24 +2713,28 @@ fn backend_error(
         reason: reason.into(),
     }
 }
+/// Idempotent Postgres schema for the RootFilesystem backend, applied on
+/// connect. The SQL lives crate-local in `migrations/` (moved byte-identical
+/// from the retired v1 repo-root `migrations/` directory, keeping the `V<n>__`
+/// names for history); it is not a refinery migration set.
 const POSTGRES_ROOT_FILESYSTEM_SCHEMA: &str = concat!(
-    include_str!("../../../../migrations/V26__root_filesystem_entries.sql"),
+    include_str!("../migrations/V26__root_filesystem_entries.sql"),
     "\n",
-    include_str!("../../../../migrations/V27__root_filesystem_entries_directories.sql"),
+    include_str!("../migrations/V27__root_filesystem_entries_directories.sql"),
     "\n",
-    include_str!("../../../../migrations/V28__root_filesystem_records.sql"),
+    include_str!("../migrations/V28__root_filesystem_records.sql"),
     "\n",
-    include_str!("../../../../migrations/V29__root_filesystem_index_specs.sql"),
+    include_str!("../migrations/V29__root_filesystem_index_specs.sql"),
     "\n",
-    include_str!("../../../../migrations/V30__root_filesystem_events.sql"),
+    include_str!("../migrations/V30__root_filesystem_events.sql"),
     "\n",
-    include_str!("../../../../migrations/V31__root_filesystem_path_collation.sql"),
+    include_str!("../migrations/V31__root_filesystem_path_collation.sql"),
     "\n",
-    include_str!("../../../../migrations/V32__root_filesystem_sequences.sql"),
+    include_str!("../migrations/V32__root_filesystem_sequences.sql"),
     "\n",
-    include_str!("../../../../migrations/V33__root_filesystem_ordered_index_rows.sql"),
+    include_str!("../migrations/V33__root_filesystem_ordered_index_rows.sql"),
     "\n",
-    include_str!("../../../../migrations/V34__root_filesystem_ordered_index_path_collation.sql"),
+    include_str!("../migrations/V34__root_filesystem_ordered_index_path_collation.sql"),
 );
 
 #[cfg(test)]

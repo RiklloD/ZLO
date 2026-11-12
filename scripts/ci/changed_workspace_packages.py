@@ -23,7 +23,6 @@ MERGE_GROUP_FULL_PATHS = {
 MERGE_GROUP_FULL_PREFIXES = (
     ".github/actions/",
     ".github/workflows/",
-    "migrations/",
     "scripts/ci/",
 )
 
