@@ -746,7 +746,7 @@ review_after = "2026-10-31"
 
 [[exemption]]
 path = "crates/product/ironclaw_assistant/src/reborn_services.rs"
-lines = [4888]
+lines = [1166]
 owner = "@nearai/reborn"
 reason = "Pre-existing `map_err` arm whose only change is a repointed type path (`ironclaw_host_api::product_surface::ProductSurfaceError::internal()` -> `ironclaw_product_contracts::surface::...`). It fires only if `serde_json::to_value` fails on a value a typed capability handler just produced, which no integration scenario can force; the line was equally unreached before this PR and is flagged solely because the path on it moved."
 issue = "https://github.com/nearai/ironclaw/issues/6963"
@@ -886,17 +886,6 @@ lines = [
 ]
 owner = "@nearai/reborn"
 reason = "steering_admission_failure error-mapping fn and the admission-failure match arms: every arm requires an injected thread-service/queue fault; covered by the scripted inbound_turn_contract crate-tier tests (mark failure, settle failure, vanishing enqueue)."
-issue = "https://github.com/nearai/ironclaw/issues/7006"
-review_after = "2026-11-01"
-
-[[exemption]]
-path = "crates/product/ironclaw_assistant/src/reborn_services.rs"
-lines = [
-  3503, 3504, 3505, 3506, 3507, 3508, 3509, 3510, 3512, 3513, 3514, 3515,
-  3516, 3517, 3518, 6397, 6398, 6399, 6401, 6404, 6407, 6408,
-]
-owner = "@nearai/reborn"
-reason = "steering_admission_error mapping fn and queued-replay run-id parse failure arms: fault-only paths covered by the scripted reborn_services_contract crate-tier tests."
 issue = "https://github.com/nearai/ironclaw/issues/7006"
 review_after = "2026-11-01"
 
@@ -1171,8 +1160,8 @@ issue = "https://github.com/nearai/ironclaw/issues/6974"
 review_after = "2026-11-02"
 
 [[exemption]]
-path = "crates/product/ironclaw_assistant/src/reborn_services.rs"
-lines = [6746, 6747]
+path = "crates/product/ironclaw_assistant/src/reborn_services/threads.rs"
+lines = [232, 233, 234, 235]
 owner = "@nearai/reborn"
 reason = "TimelineUnavailable mapping is exercised at the product boundary; these lines only emit the server-side tracing event for a backend/serialization cause while preserving the sanitized response. The integration lane does not install a tracing collector that can force and attribute this detail-only side effect."
 issue = "https://github.com/nearai/ironclaw/issues/6974"

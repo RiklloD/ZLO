@@ -1,5 +1,6 @@
 //! Caller-owned, redacted evidence bundle for a complete thread.
 
+use super::*;
 use chrono::{DateTime, Utc};
 use ironclaw_product_contracts::surface::{
     ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode,
@@ -184,6 +185,169 @@ fn group_messages_by_run(
             .push(message);
     }
     (runs_in_order, messages_by_run)
+}
+
+pub const ADMIN_THREAD_SCRAPE_THREADS_VIEW: ProductView<
+    RebornAdminThreadScrapeListRequest,
+    RebornListThreadsResponse,
+> = ProductView::paginated("admin_thread_scrape_threads");
+
+pub const ADMIN_THREAD_SCRAPE_ARTIFACT_VIEW: ProductView<
+    RebornAdminThreadScrapeArtifactRequest,
+    RebornThreadArtifact,
+> = ProductView::unpaginated("admin_thread_scrape_artifact");
+
+pub const ADMIN_THREAD_SCRAPE_RUN_ARTIFACT_VIEW: ProductView<
+    RebornAdminThreadScrapeRunArtifactRequest,
+    RebornRunArtifact,
+> = ProductView::unpaginated("admin_thread_scrape_run_artifact");
+
+impl<I, V> RebornServices<I, V>
+where
+    I: ProductCapabilityInvoker + Clone + 'static,
+    V: RebornViewProvider + Clone + 'static,
+{
+    /// Mint the admin->target scope transition for one thread-scrape request.
+    ///
+    /// Revalidates the caller as an active admin and the target as an
+    /// existing same-tenant user (absence maps to a sanitized 404), then
+    /// returns a `ProductSurfaceCaller` scoped to the *target* user so the
+    /// downstream artifact builders read that user's threads through the
+    /// caller-owned redaction and ownership gates. Never caches the admin
+    /// decision: the revalidation runs per request.
+    pub(super) async fn thread_scrape_subject(
+        &self,
+        caller: &ProductSurfaceCaller,
+        user_id: UserId,
+    ) -> Result<ProductSurfaceCaller, ProductSurfaceError> {
+        self.authorize_admin(caller).await?;
+        self.require_admin_target(&caller.tenant_id, &user_id)
+            .await?;
+        Ok(ProductSurfaceCaller::new(
+            caller.tenant_id.clone(),
+            user_id,
+            caller.agent_id.clone(),
+            caller.project_id.clone(),
+        ))
+    }
+
+    pub async fn list_admin_thread_scrape_threads(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: RebornAdminThreadScrapeListRequest,
+    ) -> Result<RebornListThreadsResponse, ProductSurfaceError> {
+        let admin_user_id = caller.user_id.clone();
+        let target_user_id = request.user_id.clone();
+        let result = async {
+            let subject = self.thread_scrape_subject(&caller, request.user_id).await?;
+            self.build_threads_view(
+                subject,
+                ProductListThreadsRequest {
+                    limit: request.limit,
+                    cursor: request.cursor,
+                    candidate_thread_id: None,
+                    needs_approval: false,
+                },
+            )
+            .await
+        }
+        .await;
+        let outcome = if result.is_ok() { "success" } else { "failure" };
+        // debug! + the audit target, not info!: the operator-log buffer
+        // captures INFO+ and would otherwise re-embed these audit fields
+        // (including the admin's identity) into the scraped user's own
+        // artifact export. Security-boundary diagnostics are debug-level per
+        // TracingSecurityAuditSink; a durable audit sink is composition wiring.
+        tracing::debug!(
+            target: "ironclaw::thread_scrape_audit",
+            action = "threads_listed",
+            outcome,
+            admin_user_id = %admin_user_id,
+            target_user_id = %target_user_id,
+            "thread scraping"
+        );
+        result
+    }
+
+    pub async fn build_admin_thread_scrape_artifact(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: RebornAdminThreadScrapeArtifactRequest,
+    ) -> Result<RebornThreadArtifact, ProductSurfaceError> {
+        let admin_user_id = caller.user_id.clone();
+        let target_user_id = request.user_id.clone();
+        // Validate the id before it can reach any audit emission: a raw path
+        // segment Display-formatted into the audit line would let a caller
+        // forge audit entries (e.g. embedded newlines). Only validated
+        // ThreadIds (newline-free by construction) are ever logged.
+        let thread_id = parse_thread_id_field("thread_id", request.thread_id.clone())?;
+        let result = async {
+            let subject = self.thread_scrape_subject(&caller, request.user_id).await?;
+            self.build_thread_artifact(
+                subject,
+                RebornThreadArtifactRequest {
+                    thread_id: thread_id.to_string(),
+                },
+            )
+            .await
+        }
+        .await;
+        let outcome = if result.is_ok() { "success" } else { "failure" };
+        // debug!, not info!: see threads_listed — the operator-log buffer
+        // captures INFO+ and would leak these audit fields (admin identity,
+        // target thread) into the scraped user's artifact export.
+        tracing::debug!(
+            target: "ironclaw::thread_scrape_audit",
+            action = "thread_artifact_exported",
+            outcome,
+            admin_user_id = %admin_user_id,
+            target_user_id = %target_user_id,
+            thread_id = %thread_id,
+            "thread scraping"
+        );
+        result
+    }
+
+    pub async fn build_admin_thread_scrape_run_artifact(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: RebornAdminThreadScrapeRunArtifactRequest,
+    ) -> Result<RebornRunArtifact, ProductSurfaceError> {
+        let admin_user_id = caller.user_id.clone();
+        let target_user_id = request.user_id.clone();
+        // Validate ids before any audit emission (see thread_artifact_exported):
+        // only validated ThreadId/TurnRunId values are ever Display-formatted
+        // into the audit trail, so path-segment injection cannot forge lines.
+        let thread_id = parse_thread_id_field("thread_id", request.thread_id.clone())?;
+        let run_id = parse_run_id_field("run_id", request.run_id.clone())?;
+        let result = async {
+            let subject = self.thread_scrape_subject(&caller, request.user_id).await?;
+            self.build_run_artifact(
+                subject,
+                RebornRunArtifactRequest {
+                    thread_id: thread_id.to_string(),
+                    run_id: run_id.to_string(),
+                },
+            )
+            .await
+        }
+        .await;
+        let outcome = if result.is_ok() { "success" } else { "failure" };
+        // debug!, not info!: see threads_listed — the operator-log buffer
+        // captures INFO+ and would leak these audit fields into the scraped
+        // user's artifact export.
+        tracing::debug!(
+            target: "ironclaw::thread_scrape_audit",
+            action = "run_artifact_exported",
+            outcome,
+            admin_user_id = %admin_user_id,
+            target_user_id = %target_user_id,
+            thread_id = %thread_id,
+            run_id = %run_id,
+            "thread scraping"
+        );
+        result
+    }
 }
 
 #[cfg(test)]
