@@ -892,8 +892,10 @@ mod lease_listing {
     /// Keeps a backend's storage alive for one test.
     enum Guard {
         None,
-        Dir(#[allow(dead_code)] tempfile::TempDir),
-        Postgres(IsolatedPostgresDatabase),
+        Dir(
+            #[allow(dead_code, reason = "held only to keep the directory alive")] tempfile::TempDir,
+        ),
+        Postgres(Box<IsolatedPostgresDatabase>),
     }
 
     impl Guard {
@@ -1023,7 +1025,7 @@ mod lease_listing {
                 .await
                 .expect("configured postgres provisions");
             let config = db.config().clone();
-            (Guard::Postgres(db), config)
+            (Guard::Postgres(Box::new(db)), config)
         } else {
             match container_database().await {
                 Ok(config) => (Guard::None, config),
