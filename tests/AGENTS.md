@@ -338,7 +338,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 |---|---|
 | Lifecycle hooks fire at the expected points and a hook deny blocks the tool without wedging | `hooks.rs` |
 | Turn lifecycle events publish to subscribers; trace capture records them | `tracecap.rs`, `trace_capture.rs` |
-| An operator scraping `/api/operator/metrics` after a tool-call turn sees one completed run (with its duration), the tool call counted by capability id, the model calls, and the provider requests by provider/model — and no tenant, user, or thread id in any label — a new bin because no existing scenario composes the metrics registry | `operator_metrics.rs` |
+| An operator scraping `/api/operator/metrics` after a tool-call turn sees one completed run (with its duration), the tool call counted by capability id, the model calls, and the provider requests by provider/model — and no tenant, user, or thread id in any label; after an approval-gated turn the user approves, one gate opened and one resolved `approved` — a new bin because no existing scenario composes the metrics registry | `operator_metrics.rs` |
 | Instruction-safety context renders into the prompt | `safety.rs` |
 | Scheduled-origin runs carry their origin into persisted state | `triggered_submit.rs` |
 | The test harness's runtime wiring stays field-identical to production's | `wiring_parity.rs` |
@@ -591,7 +591,7 @@ verify it.
 | **Sub-agents** have no group scenario | `reborn_subagent_spawn_e2e.rs` + `subagent_await_edge.rs` only. |
 | **Python E2E skip/xfail debt** | Tracked separately in `tests/e2e/E2E_DEBT.md` (ClawHub skills, legacy Gmail/MCP OAuth prerequisites, Telegram OAuth placeholders, portfolio widget, v2 auth/OAuth xfails). Do not silently un-xfail. |
 | **Live-model tool-misuse patterns** are documented but not gated | `tests/e2e/LIVE_TOOL_FAILURES.md` — the assistant claiming a write it never made, etc. No test fails on these today. |
-| **Observability** export is partial | The Prometheus scrape is covered (`operator_metrics.rs`; routes at crate tier in `ironclaw_webui/tests/operator_observability_routes.rs`). There is no OTLP exporter yet, and approval-gate and token metrics have no scenario (decorator-tier only, `ironclaw_operator` `metrics::tests`). |
+| **Observability** export is partial | The Prometheus scrape is covered (`operator_metrics.rs`; routes at crate tier in `ironclaw_webui/tests/operator_observability_routes.rs`). There is no OTLP exporter yet, and token metrics have no scenario (scripted replies report zero tokens; decorator-tier only, `ironclaw_operator` `metrics::tests`). Production's decorator call sites are pinned at the composition tier (`runtime/tests/core.rs`). |
 
 ---
 

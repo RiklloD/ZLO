@@ -200,7 +200,13 @@ Invariants:
   `[a-z0-9_]{1,64}` is replaced with `unrecognized_check`.
 - `Degraded` (dev-only profile, preview storage, a missing worker) is
   `503`: readiness means production-ready, while `/api/health` stays the
-  liveness answer.
+  liveness answer. Development profiles therefore always answer `503`.
+- The snapshot is **boot-time configuration readiness**: composition computes
+  `RebornReadiness` once while assembling the runtime and never re-evaluates
+  it (the `OperatorStatusService` port serves the same snapshot), so the route
+  returns the same answer for the life of the process. It is not a liveness
+  or dependency check: a database, provider, or worker failing after boot
+  does not turn it `503`.
 - The scrape route renders an in-process registry; it reads no store and
   takes no request input. The labels it can carry are bounded by the
   implementor (`ironclaw_operator::metrics`).

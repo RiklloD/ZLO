@@ -207,6 +207,7 @@ pub use standalone_boot::{
 };
 #[cfg(feature = "test-support")]
 pub use trace_capture::{
+    operator_metered_model_provider_for_test, operator_metered_runtime_event_sink_for_test,
     operator_metrics_turn_event_sink_for_test, trace_capture_turn_event_sink_for_test,
 };
 #[cfg(feature = "test-support")]

@@ -1,8 +1,11 @@
-//! Operator metrics over a whole real turn: a scripted tool-call turn runs
-//! through the harness with production's metrics observers at their
-//! production positions (the turn-event fan-out, outside the durable event
-//! sink, outermost on the provider chain), then the real operator scrape
-//! route is read and the counters the turn produced are asserted.
+//! Operator metrics over whole real turns: scripted turns run through the
+//! harness with production's metrics observers built by production's own
+//! helpers (the turn-event fan-out, `metered_runtime_event_sink` under the
+//! durable event log, `metered_model_provider` outermost on the provider
+//! chain, the metered approval resolver), recording into a test registry;
+//! then the real operator scrape route is read and the counters asserted.
+//! Deleting a production call site of those helpers is caught at the
+//! composition tier (`runtime/tests/core.rs`, the operator-metrics pins).
 //!
 //! A new bin because no existing scenario composes the metrics registry: the
 //! run families are folded from committed turn lifecycle events, the
@@ -24,9 +27,12 @@ use std::time::Duration;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use ironclaw_operator::OperatorMetrics;
+use ironclaw_product_contracts::inbound::{ApprovalDecision, ProductInboundAck};
+use ironclaw_turns::TurnStatus;
 use ironclaw_webui::webui_v2::WebUiV2Capabilities;
 use ironclaw_webui::{OPERATOR_METRICS_PATH, operator_metrics_route_mount};
 use reborn_support::builder::RebornIntegrationHarness;
+use reborn_support::group::RebornIntegrationGroup;
 use reborn_support::reply::RebornScriptedReply;
 use serde_json::json;
 use tower::ServiceExt;
@@ -171,4 +177,94 @@ async fn a_tool_call_turn_moves_the_operator_scrape_impl() {
             "scope identity {identity} leaked into the scrape:\n{after}"
         );
     }
+}
+
+/// An approval-gated tool call: the turn blocks on a real gate (opened), the
+/// user approves it through the real `ApprovalInteractionService`
+/// (production's metered resolver), and the run completes (resolved).
+#[tokio::test]
+async fn an_approved_gate_moves_the_opened_and_resolved_counters() {
+    let metrics = Arc::new(OperatorMetrics::new());
+    let group = RebornIntegrationGroup::builder()
+        .with_real_gate_dispatch_services()
+        .with_operator_metrics_for_test(Arc::clone(&metrics))
+        .live_approvals()
+        .await
+        .expect("live-approvals group builds");
+    let h = group
+        .thread("conv-operator-metrics-approval")
+        .script([
+            RebornScriptedReply::tool_call(
+                "builtin.write_file",
+                json!({"path": "/workspace/metrics_approved.txt", "content": "approved"}),
+            ),
+            RebornScriptedReply::text("written after approval"),
+        ])
+        .build()
+        .await
+        .expect("thread builds");
+
+    let (run_id, gate_ref) = h
+        .submit_turn_until_blocked("write the metrics file")
+        .await
+        .expect("blocks on a real approval gate");
+    let mut blocked = scrape(&metrics).await;
+    for _ in 0..50 {
+        if sample(&blocked, "ironclaw_approval_gates_opened_total") > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        blocked = scrape(&metrics).await;
+    }
+    assert_eq!(
+        sample(&blocked, "ironclaw_approval_gates_opened_total"),
+        1,
+        "the committed Blocked transition opens one gate:\n{blocked}"
+    );
+    assert_eq!(
+        sample(
+            &blocked,
+            "ironclaw_approval_gates_resolved_total{resolution=\"approved\"}"
+        ),
+        0,
+        "{blocked}"
+    );
+
+    let ack = h
+        .submit_approval_resolution(&gate_ref, ApprovalDecision::ApproveOnce)
+        .await
+        .expect("resolution submits");
+    assert!(
+        matches!(ack, ProductInboundAck::Accepted { .. }),
+        "expected Accepted, got {ack:?}"
+    );
+    h.wait_for_status(run_id, TurnStatus::Completed)
+        .await
+        .expect("approved run completes");
+    h.assert_workspace_file_contains("metrics_approved.txt", "approved")
+        .await
+        .expect("the approved write re-dispatched");
+
+    let after = scrape(&metrics).await;
+    assert_eq!(
+        sample(
+            &after,
+            "ironclaw_approval_gates_resolved_total{resolution=\"approved\"}"
+        ),
+        1,
+        "the approval resolution is counted:\n{after}"
+    );
+    assert_eq!(
+        sample(&after, "ironclaw_approval_gates_opened_total"),
+        1,
+        "resuming the run opens no second gate:\n{after}"
+    );
+    assert_eq!(
+        sample(
+            &after,
+            "ironclaw_approval_gates_resolved_total{resolution=\"denied\"}"
+        ),
+        0,
+        "{after}"
+    );
 }

@@ -81,7 +81,7 @@ use ironclaw_capabilities::{
 use ironclaw_conversations::RebornFilesystemConversationServices;
 use ironclaw_conversations::{AdapterInstallationId, AdapterKind, ConversationActorPairingService};
 use ironclaw_event_log::{DurableAuditLog, DurableEventLog, EventSink, NonBlockingEventSink};
-use ironclaw_event_store::{CoalescingEventSink, EventBatchConfig};
+use ironclaw_event_store::EventBatchConfig;
 use ironclaw_extension_contracts::external::ExternalActorRef;
 use ironclaw_extension_contracts::recipe::RecipeClientCredentials;
 use ironclaw_extension_host::channel_pairing::ChannelPairingRegistry;

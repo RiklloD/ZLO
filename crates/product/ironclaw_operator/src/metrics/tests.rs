@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use ironclaw_approvals::{ApprovalRequestStorePort, in_memory_backed_approval_request_store};
 use ironclaw_event_log::{
-    EventError, EventSink, InMemoryEventSink, NonBlockingEventSink, RuntimeEvent,
+    DurableEventLog, EventCursor, EventError, EventLogEntry, EventReplay, EventStreamKey,
+    InMemoryDurableEventLog, ReadScope, RuntimeEvent,
 };
 use ironclaw_host_api::action::Action;
 use ironclaw_host_api::approval::ApprovalRequest;
@@ -14,8 +15,9 @@ use ironclaw_host_api::ids::{
 use ironclaw_host_api::resource::{ResourceEstimate, ResourceScope};
 use ironclaw_host_api::runtime::RuntimeKind;
 use ironclaw_host_api::scope::Principal;
+use ironclaw_llm::provider_routing::{ProviderRouter, RoutedProviderSource};
 use ironclaw_llm::testing::StubLlm;
-use ironclaw_llm::{ChatMessage, CompletionRequest, LlmProvider};
+use ironclaw_llm::{ChatMessage, CompletionRequest, FailoverProvider, LlmError, LlmProvider};
 
 use super::*;
 
@@ -215,10 +217,11 @@ fn capability_series_are_bounded_and_overflow_is_counted() {
     assert_eq!(
         line_value(
             &rendered,
-            "ironclaw_capability_invocations_total{capability_id=\"__other__\",outcome=\"__other__\"}"
+            "ironclaw_capability_invocations_total{capability_id=\"__other__\",outcome=\"succeeded\"}"
         )
         .as_deref(),
-        Some("10")
+        Some("10"),
+        "past the ceiling only the open capability label folds; the closed outcome is kept"
     );
     assert_eq!(
         line_value(
@@ -227,6 +230,66 @@ fn capability_series_are_bounded_and_overflow_is_counted() {
         )
         .as_deref(),
         Some("10")
+    );
+}
+
+#[test]
+fn overflow_keeps_closed_outcome_and_kind_labels() {
+    let metrics = OperatorMetrics::new();
+    for index in 0..MAX_CAPABILITY_SERIES {
+        metrics.record_runtime_event(&succeeded(&format!("ext.tool_{index}")));
+    }
+    metrics.record_runtime_event(&RuntimeEvent::capability_activity_failed(
+        scope(),
+        capability("ext.late_tool"),
+        None,
+        None,
+        "operation_failed",
+    ));
+    let configured = |model: &'static str| LlmRequestLabels {
+        provider: "configured",
+        provider_configured: true,
+        model,
+    };
+    for index in 0..MAX_LLM_SERIES {
+        let model = format!("model-{index}");
+        metrics.record_llm_request(
+            LlmRequestLabels {
+                provider: "configured",
+                provider_configured: true,
+                model: &model,
+            },
+            Ok(LlmTokenUsage::default()),
+            Duration::from_millis(5),
+        );
+    }
+    metrics.record_llm_request(
+        configured("late-model"),
+        Ok(LlmTokenUsage {
+            input: 3,
+            ..LlmTokenUsage::default()
+        }),
+        Duration::from_millis(5),
+    );
+
+    let rendered = metrics.render_prometheus();
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_capability_invocations_total{capability_id=\"__other__\",outcome=\"failed\"}"
+        )
+        .as_deref(),
+        Some("1"),
+        "{rendered}"
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_requests_total{provider=\"__other__\",model=\"__other__\",outcome=\"success\"}"
+        )
+        .as_deref(),
+        Some("1"),
+        "{rendered}"
     );
 }
 
@@ -240,53 +303,83 @@ fn label_values_cannot_carry_exposition_syntax() {
     );
 }
 
-/// A sink whose accept fails, to prove a rejected event is never counted.
-struct RejectingSink;
-
-#[async_trait::async_trait]
-impl EventSink for RejectingSink {
-    async fn emit(&self, _event: RuntimeEvent) -> Result<(), EventError> {
-        Err(EventError::Sink {
-            reason: "full".to_string(),
-        })
-    }
+/// A durable log that rejects the rows of one capability, as a backend
+/// rejecting part of a batch does.
+struct PartlyRejectingLog {
+    inner: InMemoryDurableEventLog,
+    rejected_capability: &'static str,
 }
 
-impl NonBlockingEventSink for RejectingSink {
-    fn try_emit(&self, _event: RuntimeEvent) -> Result<(), EventError> {
-        Err(EventError::Sink {
-            reason: "full".to_string(),
-        })
+#[async_trait::async_trait]
+impl DurableEventLog for PartlyRejectingLog {
+    async fn append(&self, event: RuntimeEvent) -> Result<EventLogEntry<RuntimeEvent>, EventError> {
+        if event.capability_id.as_str() == self.rejected_capability {
+            return Err(EventError::Sink {
+                reason: "rejected".to_string(),
+            });
+        }
+        self.inner.append(event).await
+    }
+
+    async fn read_after_cursor(
+        &self,
+        stream: &EventStreamKey,
+        filter: &ReadScope,
+        after: Option<EventCursor>,
+        limit: usize,
+    ) -> Result<EventReplay<RuntimeEvent>, EventError> {
+        self.inner
+            .read_after_cursor(stream, filter, after, limit)
+            .await
+    }
+
+    async fn head_cursor(
+        &self,
+        stream: &EventStreamKey,
+        after: EventCursor,
+    ) -> Result<EventCursor, EventError> {
+        self.inner.head_cursor(stream, after).await
     }
 }
 
 #[tokio::test]
-async fn event_sink_decorator_forwards_then_counts_only_accepted_events() {
+async fn durable_log_decorator_counts_only_committed_rows() {
     let metrics = Arc::new(OperatorMetrics::new());
-    let inner = Arc::new(InMemoryEventSink::new());
-    let sink = MetricsEventSink::new(inner.clone(), Arc::clone(&metrics));
-    sink.try_emit(succeeded("builtin.http")).expect("accepted");
-    sink.emit(succeeded("builtin.http"))
-        .await
-        .expect("accepted");
-    assert_eq!(
-        inner.events().len(),
-        2,
-        "every event reaches the durable sink"
+    let log = MetricsDurableEventLog::new(
+        Arc::new(PartlyRejectingLog {
+            inner: InMemoryDurableEventLog::new(),
+            rejected_capability: "builtin.rejected",
+        }),
+        Arc::clone(&metrics),
     );
+    let results = log
+        .append_batch(vec![
+            succeeded("builtin.http"),
+            succeeded("builtin.rejected"),
+            succeeded("builtin.http"),
+        ])
+        .await;
+    assert_eq!(
+        results.iter().filter(|result| result.is_ok()).count(),
+        2,
+        "the inner per-row results are returned unchanged"
+    );
+    log.append(succeeded("builtin.http")).await.expect("append");
+    assert!(log.append(succeeded("builtin.rejected")).await.is_err());
 
-    let rejecting = MetricsEventSink::new(Arc::new(RejectingSink), Arc::clone(&metrics));
-    assert!(rejecting.try_emit(succeeded("builtin.http")).is_err());
-    assert!(rejecting.emit(succeeded("builtin.http")).await.is_err());
-
+    let rendered = metrics.render_prometheus();
     assert_eq!(
         line_value(
-            &metrics.render_prometheus(),
+            &rendered,
             "ironclaw_capability_invocations_total{capability_id=\"builtin.http\",outcome=\"succeeded\"}"
         )
         .as_deref(),
-        Some("2"),
-        "rejected events are not counted"
+        Some("3"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("builtin.rejected"),
+        "rejected rows are not counted:\n{rendered}"
     );
 }
 
@@ -329,6 +422,16 @@ async fn approval_store_decorator_counts_committed_resolutions_only() {
     // A second resolution of a decided request fails in the store and must
     // not count as another resolution.
     assert!(store.deny(&scope, denied.request.id).await.is_err());
+    // A capability-side rollback discards a gate that never became
+    // user-actionable (and was never counted opened): not a resolution.
+    let rolled_back = store
+        .save_pending(scope.clone(), approval_request())
+        .await
+        .expect("save");
+    store
+        .discard_pending(&scope, rolled_back.request.id)
+        .await
+        .expect("discard");
 
     let rendered = metrics.render_prometheus();
     assert_eq!(
@@ -350,7 +453,12 @@ async fn approval_store_decorator_counts_committed_resolutions_only() {
             "ironclaw_approval_gates_resolved_total{resolution=\"denied\"}"
         )
         .as_deref(),
-        Some("1")
+        Some("1"),
+        "a discarded rollback is not counted as a denial"
+    );
+    assert!(
+        !rendered.contains("discarded"),
+        "no discarded series:\n{rendered}"
     );
 }
 
@@ -396,15 +504,213 @@ async fn llm_decorator_records_provider_model_tokens_and_error_kind() {
                 && line.contains("model=\"stub/ok-model\"")),
         "token usage recorded:\n{rendered}"
     );
-    assert!(
-        rendered
-            .lines()
-            .any(|line| line.starts_with("ironclaw_llm_errors_total{")
-                && line.contains("model=\"stub/failing-model\"")),
-        "error recorded with its kind:\n{rendered}"
+    let failing_provider = label_value(&failing.provider_id());
+    assert_eq!(
+        line_value(
+            &rendered,
+            &format!(
+                "ironclaw_llm_errors_total{{provider=\"{failing_provider}\",model=\"unknown\",kind=\"request_failed\"}}"
+            )
+        )
+        .as_deref(),
+        Some("1"),
+        "a model never served mints no series; the error keeps its kind:\n{rendered}"
+    );
+    assert!(!rendered.contains("stub/failing-model"), "{rendered}");
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_request_duration_seconds_count{outcome=\"success\"}"
+        )
+        .as_deref(),
+        Some("1")
     );
     assert_eq!(
-        line_value(&rendered, "ironclaw_llm_request_duration_seconds_count").as_deref(),
-        Some("2")
+        line_value(
+            &rendered,
+            "ironclaw_llm_request_duration_seconds_count{outcome=\"error\"}"
+        )
+        .as_deref(),
+        Some("1")
     );
+}
+
+#[test]
+fn junk_model_names_on_failed_requests_cannot_claim_series() {
+    let metrics = OperatorMetrics::new();
+    for index in 0..(MAX_LLM_SERIES * 2) {
+        let junk = format!("junk-{index}");
+        metrics.record_llm_request(
+            LlmRequestLabels {
+                provider: "configured",
+                provider_configured: true,
+                model: &junk,
+            },
+            Err("invalid_request"),
+            Duration::from_millis(1),
+        );
+        let routed_provider = format!("junk-provider-{index}");
+        metrics.record_llm_request(
+            LlmRequestLabels {
+                provider: &routed_provider,
+                provider_configured: false,
+                model: &junk,
+            },
+            Err("model_not_available"),
+            Duration::from_millis(1),
+        );
+    }
+    metrics.record_llm_request(
+        LlmRequestLabels {
+            provider: "configured",
+            provider_configured: true,
+            model: "real-model",
+        },
+        Ok(LlmTokenUsage::default()),
+        Duration::from_millis(1),
+    );
+    // Once served, the pair's later failures are attributed to it.
+    metrics.record_llm_request(
+        LlmRequestLabels {
+            provider: "configured",
+            provider_configured: true,
+            model: "real-model",
+        },
+        Err("rate_limited"),
+        Duration::from_millis(1),
+    );
+
+    let rendered = metrics.render_prometheus();
+    assert!(!rendered.contains("junk"), "{rendered}");
+    assert!(!rendered.contains("=\"__other__\""), "{rendered}");
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_requests_total{provider=\"configured\",model=\"unknown\",outcome=\"error\"}"
+        )
+        .as_deref(),
+        Some(&*(MAX_LLM_SERIES * 2).to_string())
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_requests_total{provider=\"unknown\",model=\"unknown\",outcome=\"error\"}"
+        )
+        .as_deref(),
+        Some(&*(MAX_LLM_SERIES * 2).to_string())
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_requests_total{provider=\"configured\",model=\"real-model\",outcome=\"success\"}"
+        )
+        .as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_errors_total{provider=\"configured\",model=\"real-model\",kind=\"rate_limited\"}"
+        )
+        .as_deref(),
+        Some("1")
+    );
+}
+
+/// Builds the routed provider for one configured id, as the operator's
+/// provider catalog does.
+struct OneRoutedProvider {
+    id: &'static str,
+    provider: Arc<dyn LlmProvider>,
+}
+
+#[async_trait::async_trait]
+impl RoutedProviderSource for OneRoutedProvider {
+    async fn provider(&self, provider_id: &str) -> Result<Arc<dyn LlmProvider>, LlmError> {
+        if provider_id == self.id {
+            Ok(Arc::clone(&self.provider))
+        } else {
+            Err(LlmError::ModelNotAvailable {
+                provider: provider_id.to_string(),
+                model: String::new(),
+            })
+        }
+    }
+}
+
+/// Production's chain shape: metrics outermost over a `ProviderRouter` whose
+/// primary is a failover set. A routed call is attributed to the provider it
+/// named, and a call the failover served from its second provider to that
+/// provider's model — not the primary's.
+#[tokio::test]
+async fn llm_labels_follow_the_routed_provider_and_the_failover_serving_model() {
+    let metrics = Arc::new(OperatorMetrics::new());
+    let failover = FailoverProvider::new(vec![
+        Arc::new(StubLlm::failing("primary-model")),
+        Arc::new(StubLlm::new("from fallback").with_model_name("fallback-model")),
+    ])
+    .expect("failover");
+    let router = ProviderRouter::new(
+        Arc::new(failover),
+        Arc::new(OneRoutedProvider {
+            id: "glm",
+            provider: Arc::new(StubLlm::new("from glm").with_model_name("glm-default")),
+        }),
+    );
+    let provider = MetricsLlmProvider::new(Arc::new(router), Arc::clone(&metrics));
+
+    // Spawned, so the failover's task-bound serving evidence applies.
+    let provider = Arc::new(provider);
+    let task_provider = Arc::clone(&provider);
+    tokio::spawn(async move {
+        task_provider
+            .complete(CompletionRequest::new(vec![ChatMessage::user("hi")]))
+            .await
+            .expect("fallback serves");
+        task_provider
+            .complete(
+                CompletionRequest::new(vec![ChatMessage::user("hi")]).with_model("glm::glm-5.3"),
+            )
+            .await
+            .expect("routed provider serves");
+        task_provider
+            .complete(
+                CompletionRequest::new(vec![ChatMessage::user("hi")]).with_model("absent::model-x"),
+            )
+            .await
+            .expect_err("unconfigured routed provider fails");
+    })
+    .await
+    .expect("task completes");
+
+    let rendered = metrics.render_prometheus();
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_requests_total{provider=\"failover\",model=\"fallback-model\",outcome=\"success\"}"
+        )
+        .as_deref(),
+        Some("1"),
+        "the failover's serving model, not the primary's:\n{rendered}"
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_requests_total{provider=\"glm\",model=\"glm-5.3\",outcome=\"success\"}"
+        )
+        .as_deref(),
+        Some("1"),
+        "the routed provider, not the primary:\n{rendered}"
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_errors_total{provider=\"unknown\",model=\"unknown\",kind=\"model_not_available\"}"
+        )
+        .as_deref(),
+        Some("1"),
+        "a caller-named provider that never served mints no series:\n{rendered}"
+    );
+    assert!(!rendered.contains("primary-model"), "{rendered}");
+    assert!(!rendered.contains("absent"), "{rendered}");
 }

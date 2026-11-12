@@ -6,7 +6,11 @@
 //!   check's id, state and severity — never the checks' prose, remediation,
 //!   host paths, backend URLs, or secrets. A host that supplied no readiness
 //!   snapshot answers `503` with `overall: "not_configured"`. `/api/health`
-//!   stays the always-healthy liveness probe.
+//!   stays the always-healthy liveness probe. The snapshot is the
+//!   **boot-time configuration readiness** composition computed while
+//!   assembling the runtime — never re-evaluated, so dependencies failing
+//!   after boot do not change the answer, and development profiles (which
+//!   roll up to `degraded`) always answer `503`.
 //! - `GET /api/operator/metrics` — bearer-authenticated, **operator-only**,
 //!   Prometheus text exposition rendered by the
 //!   [`OperatorMetricsService`] port (implemented by `ironclaw_operator`).

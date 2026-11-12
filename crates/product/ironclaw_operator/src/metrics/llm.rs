@@ -4,19 +4,34 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use ironclaw_llm::provider_routing::ModelRoute;
 use ironclaw_llm::{
     CompletionRequest, CompletionResponse, CompletionStreamSink, LlmError, LlmProvider,
     ModelFallbackRoute, ModelMetadata, ToolCompletionRequest, ToolCompletionResponse,
 };
 use rust_decimal::Decimal;
 
-use super::{LlmTokenUsage, OperatorMetrics};
+use super::{LlmRequestLabels, LlmTokenUsage, OperatorMetrics};
 
 /// Wraps the composed provider chain and records one sample per completion
-/// call: provider and effective model as labels, token usage on success, a
+/// call: provider and served model as labels, token usage on success, a
 /// closed-vocabulary error kind on failure. Every other method delegates
 /// unchanged — a wrapper delegates the complete provider trait
 /// (`ironclaw_llm/CONTRACT.md`).
+///
+/// Labels come from request-scoped evidence, not from the chain's metadata
+/// methods (which describe the primary):
+///
+/// - **provider** — a routed request (`"<provider_id>::<model>"`, the
+///   [`ModelRoute`] the `ProviderRouter` dispatches on) is attributed to the
+///   provider it names; any other request to the chain's own `provider_id()`
+///   (`failover` when the chain is a failover set).
+/// - **model** — read **after** the call through `effective_model_name`,
+///   so a failover chain that served the request from a later provider
+///   reports that provider's model (`FailoverProvider` binds the serving
+///   provider to the calling task on completion). This decorator is the
+///   outermost provider and the gateway does not read the binding after
+///   completion, so taking it here starves no other reader.
 pub struct MetricsLlmProvider {
     inner: Arc<dyn LlmProvider>,
     metrics: Arc<OperatorMetrics>,
@@ -29,20 +44,32 @@ impl MetricsLlmProvider {
 
     fn record<T>(
         &self,
-        model: &str,
+        requested_model: Option<&str>,
         started: Instant,
         result: &Result<T, LlmError>,
         usage: impl FnOnce(&T) -> LlmTokenUsage,
     ) {
+        let elapsed = started.elapsed();
         let outcome = match result {
             Ok(response) => Ok(usage(response)),
             Err(error) => Err(llm_error_kind(error)),
         };
+        let routed_provider = requested_model
+            .and_then(ModelRoute::parse)
+            .and_then(|route| route.provider_id().map(str::to_string));
+        let (provider, provider_configured) = match routed_provider {
+            Some(provider) => (provider, false),
+            None => (self.inner.provider_id(), true),
+        };
+        let model = self.inner.effective_model_name(requested_model);
         self.metrics.record_llm_request(
-            &self.inner.provider_id(),
-            model,
+            LlmRequestLabels {
+                provider: &provider,
+                provider_configured,
+                model: &model,
+            },
             outcome,
-            started.elapsed(),
+            elapsed,
         );
     }
 }
@@ -103,10 +130,10 @@ impl LlmProvider for MetricsLlmProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-        let model = self.inner.effective_model_name(request.model.as_deref());
+        let requested = request.model.clone();
         let started = Instant::now();
         let result = self.inner.complete(request).await;
-        self.record(&model, started, &result, completion_usage);
+        self.record(requested.as_deref(), started, &result, completion_usage);
         result
     }
 
@@ -115,10 +142,10 @@ impl LlmProvider for MetricsLlmProvider {
         request: CompletionRequest,
         sink: Arc<dyn CompletionStreamSink>,
     ) -> Result<CompletionResponse, LlmError> {
-        let model = self.inner.effective_model_name(request.model.as_deref());
+        let requested = request.model.clone();
         let started = Instant::now();
         let result = self.inner.complete_streaming(request, sink).await;
-        self.record(&model, started, &result, completion_usage);
+        self.record(requested.as_deref(), started, &result, completion_usage);
         result
     }
 
@@ -126,10 +153,15 @@ impl LlmProvider for MetricsLlmProvider {
         &self,
         request: ToolCompletionRequest,
     ) -> Result<ToolCompletionResponse, LlmError> {
-        let model = self.inner.effective_model_name(request.model.as_deref());
+        let requested = request.model.clone();
         let started = Instant::now();
         let result = self.inner.complete_with_tools(request).await;
-        self.record(&model, started, &result, tool_completion_usage);
+        self.record(
+            requested.as_deref(),
+            started,
+            &result,
+            tool_completion_usage,
+        );
         result
     }
 
@@ -138,13 +170,18 @@ impl LlmProvider for MetricsLlmProvider {
         request: ToolCompletionRequest,
         sink: Arc<dyn CompletionStreamSink>,
     ) -> Result<ToolCompletionResponse, LlmError> {
-        let model = self.inner.effective_model_name(request.model.as_deref());
+        let requested = request.model.clone();
         let started = Instant::now();
         let result = self
             .inner
             .complete_with_tools_streaming(request, sink)
             .await;
-        self.record(&model, started, &result, tool_completion_usage);
+        self.record(
+            requested.as_deref(),
+            started,
+            &result,
+            tool_completion_usage,
+        );
         result
     }
 

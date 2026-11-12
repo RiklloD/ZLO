@@ -1110,18 +1110,21 @@ impl RebornIntegrationGroupBuilder {
                 Arc::clone(&base.composite),
             )?
             .events;
-            let event_sink: Arc<dyn NonBlockingEventSink> = Arc::new(CoalescingEventSink::new(
-                Arc::clone(&event_log),
-                EventBatchConfig::default(),
-            ));
-            // Production decorator position (`production_backend_assembly.rs`):
-            // operator metrics sit directly outside the coalescing durable sink.
+            // With operator metrics, production's own sink recipe
+            // (`metered_runtime_event_sink`, what both production backend
+            // assemblies call), metered into the test's registry.
             let event_sink: Arc<dyn NonBlockingEventSink> = match &self.operator_metrics {
-                Some(metrics) => Arc::new(ironclaw_operator::MetricsEventSink::new(
-                    event_sink,
-                    Arc::clone(metrics),
+                Some(metrics) => {
+                    ironclaw_composition::test_support::operator_metered_runtime_event_sink_for_test(
+                        Arc::clone(&event_log),
+                        EventBatchConfig::default(),
+                        Arc::clone(metrics),
+                    )
+                }
+                None => Arc::new(CoalescingEventSink::new(
+                    Arc::clone(&event_log),
+                    EventBatchConfig::default(),
                 )),
-                None => event_sink,
             };
             (Some(event_log), Some(event_sink))
         } else {
@@ -1938,13 +1941,15 @@ impl<'g> RebornThreadBuilder<'g> {
         } else {
             provider_chain_over(raw, &llm_config, session).await?
         };
-        // Production decorator position (`model_gateway_assembly.rs`): the
-        // metrics provider wraps the composed chain outermost.
+        // Production's outermost provider decorator (`metered_model_provider`,
+        // what `wrap_swappable_gateway` calls), metered into the test's registry.
         let provider: Arc<dyn LlmProvider> = match &shared.operator_metrics {
-            Some(metrics) => Arc::new(ironclaw_operator::MetricsLlmProvider::new(
-                provider,
-                Arc::clone(metrics),
-            )),
+            Some(metrics) => {
+                ironclaw_composition::test_support::operator_metered_model_provider_for_test(
+                    provider,
+                    Arc::clone(metrics),
+                )
+            }
             None => provider,
         };
         let model_profile_id = ModelProfileId::new(INTERACTIVE_MODEL_PROFILE)
@@ -2021,10 +2026,17 @@ impl<'g> RebornThreadBuilder<'g> {
             let reborn_services = harness.reborn_services_for_test().ok_or(
                 "with_real_gate_dispatch_services requires a harness built via new_with_options",
             )?;
+            // Production's metered resolver; recorded into the group's
+            // registry when operator metrics are opted in.
+            let approval_metrics = shared
+                .operator_metrics
+                .clone()
+                .unwrap_or_else(|| Arc::new(ironclaw_operator::OperatorMetrics::new()));
             let approval_interaction_service = reborn_services
-                .standalone_approval_interaction_service_with_turn_state_for_test(
+                .standalone_approval_interaction_service_with_turn_state_and_metrics_for_test(
                     Arc::clone(&shared.coordinator),
                     shared.process_system.gates(),
+                    approval_metrics,
                 )?
                 .ok_or(
                     "local-dev approval interaction service unavailable (harness has no local runtime)",

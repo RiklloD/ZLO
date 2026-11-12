@@ -10,20 +10,35 @@
 //!   [`OperatorMetrics::record_approval_gate_opened`] (this crate may not
 //!   name `ironclaw_turns`);
 //! - **model calls, capability invocations** — the redacted
-//!   [`RuntimeEvent`]s the runtime hands its durable event sink, observed by
-//!   [`MetricsEventSink`] after the inner sink accepts them;
+//!   [`RuntimeEvent`]s the runtime's write-behind event sink commits to the
+//!   durable event log, observed by [`MetricsDurableEventLog`] beneath that
+//!   sink's drain: an event counts only once its row is durably appended, so
+//!   events the bounded queue drops under overload, or the backend rejects,
+//!   are never counted;
 //! - **approval gates resolved** — the durable approval-request decisions
-//!   (`approve` / `deny` / `discard_pending`), observed by
-//!   [`MetricsApprovalRequestStore`] around the approval resolver's store;
+//!   (`approve` / `deny`), observed by [`MetricsApprovalRequestStore`] around
+//!   the approval resolver's store. A pending request *discarded* during a
+//!   capability-side rollback is not a resolution: the rollback runs before
+//!   the invocation blocks, so the turn never commits the `Blocked`
+//!   transition that counts a gate opened, and counting the discard would
+//!   make resolved exceed opened. A gate whose run ends (cancelled, failed)
+//!   while still pending stays in `opened - resolved`;
 //! - **LLM requests, tokens, errors** — the provider responses the model
 //!   gateway receives, observed by [`MetricsLlmProvider`] at the outermost
-//!   position of the provider chain.
+//!   position of the provider chain, labelled from the request's own route
+//!   evidence after the call (see that type).
 //!
 //! Label cardinality is bounded by construction: no label carries a tenant,
 //! user, thread, run, or invocation id, every label value is reduced to a
 //! short closed alphabet, and each labelled family holds at most a fixed
-//! number of series — the overflow folds into one `__other__` series and is
-//! counted in `ironclaw_metrics_series_overflow_total`.
+//! number of series. Past the ceiling only the *open-vocabulary* labels
+//! (capability id, provider, model, failure reason) fold into `__other__` —
+//! closed ones (`outcome`, token `kind`, error `kind`) are kept — and every
+//! folded sample is counted in `ironclaw_metrics_series_overflow_total`. A
+//! model or provider label is only ever minted by a successful response: a
+//! failed request is attributed to `model="unknown"` unless that
+//! provider/model pair has already been served, so caller-chosen model names
+//! the provider rejects cannot claim series slots.
 //!
 //! Like the operator log ring, the production registry is process-global
 //! ([`operator_metrics`]): Prometheus scrapes a process, and the runtime's
@@ -41,7 +56,7 @@ use std::time::Duration;
 use ironclaw_event_log::{RuntimeEvent, RuntimeEventKind};
 use ironclaw_product_contracts::operator_service::OperatorMetricsService;
 
-pub use decorators::{MetricsApprovalRequestStore, MetricsEventSink};
+pub use decorators::{MetricsApprovalRequestStore, MetricsDurableEventLog};
 pub use llm::MetricsLlmProvider;
 
 /// Series ceiling for the per-capability families.
@@ -85,13 +100,11 @@ impl TurnRunOutcome {
     }
 }
 
-/// How an approval gate left the pending state.
+/// How a user-actionable approval gate left the pending state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ApprovalResolution {
     Approved,
     Denied,
-    /// Rolled back before it became user-actionable.
-    Discarded,
 }
 
 impl ApprovalResolution {
@@ -99,9 +112,25 @@ impl ApprovalResolution {
         match self {
             Self::Approved => "approved",
             Self::Denied => "denied",
-            Self::Discarded => "discarded",
         }
     }
+}
+
+/// Which labels of a family are open-vocabulary (folded into `__other__`
+/// past the series ceiling) and which are closed (always kept).
+const OUTCOME_ONLY: &[bool] = &[false];
+const OPEN_THEN_CLOSED: &[bool] = &[true, false];
+const OPEN_OPEN: &[bool] = &[true, true];
+const OPEN_OPEN_CLOSED: &[bool] = &[true, true, false];
+
+/// The labels one provider request is attributed to.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LlmRequestLabels<'a> {
+    pub(crate) provider: &'a str,
+    /// `true` when `provider` is the configured chain's own id, `false` when
+    /// it came from the request (a routed `provider::model`).
+    pub(crate) provider_configured: bool,
+    pub(crate) model: &'a str,
 }
 
 /// Token counts one successful provider response reported.
@@ -159,6 +188,7 @@ impl OperatorMetrics {
             &mut state.overflow,
             "runs",
             vec![outcome.as_str().into()],
+            OUTCOME_ONLY,
             1,
             3,
         );
@@ -174,7 +204,7 @@ impl OperatorMetrics {
         self.state().approvals_opened += 1;
     }
 
-    /// Fold one runtime event that the durable event sink accepted.
+    /// Fold one runtime event the durable event log committed.
     pub fn record_runtime_event(&self, event: &RuntimeEvent) {
         let duration = event.duration_ms.map(Duration::from_millis);
         let mut state = self.state();
@@ -190,6 +220,7 @@ impl OperatorMetrics {
                     &mut state.overflow,
                     "model_calls",
                     vec![outcome.into()],
+                    OUTCOME_ONLY,
                     1,
                     2,
                 );
@@ -208,6 +239,7 @@ impl OperatorMetrics {
                     &mut state.overflow,
                     "capability_invocations",
                     vec![capability.clone(), outcome.into()],
+                    OPEN_THEN_CLOSED,
                     1,
                     MAX_CAPABILITY_SERIES,
                 );
@@ -221,6 +253,7 @@ impl OperatorMetrics {
                         &mut state.overflow,
                         "capability_failures",
                         vec![capability, reason],
+                        OPEN_OPEN,
                         1,
                         MAX_CAPABILITY_SERIES,
                     );
@@ -237,8 +270,9 @@ impl OperatorMetrics {
             &mut state.overflow,
             "approvals_resolved",
             vec![resolution.as_str().into()],
+            OUTCOME_ONLY,
             1,
-            3,
+            2,
         );
     }
 
@@ -246,24 +280,41 @@ impl OperatorMetrics {
     /// with a closed-vocabulary error kind.
     pub(crate) fn record_llm_request(
         &self,
-        provider: &str,
-        model: &str,
+        labels: LlmRequestLabels<'_>,
         outcome: Result<LlmTokenUsage, &'static str>,
         duration: Duration,
     ) {
-        let provider = label_value(provider);
-        let model = label_value(model);
+        let mut provider = label_value(labels.provider);
+        let mut model = label_value(labels.model);
         let mut state = self.state();
         let state = &mut *state;
         let outcome_label = if outcome.is_ok() { "success" } else { "error" };
+        if outcome.is_err() {
+            // Only a served response mints a provider/model series; a failure
+            // reuses one that already exists or lands on `unknown`.
+            let served = state.llm_requests.series.contains_key(&vec![
+                provider.clone(),
+                model.clone(),
+                "success".to_string(),
+            ]);
+            if !served {
+                model = UNKNOWN_LABEL_VALUE.to_string();
+                if !labels.provider_configured {
+                    provider = UNKNOWN_LABEL_VALUE.to_string();
+                }
+            }
+        }
         state.llm_requests.increment(
             &mut state.overflow,
             "llm_requests",
             vec![provider.clone(), model.clone(), outcome_label.into()],
+            OPEN_OPEN_CLOSED,
             1,
             MAX_LLM_SERIES,
         );
-        state.llm_request_duration.observe(Vec::new(), duration);
+        state
+            .llm_request_duration
+            .observe(vec![outcome_label.into()], duration);
         match outcome {
             Ok(usage) => {
                 for (kind, count) in [
@@ -277,6 +328,7 @@ impl OperatorMetrics {
                             &mut state.overflow,
                             "llm_tokens",
                             vec![provider.clone(), model.clone(), kind.into()],
+                            OPEN_OPEN_CLOSED,
                             count,
                             MAX_LLM_SERIES * 4,
                         );
@@ -288,6 +340,7 @@ impl OperatorMetrics {
                     &mut state.overflow,
                     "llm_errors",
                     vec![provider, model, kind.into()],
+                    OPEN_OPEN_CLOSED,
                     1,
                     MAX_LLM_SERIES,
                 );
@@ -365,8 +418,8 @@ impl OperatorMetrics {
         render_histogram(
             &mut out,
             "ironclaw_llm_request_duration_seconds",
-            "LLM provider request duration.",
-            &[],
+            "LLM provider request duration, by outcome.",
+            &["outcome"],
             &state.llm_request_duration,
         );
         let _ = writeln!(
@@ -382,7 +435,7 @@ impl OperatorMetrics {
         render_counter(
             &mut out,
             "ironclaw_approval_gates_resolved_total",
-            "Approval gates that left the pending state, by resolution.",
+            "User-actionable approval gates that left the pending state, by resolution.",
             &["resolution"],
             &state.approvals_resolved,
         );
@@ -414,11 +467,15 @@ struct LabeledCounter {
 }
 
 impl LabeledCounter {
+    /// `open[i]` marks label `i` as open-vocabulary: past `max_series` only
+    /// those labels fold into `__other__`, closed ones are kept, so the
+    /// overflow is at most one series per closed-label combination.
     fn increment(
         &mut self,
         overflow: &mut BTreeMap<&'static str, u64>,
         family: &'static str,
         labels: Vec<String>,
+        open: &[bool],
         by: u64,
         max_series: usize,
     ) {
@@ -426,7 +483,17 @@ impl LabeledCounter {
             labels
         } else {
             *overflow.entry(family).or_default() += 1;
-            vec![OVERFLOW_LABEL_VALUE.to_string(); labels.len()]
+            labels
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    if open.get(index).copied().unwrap_or(true) {
+                        OVERFLOW_LABEL_VALUE.to_string()
+                    } else {
+                        value
+                    }
+                })
+                .collect()
         };
         let slot = self.series.entry(key).or_default();
         *slot = slot.saturating_add(by);

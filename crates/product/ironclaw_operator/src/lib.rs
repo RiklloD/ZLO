@@ -13,7 +13,7 @@ pub use llm_admin::{
     nearai_login_callback_mount, resolve_reborn_runtime_llm,
 };
 pub use metrics::{
-    MetricsApprovalRequestStore, MetricsEventSink, MetricsLlmProvider, OperatorMetrics,
+    MetricsApprovalRequestStore, MetricsDurableEventLog, MetricsLlmProvider, OperatorMetrics,
     TurnRunOutcome, operator_metrics,
 };
 pub use operator_logs::{OperatorLogLayer, capture_tracing_log, operator_log_buffer};

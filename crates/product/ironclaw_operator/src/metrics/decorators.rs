@@ -1,6 +1,6 @@
-//! Observing decorators over the durable sinks the metrics are folded from.
+//! Observing decorators over the durable owners the metrics are folded from.
 //!
-//! Each records only **after** the inner owner accepted the fact, and never
+//! Each records only **after** the inner owner committed the fact, and never
 //! changes the inner result: a metrics fold is observability, so it may not
 //! turn a success into a failure or swallow an error.
 
@@ -8,58 +8,87 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironclaw_approvals::{ApprovalRecord, ApprovalRequestStorePort, ApprovalStoreError};
-use ironclaw_event_log::{EventError, EventSink, NonBlockingEventSink, RuntimeEvent};
+use ironclaw_event_log::{
+    DurableEventLog, EventCursor, EventError, EventLogEntry, EventReplay, EventStreamKey,
+    ReadScope, RuntimeEvent,
+};
 use ironclaw_host_api::approval::ApprovalRequest;
 use ironclaw_host_api::ids::ApprovalRequestId;
 use ironclaw_host_api::resource::ResourceScope;
 
 use super::{ApprovalResolution, OperatorMetrics};
 
-/// Folds every runtime event the inner (durable) sink accepts into
-/// [`OperatorMetrics`]. Sits directly outside the runtime's coalescing durable
-/// sink, so the metrics see exactly the events the event log is handed.
-pub struct MetricsEventSink {
-    inner: Arc<dyn NonBlockingEventSink>,
+/// Folds every runtime event the inner durable event log **commits** into
+/// [`OperatorMetrics`].
+///
+/// Production hands this to the write-behind `CoalescingEventSink` as the log
+/// its drain task appends to, so producers stay non-blocking while the
+/// metrics see exactly the rows that became durable: an event the sink's
+/// bounded queue drops under overload never reaches `append_batch`, and a row
+/// the backend rejects comes back `Err` and is not counted. The fold reads the
+/// committed [`EventLogEntry::record`], so nothing is cloned on the hot path.
+pub struct MetricsDurableEventLog {
+    inner: Arc<dyn DurableEventLog>,
     metrics: Arc<OperatorMetrics>,
 }
 
-impl MetricsEventSink {
-    pub fn new(inner: Arc<dyn NonBlockingEventSink>, metrics: Arc<OperatorMetrics>) -> Self {
+impl MetricsDurableEventLog {
+    pub fn new(inner: Arc<dyn DurableEventLog>, metrics: Arc<OperatorMetrics>) -> Self {
         Self { inner, metrics }
     }
 }
 
-impl std::fmt::Debug for MetricsEventSink {
+impl std::fmt::Debug for MetricsDurableEventLog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MetricsEventSink").finish_non_exhaustive()
+        f.debug_struct("MetricsDurableEventLog")
+            .finish_non_exhaustive()
     }
 }
 
 #[async_trait]
-impl EventSink for MetricsEventSink {
-    async fn emit(&self, event: RuntimeEvent) -> Result<(), EventError> {
-        let observed = event.clone();
-        self.inner.emit(event).await?;
-        self.metrics.record_runtime_event(&observed);
-        Ok(())
+impl DurableEventLog for MetricsDurableEventLog {
+    async fn append(&self, event: RuntimeEvent) -> Result<EventLogEntry<RuntimeEvent>, EventError> {
+        let entry = self.inner.append(event).await?;
+        self.metrics.record_runtime_event(&entry.record);
+        Ok(entry)
     }
 
-    async fn flush(&self) -> Result<(), EventError> {
-        self.inner.flush().await
+    async fn append_batch(
+        &self,
+        events: Vec<RuntimeEvent>,
+    ) -> Vec<Result<EventLogEntry<RuntimeEvent>, EventError>> {
+        let results = self.inner.append_batch(events).await;
+        for entry in results.iter().flatten() {
+            self.metrics.record_runtime_event(&entry.record);
+        }
+        results
     }
-}
 
-impl NonBlockingEventSink for MetricsEventSink {
-    fn try_emit(&self, event: RuntimeEvent) -> Result<(), EventError> {
-        let observed = event.clone();
-        self.inner.try_emit(event)?;
-        self.metrics.record_runtime_event(&observed);
-        Ok(())
+    async fn read_after_cursor(
+        &self,
+        stream: &EventStreamKey,
+        filter: &ReadScope,
+        after: Option<EventCursor>,
+        limit: usize,
+    ) -> Result<EventReplay<RuntimeEvent>, EventError> {
+        self.inner
+            .read_after_cursor(stream, filter, after, limit)
+            .await
+    }
+
+    async fn head_cursor(
+        &self,
+        stream: &EventStreamKey,
+        after: EventCursor,
+    ) -> Result<EventCursor, EventError> {
+        self.inner.head_cursor(stream, after).await
     }
 }
 
 /// Counts approval-gate resolutions as their durable records commit:
-/// `approve`, `deny`, `discard_pending`. A failed store call records nothing.
+/// `approve`, `deny`. A failed store call records nothing. `discard_pending`
+/// is delegated uncounted — a capability-side rollback of a gate that never
+/// became user-actionable, so never counted opened either (module docs).
 /// Gates *opened* are counted from the committed turn `Blocked` transition
 /// instead ([`OperatorMetrics::record_approval_gate_opened`]), so wrapping a
 /// store that also takes `save_pending` cannot double count.
@@ -119,13 +148,10 @@ impl ApprovalRequestStorePort for MetricsApprovalRequestStore {
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
     ) -> Result<ApprovalRecord, ApprovalStoreError> {
-        // Delegate to the inner override (some stores delete rather than
-        // tombstone); the default would route through `self.deny` and count
+        // Delegate to the inner override (some stores tombstone rather than
+        // deny); the trait default would route through `self.deny` and count
         // a rollback as a user denial.
-        let record = self.inner.discard_pending(scope, request_id).await?;
-        self.metrics
-            .record_approval_resolved(ApprovalResolution::Discarded);
-        Ok(record)
+        self.inner.discard_pending(scope, request_id).await
     }
 
     async fn records_for_scope(

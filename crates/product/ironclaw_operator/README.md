@@ -14,7 +14,7 @@ into the conversational core.
 - **Family / layer:** `product` / `products` · **Package:** `ironclaw_operator` · **Manifest:** `crates/product/ironclaw_operator/Cargo.toml`
 - **Use this when:** changing LLM provider administration, operator log
   capture, operator metrics (`src/metrics/`: the registry and the observing
-  decorators over the durable event sink, the approval-request store, and the
+  decorators over the durable event log, the approval-request store, and the
   LLM provider chain — `docs/internal/reborn/contracts/operator-observability-backends.md`),
   or host service lifecycle.
 - **Don't use this when:** changing conversation or channel behavior →
