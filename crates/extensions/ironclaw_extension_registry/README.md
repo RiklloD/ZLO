@@ -16,7 +16,7 @@ CAS-mutated store out of the crate whose other job is verifying inbound trust.
 
 `ExtensionRegistry` (in-memory catalog), `ExtensionManifestV2`/`v3`/
 `ResolvedExtensionManifest` (+ digest), the installation-record store
-(`installations.rs`, four record classes incl. registered package definitions
+(`installations.rs` + `installations/`: ids, records, store port, store, wire rows; four record classes incl. registered package definitions
 with `PackageDefinitionRetention`), lifecycle vocabulary
 (`ExtensionLifecycleEvent`/`Sink`/`Service`), and the host-API manifest
 contract projection (`host_api/`, incl. `host_api::product_adapter` — reached

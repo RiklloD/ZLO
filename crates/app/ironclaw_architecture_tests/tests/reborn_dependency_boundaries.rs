@@ -2369,6 +2369,12 @@ fn provider_tool_names_stay_at_model_protocol_boundaries() {
         "crates/ironclaw_loop_host/src/lib.rs",
         "crates/ironclaw_loop_host/src/capability_info.rs",
         "crates/ironclaw_loop_host/src/capability_port.rs",
+        // The capability-port adapter's provider-tool registration, dispatch
+        // preparation, and naming split out of `capability_port.rs` into
+        // these submodules (pure move): the same boundary, not new uses.
+        "crates/ironclaw_loop_host/src/capability_port/loop_port_impl.rs",
+        "crates/ironclaw_loop_host/src/capability_port/port.rs",
+        "crates/ironclaw_loop_host/src/capability_port/provider_tool_names.rs",
         "crates/ironclaw_loop_host/src/capability_port/provider_validation.rs",
         "crates/ironclaw_loop_host/src/capability_port/surface_snapshot.rs",
         "crates/ironclaw_loop_host/src/external_tool_capability.rs",

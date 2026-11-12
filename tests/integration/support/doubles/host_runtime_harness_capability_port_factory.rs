@@ -1,6 +1,6 @@
 /// Test double substituting the production `LoopCapabilityPortFactory` wiring:
 /// `RefreshingLoopCapabilityPortFactory` (`crates/app/ironclaw_composition/src/runtime/capability_host.rs`)
-/// and `HostRuntimeLoopCapabilityPortFactory` (`crates/loop/ironclaw_loop_host/src/capability_port.rs`).
+/// and `HostRuntimeLoopCapabilityPortFactory` (`crates/loop/ironclaw_loop_host/src/capability_port/factory.rs`).
 use std::sync::Arc;
 
 use async_trait::async_trait;

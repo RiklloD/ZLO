@@ -44,8 +44,58 @@ issue  = "https://github.com/nearai/ironclaw/issues/6524"
 
 [[exemption]]
 module = "crates/domains/ironclaw_llm/src/rig_adapter/tests/finish_reason_tests.rs"
-reason = "Test-only module stored under src/ for private adapter access; cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter.rs production lines remain coverage-gated."
+reason = "Test-only module stored under src/ for private adapter access; cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter production lines remain coverage-gated."
 issue  = "https://github.com/nearai/ironclaw/issues/6284"
+
+[[exemption]]
+module = "crates/domains/ironclaw_llm/src/rig_adapter/tests.rs"
+reason = "Test-only module stored under src/ for private adapter access (moved out of rig_adapter.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6284"
+
+[[exemption]]
+module = "crates/domains/ironclaw_llm/src/rig_adapter/tests/convert_tests.rs"
+reason = "Test-only module stored under src/ for private adapter access (moved out of rig_adapter.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6284"
+
+[[exemption]]
+module = "crates/domains/ironclaw_llm/src/rig_adapter/tests/error_tests.rs"
+reason = "Test-only module stored under src/ for private adapter access (moved out of rig_adapter.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6284"
+
+[[exemption]]
+module = "crates/domains/ironclaw_llm/src/rig_adapter/tests/models_endpoint_tests.rs"
+reason = "Test-only module stored under src/ for private adapter access (moved out of rig_adapter.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6284"
+
+[[exemption]]
+module = "crates/domains/ironclaw_llm/src/rig_adapter/tests/provider_tests.rs"
+reason = "Test-only module stored under src/ for private adapter access (moved out of rig_adapter.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6284"
+
+[[exemption]]
+module = "crates/domains/ironclaw_llm/src/rig_adapter/tests/request_tests.rs"
+reason = "Test-only module stored under src/ for private adapter access (moved out of rig_adapter.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6284"
+
+[[exemption]]
+module = "crates/domains/ironclaw_llm/src/rig_adapter/tests/schema_tests.rs"
+reason = "Test-only module stored under src/ for private adapter access (moved out of rig_adapter.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6284"
+
+[[exemption]]
+module = "crates/domains/ironclaw_llm/src/rig_adapter/tests/wire_tests.rs"
+reason = "Test-only module stored under src/ for private adapter access (moved out of rig_adapter.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised rig_adapter production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6284"
+
+[[exemption]]
+module = "crates/extensions/ironclaw_extension_registry/src/installations/store/tests.rs"
+reason = "Test-only module stored under src/ for private store access (moved out of installations.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised installations production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6175"
+
+[[exemption]]
+module = "crates/extensions/ironclaw_extension_registry/src/installations/test_support.rs"
+reason = "Test-only module stored under src/ for private store access (moved out of installations.rs's inline tests); cargo-llvm-cov omits test harness source from production LCOV while the exercised installations production lines remain coverage-gated."
+issue  = "https://github.com/nearai/ironclaw/issues/6175"
 
 [[exemption]]
 module = "crates/domains/ironclaw_llm/src/anthropic_oauth/tests.rs"

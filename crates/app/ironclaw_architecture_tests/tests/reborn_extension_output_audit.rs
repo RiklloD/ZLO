@@ -529,12 +529,46 @@ fn reborn_every_encoded_output_candidate_has_a_live_reviewed_boundary() {
 #[test]
 fn reborn_generic_durable_writer_and_reader_remain_producer_blind() {
     let root = workspace_root();
+    // `capability_port.rs` was split into a module directory; every production
+    // file under it stays under this producer-blind scan. Walk the directory
+    // rather than listing files so a newly added module cannot escape; the
+    // `tests.rs` module and `tests/` directory are test-only and skipped.
+    let capability_port_dir = crate_dir(&root, "ironclaw_loop_host").join("src/capability_port");
+    let mut capability_port_files = Vec::new();
+    let mut pending = vec![capability_port_dir.clone()];
+    while let Some(dir) = pending.pop() {
+        let entries =
+            fs::read_dir(&dir).unwrap_or_else(|error| panic!("read {}: {error}", dir.display()));
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|error| panic!("read entry in {}: {error}", dir.display()))
+                .path();
+            let is_test_only = path.file_stem().is_some_and(|stem| stem == "tests");
+            if is_test_only {
+                continue;
+            }
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                capability_port_files.push(path);
+            }
+        }
+    }
+    assert!(
+        capability_port_files.len() >= 10,
+        "producer-blind scan found only {} production file(s) under {}; the walk is broken \
+         or the module moved",
+        capability_port_files.len(),
+        capability_port_dir.display()
+    );
     let generic_files = [
         crate_dir(&root, "ironclaw_loop_host").join("src/capability_port.rs"),
         crate_dir(&root, "ironclaw_composition").join("src/runtime/capability_host.rs"),
         crate_dir(&root, "ironclaw_loop_host").join("src/result_read.rs"),
         crate_dir(&root, "ironclaw_threads").join("src/tool_result_records.rs"),
-    ];
+    ]
+    .into_iter()
+    .chain(capability_port_files);
     let forbidden = [
         "content_base64",
         "body_base64",

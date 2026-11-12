@@ -30,7 +30,7 @@ consolidated 2026-08-05 per `docs/internal/reborn/guidance-conventions.md` rule 
   `ManifestV2Error`, and the schema-version/size constants. The v3 wire schema
   (`v3`) and the resolved+digested form (`resolved.rs`) the rest of the system
   reads instead of re-parsing TOML.
-- The durable records (`installations.rs`): installation, membership,
+- The durable records (`installations.rs` + `installations/` — ids, record types, the store port, the filesystem store under `store/`, and the row/wire codecs): installation, membership,
   credential-binding, and **registered package definitions** — rows admitted to
   the catalog with zero installations, carrying their own retention policy
   (`definition_admission.rs`). Four record classes, CAS-mutated.

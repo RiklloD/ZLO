@@ -1038,7 +1038,7 @@ mod tests {
     }
 
     /// Replay-payload scope isolation, pinned on the synthetic path (the
-    /// runtime-port sibling lives in `capability_port.rs`): a payload saved
+    /// runtime-port sibling lives in `capability_port/tests/`): a payload saved
     /// under one scope user is INVISIBLE to a resume that loads under a
     /// different scope user — the resume must MISS and fail closed as a
     /// terminal `Unavailable`, never dispatching the handler with re-resolved
