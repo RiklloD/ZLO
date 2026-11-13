@@ -9,6 +9,12 @@
 //! IronClaw's own journal (`<state_dir>/transcripts/<key>.jsonl`): the agent's
 //! conversation store is not a stable format.
 //!
+//! The account's models come from the agent, never a list of ours: every
+//! session's config options are saved to `<state_dir>/models.json`, and a
+//! signed-in catalog read refreshes a list older than an hour in the
+//! background (a bare `session/new` + `session/close`, no prompt), so models
+//! Google ships appear in the picker without an app release.
+//!
 //! The `agy` CLI is not an ACP agent (1.4.0 has no ACP mode); the ACP server
 //! is the separately shipped runtime T3 Code and Hermes install.
 //!
@@ -54,6 +60,11 @@ const DEFAULT_MODEL: &str = "default";
 const INIT_TIMEOUT: Duration = Duration::from_secs(90);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
 const CONFIG_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the account's model list is trusted before a catalog read asks
+/// the agent again, so models Google ships reach the picker without a turn.
+const MODELS_TTL_MS: i64 = 60 * 60 * 1000;
+/// Closing the probe session is housekeeping; never wait long for it.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A prompt runs as long as the agent works on it; Stop ends it sooner.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
 
@@ -140,6 +151,8 @@ pub struct AntigravityRuntime {
     bridge: Option<Arc<CliBridge>>,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     primed: crate::Primed,
+    /// Single flight for the background model-list refresh.
+    refreshing: Arc<AtomicBool>,
 }
 
 impl AntigravityRuntime {
@@ -155,6 +168,7 @@ impl AntigravityRuntime {
             bridge,
             active: Arc::new(Mutex::new(HashMap::new())),
             primed: crate::Primed::default(),
+            refreshing: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -166,32 +180,7 @@ impl AntigravityRuntime {
     }
 
     fn command(&self) -> Command {
-        let c = &self.config;
-        let mut cmd = Command::new(&c.executable);
-        cmd.env_clear();
-        for key in KEPT_ENV {
-            if let Some(value) = std::env::var_os(key) {
-                cmd.env(key, value);
-            }
-        }
-        // The agent is a one-file bundle that unpacks itself per launch;
-        // keep that under its profile, where it can be reclaimed.
-        let tmp = c.profile_dir.join("antigravity-acp").join("tmp");
-        cmd.env("GEMINI_HOME", &c.profile_dir)
-            .env("AGY_ACP_FORCE_FILE_STORAGE", "1")
-            .env("PYTHONUNBUFFERED", "1")
-            .env("ELECTRON_RUN_AS_NODE", "1")
-            .env("ANTIGRAVITY_HARNESS_PATH", &c.harness)
-            .env("TMPDIR", tmp)
-            // A background turn never opens a browser on its own.
-            .env("BROWSER", "/usr/bin/true")
-            .current_dir(&c.work_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
-        cmd
+        agent_command(&self.config)
     }
 
     async fn spawn_turn(
@@ -723,6 +712,36 @@ async fn permission_answer(
         .unwrap_or(cancelled)
 }
 
+/// The agent process: allowlisted environment, its own profile, its own
+/// process group, no browser.
+fn agent_command(c: &AntigravityConfig) -> Command {
+    let mut cmd = Command::new(&c.executable);
+    cmd.env_clear();
+    for key in KEPT_ENV {
+        if let Some(value) = std::env::var_os(key) {
+            cmd.env(key, value);
+        }
+    }
+    // The agent is a one-file bundle that unpacks itself per launch;
+    // keep that under its profile, where it can be reclaimed.
+    let tmp = c.profile_dir.join("antigravity-acp").join("tmp");
+    cmd.env("GEMINI_HOME", &c.profile_dir)
+        .env("AGY_ACP_FORCE_FILE_STORAGE", "1")
+        .env("PYTHONUNBUFFERED", "1")
+        .env("ELECTRON_RUN_AS_NODE", "1")
+        .env("ANTIGRAVITY_HARNESS_PATH", &c.harness)
+        .env("TMPDIR", tmp)
+        // A background turn never opens a browser on its own.
+        .env("BROWSER", "/usr/bin/true")
+        .current_dir(&c.work_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true);
+    cmd
+}
+
 async fn prepare_dirs(config: &AntigravityConfig) -> std::io::Result<()> {
     let acp = config.profile_dir.join("antigravity-acp");
     tokio::fs::create_dir_all(acp.join("tmp")).await?;
@@ -758,10 +777,94 @@ async fn save_models(path: &Path, options: &Value) {
     if models.is_empty() {
         return;
     }
-    let body = json!({"current": fold::current_model(options), "models": models}).to_string();
+    let body = json!({
+        "at": now_ms(),
+        "current": fold::current_model(options),
+        "models": models,
+    })
+    .to_string();
     if let Err(error) = tokio::fs::write(path, body).await {
         tracing::debug!(%error, "antigravity: model list not saved");
     }
+}
+
+/// Whether our model list is missing, unreadable, from before lists carried
+/// a timestamp, or older than [`MODELS_TTL_MS`].
+async fn models_stale(path: &Path) -> bool {
+    let Ok(raw) = tokio::fs::read_to_string(path).await else {
+        return true; // silent-ok: no list yet is exactly what a refresh fixes
+    };
+    let at = serde_json::from_str::<Value>(&raw)
+        .ok() // silent-ok: a torn list is refreshed like a missing one
+        .and_then(|doc| doc["at"].as_i64());
+    at.is_none_or(|at| now_ms().saturating_sub(at) > MODELS_TTL_MS)
+}
+
+/// Ask the agent for the account's models without a turn: `initialize`,
+/// `authenticate`, `session/new` (whose config options carry the model
+/// list), save the list, `session/close`, then end the process group. The
+/// session is bound to no thread and never prompted.
+async fn refresh_models(config: &AntigravityConfig) -> Result<(), String> {
+    prepare_dirs(config)
+        .await
+        .map_err(|e| format!("dirs: {}", e.kind()))?;
+    let mut child = agent_command(config)
+        .spawn()
+        .map_err(|e| format!("spawn: {}", e.kind()))?;
+    let pgid = rpc::group_of(&child).ok_or("exited at spawn")?;
+    let (Some(stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: cleanup of a half-spawned child
+        return Err("stdio unavailable".into());
+    };
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            tracing::debug!(target: "antigravity", "refresh stderr: {line}");
+        }
+    });
+    let (client, inbound) = RpcClient::start(stdin, stdout, "antigravity");
+    let asked = async {
+        let init = json!({
+            "protocolVersion": 1,
+            "clientInfo": {"name": "ironclaw", "title": "IronClaw", "version": env!("CARGO_PKG_VERSION")},
+            "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
+        });
+        client.request("initialize", init, INIT_TIMEOUT).await?;
+        client
+            .request(
+                "authenticate",
+                json!({"methodId": config.auth_method}),
+                config.auth_timeout,
+            )
+            .await?;
+        let cwd = config.work_dir.display().to_string();
+        let result = client
+            .request(
+                "session/new",
+                json!({"cwd": cwd, "mcpServers": []}),
+                SESSION_TIMEOUT,
+            )
+            .await?;
+        save_models(
+            &config.models_file(),
+            result.get("configOptions").unwrap_or(&Value::Null),
+        )
+        .await;
+        if let Some(id) = result.get("sessionId").and_then(Value::as_str) {
+            // silent-ok: closing is housekeeping, the list is already saved
+            let _ = client
+                .request("session/close", json!({"sessionId": id}), CLOSE_TIMEOUT)
+                .await;
+        }
+        Ok::<(), RpcError>(())
+    }
+    .await;
+    drop(client);
+    drop(inbound);
+    close_host(&mut child, pgid).await;
+    asked.map_err(|e| e.label())
 }
 
 /// After the answer: let the agent exit on stdin EOF, then make sure the
@@ -862,12 +965,27 @@ impl TurnRuntime for AntigravityRuntime {
     }
 
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
+        let authenticated = tokio::fs::try_exists(self.config.token_file())
+            .await
+            .unwrap_or(false); // silent-ok: an unreadable token reads as signed out
+        // Signed out, a probe would wait on a browser sign-in nobody opens.
+        if authenticated
+            && models_stale(&self.config.models_file()).await
+            && !self.refreshing.swap(true, Ordering::SeqCst)
+        {
+            let config = Arc::clone(&self.config);
+            let refreshing = Arc::clone(&self.refreshing);
+            tokio::spawn(async move {
+                if let Err(error) = refresh_models(&config).await {
+                    tracing::debug!(%error, "antigravity: model list refresh failed");
+                }
+                refreshing.store(false, Ordering::SeqCst);
+            });
+        }
         Ok(vec![CatalogProvider {
             provider: self.config.runtime_id.clone(),
             name: self.config.display_name.clone(),
-            authenticated: tokio::fs::try_exists(self.config.token_file())
-                .await
-                .unwrap_or(false), // silent-ok: an unreadable token reads as signed out
+            authenticated,
             current: false,
             models: cached_models(&self.config).await,
             // The effort is part of each model's name (`-low`/`-high`).

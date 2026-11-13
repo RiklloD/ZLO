@@ -133,6 +133,7 @@ while IFS= read -r line; do
     *'"method":"session/new"'*) reply "$id" "{\"sessionId\":\"acp-1\",\"configOptions\":$OPTS}" ;;
     *'"method":"session/resume"'*) reply "$id" "{\"configOptions\":$OPTS}" ;;
     *'"method":"session/set_config_option"'*) reply "$id" '{}' ;;
+    *'"method":"session/close"'*) reply "$id" '{}' ;;
     *'"method":"session/prompt"'*)
       if [ -n "$PIDF" ]; then sleep 30 & printf '%s' $! > "$PIDF"; wait; fi
       note '{"sessionUpdate":"usage_update","used":1200,"size":100000}'
@@ -250,6 +251,81 @@ async fn antigravity_resumes_its_session_denies_permissions_and_reports_telemetr
     let catalog = rt.catalog(&scope()).await.unwrap();
     assert!(catalog[0].authenticated);
     assert_eq!(catalog[0].models, ["gemini-a", "gemini-b"]);
+}
+
+/// A new model shipped to the account (Gemini 4 Hydrogen, say) reaches the
+/// picker without a turn: a signed-in catalog read with a missing or stale
+/// model list asks the agent in the background — `session/new` for the
+/// account's options, then `session/close` — and never prompts it.
+#[tokio::test]
+async fn antigravity_catalog_refreshes_a_stale_model_list_without_a_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity(dir.path(), None, &recorder);
+    std::fs::create_dir_all(dir.path().join("profile/antigravity-acp")).unwrap();
+    std::fs::write(
+        dir.path().join("profile/antigravity-acp/acp_token.json"),
+        "{}",
+    )
+    .unwrap();
+    // A list cached long ago, before gemini-b existed.
+    std::fs::create_dir_all(dir.path().join("state")).unwrap();
+    std::fs::write(
+        dir.path().join("state/models.json"),
+        r#"{"at":1,"current":"gemini-a","models":["gemini-a"]}"#,
+    )
+    .unwrap();
+
+    // The read answers at once from the cache and refreshes behind it.
+    let first = rt.catalog(&scope()).await.unwrap();
+    assert_eq!(first[0].models, ["gemini-a"]);
+    let mut refreshed = Vec::new();
+    for _ in 0..200 {
+        refreshed = rt.catalog(&scope()).await.unwrap()[0].models.clone();
+        if refreshed.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(refreshed, ["gemini-a", "gemini-b"]);
+
+    let log = std::fs::read_to_string(dir.path().join("agy.log")).unwrap();
+    assert_eq!(log.matches(r#""method":"session/new""#).count(), 1, "{log}");
+    assert!(log.contains(r#""method":"session/close""#), "{log}");
+    assert!(
+        !log.contains("session/prompt"),
+        "a refresh never prompts: {log}"
+    );
+    // Only allowlisted variables reach the probe too.
+    assert!(log.contains("BROWSER=/usr/bin/true"), "{log}");
+    // Fresh now: further reads do not start the agent again.
+    rt.catalog(&scope()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let log = std::fs::read_to_string(dir.path().join("agy.log")).unwrap();
+    assert_eq!(log.matches(r#""method":"session/new""#).count(), 1, "{log}");
+    assert!(
+        !dir.path()
+            .join("state/sessions")
+            .read_dir()
+            .is_ok_and(|mut d| d.next().is_some()),
+        "a refresh binds no thread session"
+    );
+}
+
+/// Signed out, the catalog never starts the agent: a sign-in would wait on a
+/// browser nobody opens.
+#[tokio::test]
+async fn antigravity_catalog_does_not_probe_while_signed_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity(dir.path(), None, &recorder);
+    let catalog = rt.catalog(&scope()).await.unwrap();
+    assert!(!catalog[0].authenticated);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !dir.path().join("agy.log").exists(),
+        "agent started while signed out"
+    );
 }
 
 #[tokio::test]
