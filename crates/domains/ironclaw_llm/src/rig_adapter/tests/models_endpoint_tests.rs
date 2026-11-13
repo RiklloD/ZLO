@@ -99,3 +99,78 @@ async fn fetch_models_does_not_follow_redirects() {
         .expect_err("redirect is not followed");
     assert!(matches!(err, LlmError::RequestFailed { .. }), "got {err:?}");
 }
+
+#[test]
+fn parse_models_response_gemini_strips_prefix_and_keeps_chat_models() {
+    // Gemini `models.list`: ids carry a `models/` prefix, and the catalogue
+    // mixes chat models with embedding/video models that cannot serve
+    // `generateContent`.
+    let body = br#"{"models":[
+        {"name":"models/gemini-4-hydrogen","supportedGenerationMethods":["generateContent","countTokens"]},
+        {"name":"models/gemini-embedding-2","supportedGenerationMethods":["embedContent"]},
+        {"name":"models/gemini-4-carbon","supportedGenerationMethods":["generateContent"]},
+        {"name":"models/veo-4","supportedGenerationMethods":["predictLongRunning"]},
+        {"name":"models/gemini-3.8-flash"}
+    ],"nextPageToken":"abc"}"#;
+    let models = parse_models_response("gemini", ModelsShape::GeminiModels, body).expect("parses");
+    assert_eq!(
+        models,
+        vec!["gemini-4-hydrogen", "gemini-4-carbon", "gemini-3.8-flash"]
+    );
+}
+
+/// Caller-level: the `gemini` (API key) factory must wire live discovery, so
+/// new Google models reach the picker without an app update. Drives the real
+/// factory against a loopback server and checks the request it sends.
+#[tokio::test]
+async fn gemini_factory_lists_models_from_models_endpoint() {
+    use secrecy::SecretString;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let addr = listener.local_addr().expect("addr");
+    let (req_tx, req_rx) = tokio::sync::oneshot::channel::<String>();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            let _ = req_tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+            let body = r#"{"models":[{"name":"models/gemini-4-hydrogen","supportedGenerationMethods":["generateContent"]},{"name":"models/text-embedding-5","supportedGenerationMethods":["embedContent"]}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.flush().await;
+        }
+    });
+
+    let config = crate::config::RegistryProviderConfig::generic(
+        crate::registry::ProviderProtocol::Gemini,
+        "gemini",
+        Some(SecretString::from("test-gemini-key".to_string())),
+        format!("http://{addr}"),
+        "gemini-2.5-flash",
+    );
+    let provider = crate::create_gemini_from_registry(&config, 30).expect("provider builds");
+    let models = provider.list_models().await.expect("lists models");
+    assert_eq!(models, vec!["gemini-4-hydrogen"]);
+
+    let request = req_rx.await.expect("request captured");
+    let request_line = request.lines().next().unwrap_or_default();
+    assert!(
+        request_line.starts_with("GET /v1beta/models?pageSize=1000 "),
+        "unexpected request line: {request_line}"
+    );
+    let lower = request.to_ascii_lowercase();
+    assert!(
+        lower.contains("x-goog-api-key: test-gemini-key"),
+        "API key must travel in the x-goog-api-key header: {request}"
+    );
+    assert!(
+        !request_line.contains("test-gemini-key"),
+        "API key must never be put in the URL"
+    );
+}

@@ -29,6 +29,7 @@ const VISION_PATTERNS: &[&str] = &[
     "gemini-1.5",
     "gemini-2",
     "gemini-3",
+    "gemini-4",
     "glm-4v",
     "glm-4.5v",
     "glm-5v",
@@ -97,6 +98,8 @@ mod tests {
             "gpt-6.1-sol",
             "gpt-4.1-mini",
             "gemini-3.8-flash-high",
+            "gemini-4-hydrogen",
+            "gemini-4-carbon",
             "glm-4.5v",
         ] {
             assert!(is_vision_model(model), "{model} sees images");

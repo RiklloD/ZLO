@@ -7,6 +7,9 @@ pub(crate) enum ModelsAuth {
     Bearer(String),
     /// `x-api-key: <key>` plus an `anthropic-version` header (Anthropic).
     AnthropicKey { api_key: String, version: String },
+    /// `x-goog-api-key: <key>` (Gemini native API). Kept in a header, never
+    /// in the `?key=` query string, so the key cannot leak into URL logs.
+    GoogApiKey(String),
     /// No auth header (Ollama).
     None,
 }
@@ -18,6 +21,10 @@ pub(crate) enum ModelsShape {
     OpenAiData,
     /// Ollama `/api/tags`: `{ "models": [ { "name": ... } ] }`.
     OllamaTags,
+    /// Gemini `models.list`: `{ "models": [ { "name": "models/<id>",
+    /// "supportedGenerationMethods": … } ] }`. Only models that serve
+    /// `generateContent` are kept, and the `models/` prefix is stripped.
+    GeminiModels,
 }
 
 /// Connection details for a provider model-discovery request.
@@ -68,6 +75,7 @@ impl ModelsEndpoint {
             ModelsAuth::AnthropicKey { api_key, version } => builder
                 .header("x-api-key", api_key)
                 .header("anthropic-version", version),
+            ModelsAuth::GoogApiKey(api_key) => builder.header("x-goog-api-key", api_key),
             ModelsAuth::None => builder,
         };
 
@@ -128,7 +136,7 @@ impl ModelsEndpoint {
 /// Split out from the HTTP call so the parsing contract is unit-testable
 /// without a live endpoint. `ModelsShape` selects the JSON shape:
 /// OpenAI/Anthropic `{ "data": [{ "id" }] }` vs Ollama
-/// `{ "models": [{ "name" }] }`.
+/// `{ "models": [{ "name" }] }` vs Gemini `{ "models": [{ "name": "models/…" }] }`.
 pub(super) fn parse_models_response(
     provider_id: &str,
     shape: ModelsShape,
@@ -153,6 +161,19 @@ pub(super) fn parse_models_response(
         name: String,
     }
 
+    #[derive(serde::Deserialize)]
+    struct GeminiResponse {
+        #[serde(default)]
+        models: Vec<GeminiEntry>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct GeminiEntry {
+        name: String,
+        /// Absent on some entries; treated as "no restriction".
+        supported_generation_methods: Option<Vec<String>>,
+    }
+
     let parse_err = |e: serde_json::Error| LlmError::InvalidResponse {
         provider: provider_id.to_string(),
         reason: format!("could not parse models response: {e}"),
@@ -170,6 +191,24 @@ pub(super) fn parse_models_response(
             .models
             .into_iter()
             .map(|entry| entry.name)
+            .collect::<Vec<_>>(),
+        ModelsShape::GeminiModels => serde_json::from_slice::<GeminiResponse>(body)
+            .map_err(parse_err)?
+            .models
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .supported_generation_methods
+                    .as_ref()
+                    .is_none_or(|methods| methods.iter().any(|m| m == "generateContent"))
+            })
+            .map(|entry| {
+                entry
+                    .name
+                    .strip_prefix("models/")
+                    .map(str::to_string)
+                    .unwrap_or(entry.name)
+            })
             .collect::<Vec<_>>(),
     };
 

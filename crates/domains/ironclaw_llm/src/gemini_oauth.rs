@@ -137,6 +137,8 @@ fn parse_custom_headers() -> std::collections::HashMap<String, String> {
 /// for unrecognized models.
 fn gemini_context_length(model: &str) -> u32 {
     match model {
+        // Gemini 4 — one unified 1,048,576-token input+output window.
+        "gemini-4-hydrogen" | "gemini-4-carbon" | "gemini-4-argon" => 1_048_576,
         // Pro models — 2M context
         "gemini-2.5-pro"
         | "gemini-3-pro-preview"
@@ -156,10 +158,21 @@ fn gemini_context_length(model: &str) -> u32 {
     }
 }
 
-/// Determine whether a model supports "modern features" (thought signatures, etc.).
-/// Gemini 3.x and custom models need thought signature injection.
+/// Major version of a Gemini model id: `gemini-4-hydrogen` -> 4,
+/// `models/gemini-3.1-pro-preview` -> 3. `None` for non-Gemini ids.
+fn gemini_major_version(model: &str) -> Option<u32> {
+    let tail = model.rsplit('/').next().unwrap_or(model);
+    let rest = tail.to_ascii_lowercase();
+    let rest = rest.strip_prefix("gemini-")?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// Determine whether a model supports "modern features" (thought signatures,
+/// level-based thinking). True for Gemini 3 and every later major, so a new
+/// generation (Gemini 4, 5, …) works without a code change.
 fn supports_modern_features(model: &str) -> bool {
-    model.contains("gemini-3")
+    gemini_major_version(model).is_some_and(|major| major >= 3)
 }
 
 /// Invalid stream error types mirroring the Gemini CLI.
@@ -1080,11 +1093,37 @@ impl GeminiOauthProvider {
         Self::model_uses_cloud_code_api(&self.config.model)
     }
 
+    /// Models offered in the picker for Gemini CLI (Code Assist OAuth).
+    ///
+    /// Code Assist has no public model-listing endpoint, so this list is
+    /// curated (the API-key `gemini` provider discovers models live instead).
+    /// Any other id still works when typed in by hand.
+    pub(crate) fn known_models() -> Vec<String> {
+        [
+            "gemini-4-hydrogen",
+            "gemini-4-carbon",
+            "gemini-4-argon",
+            "gemini-3.8-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-pro-preview-customtools",
+            "gemini-3.1-flash-lite",
+            "gemini-3-flash-preview",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+
     pub(crate) fn model_uses_cloud_code_api(model: &str) -> bool {
         let model = model.to_ascii_lowercase();
         // Models containing "-preview" suffix or "gemini-3" use the Cloud Code API.
         // Using "-preview" (with hyphen) to avoid false positives on unrelated model names.
-        if model.contains("-preview") || model.contains("gemini-3") {
+        if model.contains("-preview") || supports_modern_features(&model) {
             return true;
         }
 
@@ -1613,7 +1652,8 @@ impl GeminiOauthProvider {
         // layer (reasoning.rs) strips all <thinking> tags from responses, so
         // including thoughts just adds text that gets stripped, potentially
         // leaving an empty response.
-        let is_gemini_3 = model.contains("gemini-3");
+        // Gemini 3 and later (4 Hydrogen/Carbon/Argon, …) are level-based.
+        let is_gemini_3 = supports_modern_features(model);
         let is_gemini_25 = model.contains("gemini-2.5");
         let is_thinking_model = model.contains("thinking") || is_gemini_3 || is_gemini_25;
         if is_thinking_model {
@@ -2026,16 +2066,7 @@ impl LlmProvider for GeminiOauthProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>, LlmError> {
-        Ok(vec![
-            "gemini-3.1-pro-preview".to_string(),
-            "gemini-3.1-pro-preview-customtools".to_string(),
-            "gemini-3-pro-preview".to_string(),
-            "gemini-3-flash-preview".to_string(),
-            "gemini-3.1-flash-lite-preview".to_string(),
-            "gemini-2.5-pro".to_string(),
-            "gemini-2.5-flash".to_string(),
-            "gemini-2.5-flash-lite".to_string(),
-        ])
+        Ok(Self::known_models())
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
@@ -2704,28 +2735,95 @@ mod tests {
         assert!(gen_cfg.get("thinkingConfig").is_none());
     }
 
+    /// Gemini 3 and every later major (Gemini 4 Hydrogen/Carbon/Argon, …)
+    /// take level-based thinking. A `contains("gemini-3")` check silently
+    /// dropped thinking for Gemini 4 — this pins the version-based rule.
     #[test]
-    fn test_thinking_config_for_gemini3_thinking_level() {
+    fn test_thinking_config_for_gemini3_and_later_thinking_level() {
         let messages = vec![ChatMessage::user("Reason about this")];
 
-        let req = GeminiOauthProvider::to_gemini_request(
-            &messages,
-            GeminiRequestOptions {
-                tools: None,
-                temperature: None,
-                max_tokens: None,
-                stop_sequences: None,
-                tool_choice: None,
-                model: "gemini-3-flash-preview",
-                thought_sigs: &HashMap::new(),
-                response_format: None,
-            },
-        );
+        for model in [
+            "gemini-3-flash-preview",
+            "gemini-3.8-flash",
+            "gemini-4-hydrogen",
+            "gemini-4-carbon",
+            "models/gemini-4-argon",
+        ] {
+            let req = GeminiOauthProvider::to_gemini_request(
+                &messages,
+                GeminiRequestOptions {
+                    tools: None,
+                    temperature: None,
+                    max_tokens: None,
+                    stop_sequences: None,
+                    tool_choice: None,
+                    model,
+                    thought_sigs: &HashMap::new(),
+                    response_format: None,
+                },
+            );
 
-        let thinking = &req["generationConfig"]["thinkingConfig"];
-        assert_eq!(thinking["thinkingLevel"], "HIGH");
-        assert!(thinking.get("includeThoughts").is_none());
-        assert!(thinking.get("thinkingBudget").is_none());
+            let thinking = &req["generationConfig"]["thinkingConfig"];
+            assert_eq!(thinking["thinkingLevel"], "HIGH", "model {model}");
+            assert!(thinking.get("includeThoughts").is_none(), "model {model}");
+            assert!(thinking.get("thinkingBudget").is_none(), "model {model}");
+        }
+    }
+
+    #[test]
+    fn test_modern_features_follow_major_version() {
+        for (model, expected) in [
+            ("gemini-2.5-pro", false),
+            ("gemini-2.0-flash", false),
+            ("gemini-3-flash-preview", true),
+            ("gemini-3.1-pro-preview-customtools", true),
+            ("gemini-4-hydrogen", true),
+            ("gemini-4-carbon", true),
+            ("gemini-10-pro", true),
+            ("models/gemini-4-argon", true),
+            ("not-a-gemini-model", false),
+        ] {
+            assert_eq!(supports_modern_features(model), expected, "model {model}");
+        }
+    }
+
+    /// Everything the Gemini CLI path offers in the picker must be wired as a
+    /// modern (Gemini 3+) or a known 2.5 model, so no listed entry silently
+    /// loses thinking or thought signatures.
+    #[tokio::test]
+    async fn test_listed_models_include_gemini_4_and_are_all_wired() {
+        let models = GeminiOauthProvider::known_models();
+        for id in [
+            "gemini-4-hydrogen",
+            "gemini-4-carbon",
+            "gemini-4-argon",
+            "gemini-3.8-flash",
+        ] {
+            assert!(
+                models.iter().any(|m| m == id),
+                "{id} missing from {models:?}"
+            );
+        }
+        for retired in ["gemini-3-pro-preview", "gemini-3.1-flash-lite-preview"] {
+            assert!(!models.iter().any(|m| m == retired), "{retired} is retired");
+        }
+        for model in &models {
+            assert!(
+                supports_modern_features(model) || model.starts_with("gemini-2.5"),
+                "{model} is listed but not wired for thinking"
+            );
+            assert!(
+                GeminiOauthProvider::model_uses_cloud_code_api(model),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_gemini_4_context_window() {
+        assert_eq!(gemini_context_length("gemini-4-hydrogen"), 1_048_576);
+        assert_eq!(gemini_context_length("gemini-4-carbon"), 1_048_576);
+        assert_eq!(gemini_context_length("gemini-4-argon"), 1_048_576);
     }
 
     #[test]
@@ -2874,6 +2972,8 @@ mod tests {
             ("gemini-2.5-flash", true),
             ("gemini-3.0-flash-thinking-preview", true),
             ("gemini-3-pro", true),
+            ("gemini-4-hydrogen", true),
+            ("gemini-4-carbon", true),
             ("my-preview-custom", true), // contains "-preview", routes to Cloud Code
             ("mypreviewcustom", false),  // no hyphen before "preview", no false positive
             ("not-a-gemini-model", false),

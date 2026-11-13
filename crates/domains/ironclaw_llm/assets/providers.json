@@ -398,7 +398,7 @@
       "secret_name": "llm_gemini_api_key",
       "key_url": "https://aistudio.google.com/app/apikey",
       "display_name": "Google Gemini",
-      "can_list_models": false
+      "can_list_models": true
     }
   },
   {
