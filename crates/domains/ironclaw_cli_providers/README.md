@@ -144,7 +144,9 @@ The protocol is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
   answer, tool call names).
 - **Models:** the list the last session reported
   (`~/.ironclaw/antigravity/models.json`), else Hermes's cache in the shared
-  profile, else `default`.
+  profile, else `default`. A signed-in catalog read refreshes a list older
+  than an hour in the background (`session/new` + `session/close`, no
+  prompt), so newly shipped models appear without a turn or an app release.
 - **Limits:** a quota-shaped error (`RESOURCE_EXHAUSTED`, "quota", "rate
   limit") becomes a `usage_limit:` failure; ACP reports no reset time.
 - **Telemetry:** context used and window from ACP `usage_update`; cache hit
