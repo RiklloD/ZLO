@@ -3677,6 +3677,39 @@ fn doctor_bundle_writes_local_zip_without_creating_reborn_home() {
     assert!(run(&["--force", "--no-logs"]).status.success());
 }
 
+/// Trace Commons local state lives under the ZLO home like the rest of the
+/// binary's state: `zlo traces opt-out` (a write through the same default-path
+/// helpers `serve`'s turn-end capture and queue worker use) lands in
+/// `ZLO_HOME/trace_contributions`, and nothing is written to `~/.ironclaw`.
+#[test]
+fn traces_state_is_written_under_zlo_home_not_the_user_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let user_home = temp.path().join("user");
+    let zlo_home = temp.path().join("zlo-home");
+    std::fs::create_dir_all(&user_home).expect("user home");
+
+    let output = reborn_command()
+        .args(["traces", "opt-out"])
+        .env("HOME", &user_home)
+        .env("ZLO_HOME", &zlo_home)
+        .env_remove("IRONCLAW_BASE_DIR")
+        .output()
+        .expect("zlo traces opt-out should run");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        zlo_home.join("trace_contributions").is_dir(),
+        "trace state is kept under ZLO_HOME"
+    );
+    assert!(
+        !user_home.join(".ironclaw").exists(),
+        "zlo must not write Trace Commons state to ~/.ironclaw"
+    );
+}
+
 /// Through real CLI dispatch: with only a pre-ZLO `~/.ironclaw/reborn`
 /// present, `doctor --bundle` must collect from it where it is and must not
 /// move it to `~/.zlo` (the migrating resolver every other command uses).

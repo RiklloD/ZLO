@@ -107,7 +107,7 @@ pub async fn mint_profile_attribution_token_for_user_via_sink(
 ) -> Result<ProfileAttributionToken, ProfileAttributionError> {
     // Typed at the public boundary; stringify only for the dir-parameterised core.
     mint_profile_attribution_token_for_user_inner(
-        ironclaw_common::paths::ironclaw_base_dir().as_path(),
+        crate::location::base_dir().as_path(),
         tenant_id.as_str(),
         user_id.as_str(),
         sink,
@@ -213,7 +213,7 @@ pub async fn set_community_profile_for_user_via_sink(
 ) -> Result<(), CommunityProfileError> {
     // Typed at the public boundary; stringify only for the dir-parameterised core.
     set_community_profile_for_user_inner(
-        ironclaw_common::paths::ironclaw_base_dir().as_path(),
+        crate::location::base_dir().as_path(),
         tenant_id.as_str(),
         user_id.as_str(),
         display_handle,

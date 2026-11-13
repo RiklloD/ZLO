@@ -10,6 +10,7 @@ pub mod capture;
 pub mod client;
 pub mod contribution;
 pub mod conversation_message;
+pub mod location;
 pub mod onboarding;
 pub mod redaction;
 

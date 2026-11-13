@@ -436,7 +436,7 @@ pub(crate) fn trace_contribution_dir_for_scope_at(
 }
 
 pub fn trace_contribution_dir_for_scope(scope: Option<&str>) -> PathBuf {
-    trace_contribution_dir_for_scope_at(&ironclaw_common::paths::ironclaw_base_dir(), scope)
+    trace_contribution_dir_for_scope_at(&crate::location::base_dir(), scope)
 }
 
 /// Canonical per-scope key for Trace Commons local state (policy, device keys,
@@ -624,7 +624,7 @@ pub(crate) fn read_trace_policy_for_scope_at(
 pub fn read_trace_policy_for_scope(
     scope: Option<&str>,
 ) -> anyhow::Result<StandingTraceContributionPolicy> {
-    read_trace_policy_for_scope_at(&ironclaw_common::paths::ironclaw_base_dir(), scope)
+    read_trace_policy_for_scope_at(&crate::location::base_dir(), scope)
 }
 
 pub(crate) fn write_trace_policy_for_scope_at(
@@ -639,7 +639,7 @@ pub fn write_trace_policy_for_scope(
     scope: Option<&str>,
     policy: &StandingTraceContributionPolicy,
 ) -> anyhow::Result<()> {
-    write_trace_policy_for_scope_at(&ironclaw_common::paths::ironclaw_base_dir(), scope, policy)
+    write_trace_policy_for_scope_at(&crate::location::base_dir(), scope, policy)
 }
 
 // ── Trace credential resolution (instance enrollment) ────────────────────────
@@ -721,7 +721,7 @@ pub fn opt_out_user_scope_at(base: &std::path::Path, scope: &str) -> anyhow::Res
 
 /// [`opt_out_user_scope_at`] against the process base dir.
 pub fn opt_out_user_scope(scope: &str) -> anyhow::Result<()> {
-    opt_out_user_scope_at(&ironclaw_common::paths::ironclaw_base_dir(), scope)
+    opt_out_user_scope_at(&crate::location::base_dir(), scope)
 }
 
 /// Pick the user's own (personal-invite) enrollment when present and enabled,
@@ -737,7 +737,7 @@ pub fn resolve_trace_credentials(
     // Typed at the public boundary so callers can't transpose tenant/user;
     // stringify only when handing off to the dir-parameterised core.
     resolve_trace_credentials_at(
-        ironclaw_common::paths::ironclaw_base_dir().as_path(),
+        crate::location::base_dir().as_path(),
         tenant_id.as_str(),
         user_id.as_str(),
     )
@@ -806,7 +806,7 @@ pub(crate) fn resolve_effective_flush_target_at(
 pub(crate) fn resolve_effective_flush_target(
     scope: Option<&str>,
 ) -> anyhow::Result<Option<EffectiveFlushTarget>> {
-    resolve_effective_flush_target_at(&ironclaw_common::paths::ironclaw_base_dir(), scope)
+    resolve_effective_flush_target_at(&crate::location::base_dir(), scope)
 }
 
 /// The effective trace-contribution policy a scope captures under: its own
@@ -820,7 +820,7 @@ pub(crate) fn resolve_effective_flush_target(
 pub fn resolve_effective_capture_policy(
     scope: Option<&str>,
 ) -> anyhow::Result<Option<StandingTraceContributionPolicy>> {
-    resolve_effective_capture_policy_at(&ironclaw_common::paths::ironclaw_base_dir(), scope)
+    resolve_effective_capture_policy_at(&crate::location::base_dir(), scope)
 }
 
 /// Dir-parameterised core for [`resolve_effective_capture_policy`] so tests can
