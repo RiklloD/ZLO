@@ -46,7 +46,7 @@ pub use profiles::{
 pub use runtime::{AgentLoopRuntime, IRONCLAW_RUNTIME_ID};
 pub use surface::OrchestratedProductSurface;
 pub use telemetry::OrchestratorTelemetrySink;
-pub use tools::orchestrator_capabilities;
+pub use tools::{orchestrator_capabilities, orchestrator_capability_ids};
 pub use workspace::{NoWorkspaceFolders, WorkspaceFolders};
 
 use std::sync::Arc;

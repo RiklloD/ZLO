@@ -21,6 +21,25 @@ use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::model::ThreadScope;
 use ironclaw_orchestrator::tools::TOOLS;
 
+/// Capability id of each `t3_*` orchestrator tool, in [`TOOLS`] order.
+///
+/// Every one of them is denied to unattended (`require_no_approval`) runs:
+/// they are synthetic, so the approval-based surface narrowing cannot reach
+/// them, and all of them act on orchestration state — the engine registers
+/// the calling thread on every call, and `t3_delegate` / `t3_thread` /
+/// `t3_queue` / `t3_schedule` / `t3_task` launch, message, schedule, or
+/// cancel threads. Composition feeds this list to the unattended deny-list,
+/// so a tool added to [`TOOLS`] is denied there without a second edit.
+pub fn orchestrator_capability_ids() -> impl Iterator<Item = String> {
+    TOOLS
+        .iter()
+        .map(|tool| orchestrator_capability_id(tool.name))
+}
+
+fn orchestrator_capability_id(tool_name: &str) -> String {
+    format!("builtin.{tool_name}")
+}
+
 /// Build the orchestrator tools (`TOOLS`, `t3_schedule` included) for one run's capability surface.
 pub fn orchestrator_capabilities(
     engine: Arc<Engine>,
@@ -31,7 +50,7 @@ pub fn orchestrator_capabilities(
         .map(|tool| {
             Ok(SyntheticCapability::new(
                 SyntheticCapabilityDescriptor::new(
-                    &format!("builtin.{}", tool.name),
+                    &orchestrator_capability_id(tool.name),
                     tool.name,
                     tool.description,
                     (tool.schema)(),

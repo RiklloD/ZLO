@@ -1456,16 +1456,47 @@ async fn disabling_global_auto_approve_shrinks_the_autonomous_surface() -> Harne
     // state-changing synthetic capability, or any other unexpected
     // survivor, must fail this test loudly instead of silently widening
     // what an unattended run with nothing auto-approved can still reach.
-    // Supersedes the separate is-empty / strictly-fewer checks this used to
-    // carry — both facts are already implied by an exact match against a
-    // named 3-element set, so asserting them separately added no coverage.
-    let expected_survivors = BTreeSet::from(
-        [
+    // The remedy for a mutating newcomer is the composition deny-list
+    // (`unattended_denied_capability_ids`), never this table.
+    //
+    // Each survivor carries the reason it is exempt, and the only acceptable
+    // reason is that it is READ-ONLY over the acting user's own state (the
+    // deny-list contract: "the mutating ones belong here"). Regression
+    // pin: `history_search` and all six `t3_*` orchestrator tools were added
+    // as synthetics after the deny-list existed; the `t3_*` family writes
+    // orchestration state on every call and launches/messages/schedules/
+    // cancels threads, so it is denied as a family (derived from
+    // `ironclaw_orchestrator::tools::TOOLS`) and none of it may reappear here.
+    let survivors_with_reasons: [(&str, &str); 4] = [
+        (
             "builtin__outbound_delivery_targets_list",
+            "read-only: lists the user's own delivery targets",
+        ),
+        (
             "builtin__result_read",
+            "read-only loop infrastructure: bounded views of this run's own results",
+        ),
+        (
             "capability_info",
-        ]
-        .map(str::to_string),
+            "read-only loop infrastructure: describes surface capabilities",
+        ),
+        (
+            "history_search",
+            "read-only: searches the acting user's own chat history; refuses \
+             (NotReady) rather than let a read path migrate or index",
+        ),
+    ];
+    let expected_survivors: BTreeSet<String> = survivors_with_reasons
+        .iter()
+        .map(|(name, _reason)| (*name).to_string())
+        .collect();
+    assert!(
+        !with_auto_approve_off
+            .iter()
+            .any(|name| name.starts_with("t3_")),
+        "the t3_* orchestrator tools act on threads (delegate, send, fork, \
+         queue, schedule, cancel) and must be denied to an unattended run; \
+         got {with_auto_approve_off:?}"
     );
     assert_eq!(
         with_auto_approve_off, expected_survivors,
