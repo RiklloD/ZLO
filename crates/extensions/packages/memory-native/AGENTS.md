@@ -90,9 +90,14 @@ rule 1).
   `RootFilesystem`; the in-memory repository is test support, never a
   deployment target. Backend-specific (libSQL/Postgres) behavioral coverage
   belongs in `ironclaw_filesystem`'s backend contract tests; this crate's tests
-  target the in-memory backend and exercise memory-document semantics
+  mostly target the in-memory backend and exercise memory-document semantics
   (versioning, chunk replace, metadata cascade, full-text and hybrid search
-  ranking).
+  ranking). The exceptions are memory-level behavior whose correctness depends
+  on how a backend round-trips this crate's own index keys: the page-archive
+  libSQL legs (`tests/memory_page_archive.rs`) and the embedding-space
+  fingerprint parity suite (`tests/embedding_space_backend_parity.rs`, run on
+  in-memory, libSQL and PostgreSQL; re-list with
+  `rg -l "LibSqlRootFilesystem|PostgresRootFilesystem" crates/extensions/packages/memory-native/tests`).
 
 ## Do Not Move In Here
 

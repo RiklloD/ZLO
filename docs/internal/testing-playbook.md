@@ -424,6 +424,59 @@ documented feature gates or a loud, explicit opt-out.
 cargo test -p <owning-crate> --features integration   # e.g. -p ironclaw_hooks; the workspace-root `integration` feature is empty
 ```
 
+#### Running the PostgreSQL legs locally (macOS, no Docker Desktop)
+
+Colima plus the Docker CLI is enough for every PostgreSQL leg; Docker Desktop
+is not needed.
+
+```bash
+brew install colima docker                        # docker = CLI only
+colima start --cpu 4 --memory 8 --disk 40
+export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
+export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock   # Ryuk mounts the in-VM socket
+docker run --rm hello-world                       # sanity check
+```
+
+There are two provisioning paths, and some suites have only one of them:
+
+- **testcontainers** (`DOCKER_HOST` only): `ironclaw_filesystem`,
+  `ironclaw_secrets`, `ironclaw_triggers`, `ironclaw_composition`,
+  `ironclaw_memory_native`'s embedding-parity suite, and the root harness's
+  `StorageMode::Postgres` cases.
+- **a server URL**: some suites *skip* without one. Start one shared server
+  and point every variable at it. The isolated-database suites create and
+  sweep their own per-test databases on it.
+
+```bash
+docker run -d --name ironclaw-pg -p 55432:5432 -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=ironclaw_test postgres:16-alpine -c max_connections=500
+PG=postgres://postgres:postgres@127.0.0.1:55432/ironclaw_test
+export DATABASE_URL=$PG IRONCLAW_FILESYSTEM_POSTGRES_URL=$PG \
+  IRONCLAW_HOOKS_POSTGRES_URL=$PG IRONCLAW_PRODUCT_WORKFLOW_POSTGRES_URL=$PG \
+  IRONCLAW_REBORN_EVENT_STORE_POSTGRES_URL=$PG \
+  IRONCLAW_THREADS_HISTORY_POSTGRES_URL=$PG IRONCLAW_REBORN_POSTGRES_URL=$PG
+export IRONCLAW_REQUIRE_POSTGRES=1                # turn hooks/secrets/triggers/memory skips into failures
+export RUST_MIN_STACK=8388608
+```
+
+Re-derive the variable list before trusting it:
+`rg -o '"[A-Z_]*POSTGRES[A-Z_]*_URL"' crates tests --no-filename | sort -u`.
+Some suites honour no require-switch (for example `ironclaw_extension_registry`,
+`ironclaw_processes`, `ironclaw_threads` and `ironclaw_assistant`), so grep
+the output for `skipping` to confirm their PostgreSQL leg ran. Then run:
+
+```bash
+for p in ironclaw_filesystem ironclaw_secrets ironclaw_triggers ironclaw_processes \
+         ironclaw_event_store ironclaw_threads ironclaw_extension_registry \
+         ironclaw_assistant ironclaw_composition ironclaw_memory_native; do
+  cargo test -p "$p" --all-features --no-fail-fast
+done
+cargo test -p ironclaw_hooks --features integration,test-support --no-fail-fast
+cargo test -p ironclaw_integration_tests --test reborn_integration_backend_matrix \
+  --test reborn_integration_db_write_canonical --test reborn_integration_extension_runtime \
+  --test reborn_integration_extension_ingress --test reborn_integration_extension_delivery
+```
+
 ### Live canary
 
 Examples:

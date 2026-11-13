@@ -52,6 +52,15 @@ ironclaw_memory_native = { path = ".", features = ["test-support"] }
 # tests/memory_service_contract.rs.
 ironclaw_memory = { path = "../../../domains/ironclaw_memory", features = ["test-support"] }
 tempfile = "3"
+# Embedding-space parity (tests/embedding_space_backend_parity.rs) runs the
+# fingerprinted vector search on the PostgreSQL filesystem backend too:
+# `DATABASE_URL` (isolated database per test, via the filesystem crate's
+# `test-support` provisioner) else a testcontainers server. Dev-only, so the
+# persistence-driver gate (normal dependencies) is unaffected.
+ironclaw_filesystem = { path = "../../../substrates/ironclaw_filesystem", features = ["test-support"] }
+deadpool-postgres = "0.14"
+tokio-postgres = "0.7"
+testcontainers-modules = { version = "0.12", features = ["postgres"] }
 # The Memory-page archive test runs on the libSQL filesystem backend as well
 # as the in-memory one (version-checked delete is backend behavior).
 libsql = { workspace = true, features = ["remote", "tls"] }
