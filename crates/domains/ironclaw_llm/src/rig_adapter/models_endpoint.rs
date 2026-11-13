@@ -69,7 +69,43 @@ impl ModelsEndpoint {
         }
         let client = crate::url_check::build_http_client(&self.provider_id, &self.url, builder)?;
 
-        let mut builder = client.get(&self.url).headers(self.extra_headers.clone());
+        // Paginated shapes (Gemini) hand back a `nextPageToken`; follow it on
+        // the same validated, pinned client. Continuation pages only change
+        // the `pageToken` query parameter, never the host. Bounded so a
+        // misbehaving endpoint cannot loop forever.
+        const MAX_MODEL_PAGES: usize = 50;
+        let mut ids = Vec::new();
+        let mut page_token: Option<String> = None;
+        for _ in 0..MAX_MODEL_PAGES {
+            let url = match &page_token {
+                None => self.url.clone(),
+                Some(token) => {
+                    let mut url =
+                        reqwest::Url::parse(&self.url).map_err(|e| LlmError::RequestFailed {
+                            provider: self.provider_id.clone(),
+                            reason: format!("invalid models URL: {e}"),
+                        })?;
+                    url.query_pairs_mut().append_pair("pageToken", token);
+                    url.to_string()
+                }
+            };
+            let body = self.fetch_page(&client, &url).await?;
+            let (page_ids, next) = parse_models_page(&self.provider_id, self.shape, &body)?;
+            ids.extend(page_ids);
+            match next {
+                Some(token) if !token.is_empty() => page_token = Some(token),
+                _ => return Ok(ids),
+            }
+        }
+        Err(LlmError::InvalidResponse {
+            provider: self.provider_id.clone(),
+            reason: format!("models listing exceeded {MAX_MODEL_PAGES} pages"),
+        })
+    }
+
+    /// One bounded `GET` of a model-discovery page; returns the raw body.
+    async fn fetch_page(&self, client: &reqwest::Client, url: &str) -> Result<Vec<u8>, LlmError> {
+        let mut builder = client.get(url).headers(self.extra_headers.clone());
         builder = match &self.auth {
             ModelsAuth::Bearer(key) => builder.bearer_auth(key),
             ModelsAuth::AnthropicKey { api_key, version } => builder
@@ -81,7 +117,7 @@ impl ModelsEndpoint {
 
         let response = builder.send().await.map_err(|e| LlmError::RequestFailed {
             provider: self.provider_id.clone(),
-            reason: format!("request to {} failed: {e}", self.url),
+            reason: format!("request to {url} failed: {e}"),
         })?;
 
         let status = response.status();
@@ -93,7 +129,7 @@ impl ModelsEndpoint {
         if !status.is_success() {
             return Err(LlmError::RequestFailed {
                 provider: self.provider_id.clone(),
-                reason: format!("{} returned HTTP {}", self.url, status.as_u16()),
+                reason: format!("{url} returned HTTP {}", status.as_u16()),
             });
         }
 
@@ -126,22 +162,32 @@ impl ModelsEndpoint {
             }
             body.extend_from_slice(&chunk);
         }
-        parse_models_response(&self.provider_id, self.shape, &body)
+        Ok(body)
     }
 }
 
-/// Extract model ids from a model-discovery response body. Empty/whitespace
-/// ids are dropped.
-///
-/// Split out from the HTTP call so the parsing contract is unit-testable
-/// without a live endpoint. `ModelsShape` selects the JSON shape:
-/// OpenAI/Anthropic `{ "data": [{ "id" }] }` vs Ollama
-/// `{ "models": [{ "name" }] }` vs Gemini `{ "models": [{ "name": "models/…" }] }`.
+/// Model ids on one page. See [`parse_models_page`].
+#[cfg(test)]
 pub(super) fn parse_models_response(
     provider_id: &str,
     shape: ModelsShape,
     body: &[u8],
 ) -> Result<Vec<String>, LlmError> {
+    parse_models_page(provider_id, shape, body).map(|(ids, _)| ids)
+}
+
+/// Extract model ids, plus the continuation token for paginated shapes, from
+/// one model-discovery response body. Empty/whitespace ids are dropped.
+///
+/// Split out from the HTTP call so the parsing contract is unit-testable
+/// without a live endpoint. `ModelsShape` selects the JSON shape:
+/// OpenAI/Anthropic `{ "data": [{ "id" }] }` vs Ollama
+/// `{ "models": [{ "name" }] }` vs Gemini `{ "models": [{ "name": "models/…" }] }`.
+pub(super) fn parse_models_page(
+    provider_id: &str,
+    shape: ModelsShape,
+    body: &[u8],
+) -> Result<(Vec<String>, Option<String>), LlmError> {
     #[derive(serde::Deserialize)]
     struct OpenAiResponse {
         #[serde(default)]
@@ -165,6 +211,8 @@ pub(super) fn parse_models_response(
     struct GeminiResponse {
         #[serde(default)]
         models: Vec<GeminiEntry>,
+        #[serde(default, rename = "nextPageToken")]
+        next_page_token: Option<String>,
     }
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -179,38 +227,50 @@ pub(super) fn parse_models_response(
         reason: format!("could not parse models response: {e}"),
     };
 
-    let ids = match shape {
-        ModelsShape::OpenAiData => serde_json::from_slice::<OpenAiResponse>(body)
-            .map_err(parse_err)?
-            .data
-            .into_iter()
-            .map(|entry| entry.id)
-            .collect::<Vec<_>>(),
-        ModelsShape::OllamaTags => serde_json::from_slice::<OllamaResponse>(body)
-            .map_err(parse_err)?
-            .models
-            .into_iter()
-            .map(|entry| entry.name)
-            .collect::<Vec<_>>(),
-        ModelsShape::GeminiModels => serde_json::from_slice::<GeminiResponse>(body)
-            .map_err(parse_err)?
-            .models
-            .into_iter()
-            .filter(|entry| {
-                entry
-                    .supported_generation_methods
-                    .as_ref()
-                    .is_none_or(|methods| methods.iter().any(|m| m == "generateContent"))
-            })
-            .map(|entry| {
-                entry
-                    .name
-                    .strip_prefix("models/")
-                    .map(str::to_string)
-                    .unwrap_or(entry.name)
-            })
-            .collect::<Vec<_>>(),
+    let (ids, next) = match shape {
+        ModelsShape::OpenAiData => (
+            serde_json::from_slice::<OpenAiResponse>(body)
+                .map_err(parse_err)?
+                .data
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        ModelsShape::OllamaTags => (
+            serde_json::from_slice::<OllamaResponse>(body)
+                .map_err(parse_err)?
+                .models
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        ModelsShape::GeminiModels => {
+            let page = serde_json::from_slice::<GeminiResponse>(body).map_err(parse_err)?;
+            let ids = page
+                .models
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .supported_generation_methods
+                        .as_ref()
+                        .is_none_or(|methods| methods.iter().any(|m| m == "generateContent"))
+                })
+                .map(|entry| {
+                    entry
+                        .name
+                        .strip_prefix("models/")
+                        .map(str::to_string)
+                        .unwrap_or(entry.name)
+                })
+                .collect::<Vec<_>>();
+            (ids, page.next_page_token)
+        }
     };
 
-    Ok(ids.into_iter().filter(|id| !id.trim().is_empty()).collect())
+    Ok((
+        ids.into_iter().filter(|id| !id.trim().is_empty()).collect(),
+        next,
+    ))
 }

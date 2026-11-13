@@ -818,22 +818,18 @@ fn create_gemini_from_registry(
     );
 
     // Gemini model discovery: `GET {base}/v1beta/models` with the key in the
-    // `x-goog-api-key` header. rig-core appends `/v1beta` itself for
-    // completions, so add it here only for the discovery URL. One 1000-entry
-    // page covers Google's whole catalogue (the API's maximum page size).
+    // `x-goog-api-key` header. rig-core always appends `/v1beta/models/...`
+    // to the base for completions, so discovery composes the path the same
+    // way — a proxy mounted at `/v1` stays consistent for both. Pages are
+    // followed via `nextPageToken`.
     let gemini_base = if base_url.is_empty() {
         "https://generativelanguage.googleapis.com".to_string()
     } else {
         base_url.clone()
     };
-    let discovery_base = if gemini_base.ends_with("/v1beta") || gemini_base.ends_with("/v1") {
-        gemini_base
-    } else {
-        format!("{gemini_base}/v1beta")
-    };
     let models_endpoint = rig_adapter::ModelsEndpoint {
         provider_id: config.provider_id.clone(),
-        url: format!("{discovery_base}/models?pageSize=1000"),
+        url: format!("{gemini_base}/v1beta/models?pageSize=1000"),
         auth: rig_adapter::ModelsAuth::GoogApiKey(api_key),
         shape: rig_adapter::ModelsShape::GeminiModels,
         extra_headers: reqwest::header::HeaderMap::new(),
