@@ -4799,6 +4799,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
+ "deadpool-postgres",
  "ironclaw_filesystem",
  "ironclaw_host_api",
  "ironclaw_memory",
@@ -4809,7 +4810,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "testcontainers-modules",
  "tokio",
+ "tokio-postgres",
  "tracing",
  "uuid",
 ]
