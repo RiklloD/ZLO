@@ -268,3 +268,120 @@ async fn boot_time_settings_are_reported_restart_required_and_not_applied() {
     assert_eq!(b.model_of_next_turn().await, "model-b");
     b.runtime.shutdown().await.expect("shutdown");
 }
+
+/// The Settings → Inference save (`POST /api/webchat/v2/llm/active`) through
+/// the real WebUI router over this runtime's production product surface, as
+/// an operator. Returns the status and JSON body.
+async fn settings_set_active(b: &Booted, body: Value) -> (axum::http::StatusCode, Value) {
+    use ironclaw_host_api::ids::{AgentId, TenantId, UserId};
+    use ironclaw_product_contracts::surface::ProductSurfaceCaller;
+    use ironclaw_webui::webui_v2::{
+        DEFAULT_SSE_MAX_CONCURRENT_PER_CALLER, WebUiV2Capabilities, WebUiV2State, webui_v2_router,
+    };
+    use tower::ServiceExt;
+
+    let surface = b
+        .runtime
+        .product_surface(None)
+        .expect("production product surface builds");
+    let caller = ProductSurfaceCaller::new(
+        TenantId::new("config-reload-tenant").expect("tenant"),
+        UserId::new("config-reload-owner").expect("user"),
+        Some(AgentId::new("config-reload-agent").expect("agent")),
+        None,
+    )
+    .with_operator_config(true);
+    let router = webui_v2_router(WebUiV2State::new(
+        surface,
+        DEFAULT_SSE_MAX_CONCURRENT_PER_CALLER,
+    ))
+    .layer(axum::Extension(caller))
+    .layer(axum::Extension(WebUiV2Capabilities {
+        operator_webui_config: true,
+    }));
+    let response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .method(axum::http::Method::POST)
+                .uri("/api/webchat/v2/llm/active")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("router answers");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+fn default_slot(path: &std::path::Path) -> ironclaw_config::LlmSlotSelection {
+    RebornConfigFile::load(path)
+        .expect("config.toml parses")
+        .and_then(|file| file.default_llm_slot().cloned())
+        .expect("[llm.default] present")
+}
+
+/// A Settings save that keeps the provider and changes only the model must
+/// keep the operator's hand-set slot overrides: here `base_url` is the only
+/// thing pointing the provider at the endpoint, so dropping it would leave
+/// the file unable to serve.
+#[tokio::test]
+async fn settings_model_change_for_the_same_provider_keeps_hand_set_overrides() {
+    let b = boot("model-a", "").await;
+    assert_eq!(b.model_of_next_turn().await, "model-a");
+
+    let (status, body) =
+        settings_set_active(&b, json!({"provider_id": "lmstudio", "model": "model-b"})).await;
+    assert!(status.is_success(), "{status}: {body}");
+
+    let slot = default_slot(&b.config_path);
+    assert_eq!(slot.model.as_deref(), Some("model-b"));
+    assert_eq!(
+        slot.base_url.as_deref(),
+        Some(b.base_url.as_str()),
+        "the hand-set base_url survives a same-provider save"
+    );
+    assert_eq!(b.model_of_next_turn().await, "model-b");
+    // The file and the live provider agree: a reload has nothing to do.
+    assert_eq!(b.reload().await.outcome, ConfigReloadOutcome::Unchanged);
+    b.runtime.shutdown().await.expect("shutdown");
+}
+
+/// A Settings save whose selection cannot be applied to the running server
+/// is refused: non-2xx with a stable reason, `config.toml` is left as it
+/// was, and the old model keeps serving — never "200, applies on restart"
+/// with the file and the running provider disagreeing.
+#[tokio::test]
+async fn settings_save_that_cannot_be_applied_live_is_refused_and_rolled_back() {
+    let b = boot("model-a", "").await;
+    assert_eq!(b.model_of_next_turn().await, "model-a");
+    let before = std::fs::read_to_string(&b.config_path).expect("read config");
+
+    // `openai_compatible` requires a base_url; switching provider resets the
+    // slot to that provider's catalog defaults, which carry none.
+    let (status, body) = settings_set_active(
+        &b,
+        json!({"provider_id": "openai_compatible", "model": "model-x"}),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "conflict", "{body}");
+    assert_eq!(body["field"], "llm.default", "{body}");
+
+    let slot = default_slot(&b.config_path);
+    assert_eq!(slot.provider_id.as_deref(), Some("lmstudio"));
+    assert_eq!(slot.model.as_deref(), Some("model-a"));
+    assert_eq!(slot.base_url.as_deref(), Some(b.base_url.as_str()));
+    assert_eq!(
+        std::fs::read_to_string(&b.config_path).expect("read config"),
+        before,
+        "the refused save leaves config.toml byte-for-byte as it was"
+    );
+    assert_eq!(b.model_of_next_turn().await, "model-a");
+    assert_eq!(b.reload().await.outcome, ConfigReloadOutcome::Unchanged);
+    b.runtime.shutdown().await.expect("shutdown");
+}

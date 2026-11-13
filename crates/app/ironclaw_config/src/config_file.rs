@@ -1450,7 +1450,15 @@ pub(crate) fn write_edit_document(
             source: Box::new(source),
         }
     })?;
+    write_config_text_atomic(path, &text)
+}
 
+/// Replace `path` with `text` atomically (temp file in the same directory,
+/// then rename). Callers hold the config update lock.
+pub(crate) fn write_config_text_atomic(
+    path: &Path,
+    text: &str,
+) -> Result<(), RebornConfigFileUpdateError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| RebornConfigFileUpdateError::Write {
             path: parent.to_path_buf(),

@@ -32,7 +32,13 @@ tenant/user-scoped setting.
 ## Live reload of hand-edited `config.toml`
 
 Operator-config writes above already take effect live (`set_active` writes
-`[llm.default]`, then hot-swaps the provider). A hand edit of `config.toml` is
+`[llm.default]`, then hot-swaps the provider). Re-selecting the provider the
+slot already names keeps the slot's hand-set overrides (`base_url`,
+`api_key_env`); switching provider resets them to the new provider's catalog
+defaults. A selection the live swap refuses is not kept: `config.toml` is put
+back (only while it still holds what the save wrote) and the save answers
+`409 conflict` with `field: "llm.default"` — the file never names a provider
+the running server is not serving. A hand edit of `config.toml` is
 applied by `ironclaw_operator::RebornConfigReloader::reload`, which `zlo serve`
 runs on SIGHUP (`kill -HUP <pid>`) when stdin is not a terminal (the installed
 service). Started from a terminal, SIGHUP keeps its default and stops the

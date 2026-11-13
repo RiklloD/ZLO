@@ -14,9 +14,12 @@
 //! - API-key **values**           → scoped secret store (never the file)
 //!
 //! After a successful write the running provider's inner backend is hot-swapped
-//! via the reload trigger. The on-disk files are the source of truth: if reload
-//! fails the change is still persisted and applies on the next restart, so the
-//! operator is never left with a silently-dropped edit (the failure is logged).
+//! via the reload trigger. Saving the *active selection* (`set_active`, and
+//! `upsert_provider` with `set_active`) is all-or-nothing: when the live swap
+//! refuses it, `config.toml` is put back and the save fails `NotApplied`, so
+//! the file never names a provider the running server is not serving. Other
+//! writes (a provider definition or key) stay persisted when the reload
+//! fails and apply on the next restart (the failure is logged).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -335,6 +338,65 @@ impl RebornLlmConfigService {
             }
         });
         Ok(login)
+    }
+
+    /// Write the active selection to `[llm.default]`, then apply it to the
+    /// running provider through the live-LLM owner. When the live swap
+    /// refuses it, the file is put back as it was (only while it still holds
+    /// what this call wrote, so a concurrent edit is never overwritten) and
+    /// the save fails with [`LlmConfigServiceError::NotApplied`]: the old
+    /// provider keeps serving and the file still names it, as the live-LLM
+    /// owner leaves things after any failed apply. With no live provider
+    /// wired (cold boot) the write stands and applies on restart.
+    async fn write_and_apply_active_selection(
+        &self,
+        id: String,
+        model: Option<String>,
+    ) -> Result<(), LlmConfigServiceError> {
+        let path = self.boot.home().config_file_path();
+        let before = read_config_text_async(path.clone()).await?;
+        self.set_provider_async(id.clone(), model)
+            .await
+            .map_err(map_admin_error)?;
+        let Some(reload) = self.reload.as_ref() else {
+            self.refresh_running_provider().await;
+            return Ok(());
+        };
+        let written = read_config_text_async(path.clone()).await?;
+        let Err(reason) = reload.reload().await else {
+            return Ok(());
+        };
+        tracing::warn!(
+            provider_id = %id,
+            reason = %reason,
+            "LLM active selection could not be applied to the running provider; config.toml restored"
+        );
+        let restore = tokio::task::spawn_blocking(move || {
+            ironclaw_config::restore_config_text_if_unchanged(
+                &path,
+                written.as_deref(),
+                before.as_deref(),
+            )
+        })
+        .await;
+        match restore {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => tracing::warn!(
+                provider_id = %id,
+                "config.toml changed while the refused selection was being applied; left as is"
+            ),
+            Ok(Err(error)) => tracing::error!(
+                provider_id = %id,
+                %error,
+                "restoring config.toml after a refused LLM selection failed"
+            ),
+            Err(error) => tracing::error!(
+                provider_id = %id,
+                %error,
+                "restoring config.toml after a refused LLM selection did not run"
+            ),
+        }
+        Err(LlmConfigServiceError::NotApplied)
     }
 
     /// Persist-then-reload: the file write already happened; refresh the
@@ -841,17 +903,17 @@ impl LlmConfigService for RebornLlmConfigService {
 
         if request.set_active {
             let active_result = self
-                .set_provider_async(id.clone(), request.model.clone())
+                .write_and_apply_active_selection(id.clone(), request.model.clone())
                 .await;
             if let Err(error) = active_result {
-                tracing::error!(provider_id = %id, %error, "LLM provider save: writing active selection failed");
+                tracing::error!(provider_id = %id, ?error, "LLM provider save: activating the selection failed");
                 self.rollback_upsert(&id, previous_definition, previous_key, has_new_key)
                     .await;
-                return Err(map_admin_error(error));
+                return Err(error);
             }
+        } else {
+            self.refresh_running_provider().await;
         }
-
-        self.refresh_running_provider().await;
         if request.set_active {
             self.align_model_policy_with_active(&caller).await?;
         }
@@ -908,10 +970,8 @@ impl LlmConfigService for RebornLlmConfigService {
         request: SetActiveLlmRequest,
     ) -> Result<LlmConfigSnapshot, LlmConfigServiceError> {
         let id = validate_provider_id(&request.provider_id)?;
-        self.set_provider_async(id, request.model)
-            .await
-            .map_err(map_admin_error)?;
-        self.refresh_running_provider().await;
+        self.write_and_apply_active_selection(id, request.model)
+            .await?;
         self.align_model_policy_with_active(&caller).await?;
         self.snapshot(caller).await
     }
@@ -1855,6 +1915,24 @@ fn map_user_model_preference_store_error(
     match error {
         UserModelPreferenceStoreError::Unavailable => LlmConfigServiceError::Unavailable,
         UserModelPreferenceStoreError::InvalidData => LlmConfigServiceError::Internal,
+    }
+}
+
+/// `config.toml`'s current text off the async runtime; a read failure is a
+/// backend failure (logged with its cause, sanitized to the client).
+async fn read_config_text_async(
+    path: std::path::PathBuf,
+) -> Result<Option<String>, LlmConfigServiceError> {
+    match tokio::task::spawn_blocking(move || ironclaw_config::read_config_text(&path)).await {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(error)) => {
+            tracing::error!(%error, "reading config.toml for the LLM selection save failed");
+            Err(LlmConfigServiceError::Unavailable)
+        }
+        Err(error) => {
+            tracing::error!(%error, "reading config.toml for the LLM selection save did not run");
+            Err(LlmConfigServiceError::Unavailable)
+        }
     }
 }
 

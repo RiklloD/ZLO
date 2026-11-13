@@ -106,7 +106,8 @@ impl BeforeInboundPolicy for SessionModelSelectionPolicy {
                     permanent: false,
                 })
             }
-            Err(LlmConfigServiceError::Internal) => {
+            // `NotApplied` is a save-path outcome resolution never yields.
+            Err(LlmConfigServiceError::Internal | LlmConfigServiceError::NotApplied) => {
                 // A backend fault is not a policy verdict: `permanent: true`
                 // would settle Rejected(PolicyDenied) in the durable session
                 // idempotency ledger, poisoning this client_action_id even

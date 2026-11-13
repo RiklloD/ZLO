@@ -782,7 +782,16 @@ pub enum LlmConfigServiceError {
     Unavailable,
     /// An internal invariant was violated.
     Internal,
+    /// The selection was valid to write, but the running server could not
+    /// apply it (it does not resolve, or its provider chain does not build).
+    /// Nothing was changed: `config.toml` was put back and the previous
+    /// provider keeps serving.
+    NotApplied,
 }
+
+/// Field named by a [`LlmConfigServiceError::NotApplied`] refusal: the
+/// `config.toml` slot the save tried to change.
+pub const LLM_NOT_APPLIED_FIELD: &str = "llm.default";
 
 /// The port error's projection onto the transport-visible surface error.
 ///
@@ -808,6 +817,13 @@ impl From<LlmConfigServiceError> for ProductSurfaceError {
             }
             LlmConfigServiceError::Unavailable => ProductSurfaceError::service_unavailable(true),
             LlmConfigServiceError::Internal => ProductSurfaceError::internal_invariant(),
+            // 409, not retryable: the request was well-formed, but it
+            // conflicts with what the running server can serve; retrying the
+            // same selection fails the same way until the config changes.
+            LlmConfigServiceError::NotApplied => ProductSurfaceError {
+                field: Some(LLM_NOT_APPLIED_FIELD.to_string()),
+                ..ProductSurfaceError::from_status(ProductSurfaceErrorCode::Conflict, 409, false)
+            },
         }
     }
 }
