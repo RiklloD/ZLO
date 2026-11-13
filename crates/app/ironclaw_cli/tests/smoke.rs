@@ -3710,6 +3710,60 @@ fn traces_state_is_written_under_zlo_home_not_the_user_home() {
     );
 }
 
+/// Through the real binary: the password inside a known secret URL
+/// (`DATABASE_URL` from the process environment) is itself a known secret —
+/// quoted in a log tail on its own, percent-encoded, or as base64 of
+/// `user:password`, it never reaches the archive.
+#[test]
+fn doctor_bundle_redacts_the_password_of_a_secret_url_from_the_environment() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let zlo_home = temp.path().join("zlo-home");
+    let logs = zlo_home.join("logs");
+    std::fs::create_dir_all(&logs).expect("logs dir");
+    let password = "Pg9pw+canary/31337";
+    let encoded_password = "Pg9pw%2Bcanary%2F31337";
+    // base64("zlo:Pg9pw+canary/31337"), precomputed (no base64 dev-dep here).
+    let basic = "emxvOlBnOXB3K2NhbmFyeS8zMTMzNw==";
+    std::fs::write(
+        logs.join("serve.stderr.log"),
+        format!(
+            "db rejected credential {password}\nretry with {encoded_password}\n\
+             proxy cred {basic}\nheartbeat ok\n"
+        ),
+    )
+    .expect("seed log");
+    let bundle = temp.path().join("diagnostics.zip");
+
+    let output = reborn_command()
+        .arg("doctor")
+        .arg("--bundle")
+        .arg(&bundle)
+        .env("HOME", temp.path().join("user"))
+        .env("ZLO_HOME", &zlo_home)
+        .env(
+            "DATABASE_URL",
+            format!("postgres://zlo:{encoded_password}@db.internal:5432/zlo"),
+        )
+        .output()
+        .expect("zlo doctor --bundle should run");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut archive =
+        zip::ZipArchive::new(std::fs::File::open(&bundle).expect("open bundle")).expect("zip");
+    let mut all = String::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("entry");
+        std::io::Read::read_to_string(&mut entry, &mut all).expect("read entry");
+    }
+    for needle in [password, encoded_password, basic, "Pg9pw"] {
+        assert!(!all.contains(needle), "bundle leaks {needle:?}:\n{all}");
+    }
+    assert!(all.contains("heartbeat ok"), "the log tail is kept:\n{all}");
+}
+
 /// Through real CLI dispatch: with only a pre-ZLO `~/.ironclaw/reborn`
 /// present, `doctor --bundle` must collect from it where it is and must not
 /// move it to `~/.zlo` (the migrating resolver every other command uses).
